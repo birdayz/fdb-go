@@ -650,7 +650,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
 | Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
 | Signed-zero equality (`WHERE v = 0.0` with `-0.0`) | Keeps row (IEEE) | Drops the row — see below |
-| NaN self-equality (`WHERE v = v` with `NaN`) | FALSE (IEEE, SQL standard) | **TRUE** — see below |
+| NaN self-equality (`WHERE v = v` with `NaN`) | **TRUE — Go MATCHES Java here, and both diverge from the SQL standard.** An earlier revision of this row claimed Go returned FALSE "(IEEE, SQL standard)". That was asserted, never measured, and is wrong — see the NaN section below. | **TRUE** |
 | `SELECT v = 0.0` vs `WHERE v = 0.0` on the same `-0.0` | Agree (both IEEE) | **Contradict each other** — see below |
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
@@ -1217,3 +1217,48 @@ split the two zeros (value identity is tuple-key identity), which DOES match
 Java. `=` and dedup therefore disagree with each other in Go — an accepted,
 documented asymmetry, forced by the aggregate-index wire format. See
 `packedDedupKey`'s doc comment and TODO CQ-28 for the full argument.
+
+## NaN comparison follows Java's total order, NOT IEEE (open question)
+
+MEASURED, not inferred. Rows with `v/z` evaluating to NaN:
+
+    WHERE (v/z) = (v/z)    -> ALL rows      IEEE says FALSE (NaN != NaN)
+    WHERE (v/z) <> (v/z)   -> NO rows       IEEE says TRUE
+    WHERE (v/z) > 0        -> ALL rows      IEEE says FALSE (every NaN comparison is false)
+    ORDER BY v/z           -> NaN sorts after +Inf (a stable total order)
+    SELECT DISTINCT v/z    -> two NaNs collapse to one value
+    GROUP BY v/z           -> two NaNs form one group
+
+This is DELIBERATE, not an accident. `predicates/comparisons.go` falls through
+to `values.CompareFloat64`, the `Double.compare` total order with NaN greatest,
+and its own comment states the intent: "NaN vs NaN resolves to 0 here (matching
+Java Double.equals)."
+
+**So for NaN, Go currently matches Java and both diverge from the SQL standard,
+Postgres and CockroachDB**, all of which make every NaN comparison false. This
+is the opposite posture from signed zero, where Go deliberately keeps IEEE `=`
+and diverges from Java (see the section above).
+
+**Why this is left as an open question rather than "fixed" here.** The two are
+not symmetric:
+
+- Signed zero has a defensible IEEE answer that costs nothing elsewhere: `-0.0`
+  and `+0.0` genuinely are the same number, and treating them as equal breaks no
+  other invariant.
+- NaN under strict IEEE is not merely "not equal to itself" — it makes the
+  comparator NON-TRANSITIVE and destroys the total order that sorting, index
+  ordering, merge joins and dedup all rely on. `values.CompareFloat64`'s total
+  order (NaN greatest) is what keeps ORDER BY, the tuple key order and the
+  merge-sort comparators mutually consistent. Making PREDICATE comparison IEEE
+  while ORDER BY stays total-order is coherent (it is exactly the split already
+  documented for signed zero via RFC-082), but it is a real semantics change
+  across every comparison site and needs its own design gate.
+
+The DISTINCT / GROUP BY behaviour (two NaNs are one value) is consistent with
+this engine's settled rule that value identity is tuple-key identity — every NaN
+packs to the same key — and would NOT change even if predicate comparison moved
+to IEEE. That asymmetry is the same one already accepted for signed zero, just
+pointing the other way.
+
+Tracked in TODO.md; no behaviour changed by this entry, which only corrects a
+false claim about what Go does today.

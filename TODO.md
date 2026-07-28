@@ -9543,6 +9543,29 @@ hashes/reproducers. All experiments reverted; tree clean.
 
 ## Phase 11: Optimizer invariants
 
+- [ ] **CQ-38 (MED, semantics) — NaN comparison follows Java's total order, not
+  IEEE.** MEASURED: `WHERE (v/z) = (v/z)` returns ALL rows (IEEE says none),
+  `<> ` returns none (IEEE says all), `> 0` returns all (IEEE: every NaN
+  comparison is false). Deliberate -- predicate comparison falls through to
+  `values.CompareFloat64`, the Double.compare total order with NaN greatest, and
+  the comment says "matching Java Double.equals". So for NaN, Go matches Java
+  and BOTH diverge from the SQL standard, Postgres and CRDB -- the opposite
+  posture from signed zero, where Go keeps IEEE and diverges from Java.
+  NOT symmetric with the signed-zero case and not a simple "apply the same
+  ruling": strict IEEE makes the comparator NON-TRANSITIVE and destroys the
+  total order that ORDER BY, tuple key order, merge joins and dedup all share.
+  Splitting PREDICATE comparison (IEEE) from ORDER BY (total order) is coherent
+  -- it is exactly the split RFC-082 already documents for signed zero -- but it
+  touches every comparison site and needs its own design gate.
+  DISTINCT/GROUP BY treating two NaNs as one value is settled and would NOT
+  change: value identity is tuple-key identity and every NaN packs identically.
+  Current behaviour is pinned by `nan_comparison_semantics_test.go` so it cannot
+  drift unobserved while the question is open.
+  **Also corrected DIVERGENCES.md, which claimed Go returned FALSE for NaN
+  self-equality "(IEEE, SQL standard)".** That was asserted, never measured, and
+  backwards -- written by me earlier the same day while documenting Java's `=`
+  bug. A false claim in the divergence register is worse than no claim.
+
 (Header previously read "RFC-193/194 follow-through". Neither document was ever
 committed — no such file exists in the repo or its history. The findings they
 were meant to hold are recorded in the items below, which is why they survived

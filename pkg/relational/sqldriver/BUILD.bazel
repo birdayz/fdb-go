@@ -251,6 +251,7 @@ go_test(
         "multiway_join_index_probe_test.go",
         "multiway_join_order_nway_test.go",
         "multiway_join_order_probe_test.go",
+        "nan_comparison_semantics_test.go",
         "negative_covering_index_probe_test.go",
         "negative_double_index_probe_test.go",
         "negative_int_index_probe_test.go",
