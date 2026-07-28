@@ -76,16 +76,32 @@ Reviewers should push back here if that trade is wrong for a workload we care
 about. The alternative that preserves the seek is genuine multi-range execution,
 which is a much larger change.
 
-## Known gap, deliberately uncovered
+## Known gap, deliberately uncovered — MEASURED, not assumed
 
 Only a **compile-time-constant** zero is detectable at match time. A correlated
 or parameterised comparand that happens to be zero at runtime keeps the full
 prefix and can still miss the row.
 
-Covering it would mean de-sargging every correlated composite join whose leading
-column is a float, on the possibility of a runtime zero — trading a rare wrong
-row for a broad performance cliff. I judged that the wrong trade. This is the
-single most reviewable judgement in the change.
+Covering it at MATCH time would mean de-sargging every correlated composite join
+whose leading column is a float, on the possibility of a runtime zero — trading
+a rare wrong row for a broad performance cliff. I judged that the wrong trade.
+This is the single most reviewable judgement in the change.
+
+The gap is now measured rather than asserted, and pinned as a self-cleaning
+sentinel (`correlated_zero_composite_sentinel_test.go`):
+
+    t.v = o.k AND t.w = 5   (o.k = +0.0, t.v = -0.0)  -> []   WRONG, want [1]
+      plan: FlatMap(Scan(O), Fetch(IndexScan(T_VW, [=, =])))
+    t.v = o.k               (same values, terminal)   -> [1]  correct
+    v = 0 AND w = 5         (constant, this RFC)      -> [1]  correct
+
+The sentinel also asserts the three shapes that must keep working, so a future
+"fix" that simply de-sargs everything cannot pass by accident.
+
+Fixing it properly means deciding widening-plus-residual at EXECUTION time,
+where the comparand value is finally known. That changes the index scan's
+contract — it would return more rows than its range implies and filter
+internally — and belongs behind its own gate.
 
 ## Verification
 
