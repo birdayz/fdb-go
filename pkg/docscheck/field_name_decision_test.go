@@ -44,11 +44,18 @@ type fieldDecisionSite struct {
 // allowedFieldDecisions are the sites where comparing the display name is
 // genuinely correct. Each needs a reason that survives the question above.
 var allowedFieldDecisions = []fieldDecisionSite{
+	// The values package OWNS FieldValue, but exempting the whole DIRECTORY was
+	// wrong: it holds semantic rewrites as well as construction and rendering,
+	// and `composeFieldOverConstructor` in simplifier_value.go picks a
+	// constructor member by `field.Name == fv.Field` — exactly the conflation
+	// this gate exists to stop, skipped before it was ever inspected. Exempting
+	// 170 files to spare the handful that construct and render is not an
+	// allowlist, it is a hole. Only the files that genuinely define the type
+	// are listed.
 	{
-		file: "pkg/recordlayer/query/plan/cascades/values/",
-		why: "the values package OWNS FieldValue: constructing, resolving and rendering it " +
-			"necessarily touches the name. Decisions made ON a resolved value belong here; " +
-			"decisions made ELSEWHERE about which column something is do not.",
+		file: "pkg/recordlayer/query/plan/cascades/values/values.go",
+		why: "declares FieldValue and its accessors: constructing, resolving and rendering " +
+			"one necessarily touches the name.",
 	},
 	{
 		file: "pkg/recordlayer/key_expression_proto.go",
@@ -94,43 +101,94 @@ func fieldDecisionAllowed(rel string) bool {
 //   - DOTTED-NAME PROBE: `strings.Contains(fv.Field, ".")` asking whether a
 //     reference is qualified. Structure encoded in a string; the flat "ALIAS.col"
 //     representation is the actual debt, and these sites are its readers.
-var knownFieldDecisionDebt = map[string]string{
-	"pkg/recordlayer/query/plan/cascades/match_candidate_index.go:239":            "index column name vs query field",
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118":             "escape: THE group-key output-naming authority — the name IS the contract with the executor, so this moves only when the contract becomes an ordinal",
-	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:394":             "escape: leafFieldName, guarded to a flat non-nested PK column but still name-keyed downstream",
-	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:421":             "escape: same, after a Resolved.Single() guard",
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:112":           "dotted-name probe: leg-relative vs qualified ref",
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2337": "dotted-name probe: declines re-qualifying an already-dotted ref",
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3691": "escape: (alias, column) pair after a Resolved.Single() guard",
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3735": "escape: bareColumnName, the flat-string alias-stripping path",
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3741": "escape: same function's fallback arm",
-	"pkg/recordlayer/query/plan/plans/cost.go:643":                                "escape: correlatedInnerField — the shape this gate is named after. Guarded by Resolved.Single() and a flat-QOV child, so the name is unambiguous TODAY; the caller still keys want[]/bound[] by it",
-	"pkg/relational/core/embedded/logical_predicate.go:6093":                      "escape: aggregate group-key output name, SQL translator layer",
-	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                "referenced-field set keyed by name",
-	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197":    "distinct-key set keyed by name",
-	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            "projection merge matches by name",
-	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      "sort key matched by name",
-	"pkg/relational/conformance/rowdiff/ordering.go:241":                          "oracle-side ordering, harness not engine",
-	"pkg/relational/core/embedded/cascades_generator.go:2264":                     "SQL translator layer",
-	"pkg/relational/core/embedded/cascades_generator.go:3155":                     "SQL translator layer",
-	"pkg/relational/core/embedded/cascades_generator.go:3281":                     "SQL translator layer",
-	"pkg/relational/core/embedded/cascades_generator.go:3287":                     "SQL translator layer",
-	"pkg/relational/core/embedded/logical_predicate.go:4151":                      "SQL translator layer",
-	"pkg/relational/core/embedded/logical_predicate.go:6188":                      "SQL translator layer",
-	"pkg/relational/core/query/box_conjunct.go:149":                               "dotted-name probe: frontier read attribution, SQL translator layer",
-	"pkg/relational/core/query/ordinal_seed.go:761":                               "dotted-name probe: leg-ref detection, SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:2093":                       "SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:4748":                       "escape: sort-key field ref, SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:5048":                       "SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:5879":                       "SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:6096":                       "SQL translator layer",
-	"pkg/relational/core/query/cascades_translator.go:6104":                       "SQL translator layer",
+//
+// fieldDebt records HOW MANY decisions a line hosts, not merely that it hosts
+// one. A single source line can host several -- logical_predicate.go:4151 hosts
+// three -- and a boolean "this line is known" accepts any subset of them, so
+// two of the three could be deleted or swapped for different ones with the
+// ratchet still green. The count is what makes it a ratchet.
+type fieldDebt struct {
+	n   int
+	why string
+}
+
+var knownFieldDecisionDebt = map[string]fieldDebt{
+	"pkg/recordlayer/query/plan/cascades/match_candidate_index.go:792":            {1, "laundered map key: coveredColumns[strings.ToUpper(v.Field)] -- the ToUpper wrapper is what hid it"},
+	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go:246":   {1, "laundered map key, same shape"},
+	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:52":         {1, "values package, no longer blanket-exempt: accessor path segment compared by name"},
+	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "values package: dotted-name probe on an accessor path"},
+	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:64":         {1, "values package: accessor path segment compared by name"},
+	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "values package: field remap keyed by name"},
+	"pkg/recordlayer/query/plan/cascades/values/pullup.go:210":                    {1, "values package: pull-up matches a column by name"},
+	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                   {1, "values package: replacement target matched by name"},
+	"pkg/recordlayer/query/plan/cascades/values/replace.go:520":                   {1, "values package: same, second arm"},
+	"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go:243":          {1, "values package: composeFieldOverConstructor picks a constructor member by name and leans on a duplicate-name guard for correctness -- the exact conflation this gate targets, invisible while the whole directory was exempt"},
+	"pkg/relational/core/embedded/cascades_generator.go:3175":                     {1, "laundered map key, SQL translator layer"},
+	"pkg/relational/core/embedded/logical_predicate.go:6617":                      {1, "laundered map key, SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:2107":                       {1, "laundered switch tag: switch strings.ToUpper(fv.Field), SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:3870":                       {1, "laundered map key, SQL translator layer"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118":             {1, "escape: THE group-key output-naming authority — the name IS the contract with the executor, so this moves only when the contract becomes an ordinal"},
+	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:394":             {1, "escape: leafFieldName, guarded to a flat non-nested PK column but still name-keyed downstream"},
+	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:421":             {1, "escape: same, after a Resolved.Single() guard"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:112":           {1, "dotted-name probe: leg-relative vs qualified ref"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2337": {1, "dotted-name probe: declines re-qualifying an already-dotted ref"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3691": {1, "escape: (alias, column) pair after a Resolved.Single() guard"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3735": {1, "escape: bareColumnName, the flat-string alias-stripping path"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3741": {1, "escape: same function's fallback arm"},
+	"pkg/recordlayer/query/plan/plans/cost.go:643":                                {1, "escape: correlatedInnerField — the shape this gate is named after. Guarded by Resolved.Single() and a flat-QOV child, so the name is unambiguous TODAY; the caller still keys want[]/bound[] by it"},
+	"pkg/relational/core/embedded/logical_predicate.go:6093":                      {1, "escape: aggregate group-key output name, SQL translator layer"},
+	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "referenced-field set keyed by name"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197":    {1, "distinct-key set keyed by name"},
+	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            {1, "projection merge matches by name"},
+	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "sort key matched by name"},
+	"pkg/relational/conformance/rowdiff/ordering.go:241":                          {1, "oracle-side ordering, harness not engine"},
+	"pkg/relational/core/embedded/cascades_generator.go:3155":                     {1, "SQL translator layer"},
+	"pkg/relational/core/embedded/cascades_generator.go:3281":                     {1, "SQL translator layer"},
+	"pkg/relational/core/embedded/cascades_generator.go:3287":                     {1, "SQL translator layer"},
+	"pkg/relational/core/embedded/logical_predicate.go:4151":                      {3, "SQL translator layer"},
+	"pkg/relational/core/embedded/logical_predicate.go:6188":                      {1, "SQL translator layer"},
+	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted-name probe: frontier read attribution, SQL translator layer"},
+	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted-name probe: leg-ref detection, SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:2093":                       {1, "SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:4748":                       {1, "escape: sort-key field ref, SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:5048":                       {1, "SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:5879":                       {1, "SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:6096":                       {1, "SQL translator layer"},
+	"pkg/relational/core/query/cascades_translator.go:6104":                       {1, "SQL translator layer"},
 }
 
 // isFieldSelector reports whether e reads `.Field` off something.
 func isFieldSelector(e ast.Expr) bool {
 	sel, ok := e.(*ast.SelectorExpr)
 	return ok && sel.Sel != nil && sel.Sel.Name == "Field"
+}
+
+// readsFieldName reports whether e ultimately delivers the leaf name, peeling
+// off any wrapping that does not change identity.
+//
+// Requiring `.Field` to be the IMMEDIATE child of a sink is how
+// `coveredColumns[strings.ToUpper(v.Field)]` and `switch strings.ToUpper(fv.Field)`
+// stayed invisible: the sink's child is a CallExpr, and one level of indirection
+// was enough to hide the decision. Uppercasing a name does not turn it into a
+// resolved column, so the wrapper is peeled and the sink is judged on what
+// actually reaches it.
+func readsFieldName(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		return isFieldSelector(x)
+	case *ast.ParenExpr:
+		return readsFieldName(x.X)
+	case *ast.CallExpr:
+		if !nameLaunderers[callFuncName(x.Fun)] {
+			return false
+		}
+		for _, arg := range x.Args {
+			if readsFieldName(arg) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stringCompareHelpers are calls whose result is a name equality/ordering
@@ -200,6 +258,12 @@ func funcTouchesFieldValue(fn ast.Node) bool {
 	return found
 }
 
+// isNilIdent reports whether e is the identifier nil.
+func isNilIdent(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "nil"
+}
+
 // isOrderingOp reports whether op orders two values. Sorting BY leaf name is
 // leaf-name-as-identity exactly as much as comparing by it — a
 // `sort.Slice(cols, func(i,j int) bool { return cols[i].Field < cols[j].Field })`
@@ -229,7 +293,18 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 		case *ast.BinaryExpr:
 			op := x.Op.String()
 			if op == "==" || op == "!=" || isOrderingOp(op) {
-				if isFieldSelector(x.X) || isFieldSelector(x.Y) {
+				// `.Field` against nil is decidable without type information:
+				// FieldValue.Field is a string and cannot be compared to nil, so
+				// the receiver is some other type. `expression.Field != nil` in
+				// match_candidate_index.go selects a protobuf KeyExpression
+				// variant and has nothing to do with column identity — it was
+				// sitting in the debt list, under a description of a decision it
+				// does not make, telling its reader to consult a Resolved
+				// accessor that does not exist on it.
+				if isNilIdent(x.X) || isNilIdent(x.Y) {
+					break
+				}
+				if readsFieldName(x.X) || readsFieldName(x.Y) {
 					report(x.Pos(), "a "+op+" comparison")
 				}
 			}
@@ -237,18 +312,18 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			// Switching on a display name is equality N times over. (An
 			// EMPTY-tag switch needs no arm here: ast.Inspect still visits
 			// each case's boolean expression as an ordinary BinaryExpr.)
-			if x.Tag != nil && isFieldSelector(x.Tag) {
+			if x.Tag != nil && readsFieldName(x.Tag) {
 				report(x.Pos(), "a switch tag")
 			}
 		case *ast.IndexExpr:
 			// Keying a map by display name conflates same-named columns.
-			if isFieldSelector(x.Index) {
+			if readsFieldName(x.Index) {
 				report(x.Pos(), "a map key")
 			}
 		case *ast.KeyValueExpr:
 			// map[string]T{fv.Field: …} builds the same conflation through
 			// a composite literal, which never produces an IndexExpr.
-			if isFieldSelector(x.Key) {
+			if readsFieldName(x.Key) {
 				report(x.Pos(), "a composite-literal key")
 			}
 		case *ast.ReturnStmt:
@@ -297,7 +372,7 @@ func TestFieldNameNeverDecides(t *testing.T) {
 
 	var offenses []string
 	var scanned int
-	seenDebt := map[string]bool{}
+	seenDebt := map[string]int{}
 
 	for _, rel := range trackedGoFiles(t, root) {
 		if strings.HasSuffix(rel, "_test.go") || fieldDecisionAllowed(rel) {
@@ -326,7 +401,7 @@ func TestFieldNameNeverDecides(t *testing.T) {
 			p := fset.Position(pos)
 			key := fmt.Sprintf("%s:%d", rel, p.Line)
 			if _, known := knownFieldDecisionDebt[key]; known {
-				seenDebt[key] = true
+				seenDebt[key]++
 				return
 			}
 			offenses = append(offenses,
@@ -341,10 +416,18 @@ func TestFieldNameNeverDecides(t *testing.T) {
 	// Self-cleaning: a debt entry that no longer matches means the site moved or
 	// was fixed. Either way the line must go, or the list silently becomes a
 	// permanent allowlist pointing at code that has changed underneath it.
+	//
+	// The COUNT is checked, not just presence. A line hosting three decisions
+	// under a boolean "seen" would accept one, two or three of them — delete two
+	// and swap the third for a different violation and the ratchet stays green,
+	// which is a suppression wearing a ratchet's clothes.
 	var stale []string
-	for key := range knownFieldDecisionDebt {
-		if !seenDebt[key] {
-			stale = append(stale, key)
+	for key, want := range knownFieldDecisionDebt {
+		switch got := seenDebt[key]; {
+		case got == 0:
+			stale = append(stale, key+" (no decision found)")
+		case got != want.n:
+			stale = append(stale, fmt.Sprintf("%s (hosts %d decisions, entry says %d)", key, got, want.n))
 		}
 	}
 	if len(stale) > 0 {

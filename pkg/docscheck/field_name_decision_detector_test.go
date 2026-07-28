@@ -158,6 +158,33 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 }`,
 		},
 		{
+			// Requiring `.Field` to be the sink's IMMEDIATE child let one call
+			// wrapper hide the decision. This exact line lives in
+			// match_candidate_index.go and passed the first version of the gate.
+			name: "map key laundered through ToUpper",
+			want: "map key",
+			body: `func f(covered map[string]struct{}, fv *values.FieldValue) bool {
+	_, ok := covered[strings.ToUpper(fv.Field)]
+	return ok
+}`,
+		},
+		{
+			name: "switch tag laundered through ToUpper",
+			want: "switch tag",
+			body: `func f(fv *values.FieldValue) int {
+	switch strings.ToUpper(fv.Field) {
+	case "A":
+		return 1
+	}
+	return 0
+}`,
+		},
+		{
+			name: "comparison laundered through ToUpper",
+			want: "== comparison",
+			body: `func f(fv *values.FieldValue, s string) bool { return strings.ToUpper(fv.Field) == s }`,
+		},
+		{
 			// The parent FuncDecl names the type; a closure inside it inherits
 			// that, or every escape behind a callback goes unseen.
 			name: "escape from a closure inside a FieldValue-handling func",
@@ -225,6 +252,21 @@ func (k SortKey) Name() string { return k.Field }`,
 			name: "name only formatted into a message",
 			body: `func f(fv *values.FieldValue) error {
 	return fmt.Errorf("cannot resolve %s", fv.Field)
+}`,
+		},
+		{
+			// FieldValue.Field is a string and cannot be compared to nil, so a
+			// nil comparison proves the receiver is something else. This is a
+			// protobuf KeyExpression variant selector; it spent a release in the
+			// debt list described as a decision it does not make, pointing its
+			// reader at a Resolved accessor the type does not have.
+			name: "protobuf variant selector compared to nil",
+			body: `func f(expression *gen.KeyExpression) bool {
+	switch {
+	case expression.Field != nil:
+		return expression.Field.FanType == nil
+	}
+	return false
 }`,
 		},
 	} {
