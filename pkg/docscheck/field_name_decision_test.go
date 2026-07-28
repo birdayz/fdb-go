@@ -36,46 +36,39 @@ import (
 //
 // Adding an entry is deliberately annoying: it needs a one-line justification,
 // and the reviewer question is always "why can Resolved not answer this?"
+//
+// The exemption is per SITE (file:line, with a count), never per file. A
+// whole-file exemption is not an allowlist, it is a hole with a comment on it:
+// it covers every decision the file grows later, for free and silently. The
+// earlier version of this list held three FILES; measurement showed they
+// exempted nothing at all, so the loophole was pure downside — it would have
+// been discovered the first time someone needed one line of a 6000-line
+// translator exempted and got the other 5999 with it.
 type fieldDecisionSite struct {
-	file string
+	site string // "path/to/file.go:LINE"
+	n    int    // decisions this line hosts
 	why  string
 }
 
 // allowedFieldDecisions are the sites where comparing the display name is
 // genuinely correct. Each needs a reason that survives the question above.
-var allowedFieldDecisions = []fieldDecisionSite{
-	// The values package OWNS FieldValue, but exempting the whole DIRECTORY was
-	// wrong: it holds semantic rewrites as well as construction and rendering,
-	// and `composeFieldOverConstructor` in simplifier_value.go picks a
-	// constructor member by `field.Name == fv.Field` — exactly the conflation
-	// this gate exists to stop, skipped before it was ever inspected. Exempting
-	// 170 files to spare the handful that construct and render is not an
-	// allowlist, it is a hole. Only the files that genuinely define the type
-	// are listed.
-	{
-		file: "pkg/recordlayer/query/plan/cascades/values/values.go",
-		why: "declares FieldValue and its accessors: constructing, resolving and rendering " +
-			"one necessarily touches the name.",
-	},
-	{
-		file: "pkg/recordlayer/key_expression_proto.go",
-		why: "record-layer key expressions are defined BY field name in the metadata proto — " +
-			"the name IS the identity at that layer, before any query-side resolution exists.",
-	},
-	{
-		file: "pkg/recordlayer/query/plan/cascades/index_expansion.go",
-		why: "expands an index definition, whose columns are likewise named in metadata; the " +
-			"name is the input, not a stand-in for a resolved column.",
-	},
-}
+// It is EMPTY, and that is a measured result rather than an aspiration. The
+// previous version exempted three whole files — values.go (which declares
+// FieldValue), key_expression_proto.go and index_expansion.go — on the reasoning
+// that the name is the identity at the metadata layer. Emptying the list changed
+// nothing: none of the three contains a single decision the walk reports. Three
+// file-wide holes were standing open to cover zero sites.
+//
+// So the list stays empty until a site earns a line, and the line is a SITE.
+var allowedFieldDecisions = []fieldDecisionSite{}
 
-func fieldDecisionAllowed(rel string) bool {
+func fieldDecisionAllowed(site string) (fieldDecisionSite, bool) {
 	for _, a := range allowedFieldDecisions {
-		if strings.HasPrefix(rel, a.file) {
-			return true
+		if a.site == site {
+			return a, true
 		}
 	}
-	return false
+	return fieldDecisionSite{}, false
 }
 
 // knownFieldDecisionDebt is the surface that EXISTED when this gate was added:
@@ -376,6 +369,29 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	})
 }
 
+// An allowlist entry must name a LINE. Nothing in the walk would reject
+// `{site: "pkg/relational/core/query/cascades_translator.go"}` — it simply
+// would never match, so the entry would sit there reading like an exemption
+// while granting none, and the next person to "fix" it would reach for prefix
+// matching and re-open the file-wide hole this replaced.
+func TestFieldDecisionAllowlistIsPerSite(t *testing.T) {
+	t.Parallel()
+	for _, a := range allowedFieldDecisions {
+		file, line, ok := strings.Cut(a.site, ":")
+		if !ok || !strings.HasSuffix(file, ".go") || line == "" || strings.Trim(line, "0123456789") != "" {
+			t.Errorf("allowlist entry %q must be file.go:LINE — a whole-file exemption covers "+
+				"every decision the file grows later, silently and for free", a.site)
+		}
+		if a.n < 1 {
+			t.Errorf("allowlist entry %q must state how many decisions the line hosts", a.site)
+		}
+		if strings.TrimSpace(a.why) == "" {
+			t.Errorf("allowlist entry %q needs a reason answering: why can Resolved not "+
+				"answer this?", a.site)
+		}
+	}
+}
+
 func TestFieldNameNeverDecides(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
@@ -383,9 +399,10 @@ func TestFieldNameNeverDecides(t *testing.T) {
 	var offenses []string
 	var scanned int
 	seenDebt := map[string]int{}
+	seenAllowed := map[string]int{}
 
 	for _, rel := range trackedGoFiles(t, root) {
-		if strings.HasSuffix(rel, "_test.go") || fieldDecisionAllowed(rel) {
+		if strings.HasSuffix(rel, "_test.go") {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, rel))
@@ -410,6 +427,10 @@ func TestFieldNameNeverDecides(t *testing.T) {
 		scanFieldDecisions(f, func(pos token.Pos, form string) {
 			p := fset.Position(pos)
 			key := fmt.Sprintf("%s:%d", rel, p.Line)
+			if _, ok := fieldDecisionAllowed(key); ok {
+				seenAllowed[key]++
+				return
+			}
 			if _, known := knownFieldDecisionDebt[key]; known {
 				seenDebt[key]++
 				return
@@ -431,7 +452,19 @@ func TestFieldNameNeverDecides(t *testing.T) {
 	// under a boolean "seen" would accept one, two or three of them — delete two
 	// and swap the third for a different violation and the ratchet stays green,
 	// which is a suppression wearing a ratchet's clothes.
+	// The allowlist gets the SAME discipline. An exemption that stops matching
+	// is an exemption nobody re-justified, and it is more dangerous than a stale
+	// debt entry: debt is expected to be fixed, an exemption claims it never
+	// needed fixing.
 	var stale []string
+	for _, a := range allowedFieldDecisions {
+		switch got := seenAllowed[a.site]; {
+		case got == 0:
+			stale = append(stale, a.site+" (allowlisted, but no decision found)")
+		case got != a.n:
+			stale = append(stale, fmt.Sprintf("%s (allowlisted for %d decisions, hosts %d)", a.site, a.n, got))
+		}
+	}
 	for key, want := range knownFieldDecisionDebt {
 		switch got := seenDebt[key]; {
 		case got == 0:
