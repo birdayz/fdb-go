@@ -2326,6 +2326,12 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 	if pkLen == 0 {
 		return false, false
 	}
+	// A widening equality (a terminal zero float) binds TWO keys, so a fully
+	// equality-bound PK is still not a one-row proof. Guarding the ONE shared
+	// helper covers both scanProvableMaxCard and scanPlanProvableMaxCard.
+	if properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
+		return false, true
+	}
 	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 }
 
@@ -2346,7 +2352,13 @@ func indexPlanProvableMaxCard(pl *plans.RecordQueryIndexPlan, cols []string, uni
 			}
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(cols) {
+	// Same widening guard as computeCardinalities, isProvablePointProbe,
+	// indexProvableMaxCard and scanLikeCost. This is the CONCRETE physical
+	// path PlanningCostModelLess actually walks, so leaving it unguarded kept
+	// maxDataAccessCardinality=1 for a zero probe even after the property was
+	// fixed -- criterion #2 ranking on a bound the property had disowned.
+	if numBound > 0 && allEquality && numBound == len(cols) &&
+		!properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
 		return 1, true
 	}
 	return 0, false

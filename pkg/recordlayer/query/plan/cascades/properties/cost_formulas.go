@@ -363,8 +363,20 @@ func EqualityBoundsCoverKey(comps []*predicates.ComparisonRange, keyColumnCount 
 // (see match_candidate_index), because being conservative there de-sargs a probe
 // into a full leading-column scan rather than merely costing a sort.
 func AnyEqualityWidensBeyondOneKey(comps []*predicates.ComparisonRange) bool {
-	for _, cr := range comps {
+	for i, cr := range comps {
 		if cr == nil || !cr.IsEquality() {
+			continue
+		}
+		// The executor widens a zero bound ONLY when nothing after it
+		// constrains the key (scanComparisonsToTupleRange). With a later
+		// constraining comparison the union of the two zero prefixes is not a
+		// contiguous interval, so it deliberately does not widen — and a
+		// unique `v = outer.k AND w = 5` probe really does pin one key.
+		//
+		// Mirroring that condition matters in BOTH directions: without it this
+		// helper discards a valid one-row proof for every correlated composite
+		// float probe and replaces point-probe cost with a multi-row estimate.
+		if anyLaterComparisonConstrains(comps, i) {
 			continue
 		}
 		cmp := cr.GetEqualityComparison()
@@ -392,6 +404,21 @@ func AnyEqualityWidensBeyondOneKey(comps []*predicates.ComparisonRange) bool {
 			if n == 0 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// anyLaterComparisonConstrains reports whether any comparison after index i
+// narrows the key range. A candidate index contributes one ComparisonRange per
+// indexed column, so unconstrained trailing columns appear as EMPTY ranges and
+// must not count. Mirrors the executor's own terminal test in
+// scanComparisonsToTupleRange — the two must agree or a proof here contradicts
+// what the scan actually does.
+func anyLaterComparisonConstrains(comps []*predicates.ComparisonRange, i int) bool {
+	for _, cr := range comps[i+1:] {
+		if cr != nil && !cr.IsEmpty() {
+			return true
 		}
 	}
 	return false

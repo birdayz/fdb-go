@@ -1160,9 +1160,17 @@ enforceable — at which point this divergence closes.
 
 ## Java's float `=` is bit identity, and contradicts itself (upstream bug)
 
-Go's `=` follows IEEE 754 on floats: `-0.0 = 0.0` is TRUE and `NaN = NaN` is
-FALSE, matching the SQL standard, Postgres and CockroachDB. Java does neither
-consistently, and the divergence is deliberate on our side.
+Go's `=` treats `-0.0 = 0.0` as TRUE, matching the SQL standard, Postgres and
+CockroachDB, where Java says FALSE. That signed-zero divergence is deliberate on
+our side and is what this section is about.
+
+NaN is a SEPARATE question and points the other way: Go returns TRUE for
+`NaN = NaN`, matching Java. An earlier revision of this paragraph claimed Go
+returned FALSE "matching the SQL standard, Postgres and CockroachDB" -- wrong
+twice over. Go returns TRUE (measured), and Postgres deliberately treats NaN as
+equal to itself and greater than every non-NaN, precisely so btree indexes have
+a total order. See the NaN section below; do not read this section as covering
+it.
 
 **Java's PREDICATE path uses bit identity.** `Comparisons.java:246` is the
 deciding line — `toClassWithRealEquals(value).equals(comparand)`, which for a
@@ -1234,10 +1242,22 @@ to `values.CompareFloat64`, the `Double.compare` total order with NaN greatest,
 and its own comment states the intent: "NaN vs NaN resolves to 0 here (matching
 Java Double.equals)."
 
-**So for NaN, Go currently matches Java and both diverge from the SQL standard,
-Postgres and CockroachDB**, all of which make every NaN comparison false. This
-is the opposite posture from signed zero, where Go deliberately keeps IEEE `=`
-and diverges from Java (see the section above).
+**So for NaN, Go matches Java — and that is far less lonely than it first
+looks.** Postgres deliberately treats NaN as EQUAL to itself and greater than
+every non-NaN, precisely so btree indexes have a usable total order, and
+CockroachDB does the same. Strict IEEE, where every NaN comparison is false, is
+what the bare standard says and what almost no INDEXED engine implements — an
+index needs a total order, and IEEE NaN does not provide one.
+
+An earlier revision of this section asserted the opposite about Postgres without
+checking it, and the table row above claimed Go returned FALSE. Both were wrong,
+and both were written while documenting Java's signed-zero bug — the same
+session, the same file, the same failure to measure the other engine before
+describing it.
+
+So the posture here is NOT the mirror of signed zero. There, Go keeps IEEE and
+diverges from Java. Here, Go, Java, Postgres and CRDB all agree on a total
+order, and only the unindexed reading of the standard disagrees.
 
 **Why this is left as an open question rather than "fixed" here.** The two are
 not symmetric:
