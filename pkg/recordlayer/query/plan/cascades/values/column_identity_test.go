@@ -270,3 +270,88 @@ func TestOrdinalOfNameIn_ResolvesMetadataNamesOnce(t *testing.T) {
 		t.Fatal("an empty name must decline")
 	}
 }
+
+// TestSameColumnPath varies ONE identity element per case and holds the rest
+// equal — the same discipline TestIdentityIn_SameLeafNameDifferentQuantifiers
+// applies, and for the same reason: a case that moves two elements at once is
+// satisfied by a comparison carrying only one of them.
+func TestSameColumnPath(t *testing.T) {
+	t.Parallel()
+
+	orders := OrdinalDomainOfColumnNames([]string{"ID", "CUSTOMER_ID"})
+	items := OrdinalDomainOfColumnNames([]string{"ID", "ORDER_ID", "QTY"})
+
+	path := func(name string, ordinal int, domain OrdinalDomain) *FieldPath {
+		return NewFieldPathOfSingleInDomain(name, ordinal, false, domain)
+	}
+
+	t.Run("the DISPLAY NAME alone is not a difference", func(t *testing.T) {
+		t.Parallel()
+		// Same layout, same ordinal, two renderings. Java's
+		// ResolvedAccessor.equals excludes the name for exactly this case.
+		if !SameColumnPath(path("ID", 0, orders), path("ALIASED", 0, orders)) {
+			t.Fatal("two renderings of ordinal 0 of one layout were called different columns: " +
+				"the display name is deciding identity")
+		}
+	})
+
+	t.Run("the ORDINAL alone separates them", func(t *testing.T) {
+		t.Parallel()
+		if SameColumnPath(path("ID", 0, orders), path("ID", 1, orders)) {
+			t.Fatal("two ordinals of one layout matched")
+		}
+	})
+
+	t.Run("the DOMAIN alone separates them", func(t *testing.T) {
+		t.Parallel()
+		// Identical name AND ordinal, so nothing but the layout can refuse.
+		if SameColumnPath(path("ID", 0, orders), path("ID", 0, items)) {
+			t.Fatal("ordinal 0 of two different layouts matched: an ordinal is comparable " +
+				"only against a stated layout")
+		}
+	})
+
+	t.Run("fails closed", func(t *testing.T) {
+		t.Parallel()
+		unknown := OrdinalDomain{}
+		if SameColumnPath(path("ID", 0, unknown), path("ID", 0, unknown)) {
+			t.Fatal("two paths with an UNSTATED layout matched: unknown is not a domain")
+		}
+		if SameColumnPath(path("ID", 0, unknown), path("ID", 0, orders)) {
+			t.Fatal("an unstated layout matched a stated one")
+		}
+		// Go's -1 name-only accessors are ordinal-equal by construction, so an
+		// ordinal comparison over them is vacuous (Java forbids the shape,
+		// FieldValue.java:651).
+		if SameColumnPath(path("X", -1, orders), path("Y", -1, orders)) {
+			t.Fatal("two name-only (-1) accessors matched: ordinal equality is vacuous there")
+		}
+		if SameColumnPath(nil, path("ID", 0, orders)) || SameColumnPath(path("ID", 0, orders), nil) {
+			t.Fatal("a nil path matched")
+		}
+		if SameColumnPath(&FieldPath{Domain: orders}, &FieldPath{Domain: orders}) {
+			t.Fatal("two empty paths matched: an empty path reads nothing")
+		}
+	})
+
+	t.Run("every accessor of a nested path is compared", func(t *testing.T) {
+		t.Parallel()
+		nested := func(rootOrd, leafOrd int) *FieldPath {
+			return &FieldPath{
+				Accessors: []ResolvedAccessor{
+					{Field: "ADDR", Ordinal: rootOrd}, {Field: "CITY", Ordinal: leafOrd},
+				},
+				Domain: orders,
+			}
+		}
+		if !SameColumnPath(nested(0, 3), nested(0, 3)) {
+			t.Fatal("an identical two-accessor path did not match")
+		}
+		if SameColumnPath(nested(0, 3), nested(1, 3)) {
+			t.Fatal("two nested paths differing at the ROOT accessor matched")
+		}
+		if SameColumnPath(nested(0, 3), path("CITY", 0, orders)) {
+			t.Fatal("a two-accessor path matched a one-accessor path")
+		}
+	})
+}

@@ -4135,22 +4135,20 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 // have had that redundant qualifier stripped. Resolved path and defining source
 // still have to prove identical; a multi-source aggregate never gets this
 // childless/qualified relaxation.
+//
+// The ordinal path is the identity (values.SameColumnPath — the domain-checked,
+// non-negative form of Java's ordinal-only FieldPath.equals). The per-accessor
+// DISPLAY-name check this used to AND on is gone: a group-key reference whose
+// display name was aliased away still denotes the column its ordinal names, and
+// refusing it was the name-as-identity conflation in its refusing direction. The
+// name was load-bearing against Ordinal -1 name-only accessors, where ordinal
+// equality is vacuous; SameColumnPath declines those outright, which covers the
+// same hazard without consulting a display name.
 func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logical.LogicalAggregate) bool {
 	cf, cok := candidate.(*values.FieldValue)
 	kf, kok := key.(*values.FieldValue)
-	if !cok || !kok || cf.Resolved == nil || kf.Resolved == nil ||
-		len(cf.Resolved.Accessors) == 0 ||
-		len(cf.Resolved.Accessors) != len(kf.Resolved.Accessors) {
+	if !cok || !kok || !values.SameColumnPath(cf.Resolved, kf.Resolved) {
 		return false
-	}
-	for i := range cf.Resolved.Accessors {
-		ca, ka := cf.Resolved.Accessors[i], kf.Resolved.Accessors[i]
-		if ca.Ordinal != ka.Ordinal {
-			return false
-		}
-		if ca.Field != "" && ka.Field != "" && !strings.EqualFold(ca.Field, ka.Field) {
-			return false
-		}
 	}
 	cq, cHasQOV := cf.Child.(*values.QuantifiedObjectValue)
 	kq, kHasQOV := kf.Child.(*values.QuantifiedObjectValue)

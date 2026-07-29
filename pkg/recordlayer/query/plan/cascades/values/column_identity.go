@@ -139,3 +139,45 @@ func (c ColumnIdentity) WithCorrelation(corr CorrelationIdentifier) ColumnIdenti
 	c.Correlation = corr
 	return c
 }
+
+// SameColumnPath reports whether two RESOLVED accessor paths denote the same
+// column. It is the ORDINAL-PATH element of the identity triple asked BETWEEN
+// two references, rather than resolved into a caller's stated layout the way
+// IdentityIn is — the shape a matcher holding both operands needs. The
+// CORRELATION element is not covered here: a matcher that admits two different
+// child shapes (a childless source-relative bake against a QOV-qualified read of
+// the same source) must prove the correlation its own way, and one that does not
+// admit them should be comparing whole values.
+//
+// Java's FieldPath.equals is element-wise ordinal equality with the per-step
+// name excluded (FieldValue.java:411-420, over ResolvedAccessor.equals at
+// :676-685, which is getOrdinal()-only). Go needs two proofs on top, both for
+// shapes Java cannot express:
+//
+//   - the DOMAIN, KNOWN on both sides and equal. Java's childValue is non-null
+//     and typed, so the layout an ordinal indexes is always derivable; Go mints
+//     childless bakes, and two ordinal-equal paths can address two different
+//     layouts. An ordinal conflation reads as authoritative, which is strictly
+//     worse than the name conflation it would replace.
+//   - a NON-NEGATIVE ordinal at every step. Java asserts ordinal >= 0 at
+//     construction (FieldValue.java:651); Go mints Ordinal -1 name-only
+//     accessors at its unnest/gather/index-expansion seeds. Two of those are
+//     ordinal-equal BY CONSTRUCTION, so an ordinal comparison over them is
+//     vacuous and would bind two distinct nested fields as one.
+//
+// Both declines are the fail-closed direction: a refused match costs a rewrite,
+// an accepted one binds the wrong column.
+func SameColumnPath(a, b *FieldPath) bool {
+	if a == nil || b == nil || len(a.Accessors) == 0 || len(a.Accessors) != len(b.Accessors) {
+		return false
+	}
+	if !a.Domain.IsKnown() || a.Domain != b.Domain {
+		return false
+	}
+	for i := range a.Accessors {
+		if a.Accessors[i].Ordinal < 0 || a.Accessors[i].Ordinal != b.Accessors[i].Ordinal {
+			return false
+		}
+	}
+	return true
+}
