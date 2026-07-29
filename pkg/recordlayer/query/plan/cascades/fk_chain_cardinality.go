@@ -149,7 +149,8 @@ type namedValue struct {
 // provably preserves every tracked PK value: see pkThreadThroughResultValue.
 func computeMapPKThread(pl *plans.RecordQueryMapPlan) pkThread {
 	childThread := pkThreadFromSingleChild(pl.GetChildren())
-	return pkThreadThroughResultValue(childThread, pl.GetInnerQuantifier().GetAlias(), pl.GetResultValue())
+	return pkThreadThroughResultValue(childThread, pl.GetInnerQuantifier().GetAlias(),
+		singleChildRowLayout(pl.GetChildren()), pl.GetResultValue())
 }
 
 // computeProjectionPKThread is computeMapPKThread's analogue for
@@ -180,7 +181,7 @@ func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
 		}
 		fields[i] = namedValue{name: values.OutputColumnName(v, alias), value: v}
 	}
-	return pkThreadThroughFields(childThread, childAlias, fields)
+	return pkThreadThroughFields(childThread, childAlias, singleChildRowLayout(pl.GetChildren()), fields)
 }
 
 // pkThreadThroughResultValue re-roots childThread (a proven pkThread whose
@@ -199,7 +200,12 @@ func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
 // Anything else (a bare computed Value, a RecordConstructor missing a PK
 // field, nil) declines: under-applying the cap is always safe, so this
 // function is deliberately conservative rather than clever.
-func pkThreadThroughResultValue(childThread pkThread, childAlias values.CorrelationIdentifier, resultValue values.Value) pkThread {
+func pkThreadThroughResultValue(
+	childThread pkThread,
+	childAlias values.CorrelationIdentifier,
+	childLayout values.Type,
+	resultValue values.Value,
+) pkThread {
 	if !childThread.ok {
 		return pkThread{}
 	}
@@ -214,7 +220,7 @@ func pkThreadThroughResultValue(childThread pkThread, childAlias values.Correlat
 	for i, f := range rc.Fields {
 		fields[i] = namedValue{name: f.Name, value: f.Value}
 	}
-	return pkThreadThroughFields(childThread, childAlias, fields)
+	return pkThreadThroughFields(childThread, childAlias, childLayout, fields)
 }
 
 // pkThreadThroughFields is the shared engine behind pkThreadThroughResultValue
@@ -229,14 +235,29 @@ func pkThreadThroughResultValue(childThread pkThread, childAlias values.Correlat
 // over the same underlying row), never a discriminating column, so no field
 // slot needs to reproduce it for the thread to remain sound.
 //
-// Every other PK component must be a flat, leaf-relative FieldValue
-// (leafFieldName), and some output slot must be a DIRECT reference to that
-// same field off childAlias (correlatedFieldOf) — a renamed, computed, or
-// constant slot does not count, and a missing match fails the WHOLE thread
-// closed (not just that one component): a partial PK is not a PK.
-func pkThreadThroughFields(childThread pkThread, childAlias values.CorrelationIdentifier, fields []namedValue) pkThread {
+// Every other PK component must be a flat, leaf-relative FieldValue whose name
+// resolves in the CHILD's row layout (leafFieldIdentity), and some output slot
+// must be a DIRECT reference to that same COLUMN off childAlias
+// (correlatedFieldIdentity, matched by identity rather than by spelling) — a
+// renamed, computed, or constant slot does not count, and a missing match fails
+// the WHOLE thread closed (not just that one component): a partial PK is not a
+// PK.
+//
+// childLayout is the row childAlias binds — the child plan's own output type.
+// It is the frontier both sides are stated in, so the tracked PK column and the
+// slot reading it are compared as ordinals in ONE layout.
+func pkThreadThroughFields(
+	childThread pkThread,
+	childAlias values.CorrelationIdentifier,
+	childLayout values.Type,
+	fields []namedValue,
+) pkThread {
 	if !childThread.ok {
 		return pkThread{}
+	}
+	frontier := values.OrdinalDomainOfType(childLayout)
+	if !frontier.IsKnown() {
+		return pkThread{} // no declared column order to state the mapping in
 	}
 	newPK := make([]values.Value, 0, len(childThread.pkValues))
 	for _, pv := range childThread.pkValues {
@@ -244,28 +265,38 @@ func pkThreadThroughFields(childThread pkThread, childAlias values.CorrelationId
 			newPK = append(newPK, pv)
 			continue
 		}
-		wantedName, ok := leafFieldName(pv)
+		wanted, ok := leafFieldIdentity(pv, childLayout)
 		if !ok {
 			return pkThread{} // a non-flat-FieldValue PK component — fail closed
 		}
-		outName, found := findDirectFieldMapping(fields, childAlias, wantedName)
+		outName, found := findDirectFieldMapping(fields, childAlias, wanted.WithCorrelation(childAlias), frontier)
 		if !found {
 			return pkThread{}
 		}
+		// The re-rooted component is a name carrier under the OUTPUT name —
+		// the slot's own naming authority, which is what the NEXT hop's layout
+		// declares. It is resolved against that layout when it is next
+		// consulted, never compared as a name.
 		newPK = append(newPK, &values.FieldValue{Field: outName})
 	}
 	return pkThread{recordType: childThread.recordType, pkValues: newPK, ok: true}
 }
 
 // findDirectFieldMapping searches fields for a slot that is a DIRECT,
-// uncomputed read of wantedField off childAlias — i.e. correlatedFieldOf(v)
-// == (wantedField, childAlias, true) — and returns that slot's own output
-// name. Multiple slots may qualify (a field projected twice under different
-// names); any one witness is sufficient to prove the PK component survives.
-func findDirectFieldMapping(fields []namedValue, childAlias values.CorrelationIdentifier, wantedField string) (string, bool) {
+// uncomputed read of the wanted COLUMN off childAlias — i.e.
+// correlatedFieldIdentity(v, frontier) == wanted — and returns that slot's own
+// output name. Multiple slots may qualify (a column projected twice under
+// different names); any one witness is sufficient to prove the PK component
+// survives.
+func findDirectFieldMapping(
+	fields []namedValue,
+	childAlias values.CorrelationIdentifier,
+	wanted values.ColumnIdentity,
+	frontier values.OrdinalDomain,
+) (string, bool) {
 	for _, f := range fields {
-		field, corr, ok := correlatedFieldOf(f.value)
-		if !ok || corr != childAlias || field != wantedField {
+		key, ok := correlatedFieldIdentity(f.value, frontier)
+		if !ok || key.Correlation != childAlias || key != wanted {
 			continue
 		}
 		return f.name, true
@@ -297,7 +328,8 @@ func computeFlatMapPKThread(fm *plans.RecordQueryFlatMapPlan) pkThread {
 	// entirely, exactly like a Map/Projection's resultValue can. Re-root
 	// innerThread through it rather than assuming the FlatMap's output is
 	// interchangeable with the bare inner leg's own identity.
-	return pkThreadThroughResultValue(innerThread, fm.GetInnerAlias(), fm.GetResultValue())
+	return pkThreadThroughResultValue(innerThread, fm.GetInnerAlias(),
+		planRowLayout(fm.GetInner()), fm.GetResultValue())
 }
 
 // innerFullyBindsThread reports whether fm's inner leg's own scan/index
@@ -326,41 +358,40 @@ func computeFlatMapPKThread(fm *plans.RecordQueryFlatMapPlan) pkThread {
 // the sole exception because its constancy is structurally provable from
 // outerThread itself, not assumed.
 //
-// The match is by FIELD NAME + correlation identity, not
-// values.ValuesStructurallyEqual: a real search comparand off a planned
-// scan/index is a BAKED FieldValue (Resolved != nil, an ordinal path against
-// THAT plan's own column layout), while a plan's declared primary key
-// (GetPrimaryKeyValues/GetCommonPrimaryKeyValues) is a LAZY, name-only
-// FieldValue by design (primary_key_translation.go: "the flat field-reference
-// model", never evaluated). values.EqualsWithoutChildren's FieldValue arm
-// treats baked-vs-lazy as UNEQUAL BY CONTRACT (it's an ordinal-vs-name
-// comparison, not a value comparison) — the two sides here are NEVER
-// comparable that way. What actually answers "does this comparand read
-// outerAlias's declared PK column" is the field name plus the correlation the
-// comparand's Child resolves to, both of which are populated on baked and
-// lazy nodes alike (Field is display-name metadata; Resolved doesn't gate
-// it).
+// The match is by column IDENTITY — (correlation, domain, ordinal), RFC-197's
+// triple — resolved against the OUTER LEG's own output row layout, which is
+// the row every comparand correlated to fm's outer alias reads. The outer
+// thread's PK components are metadata name carriers with no ordinal of their
+// own (primary_key_translation.go: "the flat field-reference model", never
+// evaluated), so they are resolved against that same layout once, at the
+// boundary. Two same-leaf-named columns reached through different quantifiers
+// no longer key one slot, and an ordinal is never compared across layouts.
 func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThread) bool {
 	comps := scanComparisonsOfLeaf(fm.GetInner())
 	if comps == nil {
 		return false
 	}
-	wantFields := make(map[string]bool, len(outerThread.pkValues))
+	outerLayout := planRowLayout(fm.GetOuter())
+	frontier := values.OrdinalDomainOfType(outerLayout)
+	if !frontier.IsKnown() {
+		return false // no declared column order to state the proof in — fail closed
+	}
+	wantKeys := make(map[values.ColumnIdentity]bool, len(outerThread.pkValues))
 	for _, pv := range outerThread.pkValues {
 		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
 			continue // per-thread constant — never a discriminating column, see doc comment
 		}
-		name, ok := leafFieldName(pv)
+		key, ok := leafFieldIdentity(pv, outerLayout)
 		if !ok {
 			return false // a non-flat-FieldValue PK component — fail closed
 		}
-		wantFields[name] = true
+		wantKeys[key.WithCorrelation(fm.GetOuterAlias())] = true
 	}
-	if len(wantFields) == 0 {
+	if len(wantKeys) == 0 {
 		return false
 	}
 
-	bound := make(map[string]bool, len(wantFields))
+	bound := make(map[values.ColumnIdentity]bool, len(wantKeys))
 	for _, cr := range comps {
 		if cr == nil || !cr.IsEquality() {
 			continue
@@ -369,56 +400,125 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		if eq == nil || eq.Type != predicates.ComparisonEquals || eq.Operand == nil {
 			continue
 		}
-		field, corr, ok := correlatedFieldOf(eq.Operand)
-		if !ok || corr != fm.GetOuterAlias() {
+		key, ok := correlatedFieldIdentity(eq.Operand, frontier)
+		if !ok || key.Correlation != fm.GetOuterAlias() {
 			continue
 		}
-		if wantFields[field] {
-			bound[field] = true
+		if wantKeys[key] {
+			bound[key] = true
 		}
 	}
-	return len(bound) == len(wantFields)
+	return len(bound) == len(wantKeys)
 }
 
-// leafFieldName returns the field name of a leaf-relative primary-key Value
-// (Child==nil at the root, exactly as GetPrimaryKeyValues() /
-// GetCommonPrimaryKeyValues() stamp a simple, non-nested key column — see
-// primary_key_translation.go's "base of every leaf is nil" invariant).
-// Composite/nested PK shapes (Child != nil, i.e. a RecordTypeKey-prefixed or
-// nested structural PK) are not a flat single field and fail closed.
-func leafFieldName(v values.Value) (string, bool) {
+// leafFieldIdentity returns the IDENTITY of the column a leaf-relative
+// primary-key Value names, resolved against the layout the tracked rows
+// actually have.
+//
+// A pkThread's PK components are METADATA name carriers by design: a LAZY,
+// Child==nil FieldValue, exactly as GetPrimaryKeyValues() /
+// GetCommonPrimaryKeyValues() stamp a simple, non-nested key column
+// (primary_key_translation.go's "the flat field-reference model", never
+// evaluated), or the OUTPUT name a re-rooting hop assigned. They carry no
+// ordinal of their own — so this is the boundary resolution of RFC-197 item 1
+// applied at the point of use: the metadata name is resolved ONCE against the
+// stated row layout and dies there, and every comparison downstream is between
+// ordinals.
+//
+// It replaces `leafFieldName`, which returned the bare string and let its
+// callers key sets by it (RFC-197 item 2 — the escape). Composite/nested PK
+// shapes (Child != nil, i.e. a RecordTypeKey-prefixed or nested structural PK)
+// are not a flat single field and fail closed, as does a name the layout does
+// not declare or a layout with no declared column order.
+func leafFieldIdentity(v values.Value, layout values.Type) (values.ColumnIdentity, bool) {
 	fv, ok := v.(*values.FieldValue)
 	if !ok || fv.Child != nil {
-		return "", false
+		return values.ColumnIdentity{}, false
 	}
-	return fv.Field, true
+	return values.OrdinalOfNameIn(layout, fv.Field)
 }
 
-// correlatedFieldOf returns the field name and root correlation of a
-// comparand shaped like a BARE column reference off a source
-// QuantifiedObjectValue, baked or lazy alike. Anything else (a literal, a
-// nested/computed expression, a differently-shaped correlation) fails closed
-// — including a fused baked multi-accessor path (Child=QOV directly,
-// Resolved carrying more than one accessor): FieldValue.Field is only the
-// LEAF name there, so a nested `outer.address.id` would otherwise report
-// field="ID" and impersonate a real top-level "ID" column in wantFields
-// (plans/cost.go's correlatedInnerField closes the identical hole in the
-// unique-key join-cost proof this function mirrors; keep both in lockstep).
-func correlatedFieldOf(v values.Value) (field string, corr values.CorrelationIdentifier, ok bool) {
+// correlatedFieldIdentity returns the IDENTITY of the column a comparand
+// reads, when the comparand is a BARE column reference off a source
+// QuantifiedObjectValue, stated in the caller's frontier layout.
+//
+// It replaces `correlatedFieldOf`, which handed the leaf name back as a bare
+// string for the caller to match against a name-keyed set (RFC-197 item 2).
+// Anything else (a literal, a nested/computed expression, a differently-shaped
+// correlation) fails closed — including a fused baked multi-accessor path,
+// where FieldValue.Field is only the LEAF name and a nested `outer.address.id`
+// would otherwise impersonate a real top-level "ID" column. That case now
+// declines structurally rather than by a hand-written guard: values.OrdinalIn
+// refuses a multi-accessor path because its root ordinal addresses the OUTER
+// step. plans/cost.go's correlatedInnerFieldKey is the same shape in the
+// unique-key join-cost proof this function mirrors; keep both in lockstep.
+//
+// This also closes the incomparability the old name match existed to work
+// around. A real search comparand is a BAKED FieldValue (an ordinal path
+// against its own layout) while a declared primary key is a LAZY name carrier,
+// so values.EqualsWithoutChildren treats them as unequal BY CONTRACT — an
+// ordinal-vs-name comparison, not a value comparison. Resolving the metadata
+// name against the same stated layout the comparand's ordinal indexes makes
+// the two sides comparable in the element that is actually the identity,
+// instead of in the one that merely looks like it.
+func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (values.ColumnIdentity, bool) {
 	fv, isField := v.(*values.FieldValue)
 	if !isField {
-		return "", values.CorrelationIdentifier{}, false
+		return values.ColumnIdentity{}, false
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-	if !isQOV {
-		return "", values.CorrelationIdentifier{}, false
-	}
-	if fv.Resolved != nil {
-		if _, single := fv.Resolved.Single(); !single {
-			return "", values.CorrelationIdentifier{}, false
+	return fv.CorrelatedIdentityIn(frontier)
+}
+
+// planRowLayout is a plan's output row layout — the frontier the identities
+// above are stated in. Nil-safe: a missing leg has no layout, and the
+// resolution then declines rather than panicking.
+//
+// A FlatMap needs its own arm because RecordQueryFlatMapPlan.GetResultType()
+// answers UnknownType unconditionally: the plan does not compute a row type
+// from its resultValue. Every hop of an FK chain past the first has a FlatMap
+// as its OUTER, so taking that answer at face value would fail the identity
+// proof closed for exactly the multi-hop shape this whole file exists for —
+// the cap would still fire on hop 1 and silently stop firing on hops 2..n,
+// which is the order-dependent estimate fkChainCardinalityCap was written to
+// remove.
+//
+// The derivation is the resultValue's, because the resultValue is what shapes
+// the emitted row: a bare QuantifiedObjectValue over one of the two aliases
+// emits THAT leg's row unchanged, so the FlatMap's layout is that leg's. Any
+// other resultValue (a RecordConstructor merging both legs, a computed value)
+// produces a row this file cannot name a layout for, and declines — the same
+// fail-closed answer, reached deliberately rather than by omission.
+func planRowLayout(p plans.RecordQueryPlan) values.Type {
+	switch pl := p.(type) {
+	case nil:
+		return nil
+	case *plans.RecordQueryFlatMapPlan:
+		if pl == nil {
+			return nil
 		}
+		qov, ok := pl.GetResultValue().(*values.QuantifiedObjectValue)
+		if !ok {
+			return nil
+		}
+		switch qov.Correlation {
+		case pl.GetInnerAlias():
+			return planRowLayout(pl.GetInner())
+		case pl.GetOuterAlias():
+			return planRowLayout(pl.GetOuter())
+		}
+		return nil
 	}
-	return fv.Field, qov.Correlation, true
+	return p.GetResultType()
+}
+
+// singleChildRowLayout is planRowLayout for the sole child of a one-input
+// plan, mirroring pkThreadFromSingleChild's shape check: anything but exactly
+// one child has no single row layout to speak about.
+func singleChildRowLayout(children []plans.RecordQueryPlan) values.Type {
+	if len(children) != 1 {
+		return nil
+	}
+	return planRowLayout(children[0])
 }
 
 // scanComparisonsOfLeaf resolves p down through the same identity-preserving
