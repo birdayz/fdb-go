@@ -191,7 +191,30 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// than argument: name and ordinal answered identically on all 8358
 	// aggregate operands the relational suite produces.
 
-	// contract (11)
+	// contract (16)
+	//
+	// The four `contract:` entries below with a `normalizeAggOutputName` note
+	// were INVISIBLE when this bucket was sized, and their absence is the
+	// bucket's whole shape: it listed eleven PRODUCERS of the group-by output
+	// name and not one CONSUMER, because every consumer launders the name
+	// through that one helper (now on nameLaunderers, with the measurement in
+	// its doc comment). A migration plan written against producers alone cannot
+	// close this bucket — a display name has nowhere to come from except
+	// `.Field`, so converting a producer is not a thing that exists. The READ
+	// side is what becomes an ordinal slot.
+	//
+	// Measured while they were surfaced, so nobody re-derives it: the EXECUTOR
+	// is not a party to this contract. Replacing every name
+	// aggregateCursor.finalizeGroup emits with `$PROBEn` leaves all 20 targets
+	// of //pkg/relational/... green; only six executor UNIT tests, which assert
+	// on the emitted map keys, go red. The binding is already ordinal at
+	// runtime. What is left is entirely plan-time, and it is these four lines.
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1692": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1694": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
+
+	"pkg/relational/core/query/cascades_translator.go:964":  {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName (group_by.go:147-157). Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
+	"pkg/relational/core/query/cascades_translator.go:973":  {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:118). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
+	"pkg/relational/core/query/cascades_translator.go:1003": {1, "contract: same binder, the final group-key lookup that actually emits the baked ordinal. Its map is last-wins on a duplicated output name (groupByOutputOrdinals `keys[full] = ord`), so two group keys sharing a leaf collapse to one slot; today they are separated only because the name channel happens to carry the qualifier, which is the dotted bucket's debt propping up this one"},
 	//
 	// AggregateResultColumnName renders one canonical output name per aggregate
 	// function, so the SAME escape appears once per switch arm. Six lines, six
@@ -210,7 +233,15 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/embedded/logical_predicate.go:6092":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4696":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (6)
+	// dotted (7)
+	//
+	// cascades_translator.go:974 arrived here with the launderer widening, not
+	// from another bucket. It asks whether a group-by output name is QUALIFIED
+	// by comparing it to its own qualifier-stripped form — the identical shape
+	// to cascades_generator.go:4122 below, and it is filed with it rather than
+	// with the binder it sits inside, because the debt is the flat
+	// representation, not the lookup around it.
+	"pkg/relational/core/query/cascades_translator.go:974": {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4122"},
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
@@ -860,7 +891,18 @@ func callFuncName(fun ast.Expr) string {
 // escapes exactly as much as `fv.Field` does. A CONSTRUCTOR taking the name is
 // deliberately not here: building a FieldValue from a name is what the values
 // package is for, and flagging it would flag the correct code.
+// `normalizeAggOutputName` is in the list for the same reason and is not an
+// exception to it: it IS two entries of this list composed —
+// `strings.ReplaceAll(strings.ToUpper(s), " ", "")` (cascades_translator.go).
+// Naming a project helper here rather than only generic `strings` functions is
+// what the matcher already supports (callFuncName resolves a bare Ident), and
+// it was added on measurement, not on principle: without it the group-by output
+// binder's four name-to-ordinal lookups are invisible, and those are the READ
+// side of the very contract the `contract:` bucket is named for. The bucket
+// listed eleven producers of that name and not one consumer of it, because the
+// consumers launder through this one helper.
 var nameLaunderers = map[string]bool{
+	"ReplaceAll": true, "normalizeAggOutputName": true,
 	"ToUpper": true, "ToLower": true, "TrimSpace": true, "Clone": true,
 	"TrimPrefix": true, "TrimSuffix": true, "Title": true,
 }

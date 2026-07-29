@@ -40,6 +40,7 @@ go_test(
         "aggregate_edge_probe_test.go",
         "aggregate_edges_probe_test.go",
         "aggregate_group_key_qualifier_alias_binding_test.go",
+        "aggregate_group_key_slot_collision_fdb_test.go",
         "aggregate_index_sum_probe_test.go",
         "aggregate_null_semantics_probe_test.go",
         "aggregate_operand_width_fdb_test.go",
