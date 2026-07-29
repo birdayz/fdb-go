@@ -37,7 +37,7 @@ booked, or actively shrinking under a ratchet.
   candidate; Go's opt-out design is the divergence, and adjacent opt-out
   leaks (text/multidimensional/leaderboard/legacy min_ever) are unmeasured.
   Booked as its own gated work item.
-- The safety nets made trustworthy again (B1), so green resumes meaning green.
+- The safety nets fix is MERGED (#523); tonight is the first genuine run under corrected windows — Tier 1 confirms when the reconciler goes green on real work.
 
 What this tier already rests on: byte-identity differential vs `libfdb_c`
 running PER-PR (78 differential tests, `pkg/fdbgo/bench/`), the wire-type
@@ -69,10 +69,10 @@ same query returns different rows or different errors on the two engines.
 
 | # | Item | Impact | Size | State |
 |---|---|---|---|---|
-| B1 | Nightly safety nets fake-green: window gates skip all work and exit success. 12 straight fake-green nights on stress; rowdiff 0 seeds in 10 nights; oracles never produced signal; last REAL stress run (07-17) FAILED; binding-stress 0/50 on its last two real runs (07-24/25, FDB alive — harness fault) | Unknown-risk factory | S | Fix in flight: reconciliation job that reds when any net hasn't genuinely run in N days + rowdiff window fix; stress failure under active root-cause |
+| B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S | **FIXED, merged (#523)**: windows resized from measured dispatch landings, per-job heartbeats, reconciler fails when any net has not genuinely run in N days (red until tonight proves the nets — the truthful state). Stress 07-17 failure root-caused separately (see Tier 1); binding-stress 0/50 still open (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | Booked (TODO), pinned by probe test; needs executor scan routed through the active tx with the snapshot-vs-serializable read decision |
 | B3 | RFC-195: six cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | RFC fully ACKed (rev 3), implementation queued behind the identity migration |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Wrong rows (narrow, shrinking) | M | Active; ratchet-enforced; 68 at inception → 49 on audit day |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Wrong rows (narrow, shrinking) | M | Active; ratchet-enforced; 68 at inception → 43 after the name-keyed bucket |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale (prod-readiness RFC asserts closed gaps as open; PRODUCTION_READINESS.md authority claim outdated; TODO duplicates/stale entries) | Trust/decision risk, not code | S | Booked as one reconciliation item |
 
@@ -82,7 +82,7 @@ same query returns different rows or different errors on the two engines.
 |---|---:|---|
 | boundary | 0 | migrated |
 | escape | 0 | migrated (found + fixed a live wrong-type defect on the way) |
-| name-keyed | 9 | YES — highest-severity residue (a layout map keyed by leg-derived names in the NLJ; the distinct-key set) |
+| name-keyed | 3 | Shrunk from 15 — the NLJ layout maps and distinct-key set are CONVERTED; the 3 stops are measured machinery gaps (planner-budget re-fire on constraint growth; resolver-upstream conversion; lazy carriers with no other identity), each recorded on its debt entry |
 | dotted | 15 | Yes, narrowly — two writers key a correlation set by sliced qualifier with no ambiguity guard; alias shadowing across nested scopes can attribute a correlation to the wrong quantifier |
 | translator | 13 | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole |
 | contract | 11 | Not alone — single naming authorities; collision only becomes wrong rows via a name-keyed reader, so closing name-keyed defuses these |

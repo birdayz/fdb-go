@@ -9992,3 +9992,23 @@ None is speculative: each was re-verified against the tree before booking.
   than a fresh hand-written claim — the existing `docs_consistency_test.go` is the
   precedent, and CQ-41's options gate is the same pattern. A doc corrected by hand
   is stale again in a month; a doc with a gate is not.
+
+- [ ] **CQ-49 (MED, plan improvement, measured) — `pullUpThroughRecordConstructor`
+  always-bake removes a redundant InMemorySort.** Removing its bake gate
+  eliminates the in-memory sort on exactly 2 plan-corpus queries
+  (`SELECT a.*, b.* FROM a, b WHERE a.a1=b.b1 ORDER BY a.a1`, both variants) —
+  verified correct: `a1` is table `a`'s PRIMARY KEY, so `Scan(A)` already
+  provides `A1 ASC` and the FlatMap preserves it. Deliberately NOT landed in
+  the RFC-197 name-keyed bucket: it churns ~20 unit fixtures and moves plan
+  shapes, so it takes its own query-engine-gated lap. The measurement is in
+  hand; nothing else blocks it.
+
+- [ ] **CQ-50 (LOW, flake, bounded) — `TestMonitor_DroppedPingRePingsInsteadOfStalling`
+  failed once under an UNCAPPED whole-tree `go test ./pkg/...`** (alongside
+  four fault_test Docker container-start timeouts — same run). 40/40 green in
+  isolation; green under bazel's `--local_test_jobs=4` cap, which is the
+  sanctioned harness. The repro condition is the unsanctioned run mode, but
+  per the no-unrelated-flakes rule this stays open until either the timing
+  assumption is proven contention-safe (deadline margin vs CPU starvation in
+  `pkg/fdbgo/transport`) or the test gets an explicit guard. Do not close by
+  rerunning.
