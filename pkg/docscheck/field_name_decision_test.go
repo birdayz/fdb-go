@@ -135,7 +135,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// and a bucket that reaches zero is the shape every other bucket is aiming
 	// for.
 
-	// escape (3) -- the NLJ cluster MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
+	// escape (1) -- the NLJ cluster MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
 	// and bareColumnName are gone: the join fast path asks a value for its
 	// CORRELATION (structurally, from its QuantifiedObjectValue child) and matches
 	// the inner key column by IDENTITY against the metadata name resolved once
@@ -143,9 +143,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// helper's three arms; the two bareColumnName entries went with the lazy
 	// construction arm that produced them, which built an operand the executor
 	// cannot evaluate.
-	"pkg/relational/core/query/cascades_translator.go:7407":   {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
-	"pkg/relational/core/embedded/cascades_generator.go:3745": {1, "escape: gatheredExplodeElement hands the collection FieldValue's leaf name out as its second result; callers match it by name against the flowed row"},
-	"pkg/relational/core/embedded/cascades_generator.go:3749": {1, "escape: same function, no-element-type arm"},
+	//
+	// gatheredExplodeElement MIGRATED too, and its escape was hiding a live
+	// wrong-type defect: it handed the unnested array column's leaf name to a
+	// caller holding EVERY leg of the join, which re-resolved it first-match, so
+	// a struct element in one leg reported the other leg's scalar kind whenever
+	// the planner put that leg outer. It now resolves the element type once, at
+	// the site, by ordinal in the leg the Explode reads.
+	"pkg/relational/core/query/cascades_translator.go:7407": {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
 
 	// contract (11)
 	//
@@ -168,7 +173,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 
 	// dotted (15)
 	"pkg/recordlayer/query/plan/cascades/values/value_correlation.go:57":          {1, "dotted: keys a correlation set by the QUALIFIER sliced off the flat 'ALIAS.col' name; the slice hid it from every wrapper whitelist"},
-	"pkg/relational/core/embedded/cascades_generator.go:4046":                     {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
+	"pkg/relational/core/embedded/cascades_generator.go:4122":                     {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
 	"pkg/relational/core/query/cascades_translator.go:5898":                       {1, "dotted: leg name matched against the qualifier sliced off the flat name, multi-leg baker; same channel as 5726, one local hop away"},
 	"pkg/relational/core/query/clustered_outer_scalar.go:189":                     {1, "dotted: leg-by-binding map keyed by an alias that is the sliced qualifier on the childless arm; same shape as value_correlation.go:57"},
 	"pkg/relational/core/query/clustered_outer_scalar.go:402":                     {1, "dotted: shadowed-alias set probed by the same sliced qualifier, outer-ref collector"},

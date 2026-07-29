@@ -3644,7 +3644,7 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// RV's), exactly as before.
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
 	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
-	elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
+	elemAlias, elemTypeName, elemValue := gatheredExplodeElement(nlj, md)
 	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
 		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
@@ -3658,18 +3658,19 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 			// type is the Explode's own collection element (the AS+AT form's
 			// refs stay typed through fusion and never reach this). A STRUCT
 			// element's values.Type is ALSO unknown (7.6 does not model
-			// message element types), so fall through to the array column's
-			// own proto descriptor — the ground truth: a repeated field's
-			// Kind IS its element kind, with non-UUID messages reporting
-			// STRUCT (java.sql.Types.STRUCT), never the BIGINT fallback that
-			// silently mistyped struct elements (review finding, pinned).
+			// message element types), so fall back on the element type
+			// gatheredExplodeElement resolved from the array column's own
+			// proto field — the ground truth: a repeated field's Kind IS its
+			// element kind, with non-UUID messages reporting STRUCT
+			// (java.sql.Types.STRUCT), never the BIGINT fallback that silently
+			// mistyped struct elements.
 			if strings.EqualFold(f.Name, elemAlias) && unknownTypedValue(f.Value) {
 				tn := ""
 				if elemValue != nil {
 					tn = valueTypeName(elemValue, nil)
 				}
 				if tn == "" || tn == "UNKNOWN" {
-					tn = arrayElementTypeNameFromDescs(collField, descs)
+					tn = elemTypeName
 				}
 				if tn != "" && tn != "UNKNOWN" {
 					col.TypeName = tn
@@ -3726,54 +3727,129 @@ func unknownTypedValue(v values.Value) bool {
 // gatheredExplodeElement finds the gathered unnest's Explode leg under an NLJ
 // (the FlatMap pairing the owning source with its Explode — possibly nested
 // under further NLJ levels for a wider cluster) and returns the element's
-// binding alias (the FlatMap's inner correlation, the AS alias), the ARRAY
-// COLUMN's bare field name (the baked collection reference's display field —
-// the descriptor key for element-kind resolution), and a value typed as the
-// Explode's collection ELEMENT when the plan-level type survived (a STRUCT
-// element's values.Type is Unknown — 7.6 does not model message element
-// types — so the caller falls through to the descriptor). ("", "", nil) when
-// no such leg exists.
-func gatheredExplodeElement(p plans.RecordQueryPlan) (string, string, values.Value) {
+// binding alias (the FlatMap's inner correlation, the AS alias), the element's
+// TYPE NAME as resolved from the array column's own proto field, and a value
+// typed as the Explode's collection ELEMENT when the plan-level type survived
+// (a STRUCT element's values.Type is Unknown — 7.6 does not model message
+// element types — so the caller falls back on the resolved type name).
+// ("", "", nil) when no such leg exists.
+//
+// The second result is a TYPE name, never a COLUMN name. It used to be the
+// collection reference's display field, and the caller then re-resolved that
+// string against every join leg's descriptor — so two legs carrying an array
+// column of the same leaf name and different element kinds reported the FIRST
+// leg's kind for the OTHER leg's element (`SELECT * FROM WS AS A, WX AS B,
+// B."SITEMS" AS "EL"` typed a struct element BIGINT). Resolution happens once,
+// here, by identity, against the leg the Explode actually reads (RFC-197).
+func gatheredExplodeElement(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) (string, string, values.Value) {
 	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
 		if exp := findExplodePlan(fm.GetInner()); exp != nil {
-			collField := ""
-			if fv, isFV := exp.GetCollectionValue().(*values.FieldValue); isFV {
-				collField = fv.Field
-			}
+			elemTypeName := explodeElementTypeName(exp, fm.GetOuter(), md)
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
-				return fm.GetInnerAlias().Name(), collField, values.NewQuantifiedObjectValueOfType(
+				return fm.GetInnerAlias().Name(), elemTypeName, values.NewQuantifiedObjectValueOfType(
 					fm.GetInnerAlias(), arr.ElementType,
 				)
 			}
-			return fm.GetInnerAlias().Name(), collField, nil
+			return fm.GetInnerAlias().Name(), elemTypeName, nil
 		}
 	}
 	if nlj, ok := p.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-		if a, cf, v := gatheredExplodeElement(nlj.GetOuter()); a != "" {
-			return a, cf, v
+		if a, tn, v := gatheredExplodeElement(nlj.GetOuter(), md); a != "" {
+			return a, tn, v
 		}
-		return gatheredExplodeElement(nlj.GetInner())
+		return gatheredExplodeElement(nlj.GetInner(), md)
 	}
 	if ip, ok := p.(innerPlan); ok {
-		return gatheredExplodeElement(ip.GetInner())
+		return gatheredExplodeElement(ip.GetInner(), md)
 	}
 	return "", "", nil
 }
 
-// arrayElementTypeNameFromDescs resolves an array column's ELEMENT type name
-// from its proto descriptor — the ground truth when the plan-level element
-// type was erased (message elements). A repeated field's Kind IS its element
-// kind; a non-UUID message element is a STRUCT column (java.sql.Types.STRUCT).
-func arrayElementTypeNameFromDescs(collField string, descs []protoreflect.MessageDescriptor) string {
-	if collField == "" {
+// explodeElementTypeName resolves the ELEMENT type name of the array column an
+// Explode iterates, from that column's own proto field — the ground truth when
+// the plan-level element type was erased. Java never loses it: a repeated
+// field's element type is derived structurally at Type construction
+// (Type.java:452-455 → fromProtoTypeToArray :492-533, reached from
+// Record.Field.fromDescriptor :2866), so the element type rides the Type and
+// is never re-derived from a column name later. Go's leg-row builder collapses
+// every repeated field to UNKNOWN (cascades_translator.go fieldTypeForFD), and
+// this is where that erasure is repaired.
+//
+// The array column is identified by IDENTITY, not by its display name: the
+// collection reference's ordinal, checked against the LEG ROW LAYOUT it
+// indexes. Two structural facts make the ordinal usable against the proto
+// descriptor, and both are checked rather than assumed:
+//
+//   - The leg row's column order IS the descriptor's declared field order —
+//     the layout is built by iterating that descriptor
+//     (cascades_translator.go tableColumns). The check is a whole-layout
+//     signature match (descriptorOrdinalDomain against the reference's own
+//     domain token), not a per-column name match, so a leg whose row type was
+//     derived some other way declines instead of indexing the wrong slot.
+//   - Only the legs the Explode's own FlatMap reads are consulted. The value
+//     reads a column off that FlatMap's outer quantifier, so the far side of
+//     the join is not a candidate at all.
+//
+// Anything the identity cannot answer for — a lazy or fused reference, a
+// childless one, an unknown domain, a layout no leg descriptor matches — fails
+// closed and returns "", leaving the element column's type as derived
+// elsewhere. A declined type refinement is recoverable; a wrong column's kind
+// is not.
+//
+// Measured, so the next reader does not re-litigate it: once the search is
+// scoped to the reference's own leg AND the layouts are checked to agree,
+// indexing by ordinal and looking the field up by name pick the SAME field —
+// proto field names are unique within a descriptor, and the signature check
+// has already required the two ordered name lists to be equal. The behavioural
+// defect came from the name ESCAPING to a caller that held every leg of the
+// join and no way to tell which one the reference read. That is what the
+// ordinal removes: not a different answer here, but the possibility of the
+// question being asked anywhere else.
+func explodeElementTypeName(exp *plans.RecordQueryExplodePlan, leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData) string {
+	fv, isFV := exp.GetCollectionValue().(*values.FieldValue)
+	if !isFV {
 		return ""
 	}
-	colDesc := descriptorForColumn(collField, descs)
-	if colDesc == nil {
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
 		return ""
 	}
-	fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(collField).bare()))
+	id, ok := fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Type()))
+	if !ok {
+		return ""
+	}
+	for _, d := range allLeafDescriptors(leg, md) {
+		if descriptorOrdinalDomain(d) != id.Domain {
+			continue
+		}
+		if id.Ordinal >= d.Fields().Len() {
+			return ""
+		}
+		return arrayElementTypeNameOfField(d.Fields().Get(id.Ordinal))
+	}
+	return ""
+}
+
+// descriptorOrdinalDomain derives a record type's ordinal domain from its proto
+// descriptor — the CONSUMER-side derivation the token exists for: the signature
+// is the layout's ordered column-name list, derivable independently by the
+// producer that resolved a name against a declared column order and by the
+// consumer that holds the descriptor-shaped row type. Equality of the two is
+// the soundness condition for reusing an ordinal across them.
+func descriptorOrdinalDomain(d protoreflect.MessageDescriptor) values.OrdinalDomain {
+	fields := d.Fields()
+	names := make([]string, fields.Len())
+	for i := range names {
+		names[i] = string(fields.Get(i).Name())
+	}
+	return values.OrdinalDomainOfColumnNames(names)
+}
+
+// arrayElementTypeNameOfField reports the JDBC type name of a repeated proto
+// field's ELEMENT. A repeated field's Kind IS its element kind; a non-UUID
+// message element is a STRUCT column (java.sql.Types.STRUCT).
+func arrayElementTypeNameOfField(fd protoreflect.FieldDescriptor) string {
 	if fd == nil || !fd.IsList() {
 		return ""
 	}
