@@ -5,15 +5,20 @@ package sqldriver_test
 //
 // WHAT THIS DOES NOT COVER, stated up front so nobody mistakes it for coverage
 // it lacks: these cases do NOT exercise
-// embedded.fieldValueMatchesAggregateGroupKey. Hard-wiring that function to
-// `return false` leaves every case below green (and leaves the whole
-// //pkg/relational/sqldriver suite green). Its childless-vs-qualified
-// relaxation is simply not reached by these shapes —
+// embedded.fieldValueMatchesAggregateGroupKey. Its childless-vs-qualified
+// relaxation is not reached by these shapes —
 // values.SemanticEqualsUnderAliasMap, which the caller ORs in first, already
 // matches them, because the resolver mints both sides with the same child
 // shape. The accessor-name comparison inside that function is therefore not
-// probed here at all; the unit-level analysis of it lives in
-// pkg/relational/core/embedded/aggregate_group_key_accessor_name_test.go.
+// probed here at all.
+//
+// That non-coverage is not an assertion, it is a measured and pinned fact, and
+// the pins live next to the function rather than here:
+// pkg/relational/core/embedded/aggregate_group_key_reachability_test.go (why no
+// SQL reaches the relaxation, and what re-arms it),
+// aggregate_group_key_call_site_guard_test.go (why the caller's OR makes the
+// matcher non-decisive), and aggregate_group_key_accessor_name_test.go (what
+// the matcher compares, on synthetic fixtures).
 //
 // What this DOES pin is the resolver's qualifier/alias binding on the
 // post-aggregate path: a computed SELECT item (`col + 1`, which a bare
@@ -58,8 +63,12 @@ func TestFDB_AggregateGroupKeyQualifierAndAliasBinding(t *testing.T) {
 		// a different count.
 		wantGroups int
 	}{
-		// Qualifier asymmetry between the SELECT reference and the GROUP BY
-		// key: exactly the childless-vs-QOV shape the matcher exists for.
+		// Qualifier asymmetry in the SQL TEXT between the SELECT reference and
+		// the GROUP BY key. It does NOT survive into the Values: on one source
+		// the resolver mints both spellings childless, so these bind through
+		// semantic equality, exactly as the header says. (This comment used to
+		// claim the opposite — "the childless-vs-QOV shape the matcher exists
+		// for" — contradicting its own file header.)
 		{"SELECT a + 1, COUNT(*) FROM t GROUP BY a", 2},
 		{"SELECT a + 1, COUNT(*) FROM t GROUP BY t.a", 2},
 		{"SELECT t.a + 1, COUNT(*) FROM t GROUP BY a", 2},

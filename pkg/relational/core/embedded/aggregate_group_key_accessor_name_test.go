@@ -12,10 +12,17 @@ package embedded
 // whole ordinal path in the same layout ARE the same column, whatever display
 // name each happens to render. Refusing them turned a legitimate group-key
 // reference into the caller's "references a field outside the aggregate output
-// contract" error. Latent rather than shipped — hard-wiring the matcher to
-// `return false` leaves the whole //pkg/relational/sqldriver suite green, so no
-// SQL this repo exercises reaches the relaxation at all — but latent is how the
-// original seven shipped.
+// contract" error. Latent rather than shipped: no SQL this repo exercises
+// reaches the relaxation at all. That claim is not asserted here — it is pinned
+// by the two facts in aggregate_group_key_reachability_test.go, which also
+// records how it was measured. Latent is how the original seven shipped, so it
+// is worth pinning rather than assuming.
+//
+// EVERY FIXTURE IN THIS FILE IS SYNTHETIC. They are hand-built to isolate the
+// matcher, which no production resolution reaches; none of them is a shape the
+// resolver mints. That is stated once here rather than per case, because the
+// opposite claim — reading a fixture as production truth — is the specific
+// error this file previously carried.
 //
 // ACCEPTING direction (what the name was load-bearing for): Java asserts
 // ordinal >= 0 at construction (FieldValue.java:651); Go mints Ordinal -1
@@ -32,14 +39,18 @@ package embedded
 // on baked FieldValues, so both-childless and both-QOV ordinal-equal pairs are
 // matched by the OR's first arm before the matcher runs. The matcher exists only
 // for the ASYMMETRIC shape (one side childless, one side QOV-qualified) that
-// semantic equality rejects.
+// semantic equality rejects. The half of N1 that lives at the CALL SITES rather
+// than in the matcher — that all three really do OR it, with the polarity that
+// makes the matcher's answer non-decisive — is pinned by
+// aggregate_group_key_call_site_guard_test.go; no test that only calls the
+// matcher can establish it.
 //
 // N2 — production operands carry a domain. Both resolver arms
 // (expr.go:277-284 correlated, expr.go:296-297 bare) mint the ordinal and the
 // OrdinalDomain from the SAME declared column list in one call to
-// sourceColumnOrdinal, so the asymmetric pair the matcher exists for agrees on
-// the domain by construction. A fixture without one would be testing a shape the
-// resolver does not produce, so every fixture here states its layout.
+// sourceColumnOrdinal, so any pair the matcher is handed agrees on the domain by
+// construction. A fixture without one would be testing a shape the resolver does
+// not produce, so every fixture here states its layout.
 
 import (
 	"testing"
@@ -105,7 +116,12 @@ func TestAggregateGroupKeyMatcherIsDeadUnderSemanticEquality(t *testing.T) {
 
 // TestAggregateGroupKeyMatcherDecidesOnlyAsymmetricShape pins that the
 // childless-vs-qualified arm — the one shape semantic equality rejects — is the
-// matcher's whole reason to exist, and that the production pair binds there.
+// matcher's whole reason to exist.
+//
+// It does NOT pin that any query produces that pair. Nothing does: see
+// aggregate_group_key_reachability_test.go. The fixture is the synthetic
+// isolation of the arm, which is the only way to test a branch production does
+// not reach.
 func TestAggregateGroupKeyMatcherDecidesOnlyAsymmetricShape(t *testing.T) {
 	t.Parallel()
 
@@ -120,7 +136,13 @@ func TestAggregateGroupKeyMatcherDecidesOnlyAsymmetricShape(t *testing.T) {
 		t.Fatal("semantic equality now accepts the childless-vs-qualified pair; " +
 			"fieldValueMatchesAggregateGroupKey's relaxation is redundant — re-derive this file")
 	}
-	// The real production shape of `SELECT a + 1, COUNT(*) FROM t GROUP BY t.a`.
+	// SYNTHETIC. It is tempting to read this pair as
+	// `SELECT a + 1, COUNT(*) FROM t GROUP BY t.a` — bare on the SELECT side,
+	// qualified in the GROUP BY. It is not: on ONE source the resolver mints
+	// both spellings CHILDLESS (needsQualification is a source COUNT, not a
+	// spelling test), so that query hands the caller a SYMMETRIC pair that
+	// semantic equality matches before the matcher is reached. Measured, and
+	// pinned by TestAggregateGroupKeySingleSourceResolutionIsSymmetric.
 	if !fieldValueMatchesAggregateGroupKey(bare, qual, agg) {
 		t.Fatal("qualified/bare group-key reference over one source no longer binds")
 	}
