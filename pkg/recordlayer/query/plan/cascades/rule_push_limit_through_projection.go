@@ -58,8 +58,8 @@ func (r *PushLimitThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// `SELECT l.id AS l_id, r.id AS r_id FROM t AS l JOIN t AS r ON …
 	// LIMIT k` reported two columns both named ID. Same query without the
 	// LIMIT — no push, no rebuild — kept l_id/r_id.
-	newProj := expressions.NewLogicalProjectionExpressionWithAliases(
-		proj.GetProjectedValues(), proj.GetAliases(), limitQ)
+	newProj := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+		proj.GetProjectedValues(), proj.GetAliases(), proj.GetAliasMinted(), limitQ)
 	call.Yield(newProj)
 }
 

@@ -710,12 +710,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 							// do not collapse; a unique leaf keys bare.
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
-								if proj.Aliases == nil {
-									proj.Aliases = make([]string, len(proj.Projections))
-								}
-								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col.name)
-								}
+								mintQualifiedDatumKey(proj, i, col.name)
 							}
 						} else {
 							// Born-baked (slice 3; the dup-alias flat-name
@@ -1686,6 +1681,34 @@ func bareLeafDuplicated(projCols []projCol, projAliases []string, i int) bool {
 		}
 	}
 	return false
+}
+
+// mintQualifiedDatumKey pins projection slot i's QUALIFIED spelling as its
+// output alias so a duplicated bare leaf does not collapse two legs' columns
+// into one entry of the executor's name-keyed row map, and RECORDS that the
+// machinery — not the user's `AS` — wrote that name.
+//
+// The two halves are one act and must stay one act: an alias whose provenance
+// went unrecorded is indistinguishable from `AS "A.K"`, and the result-set
+// label site then has nothing to decide on but the spelling. Both callers (the
+// PlanVisitor's qualified-projection bind and its logical-predicate twin) go
+// through here for exactly that reason.
+//
+// An existing alias is left alone: the user named the slot, so there is no
+// collision to break and nothing to mark.
+func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, qualifiedName string) {
+	if proj.Aliases == nil {
+		proj.Aliases = make([]string, len(proj.Projections))
+	}
+	if proj.AliasMinted == nil {
+		proj.AliasMinted = make([]bool, len(proj.Projections))
+	}
+	if i < len(proj.Aliases) && proj.Aliases[i] == "" {
+		proj.Aliases[i] = strings.ToUpper(qualifiedName)
+		if i < len(proj.AliasMinted) {
+			proj.AliasMinted[i] = true
+		}
+	}
 }
 
 // resolveQualifiedBaked resolves a QUALIFIED column reference through the scope

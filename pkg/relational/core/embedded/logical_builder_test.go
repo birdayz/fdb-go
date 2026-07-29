@@ -19,33 +19,80 @@ func TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel(t *testing.T) 
 		name      string
 		field     string
 		alias     string
+		minted    bool
 		wantLabel string
 	}{
 		{
 			name:      "machinery qualified column",
 			field:     "E.SALARY",
 			alias:     "E.SALARY",
+			minted:    true,
 			wantLabel: "SALARY",
 		},
 		{
 			name:      "canonical qualified aggregate",
 			field:     "MAX(E.SALARY)",
 			alias:     "MAX(E.SALARY)",
+			minted:    true,
 			wantLabel: "MAX(E.SALARY)",
 		},
 		{
 			name:      "delimited punctuation remains a qualified column",
 			field:     "E.SAL-ARY",
 			alias:     "E.SAL-ARY",
+			minted:    true,
 			wantLabel: "SAL-ARY",
+		},
+		// The alias is spelled EXACTLY like the machinery key above, and is the
+		// user's. Only the provenance separates the two, which is the point: a
+		// delimited `AS "E.SALARY"` is one Identifier with an empty qualifier
+		// list in Java, so nothing strips its leaf.
+		{
+			name:      "user alias spelled like a machinery key stays verbatim",
+			field:     "E.SALARY",
+			alias:     "E.SALARY",
+			minted:    false,
+			wantLabel: "E.SALARY",
+		},
+		{
+			name:      "user alias whose qualifier names nothing stays verbatim",
+			field:     "E.SALARY",
+			alias:     "Q.SALARY",
+			minted:    false,
+			wantLabel: "Q.SALARY",
+		},
+		{
+			name:      "user alias whose leaf differs stays verbatim",
+			field:     "E.SALARY",
+			alias:     "E.OTHER",
+			minted:    false,
+			wantLabel: "E.OTHER",
+		},
+		// A machinery key whose leaf does NOT match the projected reference: a
+		// projection merge substitutes the inner's value under the outer's
+		// effective name, so the two can legitimately disagree. Provenance still
+		// decides, which is why the leaf comparison is gone.
+		{
+			name:      "machinery key is dequalified even when the leaf differs",
+			field:     "E.OTHER",
+			alias:     "E.SALARY",
+			minted:    true,
+			wantLabel: "SALARY",
 		},
 	}
 	for _, tc := range tests {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			v := values.NewFieldValueWithResolvedOrdinal(tc.field, 0, values.NullableLong)
-			got := deriveProjectionColumnDef(v, tc.alias, 0, nil)
+			got := deriveProjectionColumnDef(v, tc.alias, tc.minted, 0, nil)
 			if got.Label != tc.wantLabel {
 				t.Fatalf("label = %q, want %q", got.Label, tc.wantLabel)
+			}
+			// The datum key keeps the qualifier either way — it is what stops
+			// two same-leaf columns collapsing in the executor's row map.
+			if got.Name != strings.ToUpper(tc.alias) {
+				t.Fatalf("datum key = %q, want %q", got.Name, strings.ToUpper(tc.alias))
 			}
 		})
 	}

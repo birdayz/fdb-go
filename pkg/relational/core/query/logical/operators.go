@@ -220,6 +220,28 @@ type LogicalProject struct {
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// AliasMinted is parallel to Aliases: true = the alias in that slot was
+	// written by the MACHINERY, not by the user's `AS`. It is the provenance of
+	// the name, carried, because the name's SHAPE cannot carry it: the
+	// duplicated-bare-leaf dedup pins a projected reference's QUALIFIED
+	// spelling ("A.K") as the alias so two same-named datum keys stay
+	// distinguishable in the executor's row map, and a user is equally free to
+	// write `AS "A.K"`. A consumer that decides between them by inspecting the
+	// string gets the user's alias wrong, which is how `SELECT u.name AS
+	// "U.NAME"` came to report the label NAME.
+	//
+	// Java needs no such marker because its internal column for a duplicate is
+	// ANONYMOUS (Expressions.java:268-287) while the label is untouched; where
+	// it genuinely needs two names for one column it carries a SEPARATE
+	// construction-time field (Type.Record.Field.fieldStorageNameOptional,
+	// Type.java:2826-2827,2897-2899) rather than recovering provenance from a
+	// spelling later. Go's executor keys its row map by name, so the qualified
+	// key must stay — deleting it returns ONE column for `SELECT a.k, b.k` —
+	// and the provenance rides beside it instead.
+	//
+	// nil (or a short slice) reads as "user alias" for every slot it does not
+	// cover: a machinery mint is the exceptional case and states itself.
+	AliasMinted []bool
 	// AggregateOutputOrdinals is the exact native [group keys..., aggregate
 	// calls...] input slot for each post-aggregate projection item. A negative
 	// entry marks a computed item whose Value tree is bound separately. nil

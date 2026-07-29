@@ -268,19 +268,20 @@ the plan was sized from.
   (`core/embedded`), which names what a Sort-over-Project builder change
   re-arms. Translator 17 → 15.
 
-- *The JDBC label site is worse than "a provenance question wearing a string
-  comparison" — it is a SHIPPED user-visible divergence, the TENTH bug of this
-  RFC's class.* `deriveProjectionColumnDef` (`cascades_generator.go:3317`)
-  degrades any dotted result-set label whose leaf matches the projected
-  reference's leaf, and it cannot tell a machinery key from a user alias, so it
-  degrades user aliases too. Measured through the driver:
-  `SELECT u.name AS "U.NAME"` reports label `NAME`; `AS "Q.NAME"` — a qualifier
-  naming no table in the query — also reports `NAME`; and the SINGLE-TABLE
-  `SELECT u.name AS "U.NAME" FROM Users u` reports `NAME` although no machinery
-  alias can exist there (the mint at `plan_visitor.go:712-719` fires only when
-  the bare leaf is DUPLICATED and the user gave none). Only `AS "U.OTHER"`
-  survives. Java uses the alias verbatim: `AS "U.NAME"` is ONE delimited `uid`,
-  so it becomes `Identifier{name:"U.NAME", qualifier:[]}`
+- *The JDBC label site was a SHIPPED user-visible divergence, the TENTH bug of
+  this RFC's class. FIXED.* `deriveProjectionColumnDef`
+  (`cascades_generator.go`) degraded any dotted result-set label whose leaf
+  matched the projected reference's leaf, and a string comparison cannot tell a
+  machinery key from a user alias, so it degraded user aliases too. Measured
+  through the driver before the fix: `SELECT u.name AS "U.NAME"` reported label
+  `NAME`; `AS "Q.NAME"` — a qualifier naming no table in the query — also
+  `NAME`; `AS "O.NAME"` — naming the OTHER leg — also `NAME`; and the
+  SINGLE-TABLE `SELECT u.name AS "U.NAME" FROM Users u` reported `NAME` although
+  no machinery alias can exist there (the mint fires only when the bare leaf is
+  DUPLICATED and the user gave none). Only `AS "U.OTHER"` survived.
+
+  Java uses the alias verbatim: `AS "U.NAME"` is ONE delimited `uid`, so it
+  becomes `Identifier{name:"U.NAME", qualifier:[]}`
   (`IdentifierVisitor.java:73-81`), the label is `Identifier::toString`
   (`Expressions.java:245-256`), and `getColumnLabel` IS `getColumnName`
   (`RelationalStructMetaData.java:81-89`). Java's `clearQualifier`
@@ -288,20 +289,34 @@ the plan was sized from.
   the leaf, so a delimited dotted alias is untouched by construction — pinned in
   Java's own corpus (`valid-identifiers.yamsql:287-289`, alias `"__.__."`
   returns verbatim). No path in fdb-relational inspects an alias for a dot.
-  Java also has no machinery-minted alias at all: duplicates make the INTERNAL
-  column ANONYMOUS (`Expressions.java:268-287`) while the label is untouched,
-  and where Java genuinely needs two names for one column it uses a SEPARATE
-  FIELD computed at construction — `Type.Record.Field.fieldStorageNameOptional`
-  (`Type.java:2826-2827,2897-2899`) — never an in-band marker recovered by
-  string inspection later. That is the shape to port, and it is the STOP: the
-  naive fix does not work. Deleting the mint outright was measured and reds
-  seven FDB suites with WRONG ROWS (`SELECT A."K", B."K"` returns one `K`
-  column instead of two), so the qualified datum key is load-bearing and the
-  provenance must be CARRIED, not recovered — a per-slot marker threaded
+
+  The naive fix does not work, which is why this needed the marker rather than a
+  deletion: removing the mint was measured to red seven FDB suites with WRONG
+  ROWS (`SELECT A."K", B."K"` returns one `K` column instead of two), because
+  Go's executor keys its row map by NAME and the qualified key is what keeps two
+  same-leaf columns apart. Java has no machinery alias to remove — duplicates
+  make the INTERNAL column ANONYMOUS (`Expressions.java:268-287`) while the
+  label is untouched, and where Java genuinely needs two names for one column it
+  uses a SEPARATE FIELD computed at construction,
+  `Type.Record.Field.fieldStorageNameOptional`
+  (`Type.java:2826-2827,2897-2899`), never an in-band marker recovered by string
+  inspection later.
+
+  That separate field is the shape that was ported. Provenance is now CARRIED,
+  not recovered: a per-slot `AliasMinted` marker threaded
   `logical.LogicalProject` → `LogicalProjectionExpression` →
-  `RecordQueryProjectionPlan`, excluded from memo identity the way
-  `FrontierPinned` is. Sized and cited, not attempted here; it is not a
-  translator-bucket edit.
+  `RecordQueryProjectionPlan`, EXCLUDED from memo identity and hash exactly as
+  `FrontierPinned` is — it records who NAMED a slot, not what the slot computes,
+  so two projections differing only in it must intern as one member
+  (`TestProjectionPlan_AliasProvenanceExcludedFromIdentity`, and its logical-layer
+  twin). The label site's string comparison became a marker check; the leaf
+  comparison is gone. The mint keeps running, so the datum keys are unchanged and
+  the hazard case is pinned by `TestFDB_DuplicateBareLeafKeepsTwoColumns`.
+  `ProjectionMergeRule` is the one site that COMPOSES two alias vectors: a slot
+  the outer had not aliased has its effective name written into the alias vector
+  by that rule, so it becomes machinery-named there even though the outer's
+  marker said nothing — otherwise the merge alone would start leaking the
+  qualifier into `SELECT u.name`'s label. Contract 16 → 15.
 
 The original text of this item follows, and its allowlist mechanism is
 unchanged — it is simply still empty, now on measurement.
@@ -337,8 +352,10 @@ the projection output-naming authority) and the JDBC result-set label match
 consumer). These are not 11 independent sites; they are one contract whose
 currency is a name, and they close only by making that currency an ordinal
 slot where the consumer is internal — the JDBC label, whose consumer is the
-user's result set, may prove to be a true boundary and end on the allowlist
-instead, decided by item 4's test, not by fiat here. Scoping honestly: this
+user's result set, was the candidate for a true boundary and an allowlist entry
+instead. It ended as neither: the site was answering a PROVENANCE question with
+a string comparison and getting it wrong on shipped queries, so it left the
+ratchet by being fixed (see the item-4 bullet above), not exempted. Scoping honestly: this
 RFC migrates 57 sites and changes one cross-component contract covering the
 other 11 (the aggregate-result naming switch in group_by.go joined its
 sibling authority when taint tracking exposed its six arms). No wire impact — the names never leave the process — but it is the
@@ -703,13 +720,14 @@ here rather than left standing.**
   category (re-opens the drift channel the per-site mechanism closed) and
   permanent accepted debt (a ratchet that never reaches zero is a
   permanent allowlist with ceremony — this RFC's own words).
-- *The JDBC label site* is NOT a boundary — it fails item 4's leg (a)
-  outright (its right operand is another Value's `.Field`, and its left
-  cannot be asserted parser-originated because distinguishing user aliases
-  from machinery-minted spellings is the site's entire job). It is a
-  provenance question wearing a string comparison; the fix is a tag at the
-  alias MINT site, the dotted bucket's producer pattern applied here. It
-  stays on the ratchet until then. The allowlist remains empty.
+- *The JDBC label site* was NOT a boundary — it failed item 4's leg (a)
+  outright (its right operand was another Value's `.Field`, and its left
+  could not be asserted parser-originated because distinguishing user aliases
+  from machinery-minted spellings was the site's entire job). It was a
+  provenance question wearing a string comparison, and it was answering that
+  question WRONG on shipped queries. FIXED as predicted here: a tag at the alias
+  MINT site, the dotted bucket's producer pattern applied. Off the ratchet by
+  removal, not by exemption — the allowlist remains empty.
 
 **6. dotted (15) — kill the qualified-name channel, then the probes die.**
 Revision 1 claimed these probes exist because of the legacy flat

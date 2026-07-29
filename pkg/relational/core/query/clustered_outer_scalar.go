@@ -808,9 +808,10 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		}
 	}
 	projQ := t.namedQuantifier("", joinRef)
-	return expressions.NewLogicalProjectionExpressionWithAliases(
+	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		projected,
 		p.Aliases,
+		p.AliasMinted,
 		projQ,
 	)
 }

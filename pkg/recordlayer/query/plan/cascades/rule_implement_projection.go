@@ -70,8 +70,8 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 			cq := expressions.ForEachQuantifier(call.MemoizeExpression(coveredPlan))
 			// The projection is its own cascades expression carrying the live cq
 			// edge (RFC-184 W2).
-			call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
-				projectedValues, proj.GetAliases(), cq))
+			call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+				projectedValues, proj.GetAliases(), proj.GetAliasMinted(), cq))
 		}
 	}
 
@@ -103,8 +103,8 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 		// The projection is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2).
-		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
-			proj.GetProjectedValues(), proj.GetAliases(), innerQ))
+		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+			proj.GetProjectedValues(), proj.GetAliases(), proj.GetAliasMinted(), innerQ))
 	}
 }
 

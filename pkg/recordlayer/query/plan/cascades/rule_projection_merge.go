@@ -141,17 +141,30 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if outerAliases != nil && len(outerAliases) != len(outerVals) {
 		return // malformed outer alias list — decline, mirroring the inner guard
 	}
+	outerMinted := outer.GetAliasMinted()
 	mergedAliases := make([]string, len(outerVals))
+	mergedMinted := make([]bool, len(outerVals))
 	for i, v := range outerVals {
 		alias := ""
 		if outerAliases != nil {
 			alias = outerAliases[i]
 		}
 		mergedAliases[i] = values.OutputColumnName(v, alias)
+		// Provenance composes, it does not copy. A slot the outer had NOT
+		// aliased gets its effective name written into the alias vector right
+		// here — by this rule, not by the user — so it becomes machinery-named
+		// even though the outer's marker said nothing. That matters because the
+		// effective name of an unaliased slot is its Value's own Field, which
+		// over a join is LEG-QUALIFIED ("U.NAME"): report it as a user alias and
+		// the merge alone would start leaking the qualifier into `SELECT
+		// u.name`'s label. A slot the outer DID alias keeps the outer's marker,
+		// user alias and machinery key alike.
+		mergedMinted[i] = alias == "" || (i < len(outerMinted) && outerMinted[i])
 	}
-	flat := expressions.NewLogicalProjectionExpressionWithAliases(
+	flat := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		composed,
 		mergedAliases,
+		mergedMinted,
 		innerProj.GetInner(),
 	)
 	call.Yield(flat)

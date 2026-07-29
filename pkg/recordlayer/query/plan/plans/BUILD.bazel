@@ -90,6 +90,7 @@ go_test(
         "plans_new_structural_test.go",
         "plans_structural_test.go",
         "point_probe_cost_consistency_test.go",
+        "projection_alias_provenance_test.go",
         "recursive_cost_test.go",
         "recursive_level_union_correlation_test.go",
         "rfc176_p2_plan_identity_test.go",
@@ -181,6 +182,7 @@ go_test(
         "nested_loop_join_unique_key_cost_test.go",
         "equality_prefix_test.go",
         "streaming_aggregation_ordering_key_name_test.go",
+        "projection_alias_provenance_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

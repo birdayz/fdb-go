@@ -2994,6 +2994,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// first one (the single-leaf lookup left the other leg's columns UNKNOWN).
 	descs := allLeafDescriptors(proj.GetInner(), md)
 	aliases := proj.GetAliases()
+	aliasProvenance := proj.GetAliasMinted()
 	projections := proj.GetProjections()
 
 	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
@@ -3046,7 +3047,10 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if i < len(aliases) {
 			alias = aliases[i]
 		}
-		cd := deriveProjectionColumnDef(v, alias, i, descs)
+		// A slot past the provenance vector reads as a USER alias: a machinery
+		// mint is the exceptional case and states itself explicitly.
+		aliasMinted := i < len(aliasProvenance) && aliasProvenance[i]
+		cd := deriveProjectionColumnDef(v, alias, aliasMinted, i, descs)
 		if cd.Nullable == api.ColumnNoNulls {
 			// The projected reference is either a FLAT (childless) read — its
 			// Field may carry the "LEG.COL" qualifier — or the resolver's
@@ -3204,11 +3208,15 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 
 // deriveProjectionColumnDef derives the ResultSet ColumnDef (datum-lookup Name,
 // user-visible display Label, type, nullability) for a single projected column
-// from its Value + optional SELECT-list alias. This is the SHARED derivation
-// reused by BOTH the normal projection path (deriveColumnsFromProjection) AND
-// the RFC-141 projected-EXISTS fold (deriveColumnsFromFlatMap), so the two can
-// never diverge — adding a projected EXISTS must not change the labels of the
-// other projected columns.
+// from its Value + optional SELECT-list alias. Its one caller is the normal
+// projection path (deriveColumnsFromProjection).
+//
+// The RFC-141 projected-EXISTS fold does NOT come through here, despite what
+// this comment claimed until the claim was checked: deriveColumnsFromFlatMap
+// derives its columns through foldedColumnDef, which takes Name+Label from the
+// field NAME the fold set rather than re-deriving them from the field VALUE.
+// The two are consistent by construction, not by sharing code, and
+// foldedColumnDef's own doc is the one that explains why.
 //
 // The derivation matches Java's ResultSetMetaData:
 //   - Name (datum lookup key): the alias when aliased, else the column's
@@ -3223,7 +3231,13 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 // idx is the column's position (for the `_i` positional label of an unaliased
 // computed expression). descs are the leaf descriptors the column type/nullable
 // is resolved against (the leg that defines the column).
-func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+//
+// aliasMinted is the slot's alias PROVENANCE (RecordQueryProjectionPlan's
+// GetAliasMinted): true when the machinery wrote the alias as an internal datum
+// key, false when it is the user's `AS`. It is what separates the two — they are
+// spelled alike — and the separation is the whole difference between reporting
+// `SELECT u.name AS "U.NAME"` as Java does (verbatim) and degrading it.
+func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	var name string
 	if fv, ok := v.(*values.FieldValue); ok {
 		if fv.Child != nil {
@@ -3301,21 +3315,26 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 			// always the bare column, matching Java.
 			displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
 		}
-	} else if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
+	} else if aliasMinted {
 		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
 		// projected reference's QUALIFIED spelling ("A.NAME" for QOV(A).NAME)
 		// as the alias so the two same-named datum keys do not collapse — is
 		// an INTERNAL key, not a user label: Java reports the bare column for
 		// `SELECT c.name, p.name` (both NAME, JDBC allows duplicate labels).
-		// Detect it by a DOTTED label whose leaf equals the projected
-		// reference's own leaf (the reference may since have been rebased —
-		// a projected-EXISTS fold re-anchors it onto the merged row — so the
-		// qualifier cannot be compared, only the leaf). A user alias that is
-		// dotted AND leaf-matches the projected column degrades to the bare
-		// leaf too — a pathological corner traded for the duplicated-leaf
-		// class matching Java's metadata.
-		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() &&
-			strings.EqualFold(ref.bare(), parseColRef(fv.Field).bare()) {
+		// So the qualifier comes off, and the datum key (colName, below) keeps
+		// it.
+		//
+		// The provenance is CARRIED here, never recovered from the string. It
+		// used to be recovered — a dotted label whose leaf matched the
+		// projected reference's leaf was read as machinery — and a user is
+		// perfectly entitled to write that exact spelling: `SELECT u.name AS
+		// "U.NAME"` reported the label NAME, as did the SINGLE-TABLE form where
+		// no machinery alias can exist at all. Java never inspects an alias for
+		// a dot (its clearQualifier, LogicalOperator.java:484-487, strips the
+		// structural qualifier LIST, and a delimited `"U.NAME"` is one
+		// Identifier with an EMPTY qualifier list), so no spelling can be the
+		// discriminator.
+		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() {
 			displayLabel = strings.ToUpper(ref.bare())
 		}
 	}

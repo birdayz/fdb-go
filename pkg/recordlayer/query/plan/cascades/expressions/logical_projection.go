@@ -23,7 +23,18 @@ import (
 type LogicalProjectionExpression struct {
 	projectedValues []values.Value
 	aliases         []string
-	inner           Quantifier
+	// aliasMinted is parallel to aliases: true = the MACHINERY wrote that
+	// output name, false (and every slot past the slice) = the user did, via
+	// `AS`. Carried, not recovered: a machinery key and a user alias can be
+	// spelled identically ("A.K"), so only provenance separates them, and the
+	// result-set label site needs exactly that separation.
+	//
+	// EXCLUDED from identity/hash exactly as values.FieldPath.FrontierPinned is
+	// — a marker of who NAMED the slot, not of what the slot IS. Two projections
+	// differing only in it emit the same rows under the same output names and
+	// must intern as one memo member.
+	aliasMinted []bool
+	inner       Quantifier
 }
 
 // NewLogicalProjectionExpression constructs a projection over `inner`
@@ -53,9 +64,28 @@ func (e *LogicalProjectionExpression) GetProjectedValues() []values.Value {
 	return slices.Clone(e.projectedValues)
 }
 
+// NewLogicalProjectionExpressionWithAliasProvenance is
+// NewLogicalProjectionExpressionWithAliases plus the per-slot record of WHO
+// named each output — the machinery or the user's `AS`. Every rewrite that
+// hands an existing projection's aliases to a new expression must come through
+// here, or the provenance is dropped and a machinery key starts reading as a
+// user label.
+func NewLogicalProjectionExpressionWithAliasProvenance(projectedValues []values.Value, aliases []string, aliasMinted []bool, inner Quantifier) *LogicalProjectionExpression {
+	e := NewLogicalProjectionExpressionWithAliases(projectedValues, aliases, inner)
+	e.aliasMinted = slices.Clone(aliasMinted)
+	return e
+}
+
 // GetAliases returns a defensive copy of the output column aliases.
 func (e *LogicalProjectionExpression) GetAliases() []string {
 	return slices.Clone(e.aliases)
+}
+
+// GetAliasMinted returns a defensive copy of the per-slot alias provenance,
+// parallel to GetAliases. A nil or short result reads as "the user named it"
+// for every slot it does not cover.
+func (e *LogicalProjectionExpression) GetAliasMinted() []bool {
+	return slices.Clone(e.aliasMinted)
 }
 
 // GetInner returns the inner Quantifier.
@@ -159,12 +189,14 @@ func projectionAliasAt(aliases []string, ordinal int) string {
 	return ""
 }
 
+// WithQuantifiers rewires the child edge and changes nothing else, so it copies
+// the whole struct rather than re-listing fields: a field-by-field literal
+// silently drops anything added later, and this runs on EVERY memo child
+// rewrite — the one place a dropped alias provenance would be invisible.
 func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalProjectionExpression{
-		inner:           quantifiers[0],
-		projectedValues: e.projectedValues,
-		aliases:         e.aliases,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalProjectionExpression)(nil)

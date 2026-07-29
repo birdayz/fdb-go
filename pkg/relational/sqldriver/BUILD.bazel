@@ -127,6 +127,7 @@ go_test(
         "datetime_functions_probe_test.go",
         "ddl_errors_probe_test.go",
         "delete_limit_rejected_probe_test.go",
+        "delimited_dotted_alias_fdb_test.go",
         "derived_computed_projection_fdb_test.go",
         "derived_exists_scope_fdb_test.go",
         "derived_groupby_case_probe_test.go",

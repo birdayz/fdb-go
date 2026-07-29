@@ -2534,7 +2534,10 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		if !changed {
 			return p
 		}
-		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner)
+		// A rebase hands back "the same projection, moved": the output names and
+		// WHO wrote them are both unchanged by moving where the ordinals point.
+		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner).
+			WithAliasProvenance(pl.GetAliasMinted())
 	default:
 		// Unhandled node — return unchanged. planReferencesAnyBuriedAlias will detect
 		// any buried reference that survives here and decline the probe.

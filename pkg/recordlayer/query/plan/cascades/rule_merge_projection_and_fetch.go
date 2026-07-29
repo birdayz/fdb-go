@@ -95,8 +95,8 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(coveredPlan))
 		// The projection is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2).
-		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
-			projectedValues, projW.GetAliases(), innerQ))
+		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+			projectedValues, projW.GetAliases(), projW.GetAliasMinted(), innerQ))
 		return
 	}
 
@@ -122,8 +122,8 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// the projection sit over the fetch's index-scan inner (the merge that
 	// strips the fetch), and DAG-aware extraction resolves that shared inner
 	// group to its winner instead of the retired snapshot.
-	call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
-		projectedValues, projW.GetAliases(), expressions.ForEachQuantifier(fetchInnerRef)))
+	call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+		projectedValues, projW.GetAliases(), projW.GetAliasMinted(), expressions.ForEachQuantifier(fetchInnerRef)))
 }
 
 var _ ImplementationRule = (*MergeProjectionAndFetchRule)(nil)

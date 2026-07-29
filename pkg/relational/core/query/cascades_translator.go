@@ -4585,6 +4585,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	if len(extraSortCols) > 0 {
 		projVals := make([]values.Value, outputCount)
 		projAliases := make([]string, outputCount)
+		projMinted := make([]bool, outputCount)
 		for i := 0; i < outputCount; i++ {
 			// FieldValue.Field MUST equal the fold's f.Name exactly: the folded
 			// output record is keyed by f.Name and FieldValue.Evaluate does an
@@ -4606,9 +4607,16 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			if i < len(p.Aliases) {
 				projAliases[i] = strings.ToUpper(p.Aliases[i])
 			}
+			// The alias is reused, so its PROVENANCE is reused with it —
+			// truncated to the same outputCount. Copying the name without the
+			// marker would relabel a machinery datum key as something the user
+			// asked for.
+			if i < len(p.AliasMinted) {
+				projMinted[i] = p.AliasMinted[i]
+			}
 		}
-		expr = expressions.NewLogicalProjectionExpressionWithAliases(
-			projVals, projAliases, expressions.ForEachQuantifier(expressions.InitialOf(expr)),
+		expr = expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+			projVals, projAliases, projMinted, expressions.ForEachQuantifier(expressions.InitialOf(expr)),
 		)
 	}
 	return expr
@@ -6380,9 +6388,10 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	for i, v := range projected {
 		projected[i] = bakeDottedRefsToLegQOV(v, innerRef.Get())
 	}
-	return expressions.NewLogicalProjectionExpressionWithAliases(
+	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		projected,
 		p.Aliases,
+		p.AliasMinted,
 		t.namedQuantifier(sourceAlias(p.Input), innerRef),
 	)
 }
@@ -6605,9 +6614,10 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	}
 
 	projQ := t.namedQuantifier("", joinRef)
-	return expressions.NewLogicalProjectionExpressionWithAliases(
+	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		projected,
 		p.Aliases,
+		p.AliasMinted,
 		projQ,
 	)
 }
@@ -6918,6 +6928,11 @@ func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.Logi
 	outputQOV := values.NewQuantifiedObjectValueOfType(outputCorr, mergedType)
 	projected := make([]values.Value, len(outerType.Fields))
 	aliases := make([]string, len(outerType.Fields))
+	// Every name here is read off the INTERNAL merged row type, so every slot is
+	// machinery-named — no `AS` reached this projection. Where that internal
+	// name is a leg-qualified key, the result-set label must still report the
+	// bare column, which is what the provenance buys.
+	aliasMinted := make([]bool, len(outerType.Fields))
 	for i := range outerType.Fields {
 		fv, err := values.NewFieldValueOfOrdinal(outputQOV, i)
 		if err != nil {
@@ -6927,10 +6942,12 @@ func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.Logi
 		}
 		projected[i] = fv
 		aliases[i] = outerType.Fields[i].Name
+		aliasMinted[i] = true
 	}
-	return expressions.NewLogicalProjectionExpressionWithAliases(
+	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		projected,
 		aliases,
+		aliasMinted,
 		expressions.NamedForEachQuantifier(outputCorr, filterRef),
 	)
 }
