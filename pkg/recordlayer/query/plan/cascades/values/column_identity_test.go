@@ -77,12 +77,15 @@ func TestColumnIdentity_CarriesNoName(t *testing.T) {
 }
 
 // TestIdentityIn_SameLeafNameDifferentQuantifiers is the DIMENSION test the RFC
-// requires of every conversion: two columns sharing a leaf name, reached
-// through different quantifiers, must not be one column.
+// requires of every conversion: two columns sharing a leaf name must not be one
+// column.
 //
-// The old escape shape returned the bare name, so both of these answered "ID"
-// and any caller keying a map by that answer conflated them. The identity
-// answers differently on BOTH the correlation and the domain.
+// The old escape shape returned the bare name, so every case below answered
+// "ID" and any caller keying a map by that answer conflated them. Each subtest
+// varies exactly ONE element of the triple and holds the other two equal — the
+// separation is the whole point, because a case that moves the correlation AND
+// the domain together is satisfied by an identity that carries only one of
+// them, and a conversion missing the other would still pass.
 func TestIdentityIn_SameLeafNameDifferentQuantifiers(t *testing.T) {
 	t.Parallel()
 
@@ -93,35 +96,74 @@ func TestIdentityIn_SameLeafNameDifferentQuantifiers(t *testing.T) {
 	o := NamedCorrelationIdentifier("o")
 	i := NamedCorrelationIdentifier("i")
 
-	ordersID := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		NewQuantifiedObjectValue(o), "ID", 0, UnknownType, ordersDomain)
-	itemsID := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		NewQuantifiedObjectValue(i), "ID", 0, UnknownType, itemsDomain)
+	t.Run("the CORRELATION alone separates them", func(t *testing.T) {
+		t.Parallel()
+		// A SELF-JOIN: one layout, so both references carry the same domain and
+		// the same ordinal, and the quantifier is the only element left. This is
+		// the case an identity built from (name, ordinal) — or from
+		// (domain, ordinal) — cannot tell apart at all.
+		left := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, ordersDomain)
+		right := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			NewQuantifiedObjectValue(i), "ID", 0, UnknownType, ordersDomain)
 
-	if ordersID.Field != itemsID.Field {
-		t.Fatalf("test setup: both columns must share the leaf name, got %q and %q", ordersID.Field, itemsID.Field)
-	}
+		leftKey, ok := left.CorrelatedIdentityIn(ordersDomain)
+		if !ok {
+			t.Fatal("o.ID must have an identity in the ORDERS layout")
+		}
+		rightKey, ok := right.CorrelatedIdentityIn(ordersDomain)
+		if !ok {
+			t.Fatal("i.ID must have an identity in the ORDERS layout")
+		}
+		if leftKey.Domain != rightKey.Domain || leftKey.Ordinal != rightKey.Ordinal {
+			t.Fatalf("test setup: the domain and the ordinal must be EQUAL so only the correlation "+
+				"can separate the two, got %v/%d and %v/%d",
+				leftKey.Domain, leftKey.Ordinal, rightKey.Domain, rightKey.Ordinal)
+		}
+		if left.Field != right.Field {
+			t.Fatalf("test setup: both must share the leaf name, got %q and %q", left.Field, right.Field)
+		}
+		if leftKey == rightKey {
+			t.Fatalf("o.ID and i.ID share one identity %v — ordinal 0 of two quantifiers are "+
+				"different columns, and this is the element a (name, ordinal) pair can never carry", leftKey)
+		}
+	})
 
-	oKey, ok := ordersID.CorrelatedIdentityIn(ordersDomain)
-	if !ok {
-		t.Fatal("orders.ID must have an identity in the ORDERS layout")
-	}
-	iKey, ok := itemsID.CorrelatedIdentityIn(itemsDomain)
-	if !ok {
-		t.Fatal("items.ID must have an identity in the ITEMS layout")
-	}
-	if oKey == iKey {
-		t.Fatalf("orders.ID and items.ID share one identity %v — the name conflation survived the conversion", oKey)
-	}
-	if oKey.Ordinal != iKey.Ordinal {
-		t.Fatalf("test setup: both must sit at the same ordinal so the DOMAIN and CORRELATION are what separate them, got %d and %d", oKey.Ordinal, iKey.Ordinal)
-	}
+	t.Run("the DOMAIN alone separates them", func(t *testing.T) {
+		t.Parallel()
+		// One quantifier, two layouts that both declare ID at ordinal 0. The
+		// correlation and the ordinal are equal, so only the layout the ordinal
+		// indexes can refuse — an ordinal compared across layouts is the same
+		// conflation as a name, wearing a type that reads as authoritative.
+		left := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, ordersDomain)
+		right := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, itemsDomain)
 
-	// Cross-domain is not a mismatch to be resolved by falling back to the
-	// name — it is unanswerable.
-	if _, ok := ordersID.CorrelatedIdentityIn(itemsDomain); ok {
-		t.Fatal("orders.ID must not answer in the ITEMS layout")
-	}
+		leftKey, ok := left.CorrelatedIdentityIn(ordersDomain)
+		if !ok {
+			t.Fatal("o.ID must have an identity in the ORDERS layout")
+		}
+		rightKey, ok := right.CorrelatedIdentityIn(itemsDomain)
+		if !ok {
+			t.Fatal("o.ID baked in ITEMS must have an identity in the ITEMS layout")
+		}
+		if leftKey.Correlation != rightKey.Correlation || leftKey.Ordinal != rightKey.Ordinal {
+			t.Fatalf("test setup: the correlation and the ordinal must be EQUAL so only the domain "+
+				"can separate the two, got %v/%d and %v/%d",
+				leftKey.Correlation, leftKey.Ordinal, rightKey.Correlation, rightKey.Ordinal)
+		}
+		if leftKey == rightKey {
+			t.Fatalf("two layouts' ordinal-0 columns share one identity %v — the name conflation "+
+				"survived the conversion as an ordinal conflation", leftKey)
+		}
+
+		// Cross-domain is not a mismatch to be resolved by falling back to the
+		// name — it is unanswerable.
+		if _, ok := left.CorrelatedIdentityIn(itemsDomain); ok {
+			t.Fatal("an ORDERS-baked o.ID must not answer in the ITEMS layout")
+		}
+	})
 }
 
 // TestIdentityIn_FailsClosed pins every arm that must decline rather than hand

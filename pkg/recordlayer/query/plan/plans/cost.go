@@ -521,6 +521,7 @@ func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bo
 	// here. Stating it as a parameter turns the per-site proof into a
 	// predicate values.OrdinalIn checks rather than a comment (RFC-197 step 0).
 	inner := p.GetInner()
+	frontier := values.OrdinalDomainOfType(innerLegLayout(inner))
 	keyCols, ok := innerLeafUniqueKeyOrdinals(inner, innerLegLayout(inner))
 	if !ok || len(keyCols) == 0 {
 		return 0, false
@@ -542,7 +543,7 @@ func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bo
 	consumed := 0
 	for _, pred := range p.GetPredicates() {
 		for _, conjunct := range flattenAndConjuncts(pred) {
-			key, matched := matchedInnerKeyEquality(conjunct, innerAlias, want, bound)
+			key, matched := matchedInnerKeyEquality(conjunct, innerAlias, frontier, want, bound)
 			if !matched {
 				continue
 			}
@@ -598,13 +599,13 @@ func flattenAndConjuncts(p predicates.QueryPredicate) []predicates.QueryPredicat
 func matchedInnerKeyEquality(
 	conjunct predicates.QueryPredicate,
 	innerAlias values.CorrelationIdentifier,
+	frontier values.OrdinalDomain,
 	want, bound map[values.ColumnIdentity]bool,
 ) (values.ColumnIdentity, bool) {
 	cmp, ok := conjunct.(*predicates.ComparisonPredicate)
 	if !ok || cmp.Comparison.Type != predicates.ComparisonEquals {
 		return values.ColumnIdentity{}, false
 	}
-	frontier := frontierOfWant(want)
 	lhs, rhs := cmp.Operand, cmp.Comparison.Operand
 	if key, ok := correlatedInnerFieldKey(lhs, innerAlias, frontier); ok && want[key] && !bound[key] &&
 		!valueCorrelatedTo(rhs, innerAlias) {
@@ -617,16 +618,6 @@ func matchedInnerKeyEquality(
 		}
 	}
 	return values.ColumnIdentity{}, false
-}
-
-// frontierOfWant recovers the layout the want set's ordinals index. Every
-// member carries the same domain by construction (innerLeafUniqueKeyOrdinals
-// resolves them all against one layout), so any member answers.
-func frontierOfWant(want map[values.ColumnIdentity]bool) values.OrdinalDomain {
-	for key := range want {
-		return key.Domain
-	}
-	return values.OrdinalDomain{}
 }
 
 // valueCorrelatedTo reports whether v's correlation set includes alias.
@@ -665,6 +656,16 @@ func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool 
 // A declined proof costs the flat-FilterSelectivity estimate this correction
 // improves on; a wrong one manufactures an at-most-one claim the join does not
 // have.
+//
+// The CORRELATION is compared here and CANONICALIZED into the returned key.
+// Both halves are load-bearing. Comparing here is what rejects a SELF-JOIN's
+// other leg: with outer and inner sharing one layout, `o.ID` and `i.ID` agree
+// on domain and ordinal, and only the leg says one of them reads a different
+// row. Canonicalizing is what keeps that comparison the only place the leg is
+// judged — values.SameLeg folds case (its doc comment says why), so a key
+// carrying the operand's own spelling would then be re-compared EXACTLY by the
+// caller's map lookup and quietly re-impose the strictness this site just
+// decided against.
 func correlatedInnerFieldKey(
 	v values.Value,
 	innerAlias values.CorrelationIdentifier,
@@ -675,10 +676,10 @@ func correlatedInnerFieldKey(
 		return values.ColumnIdentity{}, false
 	}
 	key, ok := fv.CorrelatedIdentityIn(frontier)
-	if !ok || key.Correlation != innerAlias {
+	if !ok || !values.SameLeg(key.Correlation, innerAlias) {
 		return values.ColumnIdentity{}, false
 	}
-	return key, true
+	return key.WithCorrelation(innerAlias), true
 }
 
 // innerLegLayout is the inner leg's own output row layout — the frontier

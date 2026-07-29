@@ -828,3 +828,134 @@ func TestFKChainCardinalityCap_FlatMapOuterLayoutComesFromResultValue(t *testing
 		t.Fatalf("cap = %v, want T3's table size 200", cap)
 	}
 }
+
+// TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation is RFC-197
+// item 2's CORRELATION dimension for innerFullyBindsThread — the element the
+// rest of this file cannot vary on its own.
+//
+// Every other decline here is reached by something else: the misdomained bind
+// is refused by the layout, the nested one by its multi-accessor shape, the
+// non-PK one by its ordinal. So a conversion that compared domain and ordinal
+// and simply ASSUMED the leg would pass the whole suite. A SELF-JOIN removes
+// that cover: both legs scan T2, so there is ONE layout, and the inner's search
+// binds `i.ID` — the inner's OWN copy of the column, at the same ordinal in the
+// same domain as the outer's tracked primary key, differing only in which
+// quantifier's row it reads.
+//
+// That bind proves nothing the cap needs. innerFullyBindsThread's whole
+// argument is that each inner execution is keyed to ONE outer row, which
+// requires the equality to be parameterized by the OUTER's primary key; an
+// equality on the inner's own column is re-evaluated identically for every
+// outer row and partitions nothing. Firing the cap on it clamps the hop below
+// what the query can produce — the one failure this file's doc comment says
+// must never happen.
+func TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := fkChainAlias(0)
+	innerAlias := values.NamedCorrelationIdentifier("i")
+
+	// Self-join on T2: one layout, so the DOMAIN element cannot do the work.
+	outer := fkChainFullScan("T2")
+	selfBind := fkChainCorrelatedRef(t, "T2", innerAlias, "ID")
+	outerBind := fkChainCorrelatedRef(t, "T2", outerAlias, "ID")
+	selfFV, outerFV := selfBind.(*values.FieldValue), outerBind.(*values.FieldValue)
+	if selfFV.Resolved.Domain != outerFV.Resolved.Domain {
+		t.Fatal("test setup: both operands must be baked in ONE layout so the DOMAIN cannot reject")
+	}
+	if selfFV.Resolved.Root().Ordinal != outerFV.Resolved.Root().Ordinal || selfFV.Field != outerFV.Field {
+		t.Fatal("test setup: both operands must share the ordinal and the leaf name, leaving only the correlation")
+	}
+
+	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: selfBind}
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatal("failed to build the self-correlated eq range")
+	}
+	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
+		WithPrimaryKey(fkChainIDPK()).
+		WithScanComparisons([]*predicates.ComparisonRange{res.Range})
+	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
+		values.NewQuantifiedObjectValue(innerAlias), false)
+
+	if cap, ok := fkChainCardinalityCap(fm, fkChainStats()); ok {
+		t.Fatalf("cap fired (cap=%v) on an equality bound to the INNER leg's own column — "+
+			"it is not parameterized by the outer row at all, so it partitions nothing and "+
+			"cannot key each inner execution to one outer row", cap)
+	}
+}
+
+// TestFKChainCardinalityCap_FiresOnSameLayoutOuterCorrelation is the accept
+// companion in the SAME self-join geometry: it holds the layout, the ordinal
+// and the leaf name identical to the case above and moves only the correlation
+// back onto the outer leg.
+//
+// Without it the decline above could be satisfied by a conversion that simply
+// stopped recognizing self-joins, which would silently drop the cap for every
+// same-table chain rather than for the wrong leg.
+func TestFKChainCardinalityCap_FiresOnSameLayoutOuterCorrelation(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := fkChainAlias(0)
+	innerAlias := values.NamedCorrelationIdentifier("i")
+
+	outer := fkChainFullScan("T2")
+	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
+		WithPrimaryKey(fkChainIDPK()).
+		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T2", outerAlias, "ID")})
+	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
+		values.NewQuantifiedObjectValue(innerAlias), false)
+
+	cap, ok := fkChainCardinalityCap(fm, fkChainStats())
+	if !ok {
+		t.Fatal("cap did not fire on a genuine outer-parameterized primary-key probe in a " +
+			"self-join — the correlation check must reject the wrong leg, not the shape")
+	}
+	if cap != 20 {
+		t.Fatalf("cap = %v, want T2's table size 20", cap)
+	}
+}
+
+// TestPKThreadThroughResultValue_DeclinesSameLayoutOtherCorrelation is the
+// CORRELATION dimension for the OTHER identity comparison in this file:
+// findDirectFieldMapping, which decides whether a FlatMap's emitted record
+// still carries the tracked primary key.
+//
+// A slot only preserves the thread if it is a DIRECT read of the tracked
+// column off the CHILD. In a self-join both legs share a layout, so a slot
+// reading the OUTER leg's ID agrees with the inner's tracked PK on domain,
+// ordinal and leaf name, and differs only in which row it reads. Accepting it
+// carries a pkThread forward over rows the key no longer identifies: the next
+// hop then proves its 1:1 bind against a key that is not this stream's, and
+// caps a fan-out away.
+func TestPKThreadThroughResultValue_DeclinesSameLayoutOtherCorrelation(t *testing.T) {
+	t.Parallel()
+
+	childAlias := values.NamedCorrelationIdentifier("i")
+	otherAlias := fkChainAlias(0)
+	childLayout := fkChainRowType("T2")
+	childThread := pkThread{recordType: "T2", pkValues: fkChainIDPK(), ok: true}
+
+	// The accept direction first, so the decline below cannot pass by refusing
+	// everything.
+	survived := pkThreadThroughResultValue(childThread, childAlias, childLayout,
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "KEY", Value: fkChainCorrelatedRef(t, "T2", childAlias, "ID")},
+		))
+	if !survived.ok {
+		t.Fatal("a slot that IS a direct read of the child's tracked primary key did not " +
+			"preserve the thread — the identity comparison over-declines")
+	}
+
+	// Same layout, same ordinal, same leaf name — the OUTER quantifier.
+	crossed := pkThreadThroughResultValue(childThread, childAlias, childLayout,
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "KEY", Value: fkChainCorrelatedRef(t, "T2", otherAlias, "ID")},
+		))
+	if crossed.ok {
+		t.Fatalf("a slot reading the OUTER leg's ID preserved the child's primary-key thread "+
+			"(recordType=%q, %d component(s)) — ordinal 0 of two quantifiers are different "+
+			"columns, and the emitted rows are not identified by the one this thread tracks",
+			crossed.recordType, len(crossed.pkValues))
+	}
+}

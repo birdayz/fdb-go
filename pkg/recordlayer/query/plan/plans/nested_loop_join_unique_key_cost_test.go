@@ -555,3 +555,136 @@ func TestNestedLoopJoinPlan_HintCost_LeftOuterJoin_StillCorrected(t *testing.T) 
 		t.Fatalf("Cardinality = %v, want 10 (outerCard)", got.Cardinality)
 	}
 }
+
+// TestNestedLoopJoinPlan_HintCost_SameLayoutOtherCorrelation_Unaffected is
+// RFC-197 item 2's CORRELATION dimension for this site — the one element no
+// other test in this file can vary on its own.
+//
+// Every other decline here is reached by some OTHER element: the misdomained
+// operand is rejected by the domain, the nested one by its multi-accessor
+// shape, the lazy one by having no ordinal at all. So a conversion that
+// compared domain and ordinal and simply ASSUMED the leg would pass the whole
+// file. This case removes that cover: a SELF-JOIN, both legs scanning the same
+// table and therefore sharing one layout, with a conjunct whose operand reads
+// the OUTER leg at the INNER key's ordinal. Domain agrees, ordinal agrees, leaf
+// name agrees; only the quantifier says this reads a different row.
+//
+// Accepting it is not a worse estimate, it is a false proof: `o.ID = ?` binds
+// nothing of the inner leg, so the join still visits every inner row per outer
+// row, and the cost model would report outerCard for a full cross product.
+func TestNestedLoopJoinPlan_HintCost_SameLayoutOtherCorrelation_Unaffected(t *testing.T) {
+	t.Parallel()
+
+	// A self-join: BOTH legs scan Inner, so there is exactly one layout and the
+	// domain element cannot do the rejecting.
+	outerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID"))
+	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID"))
+
+	// o.ID — the inner key's own column, in the inner's own layout, read off
+	// the OUTER quantifier.
+	outerID := fieldOfAliasIn(innerLayout, "ID", "o").(*values.FieldValue)
+	innerID := fieldOfAliasIn(innerLayout, "ID", "i").(*values.FieldValue)
+	if outerID.Resolved.Domain != innerID.Resolved.Domain {
+		t.Fatal("test setup: both operands must be baked in ONE layout so the DOMAIN cannot reject")
+	}
+	if outerID.Resolved.Root().Ordinal != innerID.Resolved.Root().Ordinal {
+		t.Fatalf("test setup: both operands must sit at the same ordinal, got %d and %d",
+			outerID.Resolved.Root().Ordinal, innerID.Resolved.Root().Ordinal)
+	}
+	if outerID.Field != innerID.Field {
+		t.Fatalf("test setup: both operands must share the leaf name, got %q and %q", outerID.Field, innerID.Field)
+	}
+
+	pred := equalityJoinPredicate(outerID, &values.ConstantValue{Value: int64(7)})
+	plan := NewRecordQueryNestedLoopJoinPlan(
+		outerPlan, innerPlan,
+		[]predicates.QueryPredicate{pred},
+		JoinInner, "o", "i", nil,
+	)
+
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
+		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (0, false) — "+
+			"`o.ID = ?` reads the OUTER leg and binds nothing of the inner; counting it "+
+			"proves an at-most-one match the join does not have", n, ok)
+	}
+	outer := properties.Cost{Cardinality: 10}
+	inner := properties.Cost{Cardinality: 1000}
+	got := plan.HintCost([]properties.Cost{outer, inner}, nil)
+	want := outer.Cardinality * inner.Cardinality * properties.FilterSelectivity
+	if got.Cardinality != want {
+		t.Fatalf("Cardinality = %v, want %v (unchanged flat-selectivity formula) — "+
+			"a conjunct on the outer leg was costed as if it pinned the inner to one row", got.Cardinality, want)
+	}
+}
+
+// TestNestedLoopJoinPlan_HintCost_SameLayoutInnerCorrelation_StillCorrected is
+// the accept companion in the SAME self-join geometry: it holds the layout, the
+// ordinal and the leaf name identical to the case above and moves only the
+// correlation back onto the inner leg.
+//
+// Without it, the decline above could be satisfied by a conversion that simply
+// stopped recognizing self-joins, which would silently drop the correction for
+// every same-table join rather than for the wrong leg.
+func TestNestedLoopJoinPlan_HintCost_SameLayoutInnerCorrelation_StillCorrected(t *testing.T) {
+	t.Parallel()
+
+	outerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID"))
+	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID"))
+
+	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), &values.ConstantValue{Value: int64(7)})
+	plan := NewRecordQueryNestedLoopJoinPlan(
+		outerPlan, innerPlan,
+		[]predicates.QueryPredicate{pred},
+		JoinInner, "o", "i", nil,
+	)
+
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
+		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — "+
+			"the same self-join geometry with the correlation on the INNER leg is a real "+
+			"full-primary-key bind", n, ok)
+	}
+	got := plan.HintCost([]properties.Cost{{Cardinality: 10}, {Cardinality: 1000}}, nil)
+	if got.Cardinality != 10 {
+		t.Fatalf("Cardinality = %v, want 10 (outerCard)", got.Cardinality)
+	}
+}
+
+// TestNestedLoopJoinPlan_HintCost_LegSpellingIsCaseFolded pins the one
+// deliberate looseness in the correlation comparison, so it stays a decision
+// rather than becoming an accident.
+//
+// values.SameLeg folds case because Go's alias producers disagree on it (see
+// its doc comment) — the plan carries its join aliases as plain strings the
+// rules re-mint, while the operand's quantifier keeps whatever the translator
+// stamped. Java needs no such fold: CorrelationIdentifier.equals is exact
+// (CorrelationIdentifier.java:132) because every identifier there comes from
+// one factory.
+//
+// The fold can only ever RECOVER a proof, never invent one — an unrecognized
+// leg declines — but it is still a loosening of an identity element, so it is
+// asserted here rather than left to be discovered by someone reading
+// strings.EqualFold and wondering.
+func TestNestedLoopJoinPlan_HintCost_LegSpellingIsCaseFolded(t *testing.T) {
+	t.Parallel()
+
+	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
+	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID"))
+
+	// The plan's inner alias is "i"; the operand's quantifier is spelled "I".
+	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "I"), fieldOfAliasIn(outerLayout, "FK", "o"))
+	plan := NewRecordQueryNestedLoopJoinPlan(
+		outerPlan, innerPlan,
+		[]predicates.QueryPredicate{pred},
+		JoinInner, "o", "i", nil,
+	)
+
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
+		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — "+
+			"an alias spelled `I` against a plan alias spelled `i` is one leg, not two", n, ok)
+	}
+}

@@ -288,6 +288,13 @@ func pkThreadThroughFields(
 // output name. Multiple slots may qualify (a column projected twice under
 // different names); any one witness is sufficient to prove the PK component
 // survives.
+//
+// The LEG is judged by values.SameLeg and then canonicalized onto the key, so
+// the `key != wanted` comparison that follows decides the COLUMN (domain +
+// ordinal) and nothing else. Without the leg check the canonicalization would
+// re-stamp any slot as childAlias's and a projection of some OTHER leg's
+// same-ordinal column would be accepted as the tracked PK component surviving
+// — a pkThread carried forward over a row that no longer identifies it.
 func findDirectFieldMapping(
 	fields []namedValue,
 	childAlias values.CorrelationIdentifier,
@@ -296,7 +303,10 @@ func findDirectFieldMapping(
 ) (string, bool) {
 	for _, f := range fields {
 		key, ok := correlatedFieldIdentity(f.value, frontier)
-		if !ok || key.Correlation != childAlias || key != wanted {
+		if !ok || !values.SameLeg(key.Correlation, childAlias) {
+			continue
+		}
+		if key.WithCorrelation(childAlias) != wanted {
 			continue
 		}
 		return f.name, true
@@ -400,10 +410,19 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		if eq == nil || eq.Type != predicates.ComparisonEquals || eq.Operand == nil {
 			continue
 		}
+		// The LEG is judged here and canonicalized onto the key, so the
+		// wantKeys lookup that follows decides only WHICH COLUMN. Dropping the
+		// leg check admits a comparand correlated to some OTHER quantifier: in
+		// a self-join the two legs share a layout, so an equality on the
+		// INNER's own copy of the outer PK column agrees on domain and ordinal
+		// and would be counted as binding the outer thread — a 1:1 claim the
+		// inner search does not make, and the FK-chain cap would then divide a
+		// real fan-out away.
 		key, ok := correlatedFieldIdentity(eq.Operand, frontier)
-		if !ok || key.Correlation != fm.GetOuterAlias() {
+		if !ok || !values.SameLeg(key.Correlation, fm.GetOuterAlias()) {
 			continue
 		}
+		key = key.WithCorrelation(fm.GetOuterAlias())
 		if wantKeys[key] {
 			bound[key] = true
 		}
