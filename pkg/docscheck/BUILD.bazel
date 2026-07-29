@@ -13,6 +13,7 @@ go_test(
         "docs_consistency_test.go",
         "field_name_decision_detector_test.go",
         "field_name_decision_test.go",
+        "nightly_window_gate_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",
         "source_hygiene_test.go",
@@ -51,6 +52,7 @@ go_test(
     deps = [
         "//gen",
         "//pkg/linters/norecover",
+        "@in_gopkg_yaml_v3//:yaml_v3",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

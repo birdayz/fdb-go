@@ -1,0 +1,156 @@
+name: Nightly Reconcile
+
+# THE PROBLEM THIS EXISTS FOR.
+#
+# Every heavy nightly runs on `hetzner-fdb`, a SINGLE self-hosted slot, and each
+# opens with a "Check nightly window" step: if the runner is finally allocated
+# outside the job's window, the step sets `ok=false`, every subsequent step is
+# `if:`-skipped, and the job exits SUCCESS. A green check mark then means one of
+# two indistinguishable things — "the net ran and found nothing" or "the net did
+# not run at all".
+#
+# It was overwhelmingly the second. Measured on 2026-07-29:
+#   - Nightly Stress: 12 consecutive scheduled runs (07-18..07-29) green with
+#     `Run stress tests` = skipped. The last genuine execution was 07-17, and it
+#     FAILED. A red net went quiet and the quiet read as green.
+#   - Nightly RowDiff: 10 consecutive scheduled runs green with the sweep skipped.
+#   - Nightly Self-Checking Oracles: 1 scheduled run in its entire history, skipped.
+#     It has never produced a single row of signal.
+#
+# The root cause of the misses is that each window was anchored to its CRON hour,
+# and the cron hour is fiction: GitHub's own scheduled-trigger dispatch on this
+# repo is late by 1h57m..3h52m (measured across five workflows), before the
+# self-hosted queue is even consulted. A two-hour window nailed to the cron hour is
+# unreachable by construction. Those windows are now sized from the measured
+# landing times, but a window can only ever make contention rarer — it cannot make
+# a skipped night distinguishable from a clean one.
+#
+# THE FIX. A skipped window is a distinguishable outcome, not success. Each
+# windowed nightly job writes a `nightly-heartbeat-<net>` artifact when its real
+# work ACTUALLY EXECUTES (pass or fail — a red net is the net working; the
+# heartbeat answers "did it run", the job conclusion answers "did it pass"). This
+# job, on a GitHub-hosted runner that needs no FDB and so no window of its own,
+# reads the newest such artifact per net and FAILS when it is older than that net's
+# limit. Silence becomes signal.
+#
+# Why not simply fail the nightly itself when ok=false? Because single-night
+# contention on one shared runner is legitimate and self-correcting; failing on it
+# trains everyone to ignore the red. Staleness across N nights is not legitimate.
+#
+# ADDING A NET: add the window gate + heartbeat steps to the nightly, then add a
+# row below. `pkg/docscheck`'s TestNightlyWindowGatesAreReconciled fails the build
+# if a windowed job has no heartbeat, if a heartbeat has no row here, or if a row
+# here names a heartbeat nothing produces.
+on:
+  schedule:
+    # 09:11 UTC — late enough that a net which ran last night has already
+    # published its heartbeat. This job runs on a GitHub-hosted runner and only
+    # reads the API, so it never competes for hetzner-fdb and needs no window of
+    # its own; GitHub's dispatch delay on it is harmless.
+    - cron: '11 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required to list workflow-run artifacts via the REST API.
+  actions: read
+
+jobs:
+  reconcile:
+    name: Every nightly net ran recently enough
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Reconcile last-genuine-run heartbeats
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # net|heartbeat artifact|max age in days.
+        #
+        # 3 days for the nets that must run every night (stress, rowdiff, coverage,
+        # and each of the five fuzz jobs — they serialize on the one runner, so they
+        # miss the window independently of one another and each needs its own
+        # heartbeat); 7 for the oracles, whose value is combinatorial breadth
+        # accumulated over time rather than per-night freshness. The test is
+        # strictly `age > limit`, so three consecutive nights of genuine contention
+        # stay quiet and the fourth does not — single-night contention on one
+        # shared runner must never cost a red build.
+        run: |
+          set -euo pipefail
+          NETS='stress|nightly-heartbeat-stress|3
+          rowdiff|nightly-heartbeat-rowdiff|3
+          oracles|nightly-heartbeat-oracles|7
+          coverage|nightly-heartbeat-coverage|3
+          fuzz-diff|nightly-heartbeat-fuzz-diff|3
+          fuzz-race|nightly-heartbeat-fuzz-race|3
+          fuzz-binding|nightly-heartbeat-fuzz-binding|3
+          fuzz-client|nightly-heartbeat-fuzz-client|3
+          fuzz-engine|nightly-heartbeat-fuzz-engine|3'
+
+          # NO-OP GUARD, the same discipline the nightlies themselves carry: a
+          # reconciler that iterates an empty list passes green having verified
+          # nothing, which is the exact failure mode it was built to end.
+          EXPECTED=$(printf '%s\n' "$NETS" | grep -c '|' || true)
+          if [ "$EXPECTED" -lt 1 ]; then
+            echo "::error::the net list is empty — this reconciliation would pass having checked nothing"
+            exit 1
+          fi
+
+          NOW=$(date -u +%s)
+          STALE=0
+          CHECKED=0
+          {
+            echo "## Nightly net reconciliation ($(date -u +%FT%TZ))"
+            echo ""
+            echo "A net is green here only if it has actually EXECUTED recently — not if its"
+            echo "workflow exited success. See the header of .github/workflows/nightly-reconcile.yml."
+            echo ""
+            echo "| net | last genuine run | age | limit | verdict |"
+            echo "| --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS='|' read -r NET ART MAXDAYS; do
+            [ -n "$NET" ] || continue
+            CHECKED=$((CHECKED + 1))
+            # Take the MAX created_at over the whole listing rather than trusting the
+            # API's default ordering — an undocumented ordering assumption is exactly
+            # the kind of silent-wrong this file exists to end. ISO-8601 Z sorts
+            # chronologically as text. `</dev/null` keeps gh off the heredoc this loop
+            # is reading. A failing `gh api` aborts the job (set -e + pipefail); it
+            # never degrades into "no heartbeat found", which would be a false alarm.
+            LAST=$(gh api --paginate \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts?name=${ART}&per_page=100" \
+              --jq '.artifacts[].created_at' </dev/null | sort | tail -1)
+            if [ -z "$LAST" ]; then
+              echo "::error::${NET}: NO genuine run has ever been recorded (no ${ART} artifact exists). The net's workflow may be exiting green while its window gate skips every real step."
+              echo "| \`$NET\` | **never** | — | ${MAXDAYS}d | never ran |" >> "$GITHUB_STEP_SUMMARY"
+              STALE=$((STALE + 1))
+              continue
+            fi
+            THEN=$(date -u -d "$LAST" +%s)
+            AGE_DAYS=$(( (NOW - THEN) / 86400 ))
+            if [ "$AGE_DAYS" -gt "$MAXDAYS" ]; then
+              echo "::error::${NET}: last genuine run was ${LAST} (${AGE_DAYS} days ago), limit is ${MAXDAYS} days. This net is not protecting anything — its workflow is green because its window gate is skipping the work, not because the work passed."
+              echo "| \`$NET\` | $LAST | ${AGE_DAYS}d | ${MAXDAYS}d | STALE |" >> "$GITHUB_STEP_SUMMARY"
+              STALE=$((STALE + 1))
+            else
+              echo "$NET: last genuine run $LAST (${AGE_DAYS}d ago, limit ${MAXDAYS}d) — ok"
+              echo "| \`$NET\` | $LAST | ${AGE_DAYS}d | ${MAXDAYS}d | ok |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done <<EOF
+          $NETS
+          EOF
+
+          if [ "$CHECKED" -ne "$EXPECTED" ]; then
+            echo "::error::checked $CHECKED nets but the list holds $EXPECTED — the loop dropped entries"
+            exit 1
+          fi
+          {
+            echo ""
+            echo "Checked $CHECKED nets; $STALE stale."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STALE" -gt 0 ]; then
+            echo "::error::${STALE} of ${CHECKED} nightly nets have not genuinely executed inside their limit — THIS failure is the signal that the safety net did not run."
+            exit 1
+          fi
+          echo "All $CHECKED nightly nets genuinely executed inside their limits."
