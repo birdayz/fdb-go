@@ -1,0 +1,70 @@
+# streaming_agg_projection_layout.yaml
+#
+# A projection's PROVIDED ordering must be stated in the projection's OWN output
+# layout, not republished from its child verbatim. Java does this at every level:
+# OrderingProperty.visitMapPlan (OrderingProperty.java:281-287) pulls the child
+# ordering up through the map's result value before anything above sees it.
+#
+# Republishing verbatim is not a lost optimisation. A projection that RENAMES
+# advertises the child's column NAMES over its own row, so a consumer matching by
+# name resolves a name to the wrong slot. At a streaming-aggregate boundary that
+# is a wrong GROUPING -- the aggregate believes its input is grouped by the key
+# and emits one row per RUN, so an unordered input splits a group into several
+# rows -- and nothing downstream bounds it.
+#
+# The shape is a derived table that SWAPS two column names. `SELECT b AS a, a AS
+# b FROM t` outputs a layout (A, B) whose A is t.b and whose B is t.a. The scan
+# beneath runs in primary-key order, so the stream is ordered by t.a -- which the
+# projection emits as `b`, not as `a`. Grouping the derived table by `a` is
+# therefore grouping by an UNORDERED column, and the sort must stay.
+#
+# The data is chosen so the two readings disagree in the ROW COUNT, not merely in
+# row order: t.b alternates 10, 20, 10, 20 as t.a ascends, so a streaming
+# aggregate fed the t.a-ordered stream sees FOUR runs and emits four rows where
+# the answer is two. An equal-length row set could not separate the two answers.
+name: streaming_agg_projection_layout
+schema_template: |
+  CREATE TABLE t (a BIGINT NOT NULL, b BIGINT, PRIMARY KEY (a))
+setup:
+  # Ordered by a (the primary key), b runs 10, 20, 10, 20 -- every adjacent pair
+  # differs, so grouping by b over this stream splits both groups completely.
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 10), (4, 20)
+tests:
+  # The swapped derived table: `d.a` IS t.b. Two groups, two rows each.
+  # A verbatim republication makes the projection advertise the name `A` for a
+  # stream ordered by t.a, the group key is spelled `A` too, the sort is elided,
+  # and the answer becomes four rows of 1.
+  - query: SELECT a, COUNT(*) AS n FROM (SELECT b AS a, a AS b FROM t) d GROUP BY a ORDER BY a
+    rows:
+      - [10, 2]
+      - [20, 2]
+
+  # The same query's PLAN: the sort above the projection must survive, because
+  # nothing orders the derived table by its own `a`.
+  - query: SELECT a, COUNT(*) AS n FROM (SELECT b AS a, a AS b FROM t) d GROUP BY a
+    plan_contains: InMemorySort
+    unordered: true
+    rows:
+      - [10, 2]
+      - [20, 2]
+
+  # The IDENTITY-alias control, same schema and data. Here the derived table's
+  # `a` really is t.a, the scan's primary-key order really does group it, and the
+  # sort is correctly elided. Kept beside the case above because the pair is the
+  # detector: a change that makes both answer the same way has stopped
+  # distinguishing the two layouts, and one of the two assertions says so.
+  - query: SELECT a, COUNT(*) AS n FROM (SELECT a AS a, b AS b FROM t) d GROUP BY a ORDER BY a
+    rows:
+      - [1, 1]
+      - [2, 1]
+      - [3, 1]
+      - [4, 1]
+
+  - query: SELECT a, COUNT(*) AS n FROM (SELECT a AS a, b AS b FROM t) d GROUP BY a
+    plan_not_contains: InMemorySort
+    unordered: true
+    rows:
+      - [1, 1]
+      - [2, 1]
+      - [3, 1]
+      - [4, 1]

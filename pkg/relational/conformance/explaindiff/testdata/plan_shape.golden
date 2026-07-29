@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=342 queries=2485 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=343 queries=2489 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -15129,6 +15129,36 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryIndexPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryIndexPlan
+=== streaming_agg_projection_layout.yaml#0
+sql:   SELECT a, COUNT(*) AS n FROM (SELECT b AS a, a AS b FROM t) d GROUP BY a ORDER BY a
+plan:  Project([A#0, COUNT(*)#1], StreamingAgg(keys=[A#0], InMemorySort([A#0 ASC], Project([B#1, A#0], Scan(T)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+=== streaming_agg_projection_layout.yaml#1
+sql:   SELECT a, COUNT(*) AS n FROM (SELECT b AS a, a AS b FROM t) d GROUP BY a
+plan:  Project([A#0, COUNT(*)#1], StreamingAgg(keys=[A#0], InMemorySort([A#0 ASC], Project([B#1, A#0], Scan(T)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+=== streaming_agg_projection_layout.yaml#2
+sql:   SELECT a, COUNT(*) AS n FROM (SELECT a AS a, b AS b FROM t) d GROUP BY a ORDER BY a
+plan:  Project([A#0, COUNT(*)#1], StreamingAgg(keys=[A#0], Project([A#0, B#1], Scan(T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== streaming_agg_projection_layout.yaml#3
+sql:   SELECT a, COUNT(*) AS n FROM (SELECT a AS a, b AS b FROM t) d GROUP BY a
+plan:  Project([A#0, COUNT(*)#1], StreamingAgg(keys=[A#0], Project([A#0, B#1], Scan(T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === string_comparison.yaml#0
 sql:   SELECT id FROM t WHERE s = 'apple'
 plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))

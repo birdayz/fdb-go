@@ -7560,6 +7560,44 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-30 (CQ-55 component 2 review fold — the projection/map ordering
+pull-up, the streaming-aggregate output domain, the adjacency root proof):**
+baseline worktree at `master` = `3ec53d1ac`, which IS the branch point
+(merge-base == master), so the comparison isolates the branch. Same box,
+sequential fresh FDB containers per run, every run `--nocache_test_results`.
+**n=2 per side, with the second pair run in REVERSED order** (branch first, then
+master) specifically to test the run-order-warmth hypothesis on the two rows the
+first pair separated on.
+
+All 23 subtests PASS on all four runs. **Every EXPLAIN string and every
+per-query row count identical across both compared pairs** — diffed with
+timings stripped, empty both times. That is the load-bearing result and it
+agrees with the corpus measurement: the explaindiff plan-shape golden moved
+ZERO existing lines (only the 4 new `streaming_agg_projection_layout.yaml`
+entries were added), so no plan in either corpus moved.
+
+Two rows separated in the first pair and BOTH dissolved in the reversed second
+pair — the same artifact, on the same row, that the 2026-07-29 entry below
+already had to chase to n=3:
+
+| row | master r1 | branch r1 | branch r2 | master r2 |
+|---|---|---|---|---|
+| `UPDATE by index` | 8.547ms | 10.809ms | 8.770ms | 8.756ms |
+| `idx_status count pending` | 296.6ms | 319.5ms | 325.5ms | 320.3ms |
+
+`UPDATE by index`: the branch's minimum (8.770) lands 0.014ms off the master's
+(8.756) once the branch is no longer the second run of a pair. Warmth, not a
+regression. `idx_status count pending`: the ranges overlap, but only just
+(master 296.6..320.3 vs branch 319.5..325.5, an 0.8ms overlap) — recorded as
+weak rather than clean, since with identical EXPLAINs there is no plan
+difference for it to be measuring, and master's own spread on that row is
+23.7ms.
+
+Point lookups 4.81..5.08ms and `in_list` 15.05..15.25ms still violate their
+<5ms / <10ms thresholds on BOTH sides. That is the pre-existing
+baseline-vs-threshold gap already booked above ("Stress test 1M baseline
+Threshold column"), unchanged and unaffected by this branch.
+
 **2026-07-29 (RFC-197 item 2 escape bucket — review fold: correlation guards
 made load-bearing, leg comparison unified on case-folding `values.SameLeg`):**
 baseline worktree at `master` = `e5477c9f2`, which IS the branch point
@@ -10327,6 +10365,76 @@ None is speculative: each was re-verified against the tree before booking.
   lap. It also unblocks `DisplayLabel`: the reason that carrier type cannot
   compile is that this consumer renders the label INTO a match key, and no
   render exit placed in `embedded` can reach a site that lives in `plans`.
+
+  **DESIGN RULINGS ALREADY MADE (do not re-litigate; C1/C5 are NOT yet
+  implemented):**
+
+  - **Ordinal truncation is REJECTED.** An ordinal is meaningless outside the
+    layout it indexes, so the merge key is the full identity TRIPLE
+    (correlation, domain, ordinal), domain equality is REQUIRED on both sides,
+    and an unknown domain on either side FAILS CLOSED. A truncated key reads as
+    authoritative while addressing another row, which is strictly worse than the
+    name conflation it would replace.
+  - **C5's locus is the QUANTIFIER BOUNDARY, on pull-up**, and its precondition
+    is that the translator STATES the domain it baked against —
+    `cascades_translator.go:4944` still mints `OrdinalDomain{}`, and
+    `values.OrderingIdentityOf` has zero production callers today and would
+    decline on that unknown domain. Build the precondition before the
+    translation.
+
+  **MEASURED at the component-2 review fold (2026-07-30), and two of these
+  correct claims made earlier:**
+
+  - The residual is NOT closed and is much larger than the "normalized-name
+    bridge is essentially dead" line implies. Re-measured with stderr counters at
+    every exit of `RichOrdering.orderingKeyFor` and every arm of
+    `orderingValuesEqual`, over `explaindiff.GenerateBaseline` (2489 queries):
+    `orderingKeyFor` resolves 12671 pairs, of which **2521 are name-keyed
+    (19.9%) — 76 through the normalized-name arm and 2445 through the root-path
+    arm** — and `SatisfiesRequestedOrdering`'s own path resolves **4189 of 4189
+    successful comparisons by name, zero structurally**. Both arms are reachable
+    from BOTH decision paths. The 0.6% figure describes one arm only.
+  - **The projection/map ordering providers republished their child's keys
+    VERBATIM, and that shipped WRONG ROWS.** Not latent: a derived table swapping
+    two column names (`SELECT a, COUNT(*) FROM (SELECT b AS a, a AS b FROM t) d
+    GROUP BY a`) handed the streaming aggregate an adjacency guarantee for the
+    wrong column and returned 4 rows of 1 where the answer is 2 rows of 2,
+    against real FDB. Fixed by porting Java's `OrderingProperty.visitMapPlan`
+    pull-up (`plans/ordering.go`); pinned by
+    `yamsql/streaming_agg_projection_layout.yaml` and
+    `plans/ordering_pullup_identity_test.go`. This was the twelfth class, and it
+    lived in the PROVIDER, not in the name comparison the earlier self-join probe
+    searched.
+  - **The pull-up does NOT restore `aggregate_order_by_java#17`'s lost elision,
+    and the plan-shape golden moved zero existing lines.** Measured: across the
+    corpus `ImplementSortRule` reaches 69 projection expressions whose ordering
+    property SATISFIES the request and whose `pinOrderedSpine` then returns nil,
+    so nothing is yielded and the sort stays; `#17` is exactly one of the 69, and
+    after the pull-up its provided and requested keys are IDENTICAL renderings —
+    satisfaction is not the blocker. The blocker is `pinOrderedSpine`'s DELEGATOR
+    arm, which resolves through the child group and asks the CHILD to satisfy a
+    request stated in the PARENT's layout. Closing it means pushing the request
+    down through the translator first (`RichOrdering.PushDownThroughValue` is the
+    machinery) — i.e. C5. Pinned in both directions by
+    `cascades/projection_ordering_pin_gate_test.go`, which fails when the
+    translation lands and says to re-bless `#17`.
+  - **A strict identity triple in `orderingSatisfiesGroupingKeys` is blocked on
+    the same precondition, measured.** Of the 14 admissions that predicate makes
+    over the corpus, 8 state their ordinals in DIFFERENT layouts — a covering
+    index scan flows a narrowed row type (`domain(1;8:CATEGORY)`, ordinal 0)
+    while the grouping key was baked against the base record
+    (`domain(2;2:ID;8:CATEGORY)`, ordinal 1). Same column, two coordinate
+    systems. Requiring domain equality today refuses all 8 and costs those
+    queries their streaming-aggregate index path, for a conflation that cannot
+    occur within one layout. What WAS added is the free half: the ROOT-SOURCE
+    proof, since `values.AccessorNamePath` drops the QOV root and therefore
+    reported `o.a` and `i.a` equal. All 236 corpus comparisons carry the zero
+    correlation on both sides, so it admits everything that was admitted before.
+  - `plans/ordering.go`'s header claimed the delegator `HintOrdering` bodies were
+    unreachable write-only staging answered by the physical wrappers. RFC-184 W2
+    deleted those wrappers; the bodies run (17898 entries into the projection's
+    per corpus planning), and the stale claim is what let the verbatim
+    republication above survive. Header corrected.
 
 - [ ] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
   with `Domain: unknown`, and the domain is derivable at both call sites.** The

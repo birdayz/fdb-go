@@ -16,45 +16,33 @@ import (
 //     keys). They answer properties.OrderingHinter directly.
 //
 //   - DELEGATORS preserve their input's order rather than producing one
-//     (filter, projection, limit, fetch, …). They expose OrderingSourceRef so
-//     ordering satisfaction and extraction-time sort elision can resolve
-//     through the SOURCE, and their HintOrdering inherits from it.
+//     (filter, limit, fetch, …). They expose OrderingSourceRef so ordering
+//     satisfaction and extraction-time sort elision can resolve through the
+//     SOURCE, and their HintOrdering inherits from it.
 //
-// WHY THE DELEGATOR BODIES DUPLICATE THE WRAPPERS' RATHER THAN DELEGATING
+//   - TRANSLATORS preserve their input's ROW ORDER while replacing its LAYOUT
+//     (projection, map). They are delegators for the purpose of "which group
+//     does the order come from" and producers for the purpose of "in whose
+//     coordinate system is it stated": the child's keys are PULLED UP into the
+//     operator's own output space, as Java's OrderingProperty.visitMapPlan does.
+//     See RecordQueryProjectionPlan.HintOrdering.
 //
-// Not mechanism: the two sides are byte-identical loops, both over
-// AllMembers(). The difference is the PROVENANCE of the reference each one
-// walks.
+// THESE BODIES RUN. This header used to say the opposite — that the delegator
+// HintOrdering bodies were write-only staging and "every ordering question the
+// memo asks still goes to the physical wrapper". RFC-184 W2 deleted the physical
+// wrappers (physical_wrapper.go records the removal type by type); the memo now
+// holds these plans DIRECTLY as its expressions, so cascades'
+// computeWrapperOrdering asserts properties.OrderingHinter on the plan itself and
+// calls the body below. Measured: planning the explaindiff corpus once enters
+// RecordQueryProjectionPlan.HintOrdering 17898 times.
 //
-//   - A wrapper's quantifier ranges over a SHARED MEMO GROUP — the group the
-//     wrapper was built over, holding every alternative exploration has
-//     yielded into it. Walking its members asks "does any explored
-//     alternative provide an order?"
-//   - A plan's quantifier ranges over a FRESH SINGLETON: QuantifierOverPlan
-//     mints a new FinalOfAtStage reference per child, so the set holds
-//     exactly the one child plan that was put there. Walking its members asks
-//     "what order does MY concrete child produce?"
-//
-// Same loop, different set, different question. Collapsing them would make
-// one of the two questions unanswerable, which is why the memo keeps asking
-// the wrapper.
-//
-// UNREACHABLE TODAY — DELIBERATELY KEPT
-//
-// The 9 delegator HintOrdering bodies, the 9 OrderingSourceRef methods, and
-// the 4 HintRichOrdering bodies below are WRITE-ONLY: nothing in production
-// calls them. Every ordering question the memo asks still goes to the
-// physical wrapper. They are staging for the wrapper deletion that would flip
-// the caller over — and that deletion is BLOCKED, by RFC-183 §11: four rules
-// build compensating plans they never memoize, so a plan's quantifier and its
-// plan pointer are two DIFFERENT facts (what the memo costs vs. what
-// executes), and collapsing them drops DefaultOnEmpty wrappers and residual
-// filters silently. Until those rules memoize, these bodies stay unreachable.
-//
-// They are kept rather than deleted because re-deriving them at deletion time
-// is where a transcription slip would land, and the parity tests in
-// cascades/plan_rich_ordering_parity_test.go are what hold them honest in the
-// meantime.
+// The stale claim was not inert. It is what let a projection republish its
+// child's ordering keys VERBATIM — advertising ordinals and names in the CHILD's
+// layout over the projection's own row — and that shipped wrong rows: a derived
+// table swapping two column names (`SELECT b AS a, a AS b`) handed a streaming
+// aggregate an adjacency guarantee for the wrong column and split every group
+// (yamsql streaming_agg_projection_layout: 4 rows of 1 where the answer is 2 rows
+// of 2). Treat a claim of unreachability here as something to re-measure.
 
 // orderingSourceOf returns the reference a single-child plan's ordering flows
 // from — its one child quantifier's group.
@@ -77,10 +65,10 @@ func orderingSourceOf(p RecordQueryPlan) *expressions.Reference {
 // dominated alternative when both sets hold a member. The exploratory
 // fallback stays because a reference can be consulted before finalization.
 //
-// On the singleton references a plan's quantifier actually ranges over
-// (see this file's header) the two orders coincide, so this is a no-op today
-// — it is correct for the day the provenance changes, which is the same day
-// the wrapper's version stops being the one that runs.
+// The reference walked here is a SHARED memo group — since RFC-184 W2 the plan
+// IS the memo expression, so its quantifier ranges over the group every
+// alternative was yielded into, not over a private snapshot. That is why the
+// finals-first discipline is load-bearing rather than decorative.
 func inheritOrdering(ref *expressions.Reference) properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
@@ -177,9 +165,29 @@ func (p *RecordQueryProjectionPlan) OrderingSourceRef() *expressions.Reference {
 	return orderingSourceOf(p)
 }
 
-// HintOrdering: a projection reshapes rows without reordering them.
+// HintOrdering: a projection preserves its input's ROW ORDER while replacing
+// its LAYOUT, so the child's keys are pulled up into the projection's own
+// output space rather than republished verbatim.
+//
+// Ports Java OrderingProperty.visitMapPlan (OrderingProperty.java:281-287),
+// which is exactly this: take the single child's ordering, then
+// `childOrdering.pullUp(resultValue, …)` through the map's result value. Go
+// split Java's one RecordQueryMapPlan into a Map (one result Value) and a
+// Projection (a parallel projections/aliases pair), so the record constructor
+// Java reads off the plan is reassembled here — see projectionOutputRecord.
+//
+// Republishing verbatim was the ordinal conflation values/column_identity.go
+// documents: the child's key states an ordinal in the CHILD's layout while
+// every consumer above addresses the projection's own. `SELECT score + 0 AS id,
+// id AS y FROM (SELECT score, id FROM scores) d ORDER BY 2` asks for ordinal 1
+// of `(SCORE, ID)`; the scan under the sub-select provides ordinal 0 of
+// `(ID, …)`. Same column, two coordinate systems, and only the pull-up
+// reconciles them.
 func (p *RecordQueryProjectionPlan) HintOrdering() properties.Ordering {
-	return inheritOrdering(p.OrderingSourceRef())
+	return pullUpOrderingThroughResult(
+		inheritOrdering(p.OrderingSourceRef()),
+		projectionOutputRecord(p),
+		p.GetInnerQuantifier().GetAlias())
 }
 
 // OrderingSourceRef reports the child group this plan's ordering flows from.
@@ -187,9 +195,141 @@ func (p *RecordQueryMapPlan) OrderingSourceRef() *expressions.Reference {
 	return orderingSourceOf(p)
 }
 
-// HintOrdering: a map reshapes rows without reordering them.
+// HintOrdering: a map is Java's RecordQueryMapPlan itself, so the pull-up is
+// the same one visitMapPlan performs — see RecordQueryProjectionPlan.HintOrdering
+// for why the child's keys cannot be republished verbatim. The result value is
+// stored directly here, so no reassembly is needed.
 func (p *RecordQueryMapPlan) HintOrdering() properties.Ordering {
-	return inheritOrdering(p.OrderingSourceRef())
+	return pullUpOrderingThroughResult(
+		inheritOrdering(p.OrderingSourceRef()),
+		p.GetResultValue(),
+		p.GetInnerQuantifier().GetAlias())
+}
+
+// projectionOutputRecord reassembles the record a projection emits — the
+// `resultValue` Java's RecordQueryMapPlan carries and Go's projection stores as
+// a parallel projections/aliases pair.
+//
+// The per-slot name comes from values.OutputColumnName, the SAME authority
+// computeProjectionPKThread and the executor's slot keying read, so the layout
+// this record types to is the layout downstream references were baked against.
+// Minting a name here by any other rule would produce a domain token no
+// consumer's ordinal can answer to — an ordering claim stated in terms nothing
+// can verify.
+//
+// NewRecordConstructorValue (not the raw form) is deliberate: it applies SQL
+// projection duplicate-column naming (`a, a` → `A, A_2`), which is what the
+// output layout actually is. The raw form's verbatim duplicates would let a
+// name-keyed lookup resolve to the first of two same-named slots.
+func projectionOutputRecord(p *RecordQueryProjectionPlan) values.Value {
+	if p == nil {
+		return nil
+	}
+	projections := p.GetProjections()
+	if len(projections) == 0 {
+		return nil
+	}
+	aliases := p.GetAliases()
+	fields := make([]values.RecordConstructorField, len(projections))
+	for i, v := range projections {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		fields[i] = values.RecordConstructorField{
+			Name:  values.OutputColumnName(v, alias),
+			Value: v,
+		}
+	}
+	return values.NewRecordConstructorValue(fields...)
+}
+
+// pullUpOrderingThroughResult restates child's keys in the output space result
+// describes, viewed under alias — the plain-Ordering twin of
+// RichOrdering.PullUpThroughValue, which the rich derivations use.
+//
+// A key that cannot be stated in the output space TRUNCATES the ordering there
+// rather than being skipped. The keys are a total order, so key i+1 only orders
+// rows that tie on key i; dropping key i and keeping key i+1 would advertise a
+// lexicographic guarantee the stream does not have. This is the same
+// conservative loss RichOrdering.translateKeys documents for a key whose
+// prerequisite was not translatable.
+//
+// A projection with nothing to pull up through (no projections at all) reports
+// NO ordering rather than the child's. Falling back to the child's keys is the
+// verbatim republication this function exists to remove; abstaining costs a
+// sort.
+func pullUpOrderingThroughResult(
+	child properties.Ordering,
+	result values.Value,
+	alias values.CorrelationIdentifier,
+) properties.Ordering {
+	if !child.IsKnown || len(child.Keys) == 0 || result == nil {
+		return properties.Ordering{}
+	}
+	keys := make([]values.Value, 0, len(child.Keys))
+	descending := make([]bool, 0, len(child.Keys))
+	nullsFirst := make([]bool, 0, len(child.Keys))
+	for i, k := range child.Keys {
+		pulled := sourceLocalPullUp(k, result, alias)
+		if pulled == nil {
+			break
+		}
+		keys = append(keys, pulled)
+		descending = append(descending, child.DescendingAt(i))
+		nullsFirst = append(nullsFirst, child.NullsFirstAt(i))
+	}
+	if len(keys) == 0 {
+		return properties.Ordering{}
+	}
+	return properties.Ordering{
+		IsKnown:    true,
+		Keys:       keys,
+		Descending: descending,
+		NullsFirst: nullsFirst,
+	}
+}
+
+// sourceLocalPullUp is values.PullUpValue re-rooted to the SOURCE-LOCAL form a
+// single-child plan's own provided ordering must take.
+//
+// Java pulls up under `AliasMap.ofAliases(inner.getAlias(), Quantifier.current())`
+// (OrderingProperty.java:286): the emitted key is stated against `current` —
+// THIS operator's own output row — not against the child quantifier. Go's
+// canonical source-relative root is the CHILDLESS value (see
+// values/column_identity.go: a childless value carries the ZERO correlation,
+// Go's canonical source-relative root), so the faithful translation strips the
+// QOV root values.PullUpValue attaches and keeps the output-space accessor path.
+//
+// Keeping the child's alias on the root is measurably wrong, not merely
+// unidiomatic: a FlatMap over a projected leg pulls that leg's provided key into
+// the JOIN's alias next, and CanBridgeOrderingValueRoots refuses two QOV-rooted
+// values by design. A key left rooted at the projection's inner quantifier
+// therefore cannot be pulled up a second time and the join loses its ordering —
+// measured as 15772 golden lines of appearing InMemorySorts.
+//
+// Anything that is not a flat field read off `alias` declines: a whole-row QOV
+// (the child's key WAS the entire output record) is not a column ordering key,
+// and re-rooting an unrecognized shape would state a claim in a space this
+// function cannot verify.
+func sourceLocalPullUp(
+	key values.Value,
+	result values.Value,
+	alias values.CorrelationIdentifier,
+) values.Value {
+	pulled := values.PullUpValue(key, result, alias)
+	if pulled == nil {
+		return nil
+	}
+	fv, isField := pulled.(*values.FieldValue)
+	if !isField || fv == nil {
+		return nil
+	}
+	qov, rootedOnAlias := fv.Child.(*values.QuantifiedObjectValue)
+	if !rootedOnAlias || qov == nil || qov.Correlation != alias {
+		return nil
+	}
+	return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 }
 
 // OrderingSourceRef reports the child group this plan's ordering flows from.
@@ -640,15 +780,26 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 // unsatisfied — a spurious second InMemorySort above the aggregate; an
 // evaluating consumer (a merge comparison key) would also have read the
 // aggregate's output row with a dead pre-aggregate ordinal.
+// The ordinal is stated IN A DOMAIN, not bare. GroupByOutputColumnNames is the
+// single authority for the aggregate's output row — grouping keys in GROUP BY
+// order, then aggregates — so the layout token derived from it is the layout
+// group-key ordinal i actually indexes, and it is the SAME list the translator
+// bakes downstream references against. Minting no token (the bare
+// NewFieldValueWithResolvedOrdinal) left an ordinal with no layout to answer
+// for: OrderingIdentityOf declines an unknown domain, so the key was
+// unaddressable by identity and only its rendering was left, which is the
+// name channel every other provider in this file has stopped using.
 func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering {
 	if p == nil || len(p.GetGroupingKeys()) == 0 {
 		return properties.Ordering{IsKnown: false}
 	}
 	groupKeys := p.GetGroupingKeys()
+	outputNames := expressions.GroupByOutputColumnNames(groupKeys, p.GetAggregates())
+	domain := values.OrdinalDomainOfColumnNames(outputNames)
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {
-		keys[i] = values.NewFieldValueWithResolvedOrdinal(
-			expressions.AggregateKeyColumnName(k), i, values.UnknownType)
+		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			expressions.AggregateKeyColumnName(k), i, values.UnknownType, domain)
 	}
 	desc := make([]bool, len(keys))
 	if idx, ok := p.GetInner().(*RecordQueryIndexPlan); ok && idx.IsReverse() {
@@ -846,10 +997,9 @@ func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering
 // HintRichOrdering: fetching the full record per index entry preserves the
 // index scan's rich ordering, so inherit it from the source.
 //
-// This DUPLICATES the physical wrapper's body rather than delegating to it,
-// for the reason this file's header gives: same loop, but the wrapper walks a
-// shared memo group while the plan walks the fresh singleton its own child
-// quantifier ranges over. Two questions, two answers.
+// A fetch is a pure DELEGATOR, not a translator: it widens the row from index
+// entry to full record but renames nothing, so the child's keys are already
+// stated in names this plan's row answers to and no pull-up is owed.
 func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.RichOrdering {
 	return richOrderingOf(p.OrderingSourceRef())
 }

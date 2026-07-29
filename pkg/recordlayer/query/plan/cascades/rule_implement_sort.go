@@ -56,10 +56,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	requestedParts := requestedOrdering.GetParts()
-	sortValueNames := make(map[string]struct{}, len(requestedParts))
-	for _, part := range requestedParts {
-		sortValueNames[values.ExplainValue(part.Value)] = struct{}{}
-	}
+	sortValueNames := sortRequestedNames(requestedParts)
 	preserveDistinctReq := properties.NewRequestedOrdering(
 		requestedParts,
 		properties.DistinctnessPreserveDistinctness,
@@ -95,12 +92,8 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				continue
 			}
 
-			eqBound := ordering.GetEqualityBoundValues()
-			eqBoundNames := make(map[string]struct{}, len(eqBound))
-			for v := range eqBound {
-				eqBoundNames[values.ExplainValue(v)] = struct{}{}
-			}
-			equalityBoundUnsorted := len(eqBound)
+			eqBoundNames := sortEqualityBoundNames(ordering)
+			equalityBoundUnsorted := len(ordering.GetEqualityBoundValues())
 			seenEqBound := make(map[string]bool, len(requestedParts))
 			for _, part := range requestedParts {
 				name := values.ExplainValue(part.Value)
@@ -114,20 +107,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			// distinct and all ordering values are covered by sort keys
 			// or equality-bound keys, yield a strictlySorted copy.
 			if partition.IsDistinct() {
-				allCovered := true
-				for _, v := range ordering.GetOrderingKeys() {
-					name := values.ExplainValue(v)
-					_, inSort := sortValueNames[name]
-					// inEq can be true for mixed-binding keys (one fixed +
-					// one sorted) — GetOrderingKeys excludes all-fixed but
-					// GetEqualityBoundValues includes any-fixed.
-					_, inEq := eqBoundNames[name]
-					if !inSort && !inEq {
-						allCovered = false
-						break
-					}
-				}
-				if allCovered {
+				if sortCoverageAllCovered(ordering, sortValueNames, eqBoundNames) {
 					if pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel()); pinned != nil {
 						call.YieldFinalExpression(makeStrictlySorted(pinned))
 					}
@@ -156,6 +136,57 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 	}
+}
+
+// sortRequestedNames renders the REQUESTED ordering parts into the key set the
+// coverage decision probes. Exists so the decision has ONE definition: a test
+// that rebuilds this set itself is testing its own copy, and its retirement
+// trigger cannot fire when the rule's version changes.
+func sortRequestedNames(parts []properties.RequestedOrderingPart) map[string]struct{} {
+	names := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		names[values.ExplainValue(part.Value)] = struct{}{}
+	}
+	return names
+}
+
+// sortEqualityBoundNames renders the PROVIDED ordering's equality-bound values.
+// Same single-definition reason as sortRequestedNames.
+func sortEqualityBoundNames(ordering *properties.RichOrdering) map[string]struct{} {
+	eqBound := ordering.GetEqualityBoundValues()
+	names := make(map[string]struct{}, len(eqBound))
+	for v := range eqBound {
+		names[values.ExplainValue(v)] = struct{}{}
+	}
+	return names
+}
+
+// sortCoverageAllCovered is Java RemoveSortRule's `allCovered` decision: every
+// provided ordering key must be accounted for, either by a requested sort key or
+// by being equality-bound.
+//
+// It runs AFTER RichOrdering.Satisfies has already said yes, and the two can
+// disagree — that disagreement is a sort that survives a request the planner
+// already proved was met, which is why it is pinned separately in
+// ordering_identity_decisions_test.go rather than assumed to follow.
+//
+// The `inEq` disjunct is not optional garnish: inEq can be true for a
+// MIXED-binding key (one fixed binding plus one sorted), because GetOrderingKeys
+// excludes all-fixed keys while GetEqualityBoundValues includes any-fixed ones. A
+// coverage check that dropped it would refuse every equality-prefixed scan.
+func sortCoverageAllCovered(
+	ordering *properties.RichOrdering,
+	sortValueNames, eqBoundNames map[string]struct{},
+) bool {
+	for _, v := range ordering.GetOrderingKeys() {
+		name := values.ExplainValue(v)
+		_, inSort := sortValueNames[name]
+		_, inEq := eqBoundNames[name]
+		if !inSort && !inEq {
+			return false
+		}
+	}
+	return true
 }
 
 func orderedFlatMapCandidatesAtSort(

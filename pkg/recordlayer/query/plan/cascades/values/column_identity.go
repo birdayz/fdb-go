@@ -168,8 +168,13 @@ func (c ColumnIdentity) WithCorrelation(corr CorrelationIdentifier) ColumnIdenti
 // The correlation is the element that keeps two quantifiers over the SAME
 // table apart: `o.a` and `i.a` in a self-join share a domain and an ordinal
 // and are different columns. A childless value carries the ZERO correlation,
-// which is Go's canonical source-relative root (see
-// RequestedOrdering.NormalizeRootsTo).
+// which is Go's canonical source-relative root: it is the form the ordering
+// PROVIDERS mint (a scan resolving its metadata column list against the row it
+// flows) and the form a single-child plan's pull-up restates its child's keys
+// in (plans.sourceLocalPullUp — Go's stand-in for Java's `Quantifier.current()`).
+// Reconciling it against a QOV-rooted request is what
+// CanBridgeOrderingValueRoots does, by NAME, and closing that bridge is the
+// translation this type exists to make possible.
 func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 	fv, isField := v.(*FieldValue)
 	if !isField || fv == nil {

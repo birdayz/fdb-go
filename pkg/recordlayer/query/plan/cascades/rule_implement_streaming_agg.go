@@ -195,19 +195,114 @@ func findOrderedPhysicalExpr(ref *expressions.Reference, groupingKeys []values.V
 // orderingSatisfiesGroupingKeys returns true if the ordering's leading
 // keys cover all grouping keys (order matters — grouping-key[i] must
 // match ordering-key[i]).
+//
+// This decides ADJACENCY, not merely row order: a streaming aggregate handed a
+// stream it was told is grouped and is not emits one output row per RUN, so a
+// wrong answer here is a wrong VALUE — a split group, a key counted twice — not
+// a lost optimization, and nothing downstream bounds it the way a distinct's
+// dedup would.
 func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.Value) bool {
 	if len(o.Keys) < len(groupingKeys) {
 		return false
 	}
 	for i, gk := range groupingKeys {
-		// Compare grouping key and ordering key by full accessor path, not leaf
-		// name (RFC-187 S10): a nested grouping key is not satisfied by an
-		// ordering on a same-leaf-named top-level column.
-		if !values.ColumnNamePathsEqual(gk, o.Keys[i]) {
+		if !sameGroupingColumn(gk, o.Keys[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameGroupingColumn reports whether a grouping key and a provided ordering key
+// denote the same column of the same source. TWO proofs, and the split is the
+// point — the accessor path alone is blind to the element that separates two
+// quantifiers over the same table:
+//
+//   - the ROOT SOURCE. values.AccessorNamePath walks the FieldValue chain and
+//     stops at the root WITHOUT contributing it, so `o.a` and `i.a` in a
+//     self-join produce the same path ["A"] and ColumnNamePathsEqual reports
+//     them equal. Two quantifiers' same-named columns are different columns, and
+//     admitting one for the other hands the aggregate an adjacency guarantee the
+//     stream does not have. groupingRootsCompatible refuses that pair.
+//   - the ACCESSOR PATH, every position (RFC-187 S10): a nested grouping key is
+//     not satisfied by an ordering on a same-leaf-named top-level column.
+//
+// The path comparison is deliberately NOT tightened to the full ColumnIdentity
+// triple (correlation + domain + ordinal), and the reason is measured over the
+// explaindiff corpus rather than assumed. Of the 14 admissions this predicate
+// makes there, 8 state their ordinals in DIFFERENT layouts: a covering index
+// scan flows a narrowed row type (`domain(1;8:CATEGORY)`, ordinal 0) while the
+// grouping key was baked against the base record (`domain(2;2:ID;8:CATEGORY)`,
+// ordinal 1). Those are the SAME column reached through two coordinate systems,
+// and reconciling them needs the grouping key pushed into the provider's
+// layout — the translation at the quantifier boundary, which Java gets for free
+// by pulling the ordering up at EVERY level (OrderingProperty) and which Go does
+// not yet do across the covering boundary. Requiring domain equality today
+// refuses all 8 and costs those queries their streaming-aggregate index path,
+// for a conflation that cannot occur WITHIN one layout — a name maps to exactly
+// one ordinal there, so same-domain name equality already IS ordinal equality.
+func sameGroupingColumn(groupKey, provided values.Value) bool {
+	if !groupingRootsCompatible(groupKey, provided) {
+		return false
+	}
+	return values.ColumnNamePathsEqual(groupKey, provided)
+}
+
+// groupingRootsCompatible reports whether two ordering values could be read off
+// the same source row.
+//
+// Two QOV-rooted values must name the SAME quantifier. A source-local
+// (childless) side is Go's canonical "this operator's own row" root and bridges
+// to a qualified read of that row — the same seam values.CanBridgeOrderingValueRoots
+// crosses, and the shape every provider in plans/ordering.go mints. An
+// unrecognized root shape declines: an ordering claim over a value this function
+// cannot locate is not one an aggregate may act on.
+//
+// Measured over the explaindiff corpus: all 236 comparisons this rule performs
+// carry the ZERO correlation on BOTH sides, so this proof admits everything that
+// was admitted before it existed. It is structural rather than merely observed —
+// every plan that can reach here with a KNOWN plain ordering is single-source
+// today, because both join plans report IsKnown=false — and it is what keeps the
+// adjacency decision correct on the day one of them starts reporting an ordering
+// pulled up into its legs' aliases.
+func groupingRootsCompatible(a, b values.Value) bool {
+	rootA, okA := orderingRootCorrelation(a)
+	rootB, okB := orderingRootCorrelation(b)
+	if !okA || !okB {
+		return false
+	}
+	var sourceLocal values.CorrelationIdentifier
+	if rootA == sourceLocal || rootB == sourceLocal {
+		return true
+	}
+	return rootA == rootB
+}
+
+// orderingRootCorrelation returns the quantifier a column reference is read off,
+// or the ZERO identifier for a source-local (childless) reference. ok=false when
+// the chain does not bottom out in a field read off a quantifier or in a bare
+// field — the same shapes values.AccessorNamePath itself refuses.
+func orderingRootCorrelation(v values.Value) (values.CorrelationIdentifier, bool) {
+	if cardinality, isCardinality := v.(*values.CardinalityValue); isCardinality {
+		v = cardinality.Child
+	}
+	for {
+		fv, isField := v.(*values.FieldValue)
+		if !isField || fv == nil {
+			return values.CorrelationIdentifier{}, false
+		}
+		switch child := fv.Child.(type) {
+		case nil:
+			return values.CorrelationIdentifier{}, true
+		case *values.QuantifiedObjectValue:
+			if child == nil {
+				return values.CorrelationIdentifier{}, false
+			}
+			return child.Correlation, true
+		default:
+			v = child
+		}
+	}
 }
 
 // isFullRangeFetch reports whether a Fetch wrapper's inner index scan has
