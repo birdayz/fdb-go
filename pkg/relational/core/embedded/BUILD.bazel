@@ -89,6 +89,7 @@ go_test(
         "embedded_test.go",
         "exists_in_on_plan_test.go",
         "explain_no_silent_degrade_test.go",
+        "having_pushdown_decider_test.go",
         "in_over_intersection_relink_test.go",
         "inner_source_aliases_test.go",
         "intersection_residual_plan_test.go",

@@ -117,6 +117,31 @@ func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 	return m
 }
 
+// PredicatePushesBelowGroupBy reports whether one predicate over a GroupBy's
+// output can be evaluated BEFORE the aggregation — the decision this rule makes
+// per predicate, exported because the SQL translator has to make the SAME call
+// upstream: a HAVING reference that will be pushed below must keep its
+// pre-aggregate binding, and one that will not must be rebased onto the
+// aggregate's output row. Two answers to one question is a wrong-row read on
+// whichever side loses.
+//
+// It was TWO implementations, and they had already drifted in three ways that a
+// shared decider removes: the translator's copy matched a group key by BARE LEAF
+// NAME (so a nested `addr.city` key answered to a top-level `city`), it never
+// checked the COMPARAND (so `key > SUM(v)` — which this rule refuses to push —
+// was told it would be pushed), and it did not require every grouping key to
+// have an establishable identity.
+func PredicatePushesBelowGroupBy(p predicates.QueryPredicate, groupingKeys []values.Value) bool {
+	if len(groupingKeys) == 0 {
+		return false
+	}
+	keySet := buildGroupKeySet(groupingKeys)
+	if len(keySet) == 0 {
+		return false
+	}
+	return predicateReferencesOnlyKeys(p, keySet)
+}
+
 func predicateReferencesOnlyKeys(p predicates.QueryPredicate, keySet map[string]struct{}) bool {
 	cp, ok := p.(*predicates.ComparisonPredicate)
 	if !ok {

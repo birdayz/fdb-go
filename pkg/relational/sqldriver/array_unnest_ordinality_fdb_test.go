@@ -3932,6 +3932,37 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" HAVING COUNT(*) > 1`, nil)
 	})
 
+	t.Run("HAVING group key compared against an aggregate binds against the right row", func(t *testing.T) {
+		// The end-to-end half of the HAVING push-down decider (RFC-197 item 3).
+		// `V >= COUNT(*)` is a SINGLE comparison whose operand is the grouping key
+		// and whose comparand is an aggregate: PushFilterThroughGroupByRule refuses
+		// to push it (comparandReferencesOnlyKeys), so the predicate stays ABOVE the
+		// GroupBy and its `V` must be rebased onto the aggregate OUTPUT row. The
+		// translator-side decider used to look only at the operand and answer
+		// "pushes below", which would leave the pre-aggregate qualified binding in a
+		// predicate evaluated post-aggregate.
+		//
+		// These three shapes were the probe for that: they pass on BOTH sides of the
+		// switch to the shared decider, so the drift is LATENT here, and this is the
+		// committed record of that — the drift itself is pinned at the decider in
+		// pkg/relational/core/embedded/having_pushdown_decider_test.go. If one of
+		// these ever reds, the drift has become reachable end-to-end.
+		//
+		// GD.ARR flows 1,2,1,2 → groups V=1 (count 2) and V=2 (count 2).
+		// `V >= COUNT(*)` keeps ONLY V=2. The GW variants add a leg that SHADOWS the
+		// bare element key, so the grouping key is the qualified V.V — the shape
+		// where a wrong-row binding reads NULL and drops every group.
+		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V" HAVING "V" >= COUNT(*)`, []string{
+			"N=2|V=2",
+		})
+		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V" HAVING "V" >= COUNT(*)`, []string{
+			"N=2|V=2",
+		})
+		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V" HAVING "V" > 1`, []string{
+			"N=2|V=2",
+		})
+	})
+
 	t.Run("R20 HAVING on group key AND aggregate composes", func(t *testing.T) {
 		// Both a group-key HAVING and an aggregate HAVING in one predicate:
 		// `HAVING V > 0 AND COUNT(*) > 1` over GD (elements 1,2 each count 2). The
