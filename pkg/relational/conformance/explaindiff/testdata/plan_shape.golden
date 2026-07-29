@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=341 queries=2481 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=342 queries=2485 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -880,11 +880,12 @@ shape:   RecordQueryLimitPlan
 shape:     RecordQueryScanPlan
 === aggregate_order_by_java.yaml#17
 sql:   SELECT score + 0 AS id, id AS y FROM (SELECT score, id FROM scores) d ORDER BY 2 LIMIT 3
-plan:  Project([(SCORE#0 + 0), ID#1], Limit(3, Project([SCORE#3, ID#0], Scan(SCORES))))
+plan:  Project([(SCORE#0 + 0), ID#1], Limit(3, InMemorySort([ID ASC], Project([SCORE#3, ID#0], Scan(SCORES)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
 === aggregate_order_by_java.yaml#18
 sql:   SELECT total FROM (SELECT id AS x, SUM(score) AS total FROM scores GROUP BY id ORDER BY 1 DESC LIMIT 1) d
 plan:  Project([TOTAL#1], Project([ID#0, SUM(SCORE)#1], Limit(1, InMemorySort([ID DESC], StreamingAgg(keys=[ID#0], Scan(SCORES))))))
@@ -12586,6 +12587,42 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#0
+sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY i.id
+plan:  Project([O.ID#0, I.ID#0], InMemorySort([I.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#1
+sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY o.id
+plan:  Project([O.ID#0, I.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#2
+sql:   SELECT i.id AS iid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY i.id ORDER BY i.id
+plan:  Project([ID#0, SUM(O.V)#1], StreamingAgg(keys=[I.ID#0], InMemorySort([I.ID#0 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#3
+sql:   SELECT o.id AS oid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY o.id ORDER BY o.id
+plan:  Project([ID#0, SUM(O.V)#1], StreamingAgg(keys=[O.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === outer_join.yaml#0
 sql:   SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
 plan:  Project([A.ID#0, B.LABEL#2], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(A), Scan(B)))
@@ -13445,20 +13482,18 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === qualified_star_more.yaml#0
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 ORDER BY a.a1
-plan:  Project([A.A1#0, A.A2#1, B.B1#0, B.B2#1], InMemorySort([A.A1#0 ASC], FlatMap(outer=Scan(A), inner=Scan(B, [=]))))
+plan:  Project([A.A1#0, A.A2#1, B.B1#0, B.B2#1], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === qualified_star_more.yaml#1
 sql:   SELECT x.*, y.* FROM a AS x, b AS y WHERE x.a1 = y.b1 ORDER BY x.a1
-plan:  Project([X.A1#0, X.A2#1, Y.B1#0, Y.B2#1], InMemorySort([X.A1#0 ASC], FlatMap(outer=Scan(A), inner=Scan(B, [=]))))
+plan:  Project([X.A1#0, X.A2#1, Y.B1#0, Y.B2#1], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === qualified_star_more.yaml#2 expect-error=42803
 sql:   SELECT a.* FROM a GROUP BY a1
 plan:  <PLAN-ERROR: 42803: SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)>
