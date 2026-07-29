@@ -9999,9 +9999,11 @@ None is speculative: each was re-verified against the tree before booking.
   (`SELECT a.*, b.* FROM a, b WHERE a.a1=b.b1 ORDER BY a.a1`, both variants) —
   verified correct: `a1` is table `a`'s PRIMARY KEY, so `Scan(A)` already
   provides `A1 ASC` and the FlatMap preserves it. Deliberately NOT landed in
-  the RFC-197 name-keyed bucket: it churns ~20 unit fixtures and moves plan
-  shapes, so it takes its own query-engine-gated lap. The measurement is in
-  hand; nothing else blocks it.
+  the RFC-197 name-keyed bucket: it MOVES PLAN SHAPES, which is what makes it a
+  query-engine change and so requires its own Graefe-gated lap. (It also churns
+  ~20 unit fixtures, but fixture churn is a size, not a gate — a shape-neutral
+  change touching twice as many fixtures would still ride along.) The
+  measurement is in hand; nothing else blocks it.
 
 - [ ] **CQ-50 (LOW, flake, bounded) — `TestMonitor_DroppedPingRePingsInsteadOfStalling`
   failed once under an UNCAPPED whole-tree `go test ./pkg/...`** (alongside
@@ -10012,3 +10014,42 @@ None is speculative: each was re-verified against the tree before booking.
   assumption is proven contention-safe (deadline margin vs CPU starvation in
   `pkg/fdbgo/transport`) or the test gets an explicit guard. Do not close by
   rerunning.
+
+- [ ] **CQ-51 (HIGH, STRUCTURAL, query-engine-gated, MEASURED) — constraint
+  GROWTH and re-exploration are the same event, so widening any constraint's
+  key widens the fixpoint superlinearly.** `planner_constraint.go`'s `Set`
+  returns a changed-flag from the per-key lattice combine
+  (`combineForKey`, planner_constraint.go:80-95) and every change pushes the
+  property and re-fires the push rules. Nothing distinguishes "this constraint
+  now carries MORE information" from "downstream must be re-explored", so a
+  constraint that legitimately holds more elements costs re-exploration
+  proportional to its growth.
+
+  This is not hypothetical and it is not a micro-optimization — it is the thing
+  BLOCKING an RFC-197 conversion that is otherwise correct. Keying
+  `ReferencedFields` by VALUE instead of by leaf name is the unambiguous port
+  (Java's member is a `Set<FieldValue>` keyed by semanticEquals/semanticHashCode,
+  `ReferencedFieldsConstraint.java:41`), and it was BUILT and MEASURED and then
+  REVERTED, because the value-keyed set grows wherever two quantifiers share a
+  leaf name:
+
+  - 4-table chain: `tasksRun` 10255 → 12901
+  - 3-spoke ordinal star: 9481 → 12644
+  - hub+5 star: STOPS PLANNING — `ErrPlannerCapHit`, a rule-cycle round-cap
+    divergence at 87642 tasks
+
+  (Both budget baselines are ±2% pins; `plan_shape.golden` does not move, so
+  this is purely a planning-effort regression, not a plan-quality one.)
+
+  So the conversion is correct and cannot land until the coupling changes. Fix
+  the coupling FIRST, then land the value-keyed referenced-fields set and drop
+  the `referenced_fields.go:125` entry from `pkg/docscheck`'s
+  `field_name_decision_test.go` allowlist — that allowlist reason string is
+  where this finding was living, which is precisely why it needed to become an
+  item: prose inside an allowlist is unreachable under the pick-lowest-unchecked
+  rule.
+
+  Read Java first: whether `PlannerConstraint.combine`'s changed-flag drives
+  re-exploration the same way in `PlanContext`/`ConstraintsMap`, and if Java
+  separates "constraint widened" from "re-push required", the separation is the
+  port. Planner machinery, so it takes a Graefe-gated RFC + lap of its own.

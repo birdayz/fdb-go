@@ -42,8 +42,9 @@ booked, or actively shrinking under a ratchet.
 What this tier already rests on: byte-identity differential vs `libfdb_c`
 running PER-PR (78 differential tests, `pkg/fdbgo/bench/`), the wire-type
 oracle, chaos with model verification (227 tests, per-PR), Java conformance
-(~450 specs against a real 4.12.11.0 server, per-PR), 87.5% measured SQL
-coverage (2,395/2,736 corpus cases) with drift-guarded generated docs, both
+(1,361 specs against a real 4.12.11.0 server, per-PR), 87.5% measured SQL
+coverage (2,395/2,736 corpus cases across 341 scenarios) with drift-guarded
+generated docs, both
 former P0s of the prod-readiness RFC (cluster-file rotation, SetTimeout
 bounding in-flight reads) verified CLOSED in code.
 

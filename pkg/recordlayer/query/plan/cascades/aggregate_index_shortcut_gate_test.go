@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestAggregateCandidateDeclinedByRawIndexShortcuts pins the admission gates
@@ -95,15 +96,51 @@ func TestAggregateCandidateDeclinedByRawIndexShortcuts(t *testing.T) {
 		}
 	})
 
-	t.Run("streaming_agg_gate_is_explicit", func(t *testing.T) {
+	t.Run("streaming_agg_gate_declines_the_candidate", func(t *testing.T) {
 		t.Parallel()
-		// The GROUP BY shortcut names the type outright. Assert the type
-		// identity the rule switches on, so a refactor that renames or
-		// re-parents the candidate cannot silently drop that arm.
-		var mc MatchCandidate = agg
-		if _, isAgg := mc.(*AggregateIndexMatchCandidate); !isAgg {
-			t.Error("an AggregateIndexMatchCandidate no longer type-asserts as one — " +
-				"rule_streaming_agg_from_index's explicit isAgg guard is now dead")
+		// The GROUP BY shortcut is the one gate that names the type outright
+		// (rule_streaming_agg_from_index.go:61). It is exercised by FIRING THE
+		// RULE with the aggregate candidate as the ONLY candidate, not by
+		// type-asserting the candidate: `agg` is already statically
+		// *AggregateIndexMatchCandidate, so an assertion on its dynamic type
+		// cannot fail and would pass with the rule's guard deleted.
+		//
+		// The GROUP BY here is the one the candidate would otherwise serve —
+		// grouping on CUSTOMER_ID, the candidate's sole advertised column — so
+		// a decline can only come from the gates, never from a shape mismatch.
+		//
+		// WHAT THIS DOES AND DOES NOT DETECT, measured rather than assumed.
+		// Deleting the isAgg guard ALONE does not red this arm, and that is not a
+		// weakness in the arm: the decline is over-determined. The plain-field
+		// gate returns (nil, false) for any non-value candidate, which both
+		// declines it and leaves colNames empty, and the base-record-cardinality
+		// gate declines it independently. Three reasons, any one sufficient.
+		//
+		// So the arm reds on the composite that actually re-arms the fault —
+		// admitting the aggregate candidate to the plain-field gate and dropping
+		// the cardinality gate, at which point the isAgg guard is the only thing
+		// left and removing it yields a RecordQueryStreamingAggregationPlan over
+		// a raw aggregate-index scan. Verified by exactly that mutation. The
+		// single-gate deletions are covered by the two sibling arms above, which
+		// assert the gate FUNCTIONS directly; this arm is the composite.
+		scan := expressions.NewFullUnorderedScanExpression([]string{"ORDERS"}, values.UnknownType)
+		gb := expressions.NewGroupByExpression(
+			[]values.Value{&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType}},
+			[]expressions.AggregateSpec{{Function: expressions.AggCount}},
+			expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+		)
+		results := FireExpressionRuleWithMemo(
+			NewStreamingAggFromIndexRule(),
+			expressions.InitialOf(gb),
+			&indexTestPlanContext{candidates: []MatchCandidate{agg}},
+			nil,
+		)
+		if len(results) != 0 {
+			t.Errorf("StreamingAggFromIndexRule produced %d result(s) from an aggregate "+
+				"index candidate (first %T) — the GROUP BY shortcut will scan the "+
+				"aggregate index raw and fetch a record per entry from an EMPTY primary "+
+				"key, aborting with IndexOrphanBehavior.ERROR",
+				len(results), results[0])
 		}
 	})
 }
