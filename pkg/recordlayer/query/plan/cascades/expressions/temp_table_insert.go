@@ -76,11 +76,9 @@ func (e *TempTableInsertExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *TempTableInsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &TempTableInsertExpression{
-		inner:          quantifiers[0],
-		tempTableAlias: e.tempTableAlias,
-		owning:         e.owning,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*TempTableInsertExpression)(nil)

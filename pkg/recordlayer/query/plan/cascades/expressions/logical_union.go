@@ -72,9 +72,9 @@ func (e *LogicalUnionExpression) HashCodeWithoutChildren() uint64 { return 37 }
 func (e *LogicalUnionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
 	copied := make([]Quantifier, len(quantifiers))
 	copy(copied, quantifiers)
-	return &LogicalUnionExpression{
-		quantifiers: copied,
-	}
+	cp := *e
+	cp.quantifiers = copied
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalUnionExpression)(nil)

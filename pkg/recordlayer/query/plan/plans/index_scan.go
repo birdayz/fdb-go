@@ -148,25 +148,9 @@ func (p *RecordQueryIndexPlan) GetScanComparisons() []*predicates.ComparisonRang
 func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.ComparisonRange) *RecordQueryIndexPlan {
 	copied := make([]*predicates.ComparisonRange, len(comps))
 	copy(copied, comps)
-	return &RecordQueryIndexPlan{
-		indexName:              p.indexName,
-		scanComparisons:        copied,
-		recordTypes:            p.recordTypes,
-		flowedType:             p.flowedType,
-		reverse:                p.reverse,
-		strictlySorted:         p.strictlySorted,
-		covering:               p.covering,
-		coveringColumns:        p.coveringColumns,
-		columnNames:            p.columnNames,
-		pkColumnNames:          p.pkColumnNames,
-		unique:                 p.unique,
-		orderingKeyNamesKnown:  p.orderingKeyNamesKnown,
-		orderingKeyNamesSafe:   p.orderingKeyNamesSafe,
-		createsDuplicates:      p.createsDuplicates,
-		distinctRecordsKnown:   p.distinctRecordsKnown,
-		commonPrimaryKeyValues: p.commonPrimaryKeyValues,
-		resultValue:            p.resultValue,
-	}
+	cp := *p
+	cp.scanComparisons = copied
+	return &cp
 }
 
 // WithCommonPrimaryKey returns a copy carrying the index's structural common

@@ -209,7 +209,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// of //pkg/relational/... green; only six executor UNIT tests, which assert
 	// on the emitted map keys, go red. The binding is already ordinal at
 	// runtime. What is left is entirely plan-time, and it is these four lines.
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1710": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1714": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
 	"pkg/recordlayer/query/plan/cascades/values/values.go:1712": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
 
 	"pkg/relational/core/query/cascades_translator.go:983":  {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName (group_by.go:147-157). Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
@@ -227,7 +227,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:155": {1, "contract: same authority, AVG arm"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:157": {1, "contract: same authority, default arm"},
 
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1510":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1512":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
 	"pkg/relational/core/embedded/logical_predicate.go:6162":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4723":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},

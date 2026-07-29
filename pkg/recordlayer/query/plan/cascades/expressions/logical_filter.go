@@ -125,10 +125,9 @@ func (e *LogicalFilterExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *LogicalFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalFilterExpression{
-		inner:           quantifiers[0],
-		queryPredicates: e.queryPredicates,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 // Compile-time check that LogicalFilterExpression implements

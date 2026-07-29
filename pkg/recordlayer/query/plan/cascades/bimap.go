@@ -149,12 +149,15 @@ func (b *BiMap[K, V]) Copy() *BiMap[K, V] {
 	if b == nil {
 		panic("BiMap.Copy on nil receiver")
 	}
-	c := &BiMap[K, V]{
-		entries: make(map[string]*biMapEntry[K, V], len(b.entries)),
-		inverse: make(map[string]string, len(b.inverse)),
-		keyStr:  b.keyStr,
-		valStr:  b.valStr,
-	}
+	// Struct copy, then the two owned maps are replaced with fresh ones. A
+	// field-by-field literal would silently ZERO any field added later, which
+	// for a Copy is worse than sharing it: an empty map reads as "no entries"
+	// rather than failing. The trade is deliberate — a future REFERENCE field
+	// is carried shallowly and would need its own deep-copy line here.
+	cp := *b
+	cp.entries = make(map[string]*biMapEntry[K, V], len(b.entries))
+	cp.inverse = make(map[string]string, len(b.inverse))
+	c := &cp
 	for ks, entry := range b.entries {
 		c.entries[ks] = &biMapEntry[K, V]{key: entry.key, val: entry.val}
 	}

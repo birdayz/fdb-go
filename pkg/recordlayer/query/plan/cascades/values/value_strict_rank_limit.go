@@ -53,7 +53,9 @@ func (v *StrictRankLimitValue) WithChildren(newChildren []Value) Value {
 	if len(newChildren) != 1 {
 		return v
 	}
-	return &StrictRankLimitValue{K: newChildren[0]}
+	cp := *v
+	cp.K = newChildren[0]
+	return &cp
 }
 
 // EqualsWithoutChildrenValue: the node has no own attributes beyond its child K

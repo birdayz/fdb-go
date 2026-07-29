@@ -160,10 +160,9 @@ func (e *LogicalSortExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *LogicalSortExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalSortExpression{
-		inner:    quantifiers[0],
-		sortKeys: e.sortKeys,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalSortExpression)(nil)

@@ -64,11 +64,9 @@ func (p *Placeholder) GetComparisonRange() *ComparisonRange {
 // WithRange returns a new Placeholder with the given comparison range.
 // The original is not modified.
 func (p *Placeholder) WithRange(cr *ComparisonRange) *Placeholder {
-	return &Placeholder{
-		ParameterAlias: p.ParameterAlias,
-		Value:          p.Value,
-		CompRange:      cr,
-	}
+	cp := *p
+	cp.CompRange = cr
+	return &cp
 }
 
 // IsConstraining reports whether this placeholder has a non-empty

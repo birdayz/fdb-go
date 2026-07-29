@@ -50,7 +50,9 @@ func (v *ExistsValue) GetChild() Value { return v.Value }
 // WithNewChild returns a copy of this ExistsValue over a rebased/translated
 // child. Mirrors Java's ValueWithChild.withNewChild().
 func (v *ExistsValue) WithNewChild(c Value) *ExistsValue {
-	return &ExistsValue{Value: c}
+	cp := *v
+	cp.Value = c
+	return &cp
 }
 
 // Children returns the singleton list containing the child Value —

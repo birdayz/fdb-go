@@ -35,11 +35,10 @@ func (ec *EvaluationContext) WithParams(params []any) *EvaluationContext {
 	for k, v := range ec.bindings {
 		newBindings[k] = v
 	}
-	return &EvaluationContext{
-		bindings:         newBindings,
-		params:           params,
-		scalarSubqueries: ec.scalarSubqueries,
-	}
+	cp := *ec
+	cp.bindings = newBindings
+	cp.params = params
+	return &cp
 }
 
 // BindParameter implements values.ParameterBinder. Ordinal is 1-based;
@@ -128,11 +127,10 @@ func (ec *EvaluationContext) WithScalarSubqueries(results map[values.Correlation
 	for k, v := range ec.bindings {
 		newBindings[k] = v
 	}
-	return &EvaluationContext{
-		bindings:         newBindings,
-		params:           ec.params,
-		scalarSubqueries: results,
-	}
+	cp := *ec
+	cp.bindings = newBindings
+	cp.scalarSubqueries = results
+	return &cp
 }
 
 // WithBinding returns a shallow copy with an additional binding.
@@ -142,7 +140,9 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 		newBindings[k] = v
 	}
 	newBindings[id] = val
-	return &EvaluationContext{bindings: newBindings, params: ec.params, scalarSubqueries: ec.scalarSubqueries}
+	cp := *ec
+	cp.bindings = newBindings
+	return &cp
 }
 
 // GetBinding retrieves a correlation binding.

@@ -91,11 +91,9 @@ func (e *InsertExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *InsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &InsertExpression{
-		inner:            quantifiers[0],
-		targetRecordType: e.targetRecordType,
-		targetType:       e.targetType,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*InsertExpression)(nil)

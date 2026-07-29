@@ -74,10 +74,9 @@ func (e *DeleteExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *DeleteExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &DeleteExpression{
-		inner:            quantifiers[0],
-		targetRecordType: e.targetRecordType,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*DeleteExpression)(nil)

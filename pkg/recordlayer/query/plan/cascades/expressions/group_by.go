@@ -249,11 +249,9 @@ func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) Relational
 	if len(quantifiers) == 0 {
 		return e
 	}
-	return &GroupByExpression{
-		inner:        quantifiers[0],
-		groupingKeys: e.groupingKeys,
-		aggregates:   e.aggregates,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*GroupByExpression)(nil)

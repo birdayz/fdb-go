@@ -351,5 +351,8 @@ func (v *FDBRecordVersion) WithCommittedVersion(committedVersion []byte) (*FDBRe
 	copy(raw[:GlobalVersionBytes], committedVersion)
 	// Preserve the local version
 	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(v.GetLocalVersion()))
-	return &FDBRecordVersion{raw: raw, complete: true}, nil
+	cp := *v
+	cp.raw = raw
+	cp.complete = true
+	return &cp, nil
 }

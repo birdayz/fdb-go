@@ -10360,3 +10360,67 @@ None is speculative: each was re-verified against the tree before booking.
   `rule_push_filter_through_groupby.go` declines by NAME AMBIGUITY rather than
   resolving the reference by its recorded slot. With the domain minted, that
   refusal can become a decision.
+
+- [ ] **CQ-57 (MED/S, S) — `rule_decorrelate_values`'s two Select rebuilds drop
+  `quantifiersSwapped`, and whether that is CORRECT is a semantics question
+  nothing has answered or pinned.** Both rebuilds go through
+  `NewSelectExpressionWithJoinType` (`rule_decorrelate_values.go:222` and
+  `:300`), and that constructor never sets `quantifiersSwapped` — it defaults to
+  false. So a swapped Select that reaches either site comes back unswapped.
+
+  This is NOT the field-literal-copy class, and must not be "fixed" by carrying
+  the field across. Both sites MUTATE the quantifier set — `:222` removes the
+  inlined values boxes, `:300` prepends the pushed-down ones — and
+  `quantifiersSwapped` is a claim about the first TWO quantifiers specifically.
+  A mechanical carry would assert a swap that may no longer describe the list.
+
+  Measured over the whole `cascades` package suite (stderr counters at both
+  sites, `go test -count=1 -v`):
+
+      site=222   18 swapped=false   17 swapped=true
+      site=300   10 swapped=false    2 non-Select expr (no marker to read)
+
+  and, for the 17 swapped=true hits at `:222`, whether the removal destroys the
+  swapped pair:
+
+      14x  removed[0]=false removed[1]=true   nq 2 -> 1
+       1x  removed[0]=true  removed[1]=true   nq 3 -> 1
+       1x  removed[0]=true  removed[1]=true   nq 2 -> 1
+       1x  removed[0]=false removed[1]=true   nq 8 -> 4
+
+  In ALL 17, quantifier 1 is removed — the swap's second member — so the pair
+  the marker describes no longer exists, and in 16 of 17 a single quantifier
+  remains, where the marker is vacuous by construction
+  (`WithSwappedQuantifiers` itself no-ops below 2 quantifiers). On this
+  evidence dropping the marker is DEFENSIBLE at `:222` today.
+
+  What is missing is that nothing says so and nothing enforces it. The drop is
+  a side effect of which constructor was reached, not a decision: if a future
+  rewrite at either site preserves quantifiers 0 and 1, the same line silently
+  becomes a fail-OPEN, because both readers of the marker are safety DECLINES
+  (`RemoveRangeOneRule` refuses a swapped Select; the nested-loop-join rule
+  gates its correlated-scan fast path on it). Losing it admits exactly the
+  shapes those gates exist to refuse — the same failure mode as the
+  `SelectExpression.WithQuantifiers` literal, reached by a different route.
+
+  The work: decide the rule ("a rebuild that removes or reorders either of the
+  first two quantifiers invalidates the marker; one that preserves both carries
+  it"), state it at both call sites, and pin it with a test that constructs a
+  swapped Select whose values boxes sit PAST position 1 — the shape the measured
+  corpus never produced, and the one where carrying vs dropping diverges.
+
+  NOTE ON PROVENANCE: the fold report that motivated this item cited "10
+  measured hits, all swapped=false". That is site `:300` exactly, and it is
+  complete for that site. Site `:222` was not in that measurement and is where
+  the marker is actually live — 17 of 35 hits carry swapped=true. The item was
+  booked as a pure semantics question; it is that, but on a live marker rather
+  than a dormant one.
+
+- [ ] **CQ-58 (MED, latent class) — `Value.WithChildren` constructor-call rebuilds.**
+  14 methods rebuild via constructor call (invisible to the composite-literal
+  gate); constructor params cover all struct fields TODAY, and adding a param
+  is a compile error everywhere, so this is latent and structurally weaker
+  than the field-literal class — but several sites do DELIBERATE work a
+  mechanical conversion would defeat (RankValue.WithChildren resets
+  ArgumentValues by design), so each needs per-site semantic judgment like
+  CQ-57, not a sweep. Enumerated during the field-literal class closure.

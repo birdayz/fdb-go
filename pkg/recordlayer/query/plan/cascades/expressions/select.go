@@ -297,14 +297,11 @@ func (e *SelectExpression) WithSwappedQuantifiers() *SelectExpression {
 		swappedAliases = e.sourceAliases
 	}
 
-	return &SelectExpression{
-		resultValue:        e.resultValue,
-		quantifiers:        swapped,
-		queryPredicates:    e.queryPredicates,
-		sourceAliases:      swappedAliases,
-		joinType:           e.joinType,
-		quantifiersSwapped: !e.quantifiersSwapped, // toggle: swap of swap = original
-	}
+	cp := *e
+	cp.quantifiers = swapped
+	cp.sourceAliases = swappedAliases
+	cp.quantifiersSwapped = !e.quantifiersSwapped // toggle: swap of swap = original
+	return &cp
 }
 
 // WithQuantifiers rewires the child edges and changes nothing else, so it

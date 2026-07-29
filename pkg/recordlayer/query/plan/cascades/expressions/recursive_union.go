@@ -168,14 +168,10 @@ func (e *RecursiveUnionExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *RecursiveUnionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &RecursiveUnionExpression{
-		initialState:         quantifiers[0],
-		recursiveState:       quantifiers[1],
-		tempTableScanAlias:   e.tempTableScanAlias,
-		tempTableInsertAlias: e.tempTableInsertAlias,
-		traversalStrategy:    e.traversalStrategy,
-		distinct:             e.distinct,
-	}
+	cp := *e
+	cp.initialState = quantifiers[0]
+	cp.recursiveState = quantifiers[1]
+	return &cp
 }
 
 var _ RelationalExpression = (*RecursiveUnionExpression)(nil)

@@ -516,7 +516,9 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 	merged = append(merged, suffix.Accessors...)
 	// The domain, like the pin, comes from the RECEIVER: both govern the ROOT
 	// read context, and fusing keeps the inner path's root.
-	return &FieldPath{Accessors: merged, FrontierPinned: p.FrontierPinned, Domain: p.Domain}
+	cp := *p
+	cp.Accessors = merged
+	return &cp
 }
 
 // Root returns the first accessor — the one the ROOT read context resolves
