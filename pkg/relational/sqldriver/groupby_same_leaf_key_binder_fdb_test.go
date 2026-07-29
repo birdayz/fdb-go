@@ -23,15 +23,33 @@ package sqldriver_test
 // nothing else in the tree sees the conflation:
 //
 //   - `ambiguous_group_key_reread.yaml` is the closest existing coverage and it
-//     does NOT cover this. Its qualified control (`HAVING po.id > 1`) is a
-//     PURE group-key predicate, so `PushFilterThroughGroupByRule` moves it below
-//     the aggregate and `rebindGroupKeyRefToInner` re-resolves it against the
-//     grouping keys by NAME PATH, first match wins — which happens to restore
-//     the first key. Measured: with the qualifier segment deleted, that scenario
-//     still passes 4/4 and every yamsql/rowdiff target stays green; the only
-//     reds are one plan shape (the filter moves below the aggregate) and the
-//     golden. A wrong ordinal masked by a second name-based recovery is not
-//     coverage.
+//     does NOT cover this. Its qualified control (`HAVING po.id > 1`) is a PURE
+//     group-key predicate, and with the qualifier segment deleted that scenario
+//     still passes 4/4 while every yamsql/rowdiff target stays green; the only
+//     reds are one plan shape and the golden.
+//
+//     Why it cannot cover this, stated correctly: the predicate is NOT pushed
+//     below the aggregate. `plan_shape.golden` shows `PredicatesFilter` ABOVE
+//     `StreamingAgg` for that scenario, and the pushdown decider asserts the
+//     same shape independently — so the re-read never reaches the binder path
+//     this test exercises. (An earlier reading of this had
+//     `PushFilterThroughGroupByRule` pushing it down and
+//     `rebindGroupKeyRefToInner` rescuing it by first-match name path. That
+//     mechanism does not occur; the rebind never runs. The conclusion is the
+//     same and stronger.)
+//
+//     `rebindGroupKeyRefToInner` is nonetheless qualifier-blind in exactly this
+//     way — `AccessorNamePath` stops at the QOV root, so `o.k` and `i.k` both
+//     render `["K"]`. Measured over `//pkg/relational/...`: it fires 20 times
+//     and every firing has ONE grouping key, against 1094 predicates rejected
+//     because a qualified reference's path key is the flat `"I.K"` and no
+//     grouping key's is. So its scan never had two candidates to choose between,
+//     which is why mutating first-match to last-match changed no test. Item 6
+//     removes that qualifier segment and would have handed it two. Both that
+//     rule and its decider now decline an ambiguous key set outright; the pins
+//     are `TestFDB_GroupBySameLeafKeys_PushedHavingStaysAboveTheAggregate` (this
+//     package) and the two boundary tests in
+//     `//pkg/recordlayer/query/plan/cascades`.
 //   - The predicates below reference an AGGREGATE, so they are not pushable and
 //     the output-baked ordinal stays live all the way to the executor. That is
 //     what makes the wrong slot observable as wrong ROWS.

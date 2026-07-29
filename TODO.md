@@ -10221,3 +10221,142 @@ None is speculative: each was re-verified against the tree before booking.
   own. Closing it takes the RFC-197 `dotted` bucket from 6 to 1
   (`cascades_generator.go:4122`, the group-key qualification probe, is the only
   non-merged-row reader left).
+
+- [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
+  in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and
+  make the call-numbering ONE authority instead of two.** RFC-197 item 5 left
+  this as prose; it is a real defect and it is booked here.
+
+  `SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10` harvests the SELECT's `AVG(n)`
+  and the HAVING's `AVG(n)` as TWO value-identical `logical.AggregateCall`s, so
+  the aggregate computes AVG twice and its output row is one column wider than
+  the query needs. `logicalAggregateCalls`
+  (`pkg/relational/core/embedded/logical_builder.go:85-87`) suppresses a
+  harvested duplicate `COUNT(*)` and nothing else:
+
+      if countStar && call.Func == "COUNT" && call.Star && !call.Distinct {
+          continue
+      }
+
+  Why it is not a one-line widening of that condition. The aggregate's runtime
+  ABI is `[keys..., calls...]`, and the two functions that decide `calls...`
+  take DIFFERENT inputs and count independently: `logicalAggregateCalls(cls.aggCols,
+  cls.countStar, strip)` versus `buildAggregateOutputSlots(keys, outputAggCols,
+  strip)` (`plan_visitor.go:1360` and `:1370`; the same pairing at
+  `logical_builder.go:588`/`:593`). `buildAggregateOutputSlots` assigns
+  `callOrdinal[i] = len(keys) + nextCall` over ITS list
+  (`logical_builder.go:130-136`) with no knowledge of the suppression the other
+  side applied. Dedup on one side and every public output slot after the removed
+  call points one column too far right — silent wrong values, not an error. The
+  `COUNT(*)` case survives today only because the suppressed duplicate is
+  harvested (hidden) and the visible list it is numbered against never contained
+  it. Extending the dedup to arbitrary calls breaks that coincidence.
+
+  So the fix is the numbering, and the dedup follows: one authority produces the
+  call list AND the ordinal each output slot points at, from one input, in one
+  pass. That is the same "the slot is recorded at the composition that decides
+  it" move RFC-197 item 5 made for post-aggregate group-key references
+  (`logical_predicate.go:6228-6254`), applied to the aggregate calls.
+
+  Evidence that the duplicate is observable in the plan, and the divergence it
+  already exposed: one corpus query moved nine golden lines when item 5 landed —
+  `SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub` gained
+  a Projection operator. Two value-identical calls are the ONLY thing the old
+  name-keyed binder and the recorded-slot binder ever disagreed about: the
+  recorded slot picks the FIRST call (matching what
+  `bindPostAggregateValueToNativeOrdinals` already does for SELECT and ORDER
+  BY), the retired name map's last-wins picked the SECOND. Rows and column
+  labels are identical either way, which is exactly why it survived — a
+  first-wins/last-wins disagreement is invisible while the two calls compute the
+  same number. Dedup the calls and the disagreement has nothing to disagree
+  about.
+
+  Size, honestly: MED impact, M effort. Not a rewrite — two functions and their
+  two call sites, plus the golden churn. The risk is entirely in the ordinal
+  re-numbering, so it wants a pin per shape: duplicate harvested call (AVG),
+  duplicate visible call, `COUNT(*)` (the existing suppression must keep
+  working), and a DISTINCT/non-DISTINCT pair that must NOT dedup. Pin the output
+  WIDTH, not just the rows — rows are identical under the bug, which is how it
+  shipped.
+
+- [ ] **CQ-55 (HIGH/L, L, query-engine review gate) — `properties.RichOrdering`
+  matches its ordering set by rendered string; make it match on column
+  identity.** This is the STOP that RFC-197 item 5 hit and could not pass, and
+  it is the last name-keyed identity decision in the ordering property.
+
+  `properties.RichOrdering` addresses its ordering set by `values.ExplainValue`
+  (`rich_ordering.go`, `orderingKeyFor`). So an aggregate's PROVIDED group-key
+  ordering and an ORDER BY's REQUESTED key — two independently constructed
+  FieldValues — meet only as a RENDERED STRING. They agree today solely because
+  `HintOrdering` and `canonicalizeAggregateOutputValue` (the requested-side
+  authority) both spell the key through the one rendering authority. That is an
+  agreement by convention between two producers, not an identity.
+
+  Escalation rationale, which is why this is HIGH and not a cleanup: a false
+  SATISFACTION here is not a lost optimization. It feeds the ordering-dependent
+  operators — a merge join, a streaming aggregate, a distinct that assumes
+  adjacency — which then read rows they were promised were ordered and are not.
+  Wrong rows, memo-wide, from a string collision.
+
+  The reviewed shape, to build as stated:
+
+  - `PartiallyOrderedSet[string]` becomes `PartiallyOrderedSet[ColumnIdentity]`,
+    with `SameColumnPath` as the equality.
+  - Domains are MINTED at the `HintOrdering` providers and at composition — the
+    two places where the layout is in hand.
+  - `orderingKeyFor`'s three bridge arms are DELETED. They exist to reconcile
+    representations that a real identity makes indistinguishable; keeping them
+    alongside the identity would preserve the string channel under a new name.
+  - Lazy providers FAIL CLOSED: a provider that cannot mint a domain reports no
+    ordering rather than an unverifiable one. An unordered plan is slow; a
+    falsely-ordered one is wrong.
+
+  What holds it today, so the conversion has a detector: `plans/ordering.go:598`
+  is NOT display-only and the flag that it might be is refuted — probing the name
+  at that site reds the FDB driver suite with `want exactly 1 InMemorySort
+  (group-key sort, reused by ORDER BY), got 2` and moves the corpus plan-shape
+  golden. `sqldriver/aggregate_group_key_ordering_contract_fdb_test.go` is the
+  two-direction detector (provided side and requested side, mutated separately,
+  on rows AND on `InMemorySort` counts, including the two-same-leaf-group-keys
+  shape). `plans/streaming_aggregation_ordering_key_name_test.go` pins the
+  provided side only — it CANNOT see a requested-side divergence, because it
+  builds its requested value by calling `GroupByOutputColumnNames` itself. Do
+  not mistake it for coverage of both.
+
+  Cascades ordering machinery, so it takes a Graefe-gated RFC and its own review
+  lap. It also unblocks `DisplayLabel`: the reason that carrier type cannot
+  compile is that this consumer renders the label INTO a match key, and no
+  render exit placed in `embedded` can reach a site that lives in `plans`.
+
+- [ ] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
+  with `Domain: unknown`, and the domain is derivable at both call sites.** The
+  ordinal domain is RFC-197 step 0's third element of identity, and the
+  constructor that pins an ordinal is the one place it must not be blank.
+
+  Measured, from the HAVING reference of `SELECT o.k, i.k, COUNT(*) ... GROUP BY
+  o.k, i.k HAVING i.k > 15`:
+
+      Accessors:[{Field:I.K Ordinal:1}] Domain:domain(unknown) FrontierPinned:false
+
+  The ordinal is CORRECT — 1 is `i.k`'s slot, and it tracks the GROUP BY order
+  (0 when the keys are listed the other way round). The composition knows
+  exactly which layout it numbered against, and then throws that fact away.
+
+  An ordinal with an unknown domain is an ordinal no consumer may trust, which
+  is precisely the hazard `logical_predicate.go:6193-6206` documents from
+  production: a group key's SOURCE-relative ordinal and an aggregate's
+  OUTPUT-row ordinal met in one comparison and matched because the integers
+  coincided, rewriting the `SUM(v)` of `HAVING g > SUM(v)` into a reference to
+  `G`, after which the predicate looked key-only and was pushed onto the raw
+  scan. `FieldPath.Domain` exists to fail closed on exactly that comparison; the
+  `FrontierPinned` provenance bit is standing in for it because neither side
+  carries a domain yet. Every such stand-in is one more consumer that will have
+  to be revisited when the domain arrives.
+
+  Derivable now, no new machinery: `OrdinalDomainOfColumnNames` at both
+  composition sites. Small and self-contained — but it is a prerequisite for
+  anything that wants to make an identity decision on a recorded ordinal, which
+  is why the ambiguous-grouping-key refusal in
+  `rule_push_filter_through_groupby.go` declines by NAME AMBIGUITY rather than
+  resolving the reference by its recorded slot. With the domain minted, that
+  refusal can become a decision.
