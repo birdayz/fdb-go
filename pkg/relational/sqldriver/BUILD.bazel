@@ -184,6 +184,7 @@ go_test(
         "groupby_orderby_probe_test.go",
         "groupby_ordinal_probe_test.go",
         "groupby_over_join_fdb_test.go",
+        "groupby_same_leaf_key_binder_fdb_test.go",
         "groupby_select_order_probe_test.go",
         "groupby_validation_probe_test.go",
         "hash_identifier_probe_test.go",

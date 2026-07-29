@@ -258,6 +258,127 @@ other 11 (the aggregate-result naming switch in group_by.go joined its
 sibling authority when taint tracking exposed its six arms). No wire impact — the names never leave the process — but it is the
 one piece where "migrate the site" understates the work.
 
+REVISED after implementation contact refuted the item's premise. The listed
+sites are pure display-name PRODUCERS with zero listed consumers — the
+consumers were invisible behind a composed launderer
+(`normalizeAggOutputName`), and once the instrument was widened they joined
+the ratchet as ordinary convertible readers. Measured: the executor is
+ALREADY ordinal-bound at runtime (every emitted aggregate name replaced
+with a probe string leaves the full FDB aggregate suite green; only unit
+tests asserting on map keys notice). Java is the same shape: output
+composed by `Column.unnamedOf`, pulled up by loop index, `ResolvedAccessor`
+equality ordinal-only, and the display label a SEPARATE typed
+`Optional<Identifier>` (`Expression.java:72`) the executor never reads
+back.
+
+So item 5 splits:
+
+- *The readers* (the `groupByOutputBaker` family and the renderer sites the
+  widened launderer surfaced) convert normally — slot consumption, Java's
+  loop-index pull-up as the model, with the slot correspondence RECORDED AT
+  COMPOSITION (the `CompensateRecordConstructorRule.java:92` /
+  `LogicalOperator.java:454` alignment contract), never recovered through a
+  re-keyed map — a map keyed by an identity struct is item 3's shape doing
+  item 5's job, and it re-creates the recovery-instead-of-record pattern.
+
+  ORDERING CONSTRAINT with item 6, found in review and binding: the
+  last-wins reader at `cascades_translator.go:1003` separates two
+  same-leaf group keys TODAY only via the qualifier segment item 6
+  deletes, and the current SQL pins explicitly disclaim binder coverage —
+  so item 6 landing first would arm a silent last-wins conflation with
+  every test green. The readers convert BEFORE item 6's qualifier
+  producers die, and the two-same-leaf-group-keys binder shape gets its
+  pin NOW, in this item, not when item 6 discovers it.
+
+  **REFUTED on implementation contact, in the direction that matters: the
+  conflation is not armed by item 6, it is SHIPPED.** Building the pin
+  found it red on master. `GROUP BY o.k, i.k HAVING o.k + COUNT(*) > 2`
+  returns BOTH groups instead of one, and the mirror
+  (`GROUP BY i.k, o.k HAVING i.k + COUNT(*) > 12`) returns none —
+  a wrong-column bind, the EIGHTH instance of the class this RFC opens
+  with, found the same way as the other seven: by looking, not by the
+  suite. The qualifier segment protects only the shape where the re-read
+  reaches the binder QOV-qualified. A re-read nested inside an
+  expression does not: `rebasePostAggregateGroupKeyValue`
+  (`logical_predicate.go`) rewrites it to a CHILDLESS BARE-LEAF
+  FieldValue via `aggregateGroupKeyOutputName` — one of the naming
+  authorities this very item lists — and the binder then re-keys that
+  leaf in the last-wins map. There is no qualifier left to protect
+  anything.
+
+  Two further measurements, because each one changes what the plan can
+  claim:
+
+  - The existing coverage cannot see it and never could.
+    `ambiguous_group_key_reread.yaml`'s qualified control is a PURE
+    group-key HAVING, so `PushFilterThroughGroupByRule` moves it below the
+    aggregate and `rebindGroupKeyRefToInner` re-resolves it against the
+    grouping keys BY NAME PATH, first match wins — which happens to
+    restore the first key. With the qualifier segment deleted that
+    scenario still passes 4/4 and every yamsql/rowdiff target stays green;
+    the only reds are one plan shape and the golden. A wrong ordinal
+    masked by a second name-based recovery is the same defect twice, not
+    coverage. The pin therefore uses a predicate that references an
+    AGGREGATE, so it is not pushable and the output-baked ordinal stays
+    live to the executor.
+  - `groupByOutputBaker` is not near-dead. Panicking at each of its three
+    return arms over `//pkg/relational`: 224 hits on the aggregate arm, 22
+    on the group-key arm, ZERO on the qualifier-strip arm, across 88
+    failing test functions.
+
+  The fix is this item's own prescription applied one frame earlier than
+  the item placed it. `rebasePostAggregateGroupKeyValue` already holds the
+  group key's INDEX — the loop variable — and that index IS the output
+  slot. It now records it (`FieldPath` ordinal, FRONTIER-PINNED, since the
+  ordinal is final against the executor's assembled output row) instead of
+  emitting a name for the binder to recover the slot from. `bindPostAggregateValueToNativeOrdinals`
+  in the same file already binds this way, and it is Java's loop-index
+  pull-up (`CompensateRecordConstructorRule.java:92`). The binder honors
+  the pin by leaving pinned single-accessor nodes alone; measured before
+  landing, no pinned single-accessor node reached it anywhere in
+  `//pkg/relational`, so that is a channel opening rather than a policy
+  change on existing traffic. Zero `plan_shape.golden` movement.
+
+  What this does to the ordering constraint: it DISCHARGES it. With the
+  slot recorded, the item-6 qualifier deletion (simulated by deleting both
+  ends of the `qov.Correlation.Name()+"."+fv.Field` segment) leaves the pin
+  green. The constraint was real; the remedy is not "convert the readers
+  before item 6" but "stop recovering a slot that was known at
+  composition", and that is a stronger result than the ordering the
+  constraint asked for.
+- *The producers* leave the ratchet through a DISPLAY-LABEL CARRIER TYPE,
+  the policy this revision adds. A `DisplayLabel` wrapper (Java's
+  `Expression.name`, CRDB's display-only `Alias`, made structural): naming
+  authorities return `DisplayLabel`, not `string`; constructing one from
+  `.Field` is sanctioned construction exactly like building a FieldValue
+  from a name; and the gate gains the INVERSE rule — any comparison,
+  map-keying, or switch on a `DisplayLabel` is a violation, checkable by
+  named type without type inference. Three conditions from review are part
+  of the design, not follow-ups: `DisplayLabel` has NO exported string
+  accessor — the banned key struct would otherwise be reborn one method
+  call later, since the gate's taint propagates through call arguments but
+  not receivers, making `label.String() == other` invisible; the single
+  exit is one named render function at the emission boundary, and the gate
+  widening (receiver-taint propagation plus that exit treated as a
+  launderer) lands IN THE SAME CHANGE as the type — without it the type is
+  a convention wearing a struct. And the inverse rule is a sanctioned
+  GO-SIDE STRENGTHENING, not a Java port: Java's `Identifier` is compared
+  freely during resolution and its display-only discipline on
+  `Expression.name` is convention; Go makes it checkable. This is strictly
+  stronger than today's gate: the display/identity split becomes a type
+  the compiler and the gate both see, instead of a convention the ratchet
+  polices site by site. The rejected alternatives: a new prose-demonstration allowlist
+  category (re-opens the drift channel the per-site mechanism closed) and
+  permanent accepted debt (a ratchet that never reaches zero is a
+  permanent allowlist with ceremony — this RFC's own words).
+- *The JDBC label site* is NOT a boundary — it fails item 4's leg (a)
+  outright (its right operand is another Value's `.Field`, and its left
+  cannot be asserted parser-originated because distinguishing user aliases
+  from machinery-minted spellings is the site's entire job). It is a
+  provenance question wearing a string comparison; the fix is a tag at the
+  alias MINT site, the dotted bucket's producer pattern applied here. It
+  stays on the ratchet until then. The allowlist remains empty.
+
 **6. dotted (15) — kill the qualified-name channel, then the probes die.**
 Revision 1 claimed these probes exist because of the legacy flat
 `Child == nil` representation. That premise is FALSE and was falsified by

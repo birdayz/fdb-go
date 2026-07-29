@@ -6120,7 +6120,7 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 		return v
 	}
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		for _, gk := range agg.GroupKeys {
+		for i, gk := range agg.GroupKeys {
 			if gk.Value == nil {
 				continue
 			}
@@ -6129,9 +6129,32 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 				continue // only qualified group keys carry the V.V mismatch
 			}
 			if values.ValuesStructurallyEqual(fv, qfv) {
+				// The SLOT is recorded HERE, at the composition that decides it:
+				// `i` is this key's index in agg.GroupKeys, and the aggregate
+				// output row is [group keys in this order..., aggregates...]
+				// (GroupByOutputColumnNames / translateAggregate's index-parallel
+				// groupKeys build). Java pulls a post-aggregate reference up by
+				// exactly this loop index (CompensateRecordConstructorRule.java:92
+				// over Column.unnamedOf columns) rather than by any name.
+				//
+				// Emitting the BARE NAME alone — which is what this did — throws
+				// that index away and leaves the downstream binder
+				// (groupByOutputBaker) to RECOVER the slot from a map keyed by the
+				// rendered output name. When two group keys share a leaf, that map
+				// is last-wins and the recovery lands on the WRONG key: measured as
+				// wrong rows for `GROUP BY o.k, i.k HAVING o.k + COUNT(*) > 2`,
+				// pinned by TestFDB_GroupBySameLeafKeys_HavingRereadBindsItsOwnSlot.
+				// The name is kept only as the display label.
+				//
+				// PINNED because the ordinal is FINAL against the executor's
+				// assembled aggregate output row, not relative to any source's
+				// declared column order — which is also the signal the binder reads
+				// to leave this node alone instead of re-keying it.
+				name := aggregateGroupKeyOutputName(qfv)
 				return &values.FieldValue{
-					Field: aggregateGroupKeyOutputName(qfv),
-					Typ:   fv.Typ,
+					Field:    name,
+					Typ:      fv.Typ,
+					Resolved: values.NewFieldPathOfSingle(name, i, true),
 				}
 			}
 		}
