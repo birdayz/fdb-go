@@ -291,6 +291,108 @@ is provably closed; either alone proves nothing — and a quoted `"A.B"`
 column keeps working, pinned by keeping its existing regression coverage
 green through the change.
 
+*Measured while implementing the first five sites.* The bucket is not one
+channel with fifteen readers; it is four, and they close in different orders.
+
+- **The unnest collection producer is gone, with its reader.** The lowering
+  built a name-model `SEG0.COL` collection that could not escape
+  `translateUnnestJoin`. That is a STATIC reachability argument, and it is
+  recorded as one rather than dressed as a probe: the function's only success
+  return is guarded by `resultValue != nil`, and the sole assignment leaving
+  that non-nil also overwrites `innerQ` with the ORDINAL-baked Explode; every
+  other path sets it back to nil and raises 0AF00. So the name-model quantifier
+  was unreachable by construction, not merely unobserved. (Measured alongside,
+  as a check on the argument rather than as its basis: the query and embedded
+  suites are byte-identical with the deleted lines restored — which also means
+  no behavioural mutation of that deletion exists, and the pins below are
+  written against the shape being REINTRODUCED, not against the lines being
+  put back.) Its reader — a correlation set keyed by the sliced prefix — is
+  deleted too; the dependency it carried is the baked collection's own
+  correlation to its owner, pinned at both consuming rules by
+  `TestGatheredExplodeOwnerEdgeReachesPartitionOrder` and
+  `…ReachesMatchEnumerator`, each of which has a name-model arm that goes red if
+  the slice is restored.
+- **Attribution needs a correlation, and that alone closed four sites.** The
+  clustered-outer bake and outer-ref classifier each had two arms: ask the
+  QuantifiedObjectValue child, or slice the display name. Deleting the slice
+  arm cost nothing measurable and removed the invented-alias failure. Worth
+  recording is WHAT the slice arm actually meets in production: not a qualified
+  reference but a rendered aggregate output name, `SUM(AMOUNT+E.REF)`, whose
+  first dot sits inside the operand — the manufactured qualifier is
+  `SUM(AMOUNT+E`. So one feed of this bucket is not a qualification producer at
+  all; it is the CONTRACT bucket's aggregate output-naming authority, and any
+  reader that must *succeed* on such a value (rather than decline it) is gated
+  on item 5, not on a producer conversion here.
+- **The merged-row channel is executor-gated, and this is the STOP.**
+  `ordinal_seed.legRef`'s dot-probe is load-bearing, measured: without it the
+  probe fires on `FieldValue{Field:"A.ID", Child:QOV(S)}` and reports the
+  MERGED correlation S as if it were leg A — the conflation itself. That value
+  is minted by `rule_implement_nested_loop_join.go:2366` and
+  `cascades_translator.go:3560`, which rewrite `QOV(leg).COL` into
+  `QOV(merged)."LEG.COL"` because the FlatMap inner's binder resolves the
+  merged row by that key. The five readers of this channel
+  (`ordinal_seed.go:761`, `rule_implement_nested_loop_join.go:2332`,
+  `left_outer_existential.go:112`, `box_conjunct.go:149`,
+  `accessor_name_path.go:61`) stay until the producers go — producer-first, as
+  this item requires. Booked as **CQ-53**. The measurement above is no longer
+  prose: `TestLegRef_DeclinesAMergedRowQualifiedRead` pins it, and deleting the
+  guard makes it report leg `"S"` for `FieldValue{Field:"A.ID", Child:QOV(S)}`.
+
+  **The conversion this RFC first sketched was wrong, and the correction is
+  recorded here rather than only in CQ-53.** The sketch was "bind leg-locally
+  through the leg WINDOWS `concatLegPositionals` already stores
+  (`RecordType.Legs`), as `spansFromMergedLegs` does for the join-predicate
+  path". `values.RecordTypeLeg` is `{Name string // UPPER binding of the source;
+  Start; Width}` (`values/type.go:372-376`) — so a binder keyed on `Legs[i].Name`
+  is still a quantifier's identity decided by text, moved from a FieldValue's
+  display name into a row type's leg table. That is a relocation, which is the
+  exact failure this whole item is written against.
+
+  Java answers the question twice and neither answer is a leg name:
+
+  - **It never merges for binding.** `RecordQueryFlatMapPlan.executePlan`
+    (`RecordQueryFlatMapPlan.java:135-140`) binds the outer result under the
+    outer quantifier's alias and the inner result under the inner alias on a
+    context CHAINED off it. `QuantifiedObjectValue.eval`
+    (`QuantifiedObjectValue.java:84-85`) is then a map lookup by alias. No
+    concatenated row exists at bind time, so nothing needs re-addressing.
+  - **Where a merged row is unavoidable it is UNNAMED, ORDINAL, and rewritten
+    EAGERLY.** `PartitionSelectRule.java:283-315` collapses the live lowers into
+    `RecordConstructorValue.ofColumns` over `Column::unnamedOf` (`:284-291`) and
+    applies a `TranslationMap` of `FieldValue.ofOrdinalNumber(QOV(new), index)`
+    (`:296-303`) to the upper predicates and result value at construction
+    (`:307-315`). Where the lateral correlations conflict it declines the
+    partitioning outright (`:161-167`, `:234-243`) rather than inventing a
+    representation for the conflict.
+
+  Go already holds the second half: `positional_merge.go` is that port, and the
+  same rule's Case-1 mints an unnamed column at `rule_partition_select.go:616`
+  (`AddColumn("", LiteralValue(1))` — Java's
+  `addResultValue(LiteralValue.ofScalar(1))`, `PartitionSelectRule.java:264`).
+  So CQ-53 is: parent-chained per-alias bindings first, which deletes both
+  producers outright; the nested unnamed ordinal record with eager translation
+  only where merging is genuinely unavoidable; decline where the correlations
+  conflict; and no leg-name channel anywhere.
+- **Four sites did not belong to this bucket, and have been retagged.** (Three
+  were identified here; reading the fourth, `exists_gathered_cluster_wrap.go:131`,
+  showed the same shape.) The dotted
+  qualifier compares in `bakeDottedRefsToLegQOV` and `bakeFlatRefsAgainstColumns`
+  all guard on `Child != nil → bail`, so they see only lazy carriers minted from
+  PARSED text (`p.Projections[i]`, `SortKey.Expr`, `GroupKey.Display`), and each
+  emits a born-baked value — item 4's two legs, on the qualifier segment of one
+  parsed identifier whose leaf segment is already tagged translator. If that
+  reading holds they are name RESOLUTION, and the real defect is upstream and
+  smaller than a bucket: the parser HAS the segments (`SortKey.Bare/Qualifier`,
+  `GroupKey.Bare/Qualifier` are populated and then discarded;
+  `LogicalProject.Projections []string` never had them), joins them, and the
+  resolver splits them back. The site-by-site pass confirmed the reading and
+  made the move: all four are tagged `translator:` in the debt list, taking
+  `dotted` to 6 and `translator` to 17. Nothing was migrated by this — the sites
+  still read a name, and a bucket move that reads like a fix is recorded as such
+  on both buckets' group headers. The upstream fix is booked as **CQ-52**
+  (segments end-to-end, retiring all four at the source); taking them as
+  "producers to convert" would have converted the wrong thing.
+
 **harness (1)** — `rowdiff/ordering.go:241` compares plan sort keys against
 SQL `ORDER BY` text in the conformance oracle. Engine identity rules do not
 apply to the oracle, but the entry stays on the ratchet until the harness is

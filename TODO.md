@@ -4747,16 +4747,39 @@ piece if revived.
 >       planReferencesAnyBuriedAlias fail-closes — the ordinal rewrite must keep
 >       that conservatism. Pins to re-run: RFC-153 outer-join FDB suite + 1M
 >       stress before/after.
-> - [ ] Slice 5 RE-GATED (probed, evidence in code comments): both arms are
->       dead-in-effect on every covered surface (zero hits across yamsql,
->       embedded, cascades, full FDB driver — ok-line-verified probe runs),
->       but their PRODUCERS still live: fieldValueAliasAndCol's dot-split
->       serves the dup-alias carve-out's flat "ALIAS.COL" mints (retires with
->       Phase B unique quantifier aliases) and MergeSeedLegsOfValue defends
->       the enclosed-unnest name-model residual's dotted merged reads
->       (retires with the box-substrate ordinalization). Killing before the
->       producers would delete live defenses for constructible shapes
->       (RFC-142 zero-rows / misclassification hazards). NOT gated on 3-4.
+> - [x] Slice 5 DONE — and its own gating rationale was REFUTED, which is the
+>       part worth keeping. The entry said both arms had live PRODUCERS and that
+>       "killing before the producers would delete live defenses for
+>       constructible shapes (RFC-142 zero-rows / misclassification hazards)".
+>       Both halves are now settled and neither held:
+>       * fieldValueAliasAndCol went under RFC-197 item 2, with its dup-alias
+>         producer, without waiting for Phase B unique quantifier aliases.
+>       * MergeSeedLegsOfValue did NOT defend a live shape. The producer it was
+>         said to defend — the enclosed-unnest name-model residual's dotted
+>         merged read — could not escape translateUnnestJoin: the function's
+>         only success return is guarded by `resultValue != nil`, and the sole
+>         assignment leaving that non-nil also overwrites innerQ with the
+>         ORDINAL-baked Explode. Every other path nils it and raises 0AF00, so
+>         the name-model quantifier was unreachable BY CONSTRUCTION, not merely
+>         unprobed. Measured alongside: the query and embedded suites are
+>         byte-identical with the deleted producer restored.
+>       The zero-rows hazard is real and is now carried structurally — the
+>       collection is an ordinal bake over its OWNER's quantifier, so
+>       GetCorrelatedTo reports the dependency directly. Pinned at BOTH
+>       consumers by TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
+>       TestGatheredExplodeOwnerEdgeReachesMatchEnumerator
+>       (pkg/recordlayer/query/plan/cascades/gathered_explode_owner_edge_test.go),
+>       whose name-model arms assert the owner dependency is ABSENT for a dotted
+>       collection — restoring the string recovery turns them red, which is what
+>       stops this deletion from being reversible in silence. Producer side:
+>       TestExplodeCollectionsAreOrdinalBaked
+>       (pkg/relational/core/query/explode_collection_ordinal_test.go).
+>       Lesson recorded rather than deleted: "dead-in-effect but the producer
+>       lives" was the wrong question. The producer DID live in the source and
+>       was unreachable in the graph, and only reading the return guard settled
+>       it — the probe runs the entry cited could not, because a probe over
+>       unreachable code is silent for the same reason a probe over absent code
+>       is.
 > - [ ] Slice 6 SWEPT + CLASSIFIED (remaining callers each mapped to their
 >       retirement owner): converted-to-structural this slice —
 >       resolveCorrelatedColumnValue (takes aggArgBare/Qualifier/Qualified
@@ -10053,3 +10076,148 @@ None is speculative: each was re-verified against the tree before booking.
   re-exploration the same way in `PlanContext`/`ConstraintsMap`, and if Java
   separates "constraint widened" from "re-push required", the separation is the
   port. Planner machinery, so it takes a Graefe-gated RFC + lap of its own.
+
+- [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
+  segments, joins them into one string, and the resolver splits them back
+  apart.** Four debt sites exist only to undo a join the layer above performed
+  for no reason.
+
+  `logical.SortKey` (`pkg/relational/core/query/logical/operators.go:298-303`)
+  carries `Bare` / `Qualifier` / `Qualified`, documented as "parse-tree segments
+  of a plain column reference key", with qualification defined as FullId SEGMENT
+  COUNT — structure, not a string scan. `logical.GroupKey` (`:414-420`) carries
+  the same three. Both are POPULATED from the parse tree
+  (`embedded/logical_builder.go:679`, `embedded/plan_visitor.go:1601`,
+  `embedded/select_parser.go:864/997/1353/1608`) and then DISCARDED: the
+  translator mints its lazy carrier from the joined text instead
+  (`core/query/cascades_translator.go:4920` and `:6006` build
+  `&values.FieldValue{Field: k.Expr}`; `embedded/logical_predicate.go:2967` is
+  the join itself, `display = qualifier + "." + bare`).
+  `LogicalProject.Projections []string` (`operators.go:219`) never had the
+  segments at all.
+
+  The resolver then re-derives what was thrown away, by `strings.IndexByte(…,
+  '.')`, at four sites — `cascades_translator.go:5674` (single-ForEach flat
+  baker), `:5722` (`bakeDottedRefsToLegQOV`), `:5846`
+  (`bakeFlatRefsAgainstColumns` leg-window arm) and
+  `exists_gathered_cluster_wrap.go:131` (gathered-EXISTS wrap). All four are now
+  tagged `translator:` in `pkg/docscheck`'s `knownFieldDecisionDebt` rather than
+  `dotted:` — each guards `Child != nil → bail` before the slice, so it only
+  ever sees a lazy carrier minted from parsed text, and each emits a born-baked
+  value. They are name RESOLUTION, correctly performed on a representation that
+  destroyed its own input.
+
+  Fix: keep the segments end-to-end. Give `Projections` the segment triple the
+  other two already have, carry it into the lazy carrier (or bake at mint time,
+  where the resolver scope is in hand), and delete the four re-splits. This
+  retires four debt entries at the SOURCE, shrinks the translator bucket, and
+  removes the one representation in which a quoted `"A.B"` column and a
+  qualified `A.B` reference are the same bytes — the ambiguity that was already
+  a live defect once on the cluster-attribution path (see
+  `cluster_ref_attribution_test.go`).
+
+  Not query-engine machinery: no cost model, no rule, no executor contract. The
+  segments already exist and are already correct; this is deleting a join and a
+  split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
+  the joined representation cannot tell apart.
+
+- [ ] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
+  FlatMap inner binder Java's parent-chained per-alias bindings, and the
+  merged-row `leg.col` string channel dies with its five readers.** The last
+  genuinely-dotted debt sites are readers of ONE channel, and the channel is
+  executor-side. (The title used to say "teach the FlatMap inner binder
+  leg-local windows"; that plan is corrected below and the correction is the
+  point of this item.)
+
+  The producers rewrite a leg-correlated read into a merged-correlated read with
+  the leg packed into the NAME:
+  `rule_implement_nested_loop_join.go:2366` (`qualField := corr + "." +
+  strings.ToUpper(fv.Field)`) and `cascades_translator.go:3560`
+  (`values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)`)
+  both turn `QOV(leg).COL` into `QOV(merged)."LEG.COL"`, because the FlatMap
+  inner's binder resolves the merged row by that key.
+
+  The structural form ALREADY EXISTS on the other path: `executor.go:2719`
+  `concatLegPositionals` stores leg WINDOWS (`RecordType.Legs`) rather than
+  dotted names, and `executor.go:2788` `spansFromMergedLegs` binds `QOV(leg).col`
+  leg-locally over the merged row for the join-predicate path. So this is not a
+  missing capability.
+
+  **The plan below is a CORRECTION of the one first booked here.** "Bind
+  leg-locally through `RecordType.Legs`" reads as structural and is not:
+  `values.RecordTypeLeg` is `{Name string // UPPER binding of the source; Start;
+  Width}` (`pkg/recordlayer/query/plan/cascades/values/type.go:372-376`), so a
+  binder that selects a leg by `Legs[i].Name` is still deciding a quantifier's
+  identity by text. It would move the string from the FieldValue's `Field` into
+  the row type's leg table and change nothing about what can go wrong — the same
+  defect this whole item exists to remove, one indirection further away.
+
+  Java does not do this, in either of the two places it could have. Read both
+  before starting:
+
+  1. **It never merges for binding at all.** `RecordQueryFlatMapPlan.executePlan`
+     (`fdb-record-layer-core/.../query/plan/plans/RecordQueryFlatMapPlan.java:135-140`)
+     binds the OUTER result under the outer quantifier's alias
+     (`context.withBinding(Bindings.Internal.CORRELATION, outerQuantifier.getAlias(),
+     outerResult)`), then binds the INNER result under the inner alias on a
+     context CHAINED off that one (`:139-140`). Each quantifier keeps its own
+     row under its own alias; nothing is concatenated and nothing is
+     re-addressed. `QuantifiedObjectValue.eval`
+     (`.../cascades/values/QuantifiedObjectValue.java:84-85`) is then a map
+     lookup — `context.getBinding(Bindings.Internal.CORRELATION, alias)` — so a
+     leg-correlated read needs no rewriting on the way in.
+  2. **Where a merged row IS unavoidable it is UNNAMED and ORDINAL, rewritten
+     EAGERLY.** `PartitionSelectRule.java:283-315` collapses ≥2 live lowers into
+     `RecordConstructorValue.ofColumns(...)` over `Column::unnamedOf` of each
+     leg's `QuantifiedObjectValue` (`:284-291`), then builds a `TranslationMap`
+     mapping each collapsed alias to `FieldValue.ofOrdinalNumber(QOV(newQuantifier),
+     index)` (`:296-303`) and applies it to the upper predicates and the result
+     value at CONSTRUCTION time (`:307-315`). The columns carry no names, so
+     there is nothing for a later reader to match; the ordinal is fixed once,
+     where the layout is in hand.
+  3. **And it REJECTS rather than represent.** Where the lateral correlations
+     conflict, Java declines the partitioning outright: more than one lower
+     correlated-to by the uppers (`:161-167`), or an upper-correlated lower that
+     is not the same one the upper aliases correlate to (`:234-243`).
+
+  So CQ-53's plan is:
+
+  - **Parent-chained per-alias bindings first.** Teach the FlatMap inner binder
+    Java's chained `EvaluationContext`: one binding per quantifier alias, inner
+    chained off outer. A `QOV(leg).COL` read then resolves without any rewrite,
+    and both producers (`rule_implement_nested_loop_join.go:2366`,
+    `cascades_translator.go:3560`) delete outright rather than being re-keyed.
+    This is the bulk of the work and it removes the channel rather than
+    relocating it.
+  - **Nested UNNAMED ordinal record + eager translation ONLY where merging is
+    unavoidable**, following `PartitionSelectRule.java:283-315`. Go already has
+    this port: `positional_merge.go` builds the unnamed positional merge row and
+    rebases every upper reference through
+    `TranslationMap.When(live_i).Then(ofOrdinalNumber(QOV(merge), i))`, and
+    `rule_partition_select.go:616` is the same rule's Case-1 unnamed column
+    (`AddColumn("", LiteralValue(1))` — Java's `addResultValue(LiteralValue.ofScalar(1))`,
+    `PartitionSelectRule.java:264`). The device exists; the merged-row binder is
+    the site that has not been taught it.
+  - **Decline where lateral correlations conflict**, per `:161-167` / `:234-243`,
+    instead of inventing a representation that can express the conflict.
+  - **No leg-name channel.** `RecordTypeLeg.Name` may keep serving diagnostics
+    and layout derivation, but it must never be what selects the leg a reference
+    binds to. If the implementation finds itself matching on it, the first bullet
+    was skipped.
+
+  The load-bearing negative result, now PINNED rather than prose:
+  `TestLegRef_DeclinesAMergedRowQualifiedRead`
+  (`pkg/relational/core/query/cluster_ref_attribution_test.go`). `legRef`
+  (`ordinal_seed.go:759-769`) declines any dotted name BEFORE asking the child,
+  and that guard is a mitigation, not defensiveness: delete it and
+  `FieldValue{Field:"A.ID", Child:QOV(S)}` reports leg `"S"` — the merged
+  correlation returned as a direct leg reference, measured by mutation. So the
+  five readers (`ordinal_seed.go:761`,
+  `rule_implement_nested_loop_join.go:2332`, `left_outer_existential.go:112`,
+  `box_conjunct.go:149`, `accessor_name_path.go:61`) cannot be "cleaned up"
+  first. Producer-first, as RFC-197 item 6 requires.
+
+  Executor + NLJ rule, so it takes a Graefe-gated RFC and a review lap of its
+  own. Closing it takes the RFC-197 `dotted` bucket from 6 to 1
+  (`cascades_generator.go:4122`, the group-key qualification probe, is the only
+  non-merged-row reader left).

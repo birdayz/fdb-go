@@ -1,9 +1,13 @@
 package docscheck
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -213,9 +217,9 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 			// A whitelist of WRAPPERS can never reach a concatenation: the map
 			// key is a BinaryExpr, not a call, so no set of laundering function
 			// names would have matched it. This exact line is
-			// cascades_generator.go:3169, and its sibling one arm below —
-			// identical lookup, no leg prefix — was recorded as debt while this
-			// one passed silently.
+			// pkg/relational/core/embedded/cascades_generator.go:3186, and its
+			// sibling one arm below (:3192 — identical lookup, no leg prefix) was
+			// recorded as debt while this one passed silently.
 			name: "map key laundered through concatenation",
 			want: "map key",
 			body: `func f(inner map[string]int, fv *values.FieldValue, legPrefix string) int {
@@ -224,8 +228,9 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 		},
 		{
 			// Slicing the flat "ALIAS.col" name to get the qualifier is the same
-			// blind spot through a SliceExpr — cascades_translator.go:5765 and
-			// exists_gathered_cluster_wrap.go:131.
+			// blind spot through a SliceExpr —
+			// pkg/relational/core/query/cascades_translator.go:5722 and
+			// pkg/relational/core/query/exists_gathered_cluster_wrap.go:131.
 			name: "map key laundered through a slice of the name",
 			want: "map key",
 			body: `func f(layouts map[string]int, fv *values.FieldValue, dot int) int {
@@ -233,7 +238,8 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 }`,
 		},
 		{
-			// The comparison form of the same slice — cascades_translator.go:5726.
+			// The comparison form of the same slice —
+			// pkg/relational/core/query/cascades_translator.go:5674.
 			name: "comparison against a slice of the name",
 			want: "!= comparison",
 			body: `func f(fv *values.FieldValue, key string, dot int) bool {
@@ -265,10 +271,12 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 		{
 			// Two launderings stacked. One level of peeling sees a CallExpr whose
 			// callee is not a launderer and stops — which is how
-			// aggregateOperandColumn (cascades_translator.go:7392) escaped the
-			// name in plain sight. Below a launderer the argument is already a
-			// string, so there is no constructor to confuse and the search goes
-			// to any depth.
+			// aggregateOperandColumn escaped the name in plain sight. That function
+			// no longer exists (migrated under RFC-197 item 2 — the aggregate
+			// operand's width now indexes the input's typed column list by ordinal),
+			// so there is no line to cite: the fixture IS the record of the shape.
+			// Below a launderer the argument is already a string, so there is no
+			// constructor to confuse and the search goes to any depth.
 			name: "escape laundered through a nested string helper",
 			want: "escaping as a bare string",
 			body: `func stripColumnQualifier(s string) string { return s }
@@ -285,9 +293,12 @@ func f(v values.Value) (string, bool) {
 			// ONE local assignment between the name and the sink hid the
 			// decision from both tiers, because both inspect only the sink
 			// expression. This is buriedLegOrdinalLayout — one of the seven —
-			// verbatim: rule_implement_nested_loop_join.go:2213 builds the key,
-			// :2214-:2215 probe and write the layout under it. The gate was
-			// named for that function and could not see it.
+			// verbatim, as it stood: it built a `corr + "." + name` key and probed
+			// and wrote the layout under it. The gate was named for that function
+			// and could not see it. The name-built key is GONE (the function is
+			// now keyed by values.ColumnIdentity —
+			// pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2194),
+			// so the fixture is the only surviving statement of the shape.
 			name: "map key via a local derived from the name",
 			want: "a map key via local key derived from the name",
 			body: `func f(layout map[string]int, fv *values.FieldValue, corr string) int {
@@ -296,10 +307,12 @@ func f(v values.Value) (string, bool) {
 }`,
 		},
 		{
-			// The second of the two invisible bugs: fieldValueAliasAndCol
-			// (:3693 assigns, :3705/:3707 return). A returned SLICE of a local
-			// holding the name is the name leaving as a bare string exactly as
-			// much as a slice of `fv.Field` is.
+			// The second of the two invisible bugs: fieldValueAliasAndCol, which
+			// assigned `upper := strings.ToUpper(fv.Field)` and returned two slices
+			// of it. A returned SLICE of a local holding the name is the name
+			// leaving as a bare string exactly as much as a slice of `fv.Field`
+			// is. The function was deleted under RFC-197 item 2, so there is no
+			// line to cite and this fixture is what keeps the shape detectable.
 			name: "return escape via a local derived from the name",
 			want: "escaping as a bare string (return) via local upper derived from the name",
 			body: `func f(fv *values.FieldValue, dot int) (string, string) {
@@ -310,12 +323,17 @@ func f(v values.Value) (string, bool) {
 		{
 			// The engine's name matching lives in Replace/pull-up closures, so
 			// a taint pass that stopped at a FuncLit would be blind to most of
-			// it. Measured: not descending into closures loses seven real sites
-			// (cascades_translator.go:5732/:5887/:5895,
-			// clustered_outer_scalar.go:402/:405/:406,
-			// exists_gathered_cluster_wrap.go:152) and silences no false
-			// positive — the scoping question is settled by keying the taint on
-			// the DECLARATION, not by refusing to look inside closures.
+			// it. The scoping question is settled by keying the taint on the
+			// DECLARATION, not by refusing to look inside closures.
+			//
+			// How much that is worth is MEASURED rather than asserted, and the
+			// measurement is committed: TestFieldDecisionsInsideClosuresAreReported
+			// enumerates the engine decisions that are reported from inside a
+			// FuncLit and fails if the walk stops descending. An earlier version of
+			// this comment listed the sites inline, and three of the six it named
+			// were gone by the time anyone read it — an inline site list is a
+			// measurement that rots, which is the failure the whole gate exists to
+			// prevent one level down.
 			name: "helper call via a local derived from the name inside a closure",
 			want: "a Contains call via local leaf derived from the name",
 			body: `func f(v values.Value, cols []string) bool {
@@ -990,5 +1008,291 @@ func TestAllowlistShapeValidatorRejectsNonSites(t *testing.T) {
 					"reason is an exemption nobody has to justify.", tc.entry)
 			}
 		})
+	}
+}
+
+// debtFixture wraps a debt-literal body and optional trailing declarations into
+// a parseable file, so the header reader can be exercised on the structure it
+// actually reads rather than on a text fragment.
+func debtFixture(literalBody, trailing string) []byte {
+	return []byte("package p\n\n" +
+		"// dotted (900) — the var's own DOC comment, which discusses buckets\n" +
+		"var knownFieldDecisionDebt = map[string]fieldDebt{\n" +
+		literalBody +
+		"}\n" + trailing)
+}
+
+// The group headers are the only summary anyone reads off the debt list, and
+// they are parsed out of a source file that also DISCUSSES buckets in prose —
+// in the var's own doc comment, in other declarations, and inside function
+// bodies.
+//
+// The first version discriminated by INDENT (`^\t`), which is not a scope: one
+// tab is also the indent of a comment inside any function body, and the reader
+// took the LAST match, so a later look-alike silently overrode the header the
+// list actually advertises. Over the real file that was unfalsifiable — it
+// happens to contain no line shaped like a stray header — so the gate agreed
+// with a correct anchor and with no anchor at all.
+//
+// Scope is now the composite literal's span from the AST, and the FIRST header
+// per bucket wins. These fixtures are what makes that checkable.
+func TestBucketHeaderCountsReadHeadersNotProse(t *testing.T) {
+	t.Parallel()
+
+	src := debtFixture(
+		"\t// boundary (0) — MIGRATED\n"+
+			"\t// escape (0) -- MIGRATED, trailing prose\n"+
+			"\t// contract (11)\n"+
+			"\t// dotted (6)\n"+
+			"\t// name-keyed (3)\n"+
+			"\t// translator (17)\n"+
+			"\t// harness (1)\n",
+		"// dotted (999) — a top-level sentence recalling an old count\n"+
+			"func f() {\n"+
+			"\t// translator (998) — a one-tab comment inside a function body\n"+
+			"}\n"+
+			"//   dotted (997) — an indented doc-comment bullet\n")
+
+	got, problems := bucketHeaderCounts(src)
+	if len(problems) > 0 {
+		t.Fatalf("clean fixture reported problems: %v", problems)
+	}
+
+	want := map[string]int{
+		"boundary": 0, "escape": 0, "contract": 11, "dotted": 6,
+		"name-keyed": 3, "translator": 17, "harness": 1,
+	}
+	for b, w := range want {
+		if got[b] != w {
+			t.Errorf("bucket %q read as %d, want %d — prose outside the literal won over the header",
+				b, got[b], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("read %d buckets, want %d: %v", len(got), len(want), got)
+	}
+}
+
+// TestBucketHeaderCountsRejectsTheStaleHeaderDecoy is the exact shape the
+// previous reader passed: a STALE header inside the literal, plus a one-tab
+// comment in a FUNCTION BODY carrying the number the tally actually has.
+//
+// Under `^\t` + last-wins the function-body line was read as the header and the
+// gate reported 6 — agreeing with the live tally and reporting nothing, while
+// the list on screen advertised 7. That is the exact failure mode the header
+// check exists to prevent, arriving through the check itself.
+func TestBucketHeaderCountsRejectsTheStaleHeaderDecoy(t *testing.T) {
+	t.Parallel()
+
+	src := debtFixture(
+		"\t// dotted (7)\n"+
+			"\t\"a/b.go:1\": {1, \"dotted: x\"},\n",
+		"func helper() {\n"+
+			"\t// dotted (6)\n"+
+			"\t_ = 0\n"+
+			"}\n")
+
+	got, problems := bucketHeaderCounts(src)
+	if len(problems) > 0 {
+		t.Fatalf("the decoy is not a duplicate-header case; problems = %v", problems)
+	}
+	if got["dotted"] != 7 {
+		t.Fatalf("dotted read as %d, want 7 — the STALE header inside the literal is what "+
+			"the list advertises; a one-tab comment in a function body is not a header, "+
+			"and letting it win is how a stale count checks out green", got["dotted"])
+	}
+	// And the whole point: read as 7, it disagrees with a live tally of 6.
+	if bad := bucketHeaderMismatches(got, map[string]int{"dotted": 6}); len(bad) == 0 {
+		t.Fatal("the stale header agreed with a tally of 6 — the decoy is not detected")
+	}
+}
+
+// A bucket headed twice is not a tiebreak to resolve quietly: the list is then
+// advertising two totals, and whichever the reader picks, half the readers of
+// the file see the other one.
+func TestBucketHeaderCountsReportsDuplicateHeaders(t *testing.T) {
+	t.Parallel()
+
+	src := debtFixture(
+		"\t// dotted (7)\n"+
+			"\t\"a/b.go:1\": {1, \"dotted: x\"},\n"+
+			"\t// dotted (6)\n"+
+			"\t\"a/b.go:2\": {1, \"dotted: y\"},\n", "")
+
+	got, problems := bucketHeaderCounts(src)
+	if len(problems) != 1 || !strings.Contains(problems[0], "headed twice") {
+		t.Fatalf("duplicate header reported as %v, want one \"headed twice\" problem", problems)
+	}
+	if got["dotted"] != 7 {
+		t.Fatalf("dotted read as %d, want the FIRST header's 7 — last-wins is what let a "+
+			"stale header be overridden by a later look-alike", got["dotted"])
+	}
+}
+
+// A file that does not parse, or one with no debt literal, must report a
+// problem rather than an empty-and-therefore-agreeable reading.
+func TestBucketHeaderCountsRequiresTheLiteral(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"no literal", "package p\n\n// dotted (6)\nfunc f() {}\n", "not found"},
+		{"unparseable", "package p\n\nvar x = (\n", "does not parse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, problems := bucketHeaderCounts([]byte(tc.src))
+			if len(got) != 0 {
+				t.Fatalf("counts = %v, want none", got)
+			}
+			if len(problems) != 1 || !strings.Contains(problems[0], tc.want) {
+				t.Fatalf("problems = %v, want one mentioning %q", problems, tc.want)
+			}
+		})
+	}
+}
+
+// Both directions of header/tally disagreement, and the missing header. A
+// bucket at zero still has to advertise itself: dropping its header when it
+// empties is how a bucket stops being visible at exactly the moment its count
+// becomes a claim worth making.
+func TestBucketHeaderMismatchesReportsBothDirectionsAndAbsence(t *testing.T) {
+	t.Parallel()
+
+	full := map[string]int{
+		"boundary": 0, "escape": 0, "contract": 11, "dotted": 6,
+		"name-keyed": 3, "translator": 17, "harness": 1,
+	}
+	clone := func(edit func(map[string]int)) map[string]int {
+		m := map[string]int{}
+		for k, v := range full {
+			m[k] = v
+		}
+		edit(m)
+		return m
+	}
+
+	if bad := bucketHeaderMismatches(full, full); len(bad) > 0 {
+		t.Fatalf("agreeing header and tally reported %v", bad)
+	}
+
+	for _, tc := range []struct {
+		name           string
+		header, live   map[string]int
+		wantSubstrings []string
+	}{
+		{
+			name:           "header overstates — hides a migrated site",
+			header:         full,
+			live:           clone(func(m map[string]int) { m["dotted"] = 5 }),
+			wantSubstrings: []string{`"dotted"`, "header says 6", "tally 5"},
+		},
+		{
+			name:           "header understates — hides a site that arrived",
+			header:         full,
+			live:           clone(func(m map[string]int) { m["translator"] = 18 }),
+			wantSubstrings: []string{`"translator"`, "header says 17", "tally 18"},
+		},
+		{
+			name:           "an emptied bucket drops its header",
+			header:         clone(func(m map[string]int) { delete(m, "boundary") }),
+			live:           full,
+			wantSubstrings: []string{`"boundary"`, "no `// boundary (N)` group header"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bad := bucketHeaderMismatches(tc.header, tc.live)
+			if len(bad) != 1 {
+				t.Fatalf("got %d messages, want exactly 1: %v", len(bad), bad)
+			}
+			for _, want := range tc.wantSubstrings {
+				if !strings.Contains(bad[0], want) {
+					t.Errorf("message %q does not name %q", bad[0], want)
+				}
+			}
+		})
+	}
+}
+
+// TestFieldDecisionsInsideClosuresAreReported is the committed form of the
+// closure measurement the fixture above cites.
+//
+// The engine's name matching lives in `values.Replace` callbacks and pull-up
+// closures, so a walk that stopped at a FuncLit — or a taint pass scoped to the
+// closure rather than the declaration — would go blind to most of the surface
+// the gate exists to watch, while still reporting enough sites elsewhere to
+// look healthy. Nothing detected that: the ratchet is a set of file:line
+// entries, and a walk that stops finding some of them fails with "a debt entry
+// no longer matches", which reads as normal line drift.
+//
+// So the property is asserted directly: engine decisions ARE reported from
+// inside closures, and every one of them is a known debt site. The floor is a
+// floor rather than an exact count because sites move; what it cannot survive
+// is the walk ceasing to descend.
+func TestFieldDecisionsInsideClosuresAreReported(t *testing.T) {
+	t.Parallel()
+
+	root := sourceTreeRoot(t)
+	var engineSites []string
+	for _, rel := range trackedGoFiles(t, root) {
+		if strings.HasSuffix(rel, "_test.go") {
+			continue // the gate's subject is the engine, not its tests
+		}
+		src, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, rel, src, parser.ParseComments)
+		if err != nil {
+			continue // the tree walk skips unparseable files too
+		}
+		type span struct{ lo, hi token.Pos }
+		var lits []span
+		ast.Inspect(f, func(n ast.Node) bool {
+			if fl, isLit := n.(*ast.FuncLit); isLit {
+				lits = append(lits, span{fl.Pos(), fl.End()})
+			}
+			return true
+		})
+		scanFieldDecisions(f, func(pos token.Pos, _ string) {
+			for _, s := range lits {
+				if pos >= s.lo && pos <= s.hi {
+					engineSites = append(engineSites,
+						fmt.Sprintf("%s:%d", rel, fset.Position(pos).Line))
+					return
+				}
+			}
+		})
+	}
+	sort.Strings(engineSites)
+	t.Logf("engine decisions reported from inside a closure: %d\n  %s",
+		len(engineSites), strings.Join(engineSites, "\n  "))
+
+	// The floor: this many engine sites are only visible because the walk
+	// descends into FuncLits and keys the taint on the DECLARATION.
+	const closureSiteFloor = 10
+	if len(engineSites) < closureSiteFloor {
+		t.Fatalf("only %d engine decisions reported from inside a closure, want at least %d "+
+			"— the walk has stopped descending into FuncLits (or the taint has been "+
+			"re-scoped to the closure), and the Replace/pull-up callbacks where the "+
+			"engine's name matching actually lives are now invisible to this gate:\n  %s",
+			len(engineSites), closureSiteFloor, strings.Join(engineSites, "\n  "))
+	}
+	// And each is accounted for. A closure site missing from the ratchet would
+	// mean the main walk reports it as a fresh offense, but this states the
+	// invariant where the closure question is being asked.
+	for _, site := range engineSites {
+		if _, known := knownFieldDecisionDebt[site]; known {
+			continue
+		}
+		if _, allowed := fieldDecisionAllowed(allowedFieldDecisions, site); allowed {
+			continue
+		}
+		t.Errorf("closure site %s is in neither the debt list nor the allowlist", site)
 	}
 }

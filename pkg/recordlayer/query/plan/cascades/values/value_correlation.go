@@ -1,83 +1,34 @@
 package values
 
-import (
-	"strings"
-)
-
-// MergeSeedLegsOfValue returns the SOURCE-LEG correlations a value tree depends
-// on THROUGH a merged (source-anchored join) row — the partition-time
-// re-exposure twin of GetCorrelatedToOfValue, at the value level rather than the
-// predicate level (predicates.AddMergeSeedAliases).
+// A lateral UNNEST's Explode reads its array out of the row of the source that
+// owns it. When that source is one leg of a merged (multi-source) row, the
+// dependency on the OWNING leg is what keeps a bipartition from separating the
+// Explode from its array — separate them and the Explode materializes against a
+// row where the array column is unbound, which yields zero rows.
 //
-// A multi-source lateral UNNEST reads a BURIED leg's column through the merged
-// outer row: `FieldValue{Field:"A.ARR", Child:QOV(B)}` reads `QOV(B)["A.ARR"]`
-// where B is the rightmost (flow) leg and A is a NON-flow leg merged into B's
-// row. GetCorrelatedToOfValue reports only {B} (the QOV it references), so the
-// genuine dependency on A is INVISIBLE — and PartitionSelectRule/
-// PartitionBinarySelectRule, which classify bipartition validity from the
-// correlation order, would let `{B, Explode}` separate from A, materializing the
-// Explode against a bare B row where `A.ARR` is unbound (zero rows). This
-// recovers the buried leg A from the DOTTED field prefix: a FieldValue whose
-// Field is `LEG.COL` (and whose Child resolves to a QuantifiedObjectValue —
-// i.e. it reads off a merged quantifier's row, not a literal anchored RC) genuinely
-// depends on the source leg `LEG`. The anchored merged row always names its legs
-// by their source alias as the dotted prefix (the executor's mergeRows), and those
-// source aliases ARE the sibling quantifier aliases after the merge flattens — so
-// the prefix maps directly to the owned quantifier.
+// That dependency used to be recovered from a STRING: the collection was minted
+// as `FieldValue{Field:"A.ARR", Child:QOV(B)}` (B the flow leg, A the buried
+// one), GetCorrelatedToOfValue reported only {B}, and a helper here sliced "A"
+// off the field name and re-added it. The slice is a name-keyed correlation —
+// the identity of a quantifier decided by text — and it is wrong in both
+// directions: a leg addressed by a minted binding rather than its SQL alias
+// loses the edge entirely, and an unrelated sibling that happens to share the
+// alias gains one.
 //
-// Returns a non-nil (possibly empty) map; nil input yields an empty map.
+// The recovery is gone because the shape is: every Explode collection the
+// translator emits is now an ordinal bake over its OWNER's own quantifier
+// (unnestBakedRootCollection, unnest_gather, chained_unnest), so
+// GetCorrelatedToOfValue reports the owner directly — Java's
+// Quantifier.getCorrelatedTo edge, with no recovery step to get wrong.
 //
-// Retirement gating (WS-N slice 5): dead-in-effect on every covered
-// surface (probed zero across all suites incl. full FDB), but the
-// producing shape — a dotted merged-row read from the enclosed-unnest
-// name-model residual — is still constructible by the translator. This
-// recovery retires WITH that residual's ordinalization (the box
-// arcs), not before: it is the defense that keeps the partition rules
-// from separating an Explode from its buried leg (zero-rows bug).
-func MergeSeedLegsOfValue(v Value) map[CorrelationIdentifier]struct{} {
-	out := map[CorrelationIdentifier]struct{}{}
-	if v == nil {
-		return out
-	}
-	WalkValue(v, func(node Value) bool {
-		fv, ok := node.(*FieldValue)
-		if !ok || fv.Child == nil {
-			return true
-		}
-		dot := strings.IndexByte(fv.Field, '.')
-		if dot <= 0 {
-			return true
-		}
-		// The Child must bottom out in a QuantifiedObjectValue — a dotted read off
-		// a merged quantifier's row. (No anchored RC is constructible, so a
-		// literal-anchored-RC dotted case cannot occur.)
-		if _, isQOV := leftmostQOVOfValue(fv.Child); !isQOV {
-			return true
-		}
-		out[NamedCorrelationIdentifier(strings.ToUpper(fv.Field[:dot]))] = struct{}{}
-		return true
-	})
-	return out
-}
-
-// leftmostQOVOfValue descends the leftmost FieldValue chain and reports the
-// QuantifiedObjectValue correlation it bottoms out in (for
-// MergeSeedLegsOfValue).
-func leftmostQOVOfValue(v Value) (CorrelationIdentifier, bool) {
-	for {
-		switch x := v.(type) {
-		case *QuantifiedObjectValue:
-			return x.Correlation, true
-		case *FieldValue:
-			if x.Child == nil {
-				return CorrelationIdentifier{}, false
-			}
-			v = x.Child
-		default:
-			return CorrelationIdentifier{}, false
-		}
-	}
-}
+// TestExplodeCollectionsAreOrdinalBaked (pkg/relational/core/query) pins the
+// producer side across every routing arm, including that the root ordinal is
+// the owner's WINDOW OFFSET in a merged row rather than a first-match by name.
+// TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
+// …ReachesMatchEnumerator pin the two consumers, and each has a name-model arm
+// asserting the owner dependency is ABSENT for a dotted collection — restoring
+// the slice here turns those arms red, which is what keeps this deletion from
+// being reversible in silence.
 
 // GetCorrelatedToOfValue walks v + its descendants and returns the
 // union of every correlation-bearing leaf Value's alias. Handles

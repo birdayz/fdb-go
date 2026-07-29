@@ -1861,78 +1861,26 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	}
 	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
 
-	// The correlated array Value: FieldValue{arrField} over QOV(outer).
+	// The correlated array Value is ALWAYS the ordinal bake below
+	// (unnestBakedRootCollection). There is no name-keyed alternative: the
+	// outer row this Explode reads is ordinal-addressed by the seed, so a
+	// collection read keyed by a column NAME has nothing to resolve against.
 	//
-	// When the outer is a MERGED row (a multi-source FROM, e.g. `FROM A, B,
-	// A.arr AS X`), the merged row flows under the rightmost leg's alias
-	// (`sourceAlias(j.Left)`) and exposes every source's columns BOTH bare
-	// (last-leg-wins) AND qualified `LEG.COL`. The bare key's winner follows
-	// the join's EXECUTION operand order — an order the planner may legally
-	// swap (cost model, tie-breaks) — so a bare read here is order-dependent:
-	// it explodes whichever leg's array happened to merge LAST, not the array
-	// the classifier type-checked. That includes the RIGHTMOST source
-	// (`FROM A, B, B.arr AS X`): the old seg0==flow-alias bare-read arm was
-	// correct only while the step-1 join kept declaration order, and returned
-	// A's elements the moment the cost model preferred the swapped operands
-	// (caught by the stable-tie-break landing). Read the QUALIFIED
-	// `SEG0.FIELD` key whenever the outer row carries MORE THAN ONE source
-	// namespace — the anchored merged record carries the qualified key for
-	// every leg under either operand order.
-	//
-	// The authority is outerBoundAliases (the outer row's VISIBLE namespace
-	// count), NOT clusterArity: a FULL OUTER box is merge-OPAQUE (arity 1 —
-	// correct for SelectMergeRule purposes) yet its output row is MERGED
-	// (`FROM a FULL JOIN b, a.arr AS x` — bare keys last-leg-wins across
-	// both legs), so the arity proxy left exactly that shape on the bare
-	// read. Only a genuine SINGLE-NAMESPACE outer (`FROM t, t.arr` — a
-	// scan/derived row, bare keys only) reads the bare field. RFC-142.
-	// For a MULTI-SEGMENT path (`t.a.b`, unnest-residual class 2) the root
-	// read is the FIRST field segment; the remaining segments descend the
-	// struct value at eval (the unpinned multi-accessor path — root by name
-	// key, suffix through FieldValue's proto-message arm, Java's
-	// FieldValue.ofFields shape).
-	rootField := fieldName
-	if len(u.Segments) > 2 {
-		rootField = strings.ToUpper(u.Segments[1])
-	}
-	arrayFieldKey := rootField
-	seg0 := strings.ToUpper(u.Segments[0])
-	if len(outerBoundAliases(j.Left)) != 1 {
-		arrayFieldKey = seg0 + "." + rootField
-	}
-	var arrayValue values.Value
-	if len(u.Segments) > 2 {
-		// The root reads by Datum key; the suffix descends the struct value
-		// by field NAME (FieldValue's proto-message arm). Both ordinals are
-		// the LOUD sentinel -1 — never consulted on the name-model / proto
-		// paths, and out-of-range (a clean error) rather than a silent slot
-		// read if either ever reached the positional descent arm.
-		accs := []values.ResolvedAccessor{{Field: arrayFieldKey, Ordinal: -1}}
-		for _, seg := range u.Segments[2:] {
-			accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
-		}
-		arrayValue = &values.FieldValue{
-			Field: fieldName,
-			Typ:   values.NewArrayType(true, elementType),
-			Child: values.NewQuantifiedObjectValue(outerCorr),
-			// UNPINNED: the residual's rows are name-model — the root key
-			// resolves against the Datum; only the suffix descends
-			// positionally-agnostic through the struct value.
-			Resolved: &values.FieldPath{Accessors: accs},
-		}
-	} else {
-		arrayValue = values.NewFieldValue(
-			values.NewQuantifiedObjectValue(outerCorr),
-			arrayFieldKey,
-			values.NewArrayType(true, elementType),
-		)
-	}
+	// This is where the qualified-name channel used to be born (RFC-197 item 6).
+	// A multi-namespace outer row exposes every leg's columns bare
+	// (last-leg-wins, so a bare read followed the join's EXECUTION operand
+	// order — the planner may legally swap it) AND qualified `LEG.COL`, and the
+	// lowering used to pack the leg into the string, `FieldValue{Field: SEG0 +
+	// "." + COL}`, to escape the ambiguity. Structure in a string is not an
+	// escape: nothing downstream could tell that qualifier from a leaf name
+	// containing a dot, and the recovery it forced (a correlation set keyed by
+	// the sliced prefix) attributed the dependency by NAME, not by identity.
+	// The ordinal bake states the same fact structurally — the leg's own
+	// window offset — so the ambiguity never arises and the prefix has nothing
+	// to encode.
 	withOrdinality := u.AtAlias != ""
-	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
-	explodeRef := expressions.InitialOf(explode)
-
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, explodeRef)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
+	var innerQ expressions.Quantifier
 
 	// Ordinalize the seed when the OUTER is a SINGLE SOURCE (clusterArity==1) AND
 	// the unnest is NOT ENCLOSED in a larger name-model composition — this
@@ -1967,11 +1915,11 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	var resultValue values.Value
 	// SINGLE-SOURCE (clusterArity==1), non-enclosed, exists-safe unnest
 	// ordinalizes the seed. A MULTI-SEGMENT path (`FROM t, t.rec.arr AS x`,
-	// len(Segments)>2, unnest-residual class 2) also needs its COLLECTION baked
-	// as a fused ofOrdinal root (unnestBakedRootCollection below) — the shared
-	// name-keyed arrayValue does NOT descend under the ordinal-seed build. When
-	// the bake declines (nil), the whole ordinal path declines and the name-model
-	// builder (which owns the name-keyed collection) takes over.
+	// len(Segments)>2, unnest-residual class 2) needs its COLLECTION baked as a
+	// fused ofOrdinal root (unnestBakedRootCollection below), and so does the
+	// single-segment case — the suffix-free instance of the same root. When the
+	// bake declines (nil), the whole shape is untranslatable and the decline
+	// below is LOUD.
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 		// The COLLECTION bakes positionally under the ordinal-seed build for
@@ -1985,7 +1933,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 				bakedExplode := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
 				innerQ = expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(bakedExplode))
 			} else {
-				resultValue = nil // decline the ordinal path → name-model residual
+				resultValue = nil // the collection is underivable — decline LOUD
 			}
 		}
 	}

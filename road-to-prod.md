@@ -58,7 +58,14 @@ bounding in-flight reads) verified CLOSED in code.
   1020/40001. Silent lost updates. Pinned by
   `pkg/relational/sqldriver/tx_select_isolation_probe_test.go`. Size L,
   review-gated. No user-side mitigation exists; this is the Tier-2 gate.
-- The wrong-rows residue of the RFC-197 identity migration (see table).
+B2 is now the dominant Tier-2 item outright. The RFC-197 identity migration no
+longer contributes a wrong-rows residue: its name-keyed and dotted wrong-rows
+channels are closed, and what the ratchet still holds is machinery-gated stops
+and boundary-layer sites (see table). Those gate the migration's *completion*,
+not Tier 2. The B4 impact cell says the same thing — it read "wrong rows
+(narrow, shrinking)" while this paragraph said the wrong-rows channels were
+closed, and a blocking table that contradicts its own prose is a plan sized
+from whichever line the reader happened to open.
 
 ### Tier 3 — mixed Go/Java deployment on a shared cluster
 **Works today WITH the watch-list.** Wire compat is exercised per-PR; the
@@ -73,7 +80,7 @@ same query returns different rows or different errors on the two engines.
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S | **FIXED, merged (#523)**: windows resized from measured dispatch landings, per-job heartbeats, reconciler fails when any net has not genuinely run in N days (red until tonight proves the nets — the truthful state). Stress 07-17 failure root-caused separately (see Tier 1); binding-stress 0/50 still open (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | Booked (TODO), pinned by probe test; needs executor scan routed through the active tx with the snapshot-vs-serializable read decision |
 | B3 | RFC-195: six cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | RFC fully ACKed (rev 3), implementation queued behind the identity migration |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Wrong rows (narrow, shrinking) | M | Active; ratchet-enforced; 68 at inception → 43 after the name-keyed bucket |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only after writers fixed; wrong-rows channels closed | M | Active; ratchet-enforced; 68 at inception → 38 |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale (prod-readiness RFC asserts closed gaps as open; PRODUCTION_READINESS.md authority claim outdated; TODO duplicates/stale entries) | Trust/decision risk, not code | S | Booked as one reconciliation item |
 
@@ -84,15 +91,29 @@ same query returns different rows or different errors on the two engines.
 | boundary | 0 | migrated |
 | escape | 0 | migrated (found + fixed a live wrong-type defect on the way) |
 | name-keyed | 3 | Shrunk from 15 — the NLJ layout maps and distinct-key set are CONVERTED; the 3 stops are measured machinery gaps (planner-budget re-fire on constraint growth; resolver-upstream conversion; lazy carriers with no other identity), each recorded on its debt entry |
-| dotted | 15 | Yes, narrowly — two writers key a correlation set by sliced qualifier with no ambiguity guard; alias shadowing across nested scopes can attribute a correlation to the wrong quantifier |
-| translator | 13 | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole |
+| dotted | 6 | Shrunk from 15, and the WRITERS are resolved — one was pinned unreachable and deleted, the other was a confirmed live defect, now fixed (it manufactured a leg alias out of aggregate DISPLAY text, `SUM(AMOUNT+E` from `SUM(AMOUNT+E.REF)`, and matched nothing only by luck). What remains are READERS that decline, each probe-pinned; the residual is the executor-gated merged-row `leg.col` channel (CQ-53), whose five readers are producer-blocked, plus the group-key qualification probe. Four further sites left this bucket by RECLASSIFICATION, not fix — see translator |
+| translator | 17 | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole. Up from 13: four sites moved here from `dotted` (RFC-197 item 6 flagged them as possibly misfiled; the site-by-site pass confirmed it). Each guards `Child != nil → bail` before slicing, so it sees only a lazy carrier minted from parsed text, and emits a born-baked value — name resolution, not a structure-in-a-string probe. Booked upstream as CQ-52: the parser already produces the segments and joins them only for the resolver to split them back |
 | contract | 11 | Not alone — single naming authorities; collision only becomes wrong rows via a name-keyed reader, so closing name-keyed defuses these |
 | harness | 1 | No — oracle-side; affects trust in the net, not prod rows |
 
 Enforcement: `pkg/docscheck`'s `TestFieldNameNeverDecides` — every tracked
 non-generated non-test file scanned, strict ratchet (stale entries fail as
-loudly as new violations), empty allowlist, per-site counts. The migration is
-done when name-keyed and dotted hit zero; the gate then holds the count there.
+loudly as new violations), empty allowlist, per-site counts, and per-bucket
+totals checked against the group headers that advertise them
+(`TestFieldDebtBucketsArePartition`), so the arithmetic quoted into this table
+cannot drift from the list.
+
+The wrong-rows channels this item existed to close — name-keyed sets and the
+dotted qualifier-slice writers — are CLOSED. What the counts now hold is of a
+different kind: machinery-gated STOPS, each measured and recorded on its own
+debt entry (planner-budget re-fire on constraint growth, CQ-51; the FlatMap
+merged-row binder, CQ-53; the resolver-upstream projection bake; lazy carriers
+with no other identity), plus boundary-layer sites held frozen by the ratchet —
+resolution-time text at the translator boundary (CQ-52 retires four of them at
+the source), the naming contracts, and the unaudited oracle. So "done" is no
+longer "these numbers reach zero soon"; it is "no reachable wrong-rows path
+remains, and the gate holds the rest at their measured count until the
+machinery each one waits on lands."
 
 ## Watch-list — pinned divergences a prod user must be told about
 
@@ -164,9 +185,13 @@ divergence (deliberate, reviewed).
 ## Sequence
 
 1. B1 (in flight): trustworthy nets + stress root-cause. Days.
-2. Finish RFC-197 name-keyed + dotted (wrong-rows tail → 0). Days at current
-   pace; translator/contract may follow at lower urgency.
-3. B2 explicit-tx isolation. The Tier-2 gate. L, review-gated.
+2. B2 explicit-tx isolation. The Tier-2 gate, and now the top Tier-2 item on
+   its own. L, review-gated.
+3. RFC-197 tail: the wrong-rows channels are closed, so what is left is
+   sequenced behind the machinery each stop waits on — CQ-52 (segments
+   end-to-end, S/M, retires four translator sites), then CQ-51 and CQ-53
+   (planner-budget coupling and the FlatMap merged-row binder, both
+   review-gated).
 4. RFC-195 implementation (wrong plans). M, ACKed and ready.
 5. B5 typed metadata flow. L, after the migration proves the identity
    machinery everywhere.
