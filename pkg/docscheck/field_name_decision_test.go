@@ -195,7 +195,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
-	// name-keyed (13)
+	// name-keyed (11)
 	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "name-keyed: referenced-field set keyed by leaf name"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2214": {1, "name-keyed: buriedLegOrdinalLayout -- one of the seven -- probes its leg layout under 'CORR.LEAF' built from the display name; the Resolved.Single() guard above it declines FUSED accessors but two same-named top-level columns still collide"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2215": {1, "name-keyed: same layout, the WRITE that mints the colliding key"},
@@ -205,10 +205,8 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            {1, "name-keyed: projection merge matches inner slot by name"},
 	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "name-keyed: sort key equality by name"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "name-keyed: field remap compares leaf names"},
-	"pkg/recordlayer/query/plan/cascades/values/pullup.go:214":                    {1, "name-keyed: pull-up picks a struct member by name"},
 	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                   {1, "name-keyed: replacement target matched by name"},
 	"pkg/recordlayer/query/plan/cascades/values/replace.go:520":                   {1, "name-keyed: same, second arm"},
-	"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go:243":          {1, "name-keyed: composeFieldOverConstructor picks a constructor member by name, correct only because of its duplicate-name guard"},
 
 	// translator (13)
 	"pkg/relational/core/embedded/cascades_generator.go:3172": {1, "translator: parsed column ref matched against declared inner columns"},

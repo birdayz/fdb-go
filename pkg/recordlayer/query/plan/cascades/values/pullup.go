@@ -206,22 +206,14 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 				}
 				return nil
 			}
-			// LAZY push-down: name-based, but DECLINE on an ambiguous name —
-			// same rationale as composeFieldOverConstructor's lazy arm (a
-			// dup-named RC has no defensible first match).
-			var match Value
-			for _, field := range rc.Fields {
-				if field.Name == fv.Field {
-					if match != nil {
-						return nil
-					}
-					match = field.Value
-				}
-			}
-			if match != nil {
-				return match
-			}
-			return nil // field not found in constructor
+			// A LAZY node has no ordinal, so it selects no member and declines —
+			// the same answer composeFieldOverConstructor gives, for the same
+			// reason. The name arm this replaces was Go-only (Java's FieldValue
+			// carries a resolved path by construction) and it MATCHED zero times
+			// across the explaindiff corpus, the //pkg/relational/sqldriver FDB
+			// suite and every conformance harness; only hand-built unit fixtures
+			// reached it.
+			return nil
 		}
 	}
 

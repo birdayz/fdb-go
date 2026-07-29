@@ -40,15 +40,16 @@ func TestRichOrderingPushDownTranslatesFixedComparisonRangeOperand(t *testing.T)
 	lowerKey := bindingTranslationField("key")
 	lowerComparand := bindingTranslationField("cutoff")
 	upperAlias := values.NamedCorrelationIdentifier("binding_pushdown")
-	upperKey := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(upperAlias),
-		"renamed_key",
-		values.NullableLong,
+	// The upper references address the constructor's OUTPUT SLOTS: a resolved
+	// reference to a projection output carries the ordinal, and push-down selects
+	// the member by it (RFC-197 item 3). A lazy carrier here would push down to
+	// nothing, which is what the pull-up direction above deliberately still
+	// produces and this direction must not depend on.
+	upperKey := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+		values.NewQuantifiedObjectValue(upperAlias), "renamed_key", 0, values.NullableLong,
 	)
-	upperComparand := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(upperAlias),
-		"renamed_cutoff",
-		values.NullableLong,
+	upperComparand := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+		values.NewQuantifiedObjectValue(upperAlias), "renamed_cutoff", 1, values.NullableLong,
 	)
 	ordering := bindingTranslationOrdering(t, upperKey, upperComparand, false)
 	resultValue := values.NewRecordConstructorValue(

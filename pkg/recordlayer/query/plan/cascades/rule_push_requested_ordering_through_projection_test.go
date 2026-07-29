@@ -31,7 +31,11 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
-			Value:     &values.FieldValue{Field: "COL1", Typ: values.UnknownType},
+			// Output SLOT 0 of the projection. A resolved reference to a
+			// projection output carries the ordinal; the name resolution that
+			// turned `ORDER BY col1` into that slot happened upstream, at the one
+			// place a name is legitimate (RFC-197).
+			Value:     values.NewFieldValueWithResolvedOrdinal("COL1", 0, values.UnknownType),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 	}, properties.DistinctnessNotDistinct, false)
@@ -76,12 +80,18 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 	}
 }
 
-func TestPushRequestedOrderingThroughProjection_AliasResolution(t *testing.T) {
+func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	t.Parallel()
 
 	// Projection: [A+B AS total, C AS c]
-	// Requested ordering: [TOTAL ASC]
-	// Expected: ordering with arithmetic expression (A+B) pushed.
+	// Requested ordering: [output slot 0 ASC]
+	// Expected: ordering with the arithmetic expression (A+B) pushed.
+	//
+	// Was named for ALIAS RESOLUTION, which no longer happens here: the request
+	// addresses the slot, and turning `ORDER BY total` into that slot is the
+	// resolver's job upstream (RFC-197 item 3). What it pins now is that a
+	// COMPUTED output slot pushes down to its whole expression, not just a bare
+	// column read.
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	addExpr := &values.ArithmeticValue{
@@ -99,7 +109,7 @@ func TestPushRequestedOrderingThroughProjection_AliasResolution(t *testing.T) {
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
-			Value:     &values.FieldValue{Field: "TOTAL", Typ: values.UnknownType},
+			Value:     values.NewFieldValueWithResolvedOrdinal("TOTAL", 0, values.UnknownType),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 	}, properties.DistinctnessNotDistinct, false)
@@ -135,8 +145,11 @@ func TestPushRequestedOrderingThroughProjection_NoMatchDoesNotPush(t *testing.T)
 	t.Parallel()
 
 	// Projection: [A AS col1]
-	// Requested ordering: [NONEXISTENT ASC]
-	// Rule should NOT push — key doesn't translate.
+	// Requested ordering: [a LAZY "NONEXISTENT" carrier]
+	// Rule should NOT push. Two independent reasons now, and both are load-bearing:
+	// the projection has no such output, AND a lazy carrier has no ordinal to
+	// select a slot with, so it declines even against a matching name. The second
+	// case is covered on its own below.
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	proj := expressions.NewLogicalProjectionExpressionWithAliases(
@@ -238,11 +251,11 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
-			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
+			Value:     values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 		{
-			Value:     &values.FieldValue{Field: "B", Typ: values.UnknownType},
+			Value:     values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType),
 			SortOrder: properties.RequestedSortOrderDescending,
 		},
 	}, properties.DistinctnessNotDistinct, false)
@@ -378,5 +391,55 @@ func TestPushRequestedOrderingThroughProjection_NoYield(t *testing.T) {
 
 	if len(call.yielded) != 0 {
 		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
+	}
+}
+
+// TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush is the
+// dimension the conversion needed and nothing covered: a request that names the
+// projection's output column CORRECTLY, but carries no ordinal, must still
+// decline. Every other case here either matches by ordinal or misses by both, so
+// none of them can tell an ordinal push-down from a name push-down.
+//
+// Declining is the fail-closed direction (a missed push, never a wrong slot), and
+// it is what stops two same-named outputs of different projections from being one
+// column. Resolving `ORDER BY col1` to a slot is the resolver's job, upstream and
+// once (RFC-197).
+func TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	proj := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		[]string{"col1"},
+		scanQ,
+	)
+	projRef := expressions.InitialOf(proj)
+
+	cm := NewConstraintMap()
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{
+			// The RIGHT name, no ordinal.
+			Value:     &values.FieldValue{Field: "COL1", Typ: values.UnknownType},
+			SortOrder: properties.RequestedSortOrderAscending,
+		},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
+
+	rule := NewPushRequestedOrderingThroughProjectionRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      projRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := proj.GetInner().GetRangesOver()
+	if _, ok := Get(cm, innerRef, RequestedOrderingConstraintKey); ok {
+		t.Fatal("a LAZY ordering request was pushed through the projection by matching its " +
+			"display name against the output column list: the name resolution belongs " +
+			"upstream, and a name-matched push conflates two same-named projection outputs")
 	}
 }

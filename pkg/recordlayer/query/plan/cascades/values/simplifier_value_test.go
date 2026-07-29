@@ -489,14 +489,21 @@ func TestSimplifyValue_FieldOverRecordConstructor(t *testing.T) {
 		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
-	fv := &FieldValue{Field: "b", Typ: TypeString, Child: rc}
+	// The reference selects a member by ORDINAL (Java's findColumn is
+	// getColumns().get(fieldOrdinal)). NewFieldValueOfOrdinal resolves slot 1
+	// against the constructor's own type, which is what makes the ordinal a
+	// proof rather than a claim.
+	fv, err := NewFieldValueOfOrdinal(rc, 1)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal over RC: %v", err)
+	}
 	got := SimplifyValue(fv)
 	c, ok := got.(*ConstantValue)
 	if !ok {
-		t.Fatalf("field('b', RC{a:1, b:'hello'}) = %T, want *ConstantValue", got)
+		t.Fatalf("field(#1, RC{a:1, b:'hello'}) = %T, want *ConstantValue", got)
 	}
 	if c.Value != "hello" {
-		t.Fatalf("field('b') = %v, want 'hello'", c.Value)
+		t.Fatalf("field(#1) = %v, want 'hello'", c.Value)
 	}
 }
 

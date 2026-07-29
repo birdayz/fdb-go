@@ -11,6 +11,14 @@ func fieldVal(name string) values.Value {
 	return &values.FieldValue{Field: name, Typ: values.UnknownType}
 }
 
+// outputSlot is a reference to a record constructor's OUTPUT SLOT — the shape a
+// resolved reference to a projection output carries. Push-down selects the
+// member by that ordinal (RFC-197 item 3); fieldVal above is the LAZY carrier,
+// which pushes down to nothing.
+func outputSlot(name string, ordinal int) values.Value {
+	return values.NewFieldValueWithResolvedOrdinal(name, ordinal, values.UnknownType)
+}
+
 func TestRichOrdering_EmptyOrdering(t *testing.T) {
 	t.Parallel()
 	o := EmptyOrdering()
@@ -1167,8 +1175,8 @@ func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
 func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
 	t.Parallel()
 	// Ordering in output space: keys [FV("a"), FV("b")], a ASC, b DESC
-	keyA := fieldVal("a")
-	keyB := fieldVal("b")
+	keyA := outputSlot("a", 0)
+	keyB := outputSlot("b", 1)
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyA: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1198,8 +1206,11 @@ func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
 
 func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 	t.Parallel()
-	keyX := fieldVal("x")
-	keyY := fieldVal("y")
+	// The constructor's INPUTS are baked source-relative reads, which is what the
+	// translator produces and what makes pull-up carry the ordinal through — the
+	// push-down back down selects the member by that ordinal, never by a name.
+	keyX := outputSlot("x", 0)
+	keyY := outputSlot("y", 1)
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1210,8 +1221,8 @@ func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
-		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+		values.RecordConstructorField{Name: "a", Value: keyX},
+		values.RecordConstructorField{Name: "b", Value: keyY},
 	)
 
 	// PullUp: x→a, y→b
@@ -1222,11 +1233,11 @@ func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 	if len(restored.GetKeys()) != 2 {
 		t.Fatalf("expected 2 keys after round-trip, got %d", len(restored.GetKeys()))
 	}
-	if values.ExplainValue(restored.GetKeys()[0]) != "x" {
-		t.Fatalf("expected key 'x', got %q", values.ExplainValue(restored.GetKeys()[0]))
+	if restored.GetKeys()[0] != keyX {
+		t.Fatalf("expected the round trip to restore the constructor's first INPUT, got %q", values.ExplainValue(restored.GetKeys()[0]))
 	}
-	if values.ExplainValue(restored.GetKeys()[1]) != "y" {
-		t.Fatalf("expected key 'y', got %q", values.ExplainValue(restored.GetKeys()[1]))
+	if restored.GetKeys()[1] != keyY {
+		t.Fatalf("expected the round trip to restore the constructor's second INPUT, got %q", values.ExplainValue(restored.GetKeys()[1]))
 	}
 }
 
@@ -1246,8 +1257,8 @@ func TestRequestedOrdering_PushDownThroughValue(t *testing.T) {
 	t.Parallel()
 	req := NewRequestedOrdering(
 		[]RequestedOrderingPart{
-			{Value: fieldVal("a"), SortOrder: RequestedSortOrderAscending},
-			{Value: fieldVal("b"), SortOrder: RequestedSortOrderDescending},
+			{Value: outputSlot("a", 0), SortOrder: RequestedSortOrderAscending},
+			{Value: outputSlot("b", 1), SortOrder: RequestedSortOrderDescending},
 		},
 		DistinctnessNotDistinct,
 		false,
@@ -1296,8 +1307,8 @@ func TestRequestedOrdering_PushDownThroughValue_PartialDrop(t *testing.T) {
 	t.Parallel()
 	req := NewRequestedOrdering(
 		[]RequestedOrderingPart{
-			{Value: fieldVal("a"), SortOrder: RequestedSortOrderAscending},
-			{Value: fieldVal("z"), SortOrder: RequestedSortOrderDescending}, // not in result
+			{Value: outputSlot("a", 0), SortOrder: RequestedSortOrderAscending},
+			{Value: outputSlot("z", 7), SortOrder: RequestedSortOrderDescending}, // not in result
 		},
 		DistinctnessNotDistinct,
 		false,

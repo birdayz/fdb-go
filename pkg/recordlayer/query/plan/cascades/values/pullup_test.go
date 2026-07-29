@@ -484,30 +484,40 @@ func TestPushDownValue_ThroughRecordConstructor(t *testing.T) {
 		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
 	)
 
-	// PushDown FV("a") → FV("x")
-	pushed := PushDownValue(&FieldValue{Field: "a", Typ: NullableLong}, resultValue, alias)
+	// The pushed-down references address the constructor's OUTPUT SLOTS, which
+	// is what a resolved reference to a projection output carries. The display
+	// names are deliberately WRONG here — slot 0 is rendered "b" and slot 1 "a" —
+	// so the test cannot pass by matching a name: only the ordinal selects.
+	pushed := PushDownValue(NewFieldValueWithResolvedOrdinal("b", 0, NullableLong), resultValue, alias)
 	if pushed == nil {
-		t.Fatal("expected non-nil result for FV(a)")
+		t.Fatal("expected non-nil result for output slot 0")
 	}
 	fv, ok := pushed.(*FieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pushed)
 	}
 	if fv.Field != "x" {
-		t.Fatalf("expected field 'x', got %q", fv.Field)
+		t.Fatalf("output slot 0 pushed to %q, want the constructor's first input 'x'", fv.Field)
 	}
 
-	// PushDown FV("b") → FV("y")
-	pushed = PushDownValue(&FieldValue{Field: "b", Typ: NullableString}, resultValue, alias)
+	pushed = PushDownValue(NewFieldValueWithResolvedOrdinal("a", 1, NullableString), resultValue, alias)
 	if pushed == nil {
-		t.Fatal("expected non-nil result for FV(b)")
+		t.Fatal("expected non-nil result for output slot 1")
 	}
 	fv, ok = pushed.(*FieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pushed)
 	}
 	if fv.Field != "y" {
-		t.Fatalf("expected field 'y', got %q", fv.Field)
+		t.Fatalf("output slot 1 pushed to %q, want the constructor's second input 'y'", fv.Field)
+	}
+
+	// A LAZY reference has no ordinal, so it selects no member and declines —
+	// resolution belongs upstream, at the one place a name is legitimate. This
+	// is the arm RFC-197 item 3 removed; without this case the conversion is
+	// unfalsifiable, since every other case here is baked.
+	if got := PushDownValue(&FieldValue{Field: "a", Typ: NullableLong}, resultValue, alias); got != nil {
+		t.Fatalf("a lazy reference matched a constructor member by NAME = %v, want DECLINE", got)
 	}
 }
 
@@ -592,21 +602,27 @@ func TestPullUpPushDown_RoundTrip(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("q1")
 
-	// resultValue = RecordConstructor(a=FV("x"), b=FV("y"))
+	// The constructor's inputs are BAKED source-relative reads, which is what the
+	// translator produces. Pull-up bakes a baked input (pullUpThroughRecordConstructor),
+	// so the round trip closes on ORDINALS and never on a name.
+	original := NewFieldValueWithResolvedOrdinal("x", 0, NullableLong)
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
-		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
+		RecordConstructorField{Name: "a", Value: original},
+		RecordConstructorField{Name: "b", Value: NewFieldValueWithResolvedOrdinal("y", 1, NullableString)},
 	)
 
-	original := &FieldValue{Field: "x", Typ: NullableLong}
-
-	// PullUp: FV("x") → FV(QOV(q1), "a")
+	// PullUp: FV("x")#0 → FV(QOV(q1), "a")#0
 	pulled := PullUpValue(original, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("pullUp failed")
 	}
+	if pfv, ok := pulled.(*FieldValue); !ok || pfv.Resolved == nil {
+		t.Fatalf("pull-up through a record constructor must emit a BAKED reference to the "+
+			"output slot; the push-down back down resolves by ordinal and a lazy node would "+
+			"decline, got %v", pulled)
+	}
 
-	// PushDown: FV("a") → FV("x")
+	// PushDown: FV(QOV(q1), "a")#0 → FV("x")#0
 	pushed := PushDownValue(pulled, resultValue, alias)
 	if pushed == nil {
 		t.Fatal("pushDown failed")
@@ -649,9 +665,9 @@ func TestPushDownValues_Batch(t *testing.T) {
 	)
 
 	vs := []Value{
-		&FieldValue{Field: "a", Typ: NullableLong},
-		&FieldValue{Field: "b", Typ: NullableString},
-		&FieldValue{Field: "z", Typ: NullableLong}, // not in constructor
+		NewFieldValueWithResolvedOrdinal("a", 0, NullableLong),
+		NewFieldValueWithResolvedOrdinal("b", 1, NullableString),
+		NewFieldValueWithResolvedOrdinal("z", 7, NullableLong), // no such output slot
 	}
 
 	result := PushDownValues(vs, resultValue, alias)
