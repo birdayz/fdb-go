@@ -195,15 +195,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
-	// name-keyed (9)
-	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "name-keyed: referenced-field set keyed by leaf name"},
+	// name-keyed (8)
+	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "name-keyed: referenced-field set keyed by leaf name. Java's member is a Set<FieldValue> (ReferencedFieldsConstraint.java:41), keyed by semanticEquals/semanticHashCode, so the port is unambiguous -- and it was BUILT and MEASURED, then reverted: keying by value makes the set grow where two quantifiers share a leaf name, and this constraint's every growth re-fires the push rules. 4-table chain tasksRun 10255 -> 12901, 3-spoke ordinal star 9481 -> 12644 (both budget baselines are +-2% pins), and the hub+5 star stops planning entirely -- ErrPlannerCapHit becomes a rule-cycle round-cap divergence at 87642 tasks. plan_shape.golden does not move. The conversion is correct and the coupling between constraint growth and re-exploration is what has to change first; that is planner machinery with its own review gate, not this bucket"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2214": {1, "name-keyed: buriedLegOrdinalLayout -- one of the seven -- probes its leg layout under 'CORR.LEAF' built from the display name; the Resolved.Single() guard above it declines FUSED accessors but two same-named top-level columns still collide"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2215": {1, "name-keyed: same layout, the WRITE that mints the colliding key"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2389": {1, "name-keyed: the READER of that layout -- a buried-leg reference bakes to whatever ordinal the name-built key returns"},
 	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:152":               {1, "name-keyed: bare frontier read matched against the merged row's field names; the matches!=1 guard below makes an ambiguous name decline rather than mis-bind, which is the mitigation, not the fix"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197":    {1, "name-keyed: distinct-key set keyed by name"},
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            {1, "name-keyed: projection merge matches inner slot by name"},
-	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "name-keyed: sort key equality by name"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "name-keyed: field remap compares leaf names"},
 
 	// translator (13)

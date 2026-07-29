@@ -370,9 +370,9 @@ func (k *structuralKey) writeParts(w hash.Hash64) {
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.sks)))
 			w.Write(buf[:])
 			for _, sk := range p.sks {
-				binary.BigEndian.PutUint64(buf[:], uint64(len(sk.Field)))
-				w.Write(buf[:])
-				w.Write([]byte(sk.Field))
+				// sk.Field is DISPLAY-ONLY and is deliberately NOT folded, so
+				// equal sort keys hash equal (RFC-197 item 3; sortKeyEqual
+				// stopped comparing it).
 				if sk.Desc {
 					w.Write([]byte{1})
 				} else {

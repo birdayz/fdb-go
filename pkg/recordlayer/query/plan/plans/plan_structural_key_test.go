@@ -285,3 +285,40 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	assertPlanKeyUnequal(t, vec("v", &ef5), vec("v", nil))  // efSearch nil vs non-nil (IntPtr)
 	assertPlanKeyUnequal(t, vec("v", &ef5), vec("w", &ef5)) // index name
 }
+
+// TestSortKeyIdentityIgnoresDisplayName is the dimension the sort-key identity
+// was never probed on: two sort keys over the SAME baked key Value, rendered
+// under DIFFERENT display names, are ONE plan.
+//
+// Every other in_memory_sort case in TestPlanStructuralKeyDimensions holds the
+// name equal, so none of them can tell a Value-keyed identity from a
+// name-keyed one. Folding the name split one plan into two memo members whenever
+// two producers named the same baked column differently — the RFC-197 conflation
+// in its splitting direction — and the equal-implies-same-hash invariant is
+// checked here too, because dropping the name from equality without dropping it
+// from the hash is a silently broken memo.
+func TestSortKeyIdentityIgnoresDisplayName(t *testing.T) {
+	t.Parallel()
+
+	scan := NewRecordQueryScanPlan(nil, nil, false)
+	// ONE baked key value, addressed by ordinal, rendered two ways.
+	key := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
+	rendered := values.NewFieldValueWithResolvedOrdinal("ALIASED", 0, values.UnknownType)
+
+	assertPlanKeyEqual(t,
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", ValueExpr: key}}),
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "ALIASED", ValueExpr: rendered}}))
+
+	// And the direction still separates them, so the relaxation is not blanket.
+	assertPlanKeyUnequal(t,
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", ValueExpr: key}}),
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", Desc: true, ValueExpr: key}}))
+
+	// A DIFFERENT ordinal under the SAME display name stays two plans — the
+	// ordinal is what carries the identity now, so it has to be load-bearing in
+	// both directions.
+	other := values.NewFieldValueWithResolvedOrdinal("A", 1, values.UnknownType)
+	assertPlanKeyUnequal(t,
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", ValueExpr: key}}),
+		NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", ValueExpr: other}}))
+}
