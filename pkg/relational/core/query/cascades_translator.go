@@ -7394,47 +7394,64 @@ func aggregateRejectsNonNumericOperand(fn expressions.AggregateFunction) bool {
 	return false
 }
 
-// aggregateOperandColumn returns the bare (qualifier-stripped, upper-cased)
-// column name when v is a single column reference — a FieldValue with no
-// arithmetic/child wrapping — else ("", false). Only a bare column has a
-// derivable proto integer width; arithmetic / cast / constant operands keep the
-// int64 SUM_L domain.
-func aggregateOperandColumn(v values.Value) (string, bool) {
-	fv, ok := v.(*values.FieldValue)
-	if !ok || fv.Child != nil {
-		return "", false
-	}
-	return strings.ToUpper(stripColumnQualifier(fv.Field)), true
-}
-
 // aggregateOperandIntType returns the operand's STATIC integer width for the
 // int32-vs-int64 SUM/AVG overflow decision, keyed off the proto-faithful input
 // record type (Go's resolver widens INTEGER column references to LONG, so the
 // operand's own Type() cannot carry the INT32/INT64 split — the retired
 // `TypeInt` alias WAS NullableLong, so nothing named INT ever meant 32-bit).
-// Returns values.TypeCodeInt only when the operand
-// is a single column whose backing proto field is TYPE_INT32 (SQL INTEGER) and
-// the name match is unambiguous; values.TypeCodeUnknown otherwise — never a
-// narrower, wrong overflow width.
+// Returns values.TypeCodeInt only when the operand is a single column of the
+// aggregate input's own row whose backing proto field is TYPE_INT32 (SQL
+// INTEGER); values.TypeCodeUnknown otherwise — never a narrower, wrong
+// overflow width, because the width is the difference between SUM raising
+// 22003 and returning a BIGINT-range answer.
+//
+// The operand is identified by its ORDINAL in inputFields' layout, never by
+// its display name (RFC-197). Two lists meet here and they are derived
+// SEPARATELY — the operand was baked against the translated expression's
+// output columns, while inputFields comes from the logical input's leg columns
+// — so the ordinal is only usable if the two describe the same layout. That is
+// not assumed: OrdinalIn is given inputFields' own ordinal domain and answers
+// only when the operand's baked domain IS that layout. A reference from some
+// other layout (a join operand carries its LEG's 4-column domain while
+// inputFields is the 6-column qualified merge) declines and keeps the int64
+// SUM_L domain, which is the direction that cannot manufacture a wrong
+// overflow.
+//
+// A non-zero CORRELATION declines for the same reason: inputFields describes
+// the aggregate input's OWN row, so only a reference that reads that row —
+// rather than a named quantifier's — is indexable in it. That is the
+// correlation element of identity doing the job the old `fv.Child != nil`
+// bail-out did by shape.
+//
+// Measured before converting: over the relational suite (unit, FDB and the
+// conformance corpora) this answered identically to the retired leaf-name
+// match on all 8358 aggregate operands it saw, 3878 of them a known width and
+// 72 of them the INT that changes overflow semantics.
+//
+// Also measured: on today's shapes EITHER of the two checks alone excludes
+// every foreign-layout operand the suite produces, so deleting one leaves a
+// green suite and the other check carrying the whole proof by coincidence.
+// They are not redundant — they check different elements of the reference's
+// identity — and dropping BOTH is red
+// (TestFDB_AggregateOperandWidthDeclinesForeignLayout, where a BIGINT sum
+// comes back as 22003).
 func aggregateOperandIntType(operand values.Value, inputFields []values.Field) values.TypeCode {
-	col, ok := aggregateOperandColumn(operand)
-	if !ok {
+	fv, isFieldValue := operand.(*values.FieldValue)
+	if !isFieldValue || len(inputFields) == 0 {
 		return values.TypeCodeUnknown
 	}
-	result := values.TypeCodeUnknown
-	matches := 0
-	for _, f := range inputFields {
-		if strings.EqualFold(stripColumnQualifier(f.Name), col) {
-			if f.FieldType != nil {
-				result = f.FieldType.Code()
-			}
-			matches++
-		}
+	names := make([]string, len(inputFields))
+	for i, f := range inputFields {
+		names[i] = f.Name
 	}
-	if matches != 1 {
+	id, ok := fv.IdentityIn(values.OrdinalDomainOfColumnNames(names))
+	if !ok || id.Correlation != (values.CorrelationIdentifier{}) {
 		return values.TypeCodeUnknown
 	}
-	return result
+	if id.Ordinal >= len(inputFields) || inputFields[id.Ordinal].FieldType == nil {
+		return values.TypeCodeUnknown
+	}
+	return inputFields[id.Ordinal].FieldType.Code()
 }
 
 // aggregateFunctionByName maps the parse-tree-captured aggregate function

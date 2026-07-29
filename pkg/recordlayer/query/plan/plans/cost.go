@@ -515,25 +515,39 @@ func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bo
 	default:
 		return 0, false
 	}
-	keyCols, ok := innerLeafUniqueKeyColumns(p.GetInner())
+	// The FRONTIER is the inner leg's OWN output layout: every conjunct
+	// operand this proof accepts is a bare `QOV(innerAlias).<col>` read of
+	// exactly that row, so it is the one layout whose ordinals are comparable
+	// here. Stating it as a parameter turns the per-site proof into a
+	// predicate values.OrdinalIn checks rather than a comment (RFC-197 step 0).
+	inner := p.GetInner()
+	frontier := values.OrdinalDomainOfType(innerLegLayout(inner))
+	keyCols, ok := innerLeafUniqueKeyOrdinals(inner, innerLegLayout(inner))
 	if !ok || len(keyCols) == 0 {
 		return 0, false
 	}
 	innerAlias := values.NamedCorrelationIdentifier(p.GetInnerAlias())
 
-	want := make(map[string]bool, len(keyCols))
-	for _, c := range keyCols {
-		want[c] = true
+	// The key columns are the INNER LEG's, so their identity is read off the
+	// inner quantifier — the correlation element the metadata resolution has
+	// no way to supply on its own. Stamping it here is what makes `want` a
+	// full identity: ordinal 0 of the inner and ordinal 0 of the outer are
+	// different columns, and that is exactly the element the old
+	// `(string, CorrelationIdentifier)` return had split apart.
+	want := make(map[values.ColumnIdentity]bool, len(keyCols))
+	for key := range keyCols {
+		want[key.WithCorrelation(innerAlias)] = true
 	}
-	bound := make(map[string]bool, len(keyCols))
+
+	bound := make(map[values.ColumnIdentity]bool, len(want))
 	consumed := 0
 	for _, pred := range p.GetPredicates() {
 		for _, conjunct := range flattenAndConjuncts(pred) {
-			field, matched := matchedInnerKeyEquality(conjunct, innerAlias, want, bound)
+			key, matched := matchedInnerKeyEquality(conjunct, innerAlias, frontier, want, bound)
 			if !matched {
 				continue
 			}
-			bound[field] = true
+			bound[key] = true
 			consumed++
 		}
 	}
@@ -576,27 +590,34 @@ func flattenAndConjuncts(p predicates.QueryPredicate) []predicates.QueryPredicat
 // inner row, so the predicate is an intra-inner comparison the join
 // re-evaluates for every (outer, inner) pair — it does not pin the inner to
 // at most one row per outer row the way a real outer-parameterized bind does.
+//
+// want and bound are keyed by column IDENTITY (correlation, domain, ordinal),
+// never by the display name: `i.address.id` and the inner's real top-level
+// `ID` share a leaf name and would key the same slot, so a nested reference
+// could satisfy a top-level key column's bind and manufacture an at-most-one
+// proof the join does not have.
 func matchedInnerKeyEquality(
 	conjunct predicates.QueryPredicate,
 	innerAlias values.CorrelationIdentifier,
-	want, bound map[string]bool,
-) (string, bool) {
+	frontier values.OrdinalDomain,
+	want, bound map[values.ColumnIdentity]bool,
+) (values.ColumnIdentity, bool) {
 	cmp, ok := conjunct.(*predicates.ComparisonPredicate)
 	if !ok || cmp.Comparison.Type != predicates.ComparisonEquals {
-		return "", false
+		return values.ColumnIdentity{}, false
 	}
 	lhs, rhs := cmp.Operand, cmp.Comparison.Operand
-	if field, corr, ok := correlatedInnerField(lhs); ok && corr == innerAlias && want[field] && !bound[field] &&
+	if key, ok := correlatedInnerFieldKey(lhs, innerAlias, frontier); ok && want[key] && !bound[key] &&
 		!valueCorrelatedTo(rhs, innerAlias) {
-		return field, true
+		return key, true
 	}
 	if rhs != nil {
-		if field, corr, ok := correlatedInnerField(rhs); ok && corr == innerAlias && want[field] && !bound[field] &&
+		if key, ok := correlatedInnerFieldKey(rhs, innerAlias, frontier); ok && want[key] && !bound[key] &&
 			!valueCorrelatedTo(lhs, innerAlias) {
-			return field, true
+			return key, true
 		}
 	}
-	return "", false
+	return values.ColumnIdentity{}, false
 }
 
 // valueCorrelatedTo reports whether v's correlation set includes alias.
@@ -608,58 +629,136 @@ func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool 
 	return ok
 }
 
-// correlatedInnerField returns the field name and root correlation of a
-// comparand shaped like a BARE column reference off a source
-// QuantifiedObjectValue — the SAME bare-column allowlist
-// match_candidate_index.go's buildTranslateValueFunction applies before
-// trusting a FieldValue's leaf name (RFC-179 F12): a chained accessor
-// (FieldValue{ID, Child: FieldValue{ADDRESS, Child: QOV}}) or a fused
-// baked multi-accessor path (Child=QOV directly, Resolved=[ADDRESS,ID],
-// Field="ID") both put a DIFFERENT column's leaf name where a real top-level
-// "ID" reference would be; treating either shape's bare Field as a flat
-// top-level match would let a same-leaf-named nested column (i.address.id)
-// impersonate the top-level primary-key column ID.
+// correlatedInnerFieldKey returns the IDENTITY of the column a comparand
+// reads, when the comparand is a BARE column reference off innerAlias's
+// quantifier, stated in the caller's frontier layout.
 //
-// Unlike buildTranslateValueFunction — which can fall through to a lazy
-// re-resolution against the actual target row that fails loud if the guess
-// was wrong — this function's result is consumed directly as a cost-model map
-// key with no downstream re-check, so (unlike that function) it declines a
-// fused multi-accessor path outright (Resolved != nil && !Single()) rather
-// than falling through to a name-only match.
-func correlatedInnerField(v values.Value) (field string, corr values.CorrelationIdentifier, ok bool) {
+// This is RFC-197 item 2's replacement for `correlatedInnerField`, which
+// returned `(string, CorrelationIdentifier)` — the identity triple wrong by one
+// element, and the shape pkg/docscheck's gate is named after: the display name
+// escaped as a bare string and the caller keyed its want/bound sets by it, at
+// which point no type was left to consult. The key it returns now cannot carry
+// a name (values.ColumnIdentity has no string field, pinned by reflection).
+//
+// The same bare-column allowlist as before, now enforced by construction rather
+// than by hand: a chained accessor (FieldValue{ID, Child: FieldValue{ADDRESS,
+// Child: QOV}}) and a fused baked multi-accessor path (Child=QOV directly,
+// Resolved=[ADDRESS,ID], Field="ID") both put a DIFFERENT column's leaf name
+// where a real top-level "ID" reference would be, and both are declined —
+// the first because its child is not the quantifier, the second because
+// OrdinalIn refuses a multi-accessor path whose root ordinal addresses the
+// OUTER step. Where the old code had a Resolved.Single() guard and then trusted
+// the name, this consults the ordinal and never sees the name at all.
+//
+// Everything values.OrdinalIn declines declines here: a lazy value (no ordinal
+// exists), a `-1` name-only accessor (ordinal-equal to every other one), an
+// unknown domain on either side, and an ordinal that indexes some OTHER layout.
+// A declined proof costs the flat-FilterSelectivity estimate this correction
+// improves on; a wrong one manufactures an at-most-one claim the join does not
+// have.
+//
+// The CORRELATION is compared here and CANONICALIZED into the returned key.
+// Comparing here is what rejects a SELF-JOIN's other leg: with outer and inner
+// sharing one layout, `o.ID` and `i.ID` agree on domain and ordinal, and only
+// the leg says one of them reads a different row.
+//
+// Canonicalizing makes this the ONLY place the leg is judged. values.SameLeg
+// is exact, so the caller's map lookup would today reach the same verdict on
+// its own — the canonicalization is therefore defensive, not load-bearing by
+// itself. What it buys is that the leg decision cannot be re-litigated by a
+// downstream comparison that disagrees with this one, and that removing the
+// check above is a visible behaviour change rather than a silent no-op: the
+// key handed back states the leg this function ACCEPTED, so a missing check
+// hands the caller a forced match instead of a mismatch it would catch.
+func correlatedInnerFieldKey(
+	v values.Value,
+	innerAlias values.CorrelationIdentifier,
+	frontier values.OrdinalDomain,
+) (values.ColumnIdentity, bool) {
 	fv, isField := v.(*values.FieldValue)
 	if !isField {
-		return "", values.CorrelationIdentifier{}, false
+		return values.ColumnIdentity{}, false
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-	if !isQOV {
-		return "", values.CorrelationIdentifier{}, false
+	key, ok := fv.CorrelatedIdentityIn(frontier)
+	if !ok || !values.SameLeg(key.Correlation, innerAlias) {
+		return values.ColumnIdentity{}, false
 	}
-	if fv.Resolved != nil {
-		if _, single := fv.Resolved.Single(); !single {
-			return "", values.CorrelationIdentifier{}, false
-		}
-	}
-	return fv.Field, qov.Correlation, true
+	return key.WithCorrelation(innerAlias), true
 }
 
-// innerLeafUniqueKeyColumns resolves plan down through the same
+// innerLegLayout is the inner leg's own output row layout — the frontier
+// innerLeafUniqueKeyOrdinals resolves the key columns against.
+//
+// The arms are exactly the plan shapes innerLeafUniqueKeyOrdinals recognizes,
+// each guarded against a TYPED nil: a degenerate leg (a nil interface, or a nil
+// plan pointer inside a non-nil interface) has no layout, and calling
+// GetResultType on it panics rather than declining. Anything unrecognized
+// returns nil, which fails the proof closed one step later — the same answer
+// the walk itself would give.
+func innerLegLayout(plan RecordQueryPlan) values.Type {
+	switch p := plan.(type) {
+	case *RecordQueryScanPlan:
+		if p == nil {
+			return nil
+		}
+	case *RecordQueryIndexPlan:
+		if p == nil {
+			return nil
+		}
+	case *RecordQueryFetchFromPartialRecordPlan:
+		if p == nil {
+			return nil
+		}
+	case *RecordQueryTypeFilterPlan:
+		if p == nil {
+			return nil
+		}
+	case *RecordQueryPredicatesFilterPlan:
+		if p == nil {
+			return nil
+		}
+	case *RecordQueryFilterPlan:
+		if p == nil {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return plan.GetResultType()
+}
+
+// innerLeafUniqueKeyOrdinals resolves plan down through the same
 // identity-preserving wrappers isProvablePointProbe/the fk-chain pkThread
 // already see through (a Fetch/TypeFilter/PredicatesFilter/Filter changes
 // neither a record's primary key nor a named index's own key columns) and
-// returns the bottommost scan/index leaf's own UNIQUE key column names: the
-// full primary key for a bare table scan, or the index's own key columns
-// when the index is declared UNIQUE. ok=false for anything else (a
-// non-unique index, an unrecognized wrapper, a nil leaf, or a
-// composite/nested PK component that is not a flat field reference) — fails
-// closed.
-func innerLeafUniqueKeyColumns(plan RecordQueryPlan) ([]string, bool) {
+// returns the bottommost scan/index leaf's own UNIQUE key columns as
+// domain-checked ORDINALS in the stated layout: the full primary key for a bare
+// table scan, or the index's own key columns when the index is declared UNIQUE.
+//
+// layout is the INNER LEG's own output row — the layout the join predicate's
+// `QOV(innerAlias).<col>` operands read. It is passed down unchanged through
+// the wrappers rather than re-derived at the leaf, because a Fetch's child (a
+// covering index scan) flows a PARTIAL record whose column order is not the
+// row the operands address; resolving there would key the want set in a layout
+// nothing else speaks.
+//
+// The key columns arrive as METADATA names — a primary-key column list, an
+// index definition's own column list. That is the one place RFC-197 permits a
+// name, and it dies here: resolved ONCE against the stated layout, into
+// ordinals nothing downstream can compare by spelling. A name the layout does
+// not declare fails the whole proof closed rather than being dropped, since a
+// key column that cannot be located is a key column that cannot be shown bound.
+//
+// ok=false for anything else (a non-unique index, an unrecognized wrapper, a
+// nil leaf, a composite/nested PK component that is not a flat field reference,
+// or a layout with no declared column order) — fails closed.
+func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[values.ColumnIdentity]bool, bool) {
 	switch p := plan.(type) {
 	case *RecordQueryScanPlan:
 		if p == nil {
 			return nil, false
 		}
-		names := make([]string, 0, len(p.GetPrimaryKeyValues()))
+		want := make(map[values.ColumnIdentity]bool, len(p.GetPrimaryKeyValues()))
 		for _, v := range p.GetPrimaryKeyValues() {
 			if _, isRecordType := v.(*values.RecordTypeValue); isRecordType {
 				// A per-thread CONSTANT (the RecordTypeKey-prefixed
@@ -674,12 +773,16 @@ func innerLeafUniqueKeyColumns(plan RecordQueryPlan) ([]string, bool) {
 			if !ok || fv.Child != nil {
 				return nil, false // composite/nested PK component — fail closed
 			}
-			names = append(names, fv.Field)
+			key, ok := values.OrdinalOfNameIn(layout, fv.Field)
+			if !ok {
+				return nil, false
+			}
+			want[key] = true
 		}
-		if len(names) == 0 {
+		if len(want) == 0 {
 			return nil, false
 		}
-		return names, true
+		return want, true
 	case *RecordQueryIndexPlan:
 		if p == nil || !p.IsUnique() {
 			return nil, false
@@ -699,29 +802,35 @@ func innerLeafUniqueKeyColumns(plan RecordQueryPlan) ([]string, bool) {
 		if len(cols) == 0 {
 			return nil, false
 		}
-		out := make([]string, len(cols))
-		copy(out, cols)
-		return out, true
+		want := make(map[values.ColumnIdentity]bool, len(cols))
+		for _, c := range cols {
+			key, ok := values.OrdinalOfNameIn(layout, c)
+			if !ok {
+				return nil, false
+			}
+			want[key] = true
+		}
+		return want, true
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return nil, false
 		}
-		return innerLeafUniqueKeyColumns(p.GetInner())
+		return innerLeafUniqueKeyOrdinals(p.GetInner(), layout)
 	case *RecordQueryTypeFilterPlan:
 		if p == nil {
 			return nil, false
 		}
-		return innerLeafUniqueKeyColumns(p.GetInner())
+		return innerLeafUniqueKeyOrdinals(p.GetInner(), layout)
 	case *RecordQueryPredicatesFilterPlan:
 		if p == nil {
 			return nil, false
 		}
-		return innerLeafUniqueKeyColumns(p.GetInner())
+		return innerLeafUniqueKeyOrdinals(p.GetInner(), layout)
 	case *RecordQueryFilterPlan:
 		if p == nil {
 			return nil, false
 		}
-		return innerLeafUniqueKeyColumns(p.GetInner())
+		return innerLeafUniqueKeyOrdinals(p.GetInner(), layout)
 	default:
 		return nil, false
 	}

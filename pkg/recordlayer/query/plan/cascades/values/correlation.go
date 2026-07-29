@@ -68,6 +68,42 @@ func (c CorrelationIdentifier) String() string { return c.name }
 // Useful for nil-checks without a pointer.
 func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 
+// SameLeg reports whether two identifiers name the same quantifier — the
+// CORRELATION element of RFC-197's identity triple, compared in ONE place so
+// every proof that asks "does this value read that leg?" gets the same answer.
+//
+// The comparison is EXACT, matching Java, whose CorrelationIdentifier.equals
+// is `Objects.equals(id, that.id)` (CorrelationIdentifier.java:132).
+//
+// Exactness is not merely Java-fidelity here — it is load-bearing. Alias
+// namespaces in this planner are deliberately case-DISJOINT: the semantic
+// scope upper-folds every user correlation at its single registration
+// chokepoint (semantic/scope.go), while UniqueCorrelationIdentifier mints the
+// machine counter in LOWERCASE (`q$1`). scope.go states the consequence it is
+// protecting: a quoted `"q$5"` cannot forge a planner-minted q$5. A
+// case-folding comparison erases exactly that protection — it lets a user
+// alias that upper-folds onto the minted namespace be accepted as the minted
+// leg, and every caller of this helper is a proof about which row a value
+// reads. A forged match there is a wrong-rows plan or a fabricated
+// cardinality, not a lost optimization.
+//
+// The same call was already made independently at the qualified-key rewrite in
+// rule_implement_nested_loop_join.go, whose comment reads "a fold here would
+// let a quoted user alias cross into the lowercase machine namespace". This
+// helper now agrees with it rather than contradicting it.
+//
+// Folding was tempting because the translator does not upper-case aliases
+// consistently (cascades_translator.go:2366 folds; :1862 and :8730 pass the
+// name through verbatim), so an exact comparison can fail to recognize a leg
+// that really is the right one. That costs a DECLINE — every caller reads
+// "cannot tell" as "do not apply the correction" — and it is the translator's
+// inconsistency to fix at the source, not this helper's to mask. Masking it
+// here would trade a recoverable missed optimization for an unrecoverable
+// forged identity.
+func SameLeg(a, b CorrelationIdentifier) bool {
+	return a.name == b.name
+}
+
 // CurrentAlias is the well-known CorrelationIdentifier representing
 // "the current row". Mirrors Java's `Quantifier.current()` — used by
 // set-operation comparison key values and other contexts where a Value

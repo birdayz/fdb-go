@@ -8,6 +8,17 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// Every column reference in this file is a QOV-rooted `FieldValue` — the shape
+// the translator actually emits. They used to be childless values whose Field
+// packed the qualifier into the name (`Field: "A.NAME"`), the legacy flat
+// representation RFC-197's dotted bucket exists to remove. That mattered here
+// because predicateSingleSide decides which SIDE of the join a predicate
+// belongs to: reading the side out of the spelling meant these tests exercised
+// a channel production no longer uses (0 of 1944 calls over the explaindiff
+// corpus take a dotted read), while the QOV path the rule really runs on went
+// unprobed. The rule now asks the value for its correlation, so the fixtures
+// state one.
+//
 // buildJoinTree constructs:
 //
 //	Filter(filterPreds, Select(rv, [qA, qB], joinPreds, aliases))
@@ -41,7 +52,7 @@ func TestPushFilterBelowJoin_SingleSidePredicate(t *testing.T) {
 
 	// Predicate: A.NAME = 'foo' — references only alias A.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -89,10 +100,10 @@ func TestPushFilterBelowJoin_BothSidePredicate(t *testing.T) {
 
 	// Predicate: A.ID = B.ID — references both aliases.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.ID", Typ: values.NullableLong},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "ID", values.NullableLong),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.FieldValue{Field: "B.ID", Typ: values.NullableLong},
+			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "ID", values.NullableLong),
 		},
 	)
 
@@ -113,15 +124,15 @@ func TestPushFilterBelowJoin_MixedPredicates(t *testing.T) {
 
 	// Predicate 1: A.NAME = 'foo' — only side A.
 	predA := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 	// Predicate 2: A.ID = B.ID — both sides.
 	predBoth := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.ID", Typ: values.NullableLong},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "ID", values.NullableLong),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.FieldValue{Field: "B.ID", Typ: values.NullableLong},
+			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "ID", values.NullableLong),
 		},
 	)
 
@@ -169,7 +180,7 @@ func TestPushFilterBelowJoin_NoAliases(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -200,7 +211,7 @@ func TestPushFilterBelowJoin_PushToSideB(t *testing.T) {
 
 	// Predicate: B.STATUS = 'active' — references only alias B.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "B.STATUS", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 	)
 
@@ -239,7 +250,7 @@ func TestPushFilterBelowJoin_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -277,7 +288,7 @@ func TestPushFilterBelowJoin_LeftOuterJoin_Skips(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -326,7 +337,7 @@ func TestPushFilterBelowJoin_StrictSingleFailsClosed(t *testing.T) {
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
 	filter := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "B.STATUS", Typ: values.TypeString},
+			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 		)},
 		filterQ,
@@ -344,11 +355,11 @@ func TestPushFilterBelowJoin_BothSidesPushed(t *testing.T) {
 
 	// Two predicates, each referencing a different side.
 	predA := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.NAME", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 	predB := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "B.STATUS", Typ: values.TypeString},
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 	)
 

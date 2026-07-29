@@ -3382,10 +3382,11 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 func correlatedExistsComparisonRange(
 	outerValue *values.FieldValue,
 	outerCorrelation values.CorrelationIdentifier,
-	outerAlias string,
 ) (*predicates.ComparisonRange, bool) {
-	correlatedOperand := correlatedFastPathOperand(
-		outerValue, outerCorrelation, outerAlias)
+	correlatedOperand, ok := correlatedFastPathOperand(outerValue, outerCorrelation)
+	if !ok {
+		return nil, false
+	}
 	comparison := &predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
 		Operand: correlatedOperand,
@@ -3418,13 +3419,30 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 		return false
 	}
 
-	innerPrefix := strings.ToUpper(innerAlias) + "."
-	outerPrefix := strings.ToUpper(outerAlias) + "."
+	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
+	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
+
+	// The inner leg's own output row: the layout every comparand correlated to
+	// innerAlias reads, and the layout the inner leg's metadata key-column
+	// names are resolved against. Unknown means there is no declared column
+	// order to state the proof in, so the whole fast path declines rather than
+	// falling back to the names it still has.
+	innerLayout := planRowLayout(innerScan)
+	innerFrontier := values.OrdinalDomainOfType(innerLayout)
+	if !innerFrontier.IsKnown() {
+		return false
+	}
 
 	// Try PK first.
 	pkCols := call.Context.GetPrimaryKeyColumns(recordTypes[0])
 	if len(pkCols) > 0 {
-		pkCol := strings.ToUpper(pkCols[0])
+		// The metadata name dies HERE — resolved once, against the layout its
+		// ordinal will be compared in (Java's FieldValue.resolveFieldPath,
+		// FieldValue.java:270-298). Nothing downstream sees a column name.
+		pkIdent, pkResolved := values.OrdinalOfNameIn(innerLayout, pkCols[0])
+		if !pkResolved {
+			return false
+		}
 		for _, pred := range preds {
 			cp, ok := pred.(*predicates.ComparisonPredicate)
 			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
@@ -3433,22 +3451,21 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if cp.Operand == nil || cp.Comparison.Operand == nil {
 				continue
 			}
-			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
+			outerVal := r.matchJoinPKPredicate(
+				cp, outerCorrelation, innerCorrelation, pkIdent, innerFrontier)
 			if outerVal == nil {
 				continue
 			}
-			if outerValRefsBuriedLeg(outerVal, outerAlias) {
+			if outerValRefsBuriedLeg(outerVal, outerCorrelation) {
 				continue
 			}
-			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				outerVal, outerCorrelation, outerAlias)
+				outerVal, outerCorrelation)
 			if !ok {
 				return false
 			}
 			correlatedScan := innerScan.WithScanComparisons(
 				[]*predicates.ComparisonRange{comparisonRange})
-			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
 			r.yieldExistsFlatMap(
 				call, resultValue, outerPlan, correlatedScan,
 				outerCorrelation, innerCorrelation, outerExpr, innerExpr,
@@ -3479,7 +3496,13 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 		if len(candTypes) == 0 || candTypes[0] != recordTypes[0] {
 			continue
 		}
-		idxFirstCol := strings.ToUpper(candCols[0])
+		// Same boundary resolution as the PK arm: the index definition names
+		// its first column, that name is resolved once against the inner leg's
+		// row layout, and it dies there.
+		idxIdent, idxResolved := values.OrdinalOfNameIn(innerLayout, candCols[0])
+		if !idxResolved {
+			continue
+		}
 		for _, pred := range preds {
 			cp, ok := pred.(*predicates.ComparisonPredicate)
 			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
@@ -3488,17 +3511,17 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if cp.Operand == nil || cp.Comparison.Operand == nil {
 				continue
 			}
-			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
+			outerVal := r.matchJoinPKPredicate(
+				cp, outerCorrelation, innerCorrelation, idxIdent, innerFrontier)
 			if outerVal == nil {
 				continue
 			}
-			if outerValRefsBuriedLeg(outerVal, outerAlias) {
+			if outerValRefsBuriedLeg(outerVal, outerCorrelation) {
 				continue
 			}
 			// Build correlated index scan.
-			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				outerVal, outerCorrelation, outerAlias)
+				outerVal, outerCorrelation)
 			if !ok {
 				continue
 			}
@@ -3618,93 +3641,132 @@ func scalarSubqueryAliasesOfPredicate(p predicates.QueryPredicate) map[values.Co
 	return out
 }
 
-// matchJoinPKPredicate checks if a comparison predicate matches the
-// pattern outer.FK = inner.PK (or reversed). Returns the outer-side
-// FieldValue and the inner column name if matched, nil otherwise.
+// matchJoinPKPredicate reports the OUTER-side comparand of an equality
+// predicate shaped `outer.FK = inner.<key>` (or reversed), where `<key>` is
+// the inner leg's primary-key or index first column. nil means no match.
+//
+// The inner side is matched by column IDENTITY, not by leaf name: keyIdent is
+// the metadata key column resolved ONCE against the inner leg's own row layout
+// (the boundary rule), and frontier is that layout. See readsKeyColumn for the
+// Java citations — Java matches a key column through Placeholder/semanticEquals
+// on resolved ordinals and never compares a column name here at all.
+//
+// There is deliberately no third, "deep-flowed" arm. One existed, accepting an
+// outer comparand on ANY leg other than the inner one so a re-enumerated
+// multi-way chain could probe through a table buried inside the outer
+// sub-join. It could not do that: both call sites pass every accepted
+// comparand straight to outerValRefsBuriedLeg, which declines exactly the legs
+// that arm alone admitted (anything that is neither the outer nor the inner
+// leg), so no rewrite it accepted could ever be yielded. The arms are gone
+// rather than left as reachable-looking dead code; jointBuriedLegDecline in the
+// tests pins the decline that made them dead, so re-arming the capability has
+// to go through the buried-leg rebase rather than through a silent bare-name
+// read of the merged row.
 func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 	cp *predicates.ComparisonPredicate,
-	outerPrefix, innerPrefix, pkCol string,
-) (*values.FieldValue, string) {
+	outerCorr, innerCorr values.CorrelationIdentifier,
+	keyIdent values.ColumnIdentity,
+	frontier values.OrdinalDomain,
+) *values.FieldValue {
 	lhsFV, lhsOk := cp.Operand.(*values.FieldValue)
 	rhsFV, rhsOk := cp.Comparison.Operand.(*values.FieldValue)
 	if !lhsOk || !rhsOk {
-		return nil, ""
+		return nil
 	}
-
-	lhsAlias, lhsCol := fieldValueAliasAndCol(lhsFV)
-	rhsAlias, rhsCol := fieldValueAliasAndCol(rhsFV)
-
-	outerAlias := strings.TrimSuffix(outerPrefix, ".")
-	innerAlias := strings.TrimSuffix(innerPrefix, ".")
-
-	if lhsAlias == outerAlias && rhsAlias == innerAlias {
-		if rhsCol == pkCol {
-			return lhsFV, rhsCol
-		}
+	lhsLeg, lhsHasLeg := legCorrelationOf(lhsFV)
+	rhsLeg, rhsHasLeg := legCorrelationOf(rhsFV)
+	if !lhsHasLeg || !rhsHasLeg {
+		return nil
 	}
-	if lhsAlias == innerAlias && rhsAlias == outerAlias {
-		if lhsCol == pkCol {
-			return rhsFV, lhsCol
-		}
+	if values.SameLeg(lhsLeg, outerCorr) && readsKeyColumn(rhsFV, innerCorr, keyIdent, frontier) {
+		return lhsFV
 	}
-
-	// Deep-flowed outer value: in a re-enumerated multi-way join the join key's
-	// outer side may reference a table nested INSIDE the outer sub-join rather
-	// than the outer quantifier itself (a 3-way chain's top join (T1⋈T2)⋈T3 has
-	// predicate T3.t2_id = T2.id, where T2 is inside the (T1⋈T2) outer). The
-	// outer's merged row exposes that column under its bare name
-	// (last-leg-wins on a bare-name read; mergeRows
-	// writes the same bare key at execution), and the caller
-	// rebuilds the probe value as QOV(outerAlias).<bareCol> — which resolves
-	// correctly per outer row. Accept when the INNER side is the index column
-	// and the other side is any aliased (non-inner) field. This is what turns a
-	// nested chain into a chain of index probes (RFC-042 L3).
-	if lhsAlias == innerAlias && lhsCol == pkCol && rhsAlias != "" && rhsAlias != innerAlias {
-		return rhsFV, lhsCol
+	if values.SameLeg(rhsLeg, outerCorr) && readsKeyColumn(lhsFV, innerCorr, keyIdent, frontier) {
+		return rhsFV
 	}
-	if rhsAlias == innerAlias && rhsCol == pkCol && lhsAlias != "" && lhsAlias != innerAlias {
-		return lhsFV, rhsCol
-	}
-
-	return nil, ""
+	return nil
 }
 
-// fieldValueAliasAndCol splits a comparand into its source alias and bare
-// column name. For a Child=QOV bake it applies the SAME bare-column allowlist
-// as correlatedFieldOf (fk_chain_cardinality.go) and correlatedInnerField
-// (plans/cost.go): a fused multi-accessor path (Child=QOV directly,
-// Resolved=[ADDRESS, ID], Field="ID") passes the Child==QOV check while still
-// being a nested reference, so fv.Field is only the LEAF name there — a
-// nested `inner.address.id` would otherwise report col="ID" and impersonate
-// the table's real top-level "ID" column in matchJoinPKPredicate's pkCol
-// comparison, building a correlated PK/index scan on the wrong semantics
-// (wrong EXISTS rows, not merely a worse plan). Declining
-// (alias="", col="") never matches a real, non-empty outerAlias/innerAlias,
-// so this fails the rewrite closed rather than accepting the false match.
-func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
+// legCorrelationOf returns the CORRELATION whose row a comparand reads its
+// column off — RFC-197's first identity element, and the only thing the
+// alias-only callers ever wanted out of the old fieldValueAliasAndCol.
+//
+// The correlation comes STRUCTURALLY from a direct QuantifiedObjectValue
+// child. A fused multi-accessor path (Child=QOV directly, Resolved=[ADDRESS,
+// ID]) declines: it reads a column of a NESTED record, so the quantifier's row
+// is not the layout its leaf names, and reporting the root quantifier would
+// let `inner.address.id` impersonate the table's real top-level `ID` — a
+// wrong-rows rewrite, not merely a worse plan. Same allowlist as
+// correlatedFieldOf (fk_chain_cardinality.go) and correlatedInnerField
+// (plans/cost.go).
+//
+// Not-ok is the FAIL-CLOSED answer; every caller treats it as "cannot state
+// which leg this reads" and declines the rewrite.
+func legCorrelationOf(fv *values.FieldValue) (values.CorrelationIdentifier, bool) {
+	if fv == nil {
+		return values.CorrelationIdentifier{}, false
+	}
 	if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
 		if fv.Resolved != nil {
 			if _, single := fv.Resolved.Single(); !single {
-				return "", ""
+				return values.CorrelationIdentifier{}, false
 			}
 		}
-		return strings.ToUpper(qov.Correlation.String()), strings.ToUpper(fv.Field)
+		return qov.Correlation, true
 	}
-	upper := strings.ToUpper(fv.Field)
-	// The dotted-split arm serves CHILDLESS dotted merged-row reads. On
-	// every covered surface it is dead-in-effect (probed zero across
-	// yamsql, embedded, cascades, and the full FDB driver suites). The
-	// dup-alias projection carve-out — one of its two producers — is
-	// RETIRED (dup qualifiers bake QOV(binding) per-attribute, first leg
-	// included); the enclosed-unnest name-model residual still merges
-	// dotted keys, so the arm retires WITH that remaining producer (the
-	// box-substrate ordinalization), not before — deleting the defense
-	// while a producer can still emit the shape reintroduces silent
-	// misclassification.
-	if dot := strings.IndexByte(upper, '.'); dot >= 0 {
-		return upper[:dot], upper[dot+1:]
+	// A CHILDLESS value states no quantifier. There used to be an arm here that
+	// recovered one by slicing the qualifier out of the display name — the
+	// qualified-name CHANNEL (RFC-197 bucket 6). It is gone rather than
+	// retagged, because keeping it would have moved a name decision somewhere
+	// the build-time gate cannot see: the slice fed a CorrelationIdentifier
+	// constructor, and the gate deliberately does not flag construction, so the
+	// site would have gone quiet while still deciding which leg a value reads
+	// from how it is spelled. A migration that launders a decision into
+	// invisibility is worse than one that leaves it listed.
+	//
+	// Failing closed here is safe at every caller, which is why the arm could
+	// go before its producers do: matchJoinPKPredicate declines the rewrite,
+	// outerValRefsBuriedLeg reports "buried" and declines, and
+	// predicateSingleSide attributes the reference to neither side and keeps
+	// the predicate above the join. Each is a declined optimization, never a
+	// wrong slot. Nothing in the explaindiff corpus takes the arm (0 of 1944
+	// calls), so the optimization was theoretical.
+	return values.CorrelationIdentifier{}, false
+}
+
+// readsKeyColumn reports whether fv is a bare reference to keyIdent's column,
+// read off the leg bound under legCorr.
+//
+// This is the identity comparison that replaces the leaf-name match. Java
+// never asks this question by name: an index/PK key column becomes a
+// Placeholder at candidate-expansion time and the query predicate is matched
+// to it by Value.semanticEquals under a ValueEquivalence
+// (PredicateWithValueAndRanges.java:312-323, Value.java:763-771), where
+// FieldValue.equalsWithoutChildren compares the resolved field PATH
+// (FieldValue.java:214-216) and ResolvedAccessor.equals compares the ORDINAL
+// ONLY (FieldValue.java:683-684). The metadata name is resolved to that
+// ordinal exactly once, in FieldValue.resolveFieldPath
+// (FieldValue.java:270-298), and is dead weight afterwards — Java even says so
+// where it kept one for debugging (ScanWithFetchMatchCandidate.java:123: "field
+// names are for debugging purposes only, we should probably use field ordinals
+// here instead").
+//
+// keyIdent is that once-resolved metadata name, stated in the inner leg's own
+// row layout; frontier is that same layout. A comparand whose ordinal indexes
+// some OTHER layout fails OrdinalIn and declines rather than matching on the
+// name it happens to share.
+func readsKeyColumn(
+	fv *values.FieldValue,
+	legCorr values.CorrelationIdentifier,
+	keyIdent values.ColumnIdentity,
+	frontier values.OrdinalDomain,
+) bool {
+	id, ok := fv.CorrelatedIdentityIn(frontier)
+	if !ok {
+		return false
 	}
-	return "", upper
+	return values.SameLeg(id.Correlation, legCorr) &&
+		id.Domain == keyIdent.Domain && id.Ordinal == keyIdent.Ordinal
 }
 
 // outerValRefsBuriedLeg reports whether a fast-path correlation's outer
@@ -3721,65 +3783,68 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 // BAKED ordinal (an ordinalized box) — both leg-correct. The optimization is only lost
 // for existential correlations into a buried box leg; the common
 // single-source and rightmost-leg cases still take the fast path.
-func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerAlias string) bool {
-	a, _ := fieldValueAliasAndCol(outerVal)
-	return a != "" && a != strings.ToUpper(outerAlias)
-}
-
-// bareColumnName returns the unqualified column name from a FieldValue,
-// stripping the table alias prefix when it matches expectedAlias. For
-// QOV-based FieldValues the Field is already bare; for flat
-// "ALIAS.col" strings, the alias is stripped via fieldValueAliasAndCol.
-func bareColumnName(fv *values.FieldValue, expectedAlias string) string {
-	if fv.Child != nil {
-		return fv.Field
-	}
-	fvAlias, col := fieldValueAliasAndCol(fv)
-	if fvAlias != "" && fvAlias == strings.ToUpper(expectedAlias) {
-		return col
-	}
-	return fv.Field
+// It FAILS CLOSED: a comparand whose leg cannot be stated structurally is
+// treated as buried, because "which leg does this read" is precisely the
+// question the fast path must answer before it may rebuild the probe as
+// QOV(outerAlias).<col>.
+func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerCorr values.CorrelationIdentifier) bool {
+	leg, ok := legCorrelationOf(outerVal)
+	return !ok || !values.SameLeg(leg, outerCorr)
 }
 
 // correlatedFastPathOperand builds the outer-side operand pushed into the
-// parameterized inner PK/index scan. A BAKED ordinal ref (FrontierPinned — the
-// ordinal-seed contract) is used AS-IS: it already reads its outer column
-// POSITIONALLY off the merged row bound under outerCorrelation, and re-deriving
-// it by bare NAME would misread a SHADOWED or duplicate
-// column name in the merged row — the unnest's AS/AT alias and an outer column
-// can share a name, and a bare `QOV(outer).<name>` read then resolves to the
-// element instead of the outer column (`FROM t,
-// t.arr AS ID WHERE EXISTS(u.id = t.id)` probed U with the element and dropped
-// every row). A LAZY ref carries no positional bake and is rebuilt bare
-// over outerCorrelation.
+// parameterized inner PK/index scan, or declines.
+//
+// A BAKED ordinal ref (FrontierPinned — the ordinal-seed contract) is used
+// AS-IS: it already reads its outer column POSITIONALLY off the merged row
+// bound under outerCorrelation, and re-deriving it by bare NAME would misread a
+// SHADOWED or duplicate column name in the merged row — the unnest's AS/AT
+// alias and an outer column can share a name, and a bare
+// `QOV(outer).<name>` read then resolves to the element instead of the outer
+// column (`FROM t, t.arr AS ID WHERE EXISTS(u.id = t.id)` probed U with the
+// element and dropped every row).
+//
+// A LAZY ref (no resolved path at all) DECLINES. It used to be rebuilt as a
+// bare `QOV(outer).<name>`, which is not a weaker operand but an UNEVALUABLE
+// one: FieldValue.evaluateOrdinal has no runtime name-resolution fallback and
+// answers OrdinalResolutionError{Ordinal: -1} for any unbaked reference
+// (values.go:789-793, "There is NO runtime name-resolution fallback"). So that
+// arm could only ever have manufactured a plan that fails loud at execution;
+// declining hands the query to the general correlated path, which rebases the
+// reference properly. Nothing in the explaindiff corpus reaches it.
 func correlatedFastPathOperand(
 	outerVal *values.FieldValue,
 	outerCorrelation values.CorrelationIdentifier,
-	outerAlias string,
-) values.Value {
+) (values.Value, bool) {
 	if outerVal.Resolved != nil && outerVal.Resolved.FrontierPinned {
-		return outerVal
+		return outerVal, true
 	}
 	// A SOURCE-RELATIVE bake (the resolver's construction-time
 	// ordinal, addressed to a real SQL source) transfers to the rebuilt operand
 	// verbatim — the fast path only admits references to the outer source
 	// itself (outerValRefsBuriedLeg declines buried legs), so the row bound
 	// under outerCorrelation IS that source's row and the declared-column-order
-	// ordinal reads the right slot. Rebuilding it LAZY
-	// would degrade a baked reference to a runtime name read (which does not
-	// exist — it would fail loud).
+	// ordinal reads the right slot.
 	if outerVal.SourceRelativeBaked() {
+		// The rebuilt operand's DISPLAY name. Its identity is the ordinal
+		// passed beside it; this string is never compared, keyed or resolved,
+		// and the constructor is the one place RFC-197 leaves a name
+		// legitimate. It is taken VERBATIM: there used to be a branch here
+		// that sliced a qualifier out of a CHILDLESS reference's dotted
+		// display name (the qualified-name channel, RFC-197 bucket 6), and it
+		// was unreachable by the same construction that justified deleting
+		// matchJoinPKPredicate's deep-flowed arms — both callers gate on
+		// outerValRefsBuriedLeg, which routes through legCorrelationOf and
+		// fails closed on a childless value, so outerVal always has a
+		// QuantifiedObjectValue child by the time it arrives here.
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(outerCorrelation),
-			bareColumnName(outerVal, outerAlias),
+			outerVal.Field,
 			outerVal.Resolved.Root().Ordinal,
 			outerVal.Typ,
-		)
+		), true
 	}
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(outerCorrelation),
-		bareColumnName(outerVal, outerAlias), outerVal.Typ,
-	)
+	return nil, false
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)

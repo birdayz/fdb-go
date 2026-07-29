@@ -105,3 +105,61 @@ func TestUitoa(t *testing.T) {
 		}
 	}
 }
+
+// TestSameLeg_IsExact_AndPreservesMintedNamespaceDisjointness pins the leg
+// comparison's exactness against the protection that depends on it.
+//
+// semantic/scope.go upper-folds every USER correlation at its single
+// registration chokepoint, while UniqueCorrelationIdentifier mints the machine
+// counter in LOWERCASE. scope.go names what the resulting case-disjointness
+// buys, verbatim: "the lowercase q$N machine-counter namespace stays
+// case-DISJOINT from every upper-folded user correlation — quoted \"q$5\"
+// cannot forge a planner-minted q$5."
+//
+// SameLeg is the one comparison every identity proof routes through, so a fold
+// here erases that protection everywhere at once. Java has the property by
+// construction: CorrelationIdentifier.equals is exact
+// (CorrelationIdentifier.java:132).
+//
+// What re-arms if this changes: a quoted user alias could be accepted as the
+// minted leg it upper-folds onto, and the proofs that consume SameLeg answer
+// "which row does this value read" — a forged match is a wrong-rows plan or a
+// fabricated cardinality, not a lost optimization.
+func TestSameLeg_IsExact_AndPreservesMintedNamespaceDisjointness(t *testing.T) {
+	t.Parallel()
+
+	minted := UniqueCorrelationIdentifier()
+	if got := minted.String(); got != strings.ToLower(got) {
+		t.Fatalf("UniqueCorrelationIdentifier minted %q, which is not lowercase — the "+
+			"case-disjointness scope.go relies on comes from this namespace being lower "+
+			"while user correlations are upper-folded", got)
+	}
+
+	// The forgery: what a quoted user alias spelled the same as the minted one
+	// becomes after scope.go's upper-fold.
+	forged := NamedCorrelationIdentifier(strings.ToUpper(minted.String()))
+	if SameLeg(minted, forged) {
+		t.Fatalf("SameLeg(%q, %q) = true — an upper-folded user alias was accepted as the "+
+			"planner-minted leg. semantic/scope.go keeps those namespaces case-DISJOINT so a "+
+			"quoted identifier cannot forge a minted correlation; a case-folding comparison "+
+			"here erases that for every identity proof at once", minted, forged)
+	}
+
+	// Same shape one level down, spelled out rather than derived, so the pin
+	// survives a change to the minting format.
+	if SameLeg(NamedCorrelationIdentifier("q$5"), NamedCorrelationIdentifier("Q$5")) {
+		t.Fatal("SameLeg(q$5, Q$5) = true — scope.go's anti-forgery disjointness is erased")
+	}
+
+	// Accept direction, so exactness is not satisfied by refusing everything.
+	if !SameLeg(minted, NamedCorrelationIdentifier(minted.String())) {
+		t.Fatal("SameLeg declined a leg against its own spelling — exactness must still " +
+			"recognize identical identifiers")
+	}
+	if !SameLeg(NamedCorrelationIdentifier("O"), NamedCorrelationIdentifier("O")) {
+		t.Fatal("SameLeg declined two identical user aliases")
+	}
+	if SameLeg(NamedCorrelationIdentifier("O"), NamedCorrelationIdentifier("I")) {
+		t.Fatal("SameLeg accepted two different legs")
+	}
+}

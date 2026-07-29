@@ -175,6 +175,163 @@ func TestStarMetadataStructElementType(t *testing.T) {
 	}
 }
 
+// buildTwinLayoutStarMetadata builds two tables with the IDENTICAL declared
+// column list — `ID`, `SITEMS` — differing only in the array column's ELEMENT
+// kind: `WS.SITEMS` is repeated int64, `WX.SITEMS` is repeated message.
+//
+// Everything a leaf name or a row-shape signature could say about the array
+// column is therefore the same on both legs. Only the leg the reference
+// actually reads distinguishes them.
+func buildTwinLayoutStarMetadata(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("twin_layout_star_test.proto"),
+		Package: proto.String("fdb.test.twinlayoutstar"),
+		Syntax:  proto.String("proto2"),
+	}
+	titem := &descriptorpb.DescriptorProto{
+		Name: proto.String("TItem"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name: proto.String("SKU"), Number: proto.Int32(1),
+				Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:  descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			},
+		},
+	}
+	table := func(name string, structElement bool) *descriptorpb.DescriptorProto {
+		items := &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("SITEMS"), Number: proto.Int32(2),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+			Type:  descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+		}
+		if structElement {
+			items.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
+			items.TypeName = proto.String(".fdb.test.twinlayoutstar.TItem")
+		}
+		return &descriptorpb.DescriptorProto{
+			Name: proto.String(name),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{
+					Name: proto.String("ID"), Number: proto.Int32(1),
+					Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:  descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+				},
+				items,
+			},
+		}
+	}
+	union := &descriptorpb.DescriptorProto{
+		Name: proto.String("UnionDescriptor"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name: proto.String("_WS"), Number: proto.Int32(1),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String(".fdb.test.twinlayoutstar.WS"),
+			},
+			{
+				Name: proto.String("_WX"), Number: proto.Int32(2),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String(".fdb.test.twinlayoutstar.WX"),
+			},
+		},
+	}
+	fdp.MessageType = []*descriptorpb.DescriptorProto{
+		titem, table("WS", false), table("WX", true), union,
+	}
+	fd, err := protodesc.NewFile(fdp, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+	mdBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
+	mdBuilder.SetSplitLongRecords(false)
+	mdBuilder.SetStoreRecordVersions(false)
+	mdBuilder.SetVersion(1)
+	mdBuilder.SetRecordCountKey(recordlayer.RecordTypeKey())
+	mdBuilder.GetRecordType("WS").SetPrimaryKey(recordlayer.Field("ID"))
+	mdBuilder.GetRecordType("WX").SetPrimaryKey(recordlayer.Field("ID"))
+	md, err := mdBuilder.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	return md
+}
+
+// TestStarMetadataTwinLayoutTypesTheUnnestedLeg is the IDENTITY dimension of
+// the element-type derivation: the same leaf name, in two legs whose row
+// layouts are indistinguishable, with two different element kinds behind it.
+//
+// The element column's type used to be resolved by matching the collection
+// reference's DISPLAY name against every leg descriptor of the join, first
+// match wins — so the answer was decided by which leg the planner happened to
+// put on the outer side, not by which leg the unnest reads. Half the cases
+// below reported the OTHER leg's element kind: a struct element typed BIGINT,
+// the exact mistyping TestStarMetadataStructElementType pins for a disjoint
+// schema, re-armed by a duplicate name.
+//
+// The cases are chosen so that no single-element fix passes:
+//
+//   - Both leg ORDERS appear for the same unnest target, so a fix that
+//     narrows the search to one leg but picks the wrong one fails half of them.
+//   - Both TARGETS appear, so answering STRUCT unconditionally fails.
+//   - The two layouts are structurally IDENTICAL, so choosing the descriptor
+//     by row shape alone is not enough — the reference's leg has to be the
+//     thing consulted.
+func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
+	t.Parallel()
+	md := buildTwinLayoutStarMetadata(t)
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "struct-element leg planned outer",
+			sql:  `SELECT * FROM WS AS A, WX AS B, B."SITEMS" AS "EL"`,
+			want: "STRUCT",
+		},
+		{
+			name: "struct-element leg planned inner",
+			sql:  `SELECT * FROM WX AS B, WS AS A, B."SITEMS" AS "EL"`,
+			want: "STRUCT",
+		},
+		{
+			name: "struct-element leg unaliased",
+			sql:  `SELECT * FROM WS, WX, WX."SITEMS" AS "EL"`,
+			want: "STRUCT",
+		},
+		{
+			name: "scalar-element leg planned outer",
+			sql:  `SELECT * FROM WX AS B, WS AS A, A."SITEMS" AS "EL"`,
+			want: "BIGINT",
+		},
+		{
+			name: "scalar-element leg planned inner",
+			sql:  `SELECT * FROM WS AS A, WX AS B, A."SITEMS" AS "EL"`,
+			want: "BIGINT",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, perr := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil)
+			if perr != nil {
+				t.Fatalf("plan: %v", perr)
+			}
+			labels := embedded.ResultColumnLabelsForPlan(plan, md)
+			types := embedded.ResultColumnTypesForPlan(plan, md)
+			if fmt.Sprintf("%v", labels) != "[ID SITEMS ID SITEMS EL]" {
+				t.Fatalf("labels = %v, want [ID SITEMS ID SITEMS EL] — the gathered-star arm did not fire, so the element type below proves nothing", labels)
+			}
+			if got := types[len(types)-1]; got != tc.want {
+				t.Fatalf("element column type = %q (all types %v), want %q — the unnested array column was resolved by a leaf name BOTH legs declare, instead of by its ordinal in the leg the Explode actually reads",
+					got, types, tc.want)
+			}
+		})
+	}
+}
+
 // TestStarMetadataPlainThreeWayKeepsQualifiedNames pins that a PLAIN 3-way
 // join's partition can also leave a positional-merge subplan — with NO
 // unnest and NO `_N` leak in the merged columns — so the structural leg
