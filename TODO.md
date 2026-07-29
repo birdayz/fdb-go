@@ -9743,8 +9743,12 @@ to nothing.)
   actually exercised by a seed. Add a directed template rather than relying on
   random weighting, so the question stops being ambiguous.
 
-- [ ] **CQ-38 (MED) — a residual filter over a fetch-free index scan is never
-  marked COVERING.** `MergeProjectionAndFetchRule` marks the inner scan
+- [ ] **CQ-39 (MED) — a residual filter over a fetch-free index scan is never
+  marked COVERING.** *(Renumbered from a duplicate CQ-38. Two distinct items
+  carried that number — the NaN-total-order semantics item earlier in this phase
+  and this covering-label item; the later one was renumbered. Any external
+  reference to "CQ-38 covering" means this item.)*
+  `MergeProjectionAndFetchRule` marks the inner scan
   covering only in its direct `fetchInnerExpr.(*RecordQueryIndexPlan)` arm
   (`rule_merge_projection_and_fetch.go:91`); with a residual `PredicatesFilter`
   between projection and fetch it takes the `:103-126` fallback, which yields
@@ -9758,3 +9762,233 @@ to nothing.)
   lap. Read Java's MergeProjectionAndFetchRule counterpart first — if Java
   marks covering through a residual, this is a divergence; if not, it is a
   shared gap and the fix is an extension.
+
+## Phase 12: Audit bookings — found-but-unbooked
+
+Every item below was DISCOVERED by an audit and had no TODO entry. The audit's
+standing rule is that a finding without a booking is a finding that evaporates,
+so each is recorded here with its evidence refs, a size, and what "done" means.
+None is speculative: each was re-verified against the tree before booking.
+
+- [ ] **CQ-40 (MED) — two `LikeMatch` implementations disagree, and the wrong one
+  is on the INFORMATION_SCHEMA `WHERE` path.** · S
+  MEASURED divergence (probed 2026-07-29 over `escape='\'`):
+
+  | pattern | string | `values.LikeMatch` | `functions.LikeMatch` |
+  |---|---|---|---|
+  | `a\` | `a\` | false | **true** |
+  | `\` | `\` | false | **true** |
+  | `ab\` | `ab\` | false | **true** |
+  | `%\` | `x\` | false | **true** |
+
+  `pkg/recordlayer/query/plan/cascades/values/like_match.go:23` is the CANONICAL
+  matcher: its doc comment names Java's `Comparisons.likeMatcher` as the spec, it
+  is fuzzed against a regex oracle (`FuzzLikeMatch` / `FuzzLikeMatchEscape`), and
+  its trailing-escape rule ("MALFORMED → no match", `like_match.go:21-22`) is
+  itself a fuzz-found bug fix. `pkg/relational/core/functions/like.go:8` is a
+  second, independent implementation that never got that fix — its escape arm
+  requires `len(p) >= 2` (`like.go:21`) and so falls through to the literal
+  `default` arm, matching the escape rune against itself. It is reached from
+  `pkg/relational/core/embedded/eval_predicate_map.go:88`, the map-backed
+  INFORMATION_SCHEMA `WHERE` evaluator — so a `LIKE` against catalog metadata
+  answers differently from the same `LIKE` against a table.
+  This is one member of a SHADOW EVALUATOR family in `pkg/relational/core/functions`
+  — `CompareValues`, `CastValue`, `ApplyMathOp`, `IsTruthy` — a straight "no
+  parallel pipelines" violation (CLAUDE.md: "Java has one query path; Go has one
+  query path"). The map path re-derives semantics the Value tree already owns.
+  DONE = `functions.LikeMatch` deleted, `eval_predicate_map.go` adapted to
+  `values.LikeMatch`, and the trailing-escape case pinned ON THE MAP PATH (an
+  INFORMATION_SCHEMA `WHERE ... LIKE 'x\' ESCAPE '\'` scenario, not a unit test on
+  the helper — the defect is that the map path uses the wrong helper, so a test
+  that calls the helper directly cannot express it). Retiring the rest of the
+  shadow-evaluator family is the follow-on, and should be booked separately once
+  this one establishes the adaptation shape.
+
+- [ ] **CQ-41 (MED) — `API_PARITY.md` contradicts `options.go`, and nothing
+  detects it.** · S
+  `pkg/fdbgo/fdb/API_PARITY.md:56` and `:62` list `ReportConflictingKeys` and
+  `BypassStorageQuota` under "**Accepted but ignored — no-op (fails safe)**".
+  Both REJECT: `options.go:255` returns `&UnsupportedOptionError{Option:
+  "report_conflicting_keys"}` and `options.go:362` returns
+  `&UnsupportedOptionError{Option: "bypass_storage_quota"}` — each with a comment
+  explicitly saying it "fails UNSAFE if ignored". The doc states the exact
+  opposite of the code for two options, and the code's own comments name
+  `SetReportConflictingKeys` as the precedent the others follow.
+  The "Rejected" table (`API_PARITY.md:44-49`) lists 3 entries; `options.go` has
+  SEVEN rejecting sites (`:255`, `:273`, `:285`, `:362`, `:372`, `:476`, `:480` —
+  the last two on `DatabaseOptions`). A caller reading the doc to decide whether
+  the pure-Go backend is safe for their workload gets a wrong answer.
+  DONE = doc corrected AND a `pkg/docscheck` gate that parses `options.go`,
+  classifies every option body as reject / no-op / honored, and asserts the
+  classification matches `API_PARITY.md`'s tables — with a no-op guard on the
+  parse, so a broken parser fails loudly instead of passing vacuously. Same shape
+  as `TestNightlyWindowGatesAreReconciled`. A one-time doc correction without the
+  gate re-rots on the next option added.
+
+- [ ] **CQ-42 (LOW) — `SetSpecialKeySpaceRelaxed` / `SetSpecialKeySpaceEnableWrites`
+  are bare `return nil` with no recorded decision.** · S
+  `options.go:258-264`: both are two-line `return nil` with NO comment, while
+  every other option in that file carries a fail-safe/fail-unsafe rationale.
+  `API_PARITY.md:64-65` lists them as accepted no-ops with the parenthetical "the
+  special-key-space module itself is absent". That parenthetical is the whole
+  question and it is left hanging: if the module is absent, then a caller enabling
+  relaxed access or writes to it is asking for something that cannot happen, and
+  the silent `nil` tells them it did. Whether that is fail-safe (nothing to
+  corrupt) or fail-unsafe (the caller proceeds believing writes are enabled) is a
+  real decision that was never taken — it just inherited the default.
+  DONE = the keep-or-reject decision made and RECORDED in `API_PARITY.md` with its
+  reasoning, and the chosen behaviour commented at both call sites. If "keep as
+  no-op" is the answer, that is a fine answer — but it has to be a decision, not
+  an absence. Gate it with CQ-41's docscheck so the classification is enforced.
+
+- [ ] **CQ-43 (LOW) — the bounded-context requirement is documented nowhere the
+  caller will look.** · S
+  This is P1.5 of `rfcs/prod-readiness-go-client.md:210-212`, the one P1 item of
+  that punch-list still open: *"Document the bounded-context requirement in
+  godoc/README: with no internal max-retry, a `Transact`/`Open` against a down
+  cluster blocks until the caller's `ctx` cancels — a real difference from
+  `libfdb_c`'s internal timeouts. Migrators MUST pass bounded contexts."*
+  VERIFIED still absent: `pkg/fdbgo/README.md` mentions `ctx` only in a dial-func
+  code sample (`:204`, `:213`) and a chaos-test row (`:229`); there is no
+  `pkg/fdbgo/doc.go` at all. The RFC itself repeats the requirement three times
+  (`:161-162` "makes a bounded `ctx` on every `Transact` mandatory, not optional";
+  `:164-165` "callers MUST pass bounded contexts"; `:227` in the Recommendation)
+  — the knowledge exists, it just never reached the package a migrator imports.
+  DONE = a `pkg/fdbgo/doc.go` package comment plus a README section stating the
+  requirement and naming the divergence from `libfdb_c` explicitly, so `go doc
+  fdb.dev/pkg/fdbgo` surfaces it.
+
+- [ ] **CQ-44 (MED) — build the two capabilities the differential suite states it
+  cannot probe.** · M
+  `rfcs/prod-readiness-go-client.md:207` (P2 item 7) names four unprobed axes; two
+  of them are unprobed because a CAPABILITY does not exist, not because anyone
+  chose to skip them:
+  - **`commit_unknown_result` (1021) idempotency** — needs WIRE-LEVEL FAULT
+    INJECTION: a commit whose reply is dropped after the proxy accepted it. The
+    existing `ChaosTransactor` injects at tx boundaries (`pkg/recordlayer/chaos/`),
+    which is one layer too high — it cannot produce the "server committed, client
+    never learned" state the 1021 contract is about.
+  - **cross-shard range-merge** — needs a MULTI-SHARD cluster; the testcontainer
+    is a single node, so every range read resolves inside one shard and the merge
+    path across a boundary is never taken.
+  Per CLAUDE.md this is explicitly NOT a deferral: *"'It needs a capability that
+  doesn't exist yet' is not a deferral — it is the work."* Both are things to
+  BUILD. Check the C++ source first for how `libfdb_c`'s own test harness produces
+  each (FDB's simulation framework has both), and port the mechanism rather than
+  inventing one.
+  DONE = a wire-level fault-injection hook in `pkg/fdbgo` that can drop a commit
+  reply after acceptance, with a differential test asserting Go's 1021 handling
+  matches C++'s; and a multi-shard test cluster (explicit shard splits at known
+  boundaries) with a differential range read that spans one. Sized M because it is
+  two independent harness builds; split into two items if either grows.
+
+- [ ] **CQ-45 (HIGH, ROOT-CAUSED — pin landing separately) — the 07-17 stress
+  `exists_subquery` failure: an aggregate index was built into a record-fetching
+  scan.** · S (pin only)
+  **Nightly Stress 2026-07-17, run `29560169002`** —
+  `TestFDB_Stress_10K/exists_subquery` FAILED with, verbatim:
+  `EXISTS subquery: record not found from index entry
+  (index_name=SUM_AMOUNT_BY_CUSTOMER, primary_key=(), index_key=(0))`.
+  REPRODUCED DETERMINISTICALLY at the failing SHA `0e7104f71`. MECHANISM:
+  `ImplementNestedLoopJoinRule.tryExistsFlatMap`'s "try secondary indexes" loop
+  (`rule_implement_nested_loop_join.go:2629` at that SHA) matched match candidates
+  by first-column NAME with no index-TYPE check.
+  `AggregateIndexMatchCandidate.GetColumnNames()` returns the GROUPING KEY, so a
+  SUM aggregate index matched on name and was built into a record-fetching
+  `RecordQueryIndexPlan`, bypassing the enumerator's `IsAtomicMutationIndex` gate.
+  `getEntryPrimaryKey` (`pkg/recordlayer/index.go:596`) returns an EMPTY tuple for
+  the short aggregate entry → `LoadRecord` nil → the loud
+  `IndexOrphanBehavior.ERROR` above. LOUD in every measured shape; NO silent wrong
+  rows — aggregate entries are always shorter than the root `ColumnSize`, so a
+  garbage fetch is unreachable. NOT index inconsistency.
+  RULED OUT: the 2026-07-14 red (run `29311393053`) is unrelated — flat 30.00s
+  timeouts across `TestFDB_RawIngestBench` / `RawReadScaling` /
+  `SaveRecordBatchScaling` / `SaveRecordPerRowScaling`, infra collapse, no such
+  error anywhere in the log.
+  FIXED SINCE, INCIDENTALLY, by `bde66debe` (2026-07-24, a FAN_OUT-cardinality
+  commit that never mentions aggregates): it added
+  `candidatePlainFieldColumnsForShortcut`, whose `*ValueIndexScanMatchCandidate`
+  type assertion HAPPENS to exclude aggregates. That is luck, not design — see
+  CQ-46, which is the real fix.
+  DONE = `aggregate_index_shortcut_gate_test.go` landed (written, currently
+  uncommitted in the main tree). This item is the pin, not the fix; the fix is
+  CQ-46. Note this was the LAST genuine stress run there has been — the 12 nights
+  after it were fake-green window skips (fixed by
+  `.github/workflows/nightly-reconcile.yml`), so a reproducible planner fault sat
+  behind a wall of green check marks for twelve days.
+
+- [ ] **CQ-46 (HIGH, STRUCTURAL) — index candidacy is opt-OUT in Go and opt-IN in
+  Java; port the opt-in shape.** · M/L · query-engine gated (RFC + Graefe/Torvalds
+  review BEFORE implementation)
+  This is the actual defect behind CQ-45, and the reason that fault could exist at
+  all. JAVA: `IndexMaintainerFactory.createMatchCandidates` defaults to EMPTY —
+  an index type contributes match candidates only if its maintainer factory
+  explicitly emits them, and `AtomicMutationIndexMaintainerFactory` emits ONLY
+  aggregate candidates. Java therefore CANNOT EXPRESS the CQ-45 bug: an aggregate
+  index is never in the value-index candidate set to be matched by name in the
+  first place. GO: candidacy is opt-out — every index becomes a plain value-index
+  candidate unless some downstream site happens to filter it.
+  MEASURED FRAGILITY: of the three raw-index shortcut sites, only
+  `rule_streaming_agg_from_index.go:61` excludes aggregates DELIBERATELY. The
+  other two exclusions are incidental — adding an innocuous
+  `CreatesDuplicates() bool` method to `AggregateIndexMatchCandidate` re-arms the
+  IDENTICAL fault on `ORDER BY` shapes. A correctness property that an unrelated
+  method addition can switch off is not a property, it is a coincidence.
+  ADJACENT OPT-OUT LEAKS to audit in the same pass (reachability UNMEASURED —
+  measure, do not assume): `text`, `multidimensional`,
+  `time_window_leaderboard`, and the legacy bare `min_ever` / `max_ever` type
+  strings all become plain value-index candidates in Go where Java emits none.
+  DONE = candidacy inverted to opt-in per maintainer factory, matching Java's
+  structure (CLAUDE.md design principle 10: match the architectural property that
+  produces the behaviour, not a downstream observable — an `if isAggregate {skip}`
+  at each shortcut site is exactly the bolted-on check that rule forbids); every
+  adjacent leak above measured for reachability and either closed or pinned as
+  unreachable with a test naming what re-arms it; and the `CreatesDuplicates`
+  probe kept as a regression, since it is the measurement that proved the current
+  gates accidental.
+
+- [ ] **CQ-47 (HIGH) — binding-stress 0/50, every seed, un-root-caused.** · under
+  investigation
+  **Nightly Fuzz binding-stress, runs `30072919663` (07-24) and `30147568953`
+  (07-25)** — `binding-stress: 0/50 pass, 50 fail, 0 FDB deaths (1000 ops/seed)`.
+  EVERY seed failed with `exit status 1 (FDB=ALIVE, ~5.2s)`, identical timing
+  across all 50. A uniform per-seed failure with the cluster ALIVE is a systematic
+  harness or binary break, NOT a data-dependent bug — look at what changed in
+  `cmd/fdb-binding-stress` / `cmd/fdb-stacktester` or the bindingtester harness
+  around 07-23, not at seed-specific behaviour.
+  DONE = root-caused, fixed, pinned. Reproduce locally first:
+  `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start 1`.
+
+- [ ] **CQ-48 (MED) — docs authority reconciliation: five living documents assert
+  states the code has left behind.** · M
+  Booked as ONE item because they share a single root cause — a document that
+  claims authority ("scorecard", "verdict", "still genuinely OPEN") and is then
+  never re-derived becomes actively misleading, worse than no document. Each site
+  was re-verified 2026-07-29:
+  - `rfcs/prod-readiness-go-client.md` — 7 of its 9 punch-list items are closed,
+    but the Verdict, the per-section Scorecard and the "Top 3 to close" (`:230-231`:
+    cluster-file re-watch, `SetTimeout`→RPC-ctx, the `API_PARITY.md` honest-options
+    split) all still assert the gaps as open. The counts quoted in §4 (`:169-176`)
+    are all low against the current tree.
+  - `PRODUCTION_READINESS.md` — carries an authority claim; last substantive touch
+    2026-06-27.
+  - `TODO-production.md:725-737` — P2.3 states *"Verified 2026-06-24: all six still
+    OPEN in TODO.md"*. At least three are closed: `wrapBareAggregateInsertSource`
+    was DELETED by CQ-5 (so `:732-733` describes a function that no longer exists),
+    and `:735`'s bare-`GROUP BY` `INSERT…SELECT` guard went with it.
+  - `TODO.md:7222` — the `#28` client item (`commit ships the UNFOLDED mutation log`)
+    is still `- [ ]`, but it shipped: `pkg/fdbgo/client/commitpath.go:343` reads
+    *"coalesced for a RYW commit (#28)"* and `transaction.go:1778-1780` implements
+    the coalescing.
+  - `TODO.md:2903` — the freeze banner (*"⛔ ALL WORK FROZEN — sole priority is
+    RFC-173"*, owner directive dated 2026-07-01) is still the first thing a reader
+    hits, while the tree is demonstrably running RFC-197 work. A stale freeze
+    banner is the most expensive kind of staleness: it tells the next person not to
+    start.
+  DONE = each of the five re-derived against the current tree and corrected, the
+  `#28` checkbox closed, and the freeze banner either removed or re-confirmed with a
+  current date. Where a doc's claim is mechanically checkable (item counts, "still
+  open" assertions that name a function), add a `pkg/docscheck` assertion rather
+  than a fresh hand-written claim — the existing `docs_consistency_test.go` is the
+  precedent, and CQ-41's options gate is the same pattern. A doc corrected by hand
+  is stale again in a month; a doc with a gate is not.
