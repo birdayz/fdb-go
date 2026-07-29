@@ -10121,10 +10121,13 @@ None is speculative: each was re-verified against the tree before booking.
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
   the joined representation cannot tell apart.
 
-- [ ] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — teach the
-  FlatMap inner binder leg-local windows, and the merged-row `leg.col` string
-  channel dies with its five readers.** The last genuinely-dotted debt sites are
-  readers of ONE channel, and the channel is executor-side.
+- [ ] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
+  FlatMap inner binder Java's parent-chained per-alias bindings, and the
+  merged-row `leg.col` string channel dies with its five readers.** The last
+  genuinely-dotted debt sites are readers of ONE channel, and the channel is
+  executor-side. (The title used to say "teach the FlatMap inner binder
+  leg-local windows"; that plan is corrected below and the correction is the
+  point of this item.)
 
   The producers rewrite a leg-correlated read into a merged-correlated read with
   the leg packed into the NAME:
