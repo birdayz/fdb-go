@@ -7537,6 +7537,37 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-29 (RFC-197 item 2 escape bucket — review fold: correlation guards
+made load-bearing, leg comparison unified on case-folding `values.SameLeg`):**
+baseline worktree at `master` = `e5477c9f2`, which IS the branch point
+(merge-base == master), so the comparison isolates the branch's 9 commits.
+Same box, alternating master/branch, fresh FDB container per run, all runs
+`--nocache_test_results`. **n=3 per side** — not the usual 1, because the
+first pair showed `UPDATE by index` non-overlapping (master 8.93/9.84 vs
+branch 10.44/11.41) and n=2 cannot tell a 1.5ms regression from a cold-cache
+artifact. The third pair dissolved it: master 8.585ms vs branch 8.607ms, and
+the branch's minimum lands 0.02ms off the master's. Ranges overlap on every
+row where the branch is the slower side.
+
+All 23 subtests PASS on all six runs. **Every EXPLAIN string identical across
+all four compared runs and every per-query row count identical** — the
+load-bearing result, since the change is entirely cost-model/planner proof
+code: no plan in the corpus moved.
+
+Two rows have non-overlapping n=3 ranges and BOTH favour the branch — `PK
+lookup id=0` (master 4.98..6.08 vs branch 4.88..4.97) and `scan all rows
+ordered` (master 3259..3379ms vs branch 3152..3225ms). These are run-order
+warmth (master r1 was the coldest run of the six), NOT a speedup the change
+earns; recorded so nobody reads them as one.
+
+Thresholds: index equality 5.69..5.73ms PASSES (<10ms); million-row scans
+3.15..3.45s all ~3s PASSES. Point lookups 4.88..5.41ms and `in_list`
+14.79..15.31ms still violate their <5ms / <10ms thresholds — on BOTH sides,
+with the branch at or below master on every one of those rows. That is the
+pre-existing baseline-vs-threshold gap already booked above (the entry
+beginning "Stress test 1M baseline Threshold column"), unchanged and
+unaffected by this branch.
+
 **2026-07-25 (CQ-20 — PKScanOrdering drops the equality-bound PK prefix):**
 baseline worktree at the pre-change commit `473d0d0af` vs the working tree,
 same box, sequential fresh FDB containers, both runs `--nocache_test_results`.
