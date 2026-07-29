@@ -222,7 +222,89 @@ check can REFUSE an ordinal-equal match, which is a suspected live defect
 (an aliased reference to the same resolved column). Implementation probes
 that shape FIRST and pins whichever answer falls out.
 
-**4. translator (13) — the boundary keeps the name, under a mechanical test.**
+**4. translator (17→15) — the boundary keeps the name, under a mechanical test.**
+
+MEASURED ON IMPLEMENTATION CONTACT, and three of this item's claims did not
+survive. Recorded here rather than left standing, because each one is a claim
+the plan was sized from.
+
+- *The allowlist stays EMPTY, and that is now a result rather than a default.*
+  All eleven remaining sites were read against the two legs. ZERO pass both.
+  Four (`cascades_generator.go:3172/:3186/:3192`, `logical_predicate.go:6732`)
+  fail BOTH legs and are not translator name resolution at all — the first
+  three emit an `executor.ColumnDef` (ResultSet metadata inheritance), the
+  fourth emits a `bool` feeding an `ErrCodeUndefinedColumn`. The other seven
+  are genuine bakers with born-baked outputs, and every one fails leg (a) for
+  one of exactly two reasons: the guard ADMITS resolved nodes (`:2060` in fact
+  *requires* `SourceRelativeBaked()`, `:2074` has no `Resolved` guard at all,
+  `:3837` re-admits source-relative bakes deliberately), or the "declared
+  column list" side is itself `.Field`-derived. That second reason is ONE root
+  cause behind four sites: `values.ProjectionColumnName` returns `fv.Field`
+  verbatim (`values.go:1508-1512`), so `expressionOutputColumns` →
+  `projectionOutputColumnNames` → `OutputColumnName` launders other Values'
+  display names into the metadata side of the comparison wherever the input is
+  a projection. The existing debt reasons at `:5699/:5855/:5873` prove the
+  ordinal↔domain correspondence and say nothing about the LEFT operand's
+  origin; that is the half that fails. `values.go:1510` is already on the
+  ratchet under `contract:`, so the four translator sites are gated on it, not
+  independently convertible.
+
+- *`cascades_translator.go:6078` — named above as the "first candidate for the
+  per-site allowlist" — was DEAD CODE, and had been since it was written.* It
+  and its sibling `:6086` lived under
+  `if p, isProj := s.Input.(*logical.LogicalProject); isProj && …`, and
+  `translateSort`'s input is never a projection: both builders defer the
+  SELECT-list projection PAST the sort (`postSortStripProj`), which is what
+  keeps the aggregate's private `[keys…, calls…]` row addressable to ORDER BY
+  in the first place. Measured with a LOG probe over
+  `go test ./pkg/relational/...` (every package green): the guard fired ZERO
+  times, and the input's dynamic type over explaindiff+sqldriver was Filter
+  4547 / Scan 1915 / Aggregate 1568 / Join 390 / CTE 160 / Union 92. The arm
+  postdates the deferral it contradicts. Removed, not allowlisted: an allowlist
+  entry is PRECEDENT, and "the name is genuinely the identity here" is not
+  demonstrable for code no query reaches. Removed, not migrated: there is no
+  ordinal to convert to when the domain it would index cannot exist. The
+  layering is now pinned by `TestSortNeverSitsOverAProjection`
+  (`core/embedded`), which names what a Sort-over-Project builder change
+  re-arms. Translator 17 → 15.
+
+- *The JDBC label site is worse than "a provenance question wearing a string
+  comparison" — it is a SHIPPED user-visible divergence, the TENTH bug of this
+  RFC's class.* `deriveProjectionColumnDef` (`cascades_generator.go:3317`)
+  degrades any dotted result-set label whose leaf matches the projected
+  reference's leaf, and it cannot tell a machinery key from a user alias, so it
+  degrades user aliases too. Measured through the driver:
+  `SELECT u.name AS "U.NAME"` reports label `NAME`; `AS "Q.NAME"` — a qualifier
+  naming no table in the query — also reports `NAME`; and the SINGLE-TABLE
+  `SELECT u.name AS "U.NAME" FROM Users u` reports `NAME` although no machinery
+  alias can exist there (the mint at `plan_visitor.go:712-719` fires only when
+  the bare leaf is DUPLICATED and the user gave none). Only `AS "U.OTHER"`
+  survives. Java uses the alias verbatim: `AS "U.NAME"` is ONE delimited `uid`,
+  so it becomes `Identifier{name:"U.NAME", qualifier:[]}`
+  (`IdentifierVisitor.java:73-81`), the label is `Identifier::toString`
+  (`Expressions.java:245-256`), and `getColumnLabel` IS `getColumnName`
+  (`RelationalStructMetaData.java:81-89`). Java's `clearQualifier`
+  (`LogicalOperator.java:484-487`) strips the structural qualifier LIST, never
+  the leaf, so a delimited dotted alias is untouched by construction — pinned in
+  Java's own corpus (`valid-identifiers.yamsql:287-289`, alias `"__.__."`
+  returns verbatim). No path in fdb-relational inspects an alias for a dot.
+  Java also has no machinery-minted alias at all: duplicates make the INTERNAL
+  column ANONYMOUS (`Expressions.java:268-287`) while the label is untouched,
+  and where Java genuinely needs two names for one column it uses a SEPARATE
+  FIELD computed at construction — `Type.Record.Field.fieldStorageNameOptional`
+  (`Type.java:2826-2827,2897-2899`) — never an in-band marker recovered by
+  string inspection later. That is the shape to port, and it is the STOP: the
+  naive fix does not work. Deleting the mint outright was measured and reds
+  seven FDB suites with WRONG ROWS (`SELECT A."K", B."K"` returns one `K`
+  column instead of two), so the qualified datum key is load-bearing and the
+  provenance must be CARRIED, not recovered — a per-slot marker threaded
+  `logical.LogicalProject` → `LogicalProjectionExpression` →
+  `RecordQueryProjectionPlan`, excluded from memo identity the way
+  `FrontierPinned` is. Sized and cited, not attempted here; it is not a
+  translator-bucket edit.
+
+The original text of this item follows, and its allowlist mechanism is
+unchanged — it is simply still empty, now on measurement.
 These sites match a PARSED identifier or a DECLARED column list — name
 resolution, the one place the rule permits a name. They move from the debt
 ratchet to the allowlist only under a demonstration with two testable legs:
@@ -764,6 +846,27 @@ channel with fifteen readers; it is four, and they close in different orders.
   (segments end-to-end, retiring all four at the source); taking them as
   "producers to convert" would have converted the wrong thing.
 
+  **CQ-52's SCOPE IS REFUTED, measured at the four sites it names.** "The parser
+  already produces the segments and joins them only for the resolver to split
+  them back" is true of `SortKey` and `GroupKey` and true of almost nothing that
+  reaches these sites. A LOG probe on each of the four dot-split arms over
+  `go test ./pkg/relational/...` (all packages green) counted: `:5693` ZERO,
+  `exists_gathered_cluster_wrap.go:131` ZERO, `:5741` 7, `:5865` 111. So two of
+  the four take no dotted traffic at all and no segment plumbing can retire
+  them. For the two live ones, a pointer-provenance map from every lazy-dotted
+  MINT to the arrival site attributes 107 of 118 arrivals to
+  `LogicalProject.Projections []string` — the one carrier this very paragraph
+  notes "never had them" — against 2 from `SortKey.Expr`, 2 from
+  `GroupKey.Display`, 1 from `AggregateCall.Operand` and 6 from unmarked
+  producers. The segment-bearing carriers are 3.4% of the traffic, and the arms
+  must still handle the segment-free majority, so CQ-52 as scoped retires no
+  `.Field` read at any of its four sites. What DOES retire `:5741` and `:5865`
+  is giving the qualification a structural home ON THE VALUE — the leg's
+  correlation, which is this item's own producer-side prescription and CQ-53's
+  work, not an upstream parser fix. CQ-52 is re-scoped accordingly: it is a
+  `LogicalProject.Projections` question, and it is subsumed by CQ-53 rather than
+  preceding it.
+
 **harness (1)** — `rowdiff/ordering.go:241` compares plan sort keys against
 SQL `ORDER BY` text in the conformance oracle. Engine identity rules do not
 apply to the oracle, but the entry stays on the ratchet until the harness is
@@ -777,7 +880,10 @@ audited separately rather than being waved through with the engine work.
    reach.
 3. name-keyed (15): including the 4151 probe-first defect check; 6188 is
    the same two-Values shape and travels with it.
-4. translator (13): boundary demonstrations; allowlist grows only here.
+4. translator (17→15): boundary demonstrations. The allowlist did NOT grow —
+   all eleven remaining sites were read against the two legs and none passes
+   both; two more left by deletion as unreachable. `pkg/docscheck` is the live
+   count, not this line.
 5. contract (11): the coordinated naming-contract change.
 6. dotted (15): producer-side channel removal.
 

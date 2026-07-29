@@ -5935,33 +5935,20 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
 		sortGBKeyOrds, sortGBAggOrds = groupByOutputOrdinals(sortGB)
 	}
-	// A sort whose input is the GROUPED select's RESHAPING projection (the
-	// post-aggregate projection carrying computed SELECT items) must express
-	// its keys relative to the projection's OUTPUT row — Java's
-	// OrderByExpression.pullUp onto the child's result value
-	// (LogicalOperator.generateSelect). The aggregate reshapes the row, so a
-	// key left with source-scope leaf ordinals reads a FOREIGN slot of the
-	// projected row at runtime: a silent mis-sort when the stale ordinal lands
-	// in range, an ordinal-model malformed-plan error when it doesn't. Keys
-	// that cannot be pulled up decline TYPED here — Java's alternative
-	// (widening the select with the missing expression and re-projecting, the
-	// remainingOrderByExpressions branch) is the booked follow-up; until then
-	// the decline is loud, never wrong rows.
-	var aggProjFields []values.RecordConstructorField
-	// Per-slot RENDERED-ITEM texts, parallel to aggProjFields (whose Names
-	// are alias-preferred): a rendered-item sort key (`ORDER BY SUM(score)`
-	// — NOT a bare user identifier) must bind against the PROJECTION text
-	// only. Matching it against alias-preferred names let a colliding alias
-	// (`player AS "SUM(SCORE)"`) capture the aggregate's sort key and
-	// silently sort by the wrong column.
-	var aggProjItemTexts []string
-	if p, isProj := s.Input.(*logical.LogicalProject); isProj && projectionOverAggregate(p) {
-		aggProjFields = postAggregateProjectionFields(p)
-		aggProjItemTexts = make([]string, len(p.Projections))
-		for pi, col := range p.Projections {
-			aggProjItemTexts[pi] = strings.ToUpper(col)
-		}
-	}
+	// A sort NEVER sits over the grouped select's reshaping projection: both
+	// builders defer that projection PAST the sort (`postSortStripProj`), which
+	// is what keeps the aggregate's private [keys..., calls...] row addressable
+	// to ORDER BY at all. The pull-up-onto-projection-output arm that used to
+	// live here was therefore unreachable from the day it was written, and its
+	// two name-match loops resolved a sort key against the projection's output
+	// SPELLINGS — RFC-197's leaf-name-as-identity shape, in code no query could
+	// run. Removed rather than migrated: there is no ordinal to convert to when
+	// the domain it would index cannot exist.
+	//
+	// The layering that makes this so is pinned by
+	// TestSortNeverSitsOverAProjection (core/embedded), which fails if a builder
+	// ever emits Sort-over-Project — the shape that would need an
+	// ordinal-addressed pull-up here before it may exist.
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
@@ -6054,69 +6041,6 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				}
 			}
 		}
-		if aggProjFields != nil {
-			// Positional keys were already baked to the output slot above;
-			// everything else pulls up onto the projection output here.
-			_, alreadyPositional := v.(*values.FieldValue)
-			alreadyPositional = alreadyPositional && k.Pos > 0 && k.Pos <= len(inputCols)
-			if !alreadyPositional {
-				if pulled, ok := pullUpToOutputField(v, aggProjFields); ok {
-					v = pulled
-				} else if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil {
-					// A flat column key naming an output column bakes to its
-					// output slot — same rule as pullUpSortKeyValue step (3).
-					// The name universes SPLIT on the key's shape
-					// (SortKey.BareRef, the RFC-180 round-14 rule the
-					// deferred strip already applies): a BARE user
-					// identifier binds alias-preferred names; a RENDERED
-					// item (`SUM(score)`, a qualified ref) binds the
-					// PROJECTION text only — an alias spelled like a
-					// rendered item must never capture it.
-					matched := false
-					if k.BareRef {
-						for fi, f := range aggProjFields {
-							if strings.EqualFold(f.Name, fv.Field) {
-								v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
-								matched = true
-								break
-							}
-						}
-					} else {
-						for fi, item := range aggProjItemTexts {
-							if fi < len(aggProjFields) && strings.EqualFold(item, fv.Field) {
-								v = values.NewFieldValueWithResolvedOrdinal(aggProjFields[fi].Name, fi, fv.Typ)
-								matched = true
-								break
-							}
-						}
-					}
-					if !matched && fv.Resolved != nil {
-						// A flat key with a SOURCE-scope resolution that is not a
-						// projection output (`ORDER BY g` over `SELECT SUM(v) …
-						// GROUP BY g`): the stale accessor would read a foreign
-						// slot of the projected row. Strip it back to a LAZY name
-						// read — the planner's provided-ordering match still
-						// elides the sort on the canonical group-key spelling,
-						// the flat bake below still resolves TRANSLATED output
-						// names, and a key that survives to runtime unresolved
-						// fails LOUD (ordinal-model flat-reference miss), never
-						// silently mis-sorts.
-						v = &values.FieldValue{Field: fv.Field, Typ: fv.Typ}
-					}
-				} else {
-					// A COMPUTED key that did not pull up cannot be evaluated
-					// against the reshaped row (its leaves carry source-scope
-					// resolutions), and no downstream elision matches it. Java
-					// widens the select with the missing expression instead
-					// (LogicalOperator.generateSelect, remainingOrderByExpressions
-					// branch — the booked follow-up); until then decline TYPED,
-					// never emit the silent mis-sort.
-					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-						"ORDER BY expression is not derivable from the SELECT list of this grouped query"))
-					return nil
-				}
-			}
-		}
 		if bake.seedQOV != nil {
 			v = bakeGatheredGroupValue(v, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
@@ -6131,20 +6055,6 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		}
 	}
 	return expressions.NewLogicalSortExpression(sortKeys, bake.quant)
-}
-
-// projectionOverAggregate reports whether p's row is produced by a GROUP BY
-// aggregate underneath, peeling only row-shape-preserving operators
-// (Filter/Sort like underlyingGroupBy, plus Limit — Limit preserves slots
-// too; underlyingGroupBy just never encounters one below a sort). Above an
-// aggregate, the ONLY addressable columns are the projection's own outputs —
-// no base-table column survives the reshape — which is what licenses
-// translateSort's pull-up-or-decline handling of its sort keys. NOTE the
-// coupling with underlyingGroupBy: that helper deliberately STOPS at a
-// projection, so for any sort input where this returns true, sortGB is nil
-// and the two rebase paths are mutually exclusive by construction.
-func projectionOverAggregate(p *logical.LogicalProject) bool {
-	return logicalAggregateUnder(p.Input) != nil
 }
 
 // canonicalizeAggregateOutputValue keeps an exact ordinal-bound sort Value
@@ -6195,67 +6105,6 @@ func logicalAggregateUnder(op logical.LogicalOperator) *logical.LogicalAggregate
 			return nil
 		}
 	}
-}
-
-// postAggregateProjectionFields builds the OUTPUT field list of the grouped
-// select's reshaping projection for sort-key pull-up: name = alias when set,
-// else the rendered item text; value = the resolved projected Value when the
-// walker produced one (computed items), nil otherwise (plain aggregate /
-// group-column references — matchable by NAME only). Mirrors the folded-EXISTS
-// path's field construction (translateProject) minus its `_i` positional
-// naming, which exists for row keying — here the names only serve the
-// name-match and diagnostics; ordinals are authoritative.
-func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordConstructorField {
-	fields := make([]values.RecordConstructorField, len(p.Projections))
-	var nativeNames []string
-	if agg := logicalAggregateUnder(p.Input); agg != nil {
-		nativeNames = logicalAggregateNativeOutputNames(agg)
-	}
-	for i, col := range p.Projections {
-		var v values.Value
-		if i < len(p.ProjectedValues) {
-			v = p.ProjectedValues[i]
-		}
-		if i < len(p.AggregateOutputOrdinals) && p.AggregateOutputOrdinals[i] >= 0 {
-			typ := values.Type(values.UnknownType)
-			if v != nil && v.Type() != nil {
-				typ = v.Type()
-			}
-			ordinal := p.AggregateOutputOrdinals[i]
-			if ordinal < len(nativeNames) {
-				v = values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, typ)
-			}
-		}
-		name := strings.ToUpper(col)
-		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			name = strings.ToUpper(p.Aliases[i])
-		}
-		fields[i] = values.RecordConstructorField{Name: name, Value: v}
-	}
-	return fields
-}
-
-func logicalAggregateNativeOutputNames(agg *logical.LogicalAggregate) []string {
-	names := make([]string, 0, len(agg.GroupKeys)+len(agg.Calls))
-	for _, key := range agg.GroupKeys {
-		name := stripColumnQualifier(key.Display)
-		if key.Value != nil {
-			if fv, ok := key.Value.(*values.FieldValue); ok {
-				name = fv.Field
-			} else {
-				name = values.ColumnNameValue(key.Value)
-			}
-		}
-		names = append(names, strings.ToUpper(name))
-	}
-	for i, call := range agg.Calls {
-		name := call.CanonicalName()
-		if i < len(agg.Aliases) && agg.Aliases[i] != "" {
-			name = agg.Aliases[i]
-		}
-		names = append(names, strings.ToUpper(name))
-	}
-	return names
 }
 
 // validateExactAggregateProjectContract checks the logical, producer-owned

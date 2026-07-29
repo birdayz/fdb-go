@@ -122,6 +122,7 @@ go_test(
         "rfc153_joined_preserved_plan_test.go",
         "scope_ambiguous_test.go",
         "select_helpers_test.go",
+        "sort_projection_layering_test.go",
         "sort_pullup_test.go",
         "sql_plan_fuzz_test.go",
         "system_rows_test.go",
@@ -221,6 +222,7 @@ go_test(
         "vector_plan_test.go",
         "where_extractors.go",
         "aggregate_output_slot_recorded_test.go",
+        "sort_projection_layering_test.go",
     ],
     deps = [
         "//gen",

@@ -299,7 +299,26 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":   {1, "name-keyed: projection merge composes an outer LAZY read by unique output-name match against the inner projection's slot names. Probed: the arm is HEAVILY LIVE -- a panic at its match point reds dozens of FDB tests (derived tables, CTEs, RFC-128 limits, cross-table predicates), so it cannot be failed closed where it stands. The outer read has no ordinal to select a slot with, and the conversion is therefore upstream: the resolver must bake a projection-output reference to its output ordinal, the way it already bakes a source-column reference (expr.go:296-297). That is translator/resolver work, not a rewrite of this site"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354": {1, "name-keyed: EqualsWithoutChildren's LAZY-vs-LAZY arm. Probed: it returns TRUE constantly in production (a panic on the true branch reds the sqldriver FDB suite and the explaindiff corpus immediately), so it is load-bearing for memo dedup of lazy carriers. It is also the one site in this bucket with NO Java counterpart to port: Java's FieldValue is resolved at construction (FieldValue.java:273-299), a lazy name carrier is a shape it cannot express, and for such a carrier the pending name IS the whole identity. Failing it closed makes two lazy references to one column unequal, which un-interns memo members rather than fixing a conflation. This closes when lazy FieldValues stop being minted, not before"},
 
-	// translator (17)
+	// translator (15)
+	//
+	// Two entries left by DELETION, not by migration: cascades_translator.go's
+	// :6078 and :6086 (the BareRef / rendered-item name-match loops that resolved
+	// an ORDER BY key against a post-aggregate projection's output spellings —
+	// and RFC-197 item 4's named "first candidate for the per-site allowlist").
+	// They were UNREACHABLE, and had been since the day they were written. Both
+	// builders defer the SELECT-list projection PAST the sort (postSortStripProj),
+	// so `translateSort`'s `s.Input` is never a *logical.LogicalProject and the
+	// enclosing block never ran. Measured with a LOG probe over
+	// `go test ./pkg/relational/...` (all packages green): the guard fired ZERO
+	// times, and `s.Input`'s dynamic type over explaindiff+sqldriver was Filter
+	// 4547 / Scan 1915 / Aggregate 1568 / Join 390 / CTE 160 / Union 92 — no
+	// Project. Removed rather than allowlisted, because an allowlist entry is
+	// PRECEDENT and "the name is genuinely the identity here" cannot be
+	// demonstrated for code no query reaches; and removed rather than migrated,
+	// because there is no ordinal to convert to when the domain it would index
+	// cannot exist. The layering that makes it so is now pinned by
+	// TestSortNeverSitsOverAProjection (core/embedded), which names what a
+	// Sort-over-Project builder change would re-arm.
 	//
 	// The four :5688/:5736/:5860/exists:131 entries arrived from the dotted
 	// bucket (see the note there). They are the QUALIFIER halves of identifiers
@@ -322,8 +341,6 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:3837":         {1, "translator: element slot lookup during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:5015":         {1, "translator: struct field resolution against descriptor"},
 	"pkg/relational/core/query/cascades_translator.go:5855":         {1, "translator: column list membership during resolution"},
-	"pkg/relational/core/query/cascades_translator.go:6078":         {1, "translator: resolves and emits NewFieldValueWithResolvedOrdinal -- boundary-shaped; first candidate for the per-site allowlist under the mechanical test"},
-	"pkg/relational/core/query/cascades_translator.go:6086":         {1, "translator: aggregate projection item match during resolution"},
 
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go:241": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
