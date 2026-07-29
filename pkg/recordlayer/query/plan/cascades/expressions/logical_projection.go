@@ -134,6 +134,30 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 	}
 	// Alias-aware projected-Value equality (RFC-040 040.2). Inert under the
 	// memo's empty-alias path until PR-A.
+	//
+	// PR-A ACTIVATION RESIDUAL, recorded where it will bite rather than in a
+	// tracker. aliasMinted is deliberately excluded from this comparison and
+	// from HashCodeWithoutChildren — it records who NAMED a slot, not what the
+	// slot computes — and today that exclusion is safe because the alias map is
+	// empty: two projections over differently-aliased correlations do not reach
+	// the marker question at all, they simply compare unequal on the Values.
+	//
+	// When PR-A passes real alias maps, SemanticEqualsUnderAliasMap starts
+	// equating exactly those pairs. A pair whose alias STRINGS are identical but
+	// whose PROVENANCE differs — one slot named by the user's `AS "A.K"`, the
+	// other by the machinery's same-leaf disambiguation key, which is precisely
+	// the collision the marker exists to resolve — then interns as ONE member,
+	// and which marker the surviving member carries is decided by insertion
+	// order. The result-set label site reads that marker, so the user-visible
+	// column label becomes memo-order dependent.
+	//
+	// Excluding the marker stays correct (a display tag must not split a memo
+	// group). The fix belongs on the READ side: the label must be resolved
+	// against the projection the query actually built, not recovered from
+	// whichever equal member the memo happened to keep. Do not answer this by
+	// folding aliasMinted into identity — that trades a wrong label for a
+	// duplicated memo group, and re-creates the recover-instead-of-record
+	// pattern the marker was introduced to end.
 	vm := aliases.ToValuesAliasMap()
 	for i := range e.projectedValues {
 		if values.ProjectionOutputIdentityKey(e.projectedValues[i], projectionAliasAt(e.aliases, i)) !=
