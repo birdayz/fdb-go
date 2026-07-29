@@ -42,11 +42,48 @@ func makeFakePlanWrapper(recType string) *plans.RecordQueryScanPlan {
 //
 // and returns the Distinct Reference with a physical FinalMember
 // in the inner (projection) Reference.
+// distinctScanLayouts is the declared column order of each record type these
+// tests scan. A FullUnorderedScanExpression flows this type in production, and
+// the DISTINCT-elimination proof is stated in it: the projected references'
+// ordinals index it, and the metadata key columns are resolved into it once
+// (RFC-197). A scan of UnknownType states no layout and the proof fails closed,
+// so a fixture that left the type unknown would exercise nothing.
+var distinctScanLayouts = map[string][]string{
+	"USERS":       {"ID", "NAME"},
+	"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID", "QTY"},
+	"ITEMS":       {"ID", "NAME"},
+	"T":           {"TAGS", "SCORE", "CITY", "EMAIL"},
+}
+
+func distinctScanType(recType string) values.Type {
+	cols, known := distinctScanLayouts[recType]
+	if !known {
+		return values.UnknownType
+	}
+	fields := make([]values.Field, len(cols))
+	for i, c := range cols {
+		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+	}
+	return &values.RecordType{Fields: fields}
+}
+
+// distinctRead is a projected BARE column reference, baked at the column's
+// ordinal in the scan row's layout — the shape the resolver produces
+// (expr.go:296-297). Case-insensitive, like every resolution path in the engine.
+func distinctRead(recType, col string) values.Value {
+	id, ok := values.OrdinalOfNameIn(distinctScanType(recType), col)
+	if !ok {
+		panic("distinctRead: " + recType + " declares no column " + col)
+	}
+	return values.NewFieldValueWithResolvedOrdinalInDomain(
+		col, id.Ordinal, values.UnknownType, id.Domain)
+}
+
 func buildDistinctOverProjection(
 	recType string,
 	projected []values.Value,
 ) *expressions.Reference {
-	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, values.UnknownType)
+	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, distinctScanType(recType))
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
@@ -66,7 +103,7 @@ func buildDistinctOverProjection(
 // and returns the Distinct Reference with a physical FinalMember
 // in the inner (scan) Reference.
 func buildDistinctOverScan(recType string) *expressions.Reference {
-	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, values.UnknownType)
+	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, distinctScanType(recType))
 	scanRef := expressions.InitialOf(scan)
 	scanRef.Insert(makeFakePlanWrapper(recType))
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -80,8 +117,8 @@ func buildDistinctOverScan(recType string) *expressions.Reference {
 func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverProjection("USERS", []values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
+		distinctRead("USERS", "ID"),
+		distinctRead("USERS", "NAME"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
 	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
@@ -100,7 +137,7 @@ func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 func TestDistinctFinal_NonPKProjected_Wraps(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverProjection("USERS", []values.Value{
-		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
+		distinctRead("USERS", "NAME"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
 	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
@@ -161,9 +198,9 @@ func TestDistinctFinal_NoPlanContext_Wraps(t *testing.T) {
 func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverProjection("ORDER_ITEMS", []values.Value{
-		&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType},
-		&values.FieldValue{Field: "ITEM_ID", Typ: values.UnknownType},
-		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
+		distinctRead("ORDER_ITEMS", "ORDER_ID"),
+		distinctRead("ORDER_ITEMS", "ITEM_ID"),
+		distinctRead("ORDER_ITEMS", "QTY"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
 	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
@@ -182,8 +219,8 @@ func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverProjection("ORDER_ITEMS", []values.Value{
-		&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType},
-		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
+		distinctRead("ORDER_ITEMS", "ORDER_ID"),
+		distinctRead("ORDER_ITEMS", "QTY"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
 	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
@@ -231,24 +268,30 @@ func TestDistinctFinal_ComputedPKExpr_Wraps(t *testing.T) {
 	}
 }
 
-// TestCollectProjectedFieldNames_BuriedFieldNotCredited is a white-box pin on
-// the coverage helper: a bare column reference IS credited; the same column
-// buried inside an arithmetic expression is NOT.
-func TestCollectProjectedFieldNames_BuriedFieldNotCredited(t *testing.T) {
+// TestCollectProjectedOrdinals_BuriedFieldNotCredited is a white-box pin on the
+// coverage helper: a bare column reference IS credited, at its ORDINAL in the
+// scan row's layout; the same column buried inside an arithmetic expression is
+// NOT; and a reference that cannot state an ordinal in THAT layout makes the
+// whole set unstatable rather than being credited by the name it renders.
+func TestCollectProjectedOrdinals_BuriedFieldNotCredited(t *testing.T) {
 	t.Parallel()
 
-	bareID := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	layoutType := distinctScanType("USERS")
+	layout := values.OrdinalDomainOfType(layoutType)
+	bareID := distinctRead("USERS", "ID")
 	buildProj := func(v values.Value) *expressions.LogicalProjectionExpression {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, values.UnknownType)
+		scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, layoutType)
 		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 		return expressions.NewLogicalProjectionExpression([]values.Value{v}, scanQ)
 	}
 
-	// Bare FieldValue → credited.
-	if cols := collectProjectedFieldNames(buildProj(bareID)); len(cols) != 1 {
-		t.Fatalf("bare id: expected 1 credited column, got %v", cols)
-	} else if _, ok := cols["ID"]; !ok {
-		t.Fatalf("bare id: expected ID credited, got %v", cols)
+	// Bare baked FieldValue → credited at its ordinal.
+	ords, ok := collectProjectedOrdinals(buildProj(bareID), layout)
+	if !ok || len(ords) != 1 {
+		t.Fatalf("bare id: expected 1 credited ordinal, got %v ok=%v", ords, ok)
+	}
+	if _, credited := ords[0]; !credited {
+		t.Fatalf("bare id: expected ordinal 0 credited, got %v", ords)
 	}
 
 	// id / 3 → the buried ID must NOT be credited (empty covering set).
@@ -257,8 +300,28 @@ func TestCollectProjectedFieldNames_BuriedFieldNotCredited(t *testing.T) {
 		Left:  bareID,
 		Right: &values.ConstantValue{Value: int64(3), Typ: values.UnknownType},
 	}
-	if cols := collectProjectedFieldNames(buildProj(idOver3)); len(cols) != 0 {
-		t.Fatalf("id/3: expected NO credited columns (buried FieldValue), got %v", cols)
+	if ords, ok := collectProjectedOrdinals(buildProj(idOver3), layout); !ok || len(ords) != 0 {
+		t.Fatalf("id/3: expected NO credited ordinals (buried FieldValue), got %v ok=%v", ords, ok)
+	}
+
+	// A LAZY reference states no ordinal in this layout. The set becomes
+	// UNSTATABLE rather than crediting the column its display name spells —
+	// crediting it is how a projection of some other source's same-named column
+	// would be counted as covering this one's key (RFC-197).
+	lazyID := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if ords, ok := collectProjectedOrdinals(buildProj(lazyID), layout); ok {
+		t.Fatalf("a lazy reference named ID was credited as covering the layout's ID column: "+
+			"got %v", ords)
+	}
+
+	// So is a reference baked against a DIFFERENT layout, even at the same
+	// ordinal under the same name — the DOMAIN is what refuses, and only a case
+	// holding the name AND the ordinal equal can show it.
+	foreign := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"ID", 0, values.UnknownType,
+		values.OrdinalDomainOfColumnNames([]string{"ID", "SOMETHING_ELSE"}))
+	if ords, ok := collectProjectedOrdinals(buildProj(foreign), layout); ok {
+		t.Fatalf("a reference baked in ANOTHER layout was credited: got %v", ords)
 	}
 }
 
@@ -267,7 +330,7 @@ func TestCollectProjectedFieldNames_BuriedFieldNotCredited(t *testing.T) {
 func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverProjection("USERS", []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
+		distinctRead("USERS", "id"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
 	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
@@ -286,7 +349,7 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, values.UnknownType)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, distinctScanType("USERS"))
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
@@ -296,7 +359,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 
 	proj := expressions.NewLogicalProjectionExpression(
 		[]values.Value{
-			&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+			distinctRead("USERS", "ID"),
 		},
 		filterQ,
 	)
@@ -381,7 +444,7 @@ func TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate(t *testing.T) {
 		results := FireImplementationRuleWithContext(
 			NewImplementDistinctFinalRule(),
 			buildDistinctOverProjection("T", []values.Value{
-				&values.FieldValue{Field: projected, Typ: values.UnknownType},
+				distinctRead("T", projected),
 			}),
 			ctx,
 			nil,
@@ -398,7 +461,7 @@ func TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate(t *testing.T) {
 		results := FireImplementationRuleWithContext(
 			NewImplementDistinctFinalRule(),
 			buildDistinctOverProjection("T", []values.Value{
-				&values.FieldValue{Field: projected, Typ: values.UnknownType},
+				distinctRead("T", projected),
 			}),
 			ctx,
 			nil,
@@ -438,7 +501,7 @@ func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	// Project a non-PK column so elimination does NOT fire.
 	proj := expressions.NewLogicalProjectionExpression(
 		[]values.Value{
-			&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
+			distinctRead("ITEMS", "NAME"),
 		},
 		scanQ,
 	)

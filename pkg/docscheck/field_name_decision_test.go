@@ -175,7 +175,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/values.go:1492":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/relational/core/embedded/cascades_generator.go:3318":         {1, "contract: result-set metadata LABEL selection -- decides whether a dotted label is the internal duplicate-disambiguation key or a user alias by leaf-matching it against the projected value's name; the JDBC label contract, where a name genuinely is the identity"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
-	"pkg/relational/core/embedded/logical_predicate.go:6093":          {1, "contract: aggregate group-key output name, same contract family"},
+	"pkg/relational/core/embedded/logical_predicate.go:6092":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4748":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
 	// dotted (15)
@@ -190,27 +190,15 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:5774":                       {1, "dotted: leg-layout map keyed by the sliced qualifier, same channel as 5726"},
 	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131":               {1, "dotted: leg-window map keyed by the sliced qualifier, gathered-EXISTS wrap"},
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:112":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2337": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2332": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
-	// name-keyed (15)
-	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "name-keyed: referenced-field set keyed by leaf name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2214": {1, "name-keyed: buriedLegOrdinalLayout -- one of the seven -- probes its leg layout under 'CORR.LEAF' built from the display name; the Resolved.Single() guard above it declines FUSED accessors but two same-named top-level columns still collide"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2215": {1, "name-keyed: same layout, the WRITE that mints the colliding key"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2389": {1, "name-keyed: the READER of that layout -- a buried-leg reference bakes to whatever ordinal the name-built key returns"},
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:152":               {1, "name-keyed: bare frontier read matched against the merged row's field names; the matches!=1 guard below makes an ambiguous name decline rather than mis-bind, which is the mitigation, not the fix"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197":    {1, "name-keyed: distinct-key set keyed by name"},
-	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            {1, "name-keyed: projection merge matches inner slot by name"},
-	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "name-keyed: sort key equality by name"},
-	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "name-keyed: field remap compares leaf names"},
-	"pkg/recordlayer/query/plan/cascades/values/pullup.go:214":                    {1, "name-keyed: pull-up picks a struct member by name"},
-	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                   {1, "name-keyed: replacement target matched by name"},
-	"pkg/recordlayer/query/plan/cascades/values/replace.go:520":                   {1, "name-keyed: same, second arm"},
-	"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go:243":          {1, "name-keyed: composeFieldOverConstructor picks a constructor member by name, correct only because of its duplicate-name guard"},
-	"pkg/relational/core/embedded/logical_predicate.go:4151":                      {1, "name-keyed: ordinal equality ANDed with a name check on two RESOLVED values. Probed: UNREACHABLE as a decision-changer (every caller ORs it with SemanticEqualsUnderAliasMap; suite green with the matcher hard-wired false) and LOAD-BEARING against Ordinal:-1 name-only accessors, where ordinal equality is vacuous -- deleting it binds the wrong column. Pinned both directions in aggregate_group_key_accessor_name_test.go; convert only after RFC-197 step 0 fail-closes negative ordinals"},
-	"pkg/relational/core/embedded/logical_predicate.go:6188":                      {1, "name-keyed: group-key match compares two Values' leaf names during aggregate translation -- both operands are .Field, so this is a value-identity matcher, not resolution"},
+	// name-keyed (3)
+	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":       {1, "name-keyed: referenced-field set keyed by leaf name. Java's member is a Set<FieldValue> (ReferencedFieldsConstraint.java:41), keyed by semanticEquals/semanticHashCode, so the port is unambiguous -- and it was BUILT and MEASURED, then reverted: keying by value makes the set grow where two quantifiers share a leaf name, and this constraint's every growth re-fires the push rules. 4-table chain tasksRun 10255 -> 12901, 3-spoke ordinal star 9481 -> 12644 (both budget baselines are +-2% pins), and the hub+5 star stops planning entirely -- ErrPlannerCapHit becomes a rule-cycle round-cap divergence at 87642 tasks. plan_shape.golden does not move. The conversion is correct and the coupling between constraint growth and re-exploration is what has to change first; that is planner machinery with its own review gate, not this bucket"},
+	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":   {1, "name-keyed: projection merge composes an outer LAZY read by unique output-name match against the inner projection's slot names. Probed: the arm is HEAVILY LIVE -- a panic at its match point reds dozens of FDB tests (derived tables, CTEs, RFC-128 limits, cross-table predicates), so it cannot be failed closed where it stands. The outer read has no ordinal to select a slot with, and the conversion is therefore upstream: the resolver must bake a projection-output reference to its output ordinal, the way it already bakes a source-column reference (expr.go:296-297). That is translator/resolver work, not a rewrite of this site"},
+	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354": {1, "name-keyed: EqualsWithoutChildren's LAZY-vs-LAZY arm. Probed: it returns TRUE constantly in production (a panic on the true branch reds the sqldriver FDB suite and the explaindiff corpus immediately), so it is load-bearing for memo dedup of lazy carriers. It is also the one site in this bucket with NO Java counterpart to port: Java's FieldValue is resolved at construction (FieldValue.java:273-299), a lazy name carrier is a shape it cannot express, and for such a carrier the pending name IS the whole identity. Failing it closed makes two lazy references to one column unequal, which un-interns memo members rather than fixing a conflation. This closes when lazy FieldValues stop being minted, not before"},
 
 	// translator (13)
 	"pkg/relational/core/embedded/cascades_generator.go:3172": {1, "translator: parsed column ref matched against declared inner columns"},
@@ -218,7 +206,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:5906":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
 	"pkg/relational/core/embedded/cascades_generator.go:3186": {1, "translator: same inner-column lookup as 3192, leg-qualified arm -- the map key is a CONCATENATION, which is why the sibling entry was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3192": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
-	"pkg/relational/core/embedded/logical_predicate.go:6617":  {1, "translator: join-side name set during translation (laundered map key)"},
+	"pkg/relational/core/embedded/logical_predicate.go:6613":  {1, "translator: join-side name set during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:2093":   {1, "translator: unnest element alias resolution, flat arm; the sibling arm consults the ordinal"},
 	"pkg/relational/core/query/cascades_translator.go:2107":   {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},
 	"pkg/relational/core/query/cascades_translator.go:3870":   {1, "translator: element slot lookup during translation (laundered map key)"},

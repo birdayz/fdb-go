@@ -120,11 +120,17 @@ func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 // semanticValueEquals (semantic Value equality under the empty alias map), not
 // by pointer. Two independently-built sort keys over the same Value are the same
 // plan — pointer identity would spuriously split them into distinct memo members
-// (the incomplete-F21 case). Field is DISPLAY-ONLY but folded so an explain-name
-// difference still separates identities; Desc / NullsFirst are the direction.
+// (the incomplete-F21 case). Desc / NullsFirst are the direction.
+//
+// SortKey.Field is DISPLAY-ONLY and is NOT folded (RFC-197 item 3). It used to be,
+// "so an explain-name difference still separates identities" — but a display-name
+// difference IS NOT an identity difference, and folding it splits one plan into
+// two memo members whenever two producers render the same baked key under
+// different names. The ordinal-addressed ValueExpr is the identity; the string
+// beside it is what Explain prints.
 // structuralKey folds the InMemorySort identity: the ordered sort-key list via
-// sortKeyEqual (display Field + Desc / NullsFirst + semantic ValueExpr). Drives
-// both Equals and Hash.
+// sortKeyEqual (Desc / NullsFirst + semantic ValueExpr). Drives both Equals and
+// Hash.
 func (p *RecordQueryInMemorySortPlan) structuralKey() *structuralKey {
 	return newStructuralKey().SortKeys(p.sortKeys)
 }
@@ -134,13 +140,14 @@ func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQuer
 	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
-// sortKeyEqual reports semantic equality of two sort keys: display Field,
-// direction (Desc / NullsFirst), and the semantic ValueExpr. Pairs with
-// HashCodeWithoutChildren, which folds the identical set — preserving the
-// equal⟹same-hash memo invariant.
+// sortKeyEqual reports semantic equality of two sort keys: the direction
+// (Desc / NullsFirst) and the semantic ValueExpr — the plan-time-baked key, whose
+// ordinals are the column identity. The display Field is excluded (RFC-197 item
+// 3), exactly as Java excludes the per-accessor name from ResolvedAccessor
+// equality (FieldValue.java:676-685). Pairs with HashCodeWithoutChildren, which
+// folds the identical set — preserving the equal⟹same-hash memo invariant.
 func sortKeyEqual(a, b SortKey) bool {
-	return a.Field == b.Field &&
-		a.Desc == b.Desc &&
+	return a.Desc == b.Desc &&
 		a.NullsFirst == b.NullsFirst &&
 		semanticValueEquals(a.ValueExpr, b.ValueExpr)
 }

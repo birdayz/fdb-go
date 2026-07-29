@@ -314,20 +314,25 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal(t *testing.T) {
 		t.Fatalf("baked ID#0 over RC(ID:a, ID:b) simplified to %v, want a", got)
 	}
 
-	// Lazy compose over an AMBIGUOUS (duplicated) name: DECLINE — no fold, the
-	// node rides unchanged (there is no defensible first match). Over a
-	// UNIQUE name the fold is unchanged.
+	// A LAZY node has no ordinal, so it selects no member and DECLINES — the
+	// node rides unchanged. This holds whether or not the name is ambiguous:
+	// the arm that resolved a unique name is gone with the duplicate-name guard
+	// that made it defensible (RFC-197 item 3), and Java's rule has no name arm
+	// to port (ComposeFieldValueOverRecordConstructorRule.java:99-102 is
+	// getColumns().get(fieldOrdinal)).
 	lazy := NewFieldValue(rc, "ID", NullableString)
 	if got := SimplifyValue(lazy); got != lazy {
-		t.Fatalf("lazy ID over dup-named RC simplified to %v, want DECLINE (node unchanged) — no defensible first match", got)
+		t.Fatalf("lazy ID over dup-named RC simplified to %v, want DECLINE (node unchanged)", got)
 	}
 	cleanRC := &RecordConstructorValue{Fields: []RecordConstructorField{
 		{Name: "ID", Value: constA},
 		{Name: "X", Value: constB},
 	}}
 	lazyClean := NewFieldValue(cleanRC, "ID", NullableString)
-	if got := SimplifyValue(lazyClean); got != constA {
-		t.Fatalf("lazy ID over clean RC simplified to %v, want a (unchanged)", got)
+	if got := SimplifyValue(lazyClean); got != lazyClean {
+		t.Fatalf("lazy ID over a CLEAN-named RC folded to %v: the unique-name arm must be gone "+
+			"too. Keeping it for unique names is the same key with a guard on it, and the "+
+			"guard is the argument against the key", got)
 	}
 
 	// A baked ordinal the node's OWN child RC cannot satisfy is a tree
@@ -369,8 +374,9 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal(t *testing.T) {
 		t.Fatalf("baked ID#0 pushed through RC(ID:a, ID:b) = %v, want a", got)
 	}
 
-	// Lazy over an AMBIGUOUS name: DECLINE (nil) — same rationale as the
-	// compose arm. Over a unique name: unchanged.
+	// A LAZY reference DECLINES (nil) — same rationale as the compose arm, and
+	// for the CLEAN-named constructor too: the unique-name arm went with the
+	// duplicate-name guard (RFC-197 item 3).
 	lazy := NewFlatFieldValue("ID", NullableString)
 	if got := PushDownValue(lazy, rc, upper); got != nil {
 		t.Fatalf("lazy ID pushed through dup-named RC = %v, want DECLINE (nil)", got)
@@ -379,8 +385,10 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal(t *testing.T) {
 		{Name: "ID", Value: constA},
 		{Name: "X", Value: constB},
 	}}
-	if got := PushDownValue(lazy, cleanRC, upper); got != constA {
-		t.Fatalf("lazy ID pushed through clean RC = %v, want a (unchanged)", got)
+	if got := PushDownValue(lazy, cleanRC, upper); got != nil {
+		t.Fatalf("lazy ID pushed through a CLEAN-named RC = %v, want DECLINE (nil): a lazy "+
+			"node has no ordinal, and resolving its name here is the resolution the "+
+			"translator already did upstream", got)
 	}
 
 	// Out-of-range baked ordinal: decline. Unlike the compose rule (where the

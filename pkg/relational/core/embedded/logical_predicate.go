@@ -43,6 +43,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 
 	recordlayer "fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -4135,22 +4136,20 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 // have had that redundant qualifier stripped. Resolved path and defining source
 // still have to prove identical; a multi-source aggregate never gets this
 // childless/qualified relaxation.
+//
+// The ordinal path is the identity (values.SameColumnPath — the domain-checked,
+// non-negative form of Java's ordinal-only FieldPath.equals). The per-accessor
+// DISPLAY-name check this used to AND on is gone: a group-key reference whose
+// display name was aliased away still denotes the column its ordinal names, and
+// refusing it was the name-as-identity conflation in its refusing direction. The
+// name was load-bearing against Ordinal -1 name-only accessors, where ordinal
+// equality is vacuous; SameColumnPath declines those outright, which covers the
+// same hazard without consulting a display name.
 func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logical.LogicalAggregate) bool {
 	cf, cok := candidate.(*values.FieldValue)
 	kf, kok := key.(*values.FieldValue)
-	if !cok || !kok || cf.Resolved == nil || kf.Resolved == nil ||
-		len(cf.Resolved.Accessors) == 0 ||
-		len(cf.Resolved.Accessors) != len(kf.Resolved.Accessors) {
+	if !cok || !kok || !values.SameColumnPath(cf.Resolved, kf.Resolved) {
 		return false
-	}
-	for i := range cf.Resolved.Accessors {
-		ca, ka := cf.Resolved.Accessors[i], kf.Resolved.Accessors[i]
-		if ca.Ordinal != ka.Ordinal {
-			return false
-		}
-		if ca.Field != "" && ka.Field != "" && !strings.EqualFold(ca.Field, ka.Field) {
-			return false
-		}
 	}
 	cq, cHasQOV := cf.Child.(*values.QuantifiedObjectValue)
 	kq, kHasQOV := kf.Child.(*values.QuantifiedObjectValue)
@@ -6167,29 +6166,26 @@ func rebaseHavingGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.
 	return rebasePostAggregateGroupKeyPredicate(pred, agg)
 }
 
-// havingPredicatePushesBelowAggregate mirrors the Cascades
-// PushFilterThroughGroupByRule.predicateReferencesOnlyKeys decision: a single
-// ComparisonPredicate whose operand is a FieldValue naming a grouping key (by its
-// bare Field, the key the rule's group-key set is built on) is pushed below the
-// GroupBy. Anything else (an aggregate reference, an AND/OR/NOT compound, a
-// constant) stays above. The HAVING predicate is handed to the translator as ONE
-// list entry, so the rule never splits a compound — the decision is binary at the
-// top level. RFC-142.
+// havingPredicatePushesBelowAggregate asks the Cascades rule's OWN decider
+// whether this HAVING predicate will be pushed below the GroupBy. The HAVING
+// predicate is handed to the translator as ONE list entry, so the rule never
+// splits a compound — the decision is binary at the top level. RFC-142.
+//
+// It used to be a hand-rolled MIRROR of that decider, matching a grouping key by
+// BARE LEAF NAME, and the comment claimed the two "cannot drift". They had:
+// PushFilterThroughGroupByRule keys its group-key set by the canonical ACCESSOR
+// PATH (so a nested addr.city does not answer to a top-level city) and also
+// requires the COMPARAND to reference only keys, neither of which the mirror
+// did. A disagreement is not a lost optimization here — it decides which ROW a
+// reference is bound against, and the two sides losing to each other are a
+// pre-aggregate binding evaluated on the aggregate output, or the reverse.
+// One decider, called from both places, is the only form that cannot drift.
 func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) bool {
-	cp, ok := pred.(*predicates.ComparisonPredicate)
-	if !ok {
-		return false
-	}
-	fv, ok := cp.Operand.(*values.FieldValue)
-	if !ok {
-		return false
-	}
+	keys := make([]values.Value, 0, len(agg.GroupKeys))
 	for _, gk := range agg.GroupKeys {
-		if gfv, ok := gk.Value.(*values.FieldValue); ok && strings.EqualFold(gfv.Field, fv.Field) {
-			return true
-		}
+		keys = append(keys, gk.Value)
 	}
-	return false
+	return cascades.PredicatePushesBelowGroupBy(pred, keys)
 }
 
 // rebasePostAggregateGroupKeyPredicate applies rebasePostAggregateGroupKeyValue to

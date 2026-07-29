@@ -21,7 +21,26 @@ import (
 // eliminated by the predicate wouldn't contribute to any group that
 // survives it.
 //
-// Java equivalent: PushPredicateThroughGroupByRule.
+// GO-ONLY EXTENSION — there is no Java counterpart to port, and the name this
+// comment used to cite ("PushPredicateThroughGroupByRule") names no class in
+// 4.12.11.0. Java's general predicate pushdown, PredicatePushDownRule, reaches a
+// GroupBy and deliberately declines:
+//
+//	// We have to be a little careful here. In particular, we can push down any
+//	// predicates on a grouping column, but not any on the aggregate value. For
+//	// now, just don't push anything down
+//	return Optional.empty();
+//	  — PredicatePushDownRule.visitGroupByExpression, PredicatePushDownRule.java:394-399
+//
+// So Java states this rule's exact soundness condition and then implements
+// neither half. This is a read-side extension: it only lets the planner reach a
+// cheaper plan for a query Java also answers, and nothing about it touches the
+// wire. The comparand check below is the "but not any on the aggregate value"
+// half made real rather than assumed.
+//
+// Not to be confused with PushRequestedOrderingThroughGroupByRule
+// (PushRequestedOrderingThroughGroupByRule.java:52), which Java does have — it
+// propagates an ordering CONSTRAINT through a GroupBy and rewrites no predicate.
 type PushFilterThroughGroupByRule struct {
 	matcher matching.BindingMatcher
 }
@@ -115,6 +134,31 @@ func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 		m[key] = struct{}{}
 	}
 	return m
+}
+
+// PredicatePushesBelowGroupBy reports whether one predicate over a GroupBy's
+// output can be evaluated BEFORE the aggregation — the decision this rule makes
+// per predicate, exported because the SQL translator has to make the SAME call
+// upstream: a HAVING reference that will be pushed below must keep its
+// pre-aggregate binding, and one that will not must be rebased onto the
+// aggregate's output row. Two answers to one question is a wrong-row read on
+// whichever side loses.
+//
+// It was TWO implementations, and they had already drifted in three ways that a
+// shared decider removes: the translator's copy matched a group key by BARE LEAF
+// NAME (so a nested `addr.city` key answered to a top-level `city`), it never
+// checked the COMPARAND (so `key > SUM(v)` — which this rule refuses to push —
+// was told it would be pushed), and it did not require every grouping key to
+// have an establishable identity.
+func PredicatePushesBelowGroupBy(p predicates.QueryPredicate, groupingKeys []values.Value) bool {
+	if len(groupingKeys) == 0 {
+		return false
+	}
+	keySet := buildGroupKeySet(groupingKeys)
+	if len(keySet) == 0 {
+		return false
+	}
+	return predicateReferencesOnlyKeys(p, keySet)
 }
 
 func predicateReferencesOnlyKeys(p predicates.QueryPredicate, keySet map[string]struct{}) bool {

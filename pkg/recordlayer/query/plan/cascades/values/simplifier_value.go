@@ -233,21 +233,23 @@ func composeFieldOverConstructor(v Value) Value {
 		}
 		return rc.Fields[o].Value
 	}
-	// LAZY compose: name-based, but DECLINE when the name is ambiguous — a
-	// dup-named RC (constructible only by ordinal seeds) matched by a lazy
-	// reference has no defensible first-match answer; a wrong fold here is
-	// the duplicate-name conflation. Ambiguous references are the resolver's
-	// to reject (42702); the simplifier just refuses to guess.
-	var match Value
-	for _, field := range rc.Fields {
-		if field.Name == fv.Field {
-			if match != nil {
-				return nil
-			}
-			match = field.Value
-		}
-	}
-	return match
+	// A LAZY node has no ordinal, so it has nothing to select a member with, and
+	// it DECLINES. Java's rule has no name arm to port: findColumn is
+	// `getColumns().get(fieldOrdinal)` and nothing else
+	// (ComposeFieldValueOverRecordConstructorRule.java:99-102), because Java's
+	// FieldValue is resolved at construction and a nameless lazy carrier is a
+	// shape it cannot express.
+	//
+	// The arm this replaces matched a member by `field.Name == fv.Field` and was
+	// correct only because of a duplicate-name guard sitting under it — a guard
+	// whose existence is the argument against the key it guards. Both are gone
+	// together (RFC-197 item 3); a declined fold leaves the node as it stands,
+	// which is never a wrong answer.
+	//
+	// Measured before removing, not argued: the arm MATCHED zero times across the
+	// explaindiff corpus, the whole //pkg/relational/sqldriver FDB suite and every
+	// conformance harness — a panic wired into the match point is never reached.
+	return nil
 }
 
 // composeFieldOverField implements Java's ComposeFieldValueOverFieldValueRule:

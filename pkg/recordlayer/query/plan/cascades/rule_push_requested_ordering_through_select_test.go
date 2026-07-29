@@ -67,9 +67,12 @@ func TestPushRequestedOrderingThroughSelectRule_TranslatesToChild(t *testing.T) 
 	)
 	selRef := expressions.InitialOf(sel)
 
+	// The parent orders by the select's OUTPUT SLOT 0. A resolved reference to a
+	// projection output carries that ordinal, and push-down selects the member by
+	// it (RFC-197 item 3) — a lazy "OUT_ID" carrier would push down to nothing.
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     values.NewFlatFieldValue("OUT_ID", values.NullableLong),
+			Value:     values.NewFieldValueWithResolvedOrdinal("OUT_ID", 0, values.NullableLong),
 			SortOrder: properties.RequestedSortOrderDescending,
 		}},
 		properties.DistinctnessNotDistinct,
