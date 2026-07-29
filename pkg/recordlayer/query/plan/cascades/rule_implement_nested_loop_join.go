@@ -3678,10 +3678,10 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 	if !lhsHasLeg || !rhsHasLeg {
 		return nil
 	}
-	if sameLeg(lhsLeg, outerCorr) && readsKeyColumn(rhsFV, innerCorr, keyIdent, frontier) {
+	if values.SameLeg(lhsLeg, outerCorr) && readsKeyColumn(rhsFV, innerCorr, keyIdent, frontier) {
 		return lhsFV
 	}
-	if sameLeg(rhsLeg, outerCorr) && readsKeyColumn(lhsFV, innerCorr, keyIdent, frontier) {
+	if values.SameLeg(rhsLeg, outerCorr) && readsKeyColumn(lhsFV, innerCorr, keyIdent, frontier) {
 		return rhsFV
 	}
 	return nil
@@ -3734,15 +3734,6 @@ func legCorrelationOf(fv *values.FieldValue) (values.CorrelationIdentifier, bool
 	return values.CorrelationIdentifier{}, false
 }
 
-// sameLeg compares two quantifier aliases. A CorrelationIdentifier is an
-// identity element with its own producers, never a column name — but its
-// producers do not agree on CASE (the translator names quantifiers from the
-// user's SQL, the rules from upper-cased plan aliases), so the comparison
-// folds case exactly as the alias comparison it replaces did.
-func sameLeg(a, b values.CorrelationIdentifier) bool {
-	return strings.EqualFold(a.String(), b.String())
-}
-
 // readsKeyColumn reports whether fv is a bare reference to keyIdent's column,
 // read off the leg bound under legCorr.
 //
@@ -3774,7 +3765,7 @@ func readsKeyColumn(
 	if !ok {
 		return false
 	}
-	return sameLeg(id.Correlation, legCorr) &&
+	return values.SameLeg(id.Correlation, legCorr) &&
 		id.Domain == keyIdent.Domain && id.Ordinal == keyIdent.Ordinal
 }
 
@@ -3798,7 +3789,7 @@ func readsKeyColumn(
 // QOV(outerAlias).<col>.
 func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerCorr values.CorrelationIdentifier) bool {
 	leg, ok := legCorrelationOf(outerVal)
-	return !ok || !sameLeg(leg, outerCorr)
+	return !ok || !values.SameLeg(leg, outerCorr)
 }
 
 // correlatedFastPathOperand builds the outer-side operand pushed into the
@@ -3838,19 +3829,17 @@ func correlatedFastPathOperand(
 		// The rebuilt operand's DISPLAY name. Its identity is the ordinal
 		// passed beside it; this string is never compared, keyed or resolved,
 		// and the constructor is the one place RFC-197 leaves a name
-		// legitimate. A childless reference carries its qualifier packed into
-		// the display name (the qualified-name channel, RFC-197 bucket 6), so
-		// it contributes its leaf — the rebuilt value is rooted at a QOV and
-		// would otherwise render a stale qualifier.
-		display := outerVal.Field
-		if _, isQOV := outerVal.Child.(*values.QuantifiedObjectValue); !isQOV {
-			if dot := strings.IndexByte(display, '.'); dot >= 0 {
-				display = strings.ToUpper(display[dot+1:])
-			}
-		}
+		// legitimate. It is taken VERBATIM: there used to be a branch here
+		// that sliced a qualifier out of a CHILDLESS reference's dotted
+		// display name (the qualified-name channel, RFC-197 bucket 6), and it
+		// was unreachable by the same construction that justified deleting
+		// matchJoinPKPredicate's deep-flowed arms — both callers gate on
+		// outerValRefsBuriedLeg, which routes through legCorrelationOf and
+		// fails closed on a childless value, so outerVal always has a
+		// QuantifiedObjectValue child by the time it arrives here.
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(outerCorrelation),
-			display,
+			outerVal.Field,
 			outerVal.Resolved.Root().Ordinal,
 			outerVal.Typ,
 		), true

@@ -860,6 +860,23 @@ func TestMatchJoinPKPredicate_BuriedLegHasNoBareNameBackDoor(t *testing.T) {
 	if !outerValRefsBuriedLeg(unstateable, outerCorr) {
 		t.Fatal("outerValRefsBuriedLeg accepted a comparand with no stateable leg")
 	}
+	// The same decline, on the exact shape the QUALIFIED-NAME channel produces:
+	// a CHILDLESS reference carrying its qualifier packed into the display name.
+	// correlatedFastPathOperand used to slice that qualifier back out to build
+	// the rebuilt operand's display name; that branch is gone, and this is what
+	// makes its absence safe rather than merely untested — a childless value
+	// never reaches the operand builder at all, because legCorrelationOf cannot
+	// state its leg and every call site routes through this gate first.
+	//
+	// What re-arms if this changes: a childless dotted reference reaching
+	// correlatedFastPathOperand would be rebuilt as QOV(outer).<whole dotted
+	// string>, a display name no layout declares.
+	dotted := &values.FieldValue{Field: "O.ID", Typ: values.UnknownType}
+	if !outerValRefsBuriedLeg(dotted, outerCorr) {
+		t.Fatal("outerValRefsBuriedLeg accepted a CHILDLESS dotted reference — the fast path " +
+			"would then have to recover the leg from how the column is SPELLED, which is the " +
+			"qualified-name channel RFC-197 closed")
+	}
 	// Accept direction, so the decline cannot be satisfied by refusing all.
 	own := nljBakedRef(t, "OUTER", outerCorr, "ID")
 	if outerValRefsBuriedLeg(own, outerCorr) {
@@ -1030,12 +1047,42 @@ func TestImplementNestedLoopJoin_ExistsPKShortcutDimensions(t *testing.T) {
 		// merely spells its column the way INNER's primary key is spelled.
 		// Under a leaf-name match this is a PK equi-join and the rule builds a
 		// correlated probe of INNER on a value that never reads INNER at all.
+		//
+		// This case does NOT isolate the correlation: the operand is baked
+		// against OUTER's layout, so the domain refuses it first and a
+		// correlation-blind rule would still decline here. The sibling case
+		// below is the one that removes that cover.
 		results := buildExistsPKShortcutScenarioWithOuter(t,
 			nljBakedRef(t, "OUTER", outerCorr, "ID"),
 			nljBakedRef(t, "OUTER", outerCorr, "ID"))
 		if anyScanCarriesComparisons(t, results) {
 			t.Fatal("EXISTS PK shortcut fired on an OUTER reference sharing the inner PK's " +
 				"leaf name — the probe narrows INNER by a column of a different table")
+		}
+	})
+
+	t.Run("declines an INNER-DOMAIN reference read off the OUTER leg", func(t *testing.T) {
+		t.Parallel()
+		// The correlation ISOLATED, at rule level. The "inner" operand is baked
+		// against INNER's OWN layout at INNER's primary-key ordinal, so the
+		// domain check and the ordinal check both pass; only the quantifier
+		// says it reads the outer's row. This is the self-join shape — two legs
+		// sharing one layout — and it is the only case in this suite a
+		// correlation-blind rule reaches.
+		//
+		// Firing here builds a correlated PK-narrowed scan of INNER whose bound
+		// value never reads INNER at all, which is a wrong-rows plan, not a
+		// slower one.
+		inner := nljBakedRef(t, "INNER", outerCorr, "ID")
+		if inner.Resolved.Domain != values.OrdinalDomainOfType(nljTestLayouts["INNER"]) {
+			t.Fatal("setup: the operand must carry INNER's own domain, or the domain check rejects it first")
+		}
+		results := buildExistsPKShortcutScenarioWithOuter(t, inner,
+			nljBakedRef(t, "OUTER", outerCorr, "ID"))
+		if anyScanCarriesComparisons(t, results) {
+			t.Fatal("EXISTS PK shortcut fired on a reference baked in INNER's layout but read " +
+				"off the OUTER quantifier — ordinal 0 of two quantifiers are different columns, " +
+				"and the probe would narrow INNER by a value that never reads it")
 		}
 	})
 

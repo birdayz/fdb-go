@@ -167,10 +167,10 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 		if !ok {
 			return
 		}
-		if sameLeg(leg, corr0) {
+		if values.SameLeg(leg, corr0) {
 			refs0 = true
 		}
-		if sameLeg(leg, corr1) {
+		if values.SameLeg(leg, corr1) {
 			refs1 = true
 		}
 	})

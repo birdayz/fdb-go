@@ -68,6 +68,30 @@ func (c CorrelationIdentifier) String() string { return c.name }
 // Useful for nil-checks without a pointer.
 func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 
+// SameLeg reports whether two identifiers name the same quantifier — the
+// CORRELATION element of RFC-197's identity triple, compared in ONE place so
+// every proof that asks "does this value read that leg?" gets the same answer.
+//
+// It FOLDS CASE, and that is a deliberate divergence from Java, whose
+// CorrelationIdentifier.equals is `Objects.equals(id, that.id)` —
+// case-SENSITIVE (CorrelationIdentifier.java:132). Java can afford exactness
+// because every identifier comes from one factory (`CorrelationIdentifier.of`)
+// fed by the planner itself. Go's do not agree on case: the SQL translator
+// mints some aliases upper-cased (cascades_translator.go:2366) and others
+// verbatim from the user's SQL or from a synthesized suffix
+// (`<cte>forScan`), while the physical plans carry their join aliases as
+// plain strings that the rules re-mint. Comparing those exactly does not
+// reject a wrong leg — it silently fails to recognize the RIGHT one, and every
+// caller here treats "cannot tell" as "decline", so the fold recovers proofs
+// rather than manufacturing them.
+//
+// Folding cannot conflate two genuinely distinct quantifiers: aliases
+// originate as SQL identifiers, which are case-insensitive, so `o` and `O`
+// are one alias and never two legs of the same plan.
+func SameLeg(a, b CorrelationIdentifier) bool {
+	return strings.EqualFold(a.name, b.name)
+}
+
 // CurrentAlias is the well-known CorrelationIdentifier representing
 // "the current row". Mirrors Java's `Quantifier.current()` — used by
 // set-operation comparison key values and other contexts where a Value
