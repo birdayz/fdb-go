@@ -72,24 +72,36 @@ func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 // CORRELATION element of RFC-197's identity triple, compared in ONE place so
 // every proof that asks "does this value read that leg?" gets the same answer.
 //
-// It FOLDS CASE, and that is a deliberate divergence from Java, whose
-// CorrelationIdentifier.equals is `Objects.equals(id, that.id)` —
-// case-SENSITIVE (CorrelationIdentifier.java:132). Java can afford exactness
-// because every identifier comes from one factory (`CorrelationIdentifier.of`)
-// fed by the planner itself. Go's do not agree on case: the SQL translator
-// mints some aliases upper-cased (cascades_translator.go:2366) and others
-// verbatim from the user's SQL or from a synthesized suffix
-// (`<cte>forScan`), while the physical plans carry their join aliases as
-// plain strings that the rules re-mint. Comparing those exactly does not
-// reject a wrong leg — it silently fails to recognize the RIGHT one, and every
-// caller here treats "cannot tell" as "decline", so the fold recovers proofs
-// rather than manufacturing them.
+// The comparison is EXACT, matching Java, whose CorrelationIdentifier.equals
+// is `Objects.equals(id, that.id)` (CorrelationIdentifier.java:132).
 //
-// Folding cannot conflate two genuinely distinct quantifiers: aliases
-// originate as SQL identifiers, which are case-insensitive, so `o` and `O`
-// are one alias and never two legs of the same plan.
+// Exactness is not merely Java-fidelity here — it is load-bearing. Alias
+// namespaces in this planner are deliberately case-DISJOINT: the semantic
+// scope upper-folds every user correlation at its single registration
+// chokepoint (semantic/scope.go), while UniqueCorrelationIdentifier mints the
+// machine counter in LOWERCASE (`q$1`). scope.go states the consequence it is
+// protecting: a quoted `"q$5"` cannot forge a planner-minted q$5. A
+// case-folding comparison erases exactly that protection — it lets a user
+// alias that upper-folds onto the minted namespace be accepted as the minted
+// leg, and every caller of this helper is a proof about which row a value
+// reads. A forged match there is a wrong-rows plan or a fabricated
+// cardinality, not a lost optimization.
+//
+// The same call was already made independently at the qualified-key rewrite in
+// rule_implement_nested_loop_join.go, whose comment reads "a fold here would
+// let a quoted user alias cross into the lowercase machine namespace". This
+// helper now agrees with it rather than contradicting it.
+//
+// Folding was tempting because the translator does not upper-case aliases
+// consistently (cascades_translator.go:2366 folds; :1862 and :8730 pass the
+// name through verbatim), so an exact comparison can fail to recognize a leg
+// that really is the right one. That costs a DECLINE — every caller reads
+// "cannot tell" as "do not apply the correction" — and it is the translator's
+// inconsistency to fix at the source, not this helper's to mask. Masking it
+// here would trade a recoverable missed optimization for an unrecoverable
+// forged identity.
 func SameLeg(a, b CorrelationIdentifier) bool {
-	return strings.EqualFold(a.name, b.name)
+	return a.name == b.name
 }
 
 // CurrentAlias is the well-known CorrelationIdentifier representing

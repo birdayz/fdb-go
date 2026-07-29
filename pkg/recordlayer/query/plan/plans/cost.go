@@ -658,14 +658,18 @@ func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool 
 // have.
 //
 // The CORRELATION is compared here and CANONICALIZED into the returned key.
-// Both halves are load-bearing. Comparing here is what rejects a SELF-JOIN's
-// other leg: with outer and inner sharing one layout, `o.ID` and `i.ID` agree
-// on domain and ordinal, and only the leg says one of them reads a different
-// row. Canonicalizing is what keeps that comparison the only place the leg is
-// judged — values.SameLeg folds case (its doc comment says why), so a key
-// carrying the operand's own spelling would then be re-compared EXACTLY by the
-// caller's map lookup and quietly re-impose the strictness this site just
-// decided against.
+// Comparing here is what rejects a SELF-JOIN's other leg: with outer and inner
+// sharing one layout, `o.ID` and `i.ID` agree on domain and ordinal, and only
+// the leg says one of them reads a different row.
+//
+// Canonicalizing makes this the ONLY place the leg is judged. values.SameLeg
+// is exact, so the caller's map lookup would today reach the same verdict on
+// its own — the canonicalization is therefore defensive, not load-bearing by
+// itself. What it buys is that the leg decision cannot be re-litigated by a
+// downstream comparison that disagrees with this one, and that removing the
+// check above is a visible behaviour change rather than a silent no-op: the
+// key handed back states the leg this function ACCEPTED, so a missing check
+// hands the caller a forced match instead of a mismatch it would catch.
 func correlatedInnerFieldKey(
 	v values.Value,
 	innerAlias values.CorrelationIdentifier,

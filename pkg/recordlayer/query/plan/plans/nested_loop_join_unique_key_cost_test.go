@@ -653,38 +653,71 @@ func TestNestedLoopJoinPlan_HintCost_SameLayoutInnerCorrelation_StillCorrected(t
 	}
 }
 
-// TestNestedLoopJoinPlan_HintCost_LegSpellingIsCaseFolded pins the one
-// deliberate looseness in the correlation comparison, so it stays a decision
-// rather than becoming an accident.
+// TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg pins the
+// reason values.SameLeg compares EXACTLY, at the site where a forged match
+// would cost a fabricated cardinality.
 //
-// values.SameLeg folds case because Go's alias producers disagree on it (see
-// its doc comment) — the plan carries its join aliases as plain strings the
-// rules re-mint, while the operand's quantifier keeps whatever the translator
-// stamped. Java needs no such fold: CorrelationIdentifier.equals is exact
-// (CorrelationIdentifier.java:132) because every identifier there comes from
-// one factory.
+// The two alias namespaces in this planner are deliberately case-DISJOINT.
+// semantic/scope.go upper-folds every user correlation at its single
+// registration chokepoint, while UniqueCorrelationIdentifier mints the machine
+// counter in lowercase (`q$1`), and scope.go states the protection that buys:
+// a quoted `"q$5"` cannot forge a planner-minted q$5. Java gets the same
+// property for free — CorrelationIdentifier.equals is exact
+// (CorrelationIdentifier.java:132).
 //
-// The fold can only ever RECOVER a proof, never invent one — an unrecognized
-// leg declines — but it is still a loosening of an identity element, so it is
-// asserted here rather than left to be discovered by someone reading
-// strings.EqualFold and wondering.
-func TestNestedLoopJoinPlan_HintCost_LegSpellingIsCaseFolded(t *testing.T) {
+// A case-folding comparison erases it. Under a fold, the upper-folded user
+// alias Q$5 below IS the minted leg q$5, and the join's unique-key proof
+// accepts an operand that reads a quantifier the inner leg is not — an
+// at-most-one claim manufactured out of a spelling collision. The
+// correction then reports outerCard for a join that visits every inner row.
+//
+// This is deliberately pinned as the ACCEPT direction's negative: exactness
+// costs a decline whenever the translator's inconsistent upper-casing
+// (cascades_translator.go:2366 folds, :1862/:8730 do not) hands the proof a
+// leg spelled differently from the plan's own alias. That decline is the
+// translator's bug to fix at the source. Masking it here would trade a
+// recoverable missed optimization for an unrecoverable forged identity.
+func TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg(t *testing.T) {
 	t.Parallel()
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
 		WithPrimaryKey(pkOf("ID"))
 
-	// The plan's inner alias is "i"; the operand's quantifier is spelled "I".
-	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "I"), fieldOfAliasIn(outerLayout, "FK", "o"))
+	// The inner leg is bound under the PLANNER-MINTED alias `q$5`
+	// (UniqueCorrelationIdentifier's lowercase machine-counter namespace). The
+	// operand reads `Q$5` — what a quoted user alias `AS "q$5"` becomes after
+	// scope.go's upper-fold. Same layout, same ordinal, same leaf name; the
+	// namespaces are disjoint by case and by design.
+	pred := equalityJoinPredicate(
+		fieldOfAliasIn(innerLayout, "ID", "Q$5"),
+		fieldOfAliasIn(outerLayout, "FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, "o", "q$5", nil,
 	)
 
-	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
-		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — "+
-			"an alias spelled `I` against a plan alias spelled `i` is one leg, not two", n, ok)
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
+		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (0, false) — an upper-folded "+
+			"USER alias Q$5 was accepted as the planner-minted leg q$5. semantic/scope.go keeps "+
+			"those two namespaces case-DISJOINT precisely so a quoted \"q$5\" cannot forge a "+
+			"minted q$5; a case-folding leg comparison erases that protection and manufactures "+
+			"an at-most-one proof out of a spelling collision", n, ok)
+	}
+
+	// Accept direction, so the decline above cannot be satisfied by refusing
+	// every minted alias outright.
+	same := equalityJoinPredicate(
+		fieldOfAliasIn(innerLayout, "ID", "q$5"),
+		fieldOfAliasIn(outerLayout, "FK", "o"))
+	samePlan := NewRecordQueryNestedLoopJoinPlan(
+		outerPlan, innerPlan,
+		[]predicates.QueryPredicate{same},
+		JoinInner, "o", "q$5", nil,
+	)
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(samePlan); !ok || n != 1 {
+		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — the genuine "+
+			"minted leg must still prove its own bind", n, ok)
 	}
 }
