@@ -328,8 +328,13 @@ channel with fifteen readers; it is four, and they close in different orders.
   readers of this channel (`ordinal_seed.go:761`,
   `rule_implement_nested_loop_join.go:2332`, `left_outer_existential.go:112`,
   `box_conjunct.go:149`, `accessor_name_path.go:61`) stay until it lands —
-  producer-first, as this item requires.
-- **Three translator sites may not belong to this bucket.** The dotted
+  producer-first, as this item requires. Booked as **CQ-53**. The measurement
+  above is no longer prose: `TestLegRef_DeclinesAMergedRowQualifiedRead` pins
+  it, and deleting the guard makes it report leg `"S"` for
+  `FieldValue{Field:"A.ID", Child:QOV(S)}`.
+- **Four sites did not belong to this bucket, and have been retagged.** (Three
+  were identified here; reading the fourth, `exists_gathered_cluster_wrap.go:131`,
+  showed the same shape.) The dotted
   qualifier compares in `bakeDottedRefsToLegQOV` and `bakeFlatRefsAgainstColumns`
   all guard on `Child != nil → bail`, so they see only lazy carriers minted from
   PARSED text (`p.Projections[i]`, `SortKey.Expr`, `GroupKey.Display`), and each
@@ -339,9 +344,13 @@ channel with fifteen readers; it is four, and they close in different orders.
   smaller than a bucket: the parser HAS the segments (`SortKey.Bare/Qualifier`,
   `GroupKey.Bare/Qualifier` are populated and then discarded;
   `LogicalProject.Projections []string` never had them), joins them, and the
-  resolver splits them back. Deciding this is a bucket move, so it is left for
-  the site-by-site pass rather than taken unilaterally here — but taking them as
-  "producers to convert" would be converting the wrong thing.
+  resolver splits them back. The site-by-site pass confirmed the reading and
+  made the move: all four are tagged `translator:` in the debt list, taking
+  `dotted` to 6 and `translator` to 17. Nothing was migrated by this — the sites
+  still read a name, and a bucket move that reads like a fix is recorded as such
+  on both buckets' group headers. The upstream fix is booked as **CQ-52**
+  (segments end-to-end, retiring all four at the source); taking them as
+  "producers to convert" would have converted the wrong thing.
 
 **harness (1)** — `rowdiff/ordering.go:241` compares plan sort keys against
 SQL `ORDER BY` text in the conformance oracle. Engine identity rules do not

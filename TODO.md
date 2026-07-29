@@ -10053,3 +10053,84 @@ None is speculative: each was re-verified against the tree before booking.
   re-exploration the same way in `PlanContext`/`ConstraintsMap`, and if Java
   separates "constraint widened" from "re-push required", the separation is the
   port. Planner machinery, so it takes a Graefe-gated RFC + lap of its own.
+
+- [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
+  segments, joins them into one string, and the resolver splits them back
+  apart.** Four debt sites exist only to undo a join the layer above performed
+  for no reason.
+
+  `logical.SortKey` (`pkg/relational/core/query/logical/operators.go:298-303`)
+  carries `Bare` / `Qualifier` / `Qualified`, documented as "parse-tree segments
+  of a plain column reference key", with qualification defined as FullId SEGMENT
+  COUNT — structure, not a string scan. `logical.GroupKey` (`:414-420`) carries
+  the same three. Both are POPULATED from the parse tree
+  (`embedded/logical_builder.go:679`, `embedded/plan_visitor.go:1601`,
+  `embedded/select_parser.go:864/997/1353/1608`) and then DISCARDED: the
+  translator mints its lazy carrier from the joined text instead
+  (`core/query/cascades_translator.go:4920` and `:6006` build
+  `&values.FieldValue{Field: k.Expr}`; `embedded/logical_predicate.go:2967` is
+  the join itself, `display = qualifier + "." + bare`).
+  `LogicalProject.Projections []string` (`operators.go:219`) never had the
+  segments at all.
+
+  The resolver then re-derives what was thrown away, by `strings.IndexByte(…,
+  '.')`, at four sites — `cascades_translator.go:5674` (single-ForEach flat
+  baker), `:5722` (`bakeDottedRefsToLegQOV`), `:5846`
+  (`bakeFlatRefsAgainstColumns` leg-window arm) and
+  `exists_gathered_cluster_wrap.go:131` (gathered-EXISTS wrap). All four are now
+  tagged `translator:` in `pkg/docscheck`'s `knownFieldDecisionDebt` rather than
+  `dotted:` — each guards `Child != nil → bail` before the slice, so it only
+  ever sees a lazy carrier minted from parsed text, and each emits a born-baked
+  value. They are name RESOLUTION, correctly performed on a representation that
+  destroyed its own input.
+
+  Fix: keep the segments end-to-end. Give `Projections` the segment triple the
+  other two already have, carry it into the lazy carrier (or bake at mint time,
+  where the resolver scope is in hand), and delete the four re-splits. This
+  retires four debt entries at the SOURCE, shrinks the translator bucket, and
+  removes the one representation in which a quoted `"A.B"` column and a
+  qualified `A.B` reference are the same bytes — the ambiguity that was already
+  a live defect once on the cluster-attribution path (see
+  `cluster_ref_attribution_test.go`).
+
+  Not query-engine machinery: no cost model, no rule, no executor contract. The
+  segments already exist and are already correct; this is deleting a join and a
+  split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
+  the joined representation cannot tell apart.
+
+- [ ] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — teach the
+  FlatMap inner binder leg-local windows, and the merged-row `leg.col` string
+  channel dies with its five readers.** The last genuinely-dotted debt sites are
+  readers of ONE channel, and the channel is executor-side.
+
+  The producers rewrite a leg-correlated read into a merged-correlated read with
+  the leg packed into the NAME:
+  `rule_implement_nested_loop_join.go:2366` (`qualField := corr + "." +
+  strings.ToUpper(fv.Field)`) and `cascades_translator.go:3560`
+  (`values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)`)
+  both turn `QOV(leg).COL` into `QOV(merged)."LEG.COL"`, because the FlatMap
+  inner's binder resolves the merged row by that key.
+
+  The structural form ALREADY EXISTS on the other path: `executor.go:2719`
+  `concatLegPositionals` stores leg WINDOWS (`RecordType.Legs`) rather than
+  dotted names, and `executor.go:2788` `spansFromMergedLegs` binds `QOV(leg).col`
+  leg-locally over the merged row for the join-predicate path. So this is not a
+  missing capability — it is teaching the FlatMap inner binder the trick its
+  sibling already does, then deleting the two producers.
+
+  The load-bearing negative result, now PINNED rather than prose:
+  `TestLegRef_DeclinesAMergedRowQualifiedRead`
+  (`pkg/relational/core/query/cluster_ref_attribution_test.go`). `legRef`
+  (`ordinal_seed.go:759-769`) declines any dotted name BEFORE asking the child,
+  and that guard is a mitigation, not defensiveness: delete it and
+  `FieldValue{Field:"A.ID", Child:QOV(S)}` reports leg `"S"` — the merged
+  correlation returned as a direct leg reference, measured by mutation. So the
+  five readers (`ordinal_seed.go:761`,
+  `rule_implement_nested_loop_join.go:2332`, `left_outer_existential.go:112`,
+  `box_conjunct.go:149`, `accessor_name_path.go:61`) cannot be "cleaned up"
+  first. Producer-first, as RFC-197 item 6 requires.
+
+  Executor + NLJ rule, so it takes a Graefe-gated RFC and a review lap of its
+  own. Closing it takes the RFC-197 `dotted` bucket from 6 to 1
+  (`cascades_generator.go:4122`, the group-key qualification probe, is the only
+  non-merged-row reader left).

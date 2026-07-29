@@ -137,3 +137,48 @@ func TestClusterOuterRefs_DoesNotAttributeAChildlessDottedName(t *testing.T) {
 		t.Fatalf("collectClusterOuterRefs(%v) lost the correlation-carrying outer-leg reference — the decline guard would go silent", refs)
 	}
 }
+
+// TestLegRef_DeclinesAMergedRowQualifiedRead pins the OTHER direction of the
+// same question, on the one dot-probe that must stay.
+//
+// `legRef` answers "does this value read leg L directly?" and it asks the
+// value's QuantifiedObjectValue child — the correct channel. But it first
+// declines any value whose name contains a dot, and that guard is load-bearing
+// rather than defensive: the merged-row channel mints
+// `FieldValue{Field:"A.ID", Child:QOV(S)}`, where the child names the MERGED
+// row S and the name carries the leg A. Ask the child alone and the answer is
+// S — the merged correlation reported as a direct leg read, which is the
+// conflation this whole workstream exists to remove.
+//
+// So the dot probe is not a reader to convert; it is the mitigation for a
+// producer that packs a leg into a string, and it can only be deleted after
+// that producer is gone. Nothing pinned it, which meant "remove the last dot
+// probes" read as safe cleanup at exactly the site where it silently misbinds.
+// The producer conversion is booked; this is what re-arms if the guard goes
+// first.
+func TestLegRef_DeclinesAMergedRowQualifiedRead(t *testing.T) {
+	t.Parallel()
+
+	mergedQOV := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("S"))
+
+	// The merged-row shape: name says leg A, child says merged row S.
+	merged := &values.FieldValue{Field: "A.ID", Child: mergedQOV, Typ: values.NotNullLong}
+	if key, ok := legRef(merged); ok {
+		t.Fatalf("legRef attributed the merged-row read {Field:%q, Child:QOV(S)} to leg %q — "+
+			"the child names the MERGED row, not a leg, so any non-empty answer here is the "+
+			"merged correlation misreported as a direct leg reference", merged.Field, key)
+	}
+
+	// The shape it MUST still accept, so the guard is not merely a blanket
+	// refusal: an unqualified read whose child names the leg itself.
+	direct := &values.FieldValue{
+		Field: "ID",
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")),
+		Typ:   values.NotNullLong,
+	}
+	key, ok := legRef(direct)
+	if !ok || key != "A" {
+		t.Fatalf("legRef(%q over QOV(A)) = (%q, %v), want (\"A\", true) — a guard that also "+
+			"declines genuine leg reads is not a mitigation, it is a hole", direct.Field, key, ok)
+	}
+}

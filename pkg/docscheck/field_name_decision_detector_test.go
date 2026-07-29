@@ -992,3 +992,109 @@ func TestAllowlistShapeValidatorRejectsNonSites(t *testing.T) {
 		})
 	}
 }
+
+// The group headers are the only summary anyone reads off the debt list, and
+// they are parsed out of a source file that also DISCUSSES buckets in prose.
+// The discriminator is the one-tab indent — headers sit at element depth inside
+// the composite literal, prose does not — and over the real file that
+// discriminator is unfalsifiable: the file happens to contain no prose line
+// shaped like a header, so a regexp anchored on nothing at all would agree with
+// one anchored correctly. A wrong anchor is not a cosmetic bug: it would let a
+// sentence mentioning an old count silently override the header the list
+// actually advertises, and those numbers are quoted outward as migration
+// arithmetic.
+func TestBucketHeaderCountsReadHeadersNotProse(t *testing.T) {
+	t.Parallel()
+
+	src := []byte("var knownFieldDecisionDebt = map[string]fieldDebt{\n" +
+		"\t// boundary (0) — MIGRATED\n" +
+		"\t// escape (0) -- MIGRATED, trailing prose\n" +
+		"\t// contract (11)\n" +
+		"\t// dotted (6)\n" +
+		"\t// name-keyed (3)\n" +
+		"\t// translator (17)\n" +
+		"\t// harness (1)\n" +
+		"}\n" +
+		"// dotted (999) — a top-level sentence recalling an old count\n" +
+		"\t\t// translator (998) — a nested comment inside a function body\n" +
+		"//   dotted (997) — an indented doc-comment bullet\n")
+
+	got := bucketHeaderCounts(src)
+
+	want := map[string]int{
+		"boundary": 0, "escape": 0, "contract": 11, "dotted": 6,
+		"name-keyed": 3, "translator": 17, "harness": 1,
+	}
+	for b, w := range want {
+		if got[b] != w {
+			t.Errorf("bucket %q read as %d, want %d — prose at another depth won over the header",
+				b, got[b], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("read %d buckets, want %d: %v", len(got), len(want), got)
+	}
+}
+
+// Both directions of header/tally disagreement, and the missing header. A
+// bucket at zero still has to advertise itself: dropping its header when it
+// empties is how a bucket stops being visible at exactly the moment its count
+// becomes a claim worth making.
+func TestBucketHeaderMismatchesReportsBothDirectionsAndAbsence(t *testing.T) {
+	t.Parallel()
+
+	full := map[string]int{
+		"boundary": 0, "escape": 0, "contract": 11, "dotted": 6,
+		"name-keyed": 3, "translator": 17, "harness": 1,
+	}
+	clone := func(edit func(map[string]int)) map[string]int {
+		m := map[string]int{}
+		for k, v := range full {
+			m[k] = v
+		}
+		edit(m)
+		return m
+	}
+
+	if bad := bucketHeaderMismatches(full, full); len(bad) > 0 {
+		t.Fatalf("agreeing header and tally reported %v", bad)
+	}
+
+	for _, tc := range []struct {
+		name           string
+		header, live   map[string]int
+		wantSubstrings []string
+	}{
+		{
+			name:           "header overstates — hides a migrated site",
+			header:         full,
+			live:           clone(func(m map[string]int) { m["dotted"] = 5 }),
+			wantSubstrings: []string{`"dotted"`, "header says 6", "tally 5"},
+		},
+		{
+			name:           "header understates — hides a site that arrived",
+			header:         full,
+			live:           clone(func(m map[string]int) { m["translator"] = 18 }),
+			wantSubstrings: []string{`"translator"`, "header says 17", "tally 18"},
+		},
+		{
+			name:           "an emptied bucket drops its header",
+			header:         clone(func(m map[string]int) { delete(m, "boundary") }),
+			live:           full,
+			wantSubstrings: []string{`"boundary"`, "no `// boundary (N)` group header"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bad := bucketHeaderMismatches(tc.header, tc.live)
+			if len(bad) != 1 {
+				t.Fatalf("got %d messages, want exactly 1: %v", len(bad), bad)
+			}
+			for _, want := range tc.wantSubstrings {
+				if !strings.Contains(bad[0], want) {
+					t.Errorf("message %q does not name %q", bad[0], want)
+				}
+			}
+		})
+	}
+}
