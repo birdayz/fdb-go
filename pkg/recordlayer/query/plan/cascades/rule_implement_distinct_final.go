@@ -135,7 +135,20 @@ func distinctEliminatedByUniqueKey(
 	innerExpr expressions.RelationalExpression,
 	ctx PlanContext,
 ) bool {
-	projectedCols := collectProjectedFieldNames(innerExpr)
+	// The proof is stated in ONE layout — the scan row both the projected
+	// references and the metadata key columns address. An unstatable layout (a
+	// multi-record-type scan degrades to unknown, a physical inner has no scan
+	// expression here) fails closed: the per-FinalMember PropDistinctRecords
+	// check is the primary path and a declined elision costs a DISTINCT that was
+	// redundant, never a duplicate row.
+	layoutType, layout := scanRowLayout(innerExpr)
+	if !layout.IsKnown() {
+		return false
+	}
+	projectedOrds, statable := collectProjectedOrdinals(innerExpr, layout)
+	if !statable {
+		return false
+	}
 
 	recordTypes := findRecordTypes(innerExpr)
 	if len(recordTypes) == 0 {
@@ -144,7 +157,7 @@ func distinctEliminatedByUniqueKey(
 
 	for _, rt := range recordTypes {
 		pkCols := ctx.GetPrimaryKeyColumns(rt)
-		if len(pkCols) > 0 && uniqueKeysCovered(pkCols, projectedCols) {
+		if len(pkCols) > 0 && uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
 			return true
 		}
 	}
@@ -163,7 +176,7 @@ func distinctEliminatedByUniqueKey(
 		if !candidatePreservesBaseRecordCardinality(cand) {
 			continue
 		}
-		if len(cols) > 0 && uniqueKeysCovered(cols, projectedCols) {
+		if len(cols) > 0 && uniqueKeysCovered(cols, layoutType, projectedOrds) {
 			return true
 		}
 	}
@@ -171,33 +184,63 @@ func distinctEliminatedByUniqueKey(
 	return false
 }
 
-// collectProjectedFieldNames returns the set of columns each projected as a
-// BARE, top-level field reference. Only a projected value that IS itself a
-// FieldValue counts: such a projection is the column value verbatim, so it is
-// injective in that column, and the DISTINCT may be elided when the bare
-// columns collectively cover a unique key. A projected value that references a
-// key column only from INSIDE an expression — id/3, f(id), a+b — is NOT
-// injective over that column (f(pk) maps many pks to one output), so it
-// contributes NOTHING: crediting its buried FieldValue would wrongly elide
-// DISTINCT over a many-to-one projection and emit duplicates.
+// collectProjectedOrdinals returns the ORDINALS, in the scan row's layout, of
+// the columns each projected as a BARE, top-level field reference. Only a
+// projected value that IS itself a FieldValue counts: such a projection is the
+// column value verbatim, so it is injective in that column, and the DISTINCT may
+// be elided when the bare columns collectively cover a unique key. A projected
+// value that references a key column only from INSIDE an expression — id/3,
+// f(id), a+b — is NOT injective over that column (f(pk) maps many pks to one
+// output), so it contributes NOTHING: crediting its buried FieldValue would
+// wrongly elide DISTINCT over a many-to-one projection and emit duplicates.
 //
-// If the inner expression is not a projection, returns nil to indicate "all
-// columns available" (full row).
-func collectProjectedFieldNames(expr expressions.RelationalExpression) map[string]struct{} {
-	proj, ok := expr.(*expressions.LogicalProjectionExpression)
-	if !ok {
-		return nil
+// ok=false means the projected set could not be established and the caller must
+// NOT elide: a bare reference whose ordinal does not provably index THIS layout
+// (lazy, fused, a foreign domain) states no column here, and crediting it by
+// the name it happens to render is how a projection of some other source's
+// same-named column would be counted as covering this one's key (RFC-197).
+//
+// A nil map with ok=true means the inner expression is not a projection: all
+// columns available (full row).
+func collectProjectedOrdinals(
+	expr expressions.RelationalExpression,
+	layout values.OrdinalDomain,
+) (map[int]struct{}, bool) {
+	proj, isProj := expr.(*expressions.LogicalProjectionExpression)
+	if !isProj {
+		return nil, true
 	}
 
-	cols := make(map[string]struct{})
+	ords := make(map[int]struct{})
 	for _, v := range proj.GetProjectedValues() {
 		// TOP-LEVEL type assertion only — a FieldValue nested inside an
 		// ArithmeticValue/function is deliberately not unwrapped here.
-		if fv, ok := v.(*values.FieldValue); ok {
-			cols[fv.Field] = struct{}{}
+		fv, isFV := v.(*values.FieldValue)
+		if !isFV {
+			continue
 		}
+		ord, stated := fv.OrdinalIn(layout)
+		if !stated {
+			return nil, false
+		}
+		ords[ord] = struct{}{}
 	}
-	return cols
+	return ords, true
+}
+
+// scanRowLayout is the row layout the DISTINCT-elimination proof is stated in:
+// the flowed type of the FullUnorderedScanExpression under the transparent
+// logical operators, which is the row both the projected references and the
+// metadata key columns address. A multi-record-type scan has no single column
+// order, so OrdinalDomainOfType yields the unknown token and every check below
+// fails closed.
+func scanRowLayout(expr expressions.RelationalExpression) (values.Type, values.OrdinalDomain) {
+	scan := findScanExpression(expr)
+	if scan == nil {
+		return nil, values.OrdinalDomain{}
+	}
+	t := scan.GetFlowedType()
+	return t, values.OrdinalDomainOfType(t)
 }
 
 // findRecordTypes walks down through transparent LOGICAL operators
@@ -242,19 +285,27 @@ func findRecordTypesViaQuantifier(q expressions.Quantifier) []string {
 // uniqueKeysCovered reports whether every column in uniqueKeyCols
 // appears in projectedCols. If projectedCols is nil, all columns are
 // considered available (no projection = full row).
-func uniqueKeysCovered(uniqueKeyCols []string, projectedCols map[string]struct{}) bool {
-	if projectedCols == nil {
+// uniqueKeysCovered reports whether every column of a unique key is projected.
+//
+// The key columns arrive as METADATA NAMES — a primary key's column list, an
+// index definition's own columns — and that is the layer whose right it is to
+// name them. Each is resolved ONCE against the scan row's layout and dies there
+// (RFC-197's boundary rule); the coverage test itself is over ordinals, so a
+// projection of some other source's same-named column can no longer be credited
+// as covering this one's key. A key column the layout does not declare fails
+// closed: no elision.
+//
+// A nil projected set means the full row is available.
+func uniqueKeysCovered(uniqueKeyCols []string, layout values.Type, projectedOrds map[int]struct{}) bool {
+	if projectedOrds == nil {
 		return true
 	}
 	for _, col := range uniqueKeyCols {
-		found := false
-		for pc := range projectedCols {
-			if eqFold(col, pc) {
-				found = true
-				break
-			}
+		id, resolved := values.OrdinalOfNameIn(layout, col)
+		if !resolved {
+			return false
 		}
-		if !found {
+		if _, covered := projectedOrds[id.Ordinal]; !covered {
 			return false
 		}
 	}
@@ -366,3 +417,36 @@ func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
 }
 
 var _ ImplementationRule = (*ImplementDistinctFinalRule)(nil)
+
+// findScanExpression is findRecordTypes' sibling: the same walk down through the
+// transparent logical operators, returning the scan ITSELF so its flowed row
+// type is available. Kept beside findRecordTypes rather than folded into it
+// because the two answer different questions of the same node, and a caller
+// wanting the layout must not have to re-derive it from a record-type name.
+func findScanExpression(expr expressions.RelationalExpression) *expressions.FullUnorderedScanExpression {
+	switch e := expr.(type) {
+	case *expressions.FullUnorderedScanExpression:
+		return e
+	case *expressions.LogicalProjectionExpression:
+		return findScanViaQuantifier(e.GetInner())
+	case *expressions.LogicalFilterExpression:
+		return findScanViaQuantifier(e.GetInner())
+	case *expressions.LogicalSortExpression:
+		return findScanViaQuantifier(e.GetInner())
+	case *expressions.LogicalDistinctExpression:
+		return findScanViaQuantifier(e.GetInner())
+	case *expressions.LogicalUniqueExpression:
+		return findScanViaQuantifier(e.GetInner())
+	case *expressions.LogicalTypeFilterExpression:
+		return findScanViaQuantifier(e.GetInner())
+	}
+	return nil
+}
+
+func findScanViaQuantifier(q expressions.Quantifier) *expressions.FullUnorderedScanExpression {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	return findScanExpression(ref.Get())
+}
