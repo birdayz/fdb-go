@@ -107,11 +107,6 @@ func buildQuantifierDependencyOrder(
 				return quantifierDependencyOrder{}
 			}
 		}
-		for alias := range quantifierMergeSeedLegDeps(quantifier) {
-			if !addDependency(alias) {
-				return quantifierDependencyOrder{}
-			}
-		}
 	}
 
 	all := make([]int, len(quantifiers))
