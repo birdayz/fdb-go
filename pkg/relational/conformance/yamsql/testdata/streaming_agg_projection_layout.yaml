@@ -68,3 +68,25 @@ tests:
       - [2, 1]
       - [3, 1]
       - [4, 1]
+
+  # The SAME defect at the OTHER decision site, and it is a SECOND wrong answer,
+  # not a duplicate of the first. The cases above reach the streaming aggregate's
+  # adjacency predicate; this one reaches sort elision, which asks whether anything
+  # already orders the derived table by its own `a`. Nothing does -- `d.a` is t.b,
+  # and t.b reads 10, 20, 10, 20 in primary-key order -- so the sort must stay.
+  #
+  # A verbatim republication elides it and ships those four rows in THAT order
+  # against an ORDER BY, which is a wrong RESULT rather than a wrong row count:
+  #
+  #   expected [10] [10] [20] [20]   actual [10] [20] [10] [20]
+  #
+  # so the two sites need two assertions. The row count is equal here, which is
+  # exactly why the GROUP BY cases above cannot stand in for it: they separate on
+  # cardinality and this one separates only on order.
+  - query: SELECT a FROM (SELECT b AS a, a AS b FROM t) d ORDER BY a
+    plan_contains: InMemorySort
+    rows:
+      - [10]
+      - [10]
+      - [20]
+      - [20]

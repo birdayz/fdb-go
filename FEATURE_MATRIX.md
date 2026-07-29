@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**343 scenarios · 2744 query/assertion cases** across 18 feature areas — 2403 supported, 111 unsupported-feature pins, 230 error-path pins.
+**343 scenarios · 2745 query/assertion cases** across 18 feature areas — 2404 supported, 111 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 31 | 237 | 204 | 10 | 23 |
-| **Total** | **343** | **2744** | **2403** | **111** | **230** |
+| Other | 31 | 238 | 205 | 10 | 23 |
+| **Total** | **343** | **2745** | **2404** | **111** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -477,6 +477,6 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
-| `streaming_agg_projection_layout` | 4 | 4 | 0 | 0 | A projection's PROVIDED ordering must be stated in the projection's OWN output |
+| `streaming_agg_projection_layout` | 5 | 5 | 0 | 0 | A projection's PROVIDED ordering must be stated in the projection's OWN output |
 | `string_comparison` | 5 | 5 | 0 | 0 | String comparison edge cases |
 
