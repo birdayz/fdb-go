@@ -169,3 +169,58 @@ func TestFDB_AggregateOperandWidthDeclinesForeignLayout(t *testing.T) {
 			q, got)
 	}
 }
+
+// TestFDB_AggregateOperandWidthJoinLegGapVsJava records what declining COSTS,
+// so the price is a measured number rather than an assumption.
+//
+// Summing an INTEGER column of a join leg does NOT overflow at int32 here,
+// while summing the SAME column of the SAME table without the join does. Java
+// raises 22003 for both: NumericAggregationValue.encapsulate picks SUM_I from
+// the operand's static TypeCode, and in Java that TypeCode survives a join
+// because the reference carries its column's own type. Go's resolver widens
+// every integer column reference to LONG, so the width has to be recovered
+// from the input's typed column list — and for a join operand that list is the
+// merged, qualified row, a layout the operand's ordinal does not index.
+//
+// This gap is OLDER than the ordinal key and unchanged by it: the leaf-name
+// version declined here too (it required a childless operand, which a join
+// reference is not). Closing it means giving the operand its LEG's typed
+// column list, which changes what queries answer — SUMs that return a number
+// today would start raising 22003 — so it is a semantics change, not a
+// migration, and it is not made here.
+//
+// When it is made, this test goes red on the first case. That is the point:
+// the pin is what makes the gap visible instead of merely absent.
+func TestFDB_AggregateOperandWidthJoinLegGapVsJava(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := aggWidthDB(t, ctx, "javagap", ""+
+		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+
+	for i := 1; i <= 2; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO j1 VALUES (%d, CAST(2000000000 AS INTEGER))", i)); err != nil {
+			t.Fatalf("INSERT j1 %d: %v", i, err)
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO j2 VALUES (%d, 1)", i)); err != nil {
+			t.Fatalf("INSERT j2 %d: %v", i, err)
+		}
+	}
+
+	joined := `SELECT SUM(j1.x) FROM j1, j2 WHERE j1.id = j2.id2`
+	if got := sumOutcome(t, ctx, db, joined); got != "ok:4000000000" {
+		t.Fatalf("%s = %s, want ok:4000000000 — this pins a KNOWN GAP, not desired behaviour: Java raises 22003 here. A 22003 means the leg-scoped width landed; update this pin and say so",
+			joined, got)
+	}
+
+	alone := `SELECT SUM(x) FROM j1`
+	if got := sumOutcome(t, ctx, db, alone); got != "22003" {
+		t.Fatalf("%s = %s, want 22003 — the same column of the same table narrows correctly without the join; if this stops, the width lookup broke outright rather than merely not reaching join legs",
+			alone, got)
+	}
+}
