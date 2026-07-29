@@ -291,6 +291,58 @@ is provably closed; either alone proves nothing — and a quoted `"A.B"`
 column keeps working, pinned by keeping its existing regression coverage
 green through the change.
 
+*Measured while implementing the first five sites.* The bucket is not one
+channel with fifteen readers; it is four, and they close in different orders.
+
+- **The unnest collection producer is gone, with its reader.** The lowering
+  built a name-model `SEG0.COL` collection and then discarded it on every path
+  that returns a plan (asserted; never fired across query, embedded, yamsql,
+  cascades, sqldriver-FDB, explaindiff, plandiff). Its reader — a correlation
+  set keyed by the sliced prefix — returned non-empty exactly once across those
+  suites, in its own hand-built pin. Both deleted; the dependency they carried
+  is the baked collection's own correlation to its owner.
+- **Attribution needs a correlation, and that alone closed four sites.** The
+  clustered-outer bake and outer-ref classifier each had two arms: ask the
+  QuantifiedObjectValue child, or slice the display name. Deleting the slice
+  arm cost nothing measurable and removed the invented-alias failure. Worth
+  recording is WHAT the slice arm actually meets in production: not a qualified
+  reference but a rendered aggregate output name, `SUM(AMOUNT+E.REF)`, whose
+  first dot sits inside the operand — the manufactured qualifier is
+  `SUM(AMOUNT+E`. So one feed of this bucket is not a qualification producer at
+  all; it is the CONTRACT bucket's aggregate output-naming authority, and any
+  reader that must *succeed* on such a value (rather than decline it) is gated
+  on item 5, not on a producer conversion here.
+- **The merged-row channel is executor-gated, and this is the STOP.**
+  `ordinal_seed.legRef`'s dot-probe is load-bearing, measured: without it the
+  probe fires on `FieldValue{Field:"A.ID", Child:QOV(S)}` and reports the
+  MERGED correlation S as if it were leg A — the conflation itself. That value
+  is minted by `rule_implement_nested_loop_join.go:2366` and
+  `cascades_translator.go:3612`, which rewrite `QOV(leg).COL` into
+  `QOV(merged)."LEG.COL"` because the FlatMap inner's binder resolves the
+  merged row by that key. The structural form already resolves elsewhere —
+  `concatLegPositionals` stores leg WINDOWS (`RecordType.Legs`) rather than
+  dotted column names, and `spansFromMergedLegs` binds `QOV(leg).col`
+  leg-locally over the merged row for the join-predicate path. So the
+  conversion is teaching the FlatMap inner binder the same trick, which is
+  executor work under its own review gate, not a translator edit. The five
+  readers of this channel (`ordinal_seed.go:761`,
+  `rule_implement_nested_loop_join.go:2332`, `left_outer_existential.go:112`,
+  `box_conjunct.go:149`, `accessor_name_path.go:61`) stay until it lands —
+  producer-first, as this item requires.
+- **Three translator sites may not belong to this bucket.** The dotted
+  qualifier compares in `bakeDottedRefsToLegQOV` and `bakeFlatRefsAgainstColumns`
+  all guard on `Child != nil → bail`, so they see only lazy carriers minted from
+  PARSED text (`p.Projections[i]`, `SortKey.Expr`, `GroupKey.Display`), and each
+  emits a born-baked value — item 4's two legs, on the qualifier segment of one
+  parsed identifier whose leaf segment is already tagged translator. If that
+  reading holds they are name RESOLUTION, and the real defect is upstream and
+  smaller than a bucket: the parser HAS the segments (`SortKey.Bare/Qualifier`,
+  `GroupKey.Bare/Qualifier` are populated and then discarded;
+  `LogicalProject.Projections []string` never had them), joins them, and the
+  resolver splits them back. Deciding this is a bucket move, so it is left for
+  the site-by-site pass rather than taken unilaterally here — but taking them as
+  "producers to convert" would be converting the wrong thing.
+
 **harness (1)** — `rowdiff/ordering.go:241` compares plan sort keys against
 SQL `ORDER BY` text in the conformance oracle. Engine identity rules do not
 apply to the oracle, but the entry stays on the ratchet until the harness is
