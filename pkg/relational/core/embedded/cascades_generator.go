@@ -2303,6 +2303,23 @@ func (d *metadataIndexDef) IndexRowType() values.Type {
 	return executor.PositionalTypeForDescriptor(rts[0].Descriptor)
 }
 
+// IndexRecordTypeRowTypes flows ONE descriptor-shaped positional type per
+// record type the index serves — what covering-column resolution needs when
+// IndexRowType has degraded to Unknown (RFC-197 item 1). Same single authority
+// (executor.PositionalTypeForDescriptor), applied per type instead of only to
+// the single-type case; a type without a descriptor contributes nothing.
+func (d *metadataIndexDef) IndexRecordTypeRowTypes() []values.Type {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	out := make([]values.Type, 0, len(rts))
+	for _, rt := range rts {
+		if rt.Descriptor == nil {
+			continue
+		}
+		out = append(out, executor.PositionalTypeForDescriptor(rt.Descriptor))
+	}
+	return out
+}
+
 func (d *metadataIndexDef) IndexRecordTypes() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
 	names := make([]string, len(rts))

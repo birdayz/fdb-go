@@ -910,10 +910,13 @@ func expandFusedFieldValue(fv *values.FieldValue) []values.Value {
 		prefixAccs := make([]values.ResolvedAccessor, p)
 		copy(prefixAccs, accs[:p])
 		var cur values.Value = &values.FieldValue{
-			Field:    accs[p-1].Field,
-			Typ:      values.UnknownType, // intermediate: never the outermost, Typ unread by matching
-			Child:    fv.Child,
-			Resolved: &values.FieldPath{Accessors: prefixAccs, FrontierPinned: pinned},
+			Field: accs[p-1].Field,
+			Typ:   values.UnknownType, // intermediate: never the outermost, Typ unread by matching
+			Child: fv.Child,
+			// The PREFIX is still rooted at the fused node's root read context,
+			// so it keeps the domain token (RFC-197 step 0) exactly as it
+			// keeps the pin.
+			Resolved: &values.FieldPath{Accessors: prefixAccs, FrontierPinned: pinned, Domain: fv.Resolved.Domain},
 		}
 		for i := p; i < n; i++ {
 			typ := values.Type(values.UnknownType)
@@ -921,9 +924,14 @@ func expandFusedFieldValue(fv *values.FieldValue) []values.Value {
 				typ = fv.Typ // the outermost node keeps the fused node's flowed type
 			}
 			cur = &values.FieldValue{
-				Field:    accs[i].Field,
-				Typ:      typ,
-				Child:    cur,
+				Field: accs[i].Field,
+				Typ:   typ,
+				Child: cur,
+				// No domain: a CHAINED tail step reads a NESTED RECORD served
+				// by the node below it, not a positional row of the fused
+				// node's layout. Inheriting the root's token here would claim
+				// a layout this ordinal does not index — the conflation
+				// OrdinalIn exists to refuse.
 				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{accs[i]}, FrontierPinned: pinned},
 			}
 		}

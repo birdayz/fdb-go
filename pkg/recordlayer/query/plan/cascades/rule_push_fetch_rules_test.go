@@ -422,12 +422,13 @@ func TestMergeProjectionAndFetch_WholeRecordRetainsFetch(t *testing.T) {
 	newSubject := func(t *testing.T, wholeRecord bool) *expressions.Reference {
 		t.Helper()
 		parameterAlias := values.UniqueCorrelationIdentifier()
+		rowType := testRecordRowType("T", "A", "B")
 		candidate := newKnownDistinctValueIndexCandidate(
 			"idx_a",
 			[]string{"T"},
 			[]string{"A"},
 			[]values.CorrelationIdentifier{parameterAlias},
-			values.UnknownType,
+			rowType,
 			false,
 			nil,
 		)
@@ -455,10 +456,9 @@ func TestMergeProjectionAndFetch_WholeRecordRetainsFetch(t *testing.T) {
 		if wholeRecord {
 			projectedValue = values.NewQuantifiedObjectValue(projectionAlias)
 		} else {
-			projectedValue = values.NewFieldValue(
+			projectedValue = testColumnRef(
 				values.NewQuantifiedObjectValue(projectionAlias),
-				"A",
-				values.UnknownType,
+				rowType, "A", values.UnknownType,
 			)
 		}
 		projection := plans.NewRecordQueryProjectionPlanFromQuantifier(

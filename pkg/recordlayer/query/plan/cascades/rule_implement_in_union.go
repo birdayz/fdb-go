@@ -87,7 +87,10 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *properties.Requeste
 			// Single-table branches carry no dups, so this never fires today; it
 			// fences the join-flows-here future.
 			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {
-				out = append(out, values.NewFieldValueWithResolvedOrdinal(fv.Field, idx, fv.Typ))
+				// The ordinal is resolved against rt HERE, so rt is the layout
+				// it indexes and the domain is a proof rather than a claim
+				// (RFC-197 step 0).
+				out = append(out, values.NewFieldValueWithResolvedOrdinalInDomain(fv.Field, idx, fv.Typ, values.OrdinalDomainOfType(rt)))
 				continue
 			}
 		}

@@ -28,6 +28,22 @@ type IndexDefWithRowType interface {
 	IndexRowType() values.Type
 }
 
+// IndexDefWithRecordTypeRowTypes is an optional extension of IndexDef for defs
+// that can state the row layout of EACH record type the index serves.
+//
+// IndexRowType above answers only for a single-record-type index and degrades
+// to UnknownType otherwise, because a multi-type index's rows have no one
+// layout. That degradation is correct for anything that needs THE layout, and
+// useless for covering-column resolution, which needs a per-type answer: an
+// ordinal is meaningful against one type's descriptor and meaningless against
+// another's (RFC-197 item 1). Defs that don't implement this leave a multi-type
+// candidate with no layout at all, which fails closed — the push is declined
+// rather than resolved against a layout that does not exist.
+type IndexDefWithRecordTypeRowTypes interface {
+	IndexDef
+	IndexRecordTypeRowTypes() []values.Type
+}
+
 // IndexDefWithColumnFunctions is an optional extension of IndexDef for indexes
 // whose key columns are not all bare fields. IndexColumnFunctions returns a
 // slice parallel to IndexColumnNames: entry i is the function wrapping the i-th
@@ -152,6 +168,9 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			upperPK,
 			createsDuplicatesSignal,
 		).WithCommonPrimaryKey(commonPK)
+		if perType, ok := def.(IndexDefWithRecordTypeRowTypes); ok {
+			candidate.WithRecordTypeRowTypes(perType.IndexRecordTypeRowTypes())
+		}
 		if rootKeyExpression != nil {
 			candidate.WithRootKeyExpression(rootKeyExpression)
 		}

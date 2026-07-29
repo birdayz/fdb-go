@@ -239,14 +239,22 @@ func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.Tr
 	for _, col := range c.primaryKeyColumns {
 		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
+	// The index definition's column names die HERE, resolved once against the
+	// row layout, exactly as in ValueIndexScanMatchCandidate — see
+	// buildCoveredOrdinalSets and the reasoning at the value-index site.
+	coveredSets := buildCoveredOrdinalSets([]values.Type{c.flowedType}, coveredColumns)
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		switch v := value.(type) {
 		case *values.FieldValue:
-			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
-				return values.NewFieldValue(
+			if ord, domain, covered := pushCoveredOrdinal(coveredSets, v); covered {
+				// The rank-index fetch presents the same descriptor-shaped
+				// partial record the value-index fetch does, so the pushed
+				// reference keeps its proven ordinal rather than degrading to
+				// a lazy name read.
+				return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 					values.NewQuantifiedObjectValue(targetAlias),
-					v.Field, v.Typ,
+					v.Field, ord, v.Typ, domain,
 				), true
 			}
 			return nil, false
