@@ -140,6 +140,61 @@ func (c ColumnIdentity) WithCorrelation(corr CorrelationIdentifier) ColumnIdenti
 	return c
 }
 
+// OrderingIdentityOf is the identity an ORDERING key is addressed by: the
+// correlation its root reads from, the layout that root indexes, and the
+// ordinal within it.
+//
+// This is the resolution Java gets for free. Java's `Ordering` is a
+// `PartiallyOrderedSet<Value>` and a `SetMultimap<Value, Binding>` keyed by
+// `Value.equals` (Ordering.java:176-183, :336) — semantic equality under the
+// EMPTY alias map, so a correlation identifier must match exactly and a
+// display name is never consulted. Go cannot key on the Value itself because
+// the two sides are built by different producers and are not pointer- or
+// structurally-equal even when they name the same column; so the identity is
+// extracted and compared instead of the whole node.
+//
+// It declines — and the caller must then treat the key as UNADDRESSABLE, never
+// fall back to a name — for:
+//
+//   - anything that is not a FieldValue (an arithmetic or function ordering
+//     key has no column identity to state);
+//   - a chained accessor path (more than one accessor, or a non-QOV child):
+//     the root's layout is not the layout the deeper ordinal indexes, exactly
+//     as IdentityIn declines;
+//   - a LAZY node, a negative name-only ordinal, or an unknown domain — the
+//     three shapes where an ordinal comparison would be vacuous or would
+//     address some other layout.
+//
+// The correlation is the element that keeps two quantifiers over the SAME
+// table apart: `o.a` and `i.a` in a self-join share a domain and an ordinal
+// and are different columns. A childless value carries the ZERO correlation,
+// which is Go's canonical source-relative root (see
+// RequestedOrdering.NormalizeRootsTo).
+func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
+	fv, isField := v.(*FieldValue)
+	if !isField || fv == nil {
+		return ColumnIdentity{}, false
+	}
+	var corr CorrelationIdentifier
+	switch child := fv.Child.(type) {
+	case nil:
+	case *QuantifiedObjectValue:
+		corr = child.Correlation
+	default:
+		return ColumnIdentity{}, false
+	}
+	path := fv.Resolved
+	if path == nil || len(path.Accessors) != 1 ||
+		path.Accessors[0].Ordinal < 0 || !path.Domain.IsKnown() {
+		return ColumnIdentity{}, false
+	}
+	return ColumnIdentity{
+		Correlation: corr,
+		Domain:      path.Domain,
+		Ordinal:     path.Accessors[0].Ordinal,
+	}, true
+}
+
 // SameColumnPath reports whether two RESOLVED accessor paths denote the same
 // column. It is the ORDINAL-PATH element of the identity triple asked BETWEEN
 // two references, rather than resolved into a caller's stated layout the way

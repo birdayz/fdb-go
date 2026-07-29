@@ -402,7 +402,7 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	}
 	comps := plan.GetScanComparisons()
 	firstNonEq := equalityPrefixLen(comps, len(pk))
-	keys := pk[firstNonEq:]
+	keys := resolveOrderingColumns(pk[firstNonEq:], plan.GetFlowedType())
 	if len(keys) == 0 {
 		return properties.Ordering{}
 	}
@@ -444,14 +444,67 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	keys := make([]values.Value, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
 	desc := make([]bool, 0, cap(keys))
 	for i := firstNonEq; i < len(columnNames); i++ {
-		keys = append(keys, &values.FieldValue{Field: columnNames[i], Typ: values.UnknownType})
+		keys = append(keys, orderingColumnOfName(p.GetFlowedType(), columnNames[i]))
 		desc = append(desc, rev)
 	}
 	for _, col := range TrimmedPKSuffix(columnNames, pkColumnNames) {
-		keys = append(keys, &values.FieldValue{Field: col, Typ: values.UnknownType})
+		keys = append(keys, orderingColumnOfName(p.GetFlowedType(), col))
 		desc = append(desc, rev)
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// orderingColumnOfName mints an ordering key for a METADATA column name
+// resolved against the layout the plan flows.
+//
+// This is RFC-197's one sanctioned direction for a name: the index's column
+// list names its columns, the name is resolved ONCE against the row type the
+// scan produces, and it dies there — every consumer downstream compares the
+// ORDINAL and the layout token, never the spelling. The display name rides
+// along for Explain only.
+//
+// A layout with no declared column order (a multi-record-type index's degraded
+// row type, UnknownType) or a name the layout does not declare yields a LAZY
+// key, which no identity-keyed consumer can address. That is the fail-closed
+// direction: the ordering claim is dropped, costing a sort, rather than being
+// stated in terms nothing can verify.
+func orderingColumnOfName(layout values.Type, name string) values.Value {
+	if ident, ok := values.OrdinalOfNameIn(layout, name); ok {
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			name, ident.Ordinal, values.UnknownType, ident.Domain)
+	}
+	return &values.FieldValue{Field: name, Typ: values.UnknownType}
+}
+
+// resolveOrderingColumns re-mints an already-Value-shaped key list against the
+// layout the plan flows, so a key that arrived as a LAZY flat field carries its
+// ordinal and layout token like every other provided key.
+//
+// A key that is not a bare flat field (a RecordTypeValue constant, a nested or
+// composite component) is passed through untouched: it has no single-ordinal
+// identity to state, and inventing one is the ordinal conflation the domain
+// token exists to prevent. An ALREADY-baked key is left alone — re-resolving it
+// by name would undo whatever producer knew better.
+func resolveOrderingColumns(keys []values.Value, layout values.Type) []values.Value {
+	out := make([]values.Value, len(keys))
+	for i, k := range keys {
+		fv, isField := k.(*values.FieldValue)
+		if !isField || fv.Child != nil || fv.Resolved != nil {
+			out[i] = k
+			continue
+		}
+		ident, resolved := values.OrdinalOfNameIn(layout, fv.Field)
+		if !resolved {
+			// Keep the producer's own node. Re-minting a fresh lazy copy would
+			// change nothing an identity consumer can see and would break the
+			// node identity callers downstream still rely on.
+			out[i] = k
+			continue
+		}
+		out[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			fv.Field, ident.Ordinal, fv.Typ, ident.Domain)
+	}
+	return out
 }
 
 // TrimmedPKSuffix returns the primary-key columns not already present in the
@@ -719,7 +772,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
-	for i, key := range pk {
+	for i, key := range resolveOrderingColumns(pk, p.GetFlowedType()) {
 		keys = append(keys, key)
 		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
@@ -763,7 +816,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		dir = properties.ProvidedSortOrderDescending
 	}
 	for i, col := range columnNames {
-		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
 		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
@@ -772,7 +825,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		}
 	}
 	for _, col := range TrimmedPKSuffix(columnNames, pkColumnNames) {
-		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
