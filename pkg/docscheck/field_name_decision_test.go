@@ -135,15 +135,17 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// and a bucket that reaches zero is the shape every other bucket is aiming
 	// for.
 
-	// escape (8)
-	"pkg/relational/core/query/cascades_translator.go:7407":                       {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3705": {1, "escape: fieldValueAliasAndCol's dotted-split arm returns (qualifier, leaf) off a local holding the upper-cased name; one of the seven, and invisible until a local hop counted as a name read"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3707": {1, "escape: same function, childless bare arm -- returns the whole upper-cased name as the column"},
-	"pkg/relational/core/embedded/cascades_generator.go:3745":                     {1, "escape: gatheredExplodeElement hands the collection FieldValue's leaf name out as its second result; callers match it by name against the flowed row"},
-	"pkg/relational/core/embedded/cascades_generator.go:3749":                     {1, "escape: same function, no-element-type arm"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3691": {1, "escape: returns (alias, column) as bare uppercased strings"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3735": {1, "escape: bareColumnName, QOV arm"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3741": {1, "escape: bareColumnName, flat-string fallback arm"},
+	// escape (3) -- the NLJ cluster MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
+	// and bareColumnName are gone: the join fast path asks a value for its
+	// CORRELATION (structurally, from its QuantifiedObjectValue child) and matches
+	// the inner key column by IDENTITY against the metadata name resolved once
+	// into the inner leg's row layout. The three entries this removed were one
+	// helper's three arms; the two bareColumnName entries went with the lazy
+	// construction arm that produced them, which built an operand the executor
+	// cannot evaluate.
+	"pkg/relational/core/query/cascades_translator.go:7407":   {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
+	"pkg/relational/core/embedded/cascades_generator.go:3745": {1, "escape: gatheredExplodeElement hands the collection FieldValue's leaf name out as its second result; callers match it by name against the flowed row"},
+	"pkg/relational/core/embedded/cascades_generator.go:3749": {1, "escape: same function, no-element-type arm"},
 
 	// contract (11)
 	//

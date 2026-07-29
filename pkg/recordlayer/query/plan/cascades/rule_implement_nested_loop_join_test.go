@@ -358,18 +358,27 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 	outerAlias := values.NamedCorrelationIdentifier("O")
 	innerAlias := values.NamedCorrelationIdentifier("I")
 
-	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
-	outerRef := expressions.InitialOf(outerScan)
-	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+	// Both legs flow their declared row type, and both comparands are baked
+	// against it. The index shortcut resolves the candidate's first column name
+	// against the inner leg's layout once and then compares ordinals, so an
+	// untyped leg has no layout to resolve in and declines before candidate
+	// selection is ever reached — which would make this test pass for the wrong
+	// reason (nothing selected because nothing was tried).
+	outerRowType := values.Type(nljTestLayouts["OUTER"])
+	innerRowType := values.Type(nljTestLayouts["INNERFK"])
 
-	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, outerRowType)
+	outerRef := expressions.InitialOf(outerScan)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, outerRowType, false))
+
+	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, innerRowType)
 	innerRef := expressions.InitialOf(innerScan)
-	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, innerRowType, false))
 
 	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
 	innerQ := expressions.NamedExistentialQuantifier(innerAlias, innerRef)
-	outerID := values.NewFieldValue(values.NewQuantifiedObjectValue(outerAlias), "ID", values.UnknownType)
-	innerFK := values.NewFieldValue(values.NewQuantifiedObjectValue(innerAlias), "FK", values.UnknownType)
+	outerID := nljBakedRef(t, "OUTER", outerAlias, "ID")
+	innerFK := nljBakedRef(t, "INNERFK", innerAlias, "FK")
 	joinPredicate := predicates.NewComparisonPredicate(
 		innerFK,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID},
@@ -597,37 +606,321 @@ func fusedNestedFieldValue(alias values.CorrelationIdentifier, parent, leaf stri
 	}
 }
 
-// TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName pins the
-// wrong-rows hole fixed in fieldValueAliasAndCol: a fused multi-accessor bake
-// (Child=QOV directly, Resolved=[ADDRESS, ID], Field="ID") passes the
-// Child==QOV check while fv.Field is only the LEAF name — a nested
-// `i.address.id` must not be reported as a bare top-level "I.ID" reference,
-// or matchJoinPKPredicate would mistake it for a real PK equi-join.
-func TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName(t *testing.T) {
+// TestLegCorrelationOf_DeclinesFusedNestedSameLeafName pins the wrong-rows
+// hole the old fieldValueAliasAndCol's bare-column allowlist guarded: a fused
+// multi-accessor bake (Child=QOV directly, Resolved=[ADDRESS, ID],
+// Field="ID") passes the Child==QOV check while still reading a NESTED
+// record's column, so the quantifier's row is not the layout its leaf names.
+// Reporting the root quantifier would let `i.address.id` stand in for a bare
+// top-level `I.ID` reference in matchJoinPKPredicate.
+func TestLegCorrelationOf_DeclinesFusedNestedSameLeafName(t *testing.T) {
 	t.Parallel()
 
 	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier("I"), "ADDRESS", "ID")
-	alias, col := fieldValueAliasAndCol(fused)
-	if alias != "" || col != "" {
-		t.Fatalf(`fieldValueAliasAndCol(fused I.ADDRESS.ID) = (%q, %q), want ("", "") — `+
-			"a nested reference must never impersonate a bare top-level column sharing its leaf name", alias, col)
+	if leg, ok := legCorrelationOf(fused); ok {
+		t.Fatalf("legCorrelationOf(fused I.ADDRESS.ID) = (%v, true), want ok=false — "+
+			"a nested reference must never report the root quantifier as the leg it reads", leg)
 	}
 }
 
-// TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn is the accept-direction
-// companion: a genuine bare top-level reference (Child=QOV, no Resolved path,
-// or a single-accessor Resolved path) must still resolve to its alias and
-// column — the fix must decline ONLY the fused nested shape, not every
-// Child=QOV reference.
-func TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn(t *testing.T) {
+// TestLegCorrelationOf_AcceptsBareTopLevelColumn is the accept-direction
+// companion: a genuine bare top-level reference must still report its leg, so
+// the decline above is specific to the fused shape rather than a blanket
+// refusal that would silently disable the fast path.
+func TestLegCorrelationOf_AcceptsBareTopLevelColumn(t *testing.T) {
 	t.Parallel()
 
-	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
-	alias, col := fieldValueAliasAndCol(bare)
-	if alias != "I" || col != "ID" {
-		t.Fatalf(`fieldValueAliasAndCol(bare I.ID) = (%q, %q), want ("I", "ID") — `+
-			"the fix must not over-decline a genuine bare top-level reference", alias, col)
+	bare := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	leg, ok := legCorrelationOf(bare)
+	if !ok || leg.String() != "I" {
+		t.Fatalf("legCorrelationOf(bare I.ID) = (%v, %v), want (I, true) — "+
+			"the decline must not over-reach to ordinary references", leg, ok)
 	}
+}
+
+// TestReadsKeyColumn_Dimensions is the identity comparison that replaced the
+// leaf-name match, probed on each element of RFC-197's triple SEPARATELY.
+//
+// Each case differs from the accepted one in exactly ONE element, so a
+// mutation that drops that element is caught here and nowhere else. That
+// separation is the point: on the explaindiff corpus the domain check and the
+// correlation check reject the same predicates, so a corpus-only check cannot
+// tell which of the two is doing the work, and a fix satisfying only one of
+// them would measure as complete.
+func TestReadsKeyColumn_Dimensions(t *testing.T) {
+	t.Parallel()
+
+	innerLayout := nljTestLayouts["INNER"]
+	innerFrontier := values.OrdinalDomainOfType(innerLayout)
+	innerCorr := values.NamedCorrelationIdentifier("I")
+
+	// The inner table's primary key, resolved once against the inner leg's own
+	// layout — the boundary rule, and the only place the name is legitimate.
+	keyIdent, ok := values.OrdinalOfNameIn(innerLayout, "ID")
+	if !ok {
+		t.Fatal("setup: INNER.ID must resolve against INNER's own layout")
+	}
+
+	t.Run("accepts the real key column", func(t *testing.T) {
+		t.Parallel()
+		ref := nljBakedRef(t, "INNER", innerCorr, "ID")
+		if !readsKeyColumn(ref, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("I.ID must match INNER's primary key ID — over-declining silently disables the probe")
+		}
+	})
+
+	t.Run("declines a same-named column of another quantifier", func(t *testing.T) {
+		t.Parallel()
+		// O.ID: same leaf name, same ordinal (0), DIFFERENT correlation and
+		// domain. This is the shape the name-keyed proof could not see at all.
+		ref := nljBakedRef(t, "OUTER", values.NamedCorrelationIdentifier("O"), "ID")
+		if readsKeyColumn(ref, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("O.ID matched INNER's primary key — two columns sharing a leaf name " +
+				"were treated as one, which is the whole bug class RFC-197 exists to end")
+		}
+	})
+
+	t.Run("declines a same-DOMAIN same-ordinal column of another quantifier", func(t *testing.T) {
+		t.Parallel()
+		// A self-join: baked against INNER's OWN layout, so the domain and the
+		// ordinal both agree with the key, and only the correlation says this
+		// reads a DIFFERENT INNER row. The `O.ID` case above cannot isolate the
+		// correlation because OUTER's domain differs too and the frontier gate
+		// rejects it first — measured: dropping the correlation check alone
+		// left every other case in this suite green.
+		otherLeg := nljBakedRef(t, "INNER", values.NamedCorrelationIdentifier("I2"), "ID")
+		if readsKeyColumn(otherLeg, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("a reference to ANOTHER INNER row matched this leg's primary key — " +
+				"ordinal 0 of two quantifiers are different columns, which is the " +
+				"element a pair of (name, ordinal) can never carry")
+		}
+	})
+
+	t.Run("declines a same-ordinal column of another DOMAIN, correlation held equal", func(t *testing.T) {
+		t.Parallel()
+		// Baked against SHADOW, whose "ID" is also ordinal 0, but stamped with
+		// the INNER correlation. Correlation and ordinal both AGREE with the
+		// key; only the domain differs. Dropping the domain check accepts this
+		// and nothing else in the suite notices.
+		ref := nljBakedRef(t, "SHADOW", innerCorr, "ID")
+		if readsKeyColumn(ref, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("a SHADOW-domain ordinal 0 matched INNER's ordinal-0 primary key — " +
+				"an ordinal compared across layouts is the same conflation as a name, " +
+				"wearing a type that reads as authoritative")
+		}
+	})
+
+	t.Run("declines a same-domain non-key column", func(t *testing.T) {
+		t.Parallel()
+		// I.OUTER_ID: right leg, right layout, WRONG column. Pins that the
+		// comparison is to the key's ordinal and not merely to "some resolved
+		// column of the inner leg".
+		ref := nljBakedRef(t, "INNER", innerCorr, "OUTER_ID")
+		if readsKeyColumn(ref, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("I.OUTER_ID matched INNER's primary key ID — the probe would be built " +
+				"on a non-key column and narrow the scan to the wrong records")
+		}
+	})
+
+	t.Run("declines when the key was resolved in a DIFFERENT layout than the frontier", func(t *testing.T) {
+		t.Parallel()
+		// readsKeyColumn takes the frontier and the resolved key as two
+		// INDEPENDENT arguments, and they are only meaningful together: a key
+		// ordinal resolved in SHADOW says nothing about a comparand's ordinal
+		// in INNER. The frontier gate inside CorrelatedIdentityIn cannot catch
+		// this one — the comparand is a perfectly good INNER reference — so the
+		// agreement between the two arguments is checked explicitly.
+		//
+		// This is the guard that keeps the per-site proof a predicate the
+		// function checks rather than a comment the next caller does not read.
+		shadowLayout := nljTestLayouts["SHADOW"]
+		shadowKey, ok := values.OrdinalOfNameIn(shadowLayout, "ID")
+		if !ok {
+			t.Fatal("setup: SHADOW.ID must resolve against SHADOW's layout")
+		}
+		ref := nljBakedRef(t, "INNER", innerCorr, "ID")
+		if readsKeyColumn(ref, innerCorr, shadowKey, innerFrontier) {
+			t.Fatal("a key resolved in SHADOW's layout was matched against a comparand's " +
+				"ordinal in INNER's — two ordinals from different layouts are not comparable, " +
+				"and agreeing by accident is what the domain element exists to prevent")
+		}
+	})
+
+	t.Run("declines a LAZY reference to the key column", func(t *testing.T) {
+		t.Parallel()
+		// Right name, right leg, no resolved ordinal at all. There is nothing
+		// to compare, so it fails closed rather than falling back to the name
+		// it still carries.
+		ref := values.NewFieldValue(values.NewQuantifiedObjectValue(innerCorr), "ID", values.UnknownType)
+		if readsKeyColumn(ref, innerCorr, keyIdent, innerFrontier) {
+			t.Fatal("a lazy I.ID matched the primary key — the only thing it could have " +
+				"matched on is its display name")
+		}
+	})
+}
+
+// TestOrdinalOfNameIn_KeyResolutionIsCaseInsensitiveAndFailsClosed pins the
+// boundary itself. The metadata layer names its columns and that name is
+// resolved ONCE, here; if this resolution silently declined, every caller
+// downstream would decline too and the fast path would vanish without a
+// failing test — the quiet-regression shape RFC-197 warns about.
+func TestOrdinalOfNameIn_KeyResolutionIsCaseInsensitiveAndFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	innerLayout := nljTestLayouts["INNER"]
+
+	if id, ok := values.OrdinalOfNameIn(innerLayout, "id"); !ok || id.Ordinal != 0 {
+		t.Fatalf(`OrdinalOfNameIn(INNER, "id") = (%v, %v), want ordinal 0 — `+
+			"metadata column lists do not agree with a record type's spelling on case", id, ok)
+	}
+	if id, ok := values.OrdinalOfNameIn(innerLayout, "NO_SUCH_COLUMN"); ok {
+		t.Fatalf("OrdinalOfNameIn resolved a column INNER does not declare: %v", id)
+	}
+	if id, ok := values.OrdinalOfNameIn(values.UnknownType, "ID"); ok {
+		t.Fatalf("OrdinalOfNameIn resolved against a layout with no declared column order: %v", id)
+	}
+}
+
+// TestCorrelatedFastPathOperand_DeclinesLazyOuterRef pins a NEGATIVE result,
+// and states what re-arms if it changes.
+//
+// The lazy arm used to rebuild the outer comparand as a bare
+// `QOV(outer).<name>`. That is not a weaker operand, it is an UNEVALUABLE one:
+// FieldValue.evaluateOrdinal has no runtime name-resolution fallback and
+// returns OrdinalResolutionError{Ordinal: -1} for any unbaked reference
+// (values.go:789-793). So the arm could only ever have produced a plan that
+// fails loud at execution, which is why nothing in the corpus reaches it —
+// not because the shape cannot occur, but because a query that took it would
+// not have survived.
+//
+// If a runtime name read is ever introduced, this test keeps failing until
+// someone decides deliberately whether the fast path may build one. It must
+// not be "fixed" by re-adding the lazy construction.
+func TestCorrelatedFastPathOperand_DeclinesLazyOuterRef(t *testing.T) {
+	t.Parallel()
+
+	outerCorr := values.NamedCorrelationIdentifier("O")
+	lazy := values.NewFieldValue(values.NewQuantifiedObjectValue(outerCorr), "ID", values.UnknownType)
+	if operand, ok := correlatedFastPathOperand(lazy, outerCorr); ok {
+		t.Fatalf("correlatedFastPathOperand built %v from a LAZY outer reference — "+
+			"an unbaked reference has no ordinal, and the executor has no name fallback "+
+			"to give it one; the fast path must decline and let the general "+
+			"correlated path rebase the reference", operand)
+	}
+
+	// Accept direction: a source-relative bake still transfers, carrying its
+	// ordinal. Without this the decline above could be satisfied by refusing
+	// everything.
+	baked := nljBakedRef(t, "OUTER", outerCorr, "ID")
+	operand, ok := correlatedFastPathOperand(baked, outerCorr)
+	if !ok {
+		t.Fatal("correlatedFastPathOperand declined a SOURCE-RELATIVE baked outer reference — " +
+			"that is the arm the whole fast path runs on")
+	}
+	built, isFV := operand.(*values.FieldValue)
+	if !isFV || built.Resolved == nil || built.Resolved.Root().Ordinal != 0 {
+		t.Fatalf("rebuilt operand %#v lost its ordinal — the ordinal IS the identity here; "+
+			"the display name beside it decides nothing", operand)
+	}
+}
+
+// TestMatchJoinPKPredicate_BuriedLegHasNoBareNameBackDoor pins the decline
+// that made matchJoinPKPredicate's removed "deep-flowed" arms dead.
+//
+// Those arms accepted an outer comparand on ANY leg other than the inner one,
+// so a re-enumerated multi-way chain could probe through a table buried inside
+// the outer sub-join by reading it off the merged row under its bare name.
+// They could never do that: both call sites hand every accepted comparand to
+// outerValRefsBuriedLeg, which declines exactly the legs those arms alone
+// admitted, so no rewrite they accepted could be yielded.
+//
+// What re-arms if this changes: relaxing outerValRefsBuriedLeg would make a
+// bare-name read of a merged row reachable again, and on a colliding column
+// name that is last-leg-wins — wrong rows, not a worse plan. The capability
+// belongs to the below-FOD rebase, which rewrites a buried reference to a
+// qualified key or a baked ordinal; it does not belong to a name read here.
+func TestMatchJoinPKPredicate_BuriedLegHasNoBareNameBackDoor(t *testing.T) {
+	t.Parallel()
+
+	outerCorr := values.NamedCorrelationIdentifier("O")
+	buriedCorr := values.NamedCorrelationIdentifier("BURIED")
+
+	buried := nljBakedRef(t, "OUTER", buriedCorr, "ID")
+	if !outerValRefsBuriedLeg(buried, outerCorr) {
+		t.Fatal("outerValRefsBuriedLeg accepted a comparand on a leg that is neither the " +
+			"outer nor the inner one — the fast path rebuilds the probe as " +
+			"QOV(outerAlias).<col>, which reads the merged row's rightmost leg, " +
+			"so accepting a buried leg is a wrong-rows rewrite")
+	}
+	// Fails CLOSED: a comparand whose leg cannot even be stated is treated as
+	// buried, because "which leg does this read" is the question that has to be
+	// answered before the probe may be rebuilt.
+	unstateable := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if !outerValRefsBuriedLeg(unstateable, outerCorr) {
+		t.Fatal("outerValRefsBuriedLeg accepted a comparand with no stateable leg")
+	}
+	// Accept direction, so the decline cannot be satisfied by refusing all.
+	own := nljBakedRef(t, "OUTER", outerCorr, "ID")
+	if outerValRefsBuriedLeg(own, outerCorr) {
+		t.Fatal("outerValRefsBuriedLeg declined a reference to the outer leg itself")
+	}
+}
+
+// nljTestLayouts are the declared column orders the EXISTS-shortcut scenarios
+// resolve against. Stating them is the point of RFC-197: an ordinal means
+// nothing without the layout it indexes, and the inner leg's layout is where
+// the inner table's primary-key NAME is resolved exactly once.
+//
+// OUTER and INNER deliberately BOTH declare a column named "ID" at ordinal 0.
+// That is the dimension every name-keyed proof in this file was blind to: with
+// the leaf name as the key the two are one column, and with the ordinal alone
+// (no domain, no correlation) they are still one column. Only the full triple
+// tells them apart.
+var nljTestLayouts = map[string]*values.RecordType{
+	"OUTER": nljTestLayout("OUTER", "ID", "CATEGORY"),
+	"INNER": nljTestLayout("INNER", "ID", "OUTER_ID"),
+	// SHADOW has "ID" at ordinal 0 exactly as INNER does, so an operand baked
+	// against it is ordinal-equal and correlation-equal to a real INNER.ID
+	// reference and differs ONLY in the domain. It is what isolates the domain
+	// check from the correlation check under mutation.
+	"SHADOW": nljTestLayout("SHADOW", "ID", "NOTE"),
+	// The inner leg of the secondary-index shortcut scenario, whose join key
+	// is a foreign key rather than the primary key.
+	"INNERFK": nljTestLayout("INNER", "FK", "STATUS", "TAGS"),
+}
+
+func nljTestLayout(name string, cols ...string) *values.RecordType {
+	fields := make([]values.Field, len(cols))
+	for i, c := range cols {
+		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+	}
+	return values.NewRecordType(name, false, fields)
+}
+
+// nljBakedRef builds the production shape of a resolved column reference:
+// correlated to alias, carrying the ordinal the column has in rt's declared
+// column order, and stamped with rt's domain (the SQL resolver's
+// sourceColumnOrdinal derives ordinal and domain in one breath). A column rt
+// does not declare stays LAZY, which is what a reference outside that row
+// really looks like and what the identity proofs decline.
+func nljBakedRef(t *testing.T, rt string, alias values.CorrelationIdentifier, field string) *values.FieldValue {
+	t.Helper()
+	layout, known := nljTestLayouts[rt]
+	if !known {
+		t.Fatalf("setup: no layout registered for %q", rt)
+	}
+	ord, found := layout.FieldIndex(field)
+	if !found {
+		return &values.FieldValue{
+			Field: field, Typ: values.UnknownType,
+			Child: values.NewQuantifiedObjectValue(alias),
+		}
+	}
+	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(alias), field, ord, values.UnknownType,
+		values.OrdinalDomainOfType(layout),
+	)
 }
 
 // buildExistsPKShortcutScenario assembles `SELECT * FROM OUTER O WHERE
@@ -635,27 +928,49 @@ func TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn(t *testing.T) {
 // tryExistsFlatMap's PK-shortcut branch tries to rewrite into a correlated
 // PK-narrowed scan. The inner table's declared primary key is the flat
 // top-level column "ID" (via pkGateTestCtx).
+//
+// Both leaf scans flow their table's declared row type. A leaf that flowed
+// UnknownType would have no domain, and the whole fast path fails closed on
+// that — so an untyped scenario could not distinguish "declined because the
+// identity says no" from "declined because there was no layout to ask", which
+// is precisely the confusion the mutation checks have to avoid.
 func buildExistsPKShortcutScenario(t *testing.T, innerOperand *values.FieldValue) []expressions.RelationalExpression {
+	t.Helper()
+	return buildExistsPKShortcutScenarioWithOuter(t, innerOperand, nil)
+}
+
+// buildExistsPKShortcutScenarioWithOuter is buildExistsPKShortcutScenario with
+// the OUTER-side comparand supplied too; nil means the ordinary baked O.ID.
+func buildExistsPKShortcutScenarioWithOuter(
+	t *testing.T,
+	innerOperand *values.FieldValue,
+	outerOperand *values.FieldValue,
+) []expressions.RelationalExpression {
 	t.Helper()
 
 	outerAlias := values.NamedCorrelationIdentifier("O")
 	innerAlias := values.NamedCorrelationIdentifier("I")
 
-	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
-	outerRef := expressions.InitialOf(outerScan)
-	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+	outerRowType := values.Type(nljTestLayouts["OUTER"])
+	innerRowType := values.Type(nljTestLayouts["INNER"])
 
-	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, outerRowType)
+	outerRef := expressions.InitialOf(outerScan)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, outerRowType, false))
+
+	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, innerRowType)
 	innerRef := expressions.InitialOf(innerScan)
-	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, innerRowType, false))
 
 	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
 	innerQ := expressions.NamedExistentialQuantifier(innerAlias, innerRef)
 
-	outerID := values.NewFieldValue(values.NewQuantifiedObjectValue(outerAlias), "ID", values.UnknownType)
+	if outerOperand == nil {
+		outerOperand = nljBakedRef(t, "OUTER", outerAlias, "ID")
+	}
 	joinPredicate := predicates.NewComparisonPredicate(
 		innerOperand,
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerOperand},
 	)
 	selectExpr := expressions.NewSelectExpressionWithAliases(
 		values.NewQuantifiedObjectValue(outerAlias),
@@ -699,9 +1014,71 @@ func anyScanCarriesComparisons(t *testing.T, results []expressions.RelationalExp
 	return found
 }
 
+// TestImplementNestedLoopJoin_ExistsPKShortcutDimensions carries the identity
+// dimensions up to the RULE level, where the consequence is a plan rather than
+// a boolean: the inner scan either gets narrowed to a correlated probe or it
+// does not.
+func TestImplementNestedLoopJoin_ExistsPKShortcutDimensions(t *testing.T) {
+	t.Parallel()
+
+	innerCorr := values.NamedCorrelationIdentifier("I")
+	outerCorr := values.NamedCorrelationIdentifier("O")
+
+	t.Run("declines a same-named column of the OUTER leg on the inner side", func(t *testing.T) {
+		t.Parallel()
+		// `O.ID = O.ID`: the "inner" side is really an OUTER reference that
+		// merely spells its column the way INNER's primary key is spelled.
+		// Under a leaf-name match this is a PK equi-join and the rule builds a
+		// correlated probe of INNER on a value that never reads INNER at all.
+		results := buildExistsPKShortcutScenarioWithOuter(t,
+			nljBakedRef(t, "OUTER", outerCorr, "ID"),
+			nljBakedRef(t, "OUTER", outerCorr, "ID"))
+		if anyScanCarriesComparisons(t, results) {
+			t.Fatal("EXISTS PK shortcut fired on an OUTER reference sharing the inner PK's " +
+				"leaf name — the probe narrows INNER by a column of a different table")
+		}
+	})
+
+	t.Run("declines a same-named column of another DOMAIN under the inner alias", func(t *testing.T) {
+		t.Parallel()
+		// Correlated to I and ordinal 0, exactly like a real I.ID, but baked
+		// against SHADOW's layout. Only the domain separates it from the
+		// accepted case, so this is what a domain-dropped mutation reaches.
+		results := buildExistsPKShortcutScenario(t, nljBakedRef(t, "SHADOW", innerCorr, "ID"))
+		if anyScanCarriesComparisons(t, results) {
+			t.Fatal("EXISTS PK shortcut fired on an ordinal baked against a different layout — " +
+				"the probe's slot was chosen in a row the inner leg does not flow")
+		}
+	})
+
+	t.Run("declines a same-domain NON-key column", func(t *testing.T) {
+		t.Parallel()
+		// I.OUTER_ID is a genuine, correctly-baked inner column — it is simply
+		// not the primary key. The shortcut may only narrow a scan by the key
+		// it claims to be probing.
+		results := buildExistsPKShortcutScenario(t, nljBakedRef(t, "INNER", innerCorr, "OUTER_ID"))
+		if anyScanCarriesComparisons(t, results) {
+			t.Fatal("EXISTS PK shortcut fired on a non-key inner column — the correlated " +
+				"scan would be narrowed by the wrong column")
+		}
+	})
+
+	t.Run("fires on the real key column", func(t *testing.T) {
+		t.Parallel()
+		results := buildExistsPKShortcutScenario(t, nljBakedRef(t, "INNER", innerCorr, "ID"))
+		if len(results) == 0 {
+			t.Fatal("setup: expected at least one physical alternative")
+		}
+		if !anyScanCarriesComparisons(t, results) {
+			t.Fatal("EXISTS PK shortcut did not fire on a genuine baked PK equi-join — " +
+				"the identity conversion must not over-decline the case the shortcut exists for")
+		}
+	})
+}
+
 // TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName
-// pins the wrong-rows hazard fieldValueAliasAndCol's bare-column allowlist
-// guards against at the RULE level, not just the matcher unit: an EXISTS join
+// pins the wrong-rows hazard the bare-column allowlist guards against at the
+// RULE level, not just the matcher unit: an EXISTS join
 // predicate whose INNER operand is a FUSED nested reference (i.address.id)
 // sharing its LEAF name with the inner table's own top-level primary key
 // ("ID") must NOT be mistaken for a PK equi-join and used to build a
@@ -730,7 +1107,7 @@ func TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName
 func TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn(t *testing.T) {
 	t.Parallel()
 
-	innerID := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	innerID := nljBakedRef(t, "INNER", values.NamedCorrelationIdentifier("I"), "ID")
 	results := buildExistsPKShortcutScenario(t, innerID)
 	if len(results) == 0 {
 		t.Fatal("setup: expected at least one physical alternative from ImplementNestedLoopJoinRule")

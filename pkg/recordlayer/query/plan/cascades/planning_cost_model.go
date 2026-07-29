@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
-	"strings"
 	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -2251,8 +2250,35 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	if len(pkCols) == 0 {
 		return false
 	}
-	// Collect the field names the filter constrains by equality.
-	eqFields := make(map[string]struct{})
+	// The scanned row's own layout. Every ordinal below is stated in it, and
+	// the primary key's metadata names are resolved against it exactly once.
+	// Unknown means there is no declared column order to state the proof in, so
+	// the probe declines rather than falling back to the names it still has.
+	layout := scan.GetResultType()
+	frontier := values.OrdinalDomainOfType(layout)
+	if !frontier.IsKnown() {
+		return false
+	}
+	// Collect the columns the filter constrains by equality, BY IDENTITY.
+	//
+	// Keying this set by leaf name conflated a correlated OUTER reference with
+	// the scanned record's own primary key whenever the two tables happen to
+	// share a column name — the overwhelmingly common case, since `ID` is the
+	// PK of nearly every table. `EXISTS (SELECT 1 FROM orders o WHERE p.id =
+	// o.product_id)` put `p.ID` (a reference to the PRODUCTS row) into the set,
+	// ORDERS' primary key `ID` found it there, and a full ORDERS scan was
+	// declared a one-record point probe. That is criterion #2 handed a
+	// cardinality bound of 1 for an unbounded access, which is exactly the
+	// mis-ranking this bound exists to prevent, pointed the other way.
+	//
+	// An operand qualifies only if it reads THIS scan's row: its ordinal must
+	// index this layout (the domain check), and its correlation must be the
+	// filter's own inner quantifier. A CHILDLESS operand carries the zero
+	// correlation, which by the ColumnIdentity contract means "the value's own
+	// source" — that is this row, so it qualifies; a QOV rooted at any OTHER
+	// quantifier is an outer reference and does not.
+	innerAlias := pl.GetInnerAlias()
+	eqColumns := make(map[values.ColumnIdentity]struct{})
 	for _, pred := range pl.GetPredicates() {
 		cp, ok := pred.(*predicates.ComparisonPredicate)
 		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
@@ -2262,11 +2288,23 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 		if !ok {
 			continue
 		}
-		_, col := fieldValueAliasAndCol(fv)
-		eqFields[strings.ToUpper(col)] = struct{}{}
+		id, ok := fv.IdentityIn(frontier)
+		if !ok {
+			continue
+		}
+		if !id.Correlation.IsZero() && id.Correlation != innerAlias {
+			continue
+		}
+		eqColumns[id.WithCorrelation(values.CorrelationIdentifier{})] = struct{}{}
 	}
 	for _, pk := range pkCols {
-		if _, ok := eqFields[strings.ToUpper(pk)]; !ok {
+		// The metadata name dies here (Java's FieldValue.resolveFieldPath,
+		// FieldValue.java:270-298); downstream only the ordinal is compared.
+		want, ok := values.OrdinalOfNameIn(layout, pk)
+		if !ok {
+			return false
+		}
+		if _, ok := eqColumns[want]; !ok {
 			return false
 		}
 	}

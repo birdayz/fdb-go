@@ -329,6 +329,7 @@ go_test(
         "planning_cost_model_hash_test.go",
         "planning_cost_model_rungs_test.go",
         "planning_cost_model_test.go",
+        "point_probe_identity_test.go",
         "point_probe_proof_agreement_test.go",
         "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
@@ -948,6 +949,7 @@ go_test(
         "covered_ordinals.go",
         "windowed_index_covered_ordinal_test.go",
         "group_pullup_ordinal_domain_test.go",
+        "point_probe_identity_test.go",
     ],
     deps = [
         "//gen",

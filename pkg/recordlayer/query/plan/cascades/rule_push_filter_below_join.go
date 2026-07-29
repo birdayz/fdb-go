@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -155,19 +153,24 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 //   - 1 if it only references alias1
 //   - -1 if it references both, neither, or has no FieldValue refs
 func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) int {
-	upper0 := strings.ToUpper(alias0)
-	upper1 := strings.ToUpper(alias1)
+	corr0 := values.NamedCorrelationIdentifier(alias0)
+	corr1 := values.NamedCorrelationIdentifier(alias1)
 
 	refs0, refs1 := false, false
 	foundAnyField := false
 
+	// Which SIDE a reference belongs to is a question about its CORRELATION —
+	// the quantifier whose row it reads — not about the column it names.
 	walkPredicateFieldValues(pred, func(fv *values.FieldValue) {
 		foundAnyField = true
-		fvAlias, _ := fieldValueAliasAndCol(fv)
-		if fvAlias == upper0 {
+		leg, ok := legCorrelationOf(fv)
+		if !ok {
+			return
+		}
+		if sameLeg(leg, corr0) {
 			refs0 = true
 		}
-		if fvAlias == upper1 {
+		if sameLeg(leg, corr1) {
 			refs1 = true
 		}
 	})
