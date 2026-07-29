@@ -126,3 +126,42 @@ func TestCoveredOrdinalSets_UnknownLayoutFailsClosed(t *testing.T) {
 		t.Fatalf("A.Y answered %d — an uncovered ordinal must not be rescued by another type's set", ord)
 	}
 }
+
+// The CORRELATION element on the rank candidate, on the axis only it can
+// decide: two quantifiers over ONE table share a layout token, so the domain
+// and ordinal checks pass for both references and the site would rebase the
+// foreign one onto the fetch target — reading this row's index entry for
+// another row's column. Same shape, same reasoning, same refusal as the
+// value-index candidate.
+func TestWindowedCandidate_ForeignQuantifierDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	rowType := testRecordRowType("LEADER", "ID", "SCORE", "TEAM")
+	q1 := values.NamedCorrelationIdentifier("q1")
+	q2 := values.NamedCorrelationIdentifier("q2")
+	tgt := values.NamedCorrelationIdentifier("TGT")
+	c := NewWindowedIndexScanMatchCandidate(
+		"leader$score",
+		[]string{"LEADER"},
+		[]string{"SCORE"},
+		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+		values.UniqueCorrelationIdentifier(),
+		values.UniqueCorrelationIdentifier(),
+		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+		nil,
+		rowType,
+		false,
+		[]string{"ID"},
+	)
+
+	foreign := testColumnRef(values.NewQuantifiedObjectValue(q2), rowType, "SCORE", values.UnknownType)
+	if out, ok := c.PushValueThroughFetch(foreign, q1, tgt); ok {
+		t.Fatalf("another quantifier's SCORE must not push through q1's rank fetch — only the "+
+			"correlation separates the two, got %#v", out)
+	}
+	// The same value pushes through its OWN quantifier's fetch, so the refusal
+	// above is the pairing and not some other ground for declining.
+	if _, ok := c.PushValueThroughFetch(foreign, q2, tgt); !ok {
+		t.Fatal("q2's SCORE must push through q2's own fetch")
+	}
+}

@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**341 scenarios · 2734 query/assertion cases** across 18 feature areas — 2393 supported, 111 unsupported-feature pins, 230 error-path pins.
+**341 scenarios · 2736 query/assertion cases** across 18 feature areas — 2395 supported, 111 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 26 | 22 | 0 | 4 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 9 | 162 | 160 | 0 | 2 |
+| Index usage | 9 | 164 | 162 | 0 | 2 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **341** | **2734** | **2393** | **111** | **230** |
+| **Total** | **341** | **2736** | **2395** | **111** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -390,7 +390,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 |---|--:|--:|--:|--:|---|
 | `composite_secondary_index_prefix_pushdown` | 11 | 11 | 0 | 0 | Pure-prefix pushdown on composite secondary indexes: when WHERE |
 | `covering_index_java` | 7 | 7 | 0 | 0 | Covering index optimization. |
-| `covering_index_pushdown` | 24 | 24 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
+| `covering_index_pushdown` | 26 | 26 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |

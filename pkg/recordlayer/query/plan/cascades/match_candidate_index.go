@@ -815,15 +815,56 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			// a genuine chain; declining it (rather than dropping v.Child) lets the
 			// recursive-decomposition path handle a deeper match or report not-pushable.
 			// ALLOWLIST (not a chained-only blocklist): a bare column is Child==nil (a
-			// baked leaf / resolved ordinal — the post-ordinalization shape) OR the
-			// source QuantifiedObjectValue directly. ANY other child — a FieldValue
-			// chain, or a composite like a RecordConstructorValue — is not the indexed
-			// Value and must decline (else its accessor structure is silently dropped).
+			// baked leaf / resolved ordinal — the post-ordinalization shape) OR
+			// THIS SOURCE's QuantifiedObjectValue directly. ANY other child — a
+			// FieldValue chain, a composite like a RecordConstructorValue, or
+			// ANOTHER QUANTIFIER's object value — is not the indexed Value and must
+			// decline (else its accessor structure is silently dropped, or a
+			// foreign row's column is read as this row's).
+			//
+			// The correlation is checked, not assumed: it is the FIRST element of
+			// column identity (RFC-197 — identity is (correlation, domain,
+			// ordinal path)), and it is the ONLY element that can separate two
+			// quantifiers over the SAME TABLE. Their layouts are identical by
+			// construction, so their domain tokens are equal and the ordinal check
+			// below passes for both; a self-join's `t2.city` would be rebased onto
+			// targetAlias and read the index entry belonging to `t1` — wrong row,
+			// silently, and the pushability oracle would additionally report the
+			// foreign column "available below the fetch" to the covering rules.
+			//
+			// Java refuses the same rebase structurally: its equivalence map
+			// equates ONLY sourceAlias with the candidate's baseAlias
+			// (ScanWithFetchMatchCandidate.java:60), so a value over any other
+			// quantifier can never semanticEquals a provided index value and never
+			// reaches the rebase arm (:66-68). Java then falls through to "return
+			// the value unchanged, pushable" (:71) because a value not correlated
+			// to sourceAlias survives its final filter (:75). Go declines instead:
+			// Go's own-row columns do NOT reliably carry sourceAlias — a column of
+			// the fetched row can be correlated to the TABLE alias while
+			// sourceAlias is the filter's QUANTIFIER alias (the two-namespace
+			// defect documented at rule_push_filter_through_fetch.go:273-279), so
+			// "not sourceAlias ⇒ foreign row ⇒ pass through" would readmit exactly
+			// the wrong-rows hole that comment closed. Until the namespaces are
+			// one, the covered-column set stays the only authority and an
+			// unprovable correlation declines. A declined push is recoverable.
 			if v.Child != nil {
-				if _, isBareSource := v.Child.(*values.QuantifiedObjectValue); !isBareSource {
+				qov, isBareSource := v.Child.(*values.QuantifiedObjectValue)
+				if !isBareSource || qov.Correlation != sourceAlias {
 					return nil, false
 				}
 			}
+			// A CHILDLESS baked reference has no correlation to check, and needs
+			// none: it reads the row currently being evaluated, and there is no way
+			// to express "the other quantifier's column" without a child to name
+			// that quantifier. So within the record-descriptor frontier the
+			// (domain, ordinal) pair below fully determines the column, and the
+			// correlation element is supplied by the rule's own quantifier context
+			// — this fetch's row is what the predicate above it is evaluated
+			// against (the shape rule_push_filter_through_fetch.go:262-267
+			// describes: after ordinalization a bare column is Child == nil with an
+			// EMPTY correlation set, which is why that rule routes every accessor
+			// through the covered-column set instead of asking correlation).
+			//
 			// The covering question is asked and answered in ORDINALS, in a
 			// stated DOMAIN (RFC-197 item 1). The index definition's column
 			// names were resolved against each record type's descriptor when

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=341 queries=2479 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=341 queries=2481 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3389,6 +3389,19 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
+=== covering_index_pushdown.yaml#24
+sql:   SELECT id, note FROM t WHERE v > 0 AND (v < 25 OR v = 40) ORDER BY v
+plan:  Project([ID#0, NOTE#4], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>]), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryIndexPlan
+=== covering_index_pushdown.yaml#25
+sql:   SELECT id, v FROM t WHERE v > 0 AND v * 2 > 40 ORDER BY v
+plan:  Project([ID#0, V#3], PredicatesFilter(IndexScan(IDX_V, [<>]), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryIndexPlan
 === cross_join.yaml#0 expect-error=0A000
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
 plan:  <PLAN-ERROR: 0A000: explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products>

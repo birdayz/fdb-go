@@ -247,6 +247,19 @@ func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.Tr
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		switch v := value.(type) {
 		case *values.FieldValue:
+			// The correlation element of column identity, checked exactly as at
+			// the value-index site and for the same reason: two quantifiers over
+			// one table share a layout token, so the domain check below cannot
+			// separate them and only the child's correlation can. A childless
+			// baked reference reads the row being evaluated and has no
+			// correlation to check. See the reasoning at
+			// ValueIndexScanMatchCandidate.buildTranslateValueFunction.
+			if v.Child != nil {
+				qov, isBareSource := v.Child.(*values.QuantifiedObjectValue)
+				if !isBareSource || qov.Correlation != sourceAlias {
+					return nil, false
+				}
+			}
 			if ord, domain, covered := pushCoveredOrdinal(coveredSets, v); covered {
 				// The rank-index fetch presents the same descriptor-shaped
 				// partial record the value-index fetch does, so the pushed

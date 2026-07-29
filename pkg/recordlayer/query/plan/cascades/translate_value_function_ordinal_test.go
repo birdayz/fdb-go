@@ -130,3 +130,81 @@ func TestFetchTranslate_PreservesSingleAccessorOrdinal_DeclinesFused(t *testing.
 		t.Fatalf("a LAZY reference must not push on the strength of its display name, got %#v", out4)
 	}
 }
+
+// The CORRELATION element of column identity, on the axis where it is the only
+// element that can decide: ONE TABLE reached through TWO quantifiers (a
+// self-join). Both references carry the same layout token — the layouts are
+// literally the same table's — and the same ordinal, so the domain check and
+// the ordinal check both PASS for both. Only the child's correlation separates
+// them, and if the site does not check it, the foreign quantifier's column is
+// rebased onto the fetch target and reads THIS row's index entry: wrong row,
+// silently. This is the dimension that was unprobed when the site was migrated
+// from names to ordinals — the name check it replaced could not decide it
+// either, so the conversion inherited the hole.
+func TestFetchTranslate_SameTableTwoQuantifiers_CorrelationDecides(t *testing.T) {
+	t.Parallel()
+
+	// Two independently built layouts for the same table, as two quantifiers
+	// over one table produce. They are structurally identical, so the tokens
+	// are EQUAL — asserted, because the whole point is that the domain element
+	// cannot separate these two references.
+	layoutQ1 := testRecordRowType("T", "ID", "ADDR", "CITY")
+	layoutQ2 := testRecordRowType("T", "ID", "ADDR", "CITY")
+	if values.OrdinalDomainOfType(layoutQ1) != values.OrdinalDomainOfType(layoutQ2) {
+		t.Fatal("two quantifiers over one table must share a layout token — " +
+			"if they ever stop, this test no longer probes the correlation axis")
+	}
+
+	cand := newKnownDistinctValueIndexCandidate(
+		"IDX_CITY",
+		[]string{"T"},
+		[]string{"CITY"},
+		[]values.CorrelationIdentifier{values.NamedCorrelationIdentifier("p0")},
+		layoutQ1,
+		false,
+		[]string{"ID"},
+	)
+	q1 := values.NamedCorrelationIdentifier("q1")
+	q2 := values.NamedCorrelationIdentifier("q2")
+	tgt := values.NamedCorrelationIdentifier("tgt")
+
+	// The fetch's OWN quantifier's column pushes.
+	own := testColumnRef(values.NewQuantifiedObjectValue(q1), layoutQ1, "CITY", values.UnknownType)
+	out, ok := cand.PushValueThroughFetch(own, q1, tgt)
+	if !ok {
+		t.Fatal("the source quantifier's covered column must push")
+	}
+	if fv, isFV := out.(*values.FieldValue); !isFV || fv.Resolved == nil || fv.Resolved.Root().Ordinal != 2 {
+		t.Fatalf("own-quantifier push must preserve ordinal 2, got %#v", out)
+	}
+
+	// The OTHER quantifier's column — same table, same token, same ordinal,
+	// same leaf name — must NOT translate. Nothing but the correlation is
+	// different, which is exactly why it is the element being tested.
+	foreign := testColumnRef(values.NewQuantifiedObjectValue(q2), layoutQ2, "CITY", values.UnknownType)
+	if out, ok := cand.PushValueThroughFetch(foreign, q1, tgt); ok {
+		t.Fatalf("a reference to ANOTHER quantifier's row must not be pushed onto this fetch's "+
+			"index entry (same table, same layout token, same ordinal — only the correlation "+
+			"differs); got %#v", out)
+	}
+
+	// Symmetry: the same value IS pushable when the fetch's source is q2, so
+	// the refusal above is the pairing being checked and not the value being
+	// rejected on some other ground.
+	if _, ok := cand.PushValueThroughFetch(foreign, q2, tgt); !ok {
+		t.Fatal("q2's column must push through q2's own fetch — otherwise the refusal above " +
+			"proves nothing about the correlation")
+	}
+
+	// A CHILDLESS baked reference has no correlation to check and still
+	// pushes: it reads the row being evaluated, and (domain, ordinal) fully
+	// determine the column inside the record-descriptor frontier. Pinned so
+	// the correlation gate above cannot be tightened into closing this door —
+	// the post-ordinalization shape is the common one below a fetch.
+	childless := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"CITY", 2, values.UnknownType, values.OrdinalDomainOfType(layoutQ1))
+	if _, ok := cand.PushValueThroughFetch(childless, q1, tgt); !ok {
+		t.Fatal("a CHILDLESS baked covered reference must still push — it has no correlation to " +
+			"check and needs none")
+	}
+}

@@ -248,6 +248,7 @@ go_test(
         "fuzz_cte_test.go",
         "graph_expansion_test.go",
         "group_by_mappings_test.go",
+        "group_pullup_ordinal_domain_test.go",
         "groupby_column_identity_test.go",
         "in_plan_order_independence_test.go",
         "in_union_cost_regression_test.go",
@@ -946,6 +947,7 @@ go_test(
         "point_probe_proof_agreement_test.go",
         "covered_ordinals.go",
         "windowed_index_covered_ordinal_test.go",
+        "group_pullup_ordinal_domain_test.go",
     ],
     deps = [
         "//gen",

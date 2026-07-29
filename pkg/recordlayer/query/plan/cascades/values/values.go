@@ -375,11 +375,26 @@ type FieldPath struct {
 	// EXCLUDED from identity/hash/Explain exactly as FrontierPinned is — an
 	// evaluation-contract marker, not a value distinction. Two references to
 	// the same column that arrived through different producers must still
-	// intern as one memo member. Every copy/rebuild/rebase site MUST preserve
-	// it (the same preserve-on-copy contract Resolved itself imposes):
-	// dropping it silently degrades a domain-checkable node to one that fails
-	// closed, which is a lost optimization rather than a wrong answer, but it
-	// is lost SILENTLY.
+	// intern as one memo member.
+	//
+	// The preservation contract binds COPY, REBUILD and REBASE sites, and only
+	// those: a rewrite that takes an existing reference and hands back "the
+	// same column, moved" must carry the token across (the preserve-on-copy
+	// contract Resolved itself imposes), because dropping it degrades a
+	// domain-checkable node into one that fails closed — a lost optimization
+	// rather than a wrong answer, but lost SILENTLY. WithChildren, RebaseValue,
+	// WithSuffix and the pull-up walk are the enforced ones
+	// (ordinal_domain_test.go's preservation cases fail if any of them stops
+	// carrying it).
+	//
+	// PRODUCERS are under no such obligation, and most of them mint UNKNOWN
+	// today. That is the designed default, not debt: a site that cannot name
+	// the layout its ordinal indexes must say so, and OrdinalIn then declines
+	// for it. Teaching a producer its domain is an improvement to be made
+	// where the layout is genuinely in hand (NewFieldValueOfOrdinal derives it
+	// from the typed child it is given, which is the model); inventing one to
+	// make the token non-zero would be the ordinal conflation this element
+	// exists to prevent, wearing a proof's clothes.
 	Domain OrdinalDomain
 
 	// FrontierPinned marks a MACHINERY-OWNED bake: the node was built by the
