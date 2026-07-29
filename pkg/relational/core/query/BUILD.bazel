@@ -35,6 +35,7 @@ go_library(
 go_test(
     name = "query_test",
     srcs = [
+        "bake_ordinal_domain_test.go",
         "box_conjunct_test.go",
         "cascades_translator_test.go",
         "chained_spine_seed_test.go",

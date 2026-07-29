@@ -98,6 +98,20 @@ pin's frontier is the given one, for an unpinned single-accessor path by
 verifying the value's own source is the given frontier — and fails closed on
 everything else: multi-accessor, lazy, or any domain mismatch.
 
+The token is a GO EXTENSION, and the implementation review located exactly
+why it exists: Java never needs one. Java's `FieldValue.childValue` is
+non-null and typed, so the domain is always derivable as
+`childValue.getResultType()` — the frontier identity rides the child. Go
+mints CHILDLESS baked FieldValues, a shape Java cannot express, and only
+those need the domain STORED. So the working rule is: **derive the domain
+when the child is typed; store the token only when it is not** —
+`NewFieldValueOfOrdinal` already derives this way and is the proof the rule
+works. The rejected alternative (stop minting childless bakes entirely,
+making derivation universal) is the deeper Java alignment and remains the
+end-state candidate once the dotted bucket removes the qualified-name
+channel that produces most childless shapes; it is not attempted in step 0
+because it would couple the foundation to the riskiest bucket.
+
 The accessor requires state that does not yet exist, and step 0 is honest
 about being a REPRESENTATION change, not a query: `FieldPath` today stores
 only a `FrontierPinned` boolean, and a childless source-relative value

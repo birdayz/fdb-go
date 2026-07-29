@@ -305,3 +305,53 @@ tests:
     rows:
       - [1]
       - [3]
+
+  # -------------------------------------------------------------------
+  # The covered-column decision is an ORDINAL in a stated LAYOUT
+  # -------------------------------------------------------------------
+  #
+  # Which columns an index covers is answered by resolving the index
+  # definition's column names against the record descriptor ONCE, then
+  # comparing domain-checked ordinals (RFC-197 item 1). That makes the
+  # push depend on TWO independently-derived layout descriptions agreeing:
+  # the SQL catalog's declared column list (the resolver bakes each
+  # reference's ordinal and layout token from it) and the record
+  # descriptor's positional type (the match candidate builds its covered
+  # ordinal set from that). Nothing else pins that agreement end to end —
+  # if the two ever describe the same table differently, no reference can
+  # prove its ordinal indexes the candidate's layout, every push declines,
+  # and the plan assertions below are what notices.
+  #
+  # A declined push is not a wrong answer, which is exactly why it needs a
+  # PLAN assertion: the rows stay right while the work moves above the
+  # fetch, so a rows-only test cannot see it.
+
+  # (a) A residual predicate on a COVERED column, over a query that still
+  # needs a fetch for its projection (`note` is not in idx_v). The OR
+  # cannot become a scan bound, so it stays a predicate — and because it
+  # reads only the covered column `v`, it belongs BELOW the fetch, where it
+  # discards non-matching entries before the by-primary-key record read.
+  # `Fetch(PredicatesFilter(IndexScan(...)))` is that pushed shape; if the
+  # push declines, the same predicate reappears as
+  # `PredicatesFilter(Fetch(IndexScan(...)))` — same rows, one record fetch
+  # per discarded entry.
+  - query: SELECT id, note FROM t WHERE v > 0 AND (v < 25 OR v = 40) ORDER BY v
+    plan_contains: Fetch(PredicatesFilter(IndexScan(IDX_V
+    rows:
+      - [1, 'n1']
+      - [2, 'n2']
+      - [4, 'n4']
+
+  # (b) The same predicate shape where the projection is fully covered
+  # (`id` is the primary key, `v` is the index key), so there is no fetch
+  # at all: an arithmetic on a covered column that cannot be a SARG, left
+  # as a residual over the fetch-free scan. The fetch is removable ONLY
+  # because every projected value proved itself available below it, which
+  # is the same ordinal-in-a-stated-layout question asked of the
+  # projection instead of the predicate — so `plan_not_contains: Fetch` is
+  # the pin, and it reddens the moment the two layout descriptions drift.
+  - query: SELECT id, v FROM t WHERE v > 0 AND v * 2 > 40 ORDER BY v
+    plan_not_contains: Fetch
+    rows:
+      - [3, 30]
+      - [4, 40]

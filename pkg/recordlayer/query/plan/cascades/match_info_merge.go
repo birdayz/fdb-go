@@ -778,10 +778,24 @@ func applyGroupFieldPath(
 			continue
 		}
 
-		stepPath := values.NewFieldPathOfSingle(
+		// DERIVE the domain rather than mint it unknown. The step reads a
+		// field OUT OF `current`, so the layout its ordinal indexes is
+		// current's own result type — the rebuilt reference states the same
+		// layout the decomposed one resolved against, and a pull-up through
+		// this walk stops degrading a domain-checkable node into one that
+		// fails closed.
+		//
+		// This is RFC-197's working rule ("derive the domain when the child is
+		// typed; store the token only when it is not"), and it is why Java
+		// needs no token at all: Java's FieldValue.childValue is non-null and
+		// typed, so the frontier always rides the child. A child that is not a
+		// record type derives the UNKNOWN token — unchanged fail-closed
+		// behaviour, now by measurement instead of by omission.
+		stepPath := values.NewFieldPathOfSingleInDomain(
 			step.field,
 			step.ordinal,
 			false,
+			values.OrdinalDomainOfType(current.Type()),
 		)
 		if inner, ok := current.(*values.FieldValue); ok &&
 			inner.Resolved != nil &&

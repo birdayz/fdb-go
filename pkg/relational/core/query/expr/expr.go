@@ -274,12 +274,13 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// reads the same slot a name lookup would have found. Unresolvable
 		// (computed alias, empty derived-table catalog) is LOUD at plan
 		// time (UnresolvableOrdinalError — born-baked, slice 2).
-		if ord, ok := sourceColumnOrdinal(src, field); ok {
-			return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+		if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+			return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 				values.NewQuantifiedObjectValue(corrID),
 				field,
 				ord,
 				columnCascadesType(col),
+				domain,
 			), nil
 		}
 		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
@@ -292,8 +293,8 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	// bound slot is the same one a name read would have found. Unresolvable
 	// (computed alias, no source table) is LOUD at plan time
 	// (UnresolvableOrdinalError — born-baked, slice 2).
-	if ord, ok := sourceColumnOrdinal(src, field); ok {
-		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
+	if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, columnCascadesType(col), domain), nil
 	}
 	return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
 }
@@ -319,16 +320,25 @@ func (e *UnresolvableOrdinalError) Error() string {
 // resolved source's declared column order — the LOGICAL ordinal of the
 // column in the row the source flows. Matching is case-insensitive
 // first-match, mirroring values.RecordType.FieldIndex.
-func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, bool) {
+func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.OrdinalDomain, bool) {
 	if src.Table == nil {
-		return 0, false
+		return 0, values.OrdinalDomain{}, false
 	}
-	for i, c := range src.Table.Columns() {
+	cols := src.Table.Columns()
+	for i, c := range cols {
 		if strings.EqualFold(c.Id.Name(), field) {
-			return i, true
+			// The DOMAIN is derived from the same declared column list the
+			// ordinal indexes (RFC-197 step 0), in the same breath, so the two
+			// cannot drift: a caller downstream can check that its own layout
+			// IS this one instead of assuming it by comment.
+			names := make([]string, len(cols))
+			for k, cc := range cols {
+				names[k] = cc.Id.Name()
+			}
+			return i, values.OrdinalDomainOfColumnNames(names), true
 		}
 	}
-	return 0, false
+	return 0, values.OrdinalDomain{}, false
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
@@ -375,12 +385,13 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 	// flat-name projection mint).
 	// A dup-alias branch under UNION ALL reaches here too and bakes the
 	// same per-binding way — no upstream decline remains.
-	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
-		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+	if ord, domain, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
+		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
 			col.Id.Name(),
 			ord,
 			columnCascadesType(col),
+			domain,
 		), nil
 	}
 	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
@@ -436,12 +447,13 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	// Bind the source-relative ordinal at construction when the shadowing
 	// source's declared column order resolves it (see ResolveIdentifier's
 	// correlated arm); unresolvable is LOUD at plan time (born-baked).
-	if ord, ok := sourceColumnOrdinal(src, field); ok {
-		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+	if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 			values.NewQuantifiedObjectValue(corrID),
 			field,
 			ord,
 			columnCascadesType(col),
+			domain,
 		), true, nil
 	}
 	return nil, false, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}

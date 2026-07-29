@@ -266,8 +266,136 @@ type ResolvedAccessor struct {
 // exists only for prefix arithmetic Go doesn't port). Both constructors
 // (NewFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
 // hand-built violation rather than tolerating it.
+// OrdinalDomain names the LAYOUT an ordinal indexes — the third element of
+// column identity (RFC-197: identity is (correlation, domain, ordinal path)).
+//
+// The same ordinal under the same correlation can address two different
+// layouts: a MACHINERY-OWNED bake's ordinal is final for the executor's
+// assembled row / leg window, while a SOURCE-RELATIVE bake's ordinal indexes
+// the reference's OWN source's declared column order (see
+// FieldPath.FrontierPinned). Comparing ordinals across those two layouts is a
+// type error that reads as authoritative, which is strictly worse than the
+// name conflation this workstream exists to end. So an ordinal is only
+// comparable against a STATED layout, and OrdinalIn is the only way to ask.
+//
+// The token identifies a layout STRUCTURALLY: the ordered list of the layout's
+// column names. That is exactly the soundness condition for reusing an ordinal
+// — position k of two layouts with the same ordered column list is the same
+// slot — and it is derivable independently by the producer (which resolves a
+// name against a declared column order) and by the consumer (which holds the
+// descriptor-shaped row type). Two structurally identical layouts of different
+// provenance are interchangeable FOR POSITIONAL PURPOSES; distinguishing which
+// quantifier a reference belongs to is the CORRELATION element's job, checked
+// separately by every caller.
+//
+// The zero value is UNKNOWN: a producer that cannot state which layout its
+// ordinal indexes mints no token, and OrdinalIn fails closed on it. Unknown is
+// therefore the safe default for every construction site that has not been
+// taught its domain — a declined optimization, never a wrong slot.
+type OrdinalDomain struct {
+	// sig is the layout signature. Unexported so the token cannot be
+	// hand-forged from a name at a call site: the only ways to obtain one are
+	// the two derivations below, both of which take a whole layout.
+	sig string
+}
+
+// IsKnown reports whether the token names a layout at all. An unknown token
+// (the zero value) never satisfies OrdinalIn, on either side of the check.
+func (d OrdinalDomain) IsKnown() bool { return d.sig != "" }
+
+// String renders the token for diagnostics. Not an identity: use ==.
+func (d OrdinalDomain) String() string {
+	if !d.IsKnown() {
+		return "domain(unknown)"
+	}
+	return "domain(" + d.sig + ")"
+}
+
+// OrdinalDomainOfColumnNames derives the token for a layout given as an ordered
+// column-name list — the shape the translator's bakers resolve against.
+//
+// The encoding is length-prefixed so it is INJECTIVE: ["A","B"] and ["A|B"]
+// (or ["AB"]) must not collide, or two different layouts would answer to one
+// token and the check would be theatre. Names are upper-cased because every
+// resolution path in the engine matches case-insensitively.
+// An empty list yields the UNKNOWN token: a layout with no columns states
+// nothing, and treating "" as a real domain would make every not-yet-taught
+// producer's zero token match it.
+func OrdinalDomainOfColumnNames(cols []string) OrdinalDomain {
+	if len(cols) == 0 {
+		return OrdinalDomain{}
+	}
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(len(cols)))
+	for _, c := range cols {
+		u := strings.ToUpper(c)
+		b.WriteByte(';')
+		b.WriteString(strconv.Itoa(len(u)))
+		b.WriteByte(':')
+		b.WriteString(u)
+	}
+	return OrdinalDomain{sig: b.String()}
+}
+
+// OrdinalDomainOfType derives the token for a layout given as a flowed record
+// type — the shape match candidates, seeds and the executor hold. Anything but
+// a *RecordType (UnknownType, a primitive, a multi-record-type index's
+// degraded row type) has no single column order and yields the UNKNOWN token,
+// so a caller that cannot name its layout fails closed by construction.
+func OrdinalDomainOfType(t Type) OrdinalDomain {
+	rt, ok := t.(*RecordType)
+	if !ok || len(rt.Fields) == 0 {
+		return OrdinalDomain{}
+	}
+	names := make([]string, len(rt.Fields))
+	for i, f := range rt.Fields {
+		names[i] = f.Name
+	}
+	return OrdinalDomainOfColumnNames(names)
+}
+
 type FieldPath struct {
 	Accessors []ResolvedAccessor
+
+	// Domain is the layout the ROOT accessor's ordinal indexes (RFC-197
+	// step 0): for a FrontierPinned path the frontier the ordinal is FINAL
+	// for, for an unpinned source-relative path the reference's OWN source.
+	// Both readings are the same question — "which layout does this ordinal
+	// address" — which is why one token and one check (OrdinalIn) serve both
+	// bake kinds.
+	//
+	// Zero (unknown) when the constructing site could not state its layout.
+	// That is a fail-closed default, not a gap to paper over at the consumer:
+	// an ordinal whose domain is unknown is not comparable to anything.
+	//
+	// Lives ON THE PATH, once, beside FrontierPinned and for the same reason:
+	// it governs the ROOT read context, and accessors beyond the first descend
+	// nested records where the question does not arise.
+	//
+	// EXCLUDED from identity/hash/Explain exactly as FrontierPinned is — an
+	// evaluation-contract marker, not a value distinction. Two references to
+	// the same column that arrived through different producers must still
+	// intern as one memo member.
+	//
+	// The preservation contract binds COPY, REBUILD and REBASE sites, and only
+	// those: a rewrite that takes an existing reference and hands back "the
+	// same column, moved" must carry the token across (the preserve-on-copy
+	// contract Resolved itself imposes), because dropping it degrades a
+	// domain-checkable node into one that fails closed — a lost optimization
+	// rather than a wrong answer, but lost SILENTLY. WithChildren, RebaseValue,
+	// WithSuffix and the pull-up walk are the enforced ones
+	// (ordinal_domain_test.go's preservation cases fail if any of them stops
+	// carrying it).
+	//
+	// PRODUCERS are under no such obligation, and most of them mint UNKNOWN
+	// today. That is the designed default, not debt: a site that cannot name
+	// the layout its ordinal indexes must say so, and OrdinalIn then declines
+	// for it. Teaching a producer its domain is an improvement to be made
+	// where the layout is genuinely in hand (NewFieldValueOfOrdinal derives it
+	// from the typed child it is given, which is the model); inventing one to
+	// make the token non-zero would be the ordinal conflation this element
+	// exists to prevent, wearing a proof's clothes.
+	Domain OrdinalDomain
 
 	// FrontierPinned marks a MACHINERY-OWNED bake: the node was built by the
 	// join/gather seed machinery (NewFieldValueOfOrdinal over a typed
@@ -302,12 +430,68 @@ type FieldPath struct {
 }
 
 // NewFieldPathOfSingle is Java's FieldPath.ofSingle (FieldValue.java:563) —
-// the constructor every single-accessor bake goes through.
+// the constructor every single-accessor bake goes through. The path carries no
+// domain: a site that has not been taught which layout its ordinal indexes
+// fails closed at OrdinalIn. Use NewFieldPathOfSingleInDomain wherever the
+// producer knows the layout it resolved against.
 func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *FieldPath {
+	return NewFieldPathOfSingleInDomain(field, ordinal, frontierPinned, OrdinalDomain{})
+}
+
+// NewFieldPathOfSingleInDomain is NewFieldPathOfSingle plus the layout the
+// ordinal indexes (RFC-197 step 0). The domain must be the layout the caller
+// RESOLVED the ordinal against — stating a layout the ordinal does not index
+// is the ordinal-conflation failure this token exists to prevent, wearing a
+// proof's clothes.
+func NewFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool, domain OrdinalDomain) *FieldPath {
 	return &FieldPath{
 		Accessors:      []ResolvedAccessor{{Field: field, Ordinal: ordinal}},
 		FrontierPinned: frontierPinned,
+		Domain:         domain,
 	}
+}
+
+// OrdinalIn is the fail-closed domain accessor (RFC-197 step 0): it reports the
+// ordinal this path reads IN the caller's stated layout, and answers ONLY when
+// the path provably indexes THAT layout.
+//
+// It answers for a single-accessor path whose recorded domain IS the given
+// frontier — for a FrontierPinned path that means the pin's frontier is the
+// given one, for an unpinned path that its own source is. It FAILS CLOSED on
+// everything else, and every arm below is a distinct way an ordinal comparison
+// has been or could be wrong:
+//
+//   - a nil path (LAZY node): no ordinal exists to answer with.
+//   - a multi-accessor (FUSED) path: its Root() ordinal addresses the OUTER
+//     step, so answering with it drops the nested descent — `t.addr.city`
+//     would read whatever slot ADDR occupies while claiming to be CITY.
+//   - an unknown domain on either side: a producer that could not state its
+//     layout, or a caller that cannot state its frontier. Neither can be
+//     coerced into a comparison; there is nothing to check.
+//   - a domain MISMATCH: the ordinal indexes a different layout. This is the
+//     element revision 1 of RFC-197 omitted, and it is the whole reason the
+//     domain is a parameter rather than a comment at the call site.
+//   - a NEGATIVE ordinal: Java's ResolvedAccessor asserts ordinal >= 0 at
+//     construction (FieldValue.java:651), which is what makes its ordinal-only
+//     equality safe. Go mints `Ordinal: -1` NAME-ONLY accessors at four
+//     producer sites (the unnest/gather/index-expansion seeds and the
+//     translator's array-path model), where two accessors are ordinal-equal by
+//     construction and the NAME is the only identity left. Answering -1 hands
+//     a caller an ordinal that matches every other name-only accessor — the
+//     wrong-column bind pinned in aggregate_group_key_accessor_name_test.go.
+//
+// A declined answer is a declined optimization; a wrong answer is wrong rows.
+func (p *FieldPath) OrdinalIn(frontier OrdinalDomain) (int, bool) {
+	if p == nil || len(p.Accessors) != 1 {
+		return 0, false
+	}
+	if !frontier.IsKnown() || !p.Domain.IsKnown() || p.Domain != frontier {
+		return 0, false
+	}
+	if ord := p.Accessors[0].Ordinal; ord >= 0 {
+		return ord, true
+	}
+	return 0, false
 }
 
 // WithSuffix returns a NEW path with suffix's accessors appended — Java's
@@ -330,7 +514,9 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 	merged := make([]ResolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
 	merged = append(merged, p.Accessors...)
 	merged = append(merged, suffix.Accessors...)
-	return &FieldPath{Accessors: merged, FrontierPinned: p.FrontierPinned}
+	// The domain, like the pin, comes from the RECEIVER: both govern the ROOT
+	// read context, and fusing keeps the inner path's root.
+	return &FieldPath{Accessors: merged, FrontierPinned: p.FrontierPinned, Domain: p.Domain}
 }
 
 // Root returns the first accessor — the one the ROOT read context resolves
@@ -1038,8 +1224,17 @@ func NewFlatFieldValue(field string, typ Type) *FieldValue {
 // caller resolves a column against a source's declared column order).
 // Distinct from NewOrdinalFieldValue, which bakes the anonymous `_<ordinal>`
 // WITH-ORDINALITY element/ordinal columns.
+// Carries no domain token; use NewFieldValueWithResolvedOrdinalInDomain where
+// the caller can state the layout it resolved against.
 func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingle(field, ordinal, false)}
+	return NewFieldValueWithResolvedOrdinalInDomain(field, ordinal, typ, OrdinalDomain{})
+}
+
+// NewFieldValueWithResolvedOrdinalInDomain is NewFieldValueWithResolvedOrdinal
+// plus the layout the ordinal indexes (RFC-197 step 0) — the source's declared
+// column order the caller resolved the name against.
+func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
 // NewCorrelatedFieldValueWithResolvedOrdinal constructs a QOV-child FieldValue
@@ -1055,8 +1250,17 @@ func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *Fiel
 // runtime the correlation binds a source-shaped row (the source's own row or
 // its leg window — both flow the source's declared column order), so the
 // source-relative ordinal reads the right slot.
+// Carries no domain token; use the InDomain form where the caller can state
+// the source layout it resolved against.
 func NewCorrelatedFieldValueWithResolvedOrdinal(child Value, field string, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: field, Typ: typ, Child: child, Resolved: NewFieldPathOfSingle(field, ordinal, false)}
+	return NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child, field, ordinal, typ, OrdinalDomain{})
+}
+
+// NewCorrelatedFieldValueWithResolvedOrdinalInDomain is the correlated bake
+// plus the layout the ordinal indexes (RFC-197 step 0): the SOURCE's declared
+// column order — the row the correlation binds — not the enclosing frontier.
+func NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child Value, field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Child: child, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
@@ -1135,12 +1339,26 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	// FrontierPinned: this constructor is the join seed's — the executor
 	// supplies positional rows for every context these nodes evaluate in, so
 	// these nodes only ever resolve by ordinal.
+	// The domain is stamped, not passed: this constructor RESOLVES the ordinal
+	// against rt itself, so rt IS the layout the ordinal indexes — the one
+	// place a derived domain is a proof rather than a claim. A caller that
+	// resolved elsewhere must state its own domain explicitly.
 	return &FieldValue{
 		Field:    fld.Name,
 		Typ:      typ,
 		Child:    child,
-		Resolved: NewFieldPathOfSingle(fld.Name, ordinal, true),
+		Resolved: NewFieldPathOfSingleInDomain(fld.Name, ordinal, true, OrdinalDomainOfType(rt)),
 	}, nil
+}
+
+// OrdinalIn is the FieldValue-level fail-closed domain accessor — see
+// FieldPath.OrdinalIn. A LAZY node (Resolved == nil) has no ordinal and fails
+// closed here; it never falls back to the display name.
+func (f *FieldValue) OrdinalIn(frontier OrdinalDomain) (int, bool) {
+	if f == nil {
+		return 0, false
+	}
+	return f.Resolved.OrdinalIn(frontier)
 }
 
 // WalkValue applies visit to every node in v's subtree, pre-order.

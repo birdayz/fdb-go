@@ -88,7 +88,11 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 				// guard must survive the pull-up. A dup-name disambiguation
 				// bake over a LAZY input establishes no frontier contract —
 				// unpinned.
-				out.Resolved = NewFieldPathOfSingle(field.Name, i, inPinned)
+				// The domain is the RC's OUTPUT layout — the row the emitted
+				// reference's correlation binds, and the layout ordinal i
+				// indexes (RFC-197 step 0). It is the same type the child QOV
+				// above flows, so the claim is checkable, not asserted.
+				out.Resolved = NewFieldPathOfSingleInDomain(field.Name, i, inPinned, OrdinalDomainOfType(rc.Type()))
 			}
 			return out
 		}

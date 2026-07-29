@@ -32,6 +32,15 @@ type ValueIndexScanMatchCandidate struct {
 	flowedType      values.Type
 	unique          bool
 
+	// recordTypeRowTypes are the per-record-type row layouts the index serves,
+	// one per entry of recordTypes — the descriptor-shaped positional types
+	// covering-column resolution needs (RFC-197 item 1). flowedType is the
+	// SINGLE-type answer and degrades to UnknownType for a multi-type index,
+	// which has no one layout; this slice keeps each type's layout separately
+	// so a covering push can still be proven per type. Empty when the def
+	// supplies none, in which case flowedType is the only layout known.
+	recordTypeRowTypes []values.Type
+
 	// columnFunctions is parallel to columnNames: columnFunctions[i] names
 	// the function wrapping the i-th key column's field, or "" if the column
 	// is a plain field. The only non-empty entry today is
@@ -74,6 +83,31 @@ type ValueIndexScanMatchCandidate struct {
 
 	traversalOnce sync.Once
 	traversal     *Traversal
+}
+
+// WithRecordTypeRowTypes attaches the per-record-type row layouts to a freshly
+// constructed candidate (RFC-197 item 1). Call before the translate function is
+// built. A nil/empty slice leaves the candidate with flowedType as its only
+// layout — the single-record-type case, and fail-closed for a multi-type index.
+func (c *ValueIndexScanMatchCandidate) WithRecordTypeRowTypes(rowTypes []values.Type) *ValueIndexScanMatchCandidate {
+	c.recordTypeRowTypes = append([]values.Type(nil), rowTypes...)
+	return c
+}
+
+// rowLayouts returns every row layout this candidate's records can have: the
+// per-record-type layouts when the def supplied them, else the single flowed
+// type.
+func (c *ValueIndexScanMatchCandidate) rowLayouts() []values.Type {
+	if len(c.recordTypeRowTypes) > 0 {
+		return c.recordTypeRowTypes
+	}
+	return []values.Type{c.flowedType}
+}
+
+// coveredOrdinalSets resolves the covered-column names against every row
+// layout the index serves — see buildCoveredOrdinalSets.
+func (c *ValueIndexScanMatchCandidate) coveredOrdinalSets(coveredColumns map[string]struct{}) []coveredOrdinalSet {
+	return buildCoveredOrdinalSets(c.rowLayouts(), coveredColumns)
 }
 
 // WithCommonPrimaryKey sets the index's structural common primary key on the
@@ -761,6 +795,7 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			coveredColumns[upperColumn] = struct{}{}
 		}
 	}
+	coveredSets := c.coveredOrdinalSets(coveredColumns)
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		switch v := value.(type) {
@@ -780,53 +815,98 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			// a genuine chain; declining it (rather than dropping v.Child) lets the
 			// recursive-decomposition path handle a deeper match or report not-pushable.
 			// ALLOWLIST (not a chained-only blocklist): a bare column is Child==nil (a
-			// baked leaf / resolved ordinal — the post-ordinalization shape) OR the
-			// source QuantifiedObjectValue directly. ANY other child — a FieldValue
-			// chain, or a composite like a RecordConstructorValue — is not the indexed
-			// Value and must decline (else its accessor structure is silently dropped).
+			// baked leaf / resolved ordinal — the post-ordinalization shape) OR
+			// THIS SOURCE's QuantifiedObjectValue directly. ANY other child — a
+			// FieldValue chain, a composite like a RecordConstructorValue, or
+			// ANOTHER QUANTIFIER's object value — is not the indexed Value and must
+			// decline (else its accessor structure is silently dropped, or a
+			// foreign row's column is read as this row's).
+			//
+			// The correlation is checked, not assumed: it is the FIRST element of
+			// column identity (RFC-197 — identity is (correlation, domain,
+			// ordinal path)), and it is the ONLY element that can separate two
+			// quantifiers over the SAME TABLE. Their layouts are identical by
+			// construction, so their domain tokens are equal and the ordinal check
+			// below passes for both; a self-join's `t2.city` would be rebased onto
+			// targetAlias and read the index entry belonging to `t1` — wrong row,
+			// silently, and the pushability oracle would additionally report the
+			// foreign column "available below the fetch" to the covering rules.
+			//
+			// Java refuses the same rebase structurally: its equivalence map
+			// equates ONLY sourceAlias with the candidate's baseAlias
+			// (ScanWithFetchMatchCandidate.java:60), so a value over any other
+			// quantifier can never semanticEquals a provided index value and never
+			// reaches the rebase arm (:66-68). Java then falls through to "return
+			// the value unchanged, pushable" (:71) because a value not correlated
+			// to sourceAlias survives its final filter (:75). Go declines instead:
+			// Go's own-row columns do NOT reliably carry sourceAlias — a column of
+			// the fetched row can be correlated to the TABLE alias while
+			// sourceAlias is the filter's QUANTIFIER alias (the two-namespace
+			// defect documented at rule_push_filter_through_fetch.go:273-279), so
+			// "not sourceAlias ⇒ foreign row ⇒ pass through" would readmit exactly
+			// the wrong-rows hole that comment closed. Until the namespaces are
+			// one, the covered-column set stays the only authority and an
+			// unprovable correlation declines. A declined push is recoverable.
 			if v.Child != nil {
-				if _, isBareSource := v.Child.(*values.QuantifiedObjectValue); !isBareSource {
+				qov, isBareSource := v.Child.(*values.QuantifiedObjectValue)
+				if !isBareSource || qov.Correlation != sourceAlias {
 					return nil, false
 				}
 			}
-			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
-				// PRESERVE the baked ordinal when rebasing the correlation to the
-				// index-scan target — but ONLY for a SINGLE-ACCESSOR path
-				// (Resolved.Single). The fetch's inner presents its partial record
-				// in the record's LOGICAL slot layout (descriptor-shaped, non-covered
-				// fields nil — the covering-scan row-shaping in executor.go /
-				// flat_map_cursor.go). A pushed-below-fetch predicate references
-				// COVERED COLUMNS in that record domain, whose frontier IS the record
-				// descriptor — the SAME layout as the target — so a single-column
-				// ordinal reads the same slot (an index-LAYOUT covering row is
-				// separately guarded to refuse a baked ordinal rather than misread).
-				//
-				// The single-accessor gate is load-bearing: a FUSED multi-accessor
-				// path (composeFieldOverField collapses `t.addr.city` into ONE node —
-				// Child=QOV, Resolved=[ADDR,CITY], Field="CITY") passes the
-				// bare-source allowlist above, but its Root() ordinal is ADDR's;
-				// baking it single-accessor would drop the descent and, if a covered
-				// column shares the leaf name, silently read the WRONG slot (wrong
-				// rows). Resolved.Single() admits only the flat covered-column shape
-				// (both the source-relative and the frontier-pinned single-accessor
-				// forms the join/merge machinery produces for `r.c`); a multi-accessor
-				// path falls through to the lazy branch (correct-or-loud).
-				//
-				// Dropping the ordinal for the flat case WAS the bug: a pushed
-				// predicate later evaluated as a residual (a join key on an indexed
-				// column that lost the index bound to a competing IS NULL) hit the
-				// executor's no-name-fallback path and failed LOUD (ordinal -1).
-				if v.Resolved != nil {
-					if acc, single := v.Resolved.Single(); single {
-						return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-							values.NewQuantifiedObjectValue(targetAlias),
-							v.Field, acc.Ordinal, v.Typ,
-						), true
-					}
-				}
-				return values.NewFieldValue(
+			// A CHILDLESS baked reference has no correlation to check, and needs
+			// none: it reads the row currently being evaluated, and there is no way
+			// to express "the other quantifier's column" without a child to name
+			// that quantifier. So within the record-descriptor frontier the
+			// (domain, ordinal) pair below fully determines the column, and the
+			// correlation element is supplied by the rule's own quantifier context
+			// — this fetch's row is what the predicate above it is evaluated
+			// against (the shape rule_push_filter_through_fetch.go:262-267
+			// describes: after ordinalization a bare column is Child == nil with an
+			// EMPTY correlation set, which is why that rule routes every accessor
+			// through the covered-column set instead of asking correlation).
+			//
+			// The covering question is asked and answered in ORDINALS, in a
+			// stated DOMAIN (RFC-197 item 1). The index definition's column
+			// names were resolved against each record type's descriptor when
+			// this function was built; here the reference must prove its own
+			// ordinal indexes THAT layout.
+			//
+			// The fetch's inner presents its partial record in the record's
+			// LOGICAL slot layout (descriptor-shaped, non-covered fields nil —
+			// the covering-scan row-shaping in executor.go /
+			// flat_map_cursor.go). So the pushed reference's frontier IS the
+			// record descriptor, the same layout as the target, and an ordinal
+			// proven to index it reads the same slot on both sides. That
+			// proof used to be the comment you are reading; it is now the
+			// predicate OrdinalIn checks, which is why BOTH the source-relative
+			// and the frontier-pinned single-accessor forms are admitted (each
+			// states the layout it indexes) and why everything else declines:
+			//
+			//   - a FUSED multi-accessor path (composeFieldOverField collapses
+			//     `t.addr.city` into ONE node — Child=QOV, Resolved=[ADDR,CITY],
+			//     Field="CITY") has an ADDR-relative root ordinal, and its leaf
+			//     name colliding with a covered column is exactly the trap;
+			//   - a pinned reference into an assembled MERGED row (a join box's
+			//     leg window) carries a leg-relative ordinal that is not a
+			//     record-descriptor ordinal at all — the same integer meaning a
+			//     different column, the failure mode a name comparison cannot
+			//     even express;
+			//   - a LAZY reference has no ordinal, and the display name it
+			//     still carries is not a fallback.
+			//
+			// Each of those declines the push. A declined push is a filter that
+			// stays above the fetch — recoverable; a wrong ordinal is wrong
+			// rows.
+			//
+			// Preserving the ordinal for the admitted case is load-bearing in
+			// the other direction too: a pushed predicate later evaluated as a
+			// residual (a join key on an indexed column that lost the index
+			// bound to a competing IS NULL) hits the executor's
+			// no-name-fallback path and fails LOUD if it arrives lazy.
+			if ord, domain, covered := pushCoveredOrdinal(coveredSets, v); covered {
+				return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 					values.NewQuantifiedObjectValue(targetAlias),
-					v.Field, v.Typ,
+					v.Field, ord, v.Typ, domain,
 				), true
 			}
 			return nil, false

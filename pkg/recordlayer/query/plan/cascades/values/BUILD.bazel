@@ -110,6 +110,7 @@ go_test(
         "index_entry_semantic_test.go",
         "integration_test.go",
         "like_match_test.go",
+        "ordinal_domain_test.go",
         "ordinal_eval_test.go",
         "proto_descent_test.go",
         "pullup_test.go",

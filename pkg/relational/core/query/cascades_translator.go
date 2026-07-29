@@ -5730,7 +5730,12 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 			}
 			for i, c := range lay.cols {
 				if strings.EqualFold(c, leaf) {
-					return values.NewFieldValueWithResolvedOrdinal(fv.Field, i, fv.Typ)
+					// The ordinal indexes lay.cols, so lay.cols IS the domain
+					// (RFC-197 step 0) — derived from the same slice the
+					// ordinal came from, in the same breath, so the two cannot
+					// drift apart.
+					return values.NewFieldValueWithResolvedOrdinalInDomain(
+						fv.Field, i, fv.Typ, values.OrdinalDomainOfColumnNames(lay.cols))
 				}
 			}
 			return node
@@ -5747,8 +5752,12 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 	legBake := func(lay *legLayout, leaf string, typ values.Type) values.Value {
 		for i, c := range lay.cols {
 			if strings.EqualFold(c, leaf) {
-				return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-					values.NewQuantifiedObjectValue(lay.alias), strings.ToUpper(leaf), i, typ)
+				// The ordinal is LEG-relative, so the domain is the LEG's own
+				// column list — the row its correlation binds — and not the
+				// composed frontier the select flows.
+				return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+					values.NewQuantifiedObjectValue(lay.alias), strings.ToUpper(leaf), i, typ,
+					values.OrdinalDomainOfColumnNames(lay.cols))
 			}
 		}
 		return nil
@@ -5877,7 +5886,9 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 		// hidden "O.SUM(AMOUNT)" slot match here — GetByName's own precedence).
 		for i, c := range cols {
 			if strings.EqualFold(c, fv.Field) {
-				return values.NewFieldValueWithResolvedOrdinal(fv.Field, i, fv.Typ)
+				// cols is the layout the ordinal indexes (RFC-197 step 0).
+				return values.NewFieldValueWithResolvedOrdinalInDomain(
+					fv.Field, i, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 			}
 		}
 		// Dotted qualifier → leg window → leaf within the window.
@@ -5893,7 +5904,11 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 				}
 				for k := leg.Start; k < end; k++ {
 					if strings.EqualFold(cols[k], leaf) {
-						return values.NewFieldValueWithResolvedOrdinal(fv.Field, k, fv.Typ)
+						// k indexes the WHOLE flat row (the leg window is a
+						// range within it), so the domain is cols — not the
+						// leg's slice of it.
+						return values.NewFieldValueWithResolvedOrdinalInDomain(
+							fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 					}
 				}
 				break
