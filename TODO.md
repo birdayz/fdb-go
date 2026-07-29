@@ -9711,3 +9711,19 @@ to nothing.)
   Second shape, unresolved: whether an outer-join `WHERE`-vs-`ON` case was ever
   actually exercised by a seed. Add a directed template rather than relying on
   random weighting, so the question stops being ambiguous.
+
+- [ ] **CQ-38 (MED) — a residual filter over a fetch-free index scan is never
+  marked COVERING.** `MergeProjectionAndFetchRule` marks the inner scan
+  covering only in its direct `fetchInnerExpr.(*RecordQueryIndexPlan)` arm
+  (`rule_merge_projection_and_fetch.go:91`); with a residual `PredicatesFilter`
+  between projection and fetch it takes the `:103-126` fallback, which yields
+  the projection over the fetch's inner group and leaves the scan unmarked.
+  Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
+  FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
+  labeling/costing gap, not wrong results: the plan renders and is costed
+  without the covering marker it earned. Found during the RFC-197 step-0
+  review fold; deferred from that fold because marking the scan moves plan
+  shapes corpus-wide and is a query-engine change needing its own RFC-gated
+  lap. Read Java's MergeProjectionAndFetchRule counterpart first — if Java
+  marks covering through a residual, this is a divergence; if not, it is a
+  shared gap and the fix is an extension.
