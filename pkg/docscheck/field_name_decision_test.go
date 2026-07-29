@@ -135,7 +135,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// and a bucket that reaches zero is the shape every other bucket is aiming
 	// for.
 
-	// escape (11)
+	// escape (10)
 	"pkg/relational/core/query/cascades_translator.go:7407":                       {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3705": {1, "escape: fieldValueAliasAndCol's dotted-split arm returns (qualifier, leaf) off a local holding the upper-cased name; one of the seven, and invisible until a local hop counted as a name read"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3707": {1, "escape: same function, childless bare arm -- returns the whole upper-cased name as the column"},
@@ -146,7 +146,6 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3691": {1, "escape: returns (alias, column) as bare uppercased strings"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3735": {1, "escape: bareColumnName, QOV arm"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3741": {1, "escape: bareColumnName, flat-string fallback arm"},
-	"pkg/recordlayer/query/plan/plans/cost.go:643":                                {1, "escape: correlatedInnerField -- the shape the gate is named after; guarded by Resolved.Single() and a flat-QOV child, but the caller still keys want[]/bound[] by the returned name"},
 
 	// contract (11)
 	//

@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "accessor_name_path.go",
         "coercion.go",
+        "column_identity.go",
         "compare_ordered.go",
         "correlation.go",
         "folder.go",
@@ -95,6 +96,7 @@ go_test(
         "cast_java_trim_test.go",
         "cast_round_bughunt_test.go",
         "coercion_test.go",
+        "column_identity_test.go",
         "column_name_value_test.go",
         "constant_signed_zero_test.go",
         "correlation_test.go",
