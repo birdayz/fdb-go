@@ -1,6 +1,10 @@
 # RFC-197: Column identity is an ordinal, not a name
 
-Status: PROPOSED, revision 2 — implementation blocked on joint-review ACK.
+Status: IN IMPLEMENTATION, revision 2. Step 0 and items 2, 3, 5 and 6 have
+landed, each under its own joint-review lap; the "blocked on joint-review ACK"
+this line used to carry was stale from the moment the first item shipped, and a
+status field that says a shipped design is unstarted is the kind of rot this
+RFC is otherwise careful about. Remaining items are unstarted and still gated.
 Revision 1 was NAK'd twice; this revision folds both reviews. The material
 changes: identity gained a third element (the ordinal DOMAIN), the
 dotted-probe item was re-rooted off a falsified premise, the migration order
@@ -257,6 +261,373 @@ RFC migrates 57 sites and changes one cross-component contract covering the
 other 11 (the aggregate-result naming switch in group_by.go joined its
 sibling authority when taint tracking exposed its six arms). No wire impact — the names never leave the process — but it is the
 one piece where "migrate the site" understates the work.
+
+REVISED after implementation contact refuted the item's premise. The listed
+sites are pure display-name PRODUCERS with zero listed consumers — the
+consumers were invisible behind a composed launderer
+(`normalizeAggOutputName`), and once the instrument was widened they joined
+the ratchet as ordinary convertible readers. Measured: the executor is
+ALREADY ordinal-bound at runtime (every emitted aggregate name replaced
+with a probe string leaves the full FDB aggregate suite green; only unit
+tests asserting on map keys notice). Java is the same shape: output
+composed by `Column.unnamedOf`, pulled up by loop index, `ResolvedAccessor`
+equality ordinal-only, and the display label a SEPARATE typed
+`Optional<Identifier>` (`Expression.java:72`) the executor never reads
+back.
+
+So item 5 splits:
+
+- *The readers* (the `groupByOutputBaker` family and the renderer sites the
+  widened launderer surfaced) convert normally — slot consumption, Java's
+  loop-index pull-up as the model, with the slot correspondence RECORDED AT
+  COMPOSITION (the `CompensateRecordConstructorRule.java:92` /
+  `LogicalOperator.java:454` alignment contract), never recovered through a
+  re-keyed map — a map keyed by an identity struct is item 3's shape doing
+  item 5's job, and it re-creates the recovery-instead-of-record pattern.
+
+  ORDERING CONSTRAINT with item 6, found in review and binding: the
+  last-wins reader at `cascades_translator.go:1003` separates two
+  same-leaf group keys TODAY only via the qualifier segment item 6
+  deletes, and the current SQL pins explicitly disclaim binder coverage —
+  so item 6 landing first would arm a silent last-wins conflation with
+  every test green. The readers convert BEFORE item 6's qualifier
+  producers die, and the two-same-leaf-group-keys binder shape gets its
+  pin NOW, in this item, not when item 6 discovers it.
+
+  **REFUTED on implementation contact, in the direction that matters: the
+  conflation is not armed by item 6, it is SHIPPED.** Building the pin
+  found it red on master. `GROUP BY o.k, i.k HAVING o.k + COUNT(*) > 2`
+  returns BOTH groups instead of one, and the mirror
+  (`GROUP BY i.k, o.k HAVING i.k + COUNT(*) > 12`) returns none —
+  a wrong-column bind, the EIGHTH instance of the class this RFC opens
+  with, found the same way as the other seven: by looking, not by the
+  suite. The qualifier segment protects only the shape where the re-read
+  reaches the binder QOV-qualified. A re-read nested inside an
+  expression does not: `rebasePostAggregateGroupKeyValue`
+  (`logical_predicate.go`) rewrites it to a CHILDLESS BARE-LEAF
+  FieldValue via `aggregateGroupKeyOutputName` — one of the naming
+  authorities this very item lists — and the binder then re-keys that
+  leaf in the last-wins map. There is no qualifier left to protect
+  anything.
+
+  Two further measurements, because each one changes what the plan can
+  claim:
+
+  - The existing coverage cannot see it and never could.
+    `ambiguous_group_key_reread.yaml`'s qualified control is a PURE
+    group-key HAVING, and with the qualifier segment deleted that
+    scenario still passes 4/4 and every yamsql/rowdiff target stays green;
+    the only reds are one plan shape and the golden. (This was first
+    explained as `PushFilterThroughGroupByRule` moving the predicate below
+    the aggregate and `rebindGroupKeyRefToInner` rescuing it by first-match
+    name path. That explanation is REFUTED — see the readers section below:
+    the predicate is never pushed at all, `PredicatesFilter` sits above
+    `StreamingAgg`, and the rebind never runs. The conclusion holds and is
+    stronger; only the mechanism was wrong.) The pin therefore uses a
+    predicate that references an
+    AGGREGATE, so it is not pushable and the output-baked ordinal stays
+    live to the executor.
+  - `groupByOutputBaker` is not near-dead. Panicking at each of its three
+    return arms over `//pkg/relational`: 224 hits on the aggregate arm, 22
+    on the group-key arm, ZERO on the qualifier-strip arm, across 88
+    failing test functions.
+
+  The fix is this item's own prescription applied one frame earlier than
+  the item placed it. `rebasePostAggregateGroupKeyValue` already holds the
+  group key's INDEX — the loop variable — and that index IS the output
+  slot. It now records it (`FieldPath` ordinal, FRONTIER-PINNED, since the
+  ordinal is final against the executor's assembled output row) instead of
+  emitting a name for the binder to recover the slot from. `bindPostAggregateValueToNativeOrdinals`
+  in the same file already binds this way, and it is Java's loop-index
+  pull-up (`CompensateRecordConstructorRule.java:92`). The binder honors
+  the pin by leaving pinned single-accessor nodes alone; measured before
+  landing, no pinned single-accessor node reached it anywhere in
+  `//pkg/relational`, so that is a channel opening rather than a policy
+  change on existing traffic. Zero `plan_shape.golden` movement.
+
+  What this does to the ordering constraint: it DISCHARGES it. With the
+  slot recorded, the item-6 qualifier deletion (simulated by deleting both
+  ends of the `qov.Correlation.Name()+"."+fv.Field` segment) leaves the pin
+  green. The constraint was real; the remedy is not "convert the readers
+  before item 6" but "stop recovering a slot that was known at
+  composition", and that is a stronger result than the ordering the
+  constraint asked for.
+SEQUENCING, corrected by implementation contact twice: the readers convert
+FIRST — "pure producers with zero consumers" was false a second time
+(`AggregateKeyColumnName`'s result is a map key in `groupByOutputOrdinals`,
+the executor, and `plans/ordering.go`), so the carrier type cannot compile
+until they are gone; and the single render exit lives in the
+metadata-assembly package (`embedded`), NOT in `values` — an exported
+render in `values` is a universal launderer every consumer can reach. The
+gate widening for the producers is a PRODUCER TIER (the call's RESULT is
+the name), not receiver taint — measured: the launderer route judges
+arguments, and these authorities take a `values.Value`, so it surfaces
+zero. One binder-reader was not merely unconverted but WRONG on master
+(the ninth bug of the class: an expression-nested group-key re-read
+rebased to a childless bare leaf, last-wins-bound to the wrong slot,
+wrong rows on `GROUP BY o.k, i.k` + HAVING) — fixed with the loop-index
+pull-up and FDB-pinned both directions, which also DISCHARGED the item-6
+ordering constraint by simulation.
+
+READERS, measured after conversion. The binder's three arms over
+`//pkg/relational` (unit, FDB, and the four conformance corpora), counted by
+logging every node at every exit. Counting by PANIC is what produced the earlier
+0, and the reason is worth stating correctly because the obvious explanation is
+wrong. It is NOT that "a panic aborts the process at the first arm reached" —
+that holds only for `embedded` and `query`, which call the baker outside the SQL
+boundary. On the dominant paths the panic is RECOVERED
+(`embedded/connection.go:358` and `:394`, `explaindiff/explaindiff.go:333`), so
+the binary runs to completion; what is lost is every SIBLING node in the same
+query, because the panic aborts that query's planning. The consequence is
+sharper than the ordering story: panic undercounts at ANY arity, not just when
+several arms are guarded at once. Measured — group-key alone reports 17 of 32,
+qualifier-strip alone 1 of 3, and with all three guarded the aggregate-name arm
+reports 0 despite having a real hit, which reproduces the "reads ZERO" artifact
+live on a different arm than the one it was first blamed on:
+
+| arm | before | after |
+|---|---|---|
+| aggregate-name | 1014 | 1 |
+| group-key | 55 | 36 |
+| qualifier-strip | 3 | 3 |
+
+The group-key "after" was recorded as 0 twice and was wrong both times; the
+table above carries the re-measured figure. Method, so the number can be
+reproduced rather than believed: a file-appending counter inside each of the
+three hit bodies (`cascades_translator.go`, the `aggOrds` / `stripColumnQualifier`
+/ `keyOrds` returns), `go test ./pkg/relational/...` at this HEAD, all packages
+green. 1 / 36 / 3. A bazel `//pkg/relational/...` run counts 32 on the group-key
+arm because it enumerates a different target set; the two agree that the arm is
+OPEN, and the discrepancy is scope, not method. Nothing here rests on the exact
+integer — what the earlier 0 licensed, and this does not, is the claim that
+widening `rebasePostAggregateGroupKeyValue` past its qualified-key-only guard
+DRAINED the group-key name channel. It did not. The surviving traffic is a
+parser-originated identifier (`HAVING a.id`, `ORDER BY a.id`) resolved against
+the aggregate's output columns, and draining it needs the reference resolved
+before a structural match can replace the name lookup — the same question as the
+ordering one below.
+
+The aggregate arm's producer was `rewriteAggregateValue`
+(`logical_predicate.go`): handed an `AggregateValue` whose identity is fully
+structural, it emitted a rendered canonical name and left the binder to recover
+the slot from a map keyed by a SECOND rendering — `AggregateResultColumnName`
+over the PARSE TEXT versus `canonicalAggName` over the RESOLVED Value, two
+renderings produced by different code from different inputs, agreeing by
+convention. `aggregateCallOutputSlot` records the slot instead, and is now the
+single structural matcher shared with `bindPostAggregateValueToNativeOrdinals`.
+The group-key arm's remaining traffic converted the same way, by widening
+`rebasePostAggregateGroupKeyValue` past its qualified-key-only guard to the bare
+keys, through that same shared matcher.
+
+Two results the conversion produced that the plan did not predict:
+
+- **It moves no rows, and that is the measured claim, not an assumption.**
+  Reverting the change and re-running gives byte-identical output across the
+  FDB aggregate scenarios and a wider probe set built specifically to break the
+  name channel (qualified-versus-bare spellings, quoted and CAST operands,
+  nested arithmetic operands, an alias deliberately spelled as another
+  aggregate's canonical name). No constructible shape made the name recovery
+  land on the wrong slot. So the row-level file pins a NEGATIVE result and says
+  so; the detector is a structural test asserting the reference CARRIES its
+  slot, which goes red on revert in each direction separately.
+- **The group-key widening was WRONG on first contact, in a way worth
+  recording.** By the time that rebase runs, the tree's aggregate references
+  have already become FieldValues carrying OUTPUT-row ordinals, while the group
+  keys carry SOURCE-relative ones. `fieldValueMatchesAggregateGroupKey`'s
+  childless/childless arm compares ordinals plus a single-inner-source check —
+  so `HAVING v > SUM(w)`, where V's source ordinal and SUM(W)'s output slot are
+  both 1, had its SUM(w) rewritten into a second reference to the group key. The
+  predicate then looked key-only and `PushFilterThroughGroupByRule` pushed it
+  onto the raw scan. `FieldPath.Domain` exists to fail closed on exactly this
+  comparison and neither side carries one yet, so the frontier pin does the job:
+  a node with a RECORDED slot is not offered to the matcher at all. This is the
+  cross-domain ordinal comparison the RFC's step 0 predicted, met in
+  production code rather than in a fixture.
+
+One corpus query's plan moves, nine golden lines:
+`SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub` gains a
+Projection operator. The cause is upstream of this item and is recorded here
+because it is the only thing the two binders ever disagreed about: the builder
+harvests the SELECT's `AVG(n)` and the HAVING's `AVG(n)` as TWO
+value-identical calls, so the aggregate computes AVG twice. The recorded slot
+picks the first (matching what `bindPostAggregateValueToNativeOrdinals` already
+does for SELECT and ORDER BY); the retired name map's last-wins picked the
+second. Rows and column labels are identical either way. The duplicate call
+itself is a separate defect and is NOT deduplicated here — `logicalAggregateCalls`
+suppresses a duplicate `COUNT(*)` only, and extending that changes the
+aggregate's output width, which `buildAggregateOutputSlots` numbers
+independently. Booked as **CQ-54**, which is where the fix goes: the two
+independent numberings become one authority, and the dedup follows from that
+rather than being bolted onto one side of it.
+
+NOT converted, and named rather than implied: the qualifier-strip arm's 3 hits;
+the `values.go` renderer sites and the `#ordinal` discriminator question; the
+name-keyed consumers of `AggregateKeyColumnName` in `executor.go` and
+`plans/ordering.go`. `DisplayLabel` is therefore NOT landed — those consumers
+still take a `string`, so the carrier type cannot compile.
+
+THE REMAINING CONSUMERS, MEASURED ONE AT A TIME. The list above is a list of
+suspects; each was probed separately, and they did not come out the same way.
+Two of the three are display, one is not, and the arm table above is wrong.
+
+- **The executor's emitted row names are display, confirmed by probe.** Every
+  name `aggregateCursor.finalizeGroup` and `emptyScalarAggregateRow` stamp onto
+  the emitted `PositionalRow` — group keys, aggregates, and the alias-preferring
+  arm alike — replaced with a positional `__PROBE_i__`. All of
+  `//pkg/relational/...` and `//pkg/recordlayer/query/...` stays green except 16
+  unit tests inside the executor package, every one of which asserts the emitted
+  spelling. Notably `TestAggregateCursor_OutputRowIdentityIsTheSlotNotTheName`
+  fails only on its display half and passes its ordinal half, which is the
+  behaviour its name claims.
+- **The plan-reported names feeding the UNION position-remap are display too,
+  and the remap does not key on them.** Probing `streamingAggOutputNames`
+  positionally (so every aggregate branch reports `__PLANPROBE_i__`) reds exactly
+  ONE test in the same 29 targets — `TestPlanColumnNames_StreamingAggReportsOutput
+  Schema`, which asserts the reported spelling. Reading the remap explains the
+  result rather than leaving it a coincidence: `remapUnionColumnsByPosition`
+  rebuilds the row's `RecordType` from the target names over the SAME `Slots`, so
+  it is a relabel; the name comparison in it only decides whether to skip an
+  allocation, and the `planColumnNamesWithMD(...) == nil` test that selects
+  streaming-versus-buffered union is a schema-KNOWN test, not a name test.
+- **`plans/ordering.go:598` is NOT display-only, and the flag that it might be is
+  REFUTED.** It is half of an identity decision. `properties.RichOrdering`
+  addresses its ordering set by `values.ExplainValue` (`rich_ordering.go`,
+  `orderingKeyFor`), so the aggregate's PROVIDED group-key ordering and an ORDER
+  BY's REQUESTED key — two independently constructed FieldValues — meet only as a
+  rendered string, and they agree solely because `HintOrdering` and
+  `canonicalizeAggregateOutputValue` (the requested-side authority — NOT the
+  whole-value sort rebase, which `!exactAggregateValue` guards off for these
+  queries) both spell the key through this one authority.
+  Probing the name at that site reds the FDB driver suite with
+  `want exactly 1 InMemorySort (group-key sort, reused by ORDER BY), got 2` and
+  moves the corpus plan-shape golden.
+  `sqldriver/aggregate_group_key_ordering_contract_fdb_test.go` pins BOTH
+  directions — provided side and requested side, mutated separately — on rows
+  AND on `InMemorySort` counts, including the two-same-leaf-group-keys shape.
+  `plans/streaming_aggregation_ordering_key_name_test.go` pins the provided side
+  plus the agreement between `AggregateKeyColumnName` and
+  `GroupByOutputColumnNames`; it cannot see a requested-side divergence, because
+  it constructs its requested value by calling `GroupByOutputColumnNames`. Only
+  the FDB file is a two-direction detector.
+
+  This is the STOP for `DisplayLabel`, and it is a stronger stop than "a consumer
+  still takes a string": the consumer renders the label INTO a match key, so no
+  render exit placed in `embedded` can reach it — the site is in `plans`, below
+  that package. The conversion this needs is the ordering property matching on a
+  structural identity (ordinal plus domain) instead of on `ExplainValue`. That is
+  Cascades ordering machinery and carries the query-engine review gate, so it is
+  named here as the next piece of work rather than done inside this item, and is
+  booked as **CQ-55** with the reviewed shape (`PartiallyOrderedSet[string]` →
+  `[ColumnIdentity]` under `SameColumnPath`, domains minted at the `HintOrdering`
+  providers and at composition, `orderingKeyFor`'s three bridge arms deleted,
+  lazy providers failing closed). The ordinal-domain half it depends on is
+  **CQ-56**: `NewFieldValueWithPinnedOrdinal` mints `Domain: unknown` at both
+  composition sites, where `OrdinalDomainOfColumnNames` would derive it.
+
+THE GROUP-KEY ARM IS OPEN, corroborated a second way so the count above is not
+the only evidence. Guarding that arm alone with a panic reds five targets
+(`sqldriver`, `yamsql`, `explaindiff`, `embedded`, `query`) — e.g. `SELECT a.id,
+COUNT(c.id) FROM a JOIN c ON c.a_id = a.id GROUP BY a.id HAVING a.id >= 2 ORDER
+BY a.id`, reaching it through `translateAggregate → ReplaceValues →
+groupByOutputBaker`. Recorded rather than repaired here for the reason given
+with the table: the remaining traffic needs a resolved reference before a
+structural match can replace the name lookup, which is the ordering question
+below.
+
+**Two further claims in this section were REFUTED on review, and are corrected
+here rather than left standing.**
+
+- *The masking story for the qualified control is wrong on mechanism.* The
+  claim above — that `ambiguous_group_key_reread.yaml`'s pure group-key HAVING
+  is pushed below the aggregate and rescued by `rebindGroupKeyRefToInner`'s
+  first-match name recovery — does not happen. The predicate is never pushed:
+  `plan_shape.golden` shows `PredicatesFilter` ABOVE `StreamingAgg` for that
+  scenario, and `having_pushdown_decider_test.go` asserts that shape
+  independently. The rebind never runs, so nothing rescues anything. The
+  CONCLUSION survives and is stronger than the one argued for — the existing
+  corpus could not have covered the ninth bug — but the reason is that the
+  reference never reaches the rebind, not that a second name recovery hid a
+  wrong ordinal.
+
+  WHY the reference never reaches it, measured rather than asserted, because the
+  answer decides whether item 6 arms a wrong-rows bug. Instrumenting the rule
+  over `//pkg/relational/...` (a stderr counter at each exit of
+  `predicateReferencesOnlyKeys` and at each arm of the rebind) gives 1094
+  rejections on ONE branch — the predicate's LHS accessor-path key is not in the
+  grouping-key set — against 20 rebind firings, and **all 20 have `nkeys=1`**, so
+  first-match was never a choice anywhere in the tree. The 1094 have a single
+  cause: a qualified reference carries its qualifier INSIDE the accessor name,
+  as ONE accessor whose `Field` is the flat string `"I.K"`
+  (`Accessors:[{Field:I.K Ordinal:1}] Domain:domain(unknown)`), so its path key
+  is `"I.K"` and the grouping keys' is `"K"`. The predicate is never classified
+  pushable, so it stays a residual filter above the aggregate and the rebind is
+  not invoked. The only spelling that could carry a bare `["K"]` is an
+  unqualified reference, and the resolver rejects that upstream with
+  `42702 Ambiguous reference K` — including when a SELECT alias supplies the bare
+  spelling (`SELECT i.k AS k ... HAVING k > 15`), because HAVING resolves against
+  the FROM scope.
+
+  So the wrong pick is UNREACHABLE today, and gate one is the qualified-name
+  channel item 6 deletes: strip the qualifier segment and `i.k` renders `["K"]`,
+  the predicate becomes pushable with two same-path keys in hand, and the pick
+  goes live. Rather than leave item 6 holding that, both sites now DECLINE the
+  ambiguity — `buildGroupKeySet` returns nil when two grouping keys share a path
+  (pushdown refused for that GroupBy; the predicate stays above, correct rows by
+  the slower path) and `rebindGroupKeyRefToInner` returns the reference unchanged
+  when more than one key matches. This is the conservative reject
+  `ColumnNamePathsEqual` already documents, applied to the ambiguity a SET
+  silently collapses; it is not the eventual answer, which is a structural
+  identity on both sides and needs the ordinal domain of CQ-56 before a recorded
+  slot may be trusted to make the pick. Pinned at the function boundary, where
+  the shape is constructible now, by
+  `TestPredicatePushesBelowGroupBy_TwoKeysOneNamePath_RefusesToPush` and
+  `TestRebindGroupKeyRefToInner_TwoKeysOneNamePath_LeavesTheRefAlone`
+  (each direction mutated separately), and at the SQL boundary — rows plus the
+  42702 gate, so a relaxed ambiguity rejection re-arms it visibly — by
+  `TestFDB_GroupBySameLeafKeys_PushedHavingStaysAboveTheAggregate`.
+- *The requested-side ordering authority is misnamed below, and the
+  both-directions credit is overstated.* The requested key is spelled by
+  `canonicalizeAggregateOutputValue` (`cascades_translator.go`), NOT by the
+  translator's whole-value sort rebase — that branch is guarded by
+  `!exactAggregateValue` and does not execute for these queries. Only the FDB
+  test pins BOTH directions; the unit test pins the provided side and an
+  agreement invariant between `AggregateKeyColumnName` and
+  `GroupByOutputColumnNames`, and it CANNOT see a requested-side divergence
+  because it builds its requested value by calling `GroupByOutputColumnNames`
+  itself. A requested-side mutation at the real site leaves it green.
+
+- *The producers* leave the ratchet through a DISPLAY-LABEL CARRIER TYPE,
+  the policy this revision adds. A `DisplayLabel` wrapper (Java's
+  `Expression.name`, CRDB's display-only `Alias`, made structural): naming
+  authorities return `DisplayLabel`, not `string`; constructing one from
+  `.Field` is sanctioned construction exactly like building a FieldValue
+  from a name; and the gate gains the INVERSE rule — any comparison,
+  map-keying, or switch on a `DisplayLabel` is a violation, checkable by
+  named type without type inference. Three conditions from review are part
+  of the design, not follow-ups: `DisplayLabel` has NO exported string
+  accessor — the banned key struct would otherwise be reborn one method
+  call later, since the gate's taint propagates through call arguments but
+  not receivers, making `label.String() == other` invisible; the single
+  exit is one named render function at the emission boundary, and the gate
+  widening (receiver-taint propagation plus that exit treated as a
+  launderer) lands IN THE SAME CHANGE as the type — without it the type is
+  a convention wearing a struct. And the inverse rule is a sanctioned
+  GO-SIDE STRENGTHENING, not a Java port: Java's `Identifier` is compared
+  freely during resolution and its display-only discipline on
+  `Expression.name` is convention; Go makes it checkable. This is strictly
+  stronger than today's gate: the display/identity split becomes a type
+  the compiler and the gate both see, instead of a convention the ratchet
+  polices site by site. The rejected alternatives: a new prose-demonstration allowlist
+  category (re-opens the drift channel the per-site mechanism closed) and
+  permanent accepted debt (a ratchet that never reaches zero is a
+  permanent allowlist with ceremony — this RFC's own words).
+- *The JDBC label site* is NOT a boundary — it fails item 4's leg (a)
+  outright (its right operand is another Value's `.Field`, and its left
+  cannot be asserted parser-originated because distinguishing user aliases
+  from machinery-minted spellings is the site's entire job). It is a
+  provenance question wearing a string comparison; the fix is a tag at the
+  alias MINT site, the dotted bucket's producer pattern applied here. It
+  stays on the ratchet until then. The allowlist remains empty.
 
 **6. dotted (15) — kill the qualified-name channel, then the probes die.**
 Revision 1 claimed these probes exist because of the legacy flat

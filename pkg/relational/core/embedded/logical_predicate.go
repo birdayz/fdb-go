@@ -3458,7 +3458,17 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				aggSlots[i] = ordinal >= len(agg.GroupKeys)
 				if ordinal >= 0 {
 					typ := aggregateNativeOutputType(agg, ordinal)
-					vals[i] = values.NewFieldValueWithResolvedOrdinal(
+					// The slot is RECORDED, not derived: proj.AggregateOutputOrdinals[i]
+					// was fixed by buildAggregateOutputSlots while the parser's
+					// structural key/call identities were still in hand, and it
+					// addresses the aggregate's [keys..., calls...] output row —
+					// the executor's assembled frontier, not this reference's
+					// source. PINNED for exactly that reason: an unpinned ordinal
+					// invites the downstream binder (groupByOutputBaker) to discard
+					// it and RECOVER a slot from a map keyed by the rendered output
+					// name, which is last-wins on any duplicated label. The name
+					// here is the display label only.
+					vals[i] = values.NewFieldValueWithPinnedOrdinal(
 						aggregateNativeOutputName(agg, ordinal), ordinal, typ)
 				}
 			}
@@ -3492,7 +3502,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 					return err
 				}
 			} else {
-				v = rewriteAggregateValuesInTree(v)
+				v = rewriteAggregateValuesInTree(v, agg)
 			}
 			vals[i] = v
 		}
@@ -3569,7 +3579,10 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			continue
 		}
 		aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
-		v = rewriteAggregateValuesInTree(v)
+		// The regular-projection path has no aggregate above it, so there is no
+		// output row whose slots could be recorded; the reference keeps its
+		// name-only form.
+		v = rewriteAggregateValuesInTree(v, nil)
 		vals[i] = v
 	}
 	proj.ProjectedValues = vals
@@ -3920,7 +3933,7 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	// qualified there (the pre-aggregate row binds `V.V`, the unnest element);
 	// rebaseHavingGroupKeyPredicate keeps that case untouched. RFC-142.
 	agg.HavingPredicate = rebaseHavingGroupKeyPredicate(
-		rewriteAggregateRefsInPredicate(pred), agg,
+		rewriteAggregateRefsInPredicate(pred, agg), agg,
 	)
 	if subqPlanner != nil && len(subqPlanner.subqueries) > 0 {
 		agg.HavingExistsSubqueries = subqPlanner.subqueries
@@ -3933,31 +3946,31 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	return nil
 }
 
-func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
+func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
 	switch p := pred.(type) {
 	case *predicates.ComparisonPredicate:
-		lhs := rewriteAggregateValuesInTree(p.Operand)
+		lhs := rewriteAggregateValuesInTree(p.Operand, agg)
 		// Copy the whole Comparison and replace ONLY the rewritten RHS operand,
 		// preserving Escape and every other Comparison field. A fresh
 		// {Type, Operand} would drop the LIKE escape rune (and the parameter /
 		// text / distance-rank metadata) and change comparison semantics. RFC-142.
 		cmp := p.Comparison
-		cmp.Operand = rewriteAggregateValuesInTree(p.Comparison.Operand)
+		cmp.Operand = rewriteAggregateValuesInTree(p.Comparison.Operand, agg)
 		return predicates.NewComparisonPredicate(lhs, cmp)
 	case *predicates.AndPredicate:
 		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sub := range p.SubPredicates {
-			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub, agg)
 		}
 		return predicates.NewAnd(rewritten...)
 	case *predicates.OrPredicate:
 		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sub := range p.SubPredicates {
-			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub, agg)
 		}
 		return predicates.NewOr(rewritten...)
 	case *predicates.NotPredicate:
-		return predicates.NewNot(rewriteAggregateRefsInPredicate(p.Child))
+		return predicates.NewNot(rewriteAggregateRefsInPredicate(p.Child, agg))
 	}
 	return pred
 }
@@ -3981,29 +3994,29 @@ func containsAggregate(v values.Value) bool {
 	return found
 }
 
-func rewriteAggregateValuesInTree(v values.Value) values.Value {
+func rewriteAggregateValuesInTree(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	if v == nil {
 		return nil
 	}
 	if _, ok := v.(*values.AggregateValue); ok {
-		return rewriteAggregateValue(v)
+		return rewriteAggregateValue(v, agg)
 	}
 	if av, ok := v.(*values.ArithmeticValue); ok {
 		return &values.ArithmeticValue{
 			Op:    av.Op,
-			Left:  rewriteAggregateValuesInTree(av.Left),
-			Right: rewriteAggregateValuesInTree(av.Right),
+			Left:  rewriteAggregateValuesInTree(av.Left, agg),
+			Right: rewriteAggregateValuesInTree(av.Right, agg),
 		}
 	}
 	if sf, ok := v.(*values.ScalarFunctionValue); ok {
 		args := make([]values.Value, len(sf.Args))
 		for i, a := range sf.Args {
-			args[i] = rewriteAggregateValuesInTree(a)
+			args[i] = rewriteAggregateValuesInTree(a, agg)
 		}
 		return values.NewScalarFunctionValue(sf.FuncName, sf.Typ, args...)
 	}
 	if cv, ok := v.(*values.CastValue); ok {
-		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
+		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child, agg), cv.Target)
 	}
 	// A machine-inserted PromoteValue (expr.promoteColumnColumnNumeric,
 	// RelOpValue's Java analogue: `HAVING SUM(int_col) > 5.5` rewrites to
@@ -4015,28 +4028,89 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	// `HAVING aggregate > scalar-subquery` of mismatched numeric types into
 	// "42803: aggregate function is not allowed here".
 	if pv, ok := v.(*values.PromoteValue); ok {
-		return values.NewPromoteValue(rewriteAggregateValuesInTree(pv.Child), pv.Target)
+		return values.NewPromoteValue(rewriteAggregateValuesInTree(pv.Child, agg), pv.Target)
 	}
 	if pv, ok := v.(*values.PickValue); ok {
 		alts := make([]values.Value, len(pv.Alternatives))
 		for i, a := range pv.Alternatives {
-			alts[i] = rewriteAggregateValuesInTree(a)
+			alts[i] = rewriteAggregateValuesInTree(a, agg)
 		}
-		return values.NewPickValue(rewriteAggregateValuesInTree(pv.Selector), alts, pv.Typ)
+		return values.NewPickValue(rewriteAggregateValuesInTree(pv.Selector, agg), alts, pv.Typ)
 	}
 	if cs, ok := v.(*values.ConditionSelectorValue); ok {
 		impl := make([]values.Value, len(cs.Implications))
 		for i, c := range cs.Implications {
-			impl[i] = rewriteAggregateValuesInTree(c)
+			impl[i] = rewriteAggregateValuesInTree(c, agg)
 		}
 		return values.NewConditionSelectorValue(impl)
 	}
 	if ph, ok := v.(expr.PredicateValueHolder); ok {
-		rewritten := rewriteAggregateRefsInPredicate(ph.GetPredicate())
+		rewritten := rewriteAggregateRefsInPredicate(ph.GetPredicate(), agg)
 		ph.SetPredicate(rewritten)
 		return ph
 	}
 	return v
+}
+
+// aggregateCallOutputSlot is THE structural matcher from an AggregateValue to
+// the slot that aggregate occupies in the aggregate's output row, and the sole
+// place a post-aggregate reference to an aggregate is born. It answers with a
+// FieldValue whose ordinal is RECORDED — the call's index in agg.Calls, offset
+// by the group keys, which is precisely the [keys..., calls...] order
+// GroupByOutputColumnNames and the executor's aggregateCursor emit.
+//
+// The match is on the aggregate's IDENTITY (function plus semantic operand
+// equality), never on a rendered name. That matters because the two renderings
+// that would otherwise have to agree are produced by different code from
+// different inputs — canonicalAggName walks the RESOLVED operand Value while
+// AggregateResultColumnName renders the PARSE TEXT the builder captured — so a
+// name channel between them is a coincidence the compiler cannot check.
+//
+// The canonical-name fallback survives for the one case identity cannot serve:
+// a catalog-free or constant call that carries no resolved AggregateOperands
+// entry, where the call's own canonical rendering is the only identity there
+// is. It stays a fallback, not a first choice.
+//
+// The result is PINNED: the ordinal is final against the executor's assembled
+// output row, not relative to any source's declared column order. That pin is
+// what stops groupByOutputBaker from discarding a slot decided here and
+// recovering one from a last-wins map keyed by the rendered output name.
+func aggregateCallOutputSlot(av *values.AggregateValue, agg *logical.LogicalAggregate) (*values.FieldValue, bool) {
+	if av == nil || agg == nil {
+		return nil, false
+	}
+	var matches []int
+	for i, call := range agg.Calls {
+		if av.Op == values.AggCountStar {
+			if call.Star {
+				matches = append(matches, i)
+			}
+			continue
+		}
+		if call.Star || !strings.EqualFold(call.Func, av.Op.Symbol()) {
+			continue
+		}
+		if i < len(agg.AggregateOperands) && agg.AggregateOperands[i] != nil &&
+			values.SemanticEqualsUnderAliasMap(av.Operand, agg.AggregateOperands[i], values.AliasMap{}) {
+			matches = append(matches, i)
+		}
+	}
+	if len(matches) == 0 {
+		want := normalizeAggregateBindingName(canonicalAggName(av.Op.Symbol(), av.Operand))
+		for i, call := range agg.Calls {
+			if normalizeAggregateBindingName(call.CanonicalName()) == want {
+				matches = append(matches, i)
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return nil, false
+	}
+	// Repeated identical aggregate calls are value-equivalent; the first
+	// native slot is a deterministic, semantics-preserving bind.
+	ordinal := len(agg.GroupKeys) + matches[0]
+	return values.NewFieldValueWithPinnedOrdinal(
+		agg.Calls[matches[0]].CanonicalName(), ordinal, av.Type()), true
 }
 
 // bindPostAggregateValueToNativeOrdinals rewrites a computed SELECT item over a
@@ -4056,43 +4130,13 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 			return node
 		}
 		if av, ok := node.(*values.AggregateValue); ok {
-			var matches []int
-			for i, call := range agg.Calls {
-				if av.Op == values.AggCountStar {
-					if call.Star {
-						matches = append(matches, i)
-					}
-					continue
-				}
-				if call.Star || !strings.EqualFold(call.Func, av.Op.Symbol()) {
-					continue
-				}
-				if i < len(agg.AggregateOperands) && agg.AggregateOperands[i] != nil &&
-					values.SemanticEqualsUnderAliasMap(av.Operand, agg.AggregateOperands[i], values.AliasMap{}) {
-					matches = append(matches, i)
-				}
-			}
-			// A catalog-free or constant call may not carry a resolved
-			// AggregateOperands entry. Canonical call identity is a safe
-			// fallback only when it selects one result shape.
-			if len(matches) == 0 {
-				want := normalizeAggregateBindingName(canonicalAggName(av.Op.Symbol(), av.Operand))
-				for i, call := range agg.Calls {
-					if normalizeAggregateBindingName(call.CanonicalName()) == want {
-						matches = append(matches, i)
-					}
-				}
-			}
-			if len(matches) == 0 {
+			bound, bindOK := aggregateCallOutputSlot(av, agg)
+			if !bindOK {
 				bindErr = api.NewError(api.ErrCodeUnsupportedQuery,
 					"post-aggregate expression could not bind an aggregate call to the native output row")
 				return node
 			}
-			// Repeated identical aggregate calls are value-equivalent; the
-			// first native slot is a deterministic, semantics-preserving bind.
-			ordinal := len(agg.GroupKeys) + matches[0]
-			return values.NewFieldValueWithResolvedOrdinal(
-				agg.Calls[matches[0]].CanonicalName(), ordinal, av.Type())
+			return bound
 		}
 
 		// Pre-order matching binds a whole computed GROUP BY expression before
@@ -4107,7 +4151,13 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 			}
 		}
 		if keyMatch >= 0 {
-			return values.NewFieldValueWithResolvedOrdinal(
+			// keyMatch is the key's index in agg.GroupKeys, which IS its output
+			// slot (the row is [group keys in this order..., calls...]). The
+			// match above is structural (semantic equality / resolved path), so
+			// the slot is a recorded fact; pinning keeps it one, instead of
+			// handing the downstream binder a bare leaf whose name it must
+			// re-key — the shape that bound two same-leaf group keys to one slot.
+			return values.NewFieldValueWithPinnedOrdinal(
 				aggregateGroupKeyOutputName(agg.GroupKeys[keyMatch].Value), keyMatch, node.Type())
 		}
 		if _, isField := node.(*values.FieldValue); isField {
@@ -4224,7 +4274,7 @@ func canonicalAggOperandText(cname string) string {
 	return cname[l+1 : r]
 }
 
-func rewriteAggregateValue(v values.Value) values.Value {
+func rewriteAggregateValue(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	if v == nil {
 		return nil
 	}
@@ -4232,6 +4282,24 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if !ok {
 		return v
 	}
+	// The aggregate's OUTPUT SLOT is decided here, where its structural identity
+	// (function + resolved operand) is still in hand, and it is recorded on the
+	// reference. Emitting only the rendered canonical name — which is what this
+	// did — hands the slot decision to groupByOutputBaker, which recovers it from
+	// a map keyed by AggregateResultColumnName's rendering of the PARSE TEXT.
+	// The two renderings are produced by different code from different inputs and
+	// agree only by convention: when they diverge the lookup MISSES and the
+	// reference falls through to a name-model read, and when two of them collide
+	// the map is last-wins. Java binds a post-aggregate reference by the call's
+	// loop index for the same reason (CompensateRecordConstructorRule.java:92 over
+	// Column.unnamedOf columns — the columns have no names to look up).
+	if bound, ok := aggregateCallOutputSlot(av, agg); ok {
+		return bound
+	}
+	// No aggregate composition in hand (a projection with no aggregate above it),
+	// or a call this aggregate does not contain: keep the name-only reference so
+	// the surface of shapes that resolve downstream is unchanged.
+	//
 	// Preserve the aggregate's result type on the reference — a reference must
 	// report the type of its referent. (Previously discarded as UnknownType,
 	// which left every downstream type query on a rewritten projection blind;
@@ -6065,7 +6133,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 			sort.Keys[i].AggregateOutputValueExact = true
 		} else {
-			v = rewriteAggregateValuesInTree(v)
+			v = rewriteAggregateValuesInTree(v, nil)
 		}
 		// A bare unnest sort key (`ORDER BY v`) resolves through the unnest's
 		// Shadowing scope source to a qualified FieldValue over the unnest
@@ -6120,18 +6188,69 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 		return v
 	}
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		for _, gk := range agg.GroupKeys {
+		// A node that already carries a RECORDED slot is addressed against the
+		// aggregate's OUTPUT row and is not a candidate for anything here. The
+		// guard is load-bearing, not defensive: by the time this runs the tree's
+		// aggregate references have already become FieldValues carrying their
+		// output-row ordinals (rewriteAggregateValue), and the group keys carry
+		// SOURCE-relative ordinals. Letting the two meet in an ordinal comparison
+		// matches across two different layouts — measured, it rewrote the SUM(v)
+		// in `HAVING g > SUM(v)` into a reference to the group key G whenever
+		// their ordinals happened to coincide, after which the predicate looked
+		// key-only and PushFilterThroughGroupByRule pushed it onto the raw scan.
+		// The domain token on FieldPath exists to fail closed on exactly this
+		// comparison; neither side carries one yet, so the provenance bit does
+		// the job.
+		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
+			return fv
+		}
+		for i, gk := range agg.GroupKeys {
 			if gk.Value == nil {
 				continue
 			}
 			qfv, ok := gk.Value.(*values.FieldValue)
-			if !ok || qfv.Child == nil {
-				continue // only qualified group keys carry the V.V mismatch
+			if !ok {
+				continue
 			}
-			if values.ValuesStructurallyEqual(fv, qfv) {
+			// Two ways a post-aggregate reference is provably THIS group key. A
+			// QUALIFIED key carries the V.V mismatch and matches on structural
+			// equality with the reference as resolved. A BARE key matches through
+			// the SAME structural matcher the exact-boundary binder uses
+			// (bindPostAggregateValueToNativeOrdinals) — semantic equality, or the
+			// one sanctioned representation difference between a qualified read and
+			// a de-qualified single-source key. Neither arm consults a name.
+			matched := qfv.Child != nil && values.ValuesStructurallyEqual(fv, qfv)
+			if !matched && qfv.Child == nil {
+				matched = values.SemanticEqualsUnderAliasMap(fv, gk.Value, values.AliasMap{}) ||
+					fieldValueMatchesAggregateGroupKey(fv, gk.Value, agg)
+			}
+			if matched {
+				// The SLOT is recorded HERE, at the composition that decides it:
+				// `i` is this key's index in agg.GroupKeys, and the aggregate
+				// output row is [group keys in this order..., aggregates...]
+				// (GroupByOutputColumnNames / translateAggregate's index-parallel
+				// groupKeys build). Java pulls a post-aggregate reference up by
+				// exactly this loop index (CompensateRecordConstructorRule.java:92
+				// over Column.unnamedOf columns) rather than by any name.
+				//
+				// Emitting the BARE NAME alone — which is what this did — throws
+				// that index away and leaves the downstream binder
+				// (groupByOutputBaker) to RECOVER the slot from a map keyed by the
+				// rendered output name. When two group keys share a leaf, that map
+				// is last-wins and the recovery lands on the WRONG key: measured as
+				// wrong rows for `GROUP BY o.k, i.k HAVING o.k + COUNT(*) > 2`,
+				// pinned by TestFDB_GroupBySameLeafKeys_HavingRereadBindsItsOwnSlot.
+				// The name is kept only as the display label.
+				//
+				// PINNED because the ordinal is FINAL against the executor's
+				// assembled aggregate output row, not relative to any source's
+				// declared column order — which is also the signal the binder reads
+				// to leave this node alone instead of re-keying it.
+				name := aggregateGroupKeyOutputName(qfv)
 				return &values.FieldValue{
-					Field: aggregateGroupKeyOutputName(qfv),
-					Typ:   fv.Typ,
+					Field:    name,
+					Typ:      fv.Typ,
+					Resolved: values.NewFieldPathOfSingle(name, i, true),
 				}
 			}
 		}
@@ -9111,7 +9230,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: fmt.Sprintf("correlated scalar subquery: walk HAVING: %v", hErr), Cause: hErr,
 				}
 			}
-			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
+			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred, aggOp)
 		}
 		innerOp = aggOp
 		// ORDER BY over the grouped output: sort the groups before an explicit

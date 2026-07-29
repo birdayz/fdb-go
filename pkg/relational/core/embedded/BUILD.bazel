@@ -75,6 +75,7 @@ go_test(
         "aggregate_group_key_accessor_name_test.go",
         "aggregate_group_key_call_site_guard_test.go",
         "aggregate_group_key_reachability_test.go",
+        "aggregate_output_slot_recorded_test.go",
         "ast_util_test.go",
         "bench_test.go",
         "bug_hunt_cascades_test.go",
@@ -219,6 +220,7 @@ go_test(
         "vector_ddl_test.go",
         "vector_plan_test.go",
         "where_extractors.go",
+        "aggregate_output_slot_recorded_test.go",
     ],
     deps = [
         "//gen",

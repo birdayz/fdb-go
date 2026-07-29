@@ -949,6 +949,25 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 		if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
 			return node
 		}
+		// A FRONTIER-PINNED single-accessor node is already addressed against an
+		// executor-assembled row — here, the aggregate's own output row, bound at
+		// the composition that decided the slot (rebasePostAggregateGroupKeyValue
+		// carries the group key's index through). The by-name rebind below exists
+		// for the OTHER bake kind, a source-relative ordinal that is dead above the
+		// aggregate; applying it to a pinned node would discard a slot that was
+		// RECORDED and recover it from a last-wins name map instead, which is the
+		// conflation this whole rebind is downstream of.
+		//
+		// This is now the channel most post-aggregate references arrive on:
+		// aggregateCallOutputSlot and the OutputSlots projection bind
+		// (logical_predicate.go) record the slot where the composition decides it,
+		// so the aggregate-name arm below went from 1014 hits over //pkg/relational
+		// to 1. Where the two answers differ they differ only on WHICH of a
+		// duplicated, value-identical aggregate call is read — the recorded slot
+		// picks the first, the name map's last-wins picks the last.
+		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
+			return node
+		}
 		// Match by the reference's OUTPUT-column name: the bare field for a flat
 		// reference, or the "ALIAS.COL" qualified form for a QOV(alias).col
 		// reference (a group key output under its qualified name, e.g. `A.ID`). A

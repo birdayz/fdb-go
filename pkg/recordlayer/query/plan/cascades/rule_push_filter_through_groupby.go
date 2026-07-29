@@ -102,6 +102,18 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 // which is what the reference denotes below the aggregate. This is Java's
 // push-down translation; resolving the bare name by string at runtime instead
 // would be a lossy shortcut. A reference matching no key is returned unchanged.
+//
+// A reference matching MORE THAN ONE key is also returned unchanged, and that is
+// the load-bearing half. The match is by accessor name path, and
+// AccessorNamePath stops at the QOV root — so the two grouping keys of
+// `GROUP BY o.k, i.k` both render ["K"] and are indistinguishable HERE. Taking
+// the first match would then bind the reference to whichever key the GROUP BY
+// happened to list first, which is a wrong-rows read whenever the reference
+// denoted the other one. The name domain cannot decide this, so it declines to,
+// exactly as AccessorNamePath declines a pure-ordinal accessor rather than
+// falling back to a silent name match. Deciding it needs a structural identity
+// (ordinal plus DOMAIN) on both sides; the reference's recorded ordinal is not
+// usable as that identity while its domain is still unknown.
 func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
 	return func(v values.Value) values.Value {
 		if _, ok := v.(*values.FieldValue); !ok {
@@ -111,12 +123,19 @@ func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Val
 		// field is rebound to a grouping key only when they denote the same
 		// column, so a nested `addr.city` is not rewritten to a same-leaf-named
 		// top-level `city` grouping key.
+		var matched values.Value
 		for _, k := range keys {
 			if values.ColumnNamePathsEqual(k, v) {
-				return k
+				if matched != nil {
+					return v // ambiguous: two keys answer to this path
+				}
+				matched = k
 			}
 		}
-		return v
+		if matched == nil {
+			return v
+		}
+		return matched
 	}
 }
 
@@ -124,11 +143,24 @@ func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Val
 // (RFC-187 S7), so predicate-pushdown membership distinguishes a nested
 // `addr.city` grouping key from a same-leaf-named top-level `city`. Returns nil
 // (pushdown disabled) if any grouping key's column identity can't be established.
+//
+// TWO grouping keys sharing one path is also "can't be established", and it is
+// the case that bites: `GROUP BY o.k, i.k` yields two keys that both render
+// ["K"] because AccessorNamePath excludes the QOV root. A set built from them
+// has ONE entry, so membership still answers yes for a reference spelled `k` —
+// and the rebind that follows has no way to tell which of the two the reference
+// meant. Pushdown is therefore refused for the whole GroupBy: the predicate
+// stays a residual filter ABOVE the aggregate, which is correct rows by the
+// slower path. This is the same conservative reject ColumnNamePathsEqual
+// documents, applied to the ambiguity a SET silently collapses.
 func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 	m := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		key, ok := values.AccessorNamePathKey(k)
 		if !ok {
+			return nil
+		}
+		if _, dup := m[key]; dup {
 			return nil
 		}
 		m[key] = struct{}{}

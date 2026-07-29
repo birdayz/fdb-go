@@ -42,6 +42,7 @@ go_test(
     name = "executor_test",
     srcs = [
         "aggregate_avg_precision_test.go",
+        "aggregate_output_slot_identity_test.go",
         "bench_proto_test.go",
         "charge_coverage_test.go",
         "comparator_differential_fuzz_test.go",
@@ -180,6 +181,7 @@ go_test(
         "merge_sort_heap_differential_test.go",
         "merge_sort_heap_error_test.go",
         "merge_sort_heap_pop_error_test.go",
+        "aggregate_output_slot_identity_test.go",
     ],
     deps = [
         "//gen",

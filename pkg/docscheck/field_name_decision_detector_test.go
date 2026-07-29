@@ -1296,3 +1296,96 @@ func TestFieldDecisionsInsideClosuresAreReported(t *testing.T) {
 		t.Errorf("closure site %s is in neither the debt list nor the allowlist", site)
 	}
 }
+
+// A struct field is not a map key, and go/parser cannot tell them apart.
+//
+// The composite-literal check used to fire on any KeyValueExpr whose key
+// "decides", and it reached that verdict through the taint set — which is keyed
+// on the parser's *ast.Object precisely so a spelling collision cannot make one
+// variable answer for another. In a STRUCT literal the collision happens one
+// level up, in what the key MEANS: go/parser has no types, so it resolves the
+// bare field identifier in `extraSortCol{name: name}` to whatever declaration is
+// in scope with that spelling — here the local holding the display name. The
+// object matches, the taint fires, and a struct field that never touched a
+// column got reported as a name-keyed decision.
+//
+// Both directions are pinned because narrowing a gate is how recall dies
+// quietly: the map literal MUST still be reported, and it is the shape the check
+// was written for.
+//
+// Found while measuring a widening (treating the RFC-197 naming authorities as
+// name PRODUCERS, so a decision on `AggregateKeyColumnName(k)` is visible): that
+// widening reports `extraSortCol{name: name}` at cascades_translator.go, and the
+// report is false. Nothing in the live tree is affected today — no listed debt
+// entry is a struct literal — so this fixture is the only thing that can hold
+// the distinction.
+func TestFieldDecisionCompositeLiteralKeysAreMapKeysNotStructFields(t *testing.T) {
+	t.Parallel()
+
+	reportsKey := func(t *testing.T, body string) bool {
+		t.Helper()
+		for _, form := range scanSnippet(t, body) {
+			if strings.Contains(form, "composite-literal key") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// RECALL: a MAP literal keyed by the display name is the conflation.
+	if !reportsKey(t, `func f(fv *values.FieldValue) map[string]int {
+	return map[string]int{fv.Field: 1}
+}`) {
+		t.Error("a map literal keyed by fv.Field is no longer reported — this is the shape " +
+			"the composite-literal check exists for, and without it `map[string]T{fv.Field: v}` " +
+			"builds the same same-leaf-name conflation an IndexExpr would, with nothing to catch it")
+	}
+
+	// RECALL through the taint set, which is how the real sites arrive.
+	if !reportsKey(t, `func f(fv *values.FieldValue) map[string]int {
+	name := fv.Field
+	return map[string]int{name: 1}
+}`) {
+		t.Error("a map literal keyed by a name-derived LOCAL is no longer reported")
+	}
+
+	// PRECISION: a STRUCT literal whose field is spelled like the local.
+	if reportsKey(t, `type extraSortCol struct {
+	name string
+	val  int
+}
+
+func f(fv *values.FieldValue) extraSortCol {
+	name := fv.Field
+	return extraSortCol{name: name, val: 1}
+}`) {
+		t.Error("a STRUCT literal's field name is reported as a name-keyed decision.\n\n" +
+			"`extraSortCol{name: name}` keys nothing — the left `name` is a field, and it " +
+			"resolves to the local only because go/parser has no types and the two share a " +
+			"spelling. A debt list whose entries are not all true is one nobody reads, and " +
+			"this entry would be unfixable by construction: there is no Resolved accessor to " +
+			"consult for a struct field name.")
+	}
+
+	// PRECISION: an ARRAY literal's integer indices are not keys either.
+	if reportsKey(t, `func f(fv *values.FieldValue) [4]string {
+	name := fv.Field
+	return [4]string{2: name}
+}`) {
+		t.Error("an array literal's integer index is reported as a name-keyed decision")
+	}
+
+	// The deliberate over-approximation, pinned so it is a choice and not a
+	// surprise: an element literal with no Type of its own could be a map
+	// element, so the check is kept there.
+	if !reportsKey(t, `type row struct{ name string }
+
+func f(fv *values.FieldValue) map[string]row {
+	name := fv.Field
+	return map[string]row{"a": {name: name}}
+}`) {
+		t.Error("an UNTYPED nested composite literal stopped being checked — the elided " +
+			"element type is exactly where a map element still appears, so erring toward " +
+			"reporting there is the deliberate side to err on")
+	}
+}

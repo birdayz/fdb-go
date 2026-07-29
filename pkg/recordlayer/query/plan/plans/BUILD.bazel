@@ -95,6 +95,7 @@ go_test(
         "rfc176_p2_plan_identity_test.go",
         "rfc180_wsb_identity_test.go",
         "scan_cost_test.go",
+        "streaming_aggregation_ordering_key_name_test.go",
         "table_function_test.go",
         "unordered_union_test.go",
     ],
@@ -179,6 +180,7 @@ go_test(
         "injoin_cardinality_cost_test.go",
         "nested_loop_join_unique_key_cost_test.go",
         "equality_prefix_test.go",
+        "streaming_aggregation_ordering_key_name_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
