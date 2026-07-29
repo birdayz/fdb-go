@@ -315,9 +315,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// PRECEDENT and "the name is genuinely the identity here" cannot be
 	// demonstrated for code no query reaches; and removed rather than migrated,
 	// because there is no ordinal to convert to when the domain it would index
-	// cannot exist. The layering that makes it so is now pinned by
-	// TestSortNeverSitsOverAProjection (core/embedded), which names what a
-	// Sort-over-Project builder change would re-arm.
+	// cannot exist. The layering that makes it so is pinned by the
+	// TestSortNeverSitsOverAProjection family (core/embedded) across all SEVEN
+	// NewSort sites in the four builder contexts -- buildSelectShell,
+	// visitOrderBy, the two union builders and the three correlated-scalar arms
+	// -- and REFUSED at the consumer: translateSort returns 0AF00 on a
+	// LogicalProject input. Deleting the arm without the guard left the shape
+	// translating SILENTLY into a leaf-name match in the wrong ordinal domain,
+	// which is a wrong sort order.
 	//
 	// The four :5688/:5736/:5860/exists:131 entries arrived from the dotted
 	// bucket (see the note there). They are the QUALIFIER halves of identifiers

@@ -5980,10 +5980,11 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// run. Removed rather than migrated: there is no ordinal to convert to when
 	// the domain it would index cannot exist.
 	//
-	// The layering that makes this so is pinned by
-	// TestSortNeverSitsOverAProjection (core/embedded), which fails if a builder
-	// ever emits Sort-over-Project — the shape that would need an
-	// ordinal-addressed pull-up here before it may exist.
+	// The layering that makes this so is pinned at every builder by the
+	// TestSortNeverSitsOverAProjection family (core/embedded) — all seven
+	// NewSort sites across the four contexts — and refused at this function's
+	// entry above, so a builder that starts emitting Sort-over-Project fails
+	// loudly at both ends rather than being silently reinterpreted here.
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst

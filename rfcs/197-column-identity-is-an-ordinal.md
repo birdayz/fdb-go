@@ -323,6 +323,31 @@ the plan was sized from.
   (`core/embedded`), which names what a Sort-over-Project builder change
   re-arms. Translator 17 → 15.
 
+  *That pin was one seventh of a defense, and has been widened.* The invariant
+  has SEVEN `NewSort` call sites in FOUR builder contexts — `buildSelectShell`
+  (`logical_builder.go:694`), `visitOrderBy` (`plan_visitor.go:1616`, the
+  builder the real connection drives), the two union builders
+  (`logical_predicate.go:5771/:6936`) and the three correlated-scalar arms
+  (`:9246/:9487/:9510`) — and the pin reached only the first. Measured with a
+  probe at each site: 13 hits on `:694`, ZERO on the other six. Adding SQL to
+  the existing table would not have fixed it, because the union and
+  correlated-scalar plans hang OFF the operator tree rather than inside it and
+  the walk never reached them. Three further tests now drive those entry points
+  directly; re-probed, all seven sites are hit, and each site's `NewSort` was
+  mutated separately to emit Sort-over-Project with only its own test going red.
+
+  *And the shape is now REFUSED at the consumer.* `translateSort` returns
+  0AF00 on a `*logical.LogicalProject` input. A builder pin says "we do not
+  emit this" and can only cover the builders someone remembered to enumerate;
+  the consumer guard covers the builder added next year. Without it the shape
+  does not error — measured: it translates silently, falls through to the
+  flat-name bake, and resolves the sort key by leaf name against a DIFFERENT
+  ordinal domain. The observable is a wrong sort ORDER, which is precisely the
+  failure this RFC exists to stop, arriving through the hole left by deleting
+  the arm. A consumer-side input contract is legitimate here because the
+  logical layer's builders never legally produce the shape; physical operator
+  placement remains the memo's business and gets no such guard.
+
 - *The JDBC label site was a SHIPPED user-visible divergence, the TENTH bug of
   this RFC's class. FIXED.* `deriveProjectionColumnDef`
   (`cascades_generator.go`) degraded any dotted result-set label whose leaf
