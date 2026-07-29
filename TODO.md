@@ -10424,3 +10424,31 @@ None is speculative: each was re-verified against the tree before booking.
   mechanical conversion would defeat (RankValue.WithChildren resets
   ArgumentValues by design), so each needs per-site semantic judgment like
   CQ-57, not a sweep. Enumerated during the field-literal class closure.
+
+- [ ] **CQ-55 AMENDMENT 2 (supersedes the entry above and the re-scope in the
+  C2 commit message) — THE ORDERING KEY IS A VALUE, NOT A COLUMN.** All
+  numbers measured over the 2481-query corpus (harness:
+  ordering_identity_decisions_test.go). Java's Ordering is
+  PartiallyOrderedSet<Value> keyed by Value.equals (Ordering.java:176-183,
+  :336) — a VALUE identity. The pure-ColumnIdentity-triple ruling
+  over-narrowed that key space to columns and cannot hold the domain: 126
+  corpus ordering keys are *RecordTypeValue discriminators (primary-key
+  intersection comparison keys, intersector_primary_key.go:615/:807) with
+  no ColumnIdentity by design, and 61 of 61 merge-path string decisions run
+  on identity-unavailable pairs, so fail-closed triple keying collapses
+  every set-operation merged ordering to empty. CORRECTED C1: the
+  ordering-set key is the VALUE, compared structurally — ColumnIdentity as
+  the FieldValue arm (answers 94.8% of provided keys), Value-structural
+  equality as the other arm (what RecordTypeValue needs; NOT a name
+  comparison). The name bridge still dies; truncation stays rejected (the
+  merge key never truncates). CORRECTED C5: the dominant unaddressable
+  producer is computeWrapperRichOrdering (plan_properties.go:367, 1218
+  keys) — the pull-up site itself; the translator-branch precondition
+  measured SQL-unreachable (0/2481; OrderingIdentityOf already answers
+  92.4% of exact-arm keys) and is dropped; the translation locus stays the
+  quantifier boundary on pull-up, never the comparator.
+  orderingValuesEqual (4189/4189 via the name bridge; candidate side
+  name-based by construction, accessor_name_path.go:30-33) converts at its
+  PRODUCER (match-candidate ordinalization), not in place. Merge-path
+  thirteenth-bug probe: identityDIFF=0 — ruled out, with the census
+  showing the string key is the only key space available there today.
