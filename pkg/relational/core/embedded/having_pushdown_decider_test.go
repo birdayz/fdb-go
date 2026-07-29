@@ -10,19 +10,25 @@ package embedded
 // havingPredicatePushesBelowAggregate used to be a hand-rolled MIRROR of
 // PushFilterThroughGroupByRule.predicateReferencesOnlyKeys carrying a comment
 // saying the two "cannot drift". They had drifted in three ways, and each is
-// pinned below. All three were LATENT: the whole sqldriver suite, the explaindiff
-// corpus and plan_shape.golden are unchanged by the switch, and the three FDB
-// probes in array_unnest_ordinality_fdb_test.go ("HAVING group key compared
-// against an aggregate") pass on both sides. Latent is the state the original
-// seven RFC-197 bugs shipped in, which is why the drift gets pinned rather than
-// argued away.
+// pinned below. All three were LATENT — the switch to the shared decider left the
+// sqldriver suite, the explaindiff corpus and plan_shape.golden unchanged — and
+// latent is the state the original seven RFC-197 bugs shipped in, which is why
+// the drift gets pinned rather than argued away.
 //
-// These are unit-level on purpose: the drift lives between two deciders, not in
-// any one query's result, so the falsifiable claim is about what the decider
-// ANSWERS. Delegating to cascades.PredicatePushesBelowGroupBy is what makes all
-// three cases answer correctly at once.
+// "Latent" here means the drift produced no observable difference on the queries
+// this repo runs. It does NOT mean the decider is unobservable in principle: one
+// of its two wrong answers moves a filter across the aggregate on a multi-source
+// grouped HAVING, and the other is invisible end-to-end everywhere. Which is
+// which, and how it was measured, is at
+// TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate below.
+//
+// The three drift cases are unit-level on purpose: the drift lives between two
+// deciders, not in any one query's result, so the falsifiable claim is about what
+// the decider ANSWERS. Delegating to cascades.PredicatePushesBelowGroupBy is what
+// makes all three cases answer correctly at once.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -141,5 +147,70 @@ func TestHavingPushdownDeciderDisablesOnAnUnidentifiableKey(t *testing.T) {
 	// A nil grouping-key value is the same answer for the same reason.
 	if havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdConst()), hpdAgg(hpdBare("CITY"), nil)) {
 		t.Fatal("pushdown was reported for a GroupBy with a nil grouping-key value")
+	}
+}
+
+// TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate is the end-to-end
+// half, and it exists because the FDB probes cannot supply it.
+//
+// The decider can be wrong in two directions and they are NOT symmetric in how
+// observable they are. Both were measured by hard-wiring the decider to each
+// constant answer and running the whole //pkg/relational tree:
+//
+//	says-NO when it should say YES — OBSERVABLE. The pure group-key HAVING below
+//	  stops being pushed and the filter jumps from below the aggregate to above
+//	  it. This test is that observation.
+//
+//	says-YES when it should say NO — NOT observable anywhere end-to-end. With the
+//	  decider hard-wired true the entire //pkg/relational tree stays green — the
+//	  sqldriver FDB suite, the explaindiff corpus, plan_shape.golden, rowdiff,
+//	  plandiff, memoinvariant and yamsql — and the ONLY reds are the three unit
+//	  tests above. For that direction those unit tests are not a supplement to
+//	  end-to-end coverage, they are the whole of it.
+//
+// The grouped-unnest FDB probes in array_unnest_ordinality_fdb_test.go observe
+// NEITHER direction: their physical plans are byte-identical under both constant
+// answers, so no assertion there — over rows or over the plan — can see the
+// decider at all. That is stated at those probes so nobody adds one believing it.
+//
+// The shape here is MULTI-SOURCE on purpose. A single-source grouped HAVING is
+// not sensitive; `po` and `pi` both declaring `id` is what makes the rebased bare
+// reference behave differently from the qualified one at the rule.
+func TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate(t *testing.T) {
+	t.Parallel()
+
+	const ddl = "CREATE TABLE po (id BIGINT NOT NULL, PRIMARY KEY (id)) " +
+		"CREATE TABLE pi (id BIGINT NOT NULL, po_id BIGINT, PRIMARY KEY (id))"
+
+	// A pure group-key comparison. The rule pushes it below the GroupBy, so the
+	// reference must stay QUALIFIED, and the plan must keep the filter under the
+	// aggregate's input — never wrapped around the aggregate.
+	plan, err := PlanQueryForTest(
+		"SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id "+
+			"GROUP BY po.id, pi.id HAVING po.id > 1 ORDER BY po.id, pi.id", ddl, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !strings.Contains(plan, "PredicatesFilter(StreamingAgg(") {
+		t.Fatalf("the HAVING filter is no longer ABOVE the streaming aggregate.\n  plan: %s\n"+
+			"havingPredicatePushesBelowAggregate answered that this predicate pushes BELOW the "+
+			"GroupBy, so the reference was left in its pre-aggregate qualified form and the rule "+
+			"then pushed the filter under the aggregate. The decider and "+
+			"PushFilterThroughGroupByRule have drifted apart, which binds the HAVING reference "+
+			"against the wrong row — not a lost optimization.", plan)
+	}
+
+	// The complement, so the assertion above cannot be satisfied by a plan that
+	// simply never pushes anything: a comparand that references an aggregate is
+	// refused by the rule for its OWN reason, and lands in the same place.
+	aggPlan, err := PlanQueryForTest(
+		"SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id "+
+			"GROUP BY po.id, pi.id HAVING po.id >= COUNT(*) ORDER BY po.id, pi.id", ddl, nil)
+	if err != nil {
+		t.Fatalf("plan (aggregate comparand): %v", err)
+	}
+	if !strings.Contains(aggPlan, "PredicatesFilter(StreamingAgg(") {
+		t.Fatalf("a HAVING whose comparand is an aggregate must stay ABOVE the aggregate.\n"+
+			"  plan: %s", aggPlan)
 	}
 }

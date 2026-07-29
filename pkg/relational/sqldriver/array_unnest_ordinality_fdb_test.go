@@ -3948,6 +3948,20 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// pkg/relational/core/embedded/having_pushdown_decider_test.go. If one of
 		// these ever reds, the drift has become reachable end-to-end.
 		//
+		// "Latent" is meant narrowly, and the narrow version was MEASURED rather
+		// than inferred from these rows: hard-wiring havingPredicatePushesBelowAggregate
+		// to each constant answer in turn leaves these queries' PHYSICAL PLANS
+		// byte-identical, not merely their rows — the decider's choice of binding
+		// is erased downstream for the grouped-unnest shapes, so no assertion on
+		// this query, over rows or over the plan, can observe it. Do not add one
+		// here believing it does.
+		//
+		// The decider IS observable, in one direction and on a different shape:
+		// a MULTI-SOURCE group-key HAVING moves the filter across the aggregate.
+		// That is pinned, with the mutation that proves it, by
+		// TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate in
+		// pkg/relational/core/embedded/having_pushdown_decider_test.go.
+		//
 		// GD.ARR flows 1,2,1,2 → groups V=1 (count 2) and V=2 (count 2).
 		// `V >= COUNT(*)` keeps ONLY V=2. The GW variants add a leg that SHADOWS the
 		// bare element key, so the grouping key is the qualified V.V — the shape
