@@ -39,8 +39,8 @@ func (r *ImplementProjectionFinalRule) OnMatch(call *ImplementationRuleCall) {
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
 		// The projection is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2).
-		call.YieldFinalExpression(plans.NewRecordQueryProjectionPlanFromQuantifier(
-			proj.GetProjectedValues(), proj.GetAliases(), innerQ))
+		call.YieldFinalExpression(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+			proj.GetProjectedValues(), proj.GetAliases(), proj.GetAliasMinted(), innerQ))
 	}
 }
 

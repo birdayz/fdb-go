@@ -408,7 +408,10 @@ func rebasePlanOuterRefsOrdinal(
 		if !changed {
 			return p, true
 		}
-		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner), true
+		// A rebase hands back "the same projection, moved": the output names and
+		// WHO wrote them are both unchanged by moving where the ordinals point.
+		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner).
+			WithAliasProvenance(pl.GetAliasMinted()), true
 	default:
 		// Unhandled node — return unchanged. The caller's
 		// planReferencesAnyBuriedAlias verification declines any buried leg

@@ -2298,12 +2298,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 							// deferred to is retired).
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
-								if proj.Aliases == nil {
-									proj.Aliases = make([]string, len(proj.Projections))
-								}
-								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col.name)
-								}
+								mintQualifiedDatumKey(proj, i, col.name)
 							}
 						} else {
 							// Born-baked (slice 3; the dup-alias flat-name
@@ -5077,6 +5072,13 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	}
 	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
 		proj.Aliases[i] = targetCols[i]
+		// The target column list is the USER's, so the slot's provenance is
+		// reset with its name. Overwriting the name while leaving a mint marker
+		// standing would leave the marker describing an alias that no longer
+		// exists — the desync a per-slot marker is most exposed to.
+		if i < len(proj.AliasMinted) {
+			proj.AliasMinted[i] = false
+		}
 	}
 }
 

@@ -342,6 +342,7 @@ go_test(
         "primary_scan_match_candidate_type_filter_test.go",
         "primary_vs_index_sarg_test.go",
         "primary_vs_index_transitivity_test.go",
+        "projection_alias_provenance_carry_test.go",
         "quantifier_match_enumerator_test.go",
         "rebase_ordinal_layout_test.go",
         "reference_winner_test.go",
@@ -956,6 +957,7 @@ go_test(
         "point_probe_ranking_test.go",
         "aggregate_index_shortcut_gate_test.go",
         "gathered_explode_owner_edge_test.go",
+        "projection_alias_provenance_carry_test.go",
     ],
     deps = [
         "//gen",

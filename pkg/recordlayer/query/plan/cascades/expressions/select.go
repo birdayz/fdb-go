@@ -307,16 +307,21 @@ func (e *SelectExpression) WithSwappedQuantifiers() *SelectExpression {
 	}
 }
 
+// WithQuantifiers rewires the child edges and changes nothing else, so it
+// copies the whole struct rather than re-listing fields. A field-by-field
+// literal silently drops anything added later, and it already had: the literal
+// omitted quantifiersSwapped, so a rebound swapped Select reported itself
+// UNSWAPPED. Both readers of that marker are safety DECLINES —
+// RemoveRangeOneRule refuses a swapped Select because the removal path does not
+// model restoring the swap's SQL column ordering, and the nested-loop-join rule
+// gates its correlated-scan fast path on it — so the omission failed OPEN in
+// both directions, admitting exactly the shapes those gates exist to refuse.
 func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
 	copied := make([]Quantifier, len(quantifiers))
 	copy(copied, quantifiers)
-	return &SelectExpression{
-		resultValue:     e.resultValue,
-		quantifiers:     copied,
-		queryPredicates: e.queryPredicates,
-		sourceAliases:   e.sourceAliases,
-		joinType:        e.joinType,
-	}
+	cp := *e
+	cp.quantifiers = copied
+	return &cp
 }
 
 var _ RelationalExpression = (*SelectExpression)(nil)

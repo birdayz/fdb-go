@@ -58,6 +58,7 @@ go_test(
         "recursive_cte_test.go",
         "rotation_guard_test.go",
         "scalar_subquery_seed_test.go",
+        "sort_over_projection_decline_test.go",
         "unnest_alias_guard_test.go",
         "unnest_exists_test.go",
         "unnest_gather_test.go",

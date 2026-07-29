@@ -18,6 +18,18 @@ type RecordQueryProjectionPlan struct {
 	PlanExprBase
 	projections []values.Value
 	aliases     []string
+	// aliasMinted is parallel to aliases: true = the MACHINERY wrote that
+	// output name (the duplicated-bare-leaf dedup pinning a leg-qualified datum
+	// key so two same-named columns stay apart in the executor's row map),
+	// false = the user's `AS`. The two are spelled alike, so the ResultSet
+	// metadata site — the only consumer — cannot tell them apart from the
+	// string; it reads this instead.
+	//
+	// EXCLUDED from structuralKey, exactly as values.FieldPath.FrontierPinned is
+	// excluded from value identity: it records who named a slot, not what the
+	// slot computes. Two projections differing only here are the same memo
+	// member.
+	aliasMinted []bool
 	innerQ      expressions.Quantifier
 }
 
@@ -52,6 +64,31 @@ func (p *RecordQueryProjectionPlan) GetProjections() []values.Value {
 	return slices.Clone(p.projections)
 }
 func (p *RecordQueryProjectionPlan) GetAliases() []string { return slices.Clone(p.aliases) }
+
+// GetAliasMinted returns the per-slot alias provenance, parallel to GetAliases:
+// true = machinery-minted datum key, false (and every slot past the slice) =
+// the user's `AS`.
+func (p *RecordQueryProjectionPlan) GetAliasMinted() []bool { return slices.Clone(p.aliasMinted) }
+
+// NewRecordQueryProjectionPlanFromQuantifierWithProvenance is
+// NewRecordQueryProjectionPlanFromQuantifier plus the per-slot record of who
+// named each output. Every lowering of a logical projection goes through here
+// so the provenance survives the logical→physical boundary; the plain
+// constructor stays for machinery that has no aliases to explain.
+func NewRecordQueryProjectionPlanFromQuantifierWithProvenance(projections []values.Value, aliases []string, aliasMinted []bool, innerQ expressions.Quantifier) *RecordQueryProjectionPlan {
+	p := NewRecordQueryProjectionPlanFromQuantifier(projections, aliases, innerQ)
+	p.aliasMinted = slices.Clone(aliasMinted)
+	return p
+}
+
+// WithAliasProvenance returns a copy carrying the given per-slot alias
+// provenance. It is the rebase/rebuild path's carry-across: a rewrite that
+// hands back "the same projection, moved" must preserve who named each slot.
+func (p *RecordQueryProjectionPlan) WithAliasProvenance(aliasMinted []bool) *RecordQueryProjectionPlan {
+	cp := *p
+	cp.aliasMinted = slices.Clone(aliasMinted)
+	return &cp
+}
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 

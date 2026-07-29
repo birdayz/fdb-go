@@ -645,11 +645,13 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		if len(freshChildren) != 1 {
 			return nil, fmt.Errorf("LogicalProjectionExpression: expected 1 child, got %d", len(freshChildren))
 		}
-		// WithAliases: this is the extraction rebuild, so dropping the alias
-		// vector here loses the output column names of every rebuilt
-		// projection — the same defect PushLimitThroughProjectionRule had.
-		return expressions.NewLogicalProjectionExpressionWithAliases(
-			ex.GetProjectedValues(), ex.GetAliases(), freshChildren[0],
+		// The alias vector AND its provenance: this is the extraction rebuild,
+		// so dropping the names here loses the output column names of every
+		// rebuilt projection — the same defect PushLimitThroughProjectionRule
+		// had — and dropping the provenance re-labels every machinery datum key
+		// as a user alias, which is the same defect one layer up.
+		return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+			ex.GetProjectedValues(), ex.GetAliases(), ex.GetAliasMinted(), freshChildren[0],
 		), nil
 
 	case *expressions.LogicalSortExpression:
