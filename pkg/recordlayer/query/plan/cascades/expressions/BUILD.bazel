@@ -75,6 +75,7 @@ go_test(
         "reference_merge_test.go",
         "reference_test.go",
         "relational_alias_completeness_test.go",
+        "select_rebind_preserves_node_info_test.go",
         "select_test.go",
         "table_function_fuzz_test.go",
         "table_function_test.go",
