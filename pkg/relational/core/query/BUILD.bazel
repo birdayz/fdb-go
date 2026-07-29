@@ -40,6 +40,7 @@ go_test(
         "cascades_translator_test.go",
         "chained_spine_seed_test.go",
         "cluster_gate_test.go",
+        "cluster_ref_attribution_test.go",
         "clustered_outer_scalar_test.go",
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",

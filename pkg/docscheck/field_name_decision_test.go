@@ -178,7 +178,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/embedded/logical_predicate.go:6092":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4696":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (14)
+	// dotted (10)
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
@@ -190,12 +190,20 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// suites), and the recovery itself returned non-empty exactly once across
 	// those suites — in its own hand-built pin. The dependency it reconstructed
 	// is now the baked collection's own correlation to its owner.
-	"pkg/relational/core/embedded/cascades_generator.go:4122":                     {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
-	"pkg/relational/core/query/cascades_translator.go:5846":                       {1, "dotted: leg name matched against the qualifier sliced off the flat name, multi-leg baker; same channel as 5726, one local hop away"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:189":                     {1, "dotted: leg-by-binding map keyed by an alias that is the sliced qualifier on the childless arm; same shape as value_correlation.go:57"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:402":                     {1, "dotted: shadowed-alias set probed by the same sliced qualifier, outer-ref collector"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:405":                     {1, "dotted: outer-alias set probed by the sliced qualifier"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:406":                     {1, "dotted: the collected outer-ref set is WRITTEN under that sliced qualifier, so the conflation propagates to every consumer of refs"},
+	"pkg/relational/core/embedded/cascades_generator.go:4122": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
+	"pkg/relational/core/query/cascades_translator.go:5846":   {1, "dotted: leg name matched against the qualifier sliced off the flat name, multi-leg baker; same channel as 5726, one local hop away"},
+	//
+	// clustered_outer_scalar.go:189/402/405/406 MIGRATED (RFC-197 item 6). The
+	// pull-up bake and the outer-ref classifier attribute a reference to a leg by
+	// its CORRELATION; the childless arm that sliced a qualifier out of the name
+	// is gone, so the ref set is written under a quantifier's own identifier
+	// rather than under text. Measured: the only childless dotted value either
+	// site meets across the FDB suite is a rendered aggregate output name
+	// (`SUM(AMOUNT+E.REF)`), out of which the first-dot slice manufactured the
+	// leg alias `SUM(AMOUNT+E` — the genuine reference that name embeds is
+	// walked separately as the aggregate's operand, carrying its correlation.
+	// Pinned by TestClusterBake_DoesNotAttributeAChildlessDottedName and
+	// TestClusterOuterRefs_DoesNotAttributeAChildlessDottedName.
 	"pkg/relational/core/query/cascades_translator.go:5674":                       {1, "dotted: leg-layout match on the sliced qualifier"},
 	"pkg/relational/core/query/cascades_translator.go:5722":                       {1, "dotted: leg-layout map keyed by the sliced qualifier, same channel as 5726"},
 	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131":               {1, "dotted: leg-window map keyed by the sliced qualifier, gathered-EXISTS wrap"},

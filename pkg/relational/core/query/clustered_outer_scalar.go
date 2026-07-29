@@ -159,12 +159,22 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 	return pu
 }
 
-// bake is the pull-up rewrite: a lazy reference to a cluster leg — either
-// resolver-anchored `FieldValue(QOV(leg), COL)` or flat dotted `LEG.COL` —
-// becomes `ofOrdinal(QOV(outerCorr, concat), legStart+idx)`. References to
-// anything else (the inner's own alias, enclosing scopes, already-baked
-// nodes) pass through untouched. A leg reference whose column is absent from
-// the leg's type flips missed (the caller declines).
+// bake is the pull-up rewrite: a reference to a cluster leg —
+// `FieldValue(QOV(leg), COL)` — becomes
+// `ofOrdinal(QOV(outerCorr, concat), legStart+idx)`. References to anything
+// else (the inner's own alias, enclosing scopes, already-baked nodes) pass
+// through untouched. A leg reference whose column is absent from the leg's
+// type flips missed (the caller declines).
+//
+// A reference is attributed to a leg by its CORRELATION, never by its name.
+// The value's QuantifiedObjectValue child is the only thing that names a
+// quantifier; a childless FieldValue carries a display string and nothing
+// else, so it is not attributable and passes through. This used to slice a
+// qualifier out of a dotted name and bake on the strength of it — which cannot
+// tell `A.B` the qualified reference from `"A.B"` the quoted column name, and
+// would re-bind a column the inner's own source declares onto leg A's row.
+// The same rule already governed childless BARE names, which were never
+// attributed either; the dotted arm was the inconsistency.
 func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	fv, isFV := v.(*values.FieldValue)
 	// A source-relative baked ref (resolver construction bind) still addresses
@@ -172,20 +182,12 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 		return v
 	}
-	var alias, col string
-	if fv.Child != nil {
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			return v
-		}
-		alias = strings.ToUpper(qov.Correlation.Name())
-		col = strings.ToUpper(fv.Field)
-	} else if i := strings.IndexByte(fv.Field, '.'); i > 0 {
-		alias = strings.ToUpper(fv.Field[:i])
-		col = strings.ToUpper(fv.Field[i+1:])
-	} else {
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
 		return v
 	}
+	alias := strings.ToUpper(qov.Correlation.Name())
+	col := strings.ToUpper(fv.Field)
 	leg, isLeg := pu.legByBinding[alias]
 	if !isLeg {
 		return v
@@ -387,18 +389,20 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return v
 		}
-		var alias string
-		if fv.Child != nil {
-			qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-			if !isQOV {
-				return v
-			}
-			alias = strings.ToUpper(qov.Correlation.Name())
-		} else if i := strings.IndexByte(fv.Field, '.'); i > 0 {
-			alias = strings.ToUpper(fv.Field[:i])
-		} else {
+		// Attribution is by CORRELATION. A childless FieldValue names no
+		// quantifier, so it is not attributable — the same treatment childless
+		// BARE names always had. The dotted arm this replaces sliced at the
+		// first dot and called the prefix an alias, which on the one shape that
+		// actually reaches here (a rendered aggregate output name such as
+		// `SUM(AMOUNT+E.REF)`) manufactures the qualifier `SUM(AMOUNT+E` — a
+		// leg alias invented out of expression text. The genuine reference that
+		// name embeds is walked separately, as the aggregate's operand, where it
+		// carries its correlation.
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
 			return v
 		}
+		alias := strings.ToUpper(qov.Correlation.Name())
 		if _, shadowed := skip[alias]; shadowed {
 			return v
 		}
