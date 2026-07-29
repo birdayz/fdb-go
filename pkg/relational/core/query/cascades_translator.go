@@ -5910,6 +5910,33 @@ func nameResolvesInColumns(key string, cols []string) bool {
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
+	// The translator's INPUT CONTRACT: a Sort never arrives over a Project.
+	// Every logical builder defers the SELECT-list projection PAST the sort
+	// (`postSortStripProj`), which is what keeps an aggregate's private
+	// [keys..., calls...] row addressable to ORDER BY at all, and the arm that
+	// once resolved sort keys against a projection's output SPELLINGS was
+	// removed as unreachable. Nothing below reconstructs it, so a
+	// Sort-over-Project would silently fall through to the flat-name bake and
+	// resolve the key against whatever layout expressionOutputColumns reports
+	// for a projection — a leaf-name match against a DIFFERENT domain, which
+	// is a wrong sort order, not a slower plan.
+	//
+	// So the shape is refused here, at the consumer, in addition to being
+	// pinned at each builder. The builder pins say "we do not emit this"; this
+	// says "and if one ever does, it does not get silently interpreted". A
+	// consumer-side guard is legitimate precisely because the logical layer's
+	// builders never legally produce the shape — physical operator placement is
+	// the memo's business, but what the TRANSLATOR accepts as logical input is
+	// the translator's.
+	if _, isProj := s.Input.(*logical.LogicalProject); isProj {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"ORDER BY over a projection reached the translator: the SELECT-list "+
+				"projection must be built ABOVE the sort. Resolving sort keys against "+
+				"a projection's output names would order by a leaf-name match in the "+
+				"wrong domain; an ordinal-addressed pull-up is required before this "+
+				"shape may exist"))
+		return nil
+	}
 	innerRef := t.translateRef(s.Input)
 	if innerRef == nil {
 		return nil
