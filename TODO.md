@@ -10452,3 +10452,19 @@ None is speculative: each was re-verified against the tree before booking.
   PRODUCER (match-candidate ordinalization), not in place. Merge-path
   thirteenth-bug probe: identityDIFF=0 — ruled out, with the census
   showing the string key is the only key space available there today.
+
+  AMENDMENT 2 CONDITIONS (review-ACKed, binding on implementation): dispatch
+  by VALUE TYPE, never by identity availability — availability dispatch is
+  intransitive inside the FieldValue class (witness: baked path [0] in
+  domain D1, in D2, and with UNKNOWN domain; identity separates the first
+  two, structural equates the third with both → insertion-order-dependent
+  ordering sets → nondeterministic plans, arriving as the
+  ordinal-across-layouts conflation column_identity.go:212-216 refuses).
+  The FieldValue arm returns identity-or-DECLINE and never falls through to
+  ValuesStructurallyEqual; pin the D1/D2/UNKNOWN triple as a transitivity
+  net. The lazy 36 are resolved at their producer (the same move as
+  orderingValuesEqual's), not compared structurally; decline is the
+  residual only and must MEASURE ZERO on the corpus before implementing —
+  if it does not, stop and come back. The 0/2481 SQL-unreachable negative
+  for the dropped translator precondition gets committed as a test naming
+  what re-arms it.
