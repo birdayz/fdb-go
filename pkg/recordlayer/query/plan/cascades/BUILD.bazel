@@ -212,6 +212,7 @@ go_test(
     srcs = [
         "abstract_data_access_rule_test.go",
         "aggregate_column_identity_test.go",
+        "aggregate_index_shortcut_gate_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
@@ -952,6 +953,7 @@ go_test(
         "group_pullup_ordinal_domain_test.go",
         "point_probe_identity_test.go",
         "point_probe_ranking_test.go",
+        "aggregate_index_shortcut_gate_test.go",
     ],
     deps = [
         "//gen",

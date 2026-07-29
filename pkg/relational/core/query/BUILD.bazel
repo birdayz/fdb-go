@@ -43,6 +43,7 @@ go_test(
         "clustered_outer_scalar_test.go",
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",
+        "exists_gathered_bare_read_test.go",
         "exists_guard_narrowing_test.go",
         "exists_known_truth_test.go",
         "exists_rider_test.go",

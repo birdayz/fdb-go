@@ -19,14 +19,24 @@ booked, or actively shrinking under a ratchet.
 ### Tier 1 — record-layer data plane + auto-commit SQL, bounded contexts
 **Distance: days.** Gated on exactly two items, both in flight on audit day:
 
-- The hidden nightly-stress failure resolved (B1 below): the 2026-07-17 run —
-  the last time stress GENUINELY ran — failed with
-  `record not found from index entry (index_name=SUM_AMOUNT_BY_CUSTOMER)` in
-  `TestFDB_Stress_10K/exists_subquery`. Until root-caused, this is the one
-  genuine unknown: either an aggregate-index misread (benign mechanism — an
-  aggregate entry has no backing record by design, so a scan wrongly fetching
-  through one fails loudly) or a dangling index entry (index-consistency
-  defect, the worst class).
+- ~~The hidden nightly-stress failure~~ **ROOT-CAUSED, benign mechanism
+  confirmed, structural fragility found.** The 07-17 failure reproduced
+  deterministically at its SHA: the NLJ EXISTS shortcut matched candidates by
+  first-column NAME with no index-type check, so a SUM aggregate index was
+  built into a record-fetching scan; `getEntryPrimaryKey` returns an empty
+  tuple for the short aggregate entry and the executor raises Java's
+  orphan-behavior error — LOUD in every measured shape, no silent wrong rows
+  (aggregate entries are always shorter than the root column size, so a
+  garbage fetch is unreachable). NOT an index-consistency defect. It was
+  fixed INCIDENTALLY on 2026-07-24 by a FAN_OUT-cardinality commit; of the
+  three gates now holding it shut, only one names aggregate indexes —
+  measured: one innocuous added method re-arms the fault on a different
+  query shape. Pinning tests exist (uncommitted, land with the next window);
+  the structural fix is Java's shape — index candidacy is opt-IN per
+  maintainer factory there, so a SUM index cannot produce a value-index
+  candidate; Go's opt-out design is the divergence, and adjacent opt-out
+  leaks (text/multidimensional/leaderboard/legacy min_ever) are unmeasured.
+  Booked as its own gated work item.
 - The safety nets made trustworthy again (B1), so green resumes meaning green.
 
 What this tier already rests on: byte-identity differential vs `libfdb_c`

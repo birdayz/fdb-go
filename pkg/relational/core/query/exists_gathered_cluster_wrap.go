@@ -142,25 +142,21 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 			}
 			return baked
 		}
-		// BARE frontier read ("COL") — bake only on a UNIQUE merged-name match.
-		if mergedType == nil {
-			return n
-		}
-		slot, matches := -1, 0
-		want := strings.ToUpper(fv.Field)
-		for i, mf := range mergedType.Fields {
-			if strings.ToUpper(mf.Name) == want {
-				slot, matches = i, matches+1
-			}
-		}
-		if matches != 1 {
-			return n // absent or ambiguous — verification declines
-		}
-		baked, err := values.NewFieldValueOfOrdinal(boxQOV, slot)
-		if err != nil {
-			return n
-		}
-		return baked
+		// BARE frontier read ("COL"). A bare read carries no leg, so nothing
+		// says which of the merged row's columns it means — this arm used to
+		// match its DISPLAY name against the merged row's field names and bake
+		// on a unique hit, with the `matches != 1` guard as the mitigation. The
+		// guard is the admission: where the merged row has two same-named
+		// columns the name cannot answer, and where it has one the ordinal
+		// answers identically. Both are gone (RFC-197 item 3), and the read is
+		// left for the caller's post-walk verification to decline.
+		//
+		// Measured before removing: a panic wired into the unique-match point is
+		// reached by nothing — not the explaindiff corpus, not the
+		// //pkg/relational/sqldriver FDB suite, not any conformance harness. The
+		// dotted and QOV-shaped arms above carry every reference that reaches
+		// here in practice, because they have a leg to key on.
+		return n
 	})
 	// Post-walk: no leg-correlated QOV may survive.
 	ok := true

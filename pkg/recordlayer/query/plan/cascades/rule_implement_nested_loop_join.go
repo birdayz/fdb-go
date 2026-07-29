@@ -2167,76 +2167,56 @@ func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, cor
 // inner P, parameters, constants) pass through untouched. Mirrors the predicate
 // shapes that can appear in existPreds (Comparison/And/Or/Not); other shapes are
 // returned unchanged.
-// buriedLegOrdinalLayout derives the merged outer row's (leg, column) →
+// buriedLegOrdinalLayout derives the merged outer row's COLUMN IDENTITY →
 // global-ordinal map from the outer plan, so buried-leg references can be
 // rebased to BAKED positional reads instead of lazy qualified-name mints
-// (WS-N slice 4). Two derivable shapes:
-//   - a FlatMap outer whose result value is the positional
-//     RecordConstructorValue concat: slot i's constructor value is
-//     FieldValue{Child: QOV(leg), Field: col} — (leg, col) maps to i
-//     directly (first occurrence wins, matching positional layout
-//     first-fold);
-//   - an ordinal-safe scan/NLJ chain: planBuriedLegConcat's leg windows
-//     (window.Start + within-leg field index).
+// (WS-N slice 4).
 //
-// nil when the outer's layout is not derivable — the rebase then keeps
-// the lazy qualified mint (the merged row's name-keyed reads), the
-// pre-slice-4 behavior.
-func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[string]int {
-	if fm, isFM := outerPlan.(*plans.RecordQueryFlatMapPlan); isFM {
-		rc, isRC := fm.GetResultValue().(*values.RecordConstructorValue)
-		if !isRC {
-			return nil
-		}
-		layout := make(map[string]int, len(rc.Fields))
-		for i, f := range rc.Fields {
-			fv, isFV := f.Value.(*values.FieldValue)
-			if !isFV {
-				continue
-			}
-			qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-			if !isQOV {
-				continue
-			}
-			// Bare-column allowlist (the same one fieldValueAliasAndCol /
-			// correlatedFieldOf / correlatedInnerField apply): a fused
-			// multi-accessor bake (Resolved carrying more than one
-			// accessor) puts a DIFFERENT column's leaf name in fv.Field, so
-			// keying this layout by leaf name would let a nested slot
-			// (leg.address.id) collide with a genuine top-level "leg.id"
-			// entry. Skip the fused slot rather than mint a colliding key.
-			if fv.Resolved != nil {
-				if _, single := fv.Resolved.Single(); !single {
-					continue
-				}
-			}
-			key := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(fv.Field)
-			if _, dup := layout[key]; !dup {
-				layout[key] = i
-			}
-		}
-		if len(layout) == 0 {
-			return nil
-		}
-		return layout
-	}
-	fields, legs, ok := planBuriedLegConcat(outerPlan, "", 0)
-	if !ok {
+// Derivable from a FlatMap outer whose result value is the positional
+// RecordConstructorValue concat: slot i's constructor value is a bare column
+// read off a leg quantifier, so its (correlation, domain, ordinal) maps to i.
+// First occurrence wins, matching the positional layout's first-fold.
+//
+// It used to key by 'CORR.LEAF' built from the display name — one of the seven
+// wrong proofs the RFC-197 gate is named after. The Resolved.Single() guard
+// under it declined FUSED accessors, but two same-named TOP-LEVEL columns of one
+// leg still collided, and the reader below baked a buried reference to whatever
+// ordinal the name-built key returned. The key is now the identity, so a slot
+// that cannot state one is simply not in the map.
+//
+// The ordinal-safe scan/NLJ chain shape (planBuriedLegConcat's leg windows) is
+// deliberately NOT derived any more: it has leg windows and column NAMES, no
+// per-slot value to take an identity from, so every key it could mint would be a
+// name. Declining costs the lazy qualified mint — the pre-slice-4 behaviour, and
+// the same thing an underivable outer already gets.
+//
+// nil when the layout is not derivable.
+func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[values.ColumnIdentity]int {
+	fm, isFM := outerPlan.(*plans.RecordQueryFlatMapPlan)
+	if !isFM {
 		return nil
 	}
-	layout := make(map[string]int, len(fields))
-	for _, leg := range legs {
-		// A leg without a name (the top-level alias argument is empty, so
-		// a single-scan outer windows under "") would mint unmatchable
-		// ".COL" keys — decline the whole layout rather than carry junk.
-		if leg.Name == "" {
-			return nil
+	rc, isRC := fm.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC {
+		return nil
+	}
+	layout := make(map[values.ColumnIdentity]int, len(rc.Fields))
+	for i, f := range rc.Fields {
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV {
+			continue
 		}
-		for j := 0; j < leg.Width && leg.Start+j < len(fields); j++ {
-			key := leg.Name + "." + strings.ToUpper(fields[leg.Start+j].Name)
-			if _, dup := layout[key]; !dup {
-				layout[key] = leg.Start + j
-			}
+		id, ok := legSlotIdentity(fv)
+		if !ok {
+			// A slot that cannot state its identity — a fused multi-accessor
+			// path, a lazy carrier, a value with no leg quantifier, a leg
+			// whose row type is not a record — mints no key. It used to mint
+			// a name-built one, which is how a nested leg.address.id could
+			// collide with a genuine top-level leg.id.
+			continue
+		}
+		if _, dup := layout[id]; !dup {
+			layout[id] = i
 		}
 	}
 	if len(layout) == 0 {
@@ -2245,11 +2225,26 @@ func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[string]int {
 	return layout
 }
 
+// legSlotIdentity is the identity of a bare column read off a join leg, stated
+// in that leg's OWN row layout — the domain derived from the quantifier the
+// value reads, which is the one place it is a proof rather than a claim (the
+// derive-when-typed rule: the child is typed, so nothing has to be stored).
+//
+// Used by both ends of the buried-leg layout, so the writer and the reader
+// cannot key it two different ways.
+func legSlotIdentity(fv *values.FieldValue) (values.ColumnIdentity, bool) {
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return values.ColumnIdentity{}, false
+	}
+	return fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Typ))
+}
+
 func rebaseOuterLegRefsToMerged(
 	p predicates.QueryPredicate,
 	legAliases []string,
 	mergedCorr values.CorrelationIdentifier,
-	legLayout map[string]int,
+	legLayout map[values.ColumnIdentity]int,
 ) predicates.QueryPredicate {
 	if p == nil {
 		return p
@@ -2324,7 +2319,7 @@ func rebaseOuterLegValue(
 	v values.Value,
 	legAliases []string,
 	mergedCorr values.CorrelationIdentifier,
-	legLayout map[string]int,
+	legLayout map[values.ColumnIdentity]int,
 ) values.Value {
 	if v == nil {
 		return v
@@ -2374,23 +2369,32 @@ func rebaseOuterLegValue(
 					// rebased reference is BORN BAKED — the global
 					// ordinal reads the merged row's slot directly
 					// (the RC concat is positional; the qualified
-					// display name is kept for Explain and the
-					// name-keyed fallback readers). NOTE: on every
-					// covered surface (yamsql, embedded, full FDB
-					// driver incl. the RFC-153 matrix) this whole
-					// leg-match arm is dead-in-effect TODAY — the box
-					// substrate rebases buried references onto box
+					// display name rides along for Explain only).
+					// The slot is found by the reference's own
+					// IDENTITY in its leg's row layout — the same
+					// derivation the layout was BUILT with
+					// (legSlotIdentity), so the two ends cannot key it
+					// differently, and a reference that cannot state
+					// an identity finds nothing rather than finding
+					// whatever its display name happens to spell.
+					// NOTE: on every covered surface (yamsql, embedded,
+					// full FDB driver incl. the RFC-153 matrix) this
+					// whole leg-match arm is dead-in-effect TODAY — the
+					// box substrate rebases buried references onto box
 					// correlations upstream, so nothing reaches it
-					// leg-aliased. It stays as the fail-closed safety
-					// net for shapes the box machinery declines, and
-					// when it fires the reference bakes here instead
-					// of minting a lazy name.
+					// leg-aliased; a panic wired into this lookup is
+					// reached only by TestRebaseOuterLegValue_OrdinalFirst.
+					// It stays as the fail-closed safety net for shapes
+					// the box machinery declines, and when it fires the
+					// reference bakes here instead of minting a lazy name.
 					if legLayout != nil {
-						if ord, ok := legLayout[qualField]; ok {
-							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-								values.NewQuantifiedObjectValue(mergedCorr),
-								qualField, ord, fv.Typ,
-							)
+						if id, idOK := legSlotIdentity(fv); idOK {
+							if ord, ok := legLayout[id]; ok {
+								return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+									values.NewQuantifiedObjectValue(mergedCorr),
+									qualField, ord, fv.Typ,
+								)
+							}
 						}
 					}
 					return values.NewFieldValue(
@@ -2435,7 +2439,7 @@ func rebaseOuterLegValue(
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
-func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[string]int) plans.RecordQueryPlan {
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int) plans.RecordQueryPlan {
 	if p == nil || len(legAliases) == 0 {
 		return p
 	}
@@ -2540,7 +2544,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 
 // rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
 // comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
-func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[string]int) ([]*predicates.ComparisonRange, bool) {
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int) ([]*predicates.ComparisonRange, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
@@ -2557,7 +2561,7 @@ func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []st
 // equality/inequality comparison operands. Returns the (possibly rebuilt) range and
 // whether it changed. A range whose rebuilt comparison cannot be re-merged is
 // returned unchanged (the verification then declines the probe).
-func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[string]int) (*predicates.ComparisonRange, bool) {
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int) (*predicates.ComparisonRange, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false
 	}
@@ -2589,7 +2593,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 // rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
 // copying the comparison so every non-operand field (Type, Escape, ParameterName,
 // the Text*/vector fields) is preserved verbatim.
-func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[string]int) *predicates.Comparison {
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int) *predicates.Comparison {
 	if c == nil || c.Operand == nil {
 		return c
 	}

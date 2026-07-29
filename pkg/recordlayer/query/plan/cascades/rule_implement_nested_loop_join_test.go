@@ -1164,20 +1164,24 @@ func TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn(t *te
 	}
 }
 
-// TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName pins the same
-// bare-column-allowlist hole in buriedLegOrdinalLayout's own leaf-name keying:
-// slot 0 is a FUSED nested reference (leg.address.id, leaf "ID"); slot 1 is
-// the leg's GENUINE bare "leg.id" column. Both would key to "LEG.ID" under a
-// leaf-name-only read, and "first occurrence wins" would let the fused slot's
-// ordinal (0) silently answer for the real bare column, misdirecting any
-// buried-leg rebase that looks up "LEG.ID" to the wrong RC slot. The fused
-// slot must be skipped so "LEG.ID" maps to its one genuine owner, slot 1.
+// TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName pins that a FUSED
+// nested reference (leg.address.id, leaf "ID") never claims the slot the leg's
+// GENUINE bare column owns. Under the retired leaf-name key both slots spelled
+// "LEG.ID" and "first occurrence wins" let the fused slot's ordinal answer for
+// the real column, misdirecting a buried-leg rebase to the wrong RC slot. The
+// identity key removes the collision at the root — a fused multi-accessor path
+// states no single-accessor identity, so it mints no key at all — and the bare
+// column is the one owner of its own.
 func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
 	t.Parallel()
 
 	leg := values.NamedCorrelationIdentifier("LEG")
 	fused := fusedNestedFieldValue(leg, "ADDRESS", "ID")
-	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(leg), "ID", values.UnknownType)
+	legType := legRowType("ADDRESS", "ID")
+	bare := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValueOfType(leg, legType),
+		"ID", 1, values.UnknownType, values.OrdinalDomainOfType(legType),
+	)
 
 	rc := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "F0", Value: fused},
@@ -1192,13 +1196,21 @@ func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
 	if layout == nil {
 		t.Fatal("setup: expected a non-nil layout")
 	}
-	ord, ok := layout["LEG.ID"]
+	id, stated := legSlotIdentity(bare)
+	if !stated {
+		t.Fatal("setup: the genuine bare column must state an identity")
+	}
+	ord, ok := layout[id]
 	if !ok {
-		t.Fatal(`expected key "LEG.ID" to be present from the genuine bare field, got missing`)
+		t.Fatal("expected the genuine bare field's identity to be present, got missing")
 	}
 	if ord != 1 {
-		t.Fatalf(`layout["LEG.ID"] = %d, want 1 (the genuine bare "leg.id" field at slot 1) — `+
+		t.Fatalf("layout[bare LEG.ID] = %d, want 1 (the genuine bare field at slot 1) — "+
 			"the fused nested field at slot 0 must not have claimed this key first", ord)
+	}
+	if _, fusedStated := legSlotIdentity(fused); fusedStated {
+		t.Fatal("a FUSED multi-accessor path must state no single-column identity, so it can " +
+			"never mint a layout key")
 	}
 }
 
