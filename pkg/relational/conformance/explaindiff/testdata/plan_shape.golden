@@ -10991,11 +10991,12 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === nested_derived_table.yaml#15
 sql:   SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub
-plan:  Project([AVG(N)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(T1)), [1 preds]))
+plan:  Project([A#0], Project([AVG(N)#0], PredicatesFilter(StreamingAgg(keys=[], Scan(T1)), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryStreamingAggregationPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
 plan:  Project([E.NAME#1, D.NAME#1], FlatMap(outer=Scan(EMP), inner=Scan(DEPT, [=])))

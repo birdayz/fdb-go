@@ -956,10 +956,15 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 		// for the OTHER bake kind, a source-relative ordinal that is dead above the
 		// aggregate; applying it to a pinned node would discard a slot that was
 		// RECORDED and recover it from a last-wins name map instead, which is the
-		// conflation this whole rebind is downstream of. Measured when this landed:
-		// no pinned single-accessor node reached this baker anywhere in
-		// //pkg/relational, so this is the channel opening, not a policy change on
-		// existing traffic.
+		// conflation this whole rebind is downstream of.
+		//
+		// This is now the channel most post-aggregate references arrive on:
+		// aggregateCallOutputSlot and the OutputSlots projection bind
+		// (logical_predicate.go) record the slot where the composition decides it,
+		// so the aggregate-name arm below went from 1014 hits over //pkg/relational
+		// to 1. Where the two answers differ they differ only on WHICH of a
+		// duplicated, value-identical aggregate call is read — the recorded slot
+		// picks the first, the name map's last-wins picks the last.
 		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			return node
 		}

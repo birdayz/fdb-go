@@ -1237,6 +1237,24 @@ func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Typ
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
+// NewFieldValueWithPinnedOrdinal constructs a flat FieldValue whose ordinal is
+// FINAL against an executor-assembled row rather than relative to any source's
+// declared column order — the composition-recorded slot (Java's loop-index
+// pull-up, CompensateRecordConstructorRule.java:92, over Column.unnamedOf
+// columns). Use it where the SLOT WAS DECIDED BY THE COMPOSITION doing the
+// construction: an aggregate's [keys..., calls...] output row, a join's
+// assembled frontier. The pin is what tells a downstream binder that the
+// ordinal is a recorded fact, not a bake to be re-derived from the display
+// name — the difference between reading the slot the composition chose and
+// recovering a slot from a last-wins name map.
+//
+// Distinct from NewFieldValueWithResolvedOrdinal, whose ordinal is
+// SOURCE-RELATIVE and therefore dead on any row the source's own layout does
+// not describe.
+func NewFieldValueWithPinnedOrdinal(field string, ordinal int, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingle(field, ordinal, true)}
+}
+
 // NewCorrelatedFieldValueWithResolvedOrdinal constructs a QOV-child FieldValue
 // carrying a plan-time-resolved SOURCE-RELATIVE ordinal accessor — the
 // construction bind for the CORRELATED resolver arm (Java's

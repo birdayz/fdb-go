@@ -346,6 +346,92 @@ So item 5 splits:
   before item 6" but "stop recovering a slot that was known at
   composition", and that is a stronger result than the ordering the
   constraint asked for.
+SEQUENCING, corrected by implementation contact twice: the readers convert
+FIRST — "pure producers with zero consumers" was false a second time
+(`AggregateKeyColumnName`'s result is a map key in `groupByOutputOrdinals`,
+the executor, and `plans/ordering.go`), so the carrier type cannot compile
+until they are gone; and the single render exit lives in the
+metadata-assembly package (`embedded`), NOT in `values` — an exported
+render in `values` is a universal launderer every consumer can reach. The
+gate widening for the producers is a PRODUCER TIER (the call's RESULT is
+the name), not receiver taint — measured: the launderer route judges
+arguments, and these authorities take a `values.Value`, so it surfaces
+zero. One binder-reader was not merely unconverted but WRONG on master
+(the ninth bug of the class: an expression-nested group-key re-read
+rebased to a childless bare leaf, last-wins-bound to the wrong slot,
+wrong rows on `GROUP BY o.k, i.k` + HAVING) — fixed with the loop-index
+pull-up and FDB-pinned both directions, which also DISCHARGED the item-6
+ordering constraint by simulation.
+
+READERS, measured after conversion. The binder's three arms over
+`//pkg/relational` (unit, FDB, and the four conformance corpora), counted by
+logging every node at every exit rather than by panicking at one — a panic
+aborts the process at the first arm reached, which is why the qualifier-strip
+arm previously read ZERO:
+
+| arm | before | after |
+|---|---|---|
+| aggregate-name | 1014 | 1 |
+| group-key | 55 | 0 |
+| qualifier-strip | 3 | 3 |
+
+The aggregate arm's producer was `rewriteAggregateValue`
+(`logical_predicate.go`): handed an `AggregateValue` whose identity is fully
+structural, it emitted a rendered canonical name and left the binder to recover
+the slot from a map keyed by a SECOND rendering — `AggregateResultColumnName`
+over the PARSE TEXT versus `canonicalAggName` over the RESOLVED Value, two
+renderings produced by different code from different inputs, agreeing by
+convention. `aggregateCallOutputSlot` records the slot instead, and is now the
+single structural matcher shared with `bindPostAggregateValueToNativeOrdinals`.
+The group-key arm's remaining traffic converted the same way, by widening
+`rebasePostAggregateGroupKeyValue` past its qualified-key-only guard to the bare
+keys, through that same shared matcher.
+
+Two results the conversion produced that the plan did not predict:
+
+- **It moves no rows, and that is the measured claim, not an assumption.**
+  Reverting the change and re-running gives byte-identical output across the
+  FDB aggregate scenarios and a wider probe set built specifically to break the
+  name channel (qualified-versus-bare spellings, quoted and CAST operands,
+  nested arithmetic operands, an alias deliberately spelled as another
+  aggregate's canonical name). No constructible shape made the name recovery
+  land on the wrong slot. So the row-level file pins a NEGATIVE result and says
+  so; the detector is a structural test asserting the reference CARRIES its
+  slot, which goes red on revert in each direction separately.
+- **The group-key widening was WRONG on first contact, in a way worth
+  recording.** By the time that rebase runs, the tree's aggregate references
+  have already become FieldValues carrying OUTPUT-row ordinals, while the group
+  keys carry SOURCE-relative ones. `fieldValueMatchesAggregateGroupKey`'s
+  childless/childless arm compares ordinals plus a single-inner-source check —
+  so `HAVING v > SUM(w)`, where V's source ordinal and SUM(W)'s output slot are
+  both 1, had its SUM(w) rewritten into a second reference to the group key. The
+  predicate then looked key-only and `PushFilterThroughGroupByRule` pushed it
+  onto the raw scan. `FieldPath.Domain` exists to fail closed on exactly this
+  comparison and neither side carries one yet, so the frontier pin does the job:
+  a node with a RECORDED slot is not offered to the matcher at all. This is the
+  cross-domain ordinal comparison the RFC's step 0 predicted, met in
+  production code rather than in a fixture.
+
+One corpus query's plan moves, nine golden lines:
+`SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub` gains a
+Projection operator. The cause is upstream of this item and is recorded here
+because it is the only thing the two binders ever disagreed about: the builder
+harvests the SELECT's `AVG(n)` and the HAVING's `AVG(n)` as TWO
+value-identical calls, so the aggregate computes AVG twice. The recorded slot
+picks the first (matching what `bindPostAggregateValueToNativeOrdinals` already
+does for SELECT and ORDER BY); the retired name map's last-wins picked the
+second. Rows and column labels are identical either way. The duplicate call
+itself is a separate defect and is NOT deduplicated here — `logicalAggregateCalls`
+suppresses a duplicate `COUNT(*)` only, and extending that changes the
+aggregate's output width, which `buildAggregateOutputSlots` numbers
+independently.
+
+NOT converted, and named rather than implied: the qualifier-strip arm's 3 hits;
+the `values.go` renderer sites and the `#ordinal` discriminator question; the
+name-keyed consumers of `AggregateKeyColumnName` in `executor.go` and
+`plans/ordering.go`. `DisplayLabel` is therefore NOT landed — those consumers
+still take a `string`, so the carrier type cannot compile.
+
 - *The producers* leave the ratchet through a DISPLAY-LABEL CARRIER TYPE,
   the policy this revision adds. A `DisplayLabel` wrapper (Java's
   `Expression.name`, CRDB's display-only `Alias`, made structural): naming

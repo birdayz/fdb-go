@@ -34,16 +34,31 @@ package embedded
 // consulting a name — the fail-close, not the display string, is what makes the
 // wrong-column bind unreachable now.
 //
-// N1 — the matcher is DEAD wherever both sides share a child shape. All three
+// N1 — the matcher is DEAD wherever both sides share a child shape. All four
 // call sites OR it with values.SemanticEqualsUnderAliasMap, which is ordinal-only
 // on baked FieldValues, so both-childless and both-QOV ordinal-equal pairs are
 // matched by the OR's first arm before the matcher runs. The matcher exists only
 // for the ASYMMETRIC shape (one side childless, one side QOV-qualified) that
 // semantic equality rejects. The half of N1 that lives at the CALL SITES rather
-// than in the matcher — that all three really do OR it, with the polarity that
+// than in the matcher — that all four really do OR it, with the polarity that
 // makes the matcher's answer non-decisive — is pinned by
 // aggregate_group_key_call_site_guard_test.go; no test that only calls the
 // matcher can establish it.
+//
+// The fourth site (rebasePostAggregateGroupKeyValue's bare-key arm) does not
+// widen the argument, and re-deriving it is the reason this paragraph exists
+// rather than a bumped constant. It carries the same OR with the same polarity,
+// and it is reached under two further narrowings that make its slice of the
+// asymmetric shape strictly smaller than the other three's: the GROUP KEY is
+// childless by an explicit guard, so the only asymmetry it can see is a
+// QOV-qualified REFERENCE against a bare key; and any reference already carrying
+// a RECORDED (frontier-pinned) slot returns before the loop, so a node addressed
+// against the aggregate's OUTPUT row is never offered to a matcher whose other
+// operand is addressed against the SOURCE row. That second guard is not
+// hypothetical — without it the matcher's childless/childless arm, which answers
+// on ordinal equality plus a single-inner-source check, matched a post-aggregate
+// SUM(v) reference to a group key whose source-relative ordinal happened to
+// coincide.
 //
 // N2 — production operands carry a domain. Both resolver arms
 // (expr.go:277-284 correlated, expr.go:296-297 bare) mint the ordinal and the

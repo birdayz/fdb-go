@@ -129,7 +129,7 @@ func TestAggregateGroupKeyMatcherIsAlwaysORedWithSemanticEquality(t *testing.T) 
 	// The count is asserted so that ADDING a call site is a deliberate act: a
 	// new site must be read against the reachability argument, not just
 	// compile.
-	const wantSites = 3
+	const wantSites = 4
 	if len(sites) != wantSites {
 		var where []string
 		for _, s := range sites {
