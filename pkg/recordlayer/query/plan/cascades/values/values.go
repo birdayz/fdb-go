@@ -1253,8 +1253,27 @@ func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Typ
 // Distinct from NewFieldValueWithResolvedOrdinal, whose ordinal is
 // SOURCE-RELATIVE and therefore dead on any row the source's own layout does
 // not describe.
+// Carries no domain token; use NewFieldValueWithPinnedOrdinalInDomain wherever
+// the composition can state the layout it numbered against — which is
+// everywhere it decided the slot, since deciding a slot means holding the
+// layout.
 func NewFieldValueWithPinnedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingle(field, ordinal, true)}
+	return NewFieldValueWithPinnedOrdinalInDomain(field, ordinal, typ, OrdinalDomain{})
+}
+
+// NewFieldValueWithPinnedOrdinalInDomain is NewFieldValueWithPinnedOrdinal plus
+// the layout the ordinal indexes (RFC-197 step 0) — the assembled row the
+// composition numbered the slot against.
+//
+// A pinned ordinal without a domain is the shape no consumer may act on: the
+// pin says "this slot is a recorded fact", and the missing domain says "against
+// an unstated row". Those two claims together are exactly the comparison
+// FieldPath.Domain exists to refuse — a group key's source-relative ordinal and
+// an aggregate's output-row ordinal matching because the integers coincided.
+// The composition that pinned the ordinal is holding the layout by definition,
+// so this is the constructor those sites use.
+func NewFieldValueWithPinnedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, true, domain)}
 }
 
 // NewCorrelatedFieldValueWithResolvedOrdinal constructs a QOV-child FieldValue

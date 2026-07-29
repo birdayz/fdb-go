@@ -3463,8 +3463,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 					// it and RECOVER a slot from a map keyed by the rendered output
 					// name, which is last-wins on any duplicated label. The name
 					// here is the display label only.
-					vals[i] = values.NewFieldValueWithPinnedOrdinal(
-						aggregateNativeOutputName(agg, ordinal), ordinal, typ)
+					vals[i] = values.NewFieldValueWithPinnedOrdinalInDomain(
+						aggregateNativeOutputName(agg, ordinal), ordinal, typ,
+						aggregateNativeOutputDomain(agg))
 				}
 			}
 		}
@@ -3604,6 +3605,32 @@ func aggregateNativeOutputType(agg *logical.LogicalAggregate, ordinal int) value
 		operand = []values.Value{agg.AggregateOperands[callIdx]}
 	}
 	return aggregateCallOutputType(agg.Calls[callIdx], operand)
+}
+
+// aggregateNativeOutputDomain is the layout token for the aggregate's native
+// output row — the `[group keys..., calls...]` row every pinned ordinal below is
+// numbered against (RFC-197 step 0's third element of identity).
+//
+// It is derived from aggregateNativeOutputName, the SAME authority that names
+// each slot, over the same [keys..., calls...] enumeration. That is what makes
+// the token a fact rather than a second opinion: a slot's name and the layout
+// signature containing it cannot drift, because one is built out of the other.
+//
+// An aggregate with no keys and no calls has no layout to state and yields the
+// unknown token, which fails closed at every OrdinalIn.
+func aggregateNativeOutputDomain(agg *logical.LogicalAggregate) values.OrdinalDomain {
+	if agg == nil {
+		return values.OrdinalDomain{}
+	}
+	width := len(agg.GroupKeys) + len(agg.Calls)
+	if width == 0 {
+		return values.OrdinalDomain{}
+	}
+	names := make([]string, width)
+	for i := range names {
+		names[i] = aggregateNativeOutputName(agg, i)
+	}
+	return values.OrdinalDomainOfColumnNames(names)
 }
 
 func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) string {
@@ -4104,8 +4131,9 @@ func aggregateCallOutputSlot(av *values.AggregateValue, agg *logical.LogicalAggr
 	// Repeated identical aggregate calls are value-equivalent; the first
 	// native slot is a deterministic, semantics-preserving bind.
 	ordinal := len(agg.GroupKeys) + matches[0]
-	return values.NewFieldValueWithPinnedOrdinal(
-		agg.Calls[matches[0]].CanonicalName(), ordinal, av.Type()), true
+	return values.NewFieldValueWithPinnedOrdinalInDomain(
+		agg.Calls[matches[0]].CanonicalName(), ordinal, av.Type(),
+		aggregateNativeOutputDomain(agg)), true
 }
 
 // bindPostAggregateValueToNativeOrdinals rewrites a computed SELECT item over a
@@ -4152,8 +4180,9 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 			// the slot is a recorded fact; pinning keeps it one, instead of
 			// handing the downstream binder a bare leaf whose name it must
 			// re-key — the shape that bound two same-leaf group keys to one slot.
-			return values.NewFieldValueWithPinnedOrdinal(
-				aggregateGroupKeyOutputName(agg.GroupKeys[keyMatch].Value), keyMatch, node.Type())
+			return values.NewFieldValueWithPinnedOrdinalInDomain(
+				aggregateGroupKeyOutputName(agg.GroupKeys[keyMatch].Value), keyMatch,
+				node.Type(), aggregateNativeOutputDomain(agg))
 		}
 		if _, isField := node.(*values.FieldValue); isField {
 			// This is an ORIGINAL resolver reference: replacement roots are
@@ -6248,12 +6277,16 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 				// assembled aggregate output row, not relative to any source's
 				// declared column order — which is also the signal the binder reads
 				// to leave this node alone instead of re-keying it.
+				//
+				// The LAYOUT that ordinal indexes is stated for the same reason
+				// the ordinal is recorded: the pin says the slot is a fact, and a
+				// fact about an unstated row is not comparable to anything. `i`
+				// addresses the aggregate's native output row, so that is the
+				// token — never the source layout the reference was resolved
+				// from, whose ordinals collide with these at every width.
 				name := aggregateGroupKeyOutputName(qfv)
-				return &values.FieldValue{
-					Field:    name,
-					Typ:      fv.Typ,
-					Resolved: values.NewFieldPathOfSingle(name, i, true),
-				}
+				return values.NewFieldValueWithPinnedOrdinalInDomain(
+					name, i, fv.Typ, aggregateNativeOutputDomain(agg))
 			}
 		}
 		return fv
