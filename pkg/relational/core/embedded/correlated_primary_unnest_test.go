@@ -258,3 +258,53 @@ func TestMetadataPlanContextMatchCandidateIdentityIsStable(t *testing.T) {
 		t.Fatal("caller mutation leaked into cached match candidates")
 	}
 }
+
+// TestStructColumnIsRejectedAtDDL pins the gate that makes a MULTI-SEGMENT
+// lateral unnest (`FROM t, t.rec.arr AS x`) unreachable from SQL: a struct
+// column cannot be declared, so no table can carry a nested array for such a
+// path to descend.
+//
+// This is a load-bearing NEGATIVE result, not trivia. The lowering's
+// multi-segment collection bake (unnestBakedRootCollection's suffix arm, pinned
+// unit-wise by TestUnnestBakedRootCollectionFusesAMultiSegmentPath in
+// pkg/relational/core/query) has no end-to-end route ONLY because of this
+// rejection. When struct columns land, that arm becomes reachable and needs a
+// full translateUnnestJoin case plus a rows assertion — nothing else records
+// that dependency, so the day this test starts failing is the day the coverage
+// gap opens.
+func TestStructColumnIsRejectedAtDDL(t *testing.T) {
+	t.Parallel()
+
+	const schema = `
+CREATE TYPE AS STRUCT nested_s (vals BIGINT ARRAY, label STRING)
+CREATE TABLE w (
+  wid BIGINT NOT NULL,
+  nested nested_s,
+  PRIMARY KEY (wid)
+)`
+	_, err := PlanQueryForTest(`SELECT x FROM w, w.nested.vals AS x`, schema, nil)
+	if err == nil {
+		t.Fatal("a struct column was accepted — a nested array is now declarable, so the " +
+			"multi-segment lateral-unnest arm is REACHABLE and needs end-to-end coverage " +
+			"through translateUnnestJoin (see TestUnnestBakedRootCollectionFusesAMultiSegmentPath)")
+	}
+	// The DDL wraps the column rejection in a table-scope error, so the code
+	// that matters sits down the Unwrap chain rather than on the outermost
+	// error. Walking to it is the point: an outer-code assertion would go on
+	// passing if the inner cause changed to something unrelated.
+	var found bool
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		var apiErr *api.Error
+		if errors.As(e, &apiErr) && apiErr.Code == api.ErrCodeUnsupportedOperation &&
+			strings.Contains(apiErr.Message, "only primitive column types") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("error = %v, want %s \"only primitive column types are supported\" in the "+
+			"cause chain — a DIFFERENT rejection means the multi-segment path is now "+
+			"blocked somewhere else, and this pin has stopped naming the thing that "+
+			"re-arms it", err, api.ErrCodeUnsupportedOperation)
+	}
+}

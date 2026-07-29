@@ -17,12 +17,18 @@ package values
 //
 // The recovery is gone because the shape is: every Explode collection the
 // translator emits is now an ordinal bake over its OWNER's own quantifier
-// (cascades_translator.unnestBakedRootCollection, unnest_gather, chained_unnest),
-// so GetCorrelatedToOfValue reports the owner directly — Java's
+// (unnestBakedRootCollection, unnest_gather, chained_unnest), so
+// GetCorrelatedToOfValue reports the owner directly — Java's
 // Quantifier.getCorrelatedTo edge, with no recovery step to get wrong.
+//
 // TestExplodeCollectionsAreOrdinalBaked (pkg/relational/core/query) pins the
-// producer side; TestGatheredExplodeCorrelatesToOwner pins that the genuine
-// correlation edge carries the dependency the slice used to reconstruct.
+// producer side across every routing arm, including that the root ordinal is
+// the owner's WINDOW OFFSET in a merged row rather than a first-match by name.
+// TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
+// …ReachesMatchEnumerator pin the two consumers, and each has a name-model arm
+// asserting the owner dependency is ABSENT for a dotted collection — restoring
+// the slice here turns those arms red, which is what keeps this deletion from
+// being reversible in silence.
 
 // GetCorrelatedToOfValue walks v + its descendants and returns the
 // union of every correlation-bearing leaf Value's alias. Handles

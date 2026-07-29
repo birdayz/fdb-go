@@ -62,7 +62,10 @@ B2 is now the dominant Tier-2 item outright. The RFC-197 identity migration no
 longer contributes a wrong-rows residue: its name-keyed and dotted wrong-rows
 channels are closed, and what the ratchet still holds is machinery-gated stops
 and boundary-layer sites (see table). Those gate the migration's *completion*,
-not Tier 2.
+not Tier 2. The B4 impact cell says the same thing — it read "wrong rows
+(narrow, shrinking)" while this paragraph said the wrong-rows channels were
+closed, and a blocking table that contradicts its own prose is a plan sized
+from whichever line the reader happened to open.
 
 ### Tier 3 — mixed Go/Java deployment on a shared cluster
 **Works today WITH the watch-list.** Wire compat is exercised per-PR; the
@@ -77,7 +80,7 @@ same query returns different rows or different errors on the two engines.
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S | **FIXED, merged (#523)**: windows resized from measured dispatch landings, per-job heartbeats, reconciler fails when any net has not genuinely run in N days (red until tonight proves the nets — the truthful state). Stress 07-17 failure root-caused separately (see Tier 1); binding-stress 0/50 still open (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | Booked (TODO), pinned by probe test; needs executor scan routed through the active tx with the snapshot-vs-serializable read decision |
 | B3 | RFC-195: six cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | RFC fully ACKed (rev 3), implementation queued behind the identity migration |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Wrong rows (narrow, shrinking) | M | Active; ratchet-enforced; 68 at inception → 38 |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only after writers fixed; wrong-rows channels closed | M | Active; ratchet-enforced; 68 at inception → 38 |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale (prod-readiness RFC asserts closed gaps as open; PRODUCTION_READINESS.md authority claim outdated; TODO duplicates/stale entries) | Trust/decision risk, not code | S | Booked as one reconciliation item |
 

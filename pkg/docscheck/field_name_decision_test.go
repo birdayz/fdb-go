@@ -46,6 +46,37 @@ import (
 // exempted nothing at all, so the loophole was pure downside — it would have
 // been discovered the first time someone needed one line of a 6000-line
 // translator exempted and got the other 5999 with it.
+//
+// # Known blind spots
+//
+// What the walk CANNOT see belongs here, in the gate's own documentation,
+// because a green ratchet is a claim about the whole tree and its exceptions
+// have to outlive whatever made them visible. Each of these was found while
+// auditing a debt entry, and each was first written down INSIDE that entry's
+// reason string — which is the wrong home: those entries retire (CQ-52 retires
+// both of the ones below), and the blind spot would retire with the prose
+// describing it while remaining just as real.
+//
+//   - A name compared as a PLAIN STRING PARAMETER, after the `.Field` read has
+//     already happened at the caller. `legBake` (cascades_translator.go, called
+//     from the multi-ForEach leg baker at :5722) takes the leaf segment as a
+//     `string` and matches it against a leg's declared columns; the walk sees a
+//     string parameter, not a display name, so only the QUALIFIER half of that
+//     identifier is on the ratchet and the LEAF half is invisible. Closing this
+//     needs types — the parameter's origin is a `.Field` read one frame up —
+//     which is why it is recorded rather than fixed here.
+//   - `Typ.FieldIndex(name)` and friends: resolving a name against a record
+//     type is a lookup, not a comparison or a map key, so no sink tier reports
+//     it. The gathered-EXISTS wrap (exists_gathered_cluster_wrap.go:131) is
+//     recorded for its qualifier and silent for its leaf for exactly this
+//     reason. This one is arguably the largest remaining hole: a type lookup by
+//     name is precisely the conflation the gate is named for, and widening to
+//     it is its own pass because the same call is the CORRECT way to resolve a
+//     metadata name once, at a boundary.
+//
+// Both are non-detections, not exemptions: nothing suppresses them, the walk
+// simply never reaches them. Neither is counted in any bucket total, so the
+// arithmetic those totals feed is a floor rather than a census.
 type fieldDecisionSite struct {
 	site string // "path/to/file.go:LINE"
 	n    int    // decisions this line hosts
@@ -184,13 +215,19 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
 	// quantifier's identity decided by text. Its producer went with it: the
-	// lateral-unnest lowering's name-model collection was built and then
-	// discarded on every path that returns a plan (measured: an assertion that
-	// it survives into the returned select never fired across the query,
-	// embedded, yamsql, cascades, sqldriver-FDB, explaindiff and plandiff
-	// suites), and the recovery itself returned non-empty exactly once across
-	// those suites — in its own hand-built pin. The dependency it reconstructed
-	// is now the baked collection's own correlation to its owner.
+	// lateral-unnest lowering's name-model collection could not escape
+	// translateUnnestJoin. That is a STATIC argument, not a probe — the
+	// function's only success return is guarded by `resultValue != nil`, and
+	// the sole assignment that leaves resultValue non-nil is the one that also
+	// overwrites innerQ with the ORDINAL-baked Explode; every other path sets
+	// it back to nil and raises 0AF00. So the name-model quantifier was
+	// unreachable by construction, and deleting it changes no output (measured
+	// too: the query and embedded suites are byte-identical with the deleted
+	// lines restored). The dependency the recovery reconstructed is now the
+	// baked collection's own correlation to its owner, pinned at both
+	// consumers by TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
+	// TestGatheredExplodeOwnerEdgeReachesMatchEnumerator, whose name-model arms
+	// go red if the slice is ever restored.
 	"pkg/relational/core/embedded/cascades_generator.go:4122": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
 	//
 	// clustered_outer_scalar.go:189/402/405/406 MIGRATED (RFC-197 item 6). The
@@ -242,10 +279,10 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/embedded/cascades_generator.go:3172":       {1, "translator: parsed column ref matched against declared inner columns"},
 	"pkg/relational/core/query/cascades_translator.go:5674":         {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5669, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5680; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5680":         {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5888, reached through a local leaf"},
-	"pkg/relational/core/query/cascades_translator.go:5722":         {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5715, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate (legBake compares a plain string parameter, not .Field), which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
+	"pkg/relational/core/query/cascades_translator.go:5722":         {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5715, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5846":         {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5828, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 5854; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5854":         {1, "translator: multi-leg baker, column membership within the matched leg window"},
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131": {1, "translator: QUALIFIER segment of a parsed identifier, gathered-EXISTS wrap -- the QOV-shaped and composed-read arms are taken FIRST (the `Child != nil → bail` at 126 sits directly above), so the dotted arm sees only a lazy carrier from parsed text, and a match emits NewFieldValueOfOrdinal against the box QOV. Its leaf segment is invisible to this gate (Typ.FieldIndex is not a comparison the walk reports); retired upstream by CQ-52"},
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131": {1, "translator: QUALIFIER segment of a parsed identifier, gathered-EXISTS wrap -- the QOV-shaped and composed-read arms are taken FIRST (the `Child != nil → bail` at 126 sits directly above), so the dotted arm sees only a lazy carrier from parsed text, and a match emits NewFieldValueOfOrdinal against the box QOV. Its leaf segment is invisible to this gate -- see the Typ.FieldIndex blind spot in the header above; retired upstream by CQ-52"},
 	"pkg/relational/core/embedded/cascades_generator.go:3186":       {1, "translator: same inner-column lookup as 3192, leg-qualified arm -- the map key is a CONCATENATION, which is why the sibling entry was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3192":       {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6613":        {1, "translator: join-side name set during translation (laundered map key)"},
@@ -300,14 +337,42 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 	return counts, untagged
 }
 
-// bucketHeaderPattern matches a group-header comment inside the debt literal —
-// one tab, then `// <bucket> (N)`. The indent is what makes it unambiguous:
-// prose elsewhere in the file names buckets freely, and only the seven headers
-// sit at element depth in the composite literal.
-var bucketHeaderPattern = regexp.MustCompile(`(?m)^\t// (boundary|escape|contract|dotted|name-keyed|translator|harness) \((\d+)\)`)
+// bucketHeaderPattern matches a group-header comment: `// <bucket> (N)` at the
+// start of the comment's own text. WHERE the comment sits is decided
+// structurally rather than by indentation — see bucketHeaderCounts.
+var bucketHeaderPattern = regexp.MustCompile(`^// (boundary|escape|contract|dotted|name-keyed|translator|harness) \((\d+)\)`)
+
+// debtLiteralSpan returns the byte span of the knownFieldDecisionDebt composite
+// literal's braces. Everything outside it — the doc comment above the var,
+// prose in other declarations, comments in function bodies — is not a header,
+// whatever it is indented by.
+func debtLiteralSpan(f *ast.File) (lo, hi token.Pos) {
+	for _, decl := range f.Decls {
+		gen, isGen := decl.(*ast.GenDecl)
+		if !isGen || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, isVS := spec.(*ast.ValueSpec)
+			if !isVS {
+				continue
+			}
+			for i, name := range vs.Names {
+				if name.Name != "knownFieldDecisionDebt" || i >= len(vs.Values) {
+					continue
+				}
+				if lit, isLit := vs.Values[i].(*ast.CompositeLit); isLit {
+					return lit.Lbrace, lit.Rbrace
+				}
+			}
+		}
+	}
+	return token.NoPos, token.NoPos
+}
 
 // bucketHeaderCounts reads the per-bucket totals a debt list ADVERTISES in its
-// own group-header comments.
+// own group-header comments, and reports anything that makes those totals
+// unreadable.
 //
 // The headers are how anyone reads this list — nobody counts 38 map entries by
 // hand — and until this existed they were unchecked prose sitting on top of the
@@ -317,16 +382,61 @@ var bucketHeaderPattern = regexp.MustCompile(`(?m)^\t// (boundary|escape|contrac
 // code does not have. Migration arithmetic is quoted OUT of these numbers into
 // RFC-197 and road-to-prod.md, so a stale header is not cosmetic — it is a plan
 // sized from fiction, the same defect the partition tag was introduced to kill.
-func bucketHeaderCounts(src []byte) map[string]int {
-	got := map[string]int{}
-	for _, m := range bucketHeaderPattern.FindAllStringSubmatch(string(src), -1) {
-		n, err := strconv.Atoi(m[2])
-		if err != nil {
-			continue // unreachable: the group is \d+
-		}
-		got[m[1]] = n
+//
+// Two things decide which comments count, and both were wrong before:
+//
+//   - SCOPE is the composite literal's own span, taken from the parsed AST.
+//     The earlier version anchored on `^\t`, which reads as "a line starting
+//     with one tab, ANYWHERE in the file" — and one tab is also the indent of
+//     a comment in a function body. The file already parses itself for the
+//     decision walk, so nothing was saved by not parsing here.
+//   - FIRST HEADER WINS, and a second one for the same bucket is reported.
+//     The earlier version let the LAST match overwrite, so a stale header
+//     could be silently corrected by any later line that happened to look
+//     like one — the gate then agreed with a number the list does not
+//     advertise. Duplicates inside the literal are an error rather than a
+//     tiebreak: two headers for one bucket means the list has two answers.
+func bucketHeaderCounts(src []byte) (map[string]int, []string) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "debt.go", src, parser.ParseComments)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("source does not parse, so no header is locatable: %v", err)}
 	}
-	return got
+	lo, hi := debtLiteralSpan(f)
+	if lo == token.NoPos {
+		return nil, []string{"knownFieldDecisionDebt composite literal not found — " +
+			"the headers cannot be scoped to it, and an unscoped read counts prose"}
+	}
+
+	got := map[string]int{}
+	firstLine := map[string]int{}
+	var problems []string
+	for _, group := range f.Comments {
+		for _, c := range group.List {
+			if c.Pos() < lo || c.End() > hi {
+				continue
+			}
+			m := bucketHeaderPattern.FindStringSubmatch(c.Text)
+			if m == nil {
+				continue
+			}
+			line := fset.Position(c.Pos()).Line
+			if first, dup := firstLine[m[1]]; dup {
+				problems = append(problems, fmt.Sprintf(
+					"bucket %q is headed twice (lines %d and %d) — the list advertises two "+
+						"totals for one bucket", m[1], first, line))
+				continue // first wins
+			}
+			firstLine[m[1]] = line
+			n, err := strconv.Atoi(m[2])
+			if err != nil {
+				continue // unreachable: the group is \d+
+			}
+			got[m[1]] = n
+		}
+	}
+	sort.Strings(problems)
+	return got, problems
 }
 
 // bucketHeaderMismatches reports every bucket where the advertised header and
@@ -1065,10 +1175,14 @@ func TestFieldDebtBucketsArePartition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read own source: %v — without it the header counts are unchecked prose", err)
 	}
-	header := bucketHeaderCounts(src)
+	header, headerProblems := bucketHeaderCounts(src)
+	if len(headerProblems) > 0 {
+		t.Errorf("the group headers are not readable:\n  %s", strings.Join(headerProblems, "\n  "))
+	}
 	if len(header) == 0 {
-		t.Fatal("no `// <bucket> (N)` group headers found in this file — the pattern stopped " +
-			"matching, so a green result proves nothing about the advertised counts")
+		t.Fatal("no `// <bucket> (N)` group headers found inside the knownFieldDecisionDebt " +
+			"literal — the reader stopped matching, so a green result proves nothing " +
+			"about the advertised counts")
 	}
 	if bad := bucketHeaderMismatches(header, counts); len(bad) > 0 {
 		t.Errorf("group-header counts disagree with the entries they head:\n  %s\n\n"+

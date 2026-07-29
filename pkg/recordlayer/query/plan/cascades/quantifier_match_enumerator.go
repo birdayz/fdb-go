@@ -68,11 +68,17 @@ type quantifierDependencyOrder struct {
 	ok         bool
 }
 
-// buildQuantifierDependencyOrder builds an ordinal-indexed dependency graph.
-// It includes the merge-seed dependencies used by Select partitioning, closes
-// the graph transitively, filters the owned alias a quantifier may re-expose,
-// and rejects duplicate aliases and cycles rather than producing an incomplete
-// order.
+// buildQuantifierDependencyOrder builds an ordinal-indexed dependency graph
+// from each quantifier's OWN correlations, closes the graph transitively,
+// filters the owned alias a quantifier may re-expose, and rejects duplicate
+// aliases and cycles rather than producing an incomplete order.
+//
+// GetCorrelatedTo is the only source of edges. A lateral UNNEST's Explode
+// reaches its array through an ordinal bake over the quantifier that owns it,
+// so the owner dependency is one of those correlations; there is no second,
+// name-derived channel re-adding legs recovered from a dotted display name.
+// Pinned by TestGatheredExplodeOwnerEdgeReachesMatchEnumerator, whose
+// name-model arm asserts that no such recovery exists.
 func buildQuantifierDependencyOrder(
 	quantifiers []expressions.Quantifier,
 ) quantifierDependencyOrder {
