@@ -283,6 +283,7 @@ go_test(
         "memo_test.go",
         "memo_wsb_no_collapse_test.go",
         "optimize_group_ordering_test.go",
+        "ordering_identity_decisions_test.go",
         "ordinal_chain_corpus_test.go",
         "ordinal_star_planning_budget_test.go",
         "partial_match_compensation_hazards_test.go",
@@ -958,6 +959,7 @@ go_test(
         "aggregate_index_shortcut_gate_test.go",
         "gathered_explode_owner_edge_test.go",
         "projection_alias_provenance_carry_test.go",
+        "ordering_identity_decisions_test.go",
     ],
     deps = [
         "//gen",
