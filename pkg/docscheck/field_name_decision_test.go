@@ -969,6 +969,27 @@ func taintedIdentIn(e ast.Expr, taint nameTaint) string {
 	return name
 }
 
+// compositeLitKeysAreValues returns a composite literal's elements when its
+// keys are VALUES — i.e. when it is a map literal, or an untyped nested literal
+// whose enclosing type the walk cannot see. A struct or array literal's keys are
+// field names and integer indices; reporting those as name-keyed decisions is a
+// spelling collision, not a conflation (see the CompositeLit arm).
+//
+// An untyped literal keeps the check deliberately. `map[string]T{"a": {…}}`
+// elides the element type, so a nested literal with no Type of its own can still
+// be a map element — and erring toward reporting there costs precision on a
+// nested struct, while erring the other way would be a hole in exactly the shape
+// the check exists for.
+func compositeLitKeysAreValues(lit *ast.CompositeLit) ([]ast.Expr, bool) {
+	switch lit.Type.(type) {
+	case *ast.MapType:
+		return lit.Elts, true
+	case nil:
+		return lit.Elts, true
+	}
+	return nil, false
+}
+
 // isNilIdent reports whether e is the identifier nil.
 func isNilIdent(e ast.Expr) bool {
 	id, ok := e.(*ast.Ident)
@@ -1121,11 +1142,38 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			if decides(x.Index) {
 				report(x.Pos(), "a map key"+localNote(decidesRaw, x.Index))
 			}
-		case *ast.KeyValueExpr:
+		case *ast.CompositeLit:
 			// map[string]T{fv.Field: …} builds the same conflation through
 			// a composite literal, which never produces an IndexExpr.
-			if decides(x.Key) {
-				report(x.Pos(), "a composite-literal key"+localNote(decidesRaw, x.Key))
+			//
+			// Matched on the COMPOSITE LITERAL rather than on the KeyValueExpr,
+			// because only the literal knows what its keys mean. In a STRUCT
+			// literal `extraSortCol{name: name}` the key is a FIELD NAME, and
+			// go/parser — which has no type information — resolves that bare
+			// identifier to whatever declaration is in scope with the same
+			// spelling. A local holding the display name is such a declaration,
+			// so a struct field that merely SHARES ITS SPELLING was reported as
+			// a name-keyed decision. That is the identical failure the taint set
+			// already fixed on its own side by keying on the parser's *ast.Object
+			// instead of the spelling; here the object IS the local's, and the
+			// spelling collision happens one level up, in what the key MEANS.
+			//
+			// The literal's own Type settles it syntactically: only a map has
+			// keys that are values. Anything else — a struct by name, an array,
+			// a slice — has field names or integer indices there, neither of
+			// which can confuse column A with column B. An UNTYPED nested literal
+			// (`map[string]T{...}{{k: v}}` elements) keeps the check, because a
+			// nested element of a map type is where a real key still appears.
+			if lit, isMap := compositeLitKeysAreValues(x); isMap {
+				for _, elt := range lit {
+					kv, isKV := elt.(*ast.KeyValueExpr)
+					if !isKV {
+						continue
+					}
+					if decides(kv.Key) {
+						report(kv.Pos(), "a composite-literal key"+localNote(decidesRaw, kv.Key))
+					}
+				}
 			}
 		case *ast.ReturnStmt:
 			// The name ESCAPING as a bare string is the shape that defeated
