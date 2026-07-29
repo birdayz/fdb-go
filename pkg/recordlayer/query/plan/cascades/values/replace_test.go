@@ -685,52 +685,64 @@ func TestLegAwareRootOrdinal(t *testing.T) {
 		t.Fatalf("ordinal-preferred: srcOrd 0 must win over name ID → slot 1 (FNAME@0); got %d (the retired OR-code gives 0)", got)
 	}
 
-	// (2b) The within-leg NAME tiebreak — the `return nameMatch` arm. When NO leg
-	// field's ordinal matches srcOrd but a name does, resolve by name. Leg E has
-	// FNAME@3 and ID@5, neither at ordinal 0; a ref {Field:ID, srcOrd:0} misses on
-	// ordinal and resolves ID by name at slot 1. (Exercises the branch the ordinal
-	// and cross-leg arms otherwise shadow.)
+	// (2b) The retired within-leg NAME tiebreak. Leg E has FNAME@3 and ID@5,
+	// neither at ordinal 0, so no seed field states the slot the reference wants.
+	// The old code resolved "ID" by name at slot 1; it now POISONS. The argument
+	// for the tiebreak was "a single source has unique column names" — which is
+	// an argument FOR the ordinal, since where the names are unique the ordinal
+	// answers identically and where they are not the name is wrong.
 	nameTieSeed := NewRawRecordConstructorValue(
 		legField("FNAME", "E", 3), legField("ID", "E", 5),
 	)
-	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, nameTieSeed, -1); got != 1 {
-		t.Fatalf("within-leg name tiebreak: e.id with no ordinal-0 field must resolve ID by name at slot 1, got %d", got)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, nameTieSeed, -1); got != -1 {
+		t.Errorf("within-leg: no seed field carries leg-ordinal 0, so the slot is unstated and "+
+			"must POISON; got %d — resolving it by the display name is the conflation this "+
+			"function exists to kill (RFC-197)", got)
 	}
 
-	// (3) Cross-leg name-fallback: no seed field bears the reference's correlation
-	// (a differently-shaped seed). Falls back to the FIRST bare-name match — the
-	// retired name-model authority. INVARIANT: reachable only when NO leg carries
-	// the corr, so it cannot mis-pick a colliding sibling (that took arm (1)).
+	// (3) The reference names a leg the seed does not carry. Nothing can rebase
+	// it, so it poisons — and specifically it does NOT fall back to fallbackOrd,
+	// which is the reference's RAW leg-relative ordinal: applying that to the
+	// box's concatenation picks the FIRST leg's slot, the wrong-leg bug arm (1)
+	// exists to prevent.
 	noLegSeed := NewRawRecordConstructorValue(
 		legField("ID", "D", 0), legField("DNAME", "D", 1),
 	)
-	if got := LegAwareRootOrdinal(ref("Z", "ID", 0), 0, noLegSeed, -99); got != 0 {
-		t.Fatalf("name-fallback: unknown-corr ref must match first name 'ID' at slot 0, got %d", got)
+	if got := LegAwareRootOrdinal(ref("Z", "ID", 0), 0, noLegSeed, -99); got != -1 {
+		t.Errorf("a reference on leg Z over a seed carrying only leg D must POISON, got %d", got)
 	}
-	if got := LegAwareRootOrdinal(ref("Z", "NOPE", 0), 0, noLegSeed, -99); got != -99 {
-		t.Fatalf("name-fallback: no name match must return fallbackOrd -99, got %d", got)
+	// The SAME reference under a different display name gets the SAME answer —
+	// the name is not consulted in either direction.
+	if got := LegAwareRootOrdinal(ref("Z", "NOPE", 0), 0, noLegSeed, -99); got != -1 {
+		t.Errorf("poisoning must not depend on the display name, got %d", got)
 	}
 
-	// (4) Poison-on-dup in the cross-leg name fallback. A bare-QOV leg (field
-	// Value is a QOV, not a FieldValue over the leg) carries no per-field
-	// correlation, so the leg-scoped arm can't key on it — two bare-QOV legs
-	// exposing the SAME column name both reach the name fallback unresolved. A
-	// first-match there would silently pick the wrong leg (the I3 conflation this
-	// function exists to kill). The fallback must POISON (return -1 → caller
-	// leaves the ref un-collapsed, loud on a positional row, never a wrong slot).
+	// (4) Bare-QOV legs (the field Value is a QOV, not a FieldValue over the leg)
+	// carry no per-field correlation at all, so no slot is ever stated and every
+	// such seed poisons — the duplicate-name case and the unique-name case alike.
+	// The old code poisoned only the duplicate and resolved the unique one, which
+	// is the same key with a guard on it: two bare-QOV legs exposing one column
+	// name are indistinguishable, and the guard was the admission.
 	dupBareSeed := NewRawRecordConstructorValue(
 		RecordConstructorField{Name: "X", Value: qov("P")}, // bare-QOV leg, name X
 		RecordConstructorField{Name: "X", Value: qov("Q")}, // bare-QOV leg, name X (collision)
 	)
 	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, dupBareSeed, -5); got != -1 {
-		t.Fatalf("bare-QOV dup name must POISON (return -1), got %d — first-match would pick a colliding sibling leg", got)
+		t.Errorf("bare-QOV dup name must POISON (return -1), got %d", got)
 	}
-	// A UNIQUE name in the same bare-QOV shape still resolves (no over-poisoning).
 	uniqBareSeed := NewRawRecordConstructorValue(
 		RecordConstructorField{Name: "Y", Value: qov("P")},
 		RecordConstructorField{Name: "X", Value: qov("Q")},
 	)
-	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, uniqBareSeed, -5); got != 1 {
-		t.Fatalf("bare-QOV unique name must resolve to slot 1, got %d", got)
+	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, uniqBareSeed, -5); got != -1 {
+		t.Errorf("bare-QOV UNIQUE name must poison too, got %d: a unique name is still a name, "+
+			"and the uniqueness guard that made it defensible is the argument against it", got)
+	}
+
+	// (5) fallbackOrd survives for the one shape that never needed a leg-relative
+	// rebase: a CHILDLESS reference names no leg, so its own ordinal stands.
+	if got := LegAwareRootOrdinal(NewFieldValueWithResolvedOrdinal("ID", 0, UnknownType), 0, noLegSeed, -42); got != -42 {
+		t.Errorf("a childless reference names no leg to rebase against, so fallbackOrd must "+
+			"stand; got %d", got)
 	}
 }

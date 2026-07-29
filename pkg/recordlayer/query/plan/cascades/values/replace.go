@@ -1,9 +1,6 @@
 package values
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // Replace applies replacementFn to every node in the Value tree
 // rooted at v, in pre-order (parent before children). If
@@ -469,65 +466,54 @@ type SelfWithChildren interface {
 // emp.id) a bare-name match picks the first occurrence — again the wrong leg,
 // the raw-RC duplicate-name conflation. Disambiguate by the reference's OWN leg
 // (vt.Child's correlation): pick the seed field whose value is a FieldValue over
-// that SAME correlation, matched by leg-relative ordinal (name as the within-leg
-// tiebreak — a single source has unique column names). Falls back to the
-// lazy-twin name authority (then fallbackOrd) when no seed field bears the
-// reference's correlation — a differently-shaped seed (e.g. a lateral-unnest
-// whose leg field is a bare QOV) resolves by name exactly as before.
+// that SAME correlation, matched by leg-relative ORDINAL.
+//
+// Two name arms used to sit under that, and both are gone (RFC-197 item 3):
+//
+//   - a within-leg name TIEBREAK, for a seed field carrying no baked ordinal.
+//     "A single source has unique column names" is the argument it rested on,
+//     and it is an argument for the ordinal, not against it: where the names are
+//     unique the ordinal answers identically, and where they are not the name is
+//     wrong. A seed field with no ordinal states nothing, so it is skipped.
+//   - a cross-leg name FALLBACK, for a seed whose leg field is a bare QOV rather
+//     than a per-column FieldValue (a lateral unnest). It resolved a UNIQUE name
+//     and poisoned a duplicate — the guard being the admission that the key was
+//     wrong, since two bare-QOV legs exposing the same column reach here
+//     indistinguishable. Every such seed now poisons.
+//
+// Poison (-1) is the fail-closed answer for both: the caller leaves the
+// reference UN-COLLAPSED rather than collapsing it onto a slot chosen by a
+// display name, which is loud on a positional row and never a wrong slot. It is
+// the same ambiguity-poison discipline bakeMergeComparisonKeys and rich_ordering
+// apply.
+//
+// Deliberately NOT falling back to fallbackOrd: that is the reference's RAW
+// leg-relative ordinal, and applying it to the box's concatenated RC picks the
+// FIRST leg's slot — the wrong-leg bug this function exists to prevent (it once
+// turned `e.id IS NULL` into `d.id IS NULL` and made a LEFT-join anti-join
+// return zero rows). fallbackOrd is used only where a leg-relative rebase was
+// never needed.
 func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
-	if childCorr, ok := ownCorrelationOfLeaf(vt.Child); ok {
-		nameMatch := -1
-		for i, f := range rc.Fields {
-			fv, isFV := f.Value.(*FieldValue)
-			if !isFV {
-				continue
-			}
-			fc, ok := ownCorrelationOfLeaf(fv.Child)
-			if !ok || fc != childCorr {
-				continue
-			}
-			// Prefer the leg-local ORDINAL match — the reference's baked slot is
-			// the authority. NAME is only a tiebreak for a seed field that carries
-			// no baked ordinal (fieldValueLegOrdinal == -1). A single source has
-			// unique column names, so within one leg the ordinal and name agree;
-			// preferring the ordinal is strictly safer should a construction
-			// inconsistency ever make a reference's srcOrd and Field disagree.
-			if fieldValueLegOrdinal(fv) == srcOrd {
-				return i
-			}
-			if nameMatch < 0 && strings.EqualFold(fv.Field, vt.Field) {
-				nameMatch = i
-			}
-		}
-		if nameMatch >= 0 {
-			return nameMatch
-		}
+	childCorr, ok := ownCorrelationOfLeaf(vt.Child)
+	if !ok {
+		// The reference names no leg at all, so there is nothing to rebase
+		// against and its own ordinal stands.
+		return fallbackOrd
 	}
-	// No seed field bears the reference's correlation — a differently-shaped seed
-	// (e.g. a lateral-unnest whose leg field is a bare QOV, not a FieldValue over
-	// the leg). Fall back to the plan-time name authority, but ONLY when the name
-	// resolves UNIQUELY. A DUPLICATE name here would first-match a colliding
-	// sibling leg's column: a bare-QOV leg carries no per-field correlation for
-	// the leg-scoped arm above to key on, so two bare-QOV legs exposing the same
-	// column name reach here unresolved, and a first-match would silently pick
-	// the wrong leg — the exact conflation this function exists to kill. A
-	// duplicate POISONS the collapse (returns -1 so the caller leaves the
-	// reference un-collapsed — loud on a positional row, never a wrong slot),
-	// matching the ambiguity-poison discipline of bakeMergeComparisonKeys /
-	// rich_ordering. Pinned by TestLegAwareRootOrdinal.
-	nameMatch := -1
 	for i, f := range rc.Fields {
-		if strings.EqualFold(f.Name, vt.Field) {
-			if nameMatch >= 0 {
-				return -1 // ambiguous cross-leg name — poison, never first-match
-			}
-			nameMatch = i
+		fv, isFV := f.Value.(*FieldValue)
+		if !isFV {
+			continue
+		}
+		fc, ok := ownCorrelationOfLeaf(fv.Child)
+		if !ok || fc != childCorr {
+			continue
+		}
+		if fieldValueLegOrdinal(fv) == srcOrd {
+			return i
 		}
 	}
-	if nameMatch >= 0 {
-		return nameMatch
-	}
-	return fallbackOrd
+	return -1
 }
 
 // fieldValueLegOrdinal returns fv's root source-relative ordinal (its leg-local
