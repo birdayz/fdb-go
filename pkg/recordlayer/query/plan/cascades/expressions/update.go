@@ -136,11 +136,9 @@ func (e *UpdateExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *UpdateExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &UpdateExpression{
-		inner:            quantifiers[0],
-		targetRecordType: e.targetRecordType,
-		transforms:       e.transforms,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*UpdateExpression)(nil)

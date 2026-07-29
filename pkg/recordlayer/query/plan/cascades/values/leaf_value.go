@@ -25,8 +25,7 @@ var _ LeafValue = (*QuantifiedObjectValue)(nil)
 // QuantifiedObjectValue with the target alias, preserving the type.
 // Ports Java's QuantifiedObjectValue.rebaseLeaf.
 func (q *QuantifiedObjectValue) RebaseLeaf(targetAlias CorrelationIdentifier) Value {
-	return &QuantifiedObjectValue{
-		Correlation: targetAlias,
-		Typ:         q.Typ,
-	}
+	cp := *q
+	cp.Correlation = targetAlias
+	return &cp
 }

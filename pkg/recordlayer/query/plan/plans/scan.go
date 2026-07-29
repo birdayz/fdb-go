@@ -65,14 +65,9 @@ func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, revers
 func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScanPlan {
 	copied := make([]values.Value, len(pk))
 	copy(copied, pk)
-	return &RecordQueryScanPlan{
-		recordTypes:     p.recordTypes,
-		flowedType:      p.flowedType,
-		reverse:         p.reverse,
-		primaryKeyVals:  copied,
-		scanComparisons: p.scanComparisons,
-		resultValue:     p.resultValue,
-	}
+	cp := *p
+	cp.primaryKeyVals = copied
+	return &cp
 }
 
 // WithScanComparisons returns a copy with the given scan comparisons.
@@ -80,14 +75,9 @@ func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScan
 func (p *RecordQueryScanPlan) WithScanComparisons(comps []*predicates.ComparisonRange) *RecordQueryScanPlan {
 	copied := make([]*predicates.ComparisonRange, len(comps))
 	copy(copied, comps)
-	return &RecordQueryScanPlan{
-		recordTypes:     p.recordTypes,
-		flowedType:      p.flowedType,
-		reverse:         p.reverse,
-		primaryKeyVals:  p.primaryKeyVals,
-		scanComparisons: copied,
-		resultValue:     p.resultValue,
-	}
+	cp := *p
+	cp.scanComparisons = copied
+	return &cp
 }
 
 // GetScanComparisons returns the per-column comparison ranges for PK narrowing.

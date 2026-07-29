@@ -110,10 +110,9 @@ func (e *LogicalTypeFilterExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *LogicalTypeFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalTypeFilterExpression{
-		inner:       quantifiers[0],
-		recordTypes: e.recordTypes,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalTypeFilterExpression)(nil)

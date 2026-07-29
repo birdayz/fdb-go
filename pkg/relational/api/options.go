@@ -253,7 +253,9 @@ func (o *Options) With(name OptionName, value any) *Options {
 	} else {
 		next[name] = value
 	}
-	return &Options{parent: o.parent, values: next}
+	cp := *o
+	cp.values = next
+	return &cp
 }
 
 // WithChild returns a new Options whose parent is o and whose own
@@ -266,7 +268,9 @@ func (o *Options) WithChild(child *Options) (*Options, error) {
 	if o == child {
 		return child, nil
 	}
-	return &Options{parent: o, values: child.values}, nil
+	cp := *child
+	cp.parent = o
+	return &cp, nil
 }
 
 // Entries returns a copy of this Options' own values (parent values

@@ -95,10 +95,9 @@ func (e *LogicalUniqueExpression) HashCodeWithoutChildren() uint64 {
 }
 
 func (e *LogicalUniqueExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalUniqueExpression{
-		inner:    quantifiers[0],
-		required: e.required,
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalUniqueExpression)(nil)

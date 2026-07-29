@@ -156,11 +156,9 @@ func (e *MatchableSortExpression) GetResultValue() values.Value {
 // WithQuantifiers returns a copy of this expression with the given
 // quantifiers replacing the original children (single child expected).
 func (e *MatchableSortExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &MatchableSortExpression{
-		sortParameterIDs: e.sortParameterIDs,
-		isReverse:        e.isReverse,
-		inner:            quantifiers[0],
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*MatchableSortExpression)(nil)

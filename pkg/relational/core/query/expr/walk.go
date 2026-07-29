@@ -739,7 +739,9 @@ func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = 
 // condition (e.g. correlation rebase) instead of hitting withChildren's
 // unhandled-type panic.
 func (pv *predicateValue) WithChildrenValue(newChildren []values.Value) values.Value {
-	return &predicateValue{pred: predicateWithChildValues(pv.pred, newChildren)}
+	cp := *pv
+	cp.pred = predicateWithChildValues(pv.pred, newChildren)
+	return &cp
 }
 
 // EqualsWithoutChildrenValue implements values.SelfEqualsWithoutChildren so the

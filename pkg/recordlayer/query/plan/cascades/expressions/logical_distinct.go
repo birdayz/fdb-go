@@ -57,9 +57,9 @@ func (e *LogicalDistinctExpression) EqualsWithoutChildren(other RelationalExpres
 func (e *LogicalDistinctExpression) HashCodeWithoutChildren() uint64 { return 31 }
 
 func (e *LogicalDistinctExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	return &LogicalDistinctExpression{
-		inner: quantifiers[0],
-	}
+	cp := *e
+	cp.inner = quantifiers[0]
+	return &cp
 }
 
 var _ RelationalExpression = (*LogicalDistinctExpression)(nil)
