@@ -135,7 +135,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// and a bucket that reaches zero is the shape every other bucket is aiming
 	// for.
 
-	// escape (1) -- the NLJ cluster MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
+	// escape (0) -- MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
 	// and bareColumnName are gone: the join fast path asks a value for its
 	// CORRELATION (structurally, from its QuantifiedObjectValue child) and matches
 	// the inner key column by IDENTITY against the metadata name resolved once
@@ -150,7 +150,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// a struct element in one leg reported the other leg's scalar kind whenever
 	// the planner put that leg outer. It now resolves the element type once, at
 	// the site, by ordinal in the leg the Explode reads.
-	"pkg/relational/core/query/cascades_translator.go:7407": {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
+	//
+	// aggregateOperandColumn is gone with it: the SUM/AVG operand's static
+	// integer width — the int32-vs-int64 overflow decision, an arithmetic
+	// result no plan golden can see — now indexes the input's typed column list
+	// by ordinal, with the two separately-derived layouts required to agree
+	// before the ordinal is used. Converting it was gated on measurement rather
+	// than argument: name and ordinal answered identically on all 8358
+	// aggregate operands the relational suite produces.
 
 	// contract (11)
 	//
