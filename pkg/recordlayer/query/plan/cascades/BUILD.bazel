@@ -261,6 +261,7 @@ go_test(
         "index_test_plan_context_test.go",
         "intersector_primary_key_test.go",
         "join_ordering_cycle_reproducer_test.go",
+        "join_same_leaf_ordering_identity_test.go",
         "left_outer_existential_test.go",
         "leg_row_types_test.go",
         "limit_retained_over_multirow_filter_test.go",
@@ -960,6 +961,7 @@ go_test(
         "gathered_explode_owner_edge_test.go",
         "projection_alias_provenance_carry_test.go",
         "ordering_identity_decisions_test.go",
+        "join_same_leaf_ordering_identity_test.go",
     ],
     deps = [
         "//gen",

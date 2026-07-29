@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=341 queries=2481 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=342 queries=2485 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -12587,6 +12587,42 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#0
+sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY i.id
+plan:  Project([O.ID#0, I.ID#0], InMemorySort([I.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#1
+sql:   SELECT o.id AS oid, i.id AS iid FROM t AS o, t AS i WHERE o.v = i.w ORDER BY o.id
+plan:  Project([O.ID#0, I.ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#2
+sql:   SELECT i.id AS iid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY i.id ORDER BY i.id
+plan:  Project([ID#0, SUM(O.V)#1], StreamingAgg(keys=[I.ID#0], InMemorySort([I.ID#0 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== ordering_same_leaf_cross_quantifier.yaml#3
+sql:   SELECT o.id AS oid, SUM(o.v) AS s FROM t AS o, t AS i WHERE o.v = i.w GROUP BY o.id ORDER BY o.id
+plan:  Project([ID#0, SUM(O.V)#1], StreamingAgg(keys=[O.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(Scan(T), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === outer_join.yaml#0
 sql:   SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
 plan:  Project([A.ID#0, B.LABEL#2], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(A), Scan(B)))

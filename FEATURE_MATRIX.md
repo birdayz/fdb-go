@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**341 scenarios · 2736 query/assertion cases** across 18 feature areas — 2395 supported, 111 unsupported-feature pins, 230 error-path pins.
+**342 scenarios · 2740 query/assertion cases** across 18 feature areas — 2399 supported, 111 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -33,7 +33,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | CTEs | 12 | 105 | 73 | 9 | 23 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 191 | 1 | 18 |
-| Ordering & pagination | 14 | 115 | 111 | 0 | 4 |
+| Ordering & pagination | 15 | 119 | 115 | 0 | 4 |
 | Scalar functions & expressions | 33 | 377 | 323 | 22 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **341** | **2736** | **2395** | **111** | **230** |
+| **Total** | **342** | **2740** | **2399** | **111** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -299,6 +299,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_limit` | 13 | 12 | 0 | 1 | ORDER BY with LIMIT — common query pattern. |
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
+| `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
 
 ## Scalar functions & expressions
 
