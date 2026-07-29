@@ -58,12 +58,19 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          # 13:00-15:00 UTC only: outside the 00:00-05:30ish window the other
-          # nightly jobs already occupy on this single runner slot.
-          if [ "$HOUR" -ge 13 ] && [ "$HOUR" -lt 15 ]; then
+          # 13:00-20:00 UTC. The previous 13:00-15:00 bound never once admitted a
+          # run: this workflow has exactly ONE scheduled run in its history
+          # (2026-07-28), its runner was allocated at 15:26 UTC for a 13:00 cron,
+          # and it skipped — GitHub's own scheduled-trigger dispatch on this repo is
+          # late by ~2-3.5h before the self-hosted queue is even consulted, so a
+          # two-hour window nailed to the cron hour is unreachable by construction.
+          # These oracles have therefore never produced a single row of signal.
+          # 20:00 clears the one observed landing by ~4.5h and still keeps the 90m
+          # job clear of the 00:00+ cluster the other nightlies occupy.
+          if [ "$HOUR" -ge 13 ] && [ "$HOUR" -lt 20 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 13:00-15:00 window (the self-hosted queue delayed dispatch) — skipping to protect other nightly jobs' slot; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 13:00-20:00 window (the self-hosted queue delayed dispatch) — skipping to protect other nightly jobs' slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -167,3 +174,38 @@ jobs:
             cardinality-oracle-output.txt
           retention-days: 30
           if-no-files-found: ignore
+
+      - name: Record genuine-run heartbeat
+        # The window gate above can skip every real step and still exit SUCCESS —
+        # which is the entire history of this workflow: one scheduled run, skipped,
+        # green. This file is written ONLY when the oracles actually executed, and
+        # nightly-reconcile.yml fails when its timestamp goes stale (limit 7 days
+        # here: the oracles' value is combinatorial breadth accumulated over time,
+        # not per-night freshness).
+        #
+        # Keyed to the sargability half, the one that needs FDB and so the one that
+        # a runner/Docker problem takes out first. The condition deliberately does
+        # NOT require success — a red oracle is the net WORKING.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sarg.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=oracles"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "sarg_combos=${{ steps.seeds.outputs.sarg_combos }} seed=${{ steps.seeds.outputs.sarg_seed }}"
+            echo "card_combos=${{ steps.seeds.outputs.card_combos }} seed=${{ steps.seeds.outputs.card_seed }}"
+            echo "sarg_outcome=${{ steps.sarg.outcome }}"
+            echo "cardinality_outcome=${{ steps.cardinality.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sarg.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        # if-no-files-found: error, NOT ignore — a heartbeat that silently fails to
+        # upload reproduces the very silence this mechanism exists to break.
+        with:
+          name: nightly-heartbeat-oracles
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error

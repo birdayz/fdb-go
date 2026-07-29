@@ -56,12 +56,26 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          # 00:00-02:00 UTC only: this sweep runs ~3.75h, so a later start
-          # would collide with the 04:23 stress job for the single slot.
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 2 ]; then
+          # 00:00-08:00 UTC. The previous 00:00-02:00 bound was UNREACHABLE, not
+          # merely tight: measured across 07-20..07-29, the 00:17 cron's runner was
+          # allocated at 03:33..04:02 UTC every single night, because GitHub's own
+          # scheduled-trigger dispatch on this repo is late by ~2-3.5h before the
+          # self-hosted queue is even consulted. Ten consecutive nights exited green
+          # having compared zero rows.
+          #
+          # WIDENED rather than rescheduled: the dispatch delay is variable
+          # (measured 1h57m..3h52m across five workflows), so an earlier cron would
+          # still need a window several hours wide to catch the spread — the window
+          # is doing the work either way — and an earlier cron additionally needs a
+          # midnight-wrapping comparison here, an extra branch for no gain. 08:00
+          # clears the worst observed landing by ~4h; the ~4.7h sweep then finishes
+          # before midday at worst. The collision this bound used to prevent is not
+          # real anyway: both jobs want the same single runner, so Actions
+          # serializes them regardless of what the clock says.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 8 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-02:00 window for this ~4h sweep (the self-hosted queue delayed dispatch) — skipping to protect the stress job's slot and daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-08:00 window for this ~4.7h sweep (the self-hosted queue delayed dispatch) — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -185,3 +199,36 @@ jobs:
             rowdiff-paging-output.txt
           retention-days: 30
           if-no-files-found: ignore
+
+      - name: Record genuine-run heartbeat
+        # The window gate above can skip every real step and still exit SUCCESS,
+        # which is how 10 consecutive nights (07-20..07-29) went green having
+        # compared zero rows. This file is written ONLY when the sweep actually
+        # executed, and nightly-reconcile.yml fails when its timestamp goes stale.
+        #
+        # Keyed to the un-paged sweep, the mandatory half; the paging sweep is
+        # inside the same job and cannot run without it. The condition deliberately
+        # does NOT require success — a red sweep is the net WORKING. The heartbeat
+        # answers "did it run"; the job conclusion answers "did it pass".
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sweep.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=rowdiff"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "seeds=${{ steps.seeds.outputs.start }}..$(( ${{ steps.seeds.outputs.start }} + ${{ steps.seeds.outputs.seeds }} - 1 ))"
+            echo "sweep_outcome=${{ steps.sweep.outcome }}"
+            echo "paging_outcome=${{ steps.paging.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sweep.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        # if-no-files-found: error, NOT ignore — a heartbeat that silently fails to
+        # upload reproduces the very silence this mechanism exists to break.
+        with:
+          name: nightly-heartbeat-rowdiff
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error

@@ -46,12 +46,21 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          # 00:00-07:00 UTC: generous margin past the 04:17 cron plus this
-          # workflow's longest job timeout (75m for engine-fuzz).
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          # 00:00-10:00 UTC, and this bound governs ALL FIVE jobs below. Sized from
+          # MEASURED dispatch, not from the cron hour: across 07-20..07-29 the first
+          # job's runner was allocated at 06:39..07:51 UTC for an 04:17 cron, because
+          # GitHub's own scheduled-trigger dispatch on this repo is late by ~2-3.5h
+          # before the self-hosted queue is even consulted. The old 00:00-07:00 bound
+          # sat inside that landing spread and skipped 4 of 10 nights green.
+          #
+          # The five jobs SERIALIZE on the single runner, so each later one is
+          # allocated later still and misses the window independently — which is why
+          # each carries its OWN heartbeat, and why a single workflow-level
+          # heartbeat would have been a lie.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -91,6 +100,9 @@ jobs:
 
       - name: Run deterministic tests (TestDiff + ALL fuzz seed corpora)
         if: steps.window.outputs.ok == 'true'
+        # id: keyed by the genuine-run heartbeat at the end of this job — this is
+        # the job's first piece of real work, so "it ran" is decided here.
+        id: replay
         # Runs EVERY night, full set — this is the regression net (replays every
         # known crasher / ground-truth seed). `^Fuzz` is load-bearing: -run=TestDiff
         # alone does NOT replay the Fuzz* seed corpora (same fix as per-PR ci.yml
@@ -192,6 +204,34 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+      - name: Record genuine-run heartbeat
+        # The window gate can skip every real step and still exit SUCCESS; this
+        # workflow did so on 4 of the 10 nights 07-20..07-29. Written ONLY when the
+        # deterministic replay actually executed, and nightly-reconcile.yml fails
+        # when its timestamp goes stale. NOT conditioned on success: a red fuzz job
+        # is the net WORKING — the heartbeat answers "did it run", the job
+        # conclusion answers "did it pass".
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.replay.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=fuzz-diff"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.replay.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.replay.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        # if-no-files-found: error, NOT ignore — a heartbeat that silently fails to
+        # upload reproduces the very silence this mechanism exists to break.
+        with:
+          name: nightly-heartbeat-fuzz-diff
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
+
   race-detector:
     name: Race Detector
     runs-on: hetzner-fdb
@@ -212,10 +252,10 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -230,6 +270,8 @@ jobs:
 
       - name: Run tests with race detector
         if: steps.window.outputs.ok == 'true'
+        # id: keyed by the genuine-run heartbeat below — this job's only real work.
+        id: race
         run: >
           bazelisk test
           //pkg/fdbgo/client:client_test
@@ -240,6 +282,29 @@ jobs:
           --@rules_go//go/config:race
           --test_timeout=900
           --test_summary=detailed
+
+      - name: Record genuine-run heartbeat
+        # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
+        # heartbeat because the five jobs serialize on the one runner and so miss
+        # the window independently of one another.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.race.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=fuzz-race"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.race.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.race.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-heartbeat-fuzz-race
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
@@ -261,10 +326,10 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -283,11 +348,36 @@ jobs:
 
       - name: Run API binding stress (50 seeds × 1000 ops)
         if: steps.window.outputs.ok == 'true'
+        # id: keyed by the genuine-run heartbeat below — this job's first real work.
+        id: binding
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 50 -ops 1000
 
       - name: Run directory binding stress (30 seeds × 500 ops)
         if: steps.window.outputs.ok == 'true'
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
+
+      - name: Record genuine-run heartbeat
+        # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
+        # heartbeat because the five jobs serialize on the one runner and so miss
+        # the window independently of one another.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.binding.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=fuzz-binding"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.binding.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.binding.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-heartbeat-fuzz-binding
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
@@ -309,10 +399,10 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -330,6 +420,8 @@ jobs:
 
       - name: Fuzz a rotating 1/3 of //pkg/fdbgo Fuzz targets (Bazel-native, 90s each)
         if: steps.window.outputs.ok == 'true'
+        # id: keyed by the genuine-run heartbeat below — this job's only real work.
+        id: clientfuzz
         # Bazel-native (NOT plain `go test -fuzz`) so the run is faithful to the
         # MODULE.bazel go_deps.module_override that patches the Apple FDB Go binding.
         # Targets are DISCOVERED, not hard-listed; an empty discovery fails the job
@@ -439,6 +531,29 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+      - name: Record genuine-run heartbeat
+        # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
+        # heartbeat because the five jobs serialize on the one runner and so miss
+        # the window independently of one another.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.clientfuzz.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=fuzz-client"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.clientfuzz.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.clientfuzz.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-heartbeat-fuzz-client
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
+
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
     runs-on: hetzner-fdb
@@ -459,10 +574,10 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -477,6 +592,8 @@ jobs:
 
       - name: Fuzz a rotating 1/3 of //pkg/relational + //pkg/recordlayer targets (Bazel-native, 90s each)
         if: steps.window.outputs.ok == 'true'
+        # id: keyed by the genuine-run heartbeat below — this job's only real work.
+        id: enginefuzz
         # The ~95 SQL-engine + record-layer Fuzz targets (planner suite, value/predicate
         # simplification, continuations, proto/record deserialization, SQL front-end +
         # e2e). Rotating a third per night (~32 targets × 90s ≈ 48min) keeps this inside
@@ -589,3 +706,27 @@ jobs:
             /tmp/fuzz-cache/**
           retention-days: 30
           if-no-files-found: ignore
+
+      - name: Record genuine-run heartbeat
+        # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
+        # heartbeat because the five jobs serialize on the one runner and so miss
+        # the window independently of one another — this one, last in the queue, is
+        # the most exposed of the five.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.enginefuzz.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=fuzz-engine"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.enginefuzz.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.enginefuzz.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-heartbeat-fuzz-engine
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error

@@ -43,12 +43,17 @@ jobs:
             exit 0
           fi
           HOUR=$(date -u +%-H)
-          # 00:00-07:00 UTC: generous margin past the 04:23 cron plus this
-          # job's 120m timeout.
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+          # 00:00-10:00 UTC. Sized from MEASURED dispatch, not from the cron hour:
+          # across 07-15..07-29 this job's runner was allocated at 06:20..08:08 UTC
+          # for an 04:23 cron, because GitHub's own scheduled-trigger dispatch on
+          # this repo is late by ~2-3.5h before the self-hosted queue is even
+          # consulted. The old 00:00-07:00 bound sat inside that landing spread and
+          # skipped 12 consecutive nights green. 10:00 clears the worst observed
+          # landing by ~2h and still leaves the 120m run finishing before midday.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -165,3 +170,37 @@ jobs:
           path: stress-output.txt
           retention-days: 30
           if-no-files-found: ignore
+
+      - name: Record genuine-run heartbeat
+        # The window gate above can skip every real step and still exit SUCCESS,
+        # which is how 12 consecutive nights (07-18..07-29) went green with the
+        # stress suite executing zero times — the last genuine run, 07-17, had
+        # FAILED. This file is written ONLY when the suite actually executed, and
+        # nightly-reconcile.yml fails when its timestamp goes stale.
+        #
+        # The condition deliberately does NOT require success: a red stress run is
+        # the net WORKING. The heartbeat answers "did it run"; the job conclusion
+        # answers "did it pass". Gating this on success would silence the net for
+        # exactly as long as it keeps finding the bug.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.stress.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=stress"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "outcome=${{ steps.stress.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.stress.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        # if-no-files-found: error, NOT ignore — a heartbeat that silently fails to
+        # upload reproduces the very silence this mechanism exists to break.
+        # retention 90d must exceed the reconciler's staleness limit by a wide
+        # margin, else expiry alone would read as "the net stopped running".
+        with:
+          name: nightly-heartbeat-stress
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
