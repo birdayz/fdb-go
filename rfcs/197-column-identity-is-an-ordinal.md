@@ -85,8 +85,20 @@ coerce. This is why the migration has a step 0.
 The 68 sites partition into seven buckets. The partition is not prose: every
 `knownFieldDecisionDebt` entry carries exactly one bucket tag as a mandatory
 prefix on its reason string, pinned by `TestFieldDebtBucketsArePartition`.
-Counts at this revision: boundary 2, escape 11, contract 11, dotted 15,
-name-keyed 15, translator 13, harness 1. Revision 1's buckets double-counted
+Counts AS DRAFTED: boundary 2, escape 11, contract 11, dotted 15,
+name-keyed 15, translator 13, harness 1.
+
+**`pkg/docscheck` is the live count. Every number in this document — the
+per-item headings below, the migration order at the end, and this line — is the
+size the bucket had when its paragraph was written, kept so the plan's
+arithmetic can be read against what it was sized from.** The authority is
+`knownFieldDecisionDebt`'s group headers in
+`pkg/docscheck/field_name_decision_test.go`, which the ratchet keeps honest in
+both directions. Where a count here and a count there disagree, the test is
+right and this file is stale; that is expected as items land, and is not a
+defect in either.
+
+Revision 1's buckets double-counted
 sites (an item claimed as both "escape" and "translator" disappears under
 whichever label is softest); single ownership makes the arithmetic real —
 and it already worked once: applying the bucket criteria moved
@@ -230,24 +242,67 @@ the plan was sized from.
 
 - *The allowlist stays EMPTY, and that is now a result rather than a default.*
   All eleven remaining sites were read against the two legs. ZERO pass both.
-  Four (`cascades_generator.go:3172/:3186/:3192`, `logical_predicate.go:6732`)
+  (Line numbers throughout this item are as of this revision; `pkg/docscheck`'s
+  `knownFieldDecisionDebt` is the live list, and a line that has moved is a
+  reason to read the debt entry, not this prose.)
+  Four (`cascades_generator.go:3176/:3190/:3196`, `logical_predicate.go:6734`)
   fail BOTH legs and are not translator name resolution at all — the first
   three emit an `executor.ColumnDef` (ResultSet metadata inheritance), the
   fourth emits a `bool` feeding an `ErrCodeUndefinedColumn`. The other seven
-  are genuine bakers with born-baked outputs, and every one fails leg (a) for
-  one of exactly two reasons: the guard ADMITS resolved nodes (`:2060` in fact
-  *requires* `SourceRelativeBaked()`, `:2074` has no `Resolved` guard at all,
-  `:3837` re-admits source-relative bakes deliberately), or the "declared
-  column list" side is itself `.Field`-derived. That second reason is ONE root
-  cause behind four sites: `values.ProjectionColumnName` returns `fv.Field`
-  verbatim (`values.go:1508-1512`), so `expressionOutputColumns` →
-  `projectionOutputColumnNames` → `OutputColumnName` launders other Values'
-  display names into the metadata side of the comparison wherever the input is
-  a projection. The existing debt reasons at `:5699/:5855/:5873` prove the
-  ordinal↔domain correspondence and say nothing about the LEFT operand's
-  origin; that is the half that fails. `values.go:1510` is already on the
-  ratchet under `contract:`, so the four translator sites are gated on it, not
-  independently convertible.
+  are genuine bakers, and they fail for one of exactly two reasons: the guard
+  ADMITS resolved nodes (`:2060` in fact *requires* `SourceRelativeBaked()`,
+  `:2074` has no `Resolved` guard at all, `:3837` re-admits source-relative
+  bakes deliberately), or the "declared column list" side is itself
+  `.Field`-derived.
+
+  WHICH leg the second group fails was stated backwards here and is corrected.
+  Those sites PASS leg (a): each bails on `Child != nil || Resolved != nil`
+  before the comparison (`:5707`'s guard at `:5696`, `:5863`'s at `:5857`), so
+  the only value that can reach the name test is a lazy carrier minted from
+  parsed text. What they fail is leg (b) — "the site's OUTPUT carries
+  `Resolved != nil`". A MATCH is born-baked, but the bakers' no-match arm
+  returns `node` UNCHANGED (`:5716`, `:5892`), so on the majority path the
+  lazy carrier and its name survive the site intact. "Born-baked outputs" was
+  true of the arm that was looked at and false of the function.
+
+  The `.Field`-derived column list is one root cause behind THREE sites
+  (`:5707/:5863/:5881`), and `values.ProjectionColumnName` is NOT its single
+  gate. All three scan a slice built by `expressionOutputColumns`
+  (`cascades_translator.go:5489`), which has five naming arms, and two of them
+  launder a `.Field`:
+
+  - the projection arm — `projectionOutputColumnNames` → `OutputColumnName` →
+    `ProjectionColumnName`, which returns `fv.Field` verbatim
+    (`values.go:1487-1491`, ratcheted at `values.go:1510` under `contract:`);
+  - the group-by arm — `expressions.GroupByOutputColumnNames`
+    (`group_by.go:168`) → `AggregateKeyColumnName` (`group_by.go:118`) and
+    `AggregateResultColumnName`'s `opName = v.Field` arm (`group_by.go:140`),
+    both also `contract:` entries. The peel-through arms carry a group-by's
+    names up through a HAVING filter or a sort, so this reaches
+    `bakeFlatRefsAgainstColumns` at `:6055` and `:6380` with `inputCols`
+    spelled entirely by those two authorities.
+
+  The remaining three arms (`SelectExpression`'s record-constructor field
+  names, `FullUnorderedScanExpression`'s descriptor field names, and the union
+  arms that recurse into leg 0) are not `.Field`-derived at all. So the three
+  sites are gated on the CONTRACT BUCKET, not on one line of it: converting
+  `values.go:1510` alone leaves them reading a group-by authority's name.
+
+  The FOURTH site the earlier text counted here, `cascades_translator.go:5023`,
+  is gated on a different contract-bucket producer and does not move with
+  `ProjectionColumnName` at all. `pullUpSortKeyValue` scans the FOLDED
+  projection's output `fields`, and those are named from `p.Projections` /
+  `p.Aliases` (parser text) or a positional `_i` — never from
+  `ProjectionColumnName`. The only `.Field`-derived names in that slice are the
+  HIDDEN sort columns `collectExtraSortColumns` appends, each named by
+  `sortKeyFieldRef`'s `strings.ToUpper(fv.Field)` (`:4723`, on the ratchet under
+  `contract:` as RFC-141 sort-key hidden-field naming). Anyone sequencing off
+  the old sentence would convert `values.go:1510`, expect four sites to fall,
+  and find `:5023` still red.
+
+  The existing debt reasons at `:5707/:5863/:5881` prove the ordinal↔domain
+  correspondence and say nothing about the column-list operand's origin; that
+  is the half that fails.
 
 - *`cascades_translator.go:6078` — named above as the "first candidate for the
   per-site allowlist" — was DEAD CODE, and had been since it was written.* It
@@ -892,18 +947,30 @@ audited separately rather than being waved through with the engine work.
 
 ## Order
 
+Sizes below are LIVE as of this revision — read off `knownFieldDecisionDebt`'s
+group headers, not off the per-item paragraphs above, which carry the size each
+bucket had when it was written. `pkg/docscheck` remains the authority for all
+of them.
+
 0. Domain accessor (fail-closed) — nothing else may land first.
-1. boundary (2): metadata names die at candidate construction.
-2. escape (11): key structs; kills the caller-side blindness the gate cannot
-   reach.
-3. name-keyed (15): including the 4151 probe-first defect check; 6188 is
-   the same two-Values shape and travels with it.
-4. translator (17→15): boundary demonstrations. The allowlist did NOT grow —
+1. boundary (0, MIGRATED): metadata names died at candidate construction.
+2. escape (0, MIGRATED): key structs; killed the caller-side blindness the gate
+   cannot reach.
+3. name-keyed (3, was 15): including the 4151 probe-first defect check; 6188 is
+   the same two-Values shape and travels with it. The three that remain are each
+   blocked on something outside the bucket — memo interning of lazy carriers,
+   constraint-growth coupling in the planner, and resolver-side baking of a
+   projection-output reference.
+4. translator (15, was 17): boundary demonstrations. The allowlist did NOT grow —
    all eleven remaining sites were read against the two legs and none passes
-   both; two more left by deletion as unreachable. `pkg/docscheck` is the live
-   count, not this line.
-5. contract (11): the coordinated naming-contract change.
-6. dotted (15): producer-side channel removal.
+   both; two more left by deletion as unreachable.
+5. contract (15, was 11): the coordinated naming-contract change. It GREW: the
+   launderer widening surfaced the readers the original sizing had missed, and
+   the JDBC label site left by being fixed rather than exempted.
+6. dotted (7, was 15): producer-side channel removal. Four sites were retagged
+   `translator:` and four migrated with item 6's producers.
+
+harness stays at 1 and is out of scope for the engine work.
 
 ## Rejected alternatives
 
