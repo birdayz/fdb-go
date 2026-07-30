@@ -10222,6 +10222,64 @@ None is speculative: each was re-verified against the tree before booking.
   (`cascades_generator.go:4122`, the group-key qualification probe, is the only
   non-merged-row reader left).
 
+  PARTIALLY IMPLEMENTED (branch `feat/cq53-flatmap-binder`), and the remainder
+  is BLOCKED ON CQ-63 by measurement, not by judgement. What landed:
+
+  - **Java's per-quantifier binding namespace, restored.** Each leg of a merged
+    outer row now binds under its OWN correlation in the FlatMap inner's
+    context (`executor.bindMergedOuterLegs`, `flat_map_cursor.go`) — Java's
+    `RecordQueryFlatMapPlan.java:135-140` over the parent chain at
+    `Bindings.java:116-134`, where `QuantifiedObjectValue.eval` is a map lookup
+    (`QuantifiedObjectValue.java:84-85`). Binding only the join's own alias is
+    what made the qualified `LEG.COL` name necessary in the first place.
+  - **The leg-local bake**, where the leg's layout can be stated: the read keeps
+    its own alias and carries its own leg's ordinal, and no name is minted. The
+    layout is read off the leg's CHOSEN PHYSICAL PLAN (`physicalLegRowTypes`),
+    which is Java's `translateCorrelations` against
+    `Quantifier.getFlowedObjectType` (`Quantifier.java:801-803`).
+
+  THREE PREMISES OF THIS ENTRY ARE REFUTED, all by reading the two sides:
+
+  1. "Both producers DELETE OUTRIGHT once the binder is parent-chained." They
+     cannot. Measured at the mint itself over the real-FDB corpus: **126
+     firings, 0 with a typed leg quantifier**. The reference carries an UNTYPED
+     QOV, so there is no layout to state a leg-local ordinal in and nothing to
+     delete the name in favour of. The bake had to acquire the layout from
+     somewhere else entirely.
+  2. "Port PartitionSelectRule's REJECTION of conflicting lateral correlations."
+     Already ported: `rule_partition_select.go:395` is Java's `:161-167`, and
+     `:548-555` is Java's `:234-243`.
+  3. "The nested UNNAMED ordinal record with eager TranslationMap rewriting is
+     the thing to build." Already built and Java-faithful:
+     `positional_merge.go`'s `positionalMergeCase` is
+     `PartitionSelectRule.java:283-315` 1:1 (`OrdinalFieldName(i)` for
+     `Column::unnamedOf`, `.When(live_i).Then(ofOrdinalNumber(QOV(merge), i))`).
+
+  WHERE IT STOPS, MEASURED. After the leg-local bake, **34 of 126** reads
+  convert; the other 92 fall through. The cause is not the reads — it is **32
+  LEGS whose physical plan is a `RecordQueryFlatMapPlan` that states no row
+  layout at all** (`leg-local bakeability` census, `NO-LAYOUT` witnesses). A
+  FlatMap's row is its result value's to state, and these result values state
+  nothing because they flow an UNTYPED quantifier object. That is CQ-63
+  verbatim. Deriving the layout from a SEEDED result value was implemented and
+  measured: it declines on every one of the 32, so it was removed rather than
+  kept on speculation.
+
+  So the ORDER changes: **CQ-63 now gates the rest of CQ-53**, not the reverse.
+  Until a FlatMap leg can state its row type, 92 of 126 leg-correlated reads
+  have no honest alternative to the qualified name, and therefore
+  `RecordTypeLeg.Name` cannot retire and the seed-window text keys cannot
+  either. The seed-window keys have a second, independent blocker of their own:
+  `exists_gathered_cluster_wrap.go:131` and `unnest_gather.go:365` SPLIT a
+  dotted reference and look the window up by the qualifier TEXT, so identity
+  keying there requires minting an identifier from a name — the exact forgery
+  RFC-197 exists to remove. Those producers are SQL-translator-side dotted
+  names, a different channel from the NLJ mint, and they retire on their own
+  producer-first path.
+
+  Stress 1M before/after (`bdf70fb2f` vs branch): all 22 measurements
+  row-identical; timings within run-to-run noise on a shared machine.
+
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and
   make the call-numbering ONE authority instead of two.** RFC-197 item 5 left
@@ -10752,6 +10810,18 @@ None is speculative: each was re-verified against the tree before booking.
   per-line justification.
 
   Not gated on CQ-53: it touches no leg identity and no dotted channel.
+
+  ESCALATED — CQ-53 IS GATED ON THIS ITEM, and the gate is measured. The
+  qualified `LEG.COL` channel cannot retire while a leg's physical plan states
+  no row layout, because a leg-correlated read then has no ordinal it can
+  honestly carry on its own alias. Measured over the real-FDB corpus: 92 of 126
+  such reads fall through to the name, and all of them trace to 32 legs whose
+  plan is a `RecordQueryFlatMapPlan` flowing an untyped result value. This item
+  is therefore no longer a residual cleanup — it is the thing that unblocks the
+  largest remaining RFC-197 channel, and it should run BEFORE the rest of
+  CQ-53. The `leg-local bakeability` census (with its `NO-LAYOUT` witnesses) is
+  the acceptance instrument: when this item lands, `underivableLegs` should go
+  to 0 and `bakeable` should approach `total`.
 
 - [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
   name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
