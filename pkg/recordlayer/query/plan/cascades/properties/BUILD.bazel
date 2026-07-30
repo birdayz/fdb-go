@@ -39,6 +39,7 @@ go_test(
         "cost_test.go",
         "expression_count_property_test.go",
         "ordering_fuzz_test.go",
+        "ordering_key_resolution_test.go",
         "ordering_test.go",
         "plan_property_test.go",
         "predicate_complexity_property_test.go",

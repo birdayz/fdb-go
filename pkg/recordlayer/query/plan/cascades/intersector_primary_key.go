@@ -862,7 +862,16 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 	return false
 }
 
+// intersectionValuesEqual is orderingValuesEqual's counterpart for the
+// primary-key intersection's own value lists (comparison keys, equality-bound
+// values, the implicit record-type discriminators). Same rule and same reason:
+// where both sides state a column identity that is the decision, because
+// ValuesStructurallyEqual compares two baked ordinal paths without comparing the
+// layouts they index.
 func intersectionValuesEqual(left, right values.Value) bool {
+	if values.BothStateOrderingIdentity(left, right) {
+		return values.SameOrderingColumn(left, right)
+	}
 	if values.ValuesStructurallyEqual(left, right) {
 		return true
 	}

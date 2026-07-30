@@ -1005,13 +1005,29 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	return &resolved
 }
 
-// orderingValuesEqual bridges independently rebuilt ordering Values. SQL sort
-// requests are bound to positional row accessors (FIELD#ordinal), while match
-// candidates carry the same columns before row-layout baking. Structural
-// equality remains authoritative. The fallback is restricted to the safe flat
-// lazy-vs-baked (or case-only lazy) bridge; two baked values with different
-// ordinals are different reads and must never satisfy each other.
+// orderingValuesEqual decides whether a requested ordering key and a match
+// candidate's ordering key are the SAME COLUMN. The two are built by different
+// producers — an SQL sort request against a row layout, a candidate against its
+// index metadata — and never arrive as one node.
+//
+// The decision is by column IDENTITY wherever both sides state one, and it is
+// then FINAL: an identity that says "different column" must not be overridden
+// by a weaker comparison. That is not conservatism, it is the whole point.
+// ValuesStructurallyEqual sends two baked FieldValues through
+// FieldPath.Equals, which compares ordinals and NOT the layout they index, so
+// it reports ordinal 0 of an aggregate's output row and ordinal 0 of a record
+// row as the same column — measured on the corpus, and a wrong sort elision if
+// the enclosing decision goes the other way. The name bridge below has the
+// mirror-image failure and is reachable only where no identity exists.
+//
+// The remaining arms are for values that have NOT stated an identity: structural
+// equality (which also covers non-FieldValue keys and the CardinalityValue
+// wrapper), then the flat lazy-vs-baked / quantifier-root name bridge that a
+// candidate column with no resolvable layout still needs.
 func orderingValuesEqual(left, right values.Value) bool {
+	if values.BothStateOrderingIdentity(left, right) {
+		return values.SameOrderingColumn(left, right)
+	}
 	if values.ValuesStructurallyEqual(left, right) {
 		return true
 	}

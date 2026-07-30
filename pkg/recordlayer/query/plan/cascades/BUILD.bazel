@@ -285,6 +285,7 @@ go_test(
         "memo_wsb_no_collapse_test.go",
         "optimize_group_ordering_test.go",
         "ordering_identity_decisions_test.go",
+        "ordering_key_identity_test.go",
         "ordinal_chain_corpus_test.go",
         "ordinal_star_planning_budget_test.go",
         "partial_match_compensation_hazards_test.go",
@@ -962,6 +963,7 @@ go_test(
         "projection_alias_provenance_carry_test.go",
         "ordering_identity_decisions_test.go",
         "join_same_leaf_ordering_identity_test.go",
+        "ordering_key_identity_test.go",
     ],
     deps = [
         "//gen",

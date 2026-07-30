@@ -145,7 +145,26 @@ func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKey
 			return nil
 		}
 		consumed[entry.index] = true
-		parts = append(parts, p)
+		// Push the GROUPING KEY's Value, not the requested part's. The
+		// requested part is stated in the aggregate's OUTPUT row (an ORDER BY
+		// above a GROUP BY addresses output slots); the child below this
+		// quantifier speaks the INPUT row. Java does this as an explicit
+		// translation before it matches at all —
+		// PushRequestedOrderingThroughGroupByRule.java:108-110 pushes the
+		// requested ordering down through the group-by's result value ("we need
+		// to do that in any case") and :152-153 then matches the PUSHED part
+		// against the grouping values by Value equality, so the part it pushes
+		// IS the grouping value.
+		//
+		// Pushing the output-space Value instead leaves the ordering match at
+		// the access path with two values from two different rows, reconcilable
+		// only by their spelling — and once both sides state an ordinal, that
+		// spelling bridge is exactly what an ordinal-across-layouts conflation
+		// hides behind.
+		parts = append(parts, properties.RequestedOrderingPart{
+			Value:     entry.value,
+			SortOrder: p.SortOrder,
+		})
 	}
 
 	// Append remaining grouping keys with ANY sort order.

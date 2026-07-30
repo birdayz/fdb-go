@@ -209,6 +209,17 @@ func (c *PrimaryScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	return c.primaryKeyValues
 }
 
+// bakeOrderingColumn resolves a primary-key column name to a domained ordinal
+// in the record row layout this scan flows. Same authority and same
+// unique-match rule as the index candidate's — see bakeOrderingColumnIn.
+func (c *PrimaryScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
+	rt, isRecord := c.baseType.(*values.RecordType)
+	if !isRecord {
+		return values.NewFieldValue(nil, name, values.UnknownType)
+	}
+	return bakeOrderingColumnIn(rt, name)
+}
+
 // ComputeMatchedOrderingParts computes one ordering part per primary-key
 // column the sort requests, in key order, carrying whatever comparison range
 // the match bound for that column.
@@ -258,10 +269,13 @@ func (c *PrimaryScanMatchCandidate) ComputeMatchedOrderingParts(
 		if idx < 0 || idx >= len(c.primaryKeyColumns) {
 			break
 		}
-		// Childless FieldValue, matching the index candidate: the ordering
-		// axis is the column NAME, resolved against the query's sort key
-		// through the same bridge.
-		colValue := values.NewFieldValue(nil, c.primaryKeyColumns[idx], values.UnknownType)
+		// Childless FieldValue, matching the index candidate — resolved
+		// against the record row layout the scan flows, so the key states a
+		// column identity rather than a display name. A primary scan can be an
+		// intersection leg beside an index scan, and both legs' comparison keys
+		// meet in one merged ordering: they must be domained in the SAME record
+		// layout or the merge hands them different tokens and collapses.
+		colValue := c.bakeOrderingColumn(c.primaryKeyColumns[idx])
 		parts = append(parts, NewMatchedOrderingPart(
 			paramID, colValue, bindings[paramID], sortOrder))
 	}

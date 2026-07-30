@@ -1,8 +1,6 @@
 package properties
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -21,13 +19,7 @@ type RichOrdering struct {
 	keys        []values.Value
 	orderingSet *combinatorics.PartiallyOrderedSet[string]
 	keyLookup   map[string]values.Value
-	// normLookup maps the NORMALIZED rendering (upper-cased, ordinal-free
-	// ColumnNameValue) of each key to its PRIMARY ExplainValue key — the
-	// same-column bridge orderingKeyFor uses when a requested value names a
-	// provided key with a different bake state or case. Ambiguous normalized
-	// names (two keys, one column rendering) are absent (exact-only).
-	normLookup map[string]string
-	distinct   bool
+	distinct    bool
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
@@ -60,31 +52,10 @@ func NewRichOrderingWithDeps(
 
 	keyStrings := make([]string, len(keys))
 	lookup := make(map[string]values.Value, len(keys))
-	norm := make(map[string]string, len(keys))
-	normPoison := map[string]struct{}{}
 	for i, k := range keys {
 		s := values.ExplainValue(k)
 		keyStrings[i] = s
 		lookup[s] = k
-		// Secondary, NORMALIZED registration (upper-cased, ordinal-free
-		// ColumnNameValue): a requested ordering names the same COLUMN with a
-		// different bake state or case (a baked "COL#2" vs a provider's lazy
-		// "col"), and the ordering match is a same-column question. A
-		// normalized collision (two keys, one column name) is ambiguous —
-		// poisoned, exact-only.
-		n := strings.ToUpper(values.ColumnNameValue(k))
-		if n == "" {
-			continue
-		}
-		if _, poisoned := normPoison[n]; poisoned {
-			continue
-		}
-		if prev, dup := norm[n]; dup && prev != s {
-			delete(norm, n)
-			normPoison[n] = struct{}{}
-			continue
-		}
-		norm[n] = s
 	}
 
 	var oset *combinatorics.PartiallyOrderedSet[string]
@@ -112,7 +83,6 @@ func NewRichOrderingWithDeps(
 		keys:        keysCopy,
 		orderingSet: oset,
 		keyLookup:   lookup,
-		normLookup:  norm,
 		distinct:    distinct,
 	}
 }
@@ -123,7 +93,6 @@ func EmptyOrdering() *RichOrdering {
 		bindingMap:  map[values.Value][]OrderingBinding{},
 		orderingSet: combinatorics.EmptyPartiallyOrderedSet[string](),
 		keyLookup:   map[string]values.Value{},
-		normLookup:  map[string]string{},
 	}
 }
 
@@ -311,30 +280,36 @@ func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
 }
 
 // orderingKeyFor resolves a requested-ordering part's Value to the ordering
-// set's key for it: the exact ExplainValue rendering first, then the
-// ordinal-FREE ColumnNameValue rendering when the two Values pass the narrow
-// flat-field representation bridge (a plan-time BAKED "COL#2" may meet a lazy
-// provider "COL"; two differently baked ordinals may not). ok=false when
-// neither representation identifies a known ordering key.
+// set's key for it: the exact ExplainValue rendering first, then the narrow
+// quantifier-root bridge. ok=false when neither identifies a known ordering key.
+//
+// The separate ORDINAL-FREE same-column arm that used to sit between the two is
+// GONE, and its removal is a SIMPLIFICATION, not a change of behaviour: it was a
+// fast path for a comparison the quantifier-root arm below already performs.
+// CanBridgeOrderingValueRoots begins by calling CanBridgeOrderingFieldValues,
+// which is that same lazy-vs-baked ordinal-free name comparison, so every pair
+// the deleted arm could resolve the loop below still resolves. Measured over the
+// 2481-query corpus its own hit count fell 5289 → 0 as the ordering providers
+// resolved their metadata column lists against the layouts they flow; the pairs
+// did not stop meeting, they stopped needing this arm to meet.
+//
+// So the display name has NOT left this function. It survives inside the root
+// arm, where 1824 corpus resolutions still run through it, and retiring it means
+// putting the request into the provider's correlation space before matching —
+// which is a translation, not a stricter comparison. Until that lands, what
+// keeps the remaining name comparison from being a conflation is
+// CanBridgeOrderingFieldValues' own refusal to bridge two BAKED values: two
+// stated ordinals are decided by their ordinals, never by their spelling.
 func (o *RichOrdering) orderingKeyFor(v values.Value) (string, bool) {
 	k := values.ExplainValue(v)
 	if _, ok := o.keyLookup[k]; ok {
 		return k, true
 	}
-	// The normalized same-column bridge: resolve through the upper-cased,
-	// ordinal-free rendering to the PRIMARY key (so the returned key is a
-	// member of the ordering set — the permutation enumeration and binding
-	// lookups all key on primaries).
-	if pk, ok := o.normLookup[strings.ToUpper(values.ColumnNameValue(v))]; ok {
-		if provided := o.keyLookup[pk]; values.CanBridgeOrderingFieldValues(v, provided) {
-			return pk, true
-		}
-	}
 
 	// A requested key scoped to one SELECT child remains rooted at that
 	// quantifier (C.NAME), while a scan/index ordering is source-local (NAME).
-	// The normalized rendering cannot bridge those strings, so use the narrow
-	// full-accessor-path bridge and reject an ambiguous multi-key match.
+	// The two renderings cannot meet, so use the narrow full-accessor-path
+	// bridge and reject an ambiguous multi-key match.
 	var bridged string
 	for key, provided := range o.keyLookup {
 		if !values.CanBridgeOrderingValueRoots(v, provided) {

@@ -222,6 +222,97 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 //
 // Both declines are the fail-closed direction: a refused match costs a rewrite,
 // an accepted one binds the wrong column.
+// SameOrderingColumn reports whether two ORDERING Values denote the same
+// column by identity: the same ordinal path in the same STATED layout, read off
+// a compatible root. Both sides must have stated an identity; a side that has
+// not declines, and nothing here consults a display name.
+//
+// It is the ordinal-domain counterpart of CanBridgeOrderingValueRoots' name
+// comparison, and it exists because the obvious alternative is unsound:
+// ValuesStructurallyEqual routes two baked FieldValues through
+// FieldPath.Equals, which is ordinal-only and DOMAIN-BLIND (Java's
+// ResolvedAccessor.equals, FieldValue.java:675-689 — sound there because a Java
+// FieldValue always has a non-null typed childValue, so the layout an ordinal
+// indexes is never in question). Go mints CHILDLESS bakes against several
+// different rows, so ordinal 0 of a record row and ordinal 0 of an aggregate's
+// output row compare EQUAL there. That conflation is measured, not
+// hypothetical, and it reads as authoritative — which is strictly worse than
+// the name comparison it would replace.
+//
+// The ROOT rule permits one asymmetry: a childless value against a
+// QOV-rooted one. A childless bake is Go's canonical source-relative root (see
+// RequestedOrdering.NormalizeRootsTo), and the match-candidate side is
+// childless by construction while a request scoped to its owning quantifier is
+// not. Two DIFFERENT named quantifiers are different columns and decline: that
+// is what keeps `o.a` and `i.a` apart in a self-join.
+func SameOrderingColumn(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	if !aIsField || !bIsField || af == nil || bf == nil {
+		return false
+	}
+	aCorr, aRootOK := orderingRootCorrelation(af)
+	bCorr, bRootOK := orderingRootCorrelation(bf)
+	if !aRootOK || !bRootOK {
+		return false
+	}
+	if aCorr != bCorr && !aCorr.IsZero() && !bCorr.IsZero() {
+		return false
+	}
+	return SameColumnPath(af.Resolved, bf.Resolved)
+}
+
+// orderingRootCorrelation returns the quantifier a flat ordering reference
+// reads from — the zero identifier for a childless (source-relative) value.
+// A child that is neither absent nor a quantifier reads some other row and
+// declines.
+func orderingRootCorrelation(f *FieldValue) (CorrelationIdentifier, bool) {
+	switch child := f.Child.(type) {
+	case nil:
+		return CorrelationIdentifier{}, true
+	case *QuantifiedObjectValue:
+		if child == nil {
+			return CorrelationIdentifier{}, false
+		}
+		return child.Correlation, true
+	default:
+		return CorrelationIdentifier{}, false
+	}
+}
+
+// BothStateOrderingIdentity reports whether both values have STATED a
+// comparable column identity — the precondition under which SameOrderingColumn
+// is a DECISION rather than a "cannot tell". A caller that gets true and false
+// from the two must not fall through to a weaker comparison: the answer is no.
+func BothStateOrderingIdentity(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	if !aIsField || !bIsField || af == nil || bf == nil {
+		return false
+	}
+	if _, ok := orderingRootCorrelation(af); !ok {
+		return false
+	}
+	if _, ok := orderingRootCorrelation(bf); !ok {
+		return false
+	}
+	return statesColumnPath(af.Resolved) && statesColumnPath(bf.Resolved)
+}
+
+// statesColumnPath reports whether a resolved path is one SameColumnPath can
+// decide on: a known layout and a non-negative ordinal at every step.
+func statesColumnPath(p *FieldPath) bool {
+	if p == nil || len(p.Accessors) == 0 || !p.Domain.IsKnown() {
+		return false
+	}
+	for _, a := range p.Accessors {
+		if a.Ordinal < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func SameColumnPath(a, b *FieldPath) bool {
 	if a == nil || b == nil || len(a.Accessors) == 0 || len(a.Accessors) != len(b.Accessors) {
 		return false
