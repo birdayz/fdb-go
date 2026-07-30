@@ -124,7 +124,7 @@ func (db *SimDB) currentReadVersion() int64 { return db.lastVersion }
 // A non-retryable error or exhausted retries propagates. This is what makes SimFDB a drop-in
 // backend — the record layer relies on Transact retrying, exactly as with the pure-Go client.
 func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	for attempt := 0; ; attempt++ {
 		result, err := fn(tx)
 		if err == nil {
@@ -145,7 +145,7 @@ func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, e
 // ReadTransact runs fn inside a read-only transaction. Reads retry on a retryable error for
 // symmetry with Transact, though the sim's synchronous reads rarely produce one.
 func (db *SimDB) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	for attempt := 0; ; attempt++ {
 		result, err := fn(tx)
 		if err == nil {
@@ -164,7 +164,7 @@ func (db *SimDB) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, e
 // lifecycle the caller owns (Commit / Cancel) — the interface path used by SQL BeginTx,
 // explicit transactions, and the FDBDatabaseRunner (RFC-199 Q1: load-bearing for SimFDB).
 func (db *SimDB) CreateWritableTransaction() (fdb.WritableTransaction, error) {
-	return db.newTxn(false), nil
+	return db.newTxn(), nil
 }
 
 // LocalityGetBoundaryKeys returns shard boundaries within r. SimFDB is a single logical shard,

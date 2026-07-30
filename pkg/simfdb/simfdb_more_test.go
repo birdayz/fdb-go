@@ -53,7 +53,7 @@ func TestSnapshotReadAddsNoConflict(t *testing.T) {
 	seed(db, "s", "0")
 	// txA snapshot-reads s (no read conflict), then writes a different key and commits after
 	// txB writes s. A snapshot read must NOT cause a conflict.
-	txA := db.newTxn(false)
+	txA := db.newTxn()
 	txA.Snapshot().Get(k("s")).MustGet() // snapshot read: no conflict
 	db.Transact(func(tx fdb.WritableTransaction) (any, error) { tx.Set(k("s"), []byte("B")); return nil, nil })
 	txA.Set(k("other"), []byte("A"))
@@ -67,7 +67,7 @@ func TestTransactionTooOldWindow(t *testing.T) {
 	db := New(nil)
 	// Simulate a far-advanced database so an ancient read version falls outside the MVCC window.
 	db.lastVersion = mvccWindow + 100
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	tx.SetReadVersion(0) // ancient
 	tx.Get(k("x")).MustGet()
 	tx.Set(k("x"), []byte("v"))
@@ -77,7 +77,7 @@ func TestTransactionTooOldWindow(t *testing.T) {
 
 	// A write-only transaction (no read conflict ranges) at an ancient read version does NOT
 	// get too_old — 1007 gates on having read conflict ranges.
-	wtx := db.newTxn(false)
+	wtx := db.newTxn()
 	wtx.SetReadVersion(0)
 	wtx.Set(k("y"), []byte("v"))
 	if err := wtx.Commit().Get(); err != nil {
@@ -133,7 +133,7 @@ func TestReadOnlyCommitShortCircuits(t *testing.T) {
 	// A read-only transaction's commit is a client-side no-op in real FDB — it never conflicts,
 	// never ages out, and never returns commit_unknown. So an injected fault must NOT fire on it.
 	db.InjectOnce(1021)
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	tx.Get(k("seed")).MustGet() // read only: adds a read conflict, no write
 	if err := tx.Commit().Get(); err != nil {
 		t.Fatalf("read-only commit should short-circuit to success, got %v", err)
@@ -144,7 +144,7 @@ func TestReadOnlyCommitShortCircuits(t *testing.T) {
 	}
 	// The injection was NOT consumed by the read-only commit — it is still pending for the next
 	// real (write) commit.
-	tx2 := db.newTxn(false)
+	tx2 := db.newTxn()
 	tx2.Set(k("w"), []byte("v"))
 	if code := errCode(t, tx2.Commit().Get()); code != 1021 {
 		t.Fatalf("injection should still fire on the next write commit, got %d", code)
@@ -157,7 +157,7 @@ func TestInjectOnce(t *testing.T) {
 
 	// 1020 (not_committed) fires BEFORE apply: the commit fails and the data is NOT written.
 	db.InjectOnce(1020)
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	tx.Set(k("x"), []byte("v"))
 	if code := errCode(t, tx.Commit().Get()); code != 1020 {
 		t.Fatalf("InjectOnce(1020): got %d, want 1020", code)
@@ -171,7 +171,7 @@ func TestInjectOnce(t *testing.T) {
 	// 1021 (commit_unknown_result) fires AFTER apply: the commit "fails" but the data IS durable —
 	// the non-idempotent-retry surface a real workload must survive.
 	db.InjectOnce(1021)
-	tx2 := db.newTxn(false)
+	tx2 := db.newTxn()
 	tx2.Set(k("y"), []byte("v"))
 	if code := errCode(t, tx2.Commit().Get()); code != 1021 {
 		t.Fatalf("InjectOnce(1021): got %d, want 1021", code)
@@ -191,7 +191,7 @@ func TestInjectOnce(t *testing.T) {
 func TestIdempotentDoubleCommit(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	tx.Add(k("cnt"), []byte{1, 0, 0, 0, 0, 0, 0, 0}) // +1 little-endian
 	tx.Set(k("x"), []byte("v"))
 	if err := tx.Commit().Get(); err != nil {
@@ -248,7 +248,7 @@ func TestAddReadConflictRangeExplicit(t *testing.T) {
 	db := New(nil)
 	seed(db, "k", "0")
 	// An explicit read conflict range conflicts with a later write, even without a Get.
-	txA := db.newTxn(false)
+	txA := db.newTxn()
 	txA.ensureReadVersion()
 	if err := txA.AddReadConflictRange(fdb.KeyRange{Begin: k("k"), End: k("l")}); err != nil {
 		t.Fatal(err)

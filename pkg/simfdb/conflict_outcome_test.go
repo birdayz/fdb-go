@@ -31,7 +31,7 @@ func TestSimFDB_ConflictOutcomeParity(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		txA := db.newTxn(false)
+		txA := db.newTxn()
 		read(txA)
 		if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			tx.Set(probeKey, []byte{0xEE})

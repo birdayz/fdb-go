@@ -54,8 +54,6 @@ type simTxn struct {
 	// SetWriteConflictsDisabled — when true, writes add no write conflict ranges at all.
 	writeConflictsDisabled bool
 
-	snapshot bool // a Snapshot() view: reads add no read conflict ranges
-
 	committed        bool
 	committedVersion int64
 	cancelled        bool
@@ -68,8 +66,8 @@ type simTxn struct {
 
 var _ fdb.WritableTransaction = (*simTxn)(nil)
 
-func (db *SimDB) newTxn(snapshot bool) *simTxn {
-	tx := &simTxn{db: db, snapshot: snapshot}
+func (db *SimDB) newTxn() *simTxn {
+	tx := &simTxn{db: db}
 	tx.opts = &txnOptions{tx: tx}
 	return tx
 }
@@ -149,12 +147,16 @@ func (tx *simTxn) resolveKey(key []byte) []byte {
 }
 
 func (tx *simTxn) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	return tx.get(key, false)
+}
+
+func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice {
 	if tx.cancelled {
 		return newReadyByteSlice(nil, fdb.Error{Code: 1025}) // transaction_cancelled
 	}
 	tx.ensureReadVersion()
 	k := []byte(key.FDBKey())
-	if !tx.snapshot {
+	if !snapshot {
 		tx.addReadConflict(k, keyAfter(k))
 	}
 	return newReadyByteSlice(tx.resolveKey(k), nil)
@@ -232,6 +234,10 @@ func resolveSelector(view []fdb.KeyValue, ks fdb.KeySelector) int {
 var endKeyMarker = fdb.Key{0xff}
 
 func (tx *simTxn) GetKey(sel fdb.Selectable) fdb.FutureKey {
+	return tx.getKey(sel, false)
+}
+
+func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
 	if tx.cancelled {
 		return newReadyKey(nil, fdb.Error{Code: 1025})
 	}
@@ -248,7 +254,7 @@ func (tx *simTxn) GetKey(sel fdb.Selectable) fdb.FutureKey {
 	default:
 		result = append(fdb.Key(nil), view[idx].Key...)
 	}
-	if !tx.snapshot {
+	if !snapshot {
 		tx.addGetKeyConflictRange(ks, []byte(result))
 	}
 	return newReadyKey(result, nil)
@@ -301,6 +307,10 @@ func selectorResolvesViaGetKey(ks fdb.KeySelector) bool {
 }
 
 func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	return tx.getRange(r, options, false)
+}
+
+func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
 	tx.ensureReadVersion()
 	beginSel, endSel := r.FDBRangeKeySelectors()
 	view := tx.buildView()
@@ -326,7 +336,7 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 		// and a cursor over SimFDB sees a different exhaustion signal than over real FDB.
 		more = true
 	}
-	if !tx.snapshot {
+	if !snapshot {
 		// The read conflict range is the RESOLVED [begin,end) clamped exactly as the pure-Go
 		// client / libfdb_c clamp it (rangeConflictExtent). Only a limit-truncated (more)
 		// non-empty read narrows to the returned data; an exhausted or EMPTY read keeps the full
@@ -444,9 +454,69 @@ func (tx *simTxn) GetReadVersion() fdb.FutureInt64 {
 }
 
 func (tx *simTxn) Snapshot() fdb.ReadTransaction {
-	snap := *tx
-	snap.snapshot = true
-	return &snap
+	return simSnapshot{tx: tx}
+}
+
+// simSnapshot is the Snapshot() view of a transaction. It HOLDS the transaction — the shape of
+// the real client's snapshot struct (fdb/snapshot.go: `type snapshot struct { tx *transaction }`,
+// every method reaching through sn.s.tx) — rather than copying it.
+//
+// A value copy is not a snapshot, it is a FORK, and each forked field breaks a different
+// invariant:
+//
+//   - readVersion/rvSet: a copy that pins the GRV first leaves the parent to pin its own, later,
+//     one. The parent then resolves its read conflicts against a version NEWER than the one the
+//     snapshot read at, so a concurrent write in between is invisible to the resolver and the
+//     transaction commits on stale data — a silent lost update where real FDB returns 1020. The
+//     record layer writes exactly that shape: BunchedMap.Put snapshot-reads the bunch, then
+//     writes the merged bunch back under an explicit read conflict on the same key.
+//   - buffer: the copy freezes the write buffer at its length as of Snapshot(). Writes issued on
+//     the parent afterwards are then invisible to snapshot reads — but a real FDB snapshot read
+//     is read-your-writes (SNAPSHOT_RYW_ENABLE is the default); snapshot suppresses CONFLICT
+//     RANGES, never the RYW merge.
+//   - opts: the copy's opts still points at the parent's txnOptions, so an option set through the
+//     snapshot handle lands on the parent and the copy's own flag fields silently disagree.
+//
+// Holding the transaction makes all three correct by construction: there is one readVersion, one
+// buffer, one option set. The only difference between the two views is that reads through this
+// one pass snapshot=true and so add no read-conflict range.
+type simSnapshot struct{ tx *simTxn }
+
+var _ fdb.ReadTransaction = simSnapshot{}
+
+func (s simSnapshot) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	return s.tx.get(key, true)
+}
+
+func (s simSnapshot) GetKey(sel fdb.Selectable) fdb.FutureKey {
+	return s.tx.getKey(sel, true)
+}
+
+func (s simSnapshot) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	return s.tx.getRange(r, options, true)
+}
+
+func (s simSnapshot) GetReadVersion() fdb.FutureInt64 { return s.tx.GetReadVersion() }
+
+// Snapshot of a snapshot is the same view (fdb/snapshot.go: `func (sn Snapshot) Snapshot()
+// ReadTransaction { return sn }`).
+func (s simSnapshot) Snapshot() fdb.ReadTransaction { return s }
+
+func (s simSnapshot) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
+	return s.tx.GetEstimatedRangeSizeBytes(r)
+}
+
+func (s simSnapshot) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.FutureKeyArray {
+	return s.tx.GetRangeSplitPoints(r, chunkSize)
+}
+
+// Options reaches through to the transaction's option handle, as the real client's
+// Snapshot.Options does (goTransactionOptions{tx: sn.s.tx}): options are a property of the
+// transaction, not of the view.
+func (s simSnapshot) Options() fdb.TransactionOptions { return s.tx.Options() }
+
+func (s simSnapshot) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return fn(s)
 }
 
 func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {

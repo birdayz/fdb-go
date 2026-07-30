@@ -24,6 +24,7 @@ go_test(
     name = "simfdb_test",
     srcs = [
         "atomic_test.go",
+        "bunchedmap_conflict_test.go",
         "commit_reset_test.go",
         "conflict_outcome_test.go",
         "continuation_fault_test.go",
@@ -37,6 +38,7 @@ go_test(
         "selector_conflict_test.go",
         "simfdb_more_test.go",
         "simfdb_test.go",
+        "snapshot_test.go",
     ],
     embed = [":simfdb"],
     deps = [

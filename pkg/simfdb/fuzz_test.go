@@ -23,7 +23,7 @@ func FuzzSimFDB_RYW(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		db := New(nil)
-		tx := db.newTxn(false)
+		tx := db.newTxn()
 		model := make(map[string][]byte) // reference: key -> value (nil/absent = not present)
 
 		i := 0

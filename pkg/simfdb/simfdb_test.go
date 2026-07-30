@@ -78,7 +78,7 @@ func TestMVCCSnapshotIsolation(t *testing.T) {
 		return nil, nil
 	})
 	// txA pins its read version, then txB commits a new value; txA must still see the old one.
-	txA := db.newTxn(false)
+	txA := db.newTxn()
 	if got := string(txA.Get(k("v")).MustGet()); got != "0" {
 		t.Fatalf("txA initial = %q", got)
 	}
@@ -98,7 +98,7 @@ func TestSSIReadWriteConflict(t *testing.T) {
 		tx.Set(k("c"), []byte("0"))
 		return nil, nil
 	})
-	txA := db.newTxn(false)
+	txA := db.newTxn()
 	txA.Get(k("c")).MustGet() // read → adds read conflict on c
 
 	// txB writes c and commits first.
@@ -117,8 +117,8 @@ func TestSSIReadWriteConflict(t *testing.T) {
 func TestDisjointKeysNoConflict(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	txA := db.newTxn(false)
-	txB := db.newTxn(false)
+	txA := db.newTxn()
+	txB := db.newTxn()
 	txA.Get(k("a")).MustGet()
 	txB.Get(k("b")).MustGet()
 	txA.Set(k("a"), []byte("A"))
@@ -136,8 +136,8 @@ func TestBlindWritesDoNotConflict(t *testing.T) {
 	db := New(nil)
 	// Two write-only transactions to the same key: no reads, so no read conflict ranges → both
 	// commit (last writer wins). Write-only transactions never conflict.
-	txA := db.newTxn(false)
-	txB := db.newTxn(false)
+	txA := db.newTxn()
+	txB := db.newTxn()
 	txA.Set(k("w"), []byte("A"))
 	txB.Set(k("w"), []byte("B"))
 	if err := txB.Commit().Get(); err != nil {
@@ -268,7 +268,7 @@ func TestDeterministicVersions(t *testing.T) {
 func TestOnErrorRetryableResets(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	tx.Set(k("k"), []byte("v"))
 	// A retryable error resets the txn (buffer dropped) and resolves success.
 	if err := tx.OnError(fdb.Error{Code: 1020}).Get(); err != nil {
@@ -285,7 +285,7 @@ func TestOnErrorRetryableResets(t *testing.T) {
 
 // run is a test helper: a single-shot transaction that returns the commit error.
 func (db *SimDB) run(fn func(fdb.WritableTransaction)) error {
-	tx := db.newTxn(false)
+	tx := db.newTxn()
 	fn(tx)
 	return tx.Commit().Get()
 }
