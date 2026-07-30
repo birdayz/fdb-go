@@ -97,6 +97,7 @@ go_test(
         "in_over_intersection_relink_test.go",
         "inner_source_aliases_test.go",
         "intersection_residual_plan_test.go",
+        "lazy_leg_mint_winner_test.go",
         "logical_builder_test.go",
         "logical_predicate_test.go",
         "logical_qualify_test.go",
@@ -225,6 +226,7 @@ go_test(
         "aggregate_output_slot_recorded_test.go",
         "sort_projection_layering_test.go",
         "aggregate_output_slot_domain_test.go",
+        "lazy_leg_mint_winner_test.go",
     ],
     deps = [
         "//gen",

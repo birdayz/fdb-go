@@ -2377,16 +2377,43 @@ func rebaseOuterLegValue(
 					// differently, and a reference that cannot state
 					// an identity finds nothing rather than finding
 					// whatever its display name happens to spell.
-					// NOTE: on every covered surface (yamsql, embedded,
-					// full FDB driver incl. the RFC-153 matrix) this
-					// whole leg-match arm is dead-in-effect TODAY — the
-					// box substrate rebases buried references onto box
-					// correlations upstream, so nothing reaches it
-					// leg-aliased; a panic wired into this lookup is
-					// reached only by TestRebaseOuterLegValue_OrdinalFirst.
-					// It stays as the fail-closed safety net for shapes
-					// the box machinery declines, and when it fires the
-					// reference bakes here instead of minting a lazy name.
+					// WHAT IS DEAD HERE IS THE BAKE, NOT THE ARM.
+					// This legLayout != nil lookup is dead-in-effect on
+					// every covered surface (yamsql, embedded, full FDB
+					// driver incl. the RFC-153 matrix): a panic wired into
+					// it is reached only by
+					// TestRebaseOuterLegValue_OrdinalFirst, because the
+					// only callers holding a layout are the ordinal-seed
+					// paths and those rebase through
+					// rebaseOuterLegRefsOrdinal instead. It stays as the
+					// fail-closed net for shapes that arrive layout-bearing.
+					//
+					// The ENCLOSING leg-match arm is live. It is reached
+					// while planning the buried / N-way / four-leg
+					// projected-EXISTS family, from
+					// implementJoinWithExistential's nil-layout call for
+					// non-windowed step-1 result values, and the lazy mint
+					// below is what it produces there.
+					//
+					// Two facts, two pins, and neither follows from the
+					// other — the arm's prose asserted the first one
+					// backwards for a while precisely because the second
+					// makes the first invisible:
+					//   - The arm is REACHED:
+					//     TestRebaseOuterLegValue_LazyMintIsLive fires this
+					//     rule on the shape OnMatch routes here and asserts
+					//     the lazy mint appears in a yielded plan.
+					//   - Its product WINS NOTHING today:
+					//     TestLazyLegMintReachesNoWinningPlan measures zero
+					//     dotted merged-row keys in the winning plan for
+					//     every shape above.
+					// The candidate carrying the mint loses and
+					// OptimizeGroup prunes finals to the winner, so the
+					// mint survives in neither the winning plan nor the
+					// post-planning memo. That is why no row-level test
+					// over those shapes can detect this code being
+					// deleted, and why the reachability pin fires the rule
+					// directly instead of planning SQL.
 					if legLayout != nil {
 						if id, idOK := legSlotIdentity(fv); idOK {
 							if ord, ok := legLayout[id]; ok {
