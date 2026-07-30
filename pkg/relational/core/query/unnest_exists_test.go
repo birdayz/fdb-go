@@ -369,8 +369,19 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 			{Name: "X", FieldType: values.NotNullLong, Ordinal: 1},
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 			{Name: "X", FieldType: values.NotNullLong, Ordinal: 3},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 4},
+			{Name: "X", FieldType: values.NotNullLong, Ordinal: 5},
 		},
-		Legs: []values.RecordTypeLeg{{Name: "A", Start: 0, Width: 2}, {Name: "B", Start: 2, Width: 2}},
+		// The legs STATE their identities: the resolver asks an identity question, so
+		// a fixture that supplied only text would be testing a code path that no
+		// longer exists.
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("A"), "A", 0, 2),
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("B"), "B", 2, 2),
+			// A PLANNER-MINTED leg: lowercase identity, UPPER text. The two namespaces
+			// are disjoint by construction and this leg is where that matters.
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("q$5"), "Q$5", 4, 2),
+		},
 	}
 	cases := []struct {
 		leg, field string
@@ -383,9 +394,25 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{"B", "X", 3, true},
 		{"B", "ZZZ", 0, false}, // qualified ref to a column absent from B's window
 		{"C", "ID", 0, false},  // qualifier NOT among the legs: LOUD decline, NOT flat first-match 0
+		// A case-variant of a leg's identity is a DIFFERENT leg. The alias namespaces
+		// are deliberately case-disjoint, and this resolver decides which slot a
+		// qualified read probes, so a fold here reads another leg's same-named column.
+		{"b", "ID", 0, false},
+		// The FORGERY shape, which is the one a text comparison cannot decline. Leg
+		// "q$5" below has a MINTED (lowercase) identity and carries the UPPER fold as
+		// its Name — the real shape, since the text channel is upper and
+		// UniqueCorrelationIdentifier mints lowercase. A quoted user alias "Q$5" is a
+		// different leg, but it equals that leg's NAME exactly, so any comparison
+		// against Name accepts it and the read lands in the minted leg's window.
+		//
+		// This is the case that makes the identity conversion load-bearing rather than
+		// cosmetic: the plain-text and upper-folded forms both MATCH here, and only
+		// values.SameLeg against the leg's own identifier declines.
+		{"Q$5", "ID", 0, false},
+		{"q$5", "ID", 4, true}, // the minted leg's OWN identity still resolves
 	}
 	for _, c := range cases {
-		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field, true)
+		got, ok := ordinalSlotInLegWindow(rt, values.NamedCorrelationIdentifier(c.leg), c.field, true)
 		if ok != c.wantOK || (ok && got != c.want) {
 			t.Errorf("ordinalSlotInLegWindow(%s.%s) = (%d,%v), want (%d,%v)", c.leg, c.field, got, ok, c.want, c.wantOK)
 		}
@@ -395,7 +422,7 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	if got, ok := ordinalSlotInLegWindow(single, "T", "V", false); !ok || got != 1 {
+	if got, ok := ordinalSlotInLegWindow(single, values.NamedCorrelationIdentifier("T"), "V", false); !ok || got != 1 {
 		t.Errorf("single-leg ordinalSlotInLegWindow(T.V) = (%d,%v), want (1,true)", got, ok)
 	}
 	// MALFORMED window (negative Start): decline, never index at a negative slot.
@@ -403,7 +430,7 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
 		Legs:   []values.RecordTypeLeg{{Name: "A", Start: -1, Width: 2}},
 	}
-	if _, ok := ordinalSlotInLegWindow(bad, "A", "ID", true); ok {
+	if _, ok := ordinalSlotInLegWindow(bad, values.NamedCorrelationIdentifier("A"), "ID", true); ok {
 		t.Error("negative-Start leg window must decline, not panic or resolve")
 	}
 	// THE FAIL-CLOSED HARDENING, both sides. A MULTI-alias prefix that arrives
@@ -425,10 +452,10 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 3},
 	}}
-	if _, ok := ordinalSlotInLegWindow(noLegs, "B", "ID", true); ok {
+	if _, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("B"), "ID", true); ok {
 		t.Error("multi-alias prefix WITHOUT windows must decline loudly, never flat-match")
 	}
-	if got, ok := ordinalSlotInLegWindow(noLegs, "A", "ID", false); !ok || got != 0 {
+	if got, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("A"), "ID", false); !ok || got != 0 {
 		t.Errorf("single-alias window-less flat path = (%d,%v), want (0,true) — the hardening must not break it", got, ok)
 	}
 }
@@ -473,7 +500,7 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 			t.Fatalf("box leaf %s absent from the seed windows %v", leg.Name, windows)
 		}
 		for _, f := range w.Typ.Fields {
-			legWalkSlot, ok1 := ordinalSlotInLegWindow(boxType, leg.Name, f.Name, true)
+			legWalkSlot, ok1 := ordinalSlotInLegWindow(boxType, leg.Alias, f.Name, true)
 			ci, okc := w.Typ.FieldIndex(f.Name)
 			seedWinSlot := w.Offset + ci
 			if !ok1 || !okc || legWalkSlot != seedWinSlot {

@@ -16,23 +16,23 @@ type OrdinalSeedLegWindow struct {
 	Offset int
 	Typ    *RecordType
 
-	// Alias is the window's leg IDENTITY, stated in the SAME namespace as the key
-	// this window is filed under — the seed-window map's upper-folded alias space,
-	// not the raw correlation space the seed's QuantifiedObjectValues carry.
+	// Alias is the window's leg IDENTITY: the correlation of the quantifier whose
+	// row occupies this window, carried VERBATIM from the seed's own
+	// QuantifiedObjectValue.
 	//
-	// That is a deliberate, and temporary, compromise. Identity ought to be the
-	// quantifier's own identifier verbatim (Java never folds one). Here it cannot
-	// yet be: this map's keys ARE the fold, downstream references reach these
-	// windows through those keys, and the producers of a box leg's two spellings
-	// disagree on case — so publishing a raw identifier would file a leg under one
-	// namespace and have it looked up in another. Deriving Alias from the key
-	// instead keeps every leg this authority emits satisfying Name ==
-	// Alias.Name(), which is what makes retyping its CONSUMERS a change of
-	// representation and not of behaviour.
+	// It used to be minted from the map KEY instead — NamedCorrelationIdentifier of
+	// the upper-folded alias — with the QOV's correlation in scope at both
+	// construction sites. That kept Name == Alias.Name() trivially true, but by
+	// making the identity a function of the text rather than the other way round:
+	// the fold is a no-op where the correlation is already upper and manufactures a
+	// forgery where it is not, since the machine namespace is LOWERCASE and folding
+	// a minted q$N yields the Q$N that SameLeg exists to exclude.
 	//
-	// The fold retires with the seed rebake, which replaces this text-keyed map
-	// with windows bound to the physical quantifiers themselves; Alias becomes the
-	// verbatim correlation at that point.
+	// The map's KEYS are still the fold, and they have to be: downstream references
+	// reach these windows through that text. So this type deliberately holds the two
+	// namespaces apart — a typed identity for consumers that ask "which leg is
+	// this?", an upper-folded key for consumers that still arrive holding a string.
+	// The seed rebake (CQ-53) retires the key half.
 	Alias CorrelationIdentifier
 }
 
@@ -85,10 +85,22 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 			if _, dup := windows[elemAlias]; dup {
 				return nil, nil // two element fields over one correlation — not a seed
 			}
+			// The window's IDENTITY is the element QOV's own correlation, carried.
+			// It used to be minted as NamedCorrelationIdentifier of the UPPER fold of
+			// that same correlation, with the correlation itself in scope: an
+			// identifier manufactured from the text of the identifier beside it. The
+			// fold is a no-op wherever the correlation is already upper and a FORGERY
+			// generator wherever it is not — the machine namespace is lowercase, so
+			// folding a minted q$N yields Q$N, which is exactly the spelling SameLeg
+			// exists to keep out of the minted leg's window.
+			//
+			// elemAlias stays the map KEY: the seed-window namespace is upper-folded
+			// text and its readers look up by that text until the seed rebake (CQ-53)
+			// gives them a typed counterparty.
 			windows[elemAlias] = OrdinalSeedLegWindow{
 				Offset: i,
 				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}},
-				Alias:  NamedCorrelationIdentifier(elemAlias),
+				Alias:  elemQOV.Correlation,
 			}
 			counts[elemAlias] = 1
 			mergedFields[i] = Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
@@ -121,7 +133,10 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 			}
 			curAlias = alias
 			curStart = i
-			windows[alias] = OrdinalSeedLegWindow{Offset: curStart, Typ: legType, Alias: NamedCorrelationIdentifier(alias)}
+			// Same as the element window above: the identity is the leg QOV's own
+			// correlation, carried verbatim, while `alias` remains the upper-folded map
+			// KEY the seed-window namespace is addressed by.
+			windows[alias] = OrdinalSeedLegWindow{Offset: curStart, Typ: legType, Alias: qov.Correlation}
 		} else if acc.Ordinal != i-curStart {
 			return nil, nil
 		}
@@ -167,28 +182,27 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 				RecordLegIdentityComparison(LegSiteFinalizeSeedWindows, leg.Name, alias)
 				RecordLegIdentityLeg(leg)
 			}
-			// This comparison stays TEXT, and deliberately so: its counterparty is
-			// `alias`, the KEY this window is filed under in the seed-window map, and a
-			// map key is not a correlation. The keys of this map are the UPPER FOLD of
-			// the seed's correlations, so they form a different namespace from the raw
-			// identifiers the legs carry — and the two producers that mint a box leg's
-			// two spellings do not agree on case (the buried-bounds walk records the
-			// logical plan's binding, while the box's own QuantifiedObjectValue carries
-			// the seed correlation verbatim).
+			// This comparison stays TEXT, and the reason is structural rather than
+			// empirical: its counterparty is `alias`, the KEY this window is filed
+			// under, and a map key is not a correlation. The keys of this map are the
+			// UPPER FOLD of the seed's correlations — the fold DISCARDED the identifier,
+			// so at this point there is no typed counterparty left to compare against.
 			//
-			// Comparing identities here therefore judges "is the buried leg the box's
-			// own leaf?" across two namespaces and answers NO for a leaf that IS the
-			// box's, which sends it down the already-taken branch and drops the
-			// rightmost-leaf sub-window entirely. The measured consequence is a 3-way
-			// layout drift between the planner's leg walk and this builder
-			// (TestThreeWayBoxCrossAgreement), i.e. a wrong absolute slot for a
-			// dup-named box column — the exact wrong-rows failure the leg windows exist
-			// to prevent.
+			// Routing it through SameLeg anyway would mean re-minting an identifier from
+			// the key, and a comparison between a real identity and one manufactured
+			// from text is a text comparison wearing the type. It would read as an
+			// identity check while proving nothing, which is worse than the honest text
+			// comparison it replaced. The right fix is upstream: the seed rebake (CQ-53)
+			// replaces this text-keyed namespace with windows bound to the physical
+			// quantifiers, and then the comparison HAS a counterparty and becomes an
+			// identity check for real.
 			//
-			// So the fold is not incidental here, and it is not this comparison's to
-			// remove: it is the seed-window authority's namespace. It goes away when the
-			// seed is REBAKED against the chosen physical leg layout, which is what
-			// retires the whole text-keyed window map.
+			// An earlier version of this comment claimed the producers disagree on case
+			// and that converting therefore drops the rightmost-leaf sub-window. The
+			// instrument here cannot observe that: over 1263 comparisons at this site the
+			// fold-only population is ZERO, and every leg this authority emits satisfies
+			// Name == Alias.Name(). A hazard the census would have to have seen, and did
+			// not, is not the reason to keep the fold — the missing counterparty is.
 			if leg.Name != alias {
 				if _, taken := windows[leg.Name]; taken {
 					continue

@@ -136,13 +136,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // The hoist site's total counts Cascades rule FIRINGS, not queries, so it is the
 // most refire-sensitive of the six; its floor is the loosest for that reason.
 var legIdentityFloors = map[values.LegIdentitySite]int64{
-	values.LegSiteRowLegsBinder:        32,
-	values.LegSiteBuriedLegWindow:      64,
-	values.LegSiteTextVsIdentity:       256,
-	values.LegSiteLeftOuterExistential: 64,
-	values.LegSiteFinalizeSeedWindows:  128,
-	values.LegSiteSelectOutputLegs:     256,
-	values.LegSiteNLJPlanAlias:         4096,
+	values.LegSiteRowLegsBinder:          32,
+	values.LegSiteBuriedLegWindow:        64,
+	values.LegSiteTextVsIdentity:         256,
+	values.LegSiteLeftOuterExistential:   64,
+	values.LegSiteFinalizeSeedWindows:    128,
+	values.LegSiteSelectOutputLegs:       256,
+	values.LegSiteNLJPlanAlias:           4096,
+	values.LegSiteOrdinalSlotInLegWindow: 8,
 }
 
 // assertLegIdentityCensus checks the whole-suite census and reports whether it

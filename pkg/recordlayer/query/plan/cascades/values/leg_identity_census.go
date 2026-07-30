@@ -125,6 +125,14 @@ const (
 	// threading the quantifier is the fix for.
 	LegSiteNLJPlanAlias
 
+	// LegSiteOrdinalSlotInLegWindow is the translator's ordinalSlotInLegWindow: it
+	// resolves a qualified column to its slot WITHIN the named leg's window, and its
+	// decline is what keeps a qualified `B.ID` from flat-first-matching A's
+	// same-named slot. Its counterparty is a correlation, so it compares through
+	// SameLeg like every other Group-A reader; it used to compare the leg's text
+	// against the UPPER fold of that correlation.
+	LegSiteOrdinalSlotInLegWindow
+
 	legIdentitySiteCount
 )
 
@@ -145,6 +153,8 @@ func (s LegIdentitySite) String() string {
 		return "expressionOutputLegs (producer: quantifier vs sourceAliases)"
 	case LegSiteNLJPlanAlias:
 		return "NLJ plan leg identity (planner: sourceAlias text vs quantifier)"
+	case LegSiteOrdinalSlotInLegWindow:
+		return "ordinalSlotInLegWindow (qualified slot within a leg window)"
 	default:
 		return "unknown leg identity site"
 	}

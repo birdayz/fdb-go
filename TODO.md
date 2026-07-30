@@ -10528,6 +10528,60 @@ None is speculative: each was re-verified against the tree before booking.
   (concatLegPositionals-is-structural) is refuted and it must not be
   implemented on the string-keyed binder under a green gate.
 
+  IMPLEMENTED + FOLD LAP DONE (branch feat/cq61-leg-identity-typed).
+  RecordTypeLeg carries Alias, every reader whose counterparty is a
+  correlation compares through values.SameLeg, and the leg identity is
+  threaded rather than re-minted. What the fold lap added over the first
+  implementation:
+  - The census gate is real and IN CI: it moved to the sqldriver TestMain,
+    unconditional, asserting per-site population FLOORS as well as the zeros.
+    The previous form reported Total 0 at five of six sites when run alone
+    (measured), so its zeros were vacuous. Whole-suite population, stable
+    across runs: rowLegsBinder 285, buriedLegWindow 567, text-vs-identity
+    3270, hoist 1026, finalizeSeedWindows 1287, expressionOutputLegs 3239,
+    NLJ plan alias 79960, ordinalSlotInLegWindow 105 — foldOnly 0 at every
+    site.
+  - values.NewRecordTypeLeg takes the identity as its first positional
+    parameter (omitting it is now a compile error, not a zero-identity leg),
+    all 13 production sites converted, and a docscheck AST scan forbids the
+    composite literal outside the constructor. SameLeg declines an UNSTATED
+    identifier — SameLeg(zero, zero) used to be true, so two omissions agreed
+    and bound.
+  - RecordQueryNestedLoopJoinPlan holds its leg identities as
+    CorrelationIdentifiers, threaded from the select's quantifiers; the
+    executor's boundary mints are deleted. The "proto-visible" objection is
+    refuted: Go marshals no plan through the plan protos, the memo structural
+    key takes the identifiers' raw Name(), plan_shape.golden is
+    byte-identical. Deleting that path's ToUpper removed a forgery generator
+    (ToUpper of a minted lowercase q$N is Q$N, the spelling SameLeg exists to
+    exclude) — the plan and its own seed disagreed by case on the 12 of 79960
+    firings where the source-alias slice carries a re-minted name.
+  - ordinalSlotInLegWindow converted (the last Group-A folding reader);
+    measured foldOnly 0 over 105 comparisons. Name's retirement condition is
+    now crisp: dotted-text consumers plus the seed-window map keys, nothing
+    else. finalizeSeedWindows stays TEXT for a structural reason — the fold
+    DISCARDED the identifier, so there is no typed counterparty and routing
+    it through SameLeg would launder a re-mint. The earlier "the producers
+    disagree on case" justification is withdrawn: the census cannot observe
+    it and reports foldOnly 0 there over 1263 comparisons.
+
+  FOUND WHILE FOLDING, NOT FIXED HERE — a live planner defect. A 3-way comma
+  join with a projected EXISTS whose legs are tied by equijoin predicates
+  plans a correlated-FlatMap chain whose MIDDLE FlatMap carries a bare baked
+  FieldValue where the merged row belongs, and executing it fails with
+  executor.newOrdinalJoinBuild's "result value contains baked ordinal
+  references but is a *values.FieldValue ... planner bug". This is the error
+  that was sighted once during a census run and could not be reproduced; it is
+  now DETERMINISTIC and PRE-EXISTING (verified at this branch's base commit).
+  Reproducers, both green as two-way tripwires that fire when the disposition
+  changes in either direction:
+  sqldriver/join_result_value_is_rc_test.go (plan-level, with the violating
+  shapes on knownNonRCJoinResultValueDebt) and
+  sqldriver/comma_join3_projected_exists_equijoin_fdb_test.go (execution, with
+  the row expectations a fix must satisfy). Choosing which result value that
+  rule arm hands its FlatMap is a Cascades planner change and needs the
+  planner review gate; it does not belong inside a leg-identity retyping.
+
 - [ ] **CQ-62 (S, bug fourteen: false prose over a live channel) —
   rule_implement_nested_loop_join.go:2380-2387 declares the leg-match arm
   "dead-in-effect TODAY ... a panic is reached only by

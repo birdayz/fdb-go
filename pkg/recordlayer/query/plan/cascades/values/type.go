@@ -378,19 +378,50 @@ type RecordTypeLeg struct {
 	// raw id; Java never case-folds an alias anywhere, and its runtime binding is
 	// keyed by the identifier object, not by text).
 	//
-	// It is SOURCED at construction from the identifier the leg's own quantifier
-	// or QuantifiedObjectValue carries — never re-minted from Name downstream. A
-	// re-mint is how a leg acquires a second spelling, and a second spelling is
-	// how a lookup silently binds the wrong row's slots.
+	// It is SOURCED at construction, never re-minted from Name downstream: a
+	// re-mint is how a leg acquires a second spelling, and a second spelling is how
+	// a lookup silently binds the wrong row's slots.
+	//
+	// The producers split into two kinds, and the split is the honest statement of
+	// where this migration stands. Most CARRY the identifier: the executor's merges
+	// and rebases, the planner's leg-concat walk, the seed-window authority, and the
+	// translator's select-leg producer all thread the identifier their own
+	// quantifier or QuantifiedObjectValue already holds. A few MINT it at a
+	// documented TEXT BOUNDARY, because at those points no identifier exists to
+	// thread:
+	//
+	//   - the logical layer's buried-leg bounds (query.ordinalLegBounds) records its
+	//     source's binding as a STRING and carries no quantifier;
+	//   - the translator's whole-row leg (wholeRowLegFor) is reached holding a
+	//     select-level layout KEY, also a string.
+	//
+	// Both mint from the only spelling that exists and set Name to that same
+	// string, so neither can make the two channels disagree — which is why the
+	// text-vs-identity census reports Name == Alias.Name() on every leg any reader
+	// walks. The seed rebake (CQ-53) is what gives those two layers a typed
+	// quantifier to carry, and it is what removes the last mints.
 	Alias CorrelationIdentifier
 
 	// Name is the leg's binding as TEXT, conventionally UPPER.
 	//
-	// It is NOT the identity — Alias is. Name survives because a distinct family
-	// of consumers still addresses legs by text: the dotted channel, where the
-	// qualifier is embedded inside a column-name string ("A.ID") and so can only
-	// be matched as a string. Those consumers retire with the seed rebake that
-	// replaces the dotted channel; this field retires with them.
+	// It is NOT the identity — Alias is. Name survives for exactly two families of
+	// consumer, and stating them precisely is what makes its retirement a checkable
+	// condition rather than an aspiration:
+	//
+	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
+	//     column-name string ("A.ID") and can therefore only be matched as a string
+	//     (executor.ordinal_join's dotted arm and the translator's multi-leg baker);
+	//   - the SEED-WINDOW map's keys, whose namespace is an upper fold of the
+	//     correlations. finalizeSeedWindows compares against a key, and the fold
+	//     discarded the identifier, so there is no typed counterparty to compare
+	//     against — see that function for why routing it through SameLeg anyway
+	//     would be a text comparison wearing the type.
+	//
+	// Every OTHER reader — every one whose counterparty is a correlation — goes
+	// through Alias. That is the retirement condition: when the seed rebake replaces
+	// the text-keyed window namespace and the dotted channel with parsed segments,
+	// both families go, and this field goes with them. Until then, a new comparison
+	// against Name is a regression unless it belongs to one of those two.
 	//
 	// Consumers whose counterparty is a correlation must use Alias. A comparison
 	// against Name is a text match dressed as an identity check, and text
