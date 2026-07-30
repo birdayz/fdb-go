@@ -11052,3 +11052,25 @@ None is speculative: each was re-verified against the tree before booking.
   DONE when `grep -rn "executor.RowValue(" pkg/relational/sqldriver/*_test.go`
   returns only the renderer definitions themselves and sites whose rows are
   single-slot (no order to assert).
+
+- [ ] **CQ-66 (M/L, gated) — the unnest ELEMENT quantifier states no type, and
+  750 positional-merge slots inherit that.** MEASURED over the real-FDB corpus
+  by the leg-local bake census's merge-slot partition: of 18246 merge slots,
+  17492 are typed by the quantifier, 4 are recovered by the `legRowTypes`
+  scavenger, 0 state a non-row scalar, and 750 state NOTHING. Every distinct
+  witness is an unnest element alias (`AS "VAL"`, `AS "X"`, `AS "EL"`, ...).
+  The cause is the array-element-inference gap already documented at
+  `values.IsMixedSeedElementType`: Go does not infer array element types far
+  enough for the element quantifier to state one, so its flowed value is
+  UNKNOWN.
+  Why the number is an UPPER BOUND rather than a defect count: an unnest
+  element and a leg whose row was genuinely lost are not separable from the
+  type alone -- both are UNKNOWN, for unrelated reasons -- which is exactly why
+  the shared element predicate must NOT be tightened to demand a stated type
+  (measured: `SELECT "X" FROM TS, TS."ITEMS" AS "X"` stops resolving). So the
+  counter is REPORTED, not asserted at zero, and its job is to MOVE.
+  The fix is to type the element quantifier from the array column's element
+  type, which the translator already derives (`unnestArrayElementType`). That
+  changes what 750 merge slots state, and the merged row type feeds ordinal
+  baking and the executor -- a planner-wide change with a Graefe lap and a
+  stress/golden comparison, not a rider on a typing sweep.

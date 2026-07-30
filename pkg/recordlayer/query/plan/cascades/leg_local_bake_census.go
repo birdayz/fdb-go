@@ -106,6 +106,55 @@ type legLocalBakeCounters struct {
 	// DisagreeingLegs counts LEGS whose reference members flow different row
 	// types — a memo defect, Java's Verify failure (Reference.java:504-513).
 	DisagreeingLegs int
+	// The POSITIONAL MERGE's slot typing, counted where the slot is built.
+	//
+	// The merge asks each collapsed leg's quantifier for its flowed value; when
+	// that value states no row it falls back to SCAVENGING one off the select's
+	// own value surfaces (legRowTypes), and when that misses too the slot enters
+	// the merged record constructor UNTYPED. An untyped merge slot is the only
+	// remaining path by which a leg's row type is lost on this route, and it is
+	// silent: the reference degrades to source-relative, a source-relative operand
+	// pushed into a leg's scan evaluates to NULL against the build-bound row, and
+	// the join returns zero rows with no error.
+	//
+	// Counted rather than remembered. The residual was previously asserted in prose
+	// on the strength of an argument about which shapes could reach it, and prose
+	// is what the shape of a fallback changes underneath.
+	//
+	// MergeSlotsTyped: the quantifier stated a ROW. The intended path for a leg.
+	MergeSlotsTyped int
+	// MergeSlotsScavenged: the quantifier did not, and legRowTypes recovered the
+	// row from a baked reference elsewhere in the select. The fallback FIRING.
+	MergeSlotsScavenged int
+	// MergeSlotsScalar: the quantifier stated a NON-ROW type. This is the mixed
+	// seed's whole-object element — an unnest quantifier flows one array element,
+	// which is a scalar and never a record — and it is CORRECT, not a residual.
+	//
+	// It is a bucket of its own because the site's own gate cannot tell it from the
+	// residual: the gate asks "is this a RecordType", so a scalar element and a leg
+	// that states nothing both fail it and both reach the scavenger. A census that
+	// inherited that test would report every unnest element as a defect. The gate
+	// is deliberately NOT tightened — an unnest element over an array of STRUCTS is
+	// a genuine whole-object element whose type is UNKNOWN because Go does not
+	// infer array element types that far, so demanding a stated type there breaks
+	// `SELECT "X" FROM TS, TS."ITEMS" AS "X"` (measured). The discrimination lives
+	// here, in the counting, not in the predicate.
+	MergeSlotsScalar int
+	// MergeSlotsUntyped: the slot states NO type at all. The residual, and the
+	// defect: the reference degrades to source-relative, a source-relative operand
+	// pushed into a leg's scan evaluates to NULL against the build-bound row, and
+	// the join returns zero rows with no error.
+	//
+	// It cannot be separated from a struct-array element by type alone — both are
+	// UNKNOWN, for unrelated reasons — so this counter is an UPPER BOUND on the
+	// residual rather than the residual itself, and it is reported rather than
+	// asserted at zero for exactly that reason. What it does buy is a number that
+	// MOVES: the previous state of this question was an argument about which shapes
+	// could reach the fallback, and an argument is what a change to the fallback
+	// invalidates without telling anyone.
+	MergeSlotsUntyped int
+	// MergeSlots is the denominator the four above must partition.
+	MergeSlots int
 	// LegDerivations counts every leg that ENTERED the layout derivation with a
 	// stated alias. It is the denominator the three per-leg outcomes above must
 	// sum to, and it exists so they can be asserted as a PARTITION rather than
@@ -252,6 +301,50 @@ func recordUnderivableLegLayout(alias values.CorrelationIdentifier, shape string
 	addLegLocalBakeWitness(fmt.Sprintf("NO-LAYOUT leg %s: %s states no row layout [%s]", alias.Name(), shape, escape))
 }
 
+// recordMergeSlotTyping counts one positional-merge slot by what it ended up
+// stating. Called once per collapsed leg per merge, after the fallback chain has
+// run, so the four outcomes partition the slots.
+//
+// slotType is the slot's FINAL type, which is what the merged record constructor
+// will carry. The classification is deliberately finer than the site's own gate —
+// see MergeSlotsScalar for why the gate cannot make this distinction and must not
+// be changed to try.
+func recordMergeSlotTyping(alias values.CorrelationIdentifier, slotType values.Type, scavenged bool) {
+	legLocalBakeMu.Lock()
+	defer legLocalBakeMu.Unlock()
+	legLocalBakeCounts.MergeSlots++
+	switch {
+	case scavenged:
+		legLocalBakeCounts.MergeSlotsScavenged++
+		addLegLocalBakeWitness(fmt.Sprintf("SCAVENGED-MERGE-SLOT leg %s: the quantifier "+
+			"stated no row and a baked reference in the select supplied one", alias.Name()))
+	case isRecordSlotType(slotType):
+		legLocalBakeCounts.MergeSlotsTyped++
+	case slotType == nil || slotType.Code() == values.TypeCodeUnknown:
+		legLocalBakeCounts.MergeSlotsUntyped++
+		addLegLocalBakeWitness(fmt.Sprintf("UNTYPED-MERGE-SLOT leg %s: neither the "+
+			"quantifier nor the select's own value surfaces state anything. Either a leg "+
+			"whose row is lost (the defect) or a whole-object element over an array of "+
+			"STRUCTS, whose element type Go does not infer (correct) — the two are not "+
+			"separable by type", alias.Name()))
+	default:
+		legLocalBakeCounts.MergeSlotsScalar++
+	}
+}
+
+// isRecordSlotType reports whether a merge slot states a ROW.
+//
+// NOT values.IsMixedSeedElementType, and the difference is the point: that
+// predicate answers "is this the seed's whole-object element", and it admits an
+// UNTYPED value on purpose, because a struct-array element is untyped for a reason
+// that has nothing to do with a leg losing its row. This census has to tell those
+// two apart, so it asks a narrower question — does the slot state a record — and
+// splits the rest by whether anything at all is stated.
+func isRecordSlotType(t values.Type) bool {
+	_, isRecord := t.(*values.RecordType)
+	return isRecord
+}
+
 // recordFlowedLegLayout names a leg the one authority stated on its own.
 func recordFlowedLegLayout(alias values.CorrelationIdentifier, rt *values.RecordType) {
 	legLocalBakeMu.Lock()
@@ -320,6 +413,8 @@ func FormatLegLocalBakeCensus() string {
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
 	fmt.Fprintf(&b, "; legDerivations %d", c.LegDerivations)
+	fmt.Fprintf(&b, "; mergeSlots %d (typed %d, scavenged %d, scalar %d, untyped %d)",
+		c.MergeSlots, c.MergeSlotsTyped, c.MergeSlotsScavenged, c.MergeSlotsScalar, c.MergeSlotsUntyped)
 	if len(witnesses) > 0 {
 		sorted := append([]string{}, witnesses...)
 		sort.Strings(sorted)
@@ -348,6 +443,10 @@ func FormatLegLocalBakeCensus() string {
 type LegLocalBakeFloors struct {
 	Total          int
 	LegDerivations int
+	// MergeSlots is floored for the same reason the other two are:
+	// MergeSlotsUntyped is a SHARE of it, and a share of a collapsed denominator
+	// reads as progress while measuring nothing.
+	MergeSlots int
 }
 
 // AssertLegLocalBakeCensus checks the bakeability census's invariants and
@@ -410,6 +509,18 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			"  instrumented rather than of the legs that cannot state a layout.\n",
 			c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs,
 			got, c.LegDerivations)
+	}
+
+	if got := c.MergeSlotsTyped + c.MergeSlotsScavenged + c.MergeSlotsScalar + c.MergeSlotsUntyped; got != c.MergeSlots {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: MergeSlotsTyped(%d) + Scavenged(%d) + "+
+			"Scalar(%d) + Untyped(%d) = %d, but MergeSlots = %d.\n"+
+			"  These four are the only things a positional-merge slot can end up stating,\n"+
+			"  so they must partition it. MergeSlotsUntyped is an UPPER BOUND on the one\n"+
+			"  remaining path by which a leg's row type is silently lost here, and a bound\n"+
+			"  is only a bound while its siblings account for the rest.\n",
+			c.MergeSlotsTyped, c.MergeSlotsScavenged, c.MergeSlotsScalar, c.MergeSlotsUntyped,
+			got, c.MergeSlots)
 	}
 
 	// The two counters CQ-63 moved, asserted at the value it moved them TO.
@@ -486,6 +597,7 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 		}{
 			{"Total", c.Total, floors.Total},
 			{"LegDerivations", c.LegDerivations, floors.LegDerivations},
+			{"MergeSlots", c.MergeSlots, floors.MergeSlots},
 		} {
 			if f.got < f.floor {
 				failed = true

@@ -355,6 +355,7 @@ func mergedLegReadIsAlarm(reads int) bool {
 var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,
+	MergeSlots:     1800,
 }
 
 // assertLegLocalBakeCensus checks the bakeability census, dropping the

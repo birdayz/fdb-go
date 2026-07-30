@@ -30,9 +30,12 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 		Total: 126, Baked: 0, Minted: 126,
 		UntypedLeg: 0, ColumnAbsent: 0, LayoutAvailable: 126,
 		FlowedLegs: 848, DisagreeingLegs: 0, UnderivableLegs: 0,
-		LegDerivations: 848,
+		LegDerivations:  848,
+		MergeSlots:      18246,
+		MergeSlotsTyped: 17492, MergeSlotsScavenged: 4, MergeSlotsScalar: 0,
+		MergeSlotsUntyped: 750,
 	}
-	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80}
+	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80, MergeSlots: 1800}
 
 	var healthyOut strings.Builder
 	if assertLegLocalBakeCounters(&healthyOut, healthy, floors) {
@@ -89,6 +92,21 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 			name:    "the leg-derivation population collapses",
 			mutate:  func(c *legLocalBakeCounters) { *c = legLocalBakeCounters{} },
 			wantMsg: "LegDerivations = 0, want >= 80",
+		},
+		{
+			// The merge-slot partition. MergeSlotsUntyped is an upper bound on the
+			// one remaining path by which a leg's row is silently lost here, and a
+			// bound is only a bound while its siblings account for the rest.
+			name:    "a merge slot counted into no bucket",
+			mutate:  func(c *legLocalBakeCounters) { c.MergeSlots++ },
+			wantMsg: "but MergeSlots = 18247",
+		},
+		{
+			name: "the merge-slot population collapses",
+			mutate: func(c *legLocalBakeCounters) {
+				c.MergeSlots, c.MergeSlotsTyped, c.MergeSlotsScavenged, c.MergeSlotsUntyped = 0, 0, 0, 0
+			},
+			wantMsg: "MergeSlots = 0, want >= 1800",
 		},
 		{
 			name: "the read population collapses",
