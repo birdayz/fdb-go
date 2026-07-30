@@ -6,6 +6,34 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## IN PROGRESS — RFC-199 deterministic simulation testing (DST) revival
+
+Branch **`feat/dst-revival`**, PR #462. Owner-directed revival of the dormant DST
+work, reconstructed onto current master. Not merged: the review lap is the gate.
+
+- [ ] **RFC-199 DST — Tier 0/1/2 landed on master's HEAD, awaiting review.** `pkg/dst`
+  (seeded Clock/Randomness/Buggify behind a nil-means-production `Env` seam),
+  `pkg/simfdb` (deterministic in-memory MVCC `fdb.BackendDatabase` with SSI, RYW, 12
+  atomic ops, true rollback and seeded fault injection), and the Tier-2 hunt harnesses
+  (`pkg/simfdb/hunt`, `cmd/dst-hunt`, `cmd/dst-generate`). The RFC was drafted and
+  ACK'd as 179; master reassigned that number, so the document is now
+  `rfcs/199-deterministic-simulation-testing.md`.
+
+  **Why this matters beyond DST:** SimFDB is the acceptance harness for the RFC-198
+  explicit-transaction work (see the read-your-writes item below, which now carries it
+  as a gate). RFC-198 has to prove a set of conflict verdicts is correct, and conflict
+  verdicts are exactly what a real cluster makes unreproducible.
+
+  Four real SimFDB conflict defects were fixed during the revival — all of them
+  under- or over-conflict against real FDB, i.e. the class that would make the harness
+  certify a wrong answer: a committed handle keeping its read version, `GetRange`
+  computing conflict extents from raw selector anchors instead of resolved keys,
+  selector resolution not taking the `GetKey` conflict range it costs on the real
+  backend, and `more` reported false when a range read exactly met its row limit. The
+  last two were found by extending the live differential's selector-range axis, which
+  had swept 400 scenarios across a range axis and a selector axis without ever
+  crossing them.
+
 ## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
 
 Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at
@@ -6656,6 +6684,24 @@ executor's scan through `activeTx.rctx` when one is open AND solve the spurious-
 serializable reads) — a Cascades/executor + driver-tx architecture change (Graefe). Until then it's a real
 read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
 probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
+
+**Gate — acceptance harness: SimFDB (RFC-199).** This item's hard part is not making an in-tx SELECT read
+through `activeTx.rctx`; it is proving the conflict behaviour that follows is right, and doing it
+*deterministically*. Binding in-tx reads to the user's write transaction adds read-conflict ranges, so the
+change is only correct if every resulting conflict/no-conflict verdict is the one real FDB gives — and those
+verdicts are exactly what a real cluster makes nondeterministic and unreproducible. `pkg/simfdb` is that
+harness: a serializable-snapshot backend whose conflict verdicts are validated against real FDB by a
+400-scenario live differential, with seed-reproducible fault injection (1020/1021/1007) so a
+read-modify-write across two explicit transactions can be replayed byte-for-byte. Use it to pin the
+read-your-writes semantics and the read-conflict verdicts before touching the executor; the real-FDB tests
+then confirm rather than discover.
+
+Two SimFDB tests are direct inputs to the semantics decision this item has to make, and they deliberately
+pin TODAY's behaviour rather than a desired end state (it matches Java today, so it is not a bug to fix
+under this item's nose): `TestSQLFault_UpdateRelative_DoubleApply` and the durably-committed-insert 23505
+case. Both are 1021 (`commit_unknown_result`) autocommit hazards — a statement whose write is durable while
+the client is told the outcome is unknown. RFC-198 is what decides whether an explicit transaction changes
+that, so read them as the problem statement, not as failing tests.
 
 ### [x] DDL error classification — duplicate-column + PK-over-unknown-column now clean 42-class errors (2026-06-28)
 

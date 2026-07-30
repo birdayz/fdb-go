@@ -54,6 +54,10 @@ var Allowlist = map[string]int{
 	// swallowed — the marker is rendered into the baseline and TestNoPlanPanics
 	// fails on any entry carrying one.
 	"pkg/relational/conformance/explaindiff/explaindiff.go": 1,
+	// DST overnight hunter: a seed that panics a maintainer is the severest bug it can
+	// find — caught, recorded as a finding, and the sweep continues (an unattended run
+	// must survive one poisoned seed). The panic is surfaced on the finding, never swallowed.
+	"cmd/dst-hunt/main.go": 1,
 }
 
 // Analyzer is the nogo entry point, bound to the production allowlist above.

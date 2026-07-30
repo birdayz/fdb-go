@@ -59,15 +59,18 @@ go_test(
         "concurrent_test.go",
         "race_test.go",
         "random_test.go",
+        "sim_verify_test.go",
     ],
     args = ["-test.parallel=1"],  # Pure Go client has concurrent tx bug; chaos tests are for fault injection, not concurrency
     embed = [":chaos"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
     ],

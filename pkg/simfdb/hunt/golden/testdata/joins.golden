@@ -1,0 +1,31 @@
+# scenario: joins (seed 2)
+#   CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))
+#   CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
+#   CREATE INDEX ord_cid ON ord(cid)
+
+=== SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid
+PLAN: Project([C.CID#0, O.OID#0, O.AMT#2], InMemorySort([C.CID#0 ASC, O.OID#0 ASC], FlatMap(outer=Scan(CUST), inner=Fetch(IndexScan(ORD_CID, [=])))))
+ROWS(4) cols=[CID, OID, AMT]:
+  [1, 100, 50]
+  [1, 101, 70]
+  [2, 102, 30]
+  [3, 103, 90]
+
+=== SELECT c.region, SUM(o.amt) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region ORDER BY c.region
+PLAN: Project([REGION#0, SUM(O.AMT)#1], StreamingAgg(keys=[C.REGION#1], InMemorySort([C.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))))
+ROWS(2) cols=[REGION, SUM(O.AMT)]:
+  [10, 210]
+  [20, 30]
+
+=== SELECT o.oid FROM ord o JOIN cust c ON o.cid = c.cid WHERE c.region = 10 ORDER BY o.oid
+PLAN: Project([O.OID#0], InMemorySort([O.OID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(CUST), [1 preds]), inner=Fetch(IndexScan(ORD_CID, [=])))))
+ROWS(3) cols=[OID]:
+  [100]
+  [101]
+  [103]
+
+=== SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid
+PLAN: Project([COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=Fetch(IndexScan(ORD_CID, [=])))))
+ROWS(1) cols=[COUNT(*)]:
+  [4]
+

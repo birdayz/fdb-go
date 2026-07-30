@@ -1,0 +1,31 @@
+# scenario: subquery (seed 6)
+#   CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))
+#   CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
+#   CREATE INDEX ord_cid ON ord(cid)
+
+=== SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid
+PLAN: Project([CID#0, O.COUNT(*)#2], FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Project([COUNT(*)#0], StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING))))))
+ROWS(3) cols=[CID, COUNT(*)]:
+  [1, 2]
+  [2, 1]
+  [3, 1]
+
+=== SELECT c.cid FROM cust c WHERE EXISTS (SELECT 1 FROM ord o WHERE o.cid = c.cid) ORDER BY c.cid
+PLAN: Project([CID#0], FlatMap(outer=Scan(CUST), inner=PredicatesFilter(FirstOrDefault(IndexScan(ORD_CID, [=])), [1 preds])))
+ROWS(3) cols=[CID]:
+  [1]
+  [2]
+  [3]
+
+=== SELECT oid FROM ord WHERE amt > (SELECT MIN(amt) FROM ord) ORDER BY oid
+PLAN: Project([OID#0], PredicatesFilter(Scan(ORD), [1 preds]))
+ROWS(3) cols=[OID]:
+  [100]
+  [101]
+  [103]
+
+=== SELECT c.region, COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region HAVING COUNT(*) > 1 ORDER BY c.region
+PLAN: Project([REGION#0, COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[C.REGION#1], InMemorySort([C.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))), [1 preds]))
+ROWS(1) cols=[REGION, COUNT(*)]:
+  [10, 3]
+
