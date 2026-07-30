@@ -9,18 +9,18 @@ import (
 // This file is the MEASUREMENT half of the ordering-value comparators. The two
 // comparators — orderingValuesEqual (a requested ordering key against a match
 // candidate's) and intersectionValuesEqual (a primary-key intersection's own
-// key lists) — decide whether two ordering Values are the same column, and both
-// dispatch by VALUE TYPE: a pair of plain FieldValues is decided by column
-// identity and by nothing else.
+// key lists) — decide whether two ordering Values are the same column. TODAY
+// both dispatch on whether the two sides STATE an identity (an UNKNOWN-domain
+// FieldValue pair falls through to the domain-blind structural arm — the
+// intransitive availability form; values.StatesOrderingColumn documents the
+// witness). The DESTINATION is CQ-60's type dispatch: a pair of plain
+// FieldValues decided by column identity and nothing else, no fallthrough.
 //
-// That dispatch has a precondition which is a MEASUREMENT, not an argument:
-// every FieldValue reaching either site must have STATED an identity. One that
-// has not is unaddressable, the comparator declines it, and a decline at these
-// sites costs a set-operation merge. The predecessor dispatch avoided the
-// decline by falling through to the domain-blind structural comparison, which is
-// why it was intransitive (values.StatesOrderingColumn documents the witness).
-// Type dispatch has no fallthrough, so "the decline residual is zero" is the
-// thing that has to keep being true.
+// The flip's precondition is a MEASUREMENT, not an argument: every FieldValue
+// reaching either site must have STATED an identity, because under type
+// dispatch a decline at these sites costs a set-operation merge. The census
+// below is what keeps "the decline residual is zero" true — it is the
+// acceptance instrument CQ-60 lands against, and it already reads zero.
 //
 // So it is counted, on the real corpus, by
 // pkg/relational/conformance/explaindiff's ordering-census test — which is where

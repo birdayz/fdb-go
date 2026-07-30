@@ -1010,26 +1010,26 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // producers — an SQL sort request against a row layout, a candidate against its
 // index metadata — and never arrive as one node.
 //
-// Dispatch is by VALUE TYPE. A pair of plain FieldValues is decided by column
-// IDENTITY and by NOTHING ELSE — identity-or-decline, no fallthrough, ever.
-// Everything else is matched as a whole Value.
+// DESTINATION (CQ-60, not yet landed): dispatch by VALUE TYPE — a pair of
+// plain FieldValues decided by column IDENTITY and nothing else,
+// identity-or-decline, no fallthrough. TODAY the code beneath dispatches on
+// whether both sides STATE an identity, and an UNKNOWN-domain FieldValue
+// pair still falls through to the structural arm — the availability form,
+// which is INTRANSITIVE: a baked path [0] whose layout is UNKNOWN compares
+// EQUAL to [0]-in-D1 and to [0]-in-D2 through the structural arm, while
+// identity keeps D1 and D2 apart
+// (TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain pins
+// this as CURRENT behavior and converts to a transitivity assertion when
+// CQ-60 lands). A comparator that is not an equivalence relation makes
+// orderingValueListContains answer differently depending on the order the
+// list was built in — insertion-order-dependent ordering sets, a
+// nondeterministic plan.
 //
-// Type dispatch is not a stylistic preference over dispatching on whether the
-// two sides happen to STATE an identity; the availability form is intransitive
-// and this one is not. values.StatesOrderingColumn carries the witness: a
-// baked path [0] whose layout is UNKNOWN compares EQUAL to [0]-in-D1 and to
-// [0]-in-D2 through the structural arm, while identity keeps D1 and D2 apart.
-// A comparator that is not an equivalence relation makes orderingValueListContains
-// answer differently depending on the order the list was built in, and the
-// ordering sets built on top of it become insertion-order-dependent — a
-// nondeterministic plan, which is a worse failure than the lost elision the
-// fallthrough was there to avoid.
-//
-// What makes the FieldValue arm safe to make final is a MEASUREMENT, not an
-// argument: every FieldValue arriving here states an identity, so the decline
-// residual is empty and nothing is lost by refusing to fall through. The count
-// is kept honest by the corpus census (ordering_comparison_census.go), which
-// also asserts that this dispatch and the retired one agree pair-for-pair.
+// The flip is measured FREE in production (the decline residual is zero at
+// both comparator sites, kept honest by the corpus census in
+// ordering_comparison_census.go) and is blocked ONLY by test fixtures that
+// mint bare-name doubles — CQ-60 carries the fixture-redesign path. Until
+// it lands, this comment states the destination, not the code.
 //
 // The structural arm remains for values that are not column reads at all — the
 // *RecordTypeValue discriminators, arithmetic and function keys, the
