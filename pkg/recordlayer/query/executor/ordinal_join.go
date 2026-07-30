@@ -1458,16 +1458,28 @@ func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.Reco
 func (b *ordinalJoinBuild) legRows(outerAlias, innerAlias string, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, map[values.CorrelationIdentifier]any, error) {
 	legs := make(map[values.CorrelationIdentifier]values.OrdinalRow, 2)
 	raw := make(map[values.CorrelationIdentifier]any)
-	if err := b.bindLeg(legs, raw, outerAlias, outer); err != nil {
+	if err := b.bindLeg(legs, raw, outerAlias, outer, legRoleOuter); err != nil {
 		return nil, nil, err
 	}
-	if err := b.bindLeg(legs, raw, innerAlias, inner); err != nil {
+	if err := b.bindLeg(legs, raw, innerAlias, inner, legRoleInner); err != nil {
 		return nil, nil, err
 	}
 	return legs, raw, nil
 }
 
-func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult) error {
+// legRole says which side of the FlatMap a leg is. It exists for ONE decision —
+// a SCALAR inner binds its datum, an outer binds its row (see bindLeg) — and it
+// is a role rather than a shape test because the two sides are treated
+// differently by the sibling non-build path for the same reason, and the two
+// paths have to be able to be read against each other.
+type legRole int
+
+const (
+	legRoleOuter legRole = iota
+	legRoleInner
+)
+
+func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult, role legRole) error {
 	id := values.NamedCorrelationIdentifier(alias)
 	// A RAW leg (a bare-QOV non-record unnest element) binds its whole flowed
 	// scalar — never adapted to a (non-record → empty) OrdinalRow. The element
@@ -1512,6 +1524,34 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	}
 	if qr == nil {
 		legs[id] = nil // the deliberately-NULL leg: present, bound to nil
+		return nil
+	}
+	// A SCALAR INNER binds its DATUM, not the one-slot carrier around it.
+	//
+	// Java's quantifier object is the datum, never the carrier:
+	// QuantifiedObjectValue.eval (QuantifiedObjectValue.java:84-95) returns
+	// `binding.getDatum()` for a non-record, non-relation result type, and
+	// ExistsValue.eval (ExistsValue.java:98-100) is `getChild().eval() != null`
+	// over exactly that. So an existential whose subplan yielded nothing — a
+	// FirstOrDefault emitting its NullValue default — has a NULL quantifier
+	// object in Java and EXISTS is FALSE.
+	//
+	// Go wraps a computed scalar in a one-slot `_0` row (scalarPositionalRow),
+	// so binding that ROW under the quantifier makes the object non-null
+	// whatever it holds. The SIBLING path already unwraps it — computeResultLegs
+	// binds `innerRow.Positional.Slots[0]` for a bare-scalar inner — and this
+	// path did not, so the two disagreed on the ONE fact a projected EXISTS
+	// turns on. Measured before this arm existed: `SELECT a.id, EXISTS (SELECT 1
+	// FROM e WHERE e.c = b.c) FROM a JOIN b ON … JOIN q ON …` over an EMPTY `e`
+	// answered TRUE for every row, while the same query correlated to the FIRST
+	// leg (which lands on the non-build path) answered FALSE.
+	//
+	// It is the INNER only, matching the sibling path: the outer binds its row
+	// (qualifyOuterPositional) because a projection over the outer reads its
+	// columns, and unwrapping there would hand a one-column outer's row to a
+	// reference expecting a row.
+	if role == legRoleInner && isBareScalarRow(qr.Positional) {
+		raw[id] = qr.Positional.Slots[0]
 		return nil
 	}
 	row, err := adaptLegPositional(*qr, b.legType(id))

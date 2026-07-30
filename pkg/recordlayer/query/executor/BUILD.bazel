@@ -56,6 +56,7 @@ go_test(
         "evaluation_context_test.go",
         "executor_integration_test.go",
         "executor_test.go",
+        "existential_datum_binding_test.go",
         "explode_element_row_test.go",
         "flat_map_continuation_test.go",
         "flat_map_inherit_outer_properties_test.go",
@@ -196,6 +197,7 @@ go_test(
         "merged_outer_leg_binding_bench_test.go",
         "merged_leg_binding_census.go",
         "merged_leg_binding_census_test.go",
+        "existential_datum_binding_test.go",
     ],
     deps = [
         "//gen",
