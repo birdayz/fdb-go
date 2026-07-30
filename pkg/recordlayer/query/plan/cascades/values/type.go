@@ -370,9 +370,105 @@ type RecordType struct {
 // RecordTypeLeg is one buried source's boundary within a clustered box leg's
 // flat ordinal concat (see RecordType.Legs).
 type RecordTypeLeg struct {
-	Name  string // UPPER binding of the source
-	Start int    // its first slot within the carrying type
-	Width int    // its column count
+	// Alias is the leg's IDENTITY: the CorrelationIdentifier of the quantifier
+	// whose row occupies [Start, Start+Width). It is the field every consumer
+	// asking "does this correlation name this leg?" must compare, through
+	// SameLeg — so that question has exactly one answer, arrived at the same way
+	// Java arrives at it (CorrelationIdentifier.equals is Objects.equals on the
+	// raw id; Java never case-folds an alias anywhere, and its runtime binding is
+	// keyed by the identifier object, not by text).
+	//
+	// It is SOURCED at construction, never re-minted from Name downstream: a
+	// re-mint is how a leg acquires a second spelling, and a second spelling is how
+	// a lookup silently binds the wrong row's slots.
+	//
+	// The producers split into two kinds, and the split is the honest statement of
+	// where this migration stands. Most CARRY the identifier: the executor's merges
+	// and rebases, the planner's leg-concat walk, the seed-window authority, and the
+	// translator's select-leg producer all thread the identifier their own
+	// quantifier or QuantifiedObjectValue already holds. A few MINT it at a
+	// documented TEXT BOUNDARY, because at those points no identifier exists to
+	// thread:
+	//
+	//   - the logical layer's buried-leg bounds (query.buriedLegBounds) records its
+	//     source's binding as a STRING. There is no quantifier to thread and the
+	//     absence is STRUCTURAL, not an omission: a buried non-rightmost leaf of a
+	//     clustered box has no quantifier at all — the box carries ONE, named by its
+	//     rightmost leaf (the sourceBinding convention, stated at
+	//     query.bakeLegType.bakeCorr). Only the seed rebake (CQ-53) creates
+	//     per-leaf quantifiers, and that is what removes this mint;
+	//   - the translator's whole-row leg (wholeRowLegFor) is reached holding a
+	//     select-level layout KEY, also a string. Here a quantifier IS nearby, and
+	//     threading it would be WRONG: these legs are consumed only by the
+	//     DOTTED-text arm, whose counterparty is a qualifier parsed out of a column
+	//     name, so a threaded correlation would be an identity no reader compares —
+	//     and if that quantifier is a machine mint, it would make Name and Alias
+	//     disagree on a leg whose readers still work in text. It retires with the
+	//     dotted channel, not before it.
+	//
+	// Both mint from the only spelling that exists and set Name to that same string,
+	// so neither can make the two channels disagree. That is not merely local to
+	// each producer: both spellings come from sourceAlias/sourceBinding, which
+	// upper-fold at a single chokepoint, and the seed-window authority's own
+	// identities are correlations minted from that same fold. Measured, the
+	// text-vs-identity census reports Name == Alias.Name() on every one of the 3320
+	// legs any reader walks over the real-FDB corpus, and no converted comparison
+	// decides differently from the text comparison it replaced.
+	Alias CorrelationIdentifier
+
+	// Name is the leg's binding as TEXT, conventionally UPPER.
+	//
+	// It is NOT the identity — Alias is. Name survives for exactly two families of
+	// consumer, and stating them precisely is what makes its retirement a checkable
+	// condition rather than an aspiration:
+	//
+	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
+	//     column-name string ("A.ID") and can therefore only be matched as a string
+	//     (executor.ordinal_join's dotted arm and the translator's multi-leg baker);
+	//   - the SEED-WINDOW map's KEYS, whose namespace is an upper fold of the
+	//     correlations. finalizeSeedWindows FILES a sub-window under leg.Name
+	//     because its readers arrive holding that text — but it no longer DECIDES
+	//     by it: the rightmost-leaf question is an identity question and goes
+	//     through SameLeg like every other. Storing under a folded key and deciding
+	//     by identity is the honest split; conflating them was the last folding
+	//     comparison on this field.
+	//
+	// Every reader whose counterparty is a correlation goes through Alias — there
+	// are no exceptions left. That is the retirement condition: when the seed rebake
+	// replaces the text-keyed window namespace and the dotted channel with parsed
+	// segments, both families go, and this field goes with them. Until then, a new
+	// comparison against Name is a regression, full stop.
+	//
+	// Consumers whose counterparty is a correlation must use Alias. A comparison
+	// against Name is a text match dressed as an identity check, and text
+	// matching is what folds the deliberately case-DISJOINT alias namespaces
+	// together (user correlations are upper-folded at the semantic scope's
+	// registration chokepoint; UniqueCorrelationIdentifier mints the machine
+	// counter lowercase, so a quoted "q$5" must not be able to forge a
+	// planner-minted q$5 — see SameLeg).
+	Name string
+
+	Start int // its first slot within the carrying type
+	Width int // its column count
+}
+
+// NewRecordTypeLeg constructs a leg boundary: the quantifier identified by
+// `alias` owns slots [start, start+width) of the carrying type's flat concat,
+// and `name` is that binding's text for the dotted channel.
+//
+// It exists to make the IDENTITY unforgettable. A composite literal lets a
+// producer state Name and omit Alias, and the result is not a compile error but
+// a leg whose identity is the zero CorrelationIdentifier — which every reader
+// then fails to bind, silently for a frontier-pinned reference (see
+// executor.buriedLegWindow's comment for the per-reference-kind disposition).
+// That is not hypothetical: deleting `Alias:` from two producers left the whole
+// suite green. Taking the identifier as the FIRST positional parameter makes the
+// omission a compile error instead.
+//
+// A docscheck AST scan (TestRecordTypeLegIsConstructed) keeps the composite
+// literal from coming back in non-test production code.
+func NewRecordTypeLeg(alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
+	return RecordTypeLeg{Alias: alias, Name: name, Start: start, Width: width}
 }
 
 // NewRecordType constructs a RecordType. The Fields slice is

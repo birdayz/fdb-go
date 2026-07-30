@@ -729,7 +729,8 @@ func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 		return plans.NewRecordQueryNestedLoopJoinPlan(
 			outer, inner, []predicates.QueryPredicate{pred}, plans.JoinInner,
-			fmt.Sprintf("no%d", suffix), fmt.Sprintf("ni%d", suffix), nil)
+			values.NamedCorrelationIdentifier(fmt.Sprintf("no%d", suffix)),
+			values.NamedCorrelationIdentifier(fmt.Sprintf("ni%d", suffix)), nil)
 	}
 
 	return []preorderCandidate{

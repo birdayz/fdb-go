@@ -250,7 +250,7 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 	}
 
 	outerAlias := sourceAlias(j.Left)
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+	outerCorr := unnestOuterCorrelation(j.Left)
 	innerCorr := unnestSourceCorrelation(u)
 
 	// Try the ORDINAL seed when the FIRST link ordinalizes.

@@ -453,9 +453,12 @@ func TestSpanWindowCrossAgreement_BoxLeg(t *testing.T) {
 		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 1}, // dup of A's column name
 		{Name: "EID", FieldType: values.NotNullLong, Ordinal: 2},
 	})
+	// A leg STATES its identity (Alias), not merely its text: identity is what the
+	// window derivations compare, so a fixture that supplies only Name models a
+	// pre-identity producer and would make this agreement check vacuous.
 	boxTyp.Legs = []values.RecordTypeLeg{
-		{Name: "B", Start: 0, Width: 2},
-		{Name: "E", Start: 2, Width: 1},
+		{Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 0, Width: 2},
+		{Alias: values.NamedCorrelationIdentifier("E"), Name: "E", Start: 2, Width: 1},
 	}
 	eBox := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
 	seed := values.NewRawRecordConstructorValue(
@@ -472,7 +475,11 @@ func TestSpanWindowCrossAgreement_BoxLeg(t *testing.T) {
 	if w := windows["B"]; w.Offset != 2 || len(w.Typ.Fields) != 2 {
 		t.Fatalf("windows[B] = (offset %d, width %d) — want the buried sub-window (offset 2, width 2)", w.Offset, len(w.Typ.Fields))
 	}
-	wantLegs := []values.RecordTypeLeg{{Name: "A", Start: 0, Width: 2}, {Name: "B", Start: 2, Width: 2}, {Name: "E", Start: 4, Width: 1}}
+	wantLegs := []values.RecordTypeLeg{
+		{Alias: values.NamedCorrelationIdentifier("A"), Name: "A", Start: 0, Width: 2},
+		{Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 2, Width: 2},
+		{Alias: values.NamedCorrelationIdentifier("E"), Name: "E", Start: 4, Width: 1},
+	}
 	if len(merged.Legs) != len(wantLegs) {
 		t.Fatalf("merged Legs = %v, want %v", merged.Legs, wantLegs)
 	}

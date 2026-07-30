@@ -248,7 +248,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add("nestedLoopJoin/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryNestedLoopJoinPlan(
 			pointLookupScan(t, "NLJ_O", "ID"), pointLookupScan(t, "NLJ_I", "ID"),
-			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, "O", "I", nil)
+			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
 	})
 
 	// --- InJoin: child cardinalities scaled by in-list size ----------------
@@ -700,7 +700,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 			nextCorr("rc_o"), nextCorr("rc_i"), nil, false)
 	case 6:
 		return plans.NewRecordQueryNestedLoopJoinPlan(child(), child(),
-			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, "O", "I", nil)
+			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
 	case 7:
 		return plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{child(), child()})
 	case 8:

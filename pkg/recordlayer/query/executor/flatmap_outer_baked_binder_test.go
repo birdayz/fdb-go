@@ -465,7 +465,7 @@ func TestComputeResult_PassThrough(t *testing.T) {
 func TestUnwrapIdentityFlatMap(t *testing.T) {
 	t.Parallel()
 	_, _, qovA, qovB, seed := ojWiringLegs(t)
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "A", "B", seed)
+	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 	corrM := values.NamedCorrelationIdentifier("M")
 	corrX := values.NamedCorrelationIdentifier("X")
 

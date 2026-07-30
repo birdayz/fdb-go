@@ -2716,7 +2716,7 @@ func legFieldName(fieldName, alias string, legWidth int) string {
 	return fieldName
 }
 
-func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias string) *PositionalRow {
+func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias values.CorrelationIdentifier) *PositionalRow {
 	if outer == nil || inner == nil || outer.Type == nil || inner.Type == nil {
 		return nil
 	}
@@ -2724,31 +2724,31 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 	nInner := len(inner.Type.Fields)
 	fields := make([]values.Field, 0, nOuter+nInner)
 	for i, f := range outer.Type.Fields {
-		fields = append(fields, values.Field{Name: legFieldName(f.Name, outerAlias, nOuter), FieldType: f.FieldType, Ordinal: i})
+		fields = append(fields, values.Field{Name: legFieldName(f.Name, outerAlias.Name(), nOuter), FieldType: f.FieldType, Ordinal: i})
 	}
 	for i, f := range inner.Type.Fields {
-		fields = append(fields, values.Field{Name: legFieldName(f.Name, innerAlias, nInner), FieldType: f.FieldType, Ordinal: nOuter + i})
+		fields = append(fields, values.Field{Name: legFieldName(f.Name, innerAlias.Name(), nInner), FieldType: f.FieldType, Ordinal: nOuter + i})
 	}
 	slots := make([]any, 0, len(outer.Slots)+len(inner.Slots))
 	slots = append(slots, outer.Slots...)
 	slots = append(slots, inner.Slots...)
 	legs := make([]values.RecordTypeLeg, 0, len(outer.Type.Legs)+len(inner.Type.Legs)+2)
-	if outerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: outerAlias, Start: 0, Width: nOuter})
+	if !outerAlias.IsZero() {
+		legs = append(legs, values.NewRecordTypeLeg(outerAlias, outerAlias.Name(), 0, nOuter))
 	}
-	if innerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: innerAlias, Start: nOuter, Width: nInner})
+	if !innerAlias.IsZero() {
+		legs = append(legs, values.NewRecordTypeLeg(innerAlias, innerAlias.Name(), nOuter, nInner))
 	}
-	for _, lg := range outer.Type.Legs {
-		legs = append(legs, lg)
-	}
+	legs = append(legs, outer.Type.Legs...)
 	for _, lg := range inner.Type.Legs {
-		legs = append(legs, values.RecordTypeLeg{Name: lg.Name, Start: lg.Start + nOuter, Width: lg.Width})
+		// The leg's identity is CARRIED, not re-minted: only its offset moves,
+		// because the inner row's slots now start at nOuter.
+		legs = append(legs, values.NewRecordTypeLeg(lg.Alias, lg.Name, lg.Start+nOuter, lg.Width))
 	}
 	return &PositionalRow{Type: &values.RecordType{Fields: fields, Legs: legs}, Slots: slots}
 }
 
-func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
+func mergeRows(outer, inner QueryResult, outerAlias, innerAlias values.CorrelationIdentifier) QueryResult {
 	// A join merge's output IS a leg-windowed PositionalRow — the two
 	// leg rows' own Positionals concatenated (concatLegPositionals), with leg windows
 	// so a qualified read (`A.ID`) resolves to its leg and a bare read by name-in-row.
@@ -2801,8 +2801,18 @@ func spansFromMergedLegs(pos *PositionalRow) []legSpan {
 			f.Ordinal = i
 			legFields[i] = f
 		}
+		if values.LegIdentityCensusEnabled() {
+			// The re-mint's delta: what the leg's identity WAS at construction
+			// against what re-minting its text would have produced.
+			values.RecordLegIdentityLeg(leg)
+		}
 		spans = append(spans, legSpan{
-			Alias:   values.NamedCorrelationIdentifier(leg.Name),
+			// The leg's identity is CARRIED, not re-minted from leg.Name. Re-minting
+			// gave the span a second spelling of the same leg — the producer chose one
+			// identifier and the consumer manufactured another from its text — and a
+			// second spelling is how an alias-qualified read binds a different leg's
+			// slots than the one it names.
+			Alias:   leg.Alias,
 			LegType: &values.RecordType{Fields: legFields},
 			Offset:  leg.Start,
 			Width:   leg.Width,

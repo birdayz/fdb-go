@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // nConjuncts builds n distinct ConstantPredicate(TriTrue) leaves — their
@@ -108,7 +109,7 @@ func TestNestedLoopJoinAndPredicatesFilterCost_AgreeOnSameLogicalResidual(t *tes
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				nlj := NewRecordQueryNestedLoopJoinPlan(nil, nil, tc.preds, JoinInner, "O", "I", nil)
+				nlj := NewRecordQueryNestedLoopJoinPlan(nil, nil, tc.preds, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
 				nljCost := nlj.HintCost([]properties.Cost{outer, inner}, nil)
 
 				// The FlatMap's own inner already contains the join predicate

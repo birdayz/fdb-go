@@ -1,6 +1,9 @@
 package cascades
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -51,19 +54,50 @@ func (r *PartitionSelectRule) positionalMergeCase(
 
 	// The collapsed lower's result value: the nested positional merge row.
 	// Field types flow the legs' whole row types (record-of-records — the
-	// shape the executor evaluates). Go's Quantifier.GetFlowedObjectValue
-	// is UNTYPED (Java's is always typed) — recover each leg's row type from
-	// the select's own value surfaces, where every baked reference is a copy
-	// of the one planner-constructed typed leg QOV: an untyped merge slot
-	// would strip the leg types the executor's span recovery and downstream
-	// fused references resolve through.
+	// shape the executor evaluates). An untyped merge slot would strip the leg
+	// types the executor's span recovery and downstream fused references resolve
+	// through — and worse, silently: a reference the bake could not type stays
+	// SOURCE-RELATIVE, and a source-relative operand pushed into a leg's scan as
+	// a SARG evaluates to NULL against the build-bound row, so the scan matches
+	// nothing and the join returns zero rows with no error.
+	//
+	// The QUANTIFIER is the authority for its own row type, exactly as in Java
+	// (`quantifier.getFlowedObjectValue()` is `QuantifiedObjectValue.of(alias,
+	// getFlowedObjectType())` — Quantifier.java:801-803, always typed).
+	// legRowTypes remains as the fallback for a quantifier whose reference
+	// carries no typed result value yet; it scavenges the select's own value
+	// surfaces, where every baked reference is a copy of the one
+	// planner-constructed typed leg QOV. It cannot be the primary source: when
+	// the select's result value is itself an untyped flowed row (the
+	// single-live-lower arm's `getFlowedObjectValue()`) there is no baked
+	// reference anywhere to scavenge, which is precisely the shape that lost the
+	// types.
 	legTypes := legRowTypes(resultValue, sel.GetPredicates())
 	fields := make([]values.RecordConstructorField, len(live))
 	mergedFields := make([]values.Field, len(live))
 	for i, a := range live {
-		fov := aliasToQ[a].GetFlowedObjectValue()
-		if rt := legTypes[a]; rt != nil {
-			fov = values.NewQuantifiedObjectValueOfType(a, rt)
+		fov, err := aliasToQ[a].GetFlowedObjectValueTyped()
+		if err != nil {
+			// The quantifier's own reference has members flowing DIFFERENT row shapes,
+			// so no member is authoritative and there is no honest merge slot type to
+			// pick. Decline the rule rather than choose by insertion order — Java
+			// Verify-fails at the same point (Reference.java:504-513).
+			//
+			// The decline alone would be SILENT, and the error's own doc says a
+			// disagreement is a memo defect that must surface: two members of one
+			// equivalence class flowing different rows is not a shape this arm declines
+			// to handle, it is the memo being wrong. Java crashes here; Go cannot,
+			// because the untyped-member reporting gap means the error is reachable
+			// without a real defect. So it is COUNTED and witnessed instead — the
+			// observation is what turns "this never happens" from an assumption into
+			// something a corpus run can read.
+			recordMergeSlotTypeDisagreement(err)
+			return nil
+		}
+		if _, typed := fov.Type().(*values.RecordType); !typed {
+			if rt := legTypes[a]; rt != nil {
+				fov = values.NewQuantifiedObjectValueOfType(a, rt)
+			}
 		}
 		fields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
 		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}
@@ -146,4 +180,63 @@ func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) ma
 		})
 	}
 	return types
+}
+
+// The positional merge's member-disagreement OBSERVATION.
+//
+// positionalMergeCase declines when a live leg's quantifier ranges over a
+// Reference whose members flow different row types
+// (expressions.MemberResultTypeDisagreementError). The decline is right — picking
+// a member would choose a row shape by memo insertion order — but a bare `return
+// nil` makes a memo defect indistinguishable from the ordinary "this arm does not
+// apply", and the error's own documentation says a disagreement must surface as
+// one.
+//
+// It is ALWAYS ON, unlike the gated censuses in this package. Those instrument
+// decisions the planner makes on every candidate, so an unconditional counter
+// would sit on a hot path; this one increments only where the memo is already
+// inconsistent, so a healthy run pays nothing and never touches the mutex.
+const mergeSlotTypeDisagreementSampleCap = 16
+
+var (
+	mergeSlotTypeDisagreementCount atomic.Int64
+
+	// mergeSlotTypeDisagreementMu guards the witness slice only.
+	mergeSlotTypeDisagreementMu        sync.Mutex
+	mergeSlotTypeDisagreementWitnesses []string
+)
+
+// recordMergeSlotTypeDisagreement counts one declined merge and retains the
+// error's own message as the witness — it names the quantifier and both row
+// types, which is what identifies the offending equivalence class.
+func recordMergeSlotTypeDisagreement(err error) {
+	mergeSlotTypeDisagreementCount.Add(1)
+	if err == nil {
+		return
+	}
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	if len(mergeSlotTypeDisagreementWitnesses) >= mergeSlotTypeDisagreementSampleCap {
+		return
+	}
+	w := err.Error()
+	for _, seen := range mergeSlotTypeDisagreementWitnesses {
+		if seen == w {
+			return
+		}
+	}
+	mergeSlotTypeDisagreementWitnesses = append(mergeSlotTypeDisagreementWitnesses, w)
+}
+
+// MergeSlotTypeDisagreements returns how many positional merges declined because
+// a leg quantifier's reference members disagreed on their row type, plus the
+// distinct witnesses retained (capped). A nonzero count over any corpus is a memo
+// defect: either a rule inserted an expression flowing a different row into an
+// existing equivalence class, or a leg's row type is being derived two ways.
+func MergeSlotTypeDisagreements() (int64, []string) {
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	out := make([]string, len(mergeSlotTypeDisagreementWitnesses))
+	copy(out, mergeSlotTypeDisagreementWitnesses)
+	return mergeSlotTypeDisagreementCount.Load(), out
 }

@@ -138,20 +138,11 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
-					keys := make([]string, 0, len(m))
-					for k := range m {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					parts := make([]string, 0, len(keys))
-					for _, k := range keys {
-						parts = append(parts, unnestSprint(m[k]))
-					}
-					out = append(out, strings.Join(parts, "|"))
-				} else {
-					out = append(out, unnestSprint(executor.RowValue(r)))
-				}
+				// POSITIONAL, in slot order. The name-keyed form this replaced sorted
+				// the row map's keys, so permuting (Fields, Slots) together rendered
+				// identically -- blind in the one dimension a mis-bound leg window
+				// moves.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -209,7 +200,7 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 		want(t, `SELECT LA."K", "X" `+leftBox+` WHERE "X" > 7 AND LA."K" = 100`, "100|8")
 	})
 	t.Run("at_ordinal_conjunct", func(t *testing.T) {
-		want(t, `SELECT LA."K", "X", "O" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID", LA."ARR" AS "X" AT "O" WHERE LA."K" = 100`, "100|1|7", "100|2|8")
+		want(t, `SELECT LA."K", "X", "O" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID", LA."ARR" AS "X" AT "O" WHERE LA."K" = 100`, "100|7|1", "100|8|2")
 	})
 	// Scalar-subquery conjunct: BAKES (the ScalarSubqueryValue is a leaf
 	// the bake leaves untouched while the sibling leg ref LA.K ordinalizes; the
@@ -230,7 +221,7 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 	})
 	// GROUP BY over the filtered gather.
 	t.Run("group_by_over_filtered", func(t *testing.T) {
-		want(t, `SELECT LA."K", COUNT(*) `+leftBox+` WHERE LA."K" = 100 GROUP BY LA."K"`, "2|100")
+		want(t, `SELECT LA."K", COUNT(*) `+leftBox+` WHERE LA."K" = 100 GROUP BY LA."K"`, "100|2")
 	})
 	// NESTED box (`(LA FULL LB) FULL CC`) + box-leg conjunct: the classifier
 	// ADMITS the nested box, so the conjunct classifies Bakeable and bakes over
@@ -239,7 +230,7 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 	// CC-unmatched null-padded rows drop).
 	t.Run("nested_box_conjunct", func(t *testing.T) {
 		want(t, `SELECT LA."K", LB."K", CC."CV", "X" FROM LA FULL OUTER JOIN LB ON LA."AID" = LB."BID" FULL OUTER JOIN CC ON LA."AID" = CC."CID", LA."ARR" AS "X" WHERE LA."K" = 100`,
-			"900|100|5|7", "900|100|5|8")
+			"100|5|900|7", "100|5|900|8")
 	})
 
 	// Sibling shapes for the nested_box_conjunct dimension: a WHERE over a
@@ -259,26 +250,26 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 	// join (LA.K=NULL,LB.K=6,CV=NULL, LA.AID NULL so also CC-unmatched).
 	// WHERE LA.K=100 must keep only the fully-matched row.
 	t.Run("nested_box_no_unnest_preserved_leg", func(t *testing.T) {
-		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LA."K" = 100`, "900|100|5")
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LA."K" = 100`, "100|5|900")
 	})
 	// WHERE over LB — the null-extendable leg of the INNER (LA FULL LB)
 	// join, itself buried inside the OUTER box. LB.K=5 only on the
 	// fully-matched row (LB.K is NULL on the aid=2 row, 6 on the bid=3 row).
 	t.Run("nested_box_no_unnest_inner_null_supplied_leg", func(t *testing.T) {
-		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 5`, "900|100|5")
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 5`, "100|5|900")
 	})
 	// WHERE LB.K=6 isolates the bid=3 row: LA is NULL-extended by the INNER
 	// join (no LA.aid=3), and LA.AID being NULL then also NULL-extends CC at
 	// the OUTER join. Proves a predicate on the inner join's null-supplying
 	// leg still resolves correctly through a SECOND level of null-extension.
 	t.Run("nested_box_no_unnest_inner_null_supplied_leg_isolates_row", func(t *testing.T) {
-		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 6`, "<nil>|<nil>|6")
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 6`, "<nil>|6|<nil>")
 	})
 	// LEFT OUTER analogue of the nested box (no UNNEST): LA LEFT JOIN LB LEFT
 	// JOIN CC WHERE LA.K=100. Only the aid=1 row (fully matched) qualifies;
 	// the aid=2 row (LA.K=110, null-padded on both LB and CC) must drop.
 	t.Run("nested_box_left_outer_no_unnest_preserved_leg", func(t *testing.T) {
 		want(t, `SELECT LA."K", LB."K", CC."CV" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" LEFT JOIN CC ON LA."AID" = CC."CID" WHERE LA."K" = 100`,
-			"900|100|5")
+			"100|5|900")
 	})
 }

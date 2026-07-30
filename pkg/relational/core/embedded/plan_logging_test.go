@@ -581,9 +581,9 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 		return plans.NewRecordQueryScanPlan([]string{"T"}, cascadesvalues.UnknownType, false)
 	}
 	innerJoin := plans.NewRecordQueryNestedLoopJoinPlan(
-		scan(), scan(), nil, plans.JoinFullOuter, "X", "Y", nil)
+		scan(), scan(), nil, plans.JoinFullOuter, cascadesvalues.NamedCorrelationIdentifier("X"), cascadesvalues.NamedCorrelationIdentifier("Y"), nil)
 	top := plans.NewRecordQueryNestedLoopJoinPlan(
-		innerJoin, scan(), nil, plans.JoinInner, "A", "X", nil)
+		innerJoin, scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("A"), cascadesvalues.NamedCorrelationIdentifier("X"), nil)
 
 	if _, _, found := legPlanFor(top, "X"); found {
 		t.Fatal("a duplicated alias across join levels must DECLINE (scope-ambiguous), not first-match")
@@ -596,9 +596,9 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	// break the plan-nesting/SQL-scoping mirror, so shallow-wins shadowing
 	// is not trusted either.
 	nested := plans.NewRecordQueryNestedLoopJoinPlan(
-		scan(), scan(), nil, plans.JoinInner, "Z", "W", nil)
+		scan(), scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("Z"), cascadesvalues.NamedCorrelationIdentifier("W"), nil)
 	shadowTop := plans.NewRecordQueryNestedLoopJoinPlan(
-		nested, scan(), nil, plans.JoinInner, "Z", "Q", nil)
+		nested, scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("Z"), cascadesvalues.NamedCorrelationIdentifier("Q"), nil)
 	if _, _, found := legPlanFor(shadowTop, "Z"); found {
 		t.Fatal("an alias duplicated between a leg and its own subtree must DECLINE")
 	}

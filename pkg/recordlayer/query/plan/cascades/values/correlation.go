@@ -93,14 +93,28 @@ func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 // helper now agrees with it rather than contradicting it.
 //
 // Folding was tempting because the translator does not upper-case aliases
-// consistently (cascades_translator.go:2366 folds; :1862 and :8730 pass the
-// name through verbatim), so an exact comparison can fail to recognize a leg
-// that really is the right one. That costs a DECLINE — every caller reads
+// consistently — some paths fold an alias at construction and others pass the
+// spelling through verbatim — so an exact comparison can fail to recognize a leg
+// that really is the right one. (This used to cite three specific translator
+// lines; two of them had already drifted onto unrelated code, which is why the
+// claim is stated structurally now. A line number is not a citation once the file
+// moves under it.) That costs a DECLINE — every caller reads
 // "cannot tell" as "do not apply the correction" — and it is the translator's
 // inconsistency to fix at the source, not this helper's to mask. Masking it
 // here would trade a recoverable missed optimization for an unrecoverable
 // forged identity.
+// An UNSTATED identifier (the Go zero value, empty name) names nothing, and two
+// of them name nothing in common. Go's zero value has no Java analogue —
+// Quantifier.getAlias() is @Nonnull and a CorrelationIdentifier is never
+// constructed empty — so the only way to hold one here is a producer that forgot
+// to state an identity. Answering "same leg" for that pair is how an
+// unstated-identity leg binds a zero-value correlation and starts serving its
+// slots: every caller reads true as "this correlation names this leg". Declining
+// turns the omission into the miss it actually is.
 func SameLeg(a, b CorrelationIdentifier) bool {
+	if a.name == "" || b.name == "" {
+		return false
+	}
 	return a.name == b.name
 }
 

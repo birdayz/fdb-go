@@ -32,8 +32,8 @@ type RecordQueryNestedLoopJoinPlan struct {
 	innerQ      expressions.Quantifier
 	predicates  []predicates.QueryPredicate
 	joinType    JoinType
-	outerAlias  string
-	innerAlias  string
+	outerAlias  values.CorrelationIdentifier
+	innerAlias  values.CorrelationIdentifier
 	resultValue values.Value
 }
 
@@ -75,15 +75,25 @@ func (jt JoinType) String() string {
 }
 
 // NewRecordQueryNestedLoopJoinPlan constructs a nested-loop join plan.
-// outerAlias/innerAlias are the SQL-level table aliases (e.g. "E", "M"
-// for `FROM Employee AS e, Employee AS m`). Used by the executor to
-// qualify merged-row keys so predicates can resolve alias-qualified
-// column references.
+// outerAlias/innerAlias identify the two legs of the merged row this join emits:
+// the executor qualifies merged-row keys by them and stamps them onto the row's
+// leg boundaries, so they are what an alias-qualified column reference resolves
+// through.
+//
+// They are CorrelationIdentifiers, not strings, because that is what they
+// identify — a quantifier — and because the executor's leg boundaries compare
+// them through values.SameLeg. Holding them as text meant the executor minted an
+// identifier from a string at the plan boundary, and an exact comparison cannot
+// protect against a forgery its own mint constructs: the mint decides the
+// spelling, so the case-disjointness that keeps a quoted "Q$5" from binding a
+// planner-minted q$5 was being re-decided at every consumer. Java holds the same
+// thing typed end to end (RecordQueryFlatMapPlan carries Quantifier.Physical,
+// not an alias string), and Go's own RecordQueryFlatMapPlan already did.
 func NewRecordQueryNestedLoopJoinPlan(
 	outer, inner RecordQueryPlan,
 	joinPredicates []predicates.QueryPredicate,
 	joinType JoinType,
-	outerAlias, innerAlias string,
+	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 ) *RecordQueryNestedLoopJoinPlan {
 	preds := make([]predicates.QueryPredicate, len(joinPredicates))
@@ -111,7 +121,7 @@ func NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
 	outerQ, innerQ expressions.Quantifier,
 	joinPredicates []predicates.QueryPredicate,
 	joinType JoinType,
-	outerAlias, innerAlias string,
+	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 ) *RecordQueryNestedLoopJoinPlan {
 	preds := make([]predicates.QueryPredicate, len(joinPredicates))
@@ -167,8 +177,14 @@ func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
 }
 func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType { return p.joinType }
-func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string { return p.outerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string { return p.innerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() values.CorrelationIdentifier {
+	return p.outerAlias
+}
+
+func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() values.CorrelationIdentifier {
+	return p.innerAlias
+}
+
 func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value {
 	return p.resultValue
 }
@@ -178,17 +194,19 @@ func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredic
 }
 
 // structuralKey lists the fields that distinguish this join in the memo: the
-// join type, the outer/inner table aliases, the join predicate list, and the
-// result Value. Children (the two legs) are excluded. The outer/inner aliases
-// are SQL-level strings (not correlation identifiers) — they qualify merged-row
-// keys, so two joins differing only in an alias resolve columns differently.
+// join type, the outer/inner leg identifiers, the join predicate list, and the
+// result Value. Children (the two legs) are excluded. The leg identifiers
+// qualify merged-row keys, so two joins differing only in one resolve columns
+// differently. They enter the key as their raw Name(): a CorrelationIdentifier's
+// equality IS equality of that string, so the key is unchanged by their retyping
+// and every memo identity and plan hash it feeds stays byte-identical.
 // The same key drives both EqualsPlanWithoutChildren and
 // HashCodeWithoutChildren, so the two can never disagree on which fields matter.
 func (p *RecordQueryNestedLoopJoinPlan) structuralKey() *structuralKey {
 	return newStructuralKey().
 		Int(int(p.joinType)).
-		Str(p.outerAlias).
-		Str(p.innerAlias).
+		Str(p.outerAlias.Name()).
+		Str(p.innerAlias.Name()).
 		Preds(p.predicates).
 		Value(p.resultValue)
 }

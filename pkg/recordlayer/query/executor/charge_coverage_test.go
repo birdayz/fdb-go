@@ -129,7 +129,7 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 				},
 			},
 		}
-		c := mustNLJCursor(t, outer, innerRows, plans.JoinInner, "O", "I", preds, nil, EmptyEvaluationContext(), st)
+		c := mustNLJCursor(t, outer, innerRows, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, EmptyEvaluationContext(), st)
 		if c.hashIndex == nil {
 			t.Fatal("hash index was not built — coverage case does not exercise the charge path")
 		}

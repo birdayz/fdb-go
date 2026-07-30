@@ -1011,8 +1011,8 @@ type nljCursor struct {
 	outerInner recordlayer.RecordCursor[QueryResult]
 	innerRows  []QueryResult
 	joinType   plans.JoinType
-	outerAlias string
-	innerAlias string
+	outerAlias values.CorrelationIdentifier
+	innerAlias values.CorrelationIdentifier
 	preds      []predicates.QueryPredicate
 	evalCtx    *EvaluationContext
 
@@ -1095,7 +1095,7 @@ func newNLJCursor(
 	outer recordlayer.RecordCursor[QueryResult],
 	innerRows []QueryResult,
 	joinType plans.JoinType,
-	outerAlias, innerAlias string,
+	outerAlias, innerAlias values.CorrelationIdentifier,
 	preds []predicates.QueryPredicate,
 	resultValue values.Value,
 	evalCtx *EvaluationContext,
@@ -1116,8 +1116,13 @@ func newNLJCursor(
 		st:         st,
 		build:      build,
 	}
-	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
-	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
+	// The plan hands its leg identities over TYPED, so the cursor holds the
+	// identifiers the planner chose rather than ones it manufactured from their
+	// text. This used to mint both here, which meant every leg identity on the
+	// merge path was decided at the plan boundary by the consumer: an exact
+	// comparison downstream cannot rule out a forgery its own mint constructed.
+	c.outerCorr = outerAlias
+	c.innerCorr = innerAlias
 	if build.enabled() {
 		// Adapt the FIXED inner side once — never per pair, which would turn
 		// every candidate-pair comparison into a re-adaptation and make the
@@ -1179,7 +1184,7 @@ func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
 // disagree with the predicate re-check the way an independent name
 // lookup or a raw-dynamic-type key could (a divergence there silently
 // DROPS matching rows, since the hash only pre-filters candidates).
-func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
+func (c *nljCursor) tryBuildHashIndex(innerAlias values.CorrelationIdentifier) {
 	if len(c.preds) == 0 || len(c.innerRows) < 100 {
 		return
 	}
@@ -1351,7 +1356,7 @@ const nljHashEntryBytes int64 = 24
 // correlation names one of the two legs. Anything else (a fused multi-accessor
 // rebase, a computed operand, a reference to a buried leg of a lower join)
 // declines the fast path: (nil, nil), the linear predicate path handles it.
-func extractEquijoinOperands(preds []predicates.QueryPredicate, outerAlias, innerAlias string) (outerVal, innerVal values.Value) {
+func extractEquijoinOperands(preds []predicates.QueryPredicate, outerAlias, innerAlias values.CorrelationIdentifier) (outerVal, innerVal values.Value) {
 	var o, in values.Value
 	eqCount := 0
 	for _, p := range preds {
@@ -1388,7 +1393,7 @@ func extractEquijoinOperands(preds []predicates.QueryPredicate, outerAlias, inne
 // either resolves by its leg-local ordinal against the leg row. A FUSED
 // multi-accessor path declines: its root ordinal addresses a merge-shaped
 // intermediate, not the leg row. ok=false for every other shape.
-func bakedLegOperand(v values.Value, outerAlias, innerAlias string) (isOuter, ok bool) {
+func bakedLegOperand(v values.Value, outerAlias, innerAlias values.CorrelationIdentifier) (isOuter, ok bool) {
 	fv, isFV := v.(*values.FieldValue)
 	if !isFV || fv.Resolved == nil || len(fv.Resolved.Accessors) != 1 {
 		return false, false
@@ -1397,12 +1402,14 @@ func bakedLegOperand(v values.Value, outerAlias, innerAlias string) (isOuter, ok
 	if !isQOV {
 		return false, false
 	}
-	alias := qov.Correlation.Name()
+	// The leg identity question, asked of identifiers rather than of their text.
+	// SameLeg is the one answer to it: exact, because the alias namespaces here are
+	// deliberately case-DISJOINT, and declining an unstated identity because an
+	// unstated identity names nothing.
 	switch {
-	// Exact: correlation-key namespace on both sides.
-	case alias == outerAlias:
+	case values.SameLeg(qov.Correlation, outerAlias):
 		return true, true
-	case alias == innerAlias:
+	case values.SameLeg(qov.Correlation, innerAlias):
 		return false, true
 	}
 	return false, false
@@ -1452,7 +1459,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// downstream qualified ref to the inner side resolves, and
 						// the absent outer side reads NULL.
 						qr := QueryResult{Record: c.innerRows[i].Record, PrimaryKey: c.innerRows[i].PrimaryKey}
-						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerAlias)
+						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerCorr)
 						if c.build.enabled() {
 							pos, berr := c.build.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
@@ -1581,7 +1588,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			idx := c.innerCandidateIndex(c.innerIdx)
 			innerRow := c.innerRows[idx]
 			c.innerIdx++
-			combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
+			combined := mergeRows(*c.currentOuter, innerRow, c.outerCorr, c.innerCorr)
 			// For an ordinal-build cursor the predicate row context carries
 			// the per-leg bindings from the PRE-adapted legs (nil binder =
 			// today's path bit-identically); the same binder builds the
@@ -1638,7 +1645,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// never an error) when active; otherwise the outer's own
 				// positional qualified under its alias, the absent inner side NULL.
 				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
-				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
+				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerCorr)
 				if c.build.enabled() {
 					pos, berr := c.build.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {

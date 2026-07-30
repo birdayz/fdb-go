@@ -164,17 +164,10 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := executor.RowValue(r).(map[string]any)
-				keys := make([]string, 0, len(m))
-				for k := range m {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-				parts := make([]string, 0, len(keys))
-				for _, k := range keys {
-					parts = append(parts, k+"="+unnestSprint(m[k]))
-				}
-				out = append(out, strings.Join(parts, "|"))
+				// SLOT order, not sorted map keys: the sorted form re-sorted a
+				// permuted row to the identical string and had already lost any
+				// duplicate output name last-wins.
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

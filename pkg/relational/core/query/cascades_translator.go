@@ -1878,7 +1878,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	if outerRef == nil {
 		return nil
 	}
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+	outerCorr := unnestOuterCorrelation(j.Left)
 
 	// The correlated array Value is ALWAYS the ordinal bake below
 	// (unnestBakedRootCollection). There is no name-keyed alternative: the
@@ -3692,19 +3692,34 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 // `WHERE B.ID = 20` admitting {A.ID:20, B.ID:null} rows. Correct-or-loud at
 // the resolution site: the decline keeps the whole class fail-closed even if
 // a window-propagation gap upstream ever leaves Legs empty.
-func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string, multiAlias bool) (int, bool) {
+func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentifier, field string, multiAlias bool) (int, bool) {
 	if rt == nil {
 		return 0, false
 	}
 	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
-			// Legs.Name here belongs to the USER-alias universe (canonical
-			// UPPER post-B3a; buriedLegBounds gathers user leg aliases —
-			// machine mints never appear as buried legs); field names are
-			// UPPER on both sides (ordinalLegType stores + caller passes
-			// ToUpper), so an exact == mirrors the flat FieldIndex
-			// fallback exactly.
-			if lw.Name != leg {
+			if values.LegIdentityCensusEnabled() {
+				// RETIRED PREDICATE: `lw.Name == strings.ToUpper(leg.Name())` — this
+				// function took the qualifier as a string and every caller passed the
+				// UPPER fold of the correlation. Recording the verdict is what makes the
+				// conversion's claim checkable: a fold-only count over the identity pair
+				// sees a match that became a decline, but NOT a decline that became a
+				// match (a lowercase machine-minted leg matches itself exactly while the
+				// folding predicate rejected it, and that pair lands in ExactEqual).
+				values.RecordLegIdentityConversion(
+					values.LegSiteOrdinalSlotInLegWindow, lw.Alias, leg,
+					lw.Name == strings.ToUpper(leg.Name()))
+				values.RecordLegIdentityLeg(lw)
+			}
+			// "Does this correlation name that leg window?" — the same IDENTITY
+			// question every other Group-A reader asks, so it gets the same answer
+			// the same way. This used to compare the leg's TEXT against the UPPER
+			// fold of the correlation, which is a text match dressed as an identity
+			// check: it happened to agree because buried legs are user aliases and
+			// those are upper-folded at the semantic scope's registration
+			// chokepoint, but the agreement was a property of today's producers
+			// rather than of the comparison.
+			if !values.SameLeg(lw.Alias, leg) {
 				continue
 			}
 			if lw.Start < 0 {
@@ -3780,7 +3795,10 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// not the flat first-match across the whole merged prefix (which silently
 			// reads the OTHER alias's same-named column).
 			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
-			ord, found := ordinalSlotInLegWindow(outerLegType, leg, strings.ToUpper(fv.Field), len(outerLegs) > 1)
+			// The MAP lookup above is keyed by upper text (the outerLegs set is built
+			// from the same text channel), but the WINDOW resolution below is an
+			// identity question and takes the correlation itself.
+			ord, found := ordinalSlotInLegWindow(outerLegType, qov.Correlation, strings.ToUpper(fv.Field), len(outerLegs) > 1)
 			if !found {
 				ok = false
 				return node
@@ -5631,7 +5649,29 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 		if legCols == nil {
 			return nil
 		}
-		legs = append(legs, values.RecordTypeLeg{Name: aliases[i], Start: off, Width: len(legCols)})
+		// The leg's IDENTITY is the quantifier's own alias — the identifier a
+		// correlation-bearing reader will hold. The select's parallel sourceAliases
+		// entry is the leg's TEXT, which the dotted channel still matches against;
+		// the two are recorded separately rather than one being derived from the
+		// other, so a divergence between them is measurable instead of silent.
+		//
+		// It IS measured: this is the one producer whose two spellings come from
+		// genuinely independent places (a quantifier vs. the select's parallel alias
+		// slice), so the census records the pair here rather than relying on a
+		// downstream reader happening to walk these legs.
+		//
+		// The recorded pair is the LEG's, read back off the constructed leg — not the
+		// quantifier alias that went in. Recording (aliases[i], q.GetAlias().Name())
+		// measured this producer's INPUTS, so it could not see the producer failing to
+		// USE them: replacing the threaded identifier with a zero one left the site
+		// reporting a clean 3239/3239 while every leg it emitted carried no identity.
+		// A producer census has to observe the product.
+		leg := values.NewRecordTypeLeg(q.GetAlias(), aliases[i], off, len(legCols))
+		if values.LegIdentityCensusEnabled() {
+			values.RecordLegIdentityComparison(
+				values.LegSiteSelectOutputLegs, leg.Name, leg.Alias.Name())
+		}
+		legs = append(legs, leg)
 		off += len(legCols)
 	}
 	if off != flatCount {
@@ -5863,7 +5903,13 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
 		return nil
 	}
-	return []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(cols)}}
+	// A TEXT-BOUNDARY mint: the caller reaches here holding an alias STRING (the
+	// select-level layout's key) and no quantifier, so the identity is
+	// manufactured once from the only spelling that exists, and Name is that same
+	// string. Retires with the dotted channel.
+	return []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(alias), alias, 0, len(cols)),
+	}
 }
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no

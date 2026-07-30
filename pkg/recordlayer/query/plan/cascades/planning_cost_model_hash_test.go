@@ -21,15 +21,15 @@ func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"PA"}, nil, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"PB"}, nil, false)
 
-	ab := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", nil)
-	ba := plans.NewRecordQueryNestedLoopJoinPlan(scanB, scanA, nil, plans.JoinInner, "A", "B", nil)
+	ab := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
+	ba := plans.NewRecordQueryNestedLoopJoinPlan(scanB, scanA, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
 
 	if stablePlanHash(ab) == stablePlanHash(ba) {
 		t.Fatal("stablePlanHash is operand-order-INSENSITIVE: NLJ(A,B) == NLJ(B,A) — the #17 tie-break cannot discriminate swapped-operand ties and the winner follows task arrival order")
 	}
 
 	// Same-child sanity: identical trees still hash identically.
-	ab2 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", nil)
+	ab2 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
 	if stablePlanHash(ab) != stablePlanHash(ab2) {
 		t.Fatal("stablePlanHash is not structural: two identical trees hashed differently")
 	}

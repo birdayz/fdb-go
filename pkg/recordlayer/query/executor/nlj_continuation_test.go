@@ -50,7 +50,7 @@ func nljEquiPreds() []predicates.QueryPredicate {
 
 func nljTestCursor(t *testing.T, outer recordlayer.RecordCursor[QueryResult], inner []QueryResult, jt plans.JoinType, preds []predicates.QueryPredicate) *nljCursor {
 	t.Helper()
-	c, err := newNLJCursor(outer, inner, jt, "O", "I", preds, nil, EmptyEvaluationContext(), recordlayer.NewExecuteState(0))
+	c, err := newNLJCursor(outer, inner, jt, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, EmptyEvaluationContext(), recordlayer.NewExecuteState(0))
 	if err != nil {
 		t.Fatalf("newNLJCursor: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestNLJContinuation_FullOuterExecutorRejectsAllTokens(t *testing.T) {
 	plan := plans.NewRecordQueryNestedLoopJoinPlan(
 		plans.NewRecordQueryTempTableScanPlan(outerAlias),
 		plans.NewRecordQueryTempTableScanPlan(innerAlias),
-		nil, plans.JoinFullOuter, "TO", "TI", nil,
+		nil, plans.JoinFullOuter, values.NamedCorrelationIdentifier("TO"), values.NamedCorrelationIdentifier("TI"), nil,
 	)
 	baseVersionToken, err := (&nljContinuation{hasInner: true, innerIdx: 1, outerMatched: true}).ToBytes()
 	if err != nil {

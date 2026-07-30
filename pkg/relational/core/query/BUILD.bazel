@@ -55,6 +55,7 @@ go_test(
         "groupby_gate_test.go",
         "is_scan_family_leg_test.go",
         "left_outer_seed_test.go",
+        "leg_identity_census_main_test.go",
         "plan_test.go",
         "recursive_cte_test.go",
         "rotation_guard_test.go",

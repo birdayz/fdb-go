@@ -46,8 +46,7 @@ func TestAggregateInputIsFlatFrontier_UnorderedPrimaryKeyDistinct(t *testing.T) 
 		nil,
 		nil,
 		plans.JoinInner,
-		"outer",
-		"inner",
+		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
 		nil,
 	)
 	if aggregateInputIsFlatFrontier(

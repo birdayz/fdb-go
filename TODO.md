@@ -10528,6 +10528,138 @@ None is speculative: each was re-verified against the tree before booking.
   (concatLegPositionals-is-structural) is refuted and it must not be
   implemented on the string-keyed binder under a green gate.
 
+  IMPLEMENTED + FOLD LAP DONE (branch feat/cq61-leg-identity-typed).
+  RecordTypeLeg carries Alias, every reader whose counterparty is a
+  correlation compares through values.SameLeg, and the leg identity is
+  threaded rather than re-minted. What the fold lap added over the first
+  implementation:
+  - The census gate is real and IN CI: it moved to the sqldriver TestMain,
+    unconditional, asserting per-site population FLOORS as well as the zeros.
+    The previous form reported Total 0 at six of the eight sites when run
+    alone (measured; expressionOutputLegs reported 4 and NLJ plan alias 370),
+    so its zeros were vacuous. Whole-suite population — VARIES run to run,
+    since several sites sit inside Cascades rules and the memo may explore a
+    rule once or many times per query: rowLegsBinder 285 and buriedLegWindow
+    567 are the only two that repeat exactly; text-vs-identity has measured
+    3115 / 3270 / 3320, hoist ~1000-1052, finalizeSeedWindows ~1287-1311,
+    expressionOutputLegs ~3239-3263, NLJ plan alias ~80k,
+    ordinalSlotInLegWindow 105. The floors sit an order of magnitude below, so
+    they detect COLLAPSE rather than that variance.
+  - values.NewRecordTypeLeg takes the identity as its first positional
+    parameter (omitting it is now a compile error, not a zero-identity leg),
+    all 13 production sites converted, and a docscheck AST scan forbids the
+    composite literal outside the constructor. SameLeg declines an UNSTATED
+    identifier — SameLeg(zero, zero) used to be true, so two omissions agreed
+    and bound.
+  - RecordQueryNestedLoopJoinPlan holds its leg identities as
+    CorrelationIdentifiers, threaded from the select's quantifiers; the
+    executor's boundary mints are deleted. The "proto-visible" objection is
+    refuted: Go marshals no plan through the plan protos, the memo structural
+    key takes the identifiers' raw Name(), plan_shape.golden is
+    byte-identical. Deleting that path's ToUpper removed a forgery generator
+    (ToUpper of a minted lowercase q$N is Q$N, the spelling SameLeg exists to
+    exclude) — the plan and its own seed disagreed by case on the 12 of ~80k
+    firings where the source-alias slice carries a re-minted name. (The 12 is
+    stable across runs; the denominator is not — 79040 / 79960 / 80856
+    measured.)
+  - ordinalSlotInLegWindow converted (the last Group-A folding reader), and
+    finalizeSeedWindows converted too. Name's retirement condition is now
+    crisp: dotted-text consumers plus the seed-window map keys, nothing else.
+  - THE ACCEPTANCE INSTRUMENT WAS MEASURING A DIFFERENT PROGRAM, and that is
+    what let finalizeSeedWindows be written up as unconvertible. The census
+    took two STRINGS, so the four readers that compare IDENTITIES all recorded
+    the leg's text against the counterparty's text — a pair that scores EXACT
+    where the shipped comparison DECLINES. Fixed: converted sites now record
+    the pair they evaluate AND the verdict of the predicate they replaced
+    (RecordLegIdentityConversion), because fold-only cannot see a
+    decline→match flip (it is byte-equal, so it lands in ExactEqual). A site's
+    census channel is OBSERVED, so an instrument that drifts from its
+    comparison is reported instead of believed. The translator package
+    (//pkg/relational/core/query) gained its own census harness; its corpus
+    drives the planning-time readers the SQL suite barely touches.
+  - MEASURED with the true pair, real-FDB corpus, all four converted sites:
+    retiredVerdictDivergent 0, foldOnly 0, unstated 0 — rowLegsBinder 285,
+    buriedLegWindow 567, hoist 1052, ordinalSlotInLegWindow 105, and
+    finalizeSeedWindows 1311. The conversion is representation-only on
+    production traffic, measured on the DECISION rather than inferred from
+    separate zeros.
+  - THE "finalizeSeedWindows CANNOT CONVERT" JUSTIFICATION IS WITHDRAWN, and
+    so is the claim that "the earlier reproduction that found it green was the
+    one that missed" — that claim was wrong. The cited red
+    ("3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)")
+    reproduces exactly, and its cause is the FIXTURE:
+    TestThreeWayBoxCrossAgreement hand-minted the box correlation as lowercase
+    "c" where production mints NamedCorrelationIdentifier(sourceAlias(box)) =
+    "C", and its own comment mis-stated that spelling as the sourceBinding.
+    The two identifiers finalizeSeedWindows compares are not "legitimately
+    different — box quantifier vs leaf"; the sourceBinding convention is
+    precisely that for the rightmost leaf they are the SAME identifier, both
+    upper-folded by the one sourceAlias chokepoint. The fixture now derives the
+    correlation the way production does, the site is converted, and the premise
+    has a deterministic pin of its own
+    (TestBoxCorrelationIsItsRightmostLeafIdentity, red in BOTH directions under
+    mutation: unfolding sourceAlias, and folding only the leaf producer).
+
+  FOUND WHILE FOLDING, NOW FIXED. A 3-way comma join with a projected EXISTS
+  whose legs are tied by equijoin predicates returned NO ROWS, and for TWO
+  independent pre-existing reasons (both verified at this branch's base commit).
+  Both fixes are in; the earlier writeup of this item mis-located the defect and
+  is superseded below.
+  DEFECT 1 — UNTYPED POSITIONAL-MERGE SLOTS (zero rows, NO error, the worse of
+  the two). PartitionSelectRule's single-live-lower arm gave its lower select an
+  UNTYPED flowed row (`Quantifier.GetFlowedObjectValue()`), and a later
+  positional-merge round derived the collapsed legs' row types by SCAVENGING the
+  select's own value surfaces (positional_merge.go legRowTypes) — which finds
+  nothing precisely when the result value is itself an untyped flowed row. The
+  merge slots went UNKNOWN, so the equijoin operand pushed into the B leg's scan
+  could not bake to a pinned ordinal; a source-relative operand evaluates to NULL
+  against the build-bound row, the scan matched nothing, and the lowest join
+  emitted zero rows silently. Java never has this: the QUANTIFIER carries its own
+  row type (Quantifier.java:801-803 — `getFlowedObjectValue()` is
+  `QuantifiedObjectValue.of(alias, getFlowedObjectType())`, always typed). Fixed
+  by porting that: `Quantifier.GetFlowedObjectType` /
+  `GetFlowedObjectValueTyped` (expressions/quantifier.go), used as the AUTHORITY
+  for the merge slots, with legRowTypes kept only as the fallback for a reference
+  that carries no typed result value yet. GetFlowedObjectType also ports Java's
+  member-agreement VERIFY (Reference.java:504-513 reduces over every member with
+  Verify.verify(left.equals(right))), which Go had cited without performing —
+  reading members[0] picks a row shape by memo insertion order, and that shape is
+  the merge slot's type. A disagreement is now an explicit error and the merge
+  declines the rule. The OTHER site that flows an untyped row
+  (rule_partition_select.go:645, the Case-2 arm) is NOT part of this item and is
+  booked as CQ-63 with its measured evidence: typing it drifts 7151 golden lines
+  and regresses four suites, which is a second defect downstream, not a reason to
+  leave it untyped.
+  DEFECT 2 — the middle FlatMap's result value is a bare baked
+  `ofOrdinal(QOV(merge), 0)` and `executor.newOrdinalJoinBuild` refused to build
+  an ordinal join whose result value was not a RecordConstructorValue. That
+  refusal was itself the bug, not a guard: Java imposes no RC requirement
+  anywhere — ImplementNestedLoopJoinRule.java:187,201,214 pass
+  selectExpression.getResultValue() VERBATIM in all three arms, and
+  PartitionSelectRule.java:281,319 legitimately MINTS the bare shape (a
+  single-live-lower select flows one leg's whole row; a later merge round
+  translates that bare QOV into `ofOrdinal(QOV(merge), i)`). Fixed with the
+  build's `Bare` arm: the build stays ENABLED (so the legs bind and the outer is
+  adapted to the merge layout the inner's pushed SARGs read by ordinal) and the
+  one value is evaluated — a row flows through AS ITSELF, a scalar wraps into the
+  1-slot row. The previously-measured "decline the build" fix is still wrong and
+  for the recorded reason (zero rows), and re-wrapping the flowed row is wrong
+  too (measured: `ordinal resolution: field "K" not resolvable ... row columns
+  [_0]`); both are pinned.
+  GATES: the plan-level file's old invariant (`ContainsBakedOrdinal ⟹ RC`) was
+  FALSE and is gone with its debt list. It is replaced by two gates that are
+  true and each red without its fix — `TestPositionalMergeRowSlotsAreTyped`
+  (every positional-merge slot flows a TYPED leg row; red with defect 1
+  reintroduced) and
+  `TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference` (a baked
+  non-RC join result value must be the WHOLE value, a single baked reference over
+  a leg QOV) — plus vacuity guards on both so a planner change that stops
+  producing either shape cannot leave them silently trivial.
+  `TestFDB_CommaJoin3ProjectedExistsWithEquijoins` is now a plain row assertion
+  rendering rows POSITIONALLY (a name-keyed rendering passes with two columns
+  swapped), and `TestOrdinalJoinBuild_Constructor` pins the Bare arm's
+  construction and its row-vs-scalar output shape.
+
 - [ ] **CQ-62 (S, bug fourteen: false prose over a live channel) —
   rule_implement_nested_loop_join.go:2380-2387 declares the leg-match arm
   "dead-in-effect TODAY ... a panic is reached only by
@@ -10569,3 +10701,83 @@ None is speculative: each was re-verified against the tree before booking.
   (7 real-FDB tests break on deletion, measured) whose qualifier is
   embedded inside column-name strings; only the rebake removes the need.
   Order: CQ-61-reduced → CQ-53 (rebake + bindings + producers + Group B).
+
+- [ ] **CQ-63 (S/M, bug fifteen: something downstream depends on the ABSENCE
+  of a type) — PartitionSelectRule's Case-2 lower select flows an UNTYPED
+  result value, and typing it regresses four suites.** Java's quantifier
+  always carries its own row type
+  (Quantifier.java:801-803 — `getFlowedObjectValue()` is
+  `QuantifiedObjectValue.of(alias, getFlowedObjectType())`), so no Java site
+  flows an untyped row. Go has one left: rule_partition_select.go:645, the
+  Case-2 (≥2-live-lowers) arm's `Quantifier.GetFlowedObjectValue()`.
+
+  Its sibling — the SINGLE-live-lower arm feeding the positional merge's slot
+  types — was the CQ-61 defect and is FIXED (the merge slots take the
+  quantifier as the authority via GetFlowedObjectValueTyped). This item is the
+  residual: the other call site, which stays untyped.
+
+  MEASURED, and the measurement is the reason this is its own item rather than
+  a one-line follow-on. Typing the Case-2 lower select's result value as well:
+  drifts 7151 plan-shape golden lines, inserts a spurious Map over a filter,
+  and regresses TestFDB_JoinMerge_OuterColumn_NotDropped,
+  TestFDB_ArrayUnnestOrdinality/gathered_flat_multi-source_unnest, yamsql
+  join_three_way_predicate and rowdiff seed 5 to ZERO ROWS. The
+  merge-slot site alone drifts no goldens.
+
+  That is not a reason to leave it untyped — it is EVIDENCE OF A SECOND
+  DEFECT. Four independent suites cannot depend on a row type being absent
+  unless something downstream is keying on untypedness: a rule whose match
+  condition is "the result value has no row type", a bake that declines when
+  it can resolve, or an equality/interning path that distinguishes the typed
+  and untyped QOV as different expressions (the memo has interned on the
+  untyped form — ~40 GetResultValue implementations return it). Find WHICH,
+  by bisecting the four regressions against the golden drift; the spurious Map
+  over a filter is the most legible lead, since a Map appearing means some
+  rule started matching that did not before.
+
+  DO NOT close this by typing the site and re-blessing 7151 golden lines. The
+  golden movement is the symptom. Fix the downstream dependence, then the
+  typing should be inert — and if it is not, the remaining drift needs a
+  per-line justification.
+
+  Not gated on CQ-53: it touches no leg identity and no dotted channel.
+
+- [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
+  name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
+  row renderings to a positional renderer.** Not a product defect: the row VALUES
+  those files assert are correct. What is missing is that the assertions cannot see
+  the failure they exist to police.
+
+  `executor.RowValue` projects a PositionalRow through `positionalToMap` (see the
+  lossiness note at its definition), which loses slot ORDER and collapses duplicate
+  output names LAST-WINS. Rendering the resulting map with `%v` gives Go's own
+  alphabetical `map[A:1 B:2]` form, so PERMUTING (Fields, Slots) together — which is
+  exactly what a mis-bound leg window produces — reproduces a byte-identical string,
+  and a duplicate-named column drops a value outright.
+  `TestPositionalRenderersSeeAPermutation` in pkg/relational/sqldriver pins that
+  blindness as a measured fact.
+
+  Two rounds are already done and are the pattern to follow. The eight `map[...]`
+  sites converted to `positionalPipeSprint` (values in slot order); the six
+  sorted-map-key `k=v|k=v` loops converted to `positionalNamedPipeSprint` (names
+  kept, slot order). Prefer the NAMED renderer: keeping the names lets the
+  expectation rewrite be verified as a pure slot REORDERING (same multiset of
+  NAME=value pairs per row, same multiset of rows) instead of resting on a value
+  multiset plus a manual read of the SELECT list. Do the rewrite with that verifier
+  in the loop and refuse any diff it cannot prove is a reordering — a rewrite that
+  silently changes a value is precisely the failure the conversion is meant to
+  expose.
+
+  The files, with their multi-key `map[...]` expectation counts (measured):
+  star_body_cte_join_leg_fdb_test.go 128, chained_unnest_predicate_pushdown_fdb_test.go 82,
+  chained_unnest_3link_filtered_ordinal_fdb_test.go 62, nested_left_box_chained_unnest_fdb_test.go 52,
+  buried_chained_rotation_fdb_test.go 52, exists_scope_shadow_fdb_test.go 41,
+  fullbox_chained_spine_fdb_test.go 29, cross_leg_duplicate_column_box_unnest_fdb_test.go 27,
+  baretwin_gather_fdb_test.go 26, orderby_gather_fdb_test.go 20, withinbox_dup_fdb_test.go 19,
+  buried_element_predicate_fdb_test.go 10, nullsupply_barrier_fdb_test.go 9,
+  fork_colliding_subfield_fdb_test.go 6, projected_exists_enclosure_lift_fdb_test.go 1
+  (all under pkg/relational/sqldriver/). ~564 expectations.
+
+  DONE when `grep -rn "executor.RowValue(" pkg/relational/sqldriver/*_test.go`
+  returns only the renderer definitions themselves and sites whose rows are
+  single-slot (no order to assert).

@@ -771,8 +771,7 @@ func makeNLJPredicateRungCandidates(
 		inner,
 		[]predicates.QueryPredicate{first, second},
 		plans.JoinInner,
-		"outer",
-		"inner",
+		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
 		nil,
 	)
 	fewerPredicates = plans.NewRecordQueryNestedLoopJoinPlan(
@@ -780,8 +779,7 @@ func makeNLJPredicateRungCandidates(
 		inner,
 		[]predicates.QueryPredicate{predicates.NewAnd(first, second)},
 		plans.JoinInner,
-		"outer",
-		"inner",
+		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
 		nil,
 	)
 	return morePredicates, fewerPredicates

@@ -93,7 +93,7 @@ func mustNLJCursor(
 	outer recordlayer.RecordCursor[QueryResult],
 	innerRows []QueryResult,
 	joinType plans.JoinType,
-	outerAlias, innerAlias string,
+	outerAlias, innerAlias values.CorrelationIdentifier,
 	preds []predicates.QueryPredicate,
 	resultValue values.Value,
 	evalCtx *EvaluationContext,
@@ -202,18 +202,97 @@ func TestOrdinalJoinBuild_Constructor(t *testing.T) {
 		}
 	})
 
-	t.Run("baked non-RC is a loud error", func(t *testing.T) {
+	// A BARE (non-RC) baked result value is a LEGITIMATE select output, not a
+	// malformed plan: PartitionSelectRule's single-live-lower arm flows one leg's
+	// whole row (PartitionSelectRule.java:281) and a later positional-merge round
+	// translates that bare QOV into `ofOrdinal(QOV(merge), i)` (:319), which then
+	// reaches RecordQueryFlatMapPlan verbatim (ImplementNestedLoopJoinRule.java:187,
+	// 201,214). The build must stay ENABLED for it — see Bare. What must NOT
+	// happen is a nil build: that routes the cursor down the non-build path, which
+	// binds the outer by name instead of adapting it to the merge layout the
+	// inner's pushed SARGs read by ordinal, and returns zero rows.
+	t.Run("baked non-RC builds enabled on the Bare arm", func(t *testing.T) {
 		t.Parallel()
 		bakedBare, err := values.NewFieldValueOfOrdinal(qovA, 0)
 		if err != nil {
 			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
 		}
 		build, err := newOrdinalJoinBuild(bakedBare, nil)
-		if err == nil || build != nil {
-			t.Fatalf("baked non-RC = (%v, %v), want a loud error — an ordinal result value that is not an RC is a planner bug", build, err)
+		if err != nil {
+			t.Fatalf("bare baked build: %v — a bare baked result value is a legitimate select output", err)
 		}
-		if !strings.Contains(err.Error(), "ordinal join build") {
-			t.Fatalf("error %q must identify the ordinal join build check", err)
+		if !build.enabled() {
+			t.Fatal("bare baked build must be ENABLED: a nil build routes the cursor down the " +
+				"non-build path, which binds the outer by NAME rather than adapting it to the " +
+				"merge layout the inner's pushed-down SARGs read by ordinal — measured as zero " +
+				"rows on TestFDB_CommaJoin3ProjectedExistsWithEquijoins")
+		}
+		if build.RC != nil || build.Bare != bakedBare {
+			t.Fatalf("bare build = {RC: %v, Bare: %v}, want RC nil and Bare the result value — the two are mutually exclusive", build.RC, build.Bare)
+		}
+		if build.WindowsOK {
+			t.Fatal("a bare result value publishes NO leg windows: its output is one flowed value, not a merge")
+		}
+		if _, present := build.LegTypes[qovA.Correlation]; !present {
+			t.Fatal("bare LegTypes must recover leg A from the baked reference — the leg still has to adapt")
+		}
+	})
+
+	// The bare arm's OUTPUT SHAPE follows from what the value evaluated to, never
+	// from a plan flag. A whole-leg reference yields the leg's ROW and that row
+	// flows through as ITSELF; re-wrapping it in a 1-slot row would double-nest it
+	// and a downstream ordinal read of column i would land on the whole record.
+	t.Run("bare arm flows a row through and wraps a scalar", func(t *testing.T) {
+		t.Parallel()
+		mergedLeg := &values.RecordType{Fields: []values.Field{
+			{Name: "_0", FieldType: legA, Ordinal: 0},
+			{Name: "_1", FieldType: legB, Ordinal: 1},
+		}}
+		mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedLeg)
+		wholeLeg, err := values.NewFieldValueOfOrdinal(mergeQOV, 0)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		build, err := newOrdinalJoinBuild(wholeLeg, nil)
+		if err != nil {
+			t.Fatalf("bare build: %v", err)
+		}
+		legRow := NewPositionalRow(legA)
+		legRow.Slots[0] = int64(7)
+		legRow.Slots[1] = int64(9)
+		mergeRow := NewPositionalRow(mergedLeg)
+		mergeRow.Slots[0] = legRow
+		got, err := build.evaluateBound(&twoLegBinder{
+			outerID: values.NamedCorrelationIdentifier("m"),
+			outer:   mergeRow,
+		})
+		if err != nil {
+			t.Fatalf("bare evaluate: %v", err)
+		}
+		if got != legRow {
+			t.Fatalf("bare evaluate = %v, want the leg row ITSELF (%v) — wrapping it in a 1-slot row "+
+				"double-nests it, and a downstream ordinal read of column i then lands on the whole record", got, legRow)
+		}
+
+		// A bare reference naming a COLUMN, not a leg, is a scalar output and wraps
+		// into the 1-slot row every other scalar-output path uses.
+		col, err := values.NewFieldValueOfOrdinal(qovA, 1)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		scalarBuild, err := newOrdinalJoinBuild(col, nil)
+		if err != nil {
+			t.Fatalf("scalar bare build: %v", err)
+		}
+		aRow := NewPositionalRow(legA)
+		aRow.Slots[0] = int64(1)
+		aRow.Slots[1] = int64(42)
+		scalarGot, err := scalarBuild.evaluateBound(&twoLegBinder{outerID: qovA.Correlation, outer: aRow})
+		if err != nil {
+			t.Fatalf("scalar bare evaluate: %v", err)
+		}
+		if len(scalarGot.Slots) != 1 || scalarGot.Slots[0] != int64(42) {
+			t.Fatalf("scalar bare evaluate = %v, want a 1-slot row holding 42", scalarGot.Slots)
 		}
 	})
 }
@@ -330,7 +409,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 	t.Run("lazy leg predicate + positional emission", func(t *testing.T) {
 		t.Parallel()
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{lazyPred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{lazyPred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		results := collectCursor(t, c)
 		if len(results) != 1 {
@@ -348,7 +427,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 		}
 		bakedPred := ojEqPred(bakedBW, &values.ConstantValue{Value: int64(100), Typ: values.NotNullLong})
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{bakedPred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{bakedPred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		results := collectCursor(t, c)
 		// B.W=100 matches for BOTH outer rows (no leg-A condition).
@@ -362,7 +441,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 		// leg windows (concatLegPositionals → Type.Legs), so
 		// passesJoinPredicatesLegs derives them (spansFromMergedLegs) and the
 		// baked leg predicate resolves correctly. B#1=100 over B(1,100) is TRUE.
-		combined := mergeRows(outerRows[0], innerRows[0], "A", "B")
+		combined := mergeRows(outerRows[0], innerRows[0], values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
 		passes, perr := passesJoinPredicatesLegs(combined, []predicates.QueryPredicate{bakedPred}, EmptyEvaluationContext(), nil)
 		if perr != nil {
 			t.Fatalf("baked predicate over the merged row's own leg windows must resolve, got error %v", perr)
@@ -393,7 +472,7 @@ func TestNLJCursor_OrdinalBuild_HashPath(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("hash index was not built — this test must exercise the hash path")
@@ -430,7 +509,7 @@ func TestNLJCursor_OrdinalBuild_LeftOuterNullLeg(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinLeftOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 2 {
@@ -458,7 +537,7 @@ func TestNLJCursor_OrdinalBuild_FullDrain(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 2 {
@@ -492,7 +571,7 @@ func TestNLJCursor_OrdinalBuild_FullDrainHashCandidates(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("fixture must build the hash index")
@@ -556,7 +635,7 @@ func TestNLJCursor_BothSeedShapesEmitPositional(t *testing.T) {
 
 	collect := func(rv values.Value) []QueryResult {
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, rv, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, rv, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		return collectCursor(t, c)
 	}
@@ -631,7 +710,7 @@ func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 func TestDownstreamLegWindows(t *testing.T) {
 	t.Parallel()
 	_, _, qovA, qovB, seed := ojWiringLegs(t)
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "A", "B", seed)
+	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 
 	assertSpans := func(t *testing.T, label string, p plans.RecordQueryPlan) {
 		t.Helper()
@@ -697,7 +776,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 		folded := values.NewRawRecordConstructorValue(
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 		)
-		foldedNLJ := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "A", "B", folded)
+		foldedNLJ := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), folded)
 		if _, ok := downstreamLegWindows(foldedNLJ); ok {
 			t.Fatal("a folded-RV join must decline — its output is a plain projection row, no leg windows")
 		}
@@ -804,7 +883,7 @@ func TestNLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 	}
 
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, foldedRV, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, foldedRV, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 1 {
@@ -896,7 +975,11 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1}, // buried B's ID — the first-match trap
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2}, // the leaf E's own ID
 		},
-		Legs: []values.RecordTypeLeg{{Name: "B", Start: 0, Width: 2}, {Name: "E", Start: 2, Width: 1}},
+		// Each buried leg STATES its identity — that is what the leg binder compares.
+		Legs: []values.RecordTypeLeg{
+			{Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 0, Width: 2},
+			{Alias: corrE, Name: "E", Start: 2, Width: 1},
+		},
 	}
 	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
 	qovE := values.NewQuantifiedObjectValueOfType(corrE, boxTyp)
@@ -955,4 +1038,181 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 	if v, found := read("A", "AID", 0); !found || v != int64(10) {
 		t.Fatalf("A.AID = (%v, %v), want 10", v, found)
 	}
+}
+
+// TestOrdinalJoinBuild_BareArmNullLeg falsifies the Bare arm's `case nil`.
+//
+// That arm was reachable only through the join's own machinery, so nothing
+// distinguished "NULL flows as a nil row" from "this branch is dead". A nil arm
+// no test constructs is a claim, and the claim here is load-bearing: it is the
+// NULL-leg extension for a LEFT/FULL join whose result value is a single baked
+// reference rather than a record constructor. If it returned a 1-slot row holding
+// nil instead of a nil row, a null-extended pair would emit a ROW where the join
+// must emit nothing-of-that-leg, and the two paths would disagree about what NULL
+// is.
+//
+// So both paths are asserted TOGETHER: the Bare arm's nil row and the RC arm's
+// NULL-PADDED row over the same NULL binding. They are deliberately different
+// shapes — the RC arm knows its output width and pads it, the Bare arm has one
+// value and no width to pad — and pinning them side by side is what keeps that
+// difference intentional.
+func TestOrdinalJoinBuild_BareArmNullLeg(t *testing.T) {
+	t.Parallel()
+	legA, _, qovA, qovB, _ := ojWiringLegs(t)
+
+	// The Bare shape: the join's result value is the WHOLE leg-A row, baked.
+	bare, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	build, err := newOrdinalJoinBuild(bare, nil)
+	if err != nil {
+		t.Fatalf("bare build: %v", err)
+	}
+	if build.Bare == nil {
+		t.Fatalf("fixture: build took the RC arm (RC=%v), so this test would not "+
+			"reach the Bare nil case at all", build.RC)
+	}
+
+	// A is the NULL leg: present in the binder with a nil row, which is the
+	// sanctioned nil-binding the LEFT/FULL padding produces.
+	nullA := &twoLegBinder{
+		outerID: qovA.Correlation, innerID: qovB.Correlation,
+		outer: nil, inner: NewPositionalRow(legA),
+	}
+	row, err := build.evaluateBound(nullA)
+	if err != nil {
+		t.Fatalf("bare arm over a NULL leg: %v", err)
+	}
+	if row != nil {
+		t.Errorf("bare arm over a NULL leg returned row %v, want a NIL row.\n"+
+			"  Wrapping NULL into a 1-slot row would make a null-extended pair emit a\n"+
+			"  present row whose single slot is nil — a different answer from the RC\n"+
+			"  path's, for the same binding.", row)
+	}
+
+	// The RC arm over the SAME NULL binding pads its known width instead. Both
+	// behaviours are correct and they are not the same behaviour.
+	rcBuild, err := newOrdinalJoinBuild(buildOrdinalJoinRC(t, qovA, qovB), nil)
+	if err != nil {
+		t.Fatalf("rc build: %v", err)
+	}
+	rcRow, err := rcBuild.evaluateBound(nullA)
+	if err != nil {
+		t.Fatalf("rc arm over a NULL leg: %v", err)
+	}
+	if rcRow == nil {
+		t.Fatal("rc arm over a NULL leg returned a nil row — the RC path knows its " +
+			"output width and must pad it with NULLs, not vanish")
+	}
+	if len(rcRow.Slots) != len(rcBuild.OutputType.Fields) {
+		t.Fatalf("rc arm padded row has %d slots, want %d (its full output width)",
+			len(rcRow.Slots), len(rcBuild.OutputType.Fields))
+	}
+	// Leg A's slots are the NULL-padded ones; leg B's still carry its row.
+	for i := 0; i < len(legA.Fields); i++ {
+		if rcRow.Slots[i] != nil {
+			t.Errorf("rc arm slot %d = %v over a NULL leg A, want nil", i, rcRow.Slots[i])
+		}
+	}
+}
+
+// TestOrdinalJoinBuild_WidthAgreementOnBothArms pins the leg width-agreement
+// assert on the BARE arm as well as the RC arm.
+//
+// Every reference to one leg is supposed to be a copy of the single
+// planner-constructed typed QOV, so two references disagreeing on that leg's
+// width is a malformed plan. The assert used to live only inside the RC arm's
+// bare-QOV loop, which meant the Bare arm — whose ONLY leg-type source is
+// legTypesFromResultValue — asserted nothing, while
+// widenLegTypesFromPredicates' doc pointed at "the RV-side collection the caller
+// already ran" as the place the invariant is checked. It also meant that even on
+// the RC path two BAKED references to one leg at different widths passed, because
+// that walk overwrote last-wins.
+//
+// The assert now lives in the walk, so both arms are covered by one check. A
+// silent last-wins here adapts a leg to the WRONG width: too narrow and a
+// predicate's ordinal blows up loudly, too wide and it reads a neighbouring
+// leg's slot, which does not.
+func TestOrdinalJoinBuild_WidthAgreementOnBothArms(t *testing.T) {
+	t.Parallel()
+	legA := ojLegTypeAV()
+	// Two QOVs for the SAME leg at DIFFERENT widths — the malformed-plan shape.
+	wide := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
+	narrow := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+		&values.RecordType{Fields: []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		}})
+	if len(legA.Fields) == 1 {
+		t.Fatal("fixture: the two leg types must differ in width or the assert cannot fire")
+	}
+	bakedWide, err := values.NewFieldValueOfOrdinal(wide, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal(wide): %v", err)
+	}
+	bakedNarrow, err := values.NewFieldValueOfOrdinal(narrow, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal(narrow): %v", err)
+	}
+
+	// BARE arm: one value carrying both references. An arithmetic value is used
+	// because the bare arm's shape is "not an RC" — the plan-level gate narrows
+	// which non-RC shapes the planner may emit, but the executor's assert must not
+	// depend on that narrowing holding.
+	t.Run("bare arm", func(t *testing.T) {
+		t.Parallel()
+		bare := &values.ArithmeticValue{Op: values.OpAdd, Left: bakedWide, Right: bakedNarrow}
+		if _, isRC := values.Value(bare).(*values.RecordConstructorValue); isRC {
+			t.Fatal("fixture: the bare-arm value must not be an RC")
+		}
+		build, err := newOrdinalJoinBuild(bare, nil)
+		if err == nil {
+			t.Fatalf("bare arm accepted DIVERGENT widths for leg A (build=%+v).\n"+
+				"  Its only leg-type source is legTypesFromResultValue; with no assert there\n"+
+				"  the wider or narrower type wins by walk order and the leg adapts to a\n"+
+				"  width the references disagree about.", build)
+		}
+		if !strings.Contains(err.Error(), "DIVERGENT") {
+			t.Errorf("bare arm error = %q, want one naming the divergent widths", err)
+		}
+	})
+
+	// RC arm with two BAKED references (not the bare-QOV pairing the old assert
+	// covered): this is the case the RC path also used to let through.
+	t.Run("rc arm two baked refs", func(t *testing.T) {
+		t.Parallel()
+		rc := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "X", Value: bakedWide},
+			values.RecordConstructorField{Name: "Y", Value: bakedNarrow},
+		)
+		build, err := newOrdinalJoinBuild(rc, nil)
+		if err == nil {
+			t.Fatalf("RC arm accepted DIVERGENT widths for leg A across two BAKED "+
+				"references (build=%+v) — the old assert only compared a bare QOV against "+
+				"the baked collection, so this pairing overwrote last-wins", build)
+		}
+	})
+
+	// The AGREEING case must still build: an assert that rejects the legitimate
+	// shape is worse than none.
+	t.Run("agreeing widths build", func(t *testing.T) {
+		t.Parallel()
+		alsoWide, err := values.NewFieldValueOfOrdinal(
+			values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA), 1)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		rc := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "X", Value: bakedWide},
+			values.RecordConstructorField{Name: "Y", Value: alsoWide},
+		)
+		build, err := newOrdinalJoinBuild(rc, nil)
+		if err != nil {
+			t.Fatalf("two references at the SAME width must build: %v", err)
+		}
+		if got := build.LegTypes[values.NamedCorrelationIdentifier("A")]; got == nil ||
+			len(got.Fields) != len(legA.Fields) {
+			t.Fatalf("leg A type = %v, want the %d-field type", got, len(legA.Fields))
+		}
+	})
 }

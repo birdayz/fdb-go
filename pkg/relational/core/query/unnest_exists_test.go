@@ -1,6 +1,8 @@
 package query
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -369,8 +371,19 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 			{Name: "X", FieldType: values.NotNullLong, Ordinal: 1},
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 			{Name: "X", FieldType: values.NotNullLong, Ordinal: 3},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 4},
+			{Name: "X", FieldType: values.NotNullLong, Ordinal: 5},
 		},
-		Legs: []values.RecordTypeLeg{{Name: "A", Start: 0, Width: 2}, {Name: "B", Start: 2, Width: 2}},
+		// The legs STATE their identities: the resolver asks an identity question, so
+		// a fixture that supplied only text would be testing a code path that no
+		// longer exists.
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("A"), "A", 0, 2),
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("B"), "B", 2, 2),
+			// A PLANNER-MINTED leg: lowercase identity, UPPER text. The two namespaces
+			// are disjoint by construction and this leg is where that matters.
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("q$5"), "Q$5", 4, 2),
+		},
 	}
 	cases := []struct {
 		leg, field string
@@ -383,9 +396,25 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{"B", "X", 3, true},
 		{"B", "ZZZ", 0, false}, // qualified ref to a column absent from B's window
 		{"C", "ID", 0, false},  // qualifier NOT among the legs: LOUD decline, NOT flat first-match 0
+		// A case-variant of a leg's identity is a DIFFERENT leg. The alias namespaces
+		// are deliberately case-disjoint, and this resolver decides which slot a
+		// qualified read probes, so a fold here reads another leg's same-named column.
+		{"b", "ID", 0, false},
+		// The FORGERY shape, which is the one a text comparison cannot decline. Leg
+		// "q$5" below has a MINTED (lowercase) identity and carries the UPPER fold as
+		// its Name — the real shape, since the text channel is upper and
+		// UniqueCorrelationIdentifier mints lowercase. A quoted user alias "Q$5" is a
+		// different leg, but it equals that leg's NAME exactly, so any comparison
+		// against Name accepts it and the read lands in the minted leg's window.
+		//
+		// This is the case that makes the identity conversion load-bearing rather than
+		// cosmetic: the plain-text and upper-folded forms both MATCH here, and only
+		// values.SameLeg against the leg's own identifier declines.
+		{"Q$5", "ID", 0, false},
+		{"q$5", "ID", 4, true}, // the minted leg's OWN identity still resolves
 	}
 	for _, c := range cases {
-		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field, true)
+		got, ok := ordinalSlotInLegWindow(rt, values.NamedCorrelationIdentifier(c.leg), c.field, true)
 		if ok != c.wantOK || (ok && got != c.want) {
 			t.Errorf("ordinalSlotInLegWindow(%s.%s) = (%d,%v), want (%d,%v)", c.leg, c.field, got, ok, c.want, c.wantOK)
 		}
@@ -395,7 +424,7 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	if got, ok := ordinalSlotInLegWindow(single, "T", "V", false); !ok || got != 1 {
+	if got, ok := ordinalSlotInLegWindow(single, values.NamedCorrelationIdentifier("T"), "V", false); !ok || got != 1 {
 		t.Errorf("single-leg ordinalSlotInLegWindow(T.V) = (%d,%v), want (1,true)", got, ok)
 	}
 	// MALFORMED window (negative Start): decline, never index at a negative slot.
@@ -403,7 +432,7 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
 		Legs:   []values.RecordTypeLeg{{Name: "A", Start: -1, Width: 2}},
 	}
-	if _, ok := ordinalSlotInLegWindow(bad, "A", "ID", true); ok {
+	if _, ok := ordinalSlotInLegWindow(bad, values.NamedCorrelationIdentifier("A"), "ID", true); ok {
 		t.Error("negative-Start leg window must decline, not panic or resolve")
 	}
 	// THE FAIL-CLOSED HARDENING, both sides. A MULTI-alias prefix that arrives
@@ -425,10 +454,10 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 3},
 	}}
-	if _, ok := ordinalSlotInLegWindow(noLegs, "B", "ID", true); ok {
+	if _, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("B"), "ID", true); ok {
 		t.Error("multi-alias prefix WITHOUT windows must decline loudly, never flat-match")
 	}
-	if got, ok := ordinalSlotInLegWindow(noLegs, "A", "ID", false); !ok || got != 0 {
+	if got, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("A"), "ID", false); !ok || got != 0 {
 		t.Errorf("single-alias window-less flat path = (%d,%v), want (0,true) — the hardening must not break it", got, ok)
 	}
 }
@@ -453,10 +482,23 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 		t.Fatalf("box ordinalLegType has no per-leg boundaries: %+v", boxType)
 	}
 	// The box mixed seed: the baked box concat over one box QOV + a bare-QOV element
-	// (o.TAGS AS X). The box QOV is keyed by its rightmost leaf (sourceBinding "c").
+	// (o.TAGS AS X).
+	//
+	// The box QOV's correlation comes from the production AUTHORITY,
+	// unnestOuterCorrelation — the one function translateUnnestJoin, the chained
+	// path and the admission gate all mint through — rather than hand-spelled or
+	// re-derived here. It used to be hand-minted as lowercase "c", which
+	// sourceAlias cannot produce (it upper-folds at every arm), and the fixture's
+	// own comment claimed that was the sourceBinding while sourceBinding of this
+	// leaf is "C". That single invented spelling was cited as proof that this
+	// builder's rightmost-leaf test could not be an identity comparison: the box
+	// identity and the leaf identity looked like different things, when the
+	// sourceBinding convention is exactly that they are the same thing. Calling the
+	// authority removes the invention and cannot drift from the producers.
 	innerCorr := values.UniqueCorrelationIdentifier()
 	u := &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}
-	seedVal := tr.unnestOrdinalSeed(box, values.NamedCorrelationIdentifier("c"), innerCorr, u, values.NotNullString)
+	boxCorr := unnestOuterCorrelation(box)
+	seedVal := tr.unnestOrdinalSeed(box, boxCorr, innerCorr, u, values.NotNullString)
 	seed, ok := seedVal.(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("box mixed seed = %T, want an RC (translateErr=%v)", seedVal, tr.translateErr)
@@ -473,7 +515,7 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 			t.Fatalf("box leaf %s absent from the seed windows %v", leg.Name, windows)
 		}
 		for _, f := range w.Typ.Fields {
-			legWalkSlot, ok1 := ordinalSlotInLegWindow(boxType, leg.Name, f.Name, true)
+			legWalkSlot, ok1 := ordinalSlotInLegWindow(boxType, leg.Alias, f.Name, true)
 			ci, okc := w.Typ.FieldIndex(f.Name)
 			seedWinSlot := w.Offset + ci
 			if !ok1 || !okc || legWalkSlot != seedWinSlot {
@@ -552,4 +594,282 @@ func TestOuterConjunctNarrowing(t *testing.T) {
 			t.Errorf("underExists=%v flag set: FULL box translated (%T) — the narrowing did not fire (a box-leg conjunct must decline loudly)", underExists, expr)
 		}
 	}
+}
+
+// TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair pins that this site's
+// census instrument reports the pair its COMPARISON evaluates, not the leg's text
+// against the correlation's.
+//
+// This is the acceptance-instrument defect, pinned at the one site where it had
+// consequences. The comparison here is values.SameLeg(lw.Alias, leg) — exact on
+// identifiers. The instrument recorded (lw.Name, leg.Name()) — exact on text. For
+// a MINTED leg those two disagree: the identity is the lowercase "q$N" the
+// quantifier owns, the Name is the UPPER fold the text channel carries, and a read
+// qualified by the upper spelling therefore records an exact MATCH while the
+// comparison DECLINES. The census reported the site clean over the whole corpus
+// while describing a different program.
+//
+// The forged leg below uses a spelling no other test drives, so the assertion is
+// safe under t.Parallel: these counters are package-scoped and monotonic, so a
+// sibling can only ADD traffic, never remove this witness. Asserting on the
+// WITNESS rather than on a count is what makes that true.
+func TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair(t *testing.T) {
+	t.Parallel()
+	if !values.LegIdentityCensusEnabled() {
+		t.Fatal("this package's TestMain enables the leg-identity census for the whole " +
+			"corpus; without it this test measures nothing")
+	}
+	// A MINTED leg: identity "zz$9" (the machine namespace is lowercase), Name the
+	// UPPER fold the text channel stores. Exactly the shape finalizeSeedWindows
+	// emits, where Name comes from the upper-folded window map KEY and Alias from
+	// the window's own correlation.
+	rt := &values.RecordType{
+		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("zz$9"), "ZZ$9", 0, 1),
+		},
+	}
+	// The forgery read: qualified by the leg's NAME, which is not its identity.
+	if _, ok := ordinalSlotInLegWindow(rt, values.NamedCorrelationIdentifier("ZZ$9"), "ID", true); ok {
+		t.Error("a read qualified by a minted leg's upper-folded NAME must DECLINE — " +
+			"the identity is the lowercase mint, and matching Name is a text claim " +
+			"dressed as an identity check")
+	}
+	c := values.LegIdentityCensusOf(values.LegSiteOrdinalSlotInLegWindow)
+	if c.Channel != values.LegChannelIdentity {
+		t.Errorf("census channel = %v, want identity — this site decides with SameLeg, "+
+			"so its recorded pair must be the two identifiers", c.Channel)
+	}
+	if !containsWitness(c.FoldOnlySamples, "zz$9 vs ZZ$9") {
+		t.Errorf("fold-only witnesses = %v, want one naming \"zz$9 vs ZZ$9\".\n"+
+			"  The instrument is recording the leg's TEXT against the correlation, so it\n"+
+			"  scored this pair EXACT while the comparison declined it. A census that\n"+
+			"  cannot see the decision it measures cannot license the conversion.",
+			c.FoldOnlySamples)
+	}
+	// And the verdict channel must see it as a CHANGE: the retired predicate here
+	// was `lw.Name == strings.ToUpper(leg.Name())`, which matches this pair.
+	if !containsWitness(c.RetiredVerdictSamples, "zz$9 vs ZZ$9 (retired=match)") {
+		t.Errorf("retired-verdict witnesses = %v, want one naming "+
+			"\"zz$9 vs ZZ$9 (retired=match)\" — the retired text predicate MATCHED this "+
+			"pair, so the conversion changed this read's answer and the census must say so",
+			c.RetiredVerdictSamples)
+	}
+}
+
+// containsWitness reports whether a census witness set names w.
+func containsWitness(set []string, w string) bool {
+	for _, s := range set {
+		if s == w {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBoxCorrelationIsItsRightmostLeafIdentity pins the PREMISE the seed-window
+// builder's rightmost-leaf test rests on: a clustered box leg's own correlation
+// and its rightmost buried leaf's leg identity are the SAME identifier.
+//
+// values.finalizeSeedWindows asks "is this buried leg the box run's rightmost
+// leaf?" and answers it with values.SameLeg on those two identifiers. That is
+// exact, so the answer is right only while the two producers agree — and the two
+// producers are independent: the box correlation is minted by
+// unnestOuterCorrelation at the unnest translation sites, the leaf identity is
+// minted from legBinding at buriedLegBounds. Nothing in either function mentions
+// the other.
+//
+// The premise covers ONE of the two producers that mint a box correlation. The
+// PRISTINE gated-join seed mints legBinding(box) = sourceBinding + "$BOX"
+// instead, and there the predicate DECLINES for every buried leaf including the
+// rightmost — deliberately, since legBinding exists precisely to make the box
+// level and the leaf level different identifiers. That arm is
+// TestBoxBoxBindingDeclinesAndStillFilesTheLeaf below; a premise test that pinned
+// only the matching producer would read as if the predicate always matched.
+//
+// This is the test that would have prevented the wrong conclusion. The agreement
+// was doubted on the strength of a fixture that hand-spelled the box correlation
+// lowercase, and the resulting cross-agreement red was written up as proof that
+// the two identities are "legitimately different" and the comparison could
+// therefore never be an identity comparison. They are not different: sourceAlias
+// upper-folds at every arm and recurses to a join's RIGHT operand, so the box's
+// correlation is the rightmost leaf's alias, upper. Nothing pinned that, so
+// nothing contradicted the write-up.
+//
+// What re-arms if this reds: a producer minting a box correlation that is not its
+// rightmost leaf's identity turns finalizeSeedWindows' exact comparison into a
+// DECLINE for the leaf that IS the box's, which drops the rightmost-leaf
+// sub-window and resolves an alias-qualified box column against the whole concat
+// — a dup-named column then reads an earlier buried leg's slot.
+func TestBoxCorrelationIsItsRightmostLeafIdentity(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	// A two-leaf FULL box and a three-leaf nesting, so the RIGHTMOST-leaf rule is
+	// exercised rather than a one-leg coincidence.
+	for _, tc := range []struct {
+		name string
+		box  *logical.LogicalJoin
+	}{
+		{"two leaves", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
+		{"nested right", logical.NewJoin(
+			scan("Order", "o"),
+			logical.NewJoin(scan("Customer", "c"), scan("TypedRecord", "g"), logical.JoinFull, ""),
+			logical.JoinFull, "")},
+	} {
+		// The production AUTHORITY, not a fourth re-derivation: translateUnnestJoin,
+		// the chained path and the admission gate all mint through this one function.
+		boxCorr := unnestOuterCorrelation(tc.box)
+		boxType := tr.ordinalLegType(tc.box)
+		if boxType == nil || len(boxType.Legs) < 2 {
+			t.Fatalf("%s: box ordinalLegType has no per-leg boundaries: %+v", tc.name, boxType)
+		}
+		// The rightmost leaf is the LAST leg window, and it is the one whose identity
+		// must equal the box's.
+		rightmost := boxType.Legs[len(boxType.Legs)-1]
+		if !values.SameLeg(rightmost.Alias, boxCorr) {
+			t.Errorf("%s: rightmost leaf identity %q != box correlation %q.\n"+
+				"  finalizeSeedWindows decides the rightmost-leaf case with values.SameLeg on\n"+
+				"  exactly this pair, so a disagreement drops the leaf sub-window and an\n"+
+				"  alias-qualified box column resolves against the whole concat.",
+				tc.name, rightmost.Alias.Name(), boxCorr.Name())
+		}
+		// And the fold direction that made the invented lowercase spelling look
+		// plausible: sourceAlias is the single chokepoint, and it upper-folds. A
+		// producer that stopped folding here would make the box correlation and the
+		// leaf identity differ by CASE — the forgery shape, not a benign variant.
+		if got := sourceAlias(tc.box); got != strings.ToUpper(got) {
+			t.Errorf("%s: sourceAlias returned %q, which is not upper-folded — the box\n"+
+				"  correlation and the buried leaf identity are minted through separate\n"+
+				"  paths and agree only because this one chokepoint folds.", tc.name, got)
+		}
+		// Every OTHER leaf must NOT be the box: the comparison has to discriminate,
+		// or the rightmost-leaf branch would fire for all of them and each buried
+		// window would overwrite the box run's.
+		for _, leg := range boxType.Legs[:len(boxType.Legs)-1] {
+			if values.SameLeg(leg.Alias, boxCorr) {
+				t.Errorf("%s: non-rightmost leaf %q compares EQUAL to the box correlation %q "+
+					"— the rightmost-leaf test must discriminate", tc.name, leg.Alias.Name(), boxCorr.Name())
+			}
+		}
+	}
+}
+
+// TestBoxBoxBindingDeclinesAndStillFilesTheLeaf is the OTHER producer's arm of
+// the premise above.
+//
+// The PRISTINE gated-join seed does not mint a box leg's correlation as its
+// rightmost leaf's alias. It mints legBinding(box) = sourceBinding(box) + "$BOX",
+// and legBinding's own doc states the suffix exists so that the box level and the
+// leaf level are DIFFERENT identifiers — one plan carries both, and a shared name
+// collides in the widen invariant. So for this producer values.finalizeSeedWindows'
+// rightmost-leaf comparison DECLINES, on every buried leaf including the rightmost.
+//
+// Two things must hold, and the second is why the decline is harmless:
+//
+//   - BOTH predicates decline — the identity comparison values.SameLeg and the
+//     TEXT comparison it replaced (`leg.Name == alias`, the map key). So the
+//     conversion is behaviour-preserving for this producer too; if only the
+//     identity one declined, the conversion would have changed a row binding here.
+//   - the leaf sub-window is FILED ANYWAY. The decline routes through the `taken`
+//     test on the buried leg's own Name, and the box run is keyed by the minted
+//     binding, so the two keys never collide: the leaf window is ADDED beside the
+//     box run instead of REPLACING it. A read qualified by the buried leaf still
+//     resolves against the leaf's slots, not across the concat.
+//
+// What re-arms if this reds: a legBinding that stops distinguishing the two
+// levels would make the REPLACE branch fire here, dropping the box run's own
+// window from the map that downstream dotted reads look the box up in.
+func TestBoxBoxBindingDeclinesAndStillFilesTheLeaf(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	// A clustered box leg (Order ⋈ Customer) beside a plain leg — the pristine
+	// gated-join seed needs >= 2 top-level windows, exactly as the layout builder
+	// requires.
+	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+	plain := scan("TypedRecord", "g")
+	legs := []clusterLeg{clusterLegOf(box, false), clusterLegOf(plain, false)}
+
+	// The mint under test: the box leg's BINDING, which is what the seed's QOV
+	// correlation is built from at ordinalJoinSeedFields.
+	boxKey := legs[0].binding
+	if boxKey != "C$BOX" {
+		t.Fatalf("box leg binding = %q, want C$BOX — legBinding is the producer this "+
+			"arm exists to cover, and a change to it changes which predicate arm fires "+
+			"in finalizeSeedWindows", boxKey)
+	}
+	boxCorr := values.NamedCorrelationIdentifier(boxKey)
+
+	boxType := tr.ordinalLegType(box)
+	if boxType == nil || len(boxType.Legs) < 2 {
+		t.Fatalf("box ordinalLegType has no per-leg boundaries: %+v", boxType)
+	}
+	rightmost := boxType.Legs[len(boxType.Legs)-1]
+
+	// Predicate 1, the IDENTITY comparison finalizeSeedWindows makes today.
+	if values.SameLeg(rightmost.Alias, boxCorr) {
+		t.Errorf("rightmost leaf identity %q compared EQUAL to the $BOX box correlation %q.\n"+
+			"  legBinding's suffix exists so the box level and the leaf level are\n"+
+			"  DIFFERENT identifiers; an equal pair here fires the REPLACE branch and\n"+
+			"  drops the box run's own window.", rightmost.Alias.Name(), boxCorr.Name())
+	}
+	// Predicate 2, the TEXT comparison it replaced: leg.Name against the window's
+	// upper-folded map key. Both must decline, or the conversion changed a binding.
+	if rightmost.Name == strings.ToUpper(boxKey) {
+		t.Errorf("retired text predicate MATCHED (%q vs %q) where the identity comparison\n"+
+			"  declines — the conversion would then have changed this read's answer for the\n"+
+			"  pristine producer, and that flip is unpinned.", rightmost.Name, strings.ToUpper(boxKey))
+	}
+
+	// And now the consequence: build the pristine seed this producer actually emits
+	// and check the leaf window survives the decline.
+	fields, _ := tr.ordinalJoinSeedFields(legs)
+	if fields == nil {
+		t.Fatalf("ordinalJoinSeedFields declined the box+plain cluster (translateErr=%v) "+
+			"— without a seed this arm measures nothing", tr.translateErr)
+	}
+	rc := values.NewRawRecordConstructorValue(fields...)
+	windows, _ := values.OrdinalSeedLegWindows(rc)
+	if windows == nil {
+		t.Fatalf("OrdinalSeedLegWindows declined the pristine box+plain seed")
+	}
+	boxRun, hasBoxRun := windows[boxKey]
+	if !hasBoxRun {
+		t.Fatalf("the box RUN window %q is absent from %v — the decline must ADD the "+
+			"leaf window, never replace the run", boxKey, windowKeys(windows))
+	}
+	leafWin, hasLeaf := windows[rightmost.Name]
+	if !hasLeaf {
+		t.Fatalf("the rightmost leaf's sub-window %q is absent from %v.\n"+
+			"  The decline is only harmless because the leaf is filed under its OWN name\n"+
+			"  while the run is filed under the minted binding, so the `taken` test misses\n"+
+			"  and the sub-window is added.", rightmost.Name, windowKeys(windows))
+	}
+	// It must be the LEAF's window, not an alias for the run's: narrower, and
+	// offset by the leaf's start within the concat.
+	if len(leafWin.Typ.Fields) >= len(boxRun.Typ.Fields) {
+		t.Errorf("leaf window %q spans %d fields and the box run spans %d — the leaf's "+
+			"sub-window must be a strict slice of the run, or an alias-qualified read\n"+
+			"  FieldIndexes across the concat", rightmost.Name,
+			len(leafWin.Typ.Fields), len(boxRun.Typ.Fields))
+	}
+	if want := boxRun.Offset + rightmost.Start; leafWin.Offset != want {
+		t.Errorf("leaf window %q offset = %d, want %d (box run offset %d + leaf start %d)",
+			rightmost.Name, leafWin.Offset, want, boxRun.Offset, rightmost.Start)
+	}
+	// The leaf window's IDENTITY is the leaf's own, carried — not the box's.
+	if !values.SameLeg(leafWin.Alias, rightmost.Alias) {
+		t.Errorf("leaf window identity %q != the buried leg's own %q — the sub-window "+
+			"carries the buried leg's identity, it does not mint one from the key",
+			leafWin.Alias.Name(), rightmost.Alias.Name())
+	}
+}
+
+// windowKeys lists a window map's keys for failure messages.
+func windowKeys(windows map[string]values.OrdinalSeedLegWindow) []string {
+	out := make([]string, 0, len(windows))
+	for k := range windows {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

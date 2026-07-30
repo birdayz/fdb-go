@@ -9,7 +9,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"sort"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -69,7 +72,103 @@ func TestMain(m *testing.M) {
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	os.Exit(runUnderLegIdentityCensus(m))
+}
+
+// runUnderLegIdentityCensus runs the suite under the leg-identity census and
+// then ASSERTS its invariants. This is the standing gate for CQ-61's retyping of
+// RecordTypeLeg's identity from text to a CorrelationIdentifier.
+//
+// The census answers "does any leg get STORED under one spelling and LOOKED UP
+// under another?" — the question that decides whether the leg-identity
+// comparisons being EXACT (values.SameLeg, matching Java, which never case-folds
+// an alias) binds a different row than folding would.
+//
+// The gate lives HERE, in TestMain, rather than in a test, because the question
+// is about the traffic of the WHOLE corpus and Go gives tests no ordering: only
+// after m.Run() is the population complete. It is unconditional rather than
+// env-gated because a proof nothing in CI runs is not a proof — the previous
+// env-gated form reported the real numbers only under a manual
+// LEG_IDENTITY_CENSUS=1 invocation, while the in-CI assertion it delegated to
+// saw six of the eight sites at zero.
+//
+// Enabling the counters always is affordable HERE and nowhere else: the gate
+// exists so production never pays an atomic in the per-row executor loop, and a
+// test binary is not production. The measured cost is inside the run-to-run
+// noise of this suite.
+func runUnderLegIdentityCensus(m *testing.M) int {
+	values.ResetLegIdentityCensus()
+	values.SetLegIdentityCensusEnabled(true)
+	code := m.Run()
+	values.SetLegIdentityCensusEnabled(false)
+
+	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
+	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	return code
+}
+
+// legIdentityFloors is the minimum population each site must report over the
+// whole suite. A site at ZERO makes every zero asserted about it vacuous, which
+// is precisely how the previous form of this gate passed while proving nothing.
+//
+// The floors are set an order of magnitude below the measured populations, and
+// that gap is doing TWO jobs. The corpus grows and shrinks with unrelated work,
+// so a floor at the measured value would fail on churn rather than on a site
+// going dark — and the populations themselves are NOT stable run to run.
+// Successive full-suite measurements of the same tree gave text-vs-identity
+// 3115 / 3270 / 3320 and hoist ~1000-1030; only rowLegsBinder (285) and
+// buriedLegWindow (567) repeated exactly. The variance is planning-side: the
+// memo may explore a rule once or many times for one query depending on
+// exploration order, and several sites sit inside rules. What the floor detects
+// is COLLAPSE — a producer stopping, a reader being routed around, a rule that
+// no longer fires — not drift, and it is set loosely enough that the observed
+// variance cannot reach it.
+//
+// The hoist site's total counts Cascades rule FIRINGS rather than queries, so it
+// is the most refire-sensitive of the eight; its floor is the loosest for that
+// reason. All eight sites are floored — a site left out of this map is a site
+// whose zeros are unprotected against going vacuous.
+var legIdentityFloors = map[values.LegIdentitySite]int64{
+	values.LegSiteRowLegsBinder:          32,
+	values.LegSiteBuriedLegWindow:        64,
+	values.LegSiteTextVsIdentity:         256,
+	values.LegSiteLeftOuterExistential:   64,
+	values.LegSiteFinalizeSeedWindows:    128,
+	values.LegSiteSelectOutputLegs:       256,
+	values.LegSiteNLJPlanAlias:           4096,
+	values.LegSiteOrdinalSlotInLegWindow: 8,
+}
+
+// assertLegIdentityCensus checks the whole-suite census and reports whether it
+// failed.
+//
+// Only the population FLOORS are corpus-shaped, so only they are dropped when
+// -test.run narrows the run: FIVE zeros hold over ANY population, one query or
+// eighty thousand firings — fold-only, unstated, retired-verdict divergence,
+// text-vs-identity divergence and mixed instrument — and a filtered invocation
+// checks them exactly as the full suite does. The earlier form returned before all
+// of them and announced only that the floors were unchecked, so a focused run
+// reported a passing gate while five assertions had silently not run.
+//
+// The enumeration is kept HONEST deliberately. It read "four" while
+// values.AssertLegIdentityCensus ran five, and the omitted one was the
+// retired-verdict zero — the assertion that compares this site's converted answer
+// against the text predicate it replaced, i.e. the only one that measures the
+// conversion rather than the representation. An enumeration that drops the
+// headline check reads as reassurance about the wrong thing.
+func assertLegIdentityCensus(w io.Writer) bool {
+	floors := legIdentityFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
+			"The fold-only, unstated, retired-verdict-divergence, text-vs-identity and "+
+			"instrument-channel zeros ARE checked — they hold over any population.\n",
+			f.Value.String())
+		floors = nil
+	}
+	return values.AssertLegIdentityCensus(w, floors)
 }
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose

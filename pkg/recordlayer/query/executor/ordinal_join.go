@@ -268,11 +268,15 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	for _, s := range spans {
 		if len(s.LegType.Legs) > 0 {
 			for _, sub := range s.LegType.Legs {
-				mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+				// A REBASE, not a re-mint: the sub-leg's identity is carried
+				// verbatim and only its offset moves.
+				mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
+					sub.Alias, sub.Name, s.Offset+sub.Start, sub.Width))
 			}
 			continue
 		}
-		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: s.Alias.Name(), Start: s.Offset, Width: s.Width})
+		mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
+			s.Alias, s.Alias.Name(), s.Offset, s.Width))
 	}
 	return mergedLegs
 }
@@ -403,8 +407,13 @@ func collectJoinLegRVs(join plans.RecordQueryPlan, out map[values.CorrelationIde
 		addJoinLegRV(out, t.GetOuterAlias(), t.GetOuter())
 		addJoinLegRV(out, t.GetInnerAlias(), t.GetInner())
 	case *plans.RecordQueryNestedLoopJoinPlan:
-		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetOuterAlias()), t.GetOuter())
-		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetInnerAlias()), t.GetInner())
+		// Both join plans now hand over their leg identities TYPED, so the two arms
+		// are the same code. This arm used to mint an identifier from the NLJ's alias
+		// text, which put the leg-identity decision for the whole merge path in a
+		// consumer's hands: the mint chose the spelling, and an exact comparison
+		// against a spelling the comparer chose proves nothing.
+		addJoinLegRV(out, t.GetOuterAlias(), t.GetOuter())
+		addJoinLegRV(out, t.GetInnerAlias(), t.GetInner())
 	}
 }
 
@@ -559,17 +568,16 @@ type legWindowBinder struct {
 //     misread a leg-local ordinal against an earlier buried leg's slots);
 //  2. a BURIED leg inside any span serves its sub-window at the buried offset.
 func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
-	alias := id.Name()
 	for _, s := range b.spans {
-		// Exact: both sides live in the correlation-key namespace
-		// (canonical UPPER for user aliases, verbatim lowercase q$N for
-		// machine mints). A fold here would let a quoted "q$5" user
-		// alias cross into the machine namespace.
-		if s.Alias.Name() != alias {
+		// Exact, via the one identity comparison: both sides are correlation
+		// IDENTIFIERS (canonical UPPER for user aliases, verbatim lowercase q$N for
+		// machine mints). A fold here would let a quoted "q$5" user alias cross into
+		// the machine namespace.
+		if !values.SameLeg(s.Alias, id) {
 			continue
 		}
 		if s.LegType != nil {
-			if w, ok := buriedLegWindow(b.row, s, alias); ok {
+			if w, ok := buriedLegWindow(b.row, s, id); ok {
 				return w, true
 			}
 		}
@@ -581,7 +589,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 		if s.LegType == nil {
 			continue
 		}
-		if w, ok := buriedLegWindow(b.row, s, alias); ok {
+		if w, ok := buriedLegWindow(b.row, s, id); ok {
 			return w, true
 		}
 	}
@@ -593,12 +601,36 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 
 // buriedLegWindow serves the sub-window of the buried leg named `alias` within
 // a clustered box span's flat concat (RecordType.Legs bounds), or ok=false.
-// Malformed bounds are a MISS (never the run-wide window — a whole-concat read
-// would silently serve another leg's slots; the caller's miss disposition is
-// loud downstream).
-func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindowRow, bool) {
+// Malformed bounds are a MISS, never the run-wide window: a whole-concat read
+// would silently serve another leg's slots.
+//
+// A miss is NOT uniformly loud downstream — the disposition depends on the
+// reference kind that failed to bind (values.FieldValue.evaluate, the
+// RowEvalContext arm):
+//   - an UNPINNED leg-relative baked root over a multi-leg row: loud
+//     (UnboundEvalContextError), because its ordinal addresses its source's own
+//     window and a whole-row read would be a wrong-slot answer;
+//   - a lazy (unbaked) reference with no positional row: loud, same error;
+//   - a FRONTIER-PINNED baked root: NOT loud. It falls through to a positional
+//     read against the whole merged row, which is correct precisely when the
+//     ordinal already indexes that row (the plan-time-baked box case) and wrong
+//     when it does not.
+//
+// So the miss path is correct-or-loud for everything except a frontier-pinned
+// ref, whose correctness rests on the baker having pinned it against the row it
+// is now read from. That is why the typed identity matters here: an unstated
+// leg alias turns a bind into a miss, and for the pinned kind the miss is
+// silent.
+func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationIdentifier) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
-		if bl.Name != alias {
+		if values.LegIdentityCensusEnabled() {
+			// RETIRED PREDICATE: `bl.Name == alias` — this function took the alias as a
+			// STRING and compared it exactly against the buried leg's text.
+			values.RecordLegIdentityConversion(values.LegSiteBuriedLegWindow,
+				bl.Alias, alias, bl.Name == alias.Name())
+			values.RecordLegIdentityLeg(bl)
+		}
+		if !values.SameLeg(bl.Alias, alias) {
 			continue
 		}
 		end := bl.Start + bl.Width
@@ -816,6 +848,39 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	return row, nil
 }
 
+// evaluateOrdinalJoinBareRow builds the emitted row for a BARE (non-RC) baked
+// result value — see ordinalJoinBuild.Bare. The value is evaluated ONCE against
+// the leg bindings and the OUTPUT SHAPE follows from what it produced, not from
+// a plan flag:
+//
+//   - a ROW (the leg row the reference names — every leg adapter produces a
+//     *PositionalRow) flows through AS ITSELF, keeping its own type and any leg
+//     windows that type carries. Re-wrapping it into a 1-slot row would
+//     double-nest it: a downstream ordinal read of column i would land on the
+//     whole record instead of the column, which is precisely how the non-build
+//     path returns zero rows for this shape;
+//   - anything else is a scalar column and wraps into the 1-slot `_0` row every
+//     other scalar-output path uses (scalarPositionalRow);
+//   - NULL flows as a nil row (the deliberately-NULL leg's extension).
+//
+// A wrongly-shaped binding still fails LOUD inside Evaluate: a baked ordinal
+// read against a row that cannot serve it is an OrdinalResolutionError, so
+// dropping the RC-only construction check trades no silence for reach.
+func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinder) (*PositionalRow, error) {
+	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings)}
+	out, err := v.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	switch row := out.(type) {
+	case nil:
+		return nil, nil
+	case *PositionalRow:
+		return row, nil
+	}
+	return scalarPositionalRow(out), nil
+}
+
 // --- cursor-side build wiring ------------------------------------------------
 
 // rcOutputType derives an RC's OUTPUT row type: a RAW *RecordType (duplicate
@@ -868,10 +933,12 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 				// RIGHT-box collision: "D.ID" first-matched the box run and
 				// read the null-supplying leg's slot). Subs only.
 				for _, sub := range rt.Legs {
-					legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+					legs = append(legs, values.NewRecordTypeLeg(
+						sub.Alias, sub.Name, i+sub.Start, sub.Width))
 				}
 			} else {
-				legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
+				legs = append(legs, values.NewRecordTypeLeg(
+					qov.Correlation, corr, i, len(rt.Fields)))
 			}
 		}
 	}
@@ -886,8 +953,20 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 // spans carry the leg types). A leg folded away entirely is ABSENT from the
 // map — no baked reference to it can exist in the RC, so evaluating the RC
 // never consults its binding and no adapter is needed.
-func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*values.RecordType {
+//
+// It ASSERTS the width-agreement invariant itself rather than leaving it to the
+// caller: every reference to one leg is a copy of the one planner-constructed
+// typed QOV, so two references disagreeing on that leg's width is a malformed
+// plan. This walk used to overwrite silently (last-wins), and the only explicit
+// assert lived in the caller's RC-specific bare-QOV loop — so the BARE arm, which
+// calls this and nothing else, had no assert at all, and even on the RC path a
+// leg referenced twice by two BAKED refs of different widths passed. Asserting
+// here covers both arms with one check, which is also why
+// widenLegTypesFromPredicates can keep its first-wins widening: it is the
+// widening source, and this is the assertion its doc points at.
+func legTypesFromResultValue(rv values.Value) (map[values.CorrelationIdentifier]*values.RecordType, error) {
 	legs := make(map[values.CorrelationIdentifier]*values.RecordType)
+	var err error
 	values.WalkValue(rv, func(n values.Value) bool {
 		fv, isFV := n.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -897,12 +976,27 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 		if !isQOV {
 			return true
 		}
-		if rt, isRT := qov.Type().(*values.RecordType); isRT {
+		rt, isRT := qov.Type().(*values.RecordType)
+		if !isRT {
+			return true
+		}
+		prev, seen := legs[qov.Correlation]
+		if !seen {
 			legs[qov.Correlation] = rt
+			return true
+		}
+		if len(prev.Fields) != len(rt.Fields) && err == nil {
+			err = fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the "+
+				"result value's baked references — all references must copy the one "+
+				"planner-constructed typed QOV (planner bug; malformed plan)",
+				qov.Correlation, len(prev.Fields), len(rt.Fields))
 		}
 		return true
 	})
-	return legs
+	if err != nil {
+		return nil, err
+	}
+	return legs, nil
 }
 
 // ordinalJoinBuild is the per-cursor ordinal-BUILD state, computed ONCE at
@@ -916,8 +1010,17 @@ type ordinalJoinBuild struct {
 	// (values.ContainsBakedOrdinal, deep). A nil/lazy result value yields a nil
 	// *ordinalJoinBuild instead — use the nil-safe enabled().
 	Enabled bool
-	// RC is the result value as the RC the build evaluates per-field.
+	// RC is the result value as the RC the build evaluates per-field. Nil
+	// exactly when Bare is set.
 	RC *values.RecordConstructorValue
+	// Bare is the result value when it is NOT an RC — a single baked value the
+	// select flows as its whole output (PartitionSelectRule's single-live-lower
+	// row translated onto a merge quantifier: `ofOrdinal(QOV(merge), i)`). The
+	// built row is that ONE value's evaluation, not an assembled slot list, so
+	// there is no OutputType and no leg window to publish: a row-shaped result
+	// flows through as itself (the merged leg row it names, windows and all) and
+	// a scalar wraps into a 1-slot row. Mutually exclusive with RC.
+	Bare values.Value
 	// OutputType is the built positional row's single authoritative type
 	// (rcOutputType; == ordinalJoinSpans' mergedType for the pristine seed).
 	OutputType *values.RecordType
@@ -954,12 +1057,31 @@ type ordinalJoinBuild struct {
 
 // newOrdinalJoinBuild probes a join plan's result value at cursor
 // construction. nil (disabled) when rv is nil or carries no baked ordinal —
-// the non-build cursor path (identity pass-through / fold). A LOUD error when
-// rv contains baked ordinals but is not a *RecordConstructorValue: every shape
-// the planner can legitimately produce for an ordinal-build join is an RC
-// (the seed, or the wrapper-merge-folded projection RC — the drift asserts
-// pin that); anything else is a planner bug and must die at construction,
-// never be silently demoted to a non-build cursor.
+// the non-build cursor path (identity pass-through / fold).
+//
+// Two ENABLED shapes, discriminated by the result value's own structure:
+//
+//   - an RC — the leg-concat seed or a folded projection: the built row is one
+//     slot per RC field, with leg windows when the seed is pristine;
+//   - a BARE (non-RC) baked value — the select flows ONE value as its whole
+//     output: the built row is that value's evaluation (see Bare and
+//     evaluateOrdinalJoinBareRow). Java imposes no RC requirement at any point;
+//     ImplementNestedLoopJoinRule.java:187,201,214 hand
+//     selectExpression.getResultValue() to RecordQueryFlatMapPlan verbatim in
+//     all three arms, and PartitionSelectRule.java:281,319 mints exactly this
+//     shape — a single-live-lower select flows one leg's whole row, and a later
+//     positional-merge round translates that bare QOV into
+//     `ofOrdinal(QOV(merge), i)`.
+//
+// The bare arm must stay ENABLED and must not be turned back into either an
+// error or a decline. Both were MEASURED on the 3-way comma join with equijoin
+// predicates and a projected EXISTS
+// (sqldriver.TestFDB_CommaJoin3ProjectedExistsWithEquijoins, which carries the
+// three correct rows): erroring fails the query outright, and declining to the
+// non-build path executes and returns ZERO rows, because that path binds the
+// outer by name rather than adapting it to the merge layout the inner's
+// pushed-down SARGs read by ordinal, then wraps the flowed leg row in a 1-slot
+// scalar row.
 func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBuild, error) {
 	// Two build triggers:
 	//   - a FrontierPinned baked reference anywhere in the RV (the flat
@@ -973,7 +1095,39 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	}
 	rc, isRC := rv.(*values.RecordConstructorValue)
 	if !isRC {
-		return nil, fmt.Errorf("ordinal join build: result value contains baked ordinal references but is a %T, want *RecordConstructorValue (seed or folded projection RC) — planner bug", rv)
+		// A BARE (non-RC) baked result value: the select's output is not an
+		// assembled row but a SINGLE flowed value read out of a leg. Java's
+		// RecordQueryFlatMapPlan has no RC requirement at all — it evaluates
+		// selectExpression.getResultValue() against the bound legs whatever its
+		// shape (ImplementNestedLoopJoinRule.java:187,201,214 pass the select's
+		// result value verbatim in all three arms) — and PartitionSelectRule
+		// legitimately MINTS this shape: its single-live-lower arm flows one
+		// leg's whole row (`quantifier.getFlowedObjectValue()`,
+		// PartitionSelectRule.java:281), and a later positional-merge round
+		// translates that bare QOV onto the merge quantifier
+		// (`resultValue.translateCorrelations(translationMap)`, :319), leaving
+		// `ofOrdinal(QOV(merge), i)` — a bare baked reference — as the upper
+		// select's whole result value.
+		//
+		// The build stays ENABLED for it, and that is the load-bearing part:
+		// DECLINING (returning a nil build) routes the cursor down the non-build
+		// path, which binds the outer by name instead of adapting it to the merge
+		// layout the inner's pushed-down SARGs read by ordinal, and wraps the
+		// flowed row in a 1-slot scalar row. Measured on the 3-way comma join
+		// with equijoin predicates and a projected EXISTS: declining executes and
+		// returns ZERO rows where three are correct. Enabled, the legs bind
+		// exactly as for an RC and the one value is evaluated against them.
+		// The width-agreement assert runs on THIS path too — it lives inside
+		// legTypesFromResultValue, so the Bare arm gets it without a copy of the RC
+		// arm's loop. It used to be RC-only, which left the arm that has exactly one
+		// leg-type source with no check on that source at all.
+		bareLegTypes, err := legTypesFromResultValue(rv)
+		if err != nil {
+			return nil, err
+		}
+		bare := &ordinalJoinBuild{Enabled: true, Bare: rv, LegTypes: bareLegTypes}
+		widenLegTypesFromPredicates(bare.LegTypes, preds)
+		return bare, nil
 	}
 	spans, _, windowsOK := ordinalJoinSpans(rc)
 	// LegTypes come from the RESULT VALUE *and* the join PREDICATES: a
@@ -982,7 +1136,10 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// RV alone left the dropped leg typeless, and the leg
 	// adapted to a ZERO-WIDTH binding that blew up the predicate
 	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
-	legTypes := legTypesFromResultValue(rc)
+	legTypes, err := legTypesFromResultValue(rc)
+	if err != nil {
+		return nil, err
+	}
 	// Bare QOV fields carry their leg's type directly (the positional-merge
 	// shape's `_i` columns and the mixed upper's untranslated leg): without
 	// this a bare-QOV leg is typeless and its adapter degrades to an all-nil
@@ -1011,6 +1168,26 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 			}
 		}
 	}
+	widenLegTypesFromPredicates(legTypes, preds)
+	return &ordinalJoinBuild{
+		Enabled:    true,
+		RC:         rc,
+		OutputType: rcOutputType(rc),
+		Spans:      spans,
+		WindowsOK:  windowsOK,
+		LegTypes:   legTypes,
+		RawLegs:    rawLegs,
+	}, nil
+}
+
+// widenLegTypesFromPredicates adds the leg types the join PREDICATES carry to
+// an already-collected map. A folded projection RV can DROP a leg entirely
+// while a baked cross-leg ON predicate still references it; collecting from the
+// RV alone leaves the dropped leg typeless, and it then adapts to a ZERO-WIDTH
+// binding that blows up the predicate. FIRST-WINS rather than a divergence
+// assert: this is the widening SOURCE, and the RV-side collection the caller
+// already ran is the one that asserts width agreement.
+func widenLegTypesFromPredicates(legTypes map[values.CorrelationIdentifier]*values.RecordType, preds []predicates.QueryPredicate) {
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
 			fv, isFV := v.(*values.FieldValue)
@@ -1027,15 +1204,6 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 			return v
 		})
 	}
-	return &ordinalJoinBuild{
-		Enabled:    true,
-		RC:         rc,
-		OutputType: rcOutputType(rc),
-		Spans:      spans,
-		WindowsOK:  windowsOK,
-		LegTypes:   legTypes,
-		RawLegs:    rawLegs,
-	}, nil
 }
 
 // enabled is the nil-safe Enabled read — a non-build cursor stores a nil
@@ -1285,13 +1453,16 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 // from evaluate so the NLJ cursor can share one legRows adaptation between
 // the predicate context and the build.
 func (b *ordinalJoinBuild) evaluateLegs(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, base values.CorrelationBinder) (*PositionalRow, error) {
-	return evaluateOrdinalJoinRow(b.RC, b.OutputType, &buildLegBinder{legs: legs, raw: raw, base: base})
+	return b.evaluateBound(&buildLegBinder{legs: legs, raw: raw, base: base})
 }
 
 // evaluateBound builds the positional row from any pre-built leg binder — the
 // zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (no per-pair
 // map, no per-pair re-adaptation).
 func (b *ordinalJoinBuild) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
+	if b.Bare != nil {
+		return evaluateOrdinalJoinBareRow(b.Bare, bindings)
+	}
 	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
 }
 
@@ -1412,11 +1583,21 @@ type rowLegsBinder struct {
 // duplicate leg names mirrors RecordType.FieldIndex's first-match rule.
 func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	if b.row != nil && b.row.Type != nil {
-		name := id.Name()
 		for _, leg := range b.row.Type.Legs {
-			// Exact: correlation-key namespace on both sides (see
-			// legWindowBinder).
-			if leg.Name != name {
+			if values.LegIdentityCensusEnabled() {
+				// RETIRED PREDICATE: `leg.Name == id.Name()` — exact on the leg's text
+				// against the correlation's own spelling. Recording it lets the census
+				// measure whether the conversion changed this binder's ANSWER, rather
+				// than only whether the pair it now compares folds equal.
+				values.RecordLegIdentityConversion(values.LegSiteRowLegsBinder,
+					leg.Alias, id, leg.Name == id.Name())
+				values.RecordLegIdentityLeg(leg)
+			}
+			// The leg's IDENTITY decides, through the one comparison every identity
+			// proof routes through. Not its Name: matching text here would be an
+			// identity claim made by string equality, and the alias namespaces are
+			// deliberately case-DISJOINT precisely so that claim cannot be forged.
+			if !values.SameLeg(leg.Alias, id) {
 				continue
 			}
 			end := leg.Start + leg.Width

@@ -42,7 +42,7 @@ func wsbPlanBuilders() []rfc176PlanBuilder {
 			return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, vs[0], false)
 		}},
 		{"NestedLoopJoin", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryNestedLoopJoinPlan(inner, inner, predsOf(vs), JoinInner, "O", "I", vs[0])
+			return NewRecordQueryNestedLoopJoinPlan(inner, inner, predsOf(vs), JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), vs[0])
 		}},
 		{"Filter", func(vs []values.Value) RecordQueryPlan {
 			return NewRecordQueryFilterPlan(predsOf(vs), inner)
@@ -196,11 +196,11 @@ func TestFlatMapAndNLJPlan_ResultValueJoinsIdentity(t *testing.T) {
 		t.Fatal("identical flat-map plans must compare equal and hash equal")
 	}
 
-	nlj := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", rvA)
-	if nlj.EqualsPlanWithoutChildren(NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", rvB)) {
+	nlj := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvA)
+	if nlj.EqualsPlanWithoutChildren(NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvB)) {
 		t.Fatal("NLJ plans with different result values must NOT compare equal")
 	}
-	nljDup := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", values.NewFlatFieldValue("A", values.UnknownType))
+	nljDup := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), values.NewFlatFieldValue("A", values.UnknownType))
 	if !nlj.EqualsPlanWithoutChildren(nljDup) || nlj.HashCodeWithoutChildren() != nljDup.HashCodeWithoutChildren() {
 		t.Fatal("identical NLJ plans must compare equal and hash equal")
 	}

@@ -160,6 +160,22 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	if rightAlias == "" {
 		rightAlias = quants[1].GetAlias().Name()
 	}
+	// The plan's leg identities are the SELECT'S QUANTIFIERS', threaded verbatim.
+	// (Not leftQ/rightQ below — those are fresh memo quantifiers over the leg
+	// EXPRESSIONS and carry minted aliases; what qualifies the merged row's keys is
+	// the source leg's own correlation.)
+	//
+	// The plan used to carry leftAlias/rightAlias, the select's source-alias TEXT,
+	// and the executor minted an identifier from it at the plan boundary. Those two
+	// spellings are an empirical agreement, not a structural one — the source-alias
+	// slice is populated independently of the quantifiers — so the substitution is
+	// recorded rather than asserted, and its zero is what makes the retyping
+	// representation-only.
+	leftCorr, rightCorr := quants[0].GetAlias(), quants[1].GetAlias()
+	if values.LegIdentityCensusEnabled() {
+		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, leftAlias, leftCorr.Name())
+		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, rightAlias, rightCorr.Name())
+	}
 
 	var joinType plans.JoinType
 	switch sel.GetJoinType() {
@@ -201,7 +217,7 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			leftQ, rightQ,
 			sel.GetPredicates(),
 			joinType,
-			leftAlias, rightAlias,
+			leftCorr, rightCorr,
 			sel.GetResultValue(),
 		))
 		return
@@ -216,8 +232,13 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// (MatchIntermediateRule → bindOrientedComparison) SARGs them into bare
 	// correlated probes, so correlated index-nested-loop chains emerge from the
 	// standard Cascades machinery (RFC-150 §8).
-	leftCorr := values.NamedCorrelationIdentifier(leftAlias)
-	rightCorr := values.NamedCorrelationIdentifier(rightAlias)
+	//
+	// This branch and the materialized one above share ONE identifier per leg —
+	// leftCorr/rightCorr, threaded from the quantifiers near the top. It used to
+	// re-mint them here from the source-alias text, giving the same leg two
+	// spellings inside a single function while `physicalProvidedAliases` just below
+	// read the quantifier's identifier directly. A second spelling of one leg is
+	// how a downstream exact comparison matches the wrong window.
 
 	// Provided-alias sets are computed from the actual EMBEDDED physical exprs
 	// (leftExpr/rightExpr) — not the logical refs — because a re-enumerated merge
@@ -307,7 +328,7 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			leftQ, rightQ,
 			sel.GetPredicates(),
 			joinType,
-			leftAlias, rightAlias,
+			leftCorr, rightCorr,
 			sel.GetResultValue(),
 		))
 	}
@@ -1796,24 +1817,73 @@ func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentif
 }
 
 // mergedOuterLegAliases returns the set of source-leg aliases the inner-join's
-// merged outer row anchors columns for: the two top-level quantifier aliases
-// (an ordinal seed's legs are the quantifiers themselves). RFC-142.
-func mergedOuterLegAliases(leftAlias, rightAlias string) []string {
+// merged outer row anchors columns for. RFC-142.
+//
+// It takes BOTH the source-alias TEXT and the leg IDENTITIES, and emits both
+// spellings, because its consumers match it against two different things. The
+// dotted rebase (rebaseOuterLegValue) compares each entry against a reference's
+// own QOV CORRELATION name, and those references are correlated to the select's
+// QUANTIFIERS — so the identity spelling is the one that can match. The text
+// spelling stays because the same set feeds the dotted "LEG.COL" key namespace,
+// which is upper-folded.
+//
+// Building it from the text ALONE was a latent mismatch on two axes, and the
+// verification set beside it (existLegCorrs) already worked around one of them by
+// adding the quantifier aliases explicitly:
+//
+//   - the two channels can name different things. Measured over the FDB corpus,
+//     the select's source-alias slice carries a RE-MINTED identifier while its
+//     quantifier keeps the user alias on 12 of ~80k firings (witnesses "q$N vs
+//     E"). There the text set matches no reference at all;
+//   - the fold is one-way. Every entry was upper-folded while a reference's
+//     correlation is verbatim, so a LOWERCASE machine-minted alias could not
+//     match its own entry even when the two channels agreed.
+//
+// A miss is not loud here: the reference stays pointing at a leg alias that is no
+// longer bound inside the FlatMap, evaluates to NULL, and an EXISTS correlation
+// that never matches drops rows. Emitting both spellings can only make the rebase
+// match MORE references, and every extra one is a reference that genuinely names
+// a leg of this merge. The text half retires with the dotted channel (CQ-53's
+// seed rebake); the identity half is what survives it.
+func mergedOuterLegAliases(leftAlias, rightAlias string, legCorrs ...values.CorrelationIdentifier) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(a string) {
 		if a == "" {
 			return
 		}
-		up := strings.ToUpper(a)
-		if _, ok := seen[up]; ok {
+		if _, ok := seen[a]; ok {
 			return
 		}
-		seen[up] = struct{}{}
-		out = append(out, up)
+		seen[a] = struct{}{}
+		out = append(out, a)
 	}
-	add(leftAlias)
-	add(rightAlias)
+	// The dotted-text namespace: upper-folded, as its keys are.
+	add(strings.ToUpper(leftAlias))
+	add(strings.ToUpper(rightAlias))
+	// The identity namespace: VERBATIM. Folding it here is what would let a
+	// quoted "q$5" and a minted q$5 be treated as one leg, and it is also what
+	// kept a minted leg from matching itself.
+	//
+	// Consequence worth stating: the lazy dotted arm in rebaseOuterLegValue matches
+	// a reference's correlation against these entries EXACTLY and then mints
+	// `corr + "." + upper(field)`, so a lowercase machine-minted leg now mints a
+	// LOWERCASE-qualified key ("c.COL") where the folded-only set produced "C.COL"
+	// or nothing. That is inert on three independent counts, none of which is a
+	// second namespace:
+	//   - no dotted merged-row key reaches a WINNING plan on any covered shape
+	//     (TestLazyLegMintReachesNoWinningPlan measures zero), so nothing executes
+	//     against a key minted here;
+	//   - the rebase is followed by a fail-closed verification — a reference that
+	//     still names a leg alias DECLINES the yield rather than shipping
+	//     (correct-or-loud), so a mis-keyed survivor costs a plan, never rows;
+	//   - the runtime dotted lookup folds BOTH sides (rowSlotForLegColumn's
+	//     EqualFold on qualifier and column), so a survivor that did reach execution
+	//     addresses the same slot either spelling.
+	// The arm retires with the dotted channel entirely (CQ-53's seed rebake).
+	for _, c := range legCorrs {
+		add(c.Name())
+	}
 	return out
 }
 
@@ -1899,7 +1969,7 @@ func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 // windows the N-way chain's ACCUMULATED INNER so the next level reads its buried
 // leaves positionally. ok=false for any non-ordinal-safe node. A single scan leg
 // yields ONE leg (its own alias) — the caller uses .Legs only when len(legs) > 1.
-func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]values.Field, []values.RecordTypeLeg, bool) {
+func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdentifier, base int) ([]values.Field, []values.RecordTypeLeg, bool) {
 	inner := p
 	for {
 		switch pl := inner.(type) {
@@ -1908,8 +1978,17 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]val
 			if !isRT || len(rt.Fields) == 0 {
 				return nil, nil, false
 			}
+			// The leg's identity is the identifier its own QuantifiedObjectValue
+			// carries — threaded in, not manufactured here. This used to mint
+			// NamedCorrelationIdentifier(ToUpper(alias)) from a plan-level string, and
+			// that fold was a forgery generator rather than a normalization: the
+			// machine namespace is LOWERCASE (UniqueCorrelationIdentifier mints q$N),
+			// so upper-folding a minted q$5 produced Q$5 — precisely the spelling
+			// SameLeg exists to keep out of the minted leg's window. Threading the
+			// identifier removes the question. Name is its own spelling, so the text
+			// channel's readers see what they always saw.
 			return rt.Fields, []values.RecordTypeLeg{
-				{Name: strings.ToUpper(alias), Start: base, Width: len(rt.Fields)},
+				values.NewRecordTypeLeg(alias, alias.Name(), base, len(rt.Fields)),
 			}, true
 		case *plans.RecordQueryPredicatesFilterPlan:
 			inner = pl.GetInner()
@@ -1954,14 +2033,14 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]val
 // for a single-source scan the flowed types coincide, which the cross-agreement
 // fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
 // a record (the caller keeps the original RV unchanged).
-func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) values.Value {
+func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) values.Value {
 	if !legIsOrdinalSafe(leftPlan) || !legIsOrdinalSafe(rightPlan) {
 		return nil
 	}
 	var fields []values.RecordConstructorField
 	for _, leg := range []struct {
 		plan  plans.RecordQueryPlan
-		alias string
+		alias values.CorrelationIdentifier
 	}{{leftPlan, leftAlias}, {rightPlan, rightAlias}} {
 		// Walk the leg to its buried scan leaves: the flat concat + each buried
 		// source's window. A scan leg yields one leaf (its own alias); the N-way
@@ -1984,8 +2063,12 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 			legs = buriedLegs
 		}
 		rt := &values.RecordType{Fields: concatFields, Legs: legs}
-		qov := values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier(strings.ToUpper(leg.alias)), rt)
+		// The QOV's correlation is the leg's identifier, carried. It must be the SAME
+		// identifier planBuriedLegConcat stamped on the leg boundaries just above —
+		// the seed's ordinal reads resolve by matching one against the other — and
+		// the way to guarantee that is for both to be the one identifier the caller
+		// threaded, rather than two independent folds of one string.
+		qov := values.NewQuantifiedObjectValueOfType(leg.alias, rt)
 		for i := range concatFields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {
@@ -2143,7 +2226,7 @@ func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
 // seed BOTH layout twins accept (full coverage). Extracted so the exact
 // decision is white-box pinned: a functional test is BLIND to a silent
 // revert of this decision.
-func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) (values.Value, bool) {
+func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool) {
 	if correlatedStep1 || !resultValueReferencesAlias(rv, existAlias) {
 		return rv, false
 	}
@@ -3086,6 +3169,18 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			return
 		}
 	}
+	// One identifier per leg, threaded from the leg's own quantifier — q0/q1 follow
+	// the same orientation swap leftAlias/rightAlias did, so they are the typed
+	// counterparts of exactly those two names. Everything below that used to mint
+	// its own identifier from that text now reads these: the plan's leg identities,
+	// the seed's QOV correlations, the correlated FlatMap's leg correlations. The
+	// substitution is recorded rather than assumed, because the source-alias slice
+	// and the quantifiers are independently populated.
+	leftCorr, rightCorr := q0.GetAlias(), q1.GetAlias()
+	if values.LegIdentityCensusEnabled() {
+		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, leftAlias, leftCorr.Name())
+		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, rightAlias, rightCorr.Name())
+	}
 
 	// Split predicates into join predicates (for the inner join) and
 	// EXISTS-related predicates (for the outer existential level). EXISTS
@@ -3150,7 +3245,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// single sources (scan-family).
 	step1RV, gatedSeedStep1 := foldStep1Seed(
 		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
-		leftPlan, rightPlan, leftAlias, rightAlias)
+		leftPlan, rightPlan, leftCorr, rightCorr)
 	// Step 1: build the inner join (left × right). Its merged row is the
 	// outer of the existential FlatMap. Independent legs take the
 	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
@@ -3159,12 +3254,10 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// step1Expr is what the step-2 FlatMap's outer quantifier ranges over.
 	step1Expr := leftExpr
 	if correlatedStep1 {
-		leftCorrID := values.NamedCorrelationIdentifier(leftAlias)
-		rightCorrID := values.NamedCorrelationIdentifier(rightAlias)
 		fmPlan, _, _, ok := buildCorrelatedFlatMapPlan(
 			call,
 			joinPreds, sel.GetResultValue(),
-			leftPlan, rightPlan, leftCorrID, rightCorrID, leftExpr, rightExpr,
+			leftPlan, rightPlan, leftCorr, rightCorr, leftExpr, rightExpr,
 			joinType, q1.IsNullOnEmpty(), false, false,
 		)
 		if !ok {
@@ -3202,14 +3295,17 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		if !materializedNLJOrdinalLayoutMatches(step1RV, leftPlan, rightPlan) {
 			return
 		}
+		// The plan's leg identities and its own memo quantifiers' aliases are the
+		// SAME identifiers, which is the invariant Java holds by construction
+		// (RecordQueryFlatMapPlan carries the Quantifier, so there is nothing to keep
+		// in step). Two independent mints from one string could drift apart here the
+		// moment either side gained a normalization.
 		nljPlan := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
-			expressions.NamedForEachQuantifier(
-				values.NamedCorrelationIdentifier(leftAlias), call.MemoizeExpression(leftExpr)),
-			expressions.NamedForEachQuantifier(
-				values.NamedCorrelationIdentifier(rightAlias), call.MemoizeExpression(rightExpr)),
+			expressions.NamedForEachQuantifier(leftCorr, call.MemoizeExpression(leftExpr)),
+			expressions.NamedForEachQuantifier(rightCorr, call.MemoizeExpression(rightExpr)),
 			joinPreds,
 			joinType,
-			leftAlias, rightAlias,
+			leftCorr, rightCorr,
 			step1RV,
 		)
 		step1Expr = nljPlan
@@ -3228,7 +3324,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// below — the spliced buried-leg windows.) Every residual/projected
 	// reference to one of these reads the merged row's verbatim "LEG.COL"
 	// key. RFC-142.
-	outerLegAliases := mergedOuterLegAliases(leftAlias, rightAlias)
+	outerLegAliases := mergedOuterLegAliases(leftAlias, rightAlias, leftCorr, rightCorr)
 
 	// Step 2: build the existential level as a PURE-MAP FlatMap (RFC-141 —
 	// no EXISTS join mode). The inner is the existential subplan filtered by

@@ -15,6 +15,25 @@ import (
 type OrdinalSeedLegWindow struct {
 	Offset int
 	Typ    *RecordType
+
+	// Alias is the window's leg IDENTITY: the correlation of the quantifier whose
+	// row occupies this window, carried VERBATIM from the seed's own
+	// QuantifiedObjectValue.
+	//
+	// It used to be minted from the map KEY instead — NamedCorrelationIdentifier of
+	// the upper-folded alias — with the QOV's correlation in scope at both
+	// construction sites. That kept Name == Alias.Name() trivially true, but by
+	// making the identity a function of the text rather than the other way round:
+	// the fold is a no-op where the correlation is already upper and manufactures a
+	// forgery where it is not, since the machine namespace is LOWERCASE and folding
+	// a minted q$N yields the Q$N that SameLeg exists to exclude.
+	//
+	// The map's KEYS are still the fold, and they have to be: downstream references
+	// reach these windows through that text. So this type deliberately holds the two
+	// namespaces apart — a typed identity for consumers that ask "which leg is
+	// this?", an upper-folded key for consumers that still arrive holding a string.
+	// The seed rebake (CQ-53) retires the key half.
+	Alias CorrelationIdentifier
 }
 
 // OrdinalSeedLegWindows derives per-leg windows (UPPER alias → window, in a
@@ -66,9 +85,22 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 			if _, dup := windows[elemAlias]; dup {
 				return nil, nil // two element fields over one correlation — not a seed
 			}
+			// The window's IDENTITY is the element QOV's own correlation, carried.
+			// It used to be minted as NamedCorrelationIdentifier of the UPPER fold of
+			// that same correlation, with the correlation itself in scope: an
+			// identifier manufactured from the text of the identifier beside it. The
+			// fold is a no-op wherever the correlation is already upper and a FORGERY
+			// generator wherever it is not — the machine namespace is lowercase, so
+			// folding a minted q$N yields Q$N, which is exactly the spelling SameLeg
+			// exists to keep out of the minted leg's window.
+			//
+			// elemAlias stays the map KEY: the seed-window namespace is upper-folded
+			// text and its readers look up by that text until the seed rebake (CQ-53)
+			// gives them a typed counterparty.
 			windows[elemAlias] = OrdinalSeedLegWindow{
 				Offset: i,
 				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}},
+				Alias:  elemQOV.Correlation,
 			}
 			counts[elemAlias] = 1
 			mergedFields[i] = Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
@@ -101,7 +133,10 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 			}
 			curAlias = alias
 			curStart = i
-			windows[alias] = OrdinalSeedLegWindow{Offset: curStart, Typ: legType}
+			// Same as the element window above: the identity is the leg QOV's own
+			// correlation, carried verbatim, while `alias` remains the upper-folded map
+			// KEY the seed-window namespace is addressed by.
+			windows[alias] = OrdinalSeedLegWindow{Offset: curStart, Typ: legType, Alias: qov.Correlation}
 		} else if acc.Ordinal != i-curStart {
 			return nil, nil
 		}
@@ -143,7 +178,56 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 			if leg.Name == "" {
 				continue
 			}
-			if leg.Name != alias {
+			if LegIdentityCensusEnabled() {
+				RecordLegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias, leg.Name == alias)
+				RecordLegIdentityLeg(leg)
+			}
+			// "Is this buried leg the box run's RIGHTMOST LEAF?" — an IDENTITY question,
+			// answered by the one comparison every identity question routes through.
+			//
+			// TWO producers mint the box QOV's correlation this compares against, and
+			// they answer this predicate DIFFERENTLY. Both dispositions are intended:
+			//
+			//  1. The unnest/mixed and chained seeds mint it through the translator's
+			//     unnestOuterCorrelation — sourceAlias(box), which recurses to a join's
+			//     RIGHT operand and upper-folds at every arm. So the box's correlation IS
+			//     its rightmost leaf's, and this predicate MATCHES for that leaf: the
+			//     REPLACE branch below swaps the box run's window for the leaf's
+			//     sub-window, which is what keeps an alias-qualified read off the concat.
+			//     This is the sourceBinding convention — a box run is named, and
+			//     identified, by its rightmost leaf — and the two spellings agree only
+			//     because that one chokepoint folds.
+			//  2. The PRISTINE gated-join seed mints it through the translator's
+			//     legBinding — sourceBinding(box) + "$BOX" for a join leg — whose stated
+			//     purpose is that the box level and the leaf level be DIFFERENT
+			//     identifiers (one plan carries both, and a shared name collides in the
+			//     widen invariant). So this predicate DECLINES for every buried leaf of
+			//     such a box, rightmost included.
+			//
+			// The decline is not a dropped window. The map KEY is the buried leg's own
+			// Name ("C"), the box run's key is the minted binding ("C$BOX"), so the
+			// `taken` test below misses and the leaf sub-window is filed anyway — it is
+			// ADDED beside the box run rather than replacing it. The retired text
+			// predicate (`leg.Name == alias`) declined that pair too, so the conversion
+			// changed nothing for this producer; the premise test pins both arms.
+			//
+			// Three earlier justifications for keeping a TEXT comparison here are
+			// withdrawn, and the last of them was wrong in an instructive way. It claimed
+			// the two identifiers are "legitimately different — box quantifier vs leaf",
+			// and cited a red in the planner/seed cross-agreement fixture as proof the
+			// site could not convert. Measured: over the real-FDB corpus this comparison
+			// decides IDENTICALLY in both namespaces on all 1311 pairs, and the fixture's
+			// red came from the fixture, which hand-minted the box correlation as
+			// LOWERCASE "c" where production mints sourceAlias(box) = "C". The convention
+			// makes the two identifiers EQUAL; it does not make them different — under
+			// producer 1. Producer 2's $BOX suffix makes them differ by design; see above.
+			//
+			// The map KEY stays text (leg.Name), and has to: downstream readers arrive
+			// holding an upper-folded string and look these windows up by it. So the two
+			// namespaces are held apart here rather than conflated — an identity for the
+			// identity question, a fold for the key. The seed rebake (CQ-53) retires the
+			// key half.
+			if !SameLeg(leg.Alias, w.Alias) {
 				if _, taken := windows[leg.Name]; taken {
 					continue
 				}
@@ -160,8 +244,8 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 				f := w.Typ.Fields[leg.Start+k]
 				sub[k] = Field{Name: f.Name, FieldType: f.FieldType, Ordinal: k}
 			}
-			// leg.Name == alias REPLACES the box-run window with the rightmost
-			// LEAF's sub-window: the box's name MEANS its rightmost leaf
+			// The rightmost-leaf case (SameLeg above) REPLACES the box-run window with
+			// the LEAF's sub-window: the box IS its rightmost leaf
 			// (sourceBinding), so an alias-qualified read must window the leaf — the
 			// run-wide window would FieldIndex across the concat and first-match an
 			// earlier buried leg's duplicate name. Also what keeps the merged type's
@@ -170,6 +254,17 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 			windows[leg.Name] = OrdinalSeedLegWindow{
 				Offset: w.Offset + leg.Start,
 				Typ:    &RecordType{Nullable: w.Typ.Nullable, Fields: sub},
+				// Filed under the BURIED leg's own NAME — the whole point of a
+				// sub-window is that a read qualified by the buried binding addresses
+				// the buried source, not the box run carrying it, and the readers arrive
+				// holding that text.
+				//
+				// Its IDENTITY, though, is the buried leg's own: carried, not minted
+				// from the key. The two are separate here exactly as they are on
+				// OrdinalSeedLegWindow itself — a typed identity for consumers asking
+				// which leg this is, an upper-folded key for consumers still arriving
+				// with a string.
+				Alias: leg.Alias,
 			}
 		}
 	}
@@ -183,7 +278,12 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 		if len(w.Typ.Legs) > 0 {
 			continue // box run: its subs are their own windows above
 		}
-		mergedLegs = append(mergedLegs, RecordTypeLeg{Name: alias, Start: w.Offset, Width: len(w.Typ.Fields)})
+		// The KEY supplies Name and the window supplies Alias. They agree on every
+		// leg this authority emits — the text-vs-identity census reports
+		// Name == Alias.Name() on all of them — but they are read from their own
+		// sources rather than one from the other, so a producer that made them
+		// diverge would be measured instead of laundered.
+		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Alias, alias, w.Offset, len(w.Typ.Fields)))
 	}
 	sort.Slice(mergedLegs, func(i, j int) bool {
 		if mergedLegs[i].Start != mergedLegs[j].Start {

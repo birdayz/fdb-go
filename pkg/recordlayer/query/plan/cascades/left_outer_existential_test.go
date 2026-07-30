@@ -133,3 +133,109 @@ func TestRebaseOuterLegValueOrdinal_MergedRefPassesThrough(t *testing.T) {
 		t.Fatalf("already-merged ref was not passed through unchanged: got %v", out)
 	}
 }
+
+// The DRIFT tripwire's true branch, which nothing had ever taken.
+//
+// rebaseOuterLegValueOrdinal's `!isLeg` arm normally means "a genuinely non-outer
+// reference" — the FlatMap inner — and passes the node through. But if the merged
+// type's own Legs contain the reference's correlation while the derived `windows`
+// do not, the two layout derivations have DRIFTED, and passing the node through
+// would silently read the inner row where an outer leg was meant. So the arm
+// declines LOUD instead.
+//
+// That branch had zero positive population: over the whole measured corpus the
+// tripwire's comparison was "neither" on 1000 of 1000 samples, so the conversion
+// of that comparison to values.SameLeg was unfalsified — every test exercised only
+// the pass-through side. A guard whose firing path is never taken is a guard
+// nobody has checked, and this one is the difference between a loud decline and
+// wrong rows.
+//
+// So the drift is constructed directly: a merged type whose Legs name correlation
+// "D" against a windows map that does not. Through the real function, not a copy —
+// a copy would pin the copy.
+func TestRebaseOuterLegValueOrdinal_DriftBetweenWindowsAndMergedLegs_Declines(t *testing.T) {
+	t.Parallel()
+
+	driftCorr := values.NamedCorrelationIdentifier("D")
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "DK", FieldType: values.NullableInt, Ordinal: 0},
+	}}
+
+	mergedFields := make([]values.Field, 8)
+	for i := range mergedFields {
+		mergedFields[i] = values.Field{Name: fmt.Sprintf("M%d", i), FieldType: values.NullableInt, Ordinal: i}
+	}
+	// The merged type KNOWS about leg D — this is the half of the layout that is
+	// derived from the plan's own leg boundaries.
+	mergedType := &values.RecordType{
+		Fields: mergedFields,
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(driftCorr, "D", 0, 1),
+		},
+	}
+	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
+
+	// ...and the OTHER half does not. The windows map carries an unrelated leg, so
+	// a reference over D misses it. That mismatch is the drift.
+	windows := map[string]ordinalLegWindow{
+		"L": {Offset: 4, Typ: legType},
+	}
+
+	ref := &values.FieldValue{
+		Field: "DK",
+		Typ:   values.NullableInt,
+		Child: values.NewQuantifiedObjectValue(driftCorr),
+	}
+
+	if _, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV); ok {
+		t.Error("the rebase ACCEPTED a reference whose correlation is a known leg boundary " +
+			"of the merged type but absent from the derived windows. The two derivations " +
+			"have drifted, and accepting means the reference is passed through to read the " +
+			"FlatMap INNER row where an OUTER leg was meant — wrong rows, silently. This " +
+			"arm must decline.")
+	}
+
+	// The negative control, which is what makes the assertion above about DRIFT
+	// rather than about any missing window: a reference over a correlation the
+	// merged type does NOT claim as a leg is a genuine non-outer reference, and must
+	// pass through untouched. Without this, a tripwire that fired on everything
+	// would satisfy the test above while declining every legitimate inner reference.
+	innerCorr := values.NamedCorrelationIdentifier("INNER")
+	innerRef := &values.FieldValue{
+		Field: "IK",
+		Typ:   values.NullableInt,
+		Child: values.NewQuantifiedObjectValue(innerCorr),
+	}
+	out, ok := rebaseOuterLegValueOrdinal(innerRef, windows, mergedQOV)
+	if !ok {
+		t.Error("the rebase declined a genuine FlatMap-INNER reference — a correlation the " +
+			"merged type does not claim as a leg is not drift, and declining it would " +
+			"reject every correlated inner reference there is")
+	}
+	if out != innerRef {
+		t.Errorf("an inner reference must pass through UNTOUCHED, got %v", out)
+	}
+
+	// And the tripwire must answer by leg IDENTITY, not by folded text. A leg whose
+	// identity is a planner-minted lowercase q$N must not be matched by a quoted
+	// user alias that upper-folds onto it: that would fire the drift decline on a
+	// perfectly good plan, which is a silent loss of the whole existential rewrite.
+	minted := values.NamedCorrelationIdentifier("q$11")
+	forgedType := &values.RecordType{
+		Fields: mergedFields,
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(minted, "Q$11", 0, 1),
+		},
+	}
+	forgedMergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), forgedType)
+	forgedRef := &values.FieldValue{
+		Field: "FK",
+		Typ:   values.NullableInt,
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q$11")),
+	}
+	if _, ok := rebaseOuterLegValueOrdinal(forgedRef, windows, forgedMergedQOV); !ok {
+		t.Error(`the drift tripwire fired for a quoted "Q$11" against a planner-minted q$11 ` +
+			`leg — it is matching leg TEXT (or a fold) rather than leg IDENTITY, so a ` +
+			`case-variant alias is mistaken for the leg it guards and a valid plan declines`)
+	}
+}

@@ -159,24 +159,11 @@ func TestFDB_FullOuterUnnestExists(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				// A single-column projection may arrive as a bare scalar OR a
-				// one-key map depending on the plan shape; normalize both to the
-				// column value(s), sorted by key, so the expected rows compare
-				// cleanly under either window.
-				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
-					keys := make([]string, 0, len(m))
-					for k := range m {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					parts := make([]string, 0, len(keys))
-					for _, k := range keys {
-						parts = append(parts, unnestSprint(m[k]))
-					}
-					out = append(out, strings.Join(parts, "|"))
-				} else {
-					out = append(out, unnestSprint(executor.RowValue(r)))
-				}
+				// POSITIONAL, in slot order. The name-keyed form this replaced sorted
+				// the row map's keys, so permuting (Fields, Slots) together rendered
+				// identically -- blind in the one dimension a mis-bound leg window
+				// moves.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})

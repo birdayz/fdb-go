@@ -83,7 +83,27 @@ func rebaseOuterLegValueOrdinal(
 			// unreachable while windows and merged Legs stay in lockstep.
 			if rt, ok := mergedQOV.Type().(*values.RecordType); ok {
 				for _, leg := range rt.Legs {
-					if leg.Name == alias {
+					// This hook sits inside a Cascades rule, so its TOTALS count rule
+					// firings, not queries: the memo may explore this hoist once or
+					// many times for one query. Read the site's absolute numbers as a
+					// planning artifact; only its zero fold-only population is a fact
+					// about the corpus.
+					if values.LegIdentityCensusEnabled() {
+						// RETIRED PREDICATE: `leg.Name == alias`, where alias is the UPPER
+						// fold of this correlation — one of the two sites that folded a side
+						// before comparing. A fold-only count cannot see what such a
+						// predicate did differently, so the census records the verdict.
+						values.RecordLegIdentityConversion(
+							values.LegSiteLeftOuterExistential, leg.Alias, qov.Correlation,
+							leg.Name == alias)
+						values.RecordLegIdentityLeg(leg)
+					}
+					// The drift check asks an IDENTITY question — "is this correlation a
+					// known leg boundary?" — so it is answered by the leg's identity
+					// against the reference's own correlation, not by the upper fold of
+					// one side against the text of the other. Folding here would let the
+					// tripwire mistake a case-variant alias for the leg it is guarding.
+					if values.SameLeg(leg.Alias, qov.Correlation) {
 						failed = true
 						break
 					}
