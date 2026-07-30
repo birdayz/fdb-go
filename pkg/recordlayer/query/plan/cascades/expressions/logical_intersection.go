@@ -39,8 +39,14 @@ func (e *LogicalIntersectionExpression) GetComparisonKeyValues() []values.Value 
 	return e.comparisonKeyValues
 }
 
-// GetResultValue approximates by returning the first child's flowed
-// object — same caveat as LogicalUnion.
+// GetResultValue returns the first child's flowed object value. Same source as
+// LogicalUnion and the same disposition: Java's
+// LogicalIntersectionExpression.java:75 is `mergeValues(quantifiers)`, whose
+// result TYPE is the first non-existential quantifier's flowed object type
+// (RecordQuerySetPlan.java:252-261). Child 0's row is Java's stated row, so this
+// site stays TYPED — see LogicalUnionExpression.GetResultValue for why the
+// mergeValues citation does not mean what it looks like it means, and for the
+// DerivedValue difference that is real.
 func (e *LogicalIntersectionExpression) GetResultValue() values.Value {
 	if len(e.quantifiers) == 0 {
 		return values.NewNullValue(values.UnknownType)

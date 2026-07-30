@@ -14,11 +14,12 @@ import (
 //
 // Ports the structural surface of Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalUnionExpression`.
-// Java's GetResultValue is a `RecordQuerySetPlan.mergeValues(children)`
-// reduction that picks a unified row-shape Value across children. Go
-// approximates by returning the first child's flowed object value —
-// union legs are column-aligned by construction, so any child's shape
-// stands in (the bare RecordQueryUnionPlan does the same).
+// Java's GetResultValue is `RecordQuerySetPlan.mergeValues(children)`, whose
+// result TYPE is the first non-existential child's flowed object type — not a
+// unified shape reduced across children, despite the name. Go returns the first
+// child's flowed object value, which states that same row; the divergence is in
+// the VALUE (Java's DerivedValue refers to every child) rather than in the row.
+// See GetResultValue.
 type LogicalUnionExpression struct {
 	quantifiers []Quantifier
 }
@@ -32,7 +33,25 @@ func NewLogicalUnionExpression(quantifiers []Quantifier) *LogicalUnionExpression
 	return &LogicalUnionExpression{quantifiers: copied}
 }
 
-// GetResultValue approximates Java's mergeValues — see type doc.
+// GetResultValue returns the first child's flowed object value, and the TYPE it
+// states is Java's answer verbatim — which is worth stating because the citation
+// to `RecordQuerySetPlan.mergeValues` reads at first glance like it is not.
+//
+// Java's LogicalUnionExpression.java:50 is `mergeValues(quantifiers)`, and
+// mergeValues (RecordQuerySetPlan.java:252-261) resolves its result TYPE as the
+// FIRST non-existential quantifier's `getFlowedObjectType()` — under an explicit
+// `// TODO let's just pick the first result type for now`. So child 0's row IS the
+// row Java states here, and typing this site moves Go TOWARDS Java rather than
+// away from it. Freezing it untyped, as the genuinely-divergent DML and group-by
+// sites are frozen, would be a regression against the spec.
+//
+// What DOES diverge is the Value: Java wraps every child's flowed value in a
+// DerivedValue so the union's result carries all of them, where Go returns child
+// 0's object outright. That costs the correlation set of children 1..n on this
+// node, and it is a real difference — but it is a difference in what the value
+// REFERS to, not in the row it claims, and the typing sweep is about the claim.
+//
+// Pinned by TestSetOperationResultValueStatesChildZerosRow.
 func (e *LogicalUnionExpression) GetResultValue() values.Value {
 	if len(e.quantifiers) == 0 {
 		return values.NewNullValue(values.UnknownType)

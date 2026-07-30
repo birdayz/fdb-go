@@ -60,10 +60,29 @@ func (e *UpdateExpression) GetTargetRecordType() string { return e.targetRecordT
 // list. Read-only.
 func (e *UpdateExpression) GetTransforms() []UpdateTransform { return e.transforms }
 
-// GetResultValue is the inner's flowed object value — UPDATE
-// passes-through the rows it updated.
+// GetResultValue passes the inner's flowed object through with the TYPE
+// DELIBERATELY STRIPPED, for the reason InsertExpression.GetResultValue states at
+// length, and here the divergence is larger.
+//
+// Java's UpdateExpression.java:84 is
+// `new QueriedValue(computeResultType(inner.getFlowedObjectType(), targetType))`,
+// and computeResultType (:209-213) builds a TWO-FIELD record — `OLD` carrying the
+// inner's row and `NEW` carrying the target's. An UPDATE flows the before/after
+// pair, which is what makes `UPDATE … RETURNING "OLD"."X", "NEW"."X"` expressible.
+// Go returns the inner's row: not a differently-shaped version of the same claim,
+// a different row with a different column count.
+//
+// Untyped that was inert. Typed it asserts an N-column source row where the
+// operator produces a 2-column old/new pair, so a reader that believes it reads
+// every slot at the wrong depth. Stating no type is the honest interim.
+//
+// The real fix is the OLD/NEW record, and it needs the target type this expression
+// does not yet carry (Go's UpdateExpression takes only the target record's NAME).
+// That is work, not a wall — the name resolves to a type through the schema the
+// planner already consults — but it changes what an UPDATE's result value IS and
+// every consumer of it moves with it. Booked in TODO.md beside the INSERT half.
 func (e *UpdateExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
 }
 
 // GetQuantifiers returns the single inner Quantifier.

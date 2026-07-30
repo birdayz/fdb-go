@@ -10672,6 +10672,47 @@ None is speculative: each was re-verified against the tree before booking.
   and was reverted -- the fix must come WITH the consumers that expect the
   input-row shape converted in the same change. Blocks the groupby rule's
   AccessorNamePathKey match becoming pushDown+Value.equals.
+  UPDATE (typed-flowed-value sweep): the site is now FROZEN on an explicitly
+  untyped quantifier object rather than riding `GetFlowedObjectValue`, which
+  is typed since the sweep. Untyped, the wrong passthrough asserted nothing;
+  typed, it additionally STATES that a GROUP BY flows its input row, and a
+  downstream reader that believes a stated row reads every slot at the wrong
+  depth (the failure LogicalProjectionExpression already measured). The
+  freeze is behaviour-preserving against pre-sweep master and pinned by
+  `TestFlowedValueExemptionsStateNoRowType`, which fails LOUDLY the moment
+  the site is typed without the value being fixed. So this item's scope is
+  unchanged and its pin is now non-vacuous.
+
+- [ ] **CQ-65 (M) — InsertExpression and UpdateExpression state the WRONG
+  result row, and are frozen untyped until they state the right one.**
+  Java: `InsertExpression.java:71` is `new QueriedValue(targetType)` -- an
+  INSERT flows the TARGET record's row, not the source select's, and those
+  differ whenever the insert does not name every column in table order.
+  `UpdateExpression.java:84` + `:209-213` is
+  `new QueriedValue(RECORD<OLD: innerRow, NEW: targetType>)` -- an UPDATE
+  flows the before/after PAIR, a two-column row, which is what makes
+  `UPDATE ... RETURNING "OLD"."X", "NEW"."X"` expressible. Go returns the
+  inner's flowed object at both sites.
+  Both are now frozen on an explicitly untyped quantifier object (see CQ-59's
+  update for why typed is worse than untyped here) and pinned by
+  `TestFlowedValueExemptionsStateNoRowType`.
+  The fix: INSERT is `values.NewQueriedValue(e.targetType)` and the
+  expression already holds the target type; UPDATE needs the target TYPE
+  threaded in (Go's `NewUpdateExpression` takes only the record NAME, which
+  the planner's schema already resolves). Both change what the DML result
+  value IS -- Java's `computeCorrelatedToWithoutChildren` for INSERT is the
+  empty set precisely because its result correlates to nothing -- so the
+  physical lowering and every consumer of the DML result value move in the
+  same change.
+  NOT in scope, and checked: `DeleteExpression.java:62` IS
+  `inner.getFlowedObjectValue()`, so Go's Delete matches Java and stays
+  TYPED. Likewise `LogicalUnion`/`LogicalIntersection`: Java's
+  `RecordQuerySetPlan.mergeValues` resolves its result TYPE as the first
+  non-existential quantifier's flowed object type
+  (RecordQuerySetPlan.java:252-261, under an explicit "let's just pick the
+  first result type for now"), so child 0's row is the spec's answer and
+  freezing them would be a regression. All three are pinned in the opposite
+  direction so the exemption cannot spread to them by analogy.
 
 - [x] **CQ-60 (S/M) — the ordering-comparator type-dispatch flip is measured
   FREE in production (decline residual 0 at both sites) but blocked by 24

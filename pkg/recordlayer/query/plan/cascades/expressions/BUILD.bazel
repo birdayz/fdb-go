@@ -55,6 +55,7 @@ go_test(
         "explode_test.go",
         "expression_test.go",
         "flowed_row_refinement_test.go",
+        "flowed_value_exemptions_test.go",
         "flowed_value_typing_test.go",
         "full_unordered_scan_test.go",
         "fuzz_test.go",

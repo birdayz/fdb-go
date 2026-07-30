@@ -46,11 +46,33 @@ func (e *InsertExpression) GetTargetRecordType() string { return e.targetRecordT
 // GetTargetType returns the target row Type.
 func (e *InsertExpression) GetTargetType() values.Type { return e.targetType }
 
-// GetResultValue is the inner's flowed object value — INSERT
-// passes-through the rows it inserted (so callers can chain a
-// projection counting them, etc.).
+// GetResultValue passes the inner's flowed object through with the TYPE
+// DELIBERATELY STRIPPED, and both halves need saying.
+//
+// Java does NOT pass the inner through here. `InsertExpression.java:71` is
+// `new QueriedValue(targetType)` — the row an INSERT produces is the TARGET
+// record's row, not the row the source select feeds it. Those are different rows
+// whenever the insert does not name every column in table order, which is most of
+// them: `INSERT INTO t SELECT a, b FROM s` has an inner row of (a, b) and a target
+// row of t's full column list.
+//
+// While the flowed accessor carried no type, passing the inner through was inert —
+// an untyped value claims nothing, and the divergence was confined to the Value's
+// shape. The moment the accessor became typed (Java's shape) this site started
+// ASSERTING that an INSERT flows its source row, which is a statement Java
+// contradicts and the shapes above falsify. Stating no type is the honest interim;
+// stating the inner's is a wrong answer, and it is wrong in the direction that
+// bites — a downstream reader that believes a stated row takes it at its word.
+//
+// The real fix is `values.NewQueriedValue(e.targetType)`, which this expression
+// already holds the target type for. It is not a rider on the typing sweep: it
+// changes what an INSERT's result value IS (a queried value over the target,
+// correlated to nothing — Java's computeCorrelatedToWithoutChildren is the empty
+// set for exactly that reason) rather than only what it says, so every consumer of
+// the DML result value and the physical lowering move with it. Booked in TODO.md.
+// Until it lands this site must not be "cleaned up" back onto the typed accessor.
 func (e *InsertExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
 }
 
 // GetQuantifiers returns the single inner Quantifier.

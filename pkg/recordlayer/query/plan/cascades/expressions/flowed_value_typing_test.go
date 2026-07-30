@@ -82,9 +82,19 @@ func TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity(t *testing.T) {
 	}
 }
 
-// TestLogicalProjectionResultValueStatesNoRowType pins the ONE site that must NOT
-// take the typed flowed value, and pins it with its reason attached so it cannot
-// be "cleaned up" onto the typed accessor for consistency.
+// TestLogicalProjectionResultValueStatesNoRowType pins the FIRST site found that
+// must not take the typed flowed value, with its reason attached so it cannot be
+// "cleaned up" onto the typed accessor for consistency.
+//
+// It was believed to be the only one. It is not: GroupBy, Insert and Update pass
+// their inner through while producing a different row too, for three different
+// reasons, and they are pinned as a family in flowed_value_exemptions_test.go —
+// along with the three sites that LOOK like the family and are actually
+// Java-faithful (Delete, Union, Intersection), because the analogy is what would
+// spread the exemption to them.
+//
+// This one keeps its own test because its reason is its own: a projection outputs
+// its PROJECTED columns, and the fix is a row built from GetProjectedValues.
 //
 // LogicalProjectionExpression.GetResultValue passes its inner's flowed object
 // through, which is Java's contract verbatim
