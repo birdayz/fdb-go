@@ -62,14 +62,19 @@ var (
 // column is the read's column name as the arm would have folded it into the
 // qualified key. Deliberately takes the SAME inputs the arm itself has in hand, so
 // the census cannot answer a different question than the one the arm decides.
-func recordLegLocalBakeability(leg values.CorrelationIdentifier, legTyp values.Type, column string) {
+// available names the leg layouts the caller could derive from the legs' physical
+// plans. It is carried into the UNTYPED-LEG witness because the interesting case
+// is not "no layouts existed" but "layouts existed and this leg was not among
+// them" — a reference correlated to an alias no chosen leg plan carries, which is
+// a different defect from a leg whose plan yields no row type.
+func recordLegLocalBakeability(leg values.CorrelationIdentifier, legTyp values.Type, column string, available ...string) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
 	legLocalBakeCounts.Total++
 	rt, isRT := legTyp.(*values.RecordType)
 	if !isRT {
 		legLocalBakeCounts.UntypedLeg++
-		addLegLocalBakeWitness(fmt.Sprintf("UNTYPED-LEG %s.%s (leg type %v)", leg.Name(), column, legTyp))
+		addLegLocalBakeWitness(fmt.Sprintf("UNTYPED-LEG %s.%s (leg type %v; derivable leg layouts %v)", leg.Name(), column, legTyp, available))
 		return
 	}
 	if _, found := rt.FieldIndex(column); !found {
@@ -92,6 +97,19 @@ func addLegLocalBakeWitness(w string) {
 		}
 	}
 	legLocalBakeWitnesses = append(legLocalBakeWitnesses, w)
+}
+
+// legTypeOrUntyped picks the layout the census should classify a fallen-through
+// read against: the leg's PHYSICAL row type when the caller could derive one (the
+// read is then classified COLUMN-ABSENT — a name that does not name a column of
+// the leg it claims), otherwise the reference's own untyped quantifier object (the
+// read is UNTYPED-LEG — no layout existed at all). Distinguishing the two is the
+// whole point: they are different residues with different fixes.
+func legTypeOrUntyped(legType *values.RecordType, haveLegType bool, refType values.Type) values.Type {
+	if haveLegType && legType != nil {
+		return legType
+	}
+	return refType
 }
 
 func recordTypeFieldNames(rt *values.RecordType) []string {
@@ -128,4 +146,13 @@ func FormatLegLocalBakeCensus() string {
 		fmt.Fprintf(&b, "\n  witnesses:\n    %s", strings.Join(sorted, "\n    "))
 	}
 	return b.String()
+}
+
+func legLocalTypeKeys(m map[values.CorrelationIdentifier]*values.RecordType) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k.Name())
+	}
+	sort.Strings(out)
+	return out
 }

@@ -79,6 +79,7 @@ go_test(
         "merge_sort_heap_pop_error_test.go",
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
+        "merged_outer_leg_binding_test.go",
         "name_oracle_test.go",
         "nlj_continuation_test.go",
         "nlj_hash_key_test.go",
@@ -184,6 +185,7 @@ go_test(
         "merge_sort_heap_pop_error_test.go",
         "aggregate_output_slot_identity_test.go",
         "leg_identity_binding_test.go",
+        "merged_outer_leg_binding_test.go",
     ],
     deps = [
         "//gen",
