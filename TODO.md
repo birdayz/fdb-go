@@ -34,6 +34,58 @@ work, reconstructed onto current master. Not merged: the review lap is the gate.
   had swept 400 scenarios across a range axis and a selector axis without ever
   crossing them.
 
+- [ ] **F4 — re-land the reverted client-fidelity commit, 1036 last and only with an
+  answer.** `de1da5f17` ported four client-fidelity gaps; `302ea8a67` reverted all four
+  because ONE of them — M5, `accessed_unreadable`(1036) on a read that reaches a pending
+  versionstamped write — turned the Tier-2 hunt red:
+
+  ```
+  hunt: seed=42 FAILED after 9 ops (3 faults)
+    error: op 8 saveNew: load old record version for index update:
+           failed to load record version: accessed_unreadable (1036)
+    reproduce: hunt.Run(42, cfg)          (also seed 0, at op 24)
+  ```
+
+  Three explanations, none settled: **(a)** the record layer would get 1036 against a real
+  cluster too, and no existing test reaches it because only the hunt runs many
+  version-writing ops inside one transaction; **(b)** it sets `BYPASS_UNREADABLE` somewhere
+  the sim does not model — grep finds no such call; **(c)** the ordering that makes it safe
+  on real FDB is one the sim does not reproduce.
+
+  **Timing evidence, and it points at (c).** MEASURED: `flushVersionMutations`
+  (`database.go:850-863`) is what turns a queued `AddVersionMutation` into an actual
+  `tx.SetVersionstampedKey/Value`, and it defers every one of them to just before commit.
+  There are SIX call sites, not seven — the seventh `grep` hit is the definition itself —
+  and ALL SIX are commit-adjacent: `database.go:253`, `:330`, `:374`, `:719`
+  (`CommitWithHooks`), `:1067` (`CommitWithVersionstamp`) and `runner.go:174` each sit
+  immediately after `runCommitChecks()` and immediately before the commit. The
+  record-version key the hunt died on goes through that queue (`store_version.go:52`,
+  `:78`), so nothing the record layer reads mid-transaction can reach a key the REAL client
+  would have marked unreadable. That is the shape of a sim application-point divergence,
+  not of a live record-layer bug.
+
+  Two sites do bypass the queue and write a versionstamped value mid-transaction:
+  `database.go:1025` (`SetMetaDataVersionStamp`) and `spfresh_storage.go:520`. The first
+  already handles the error — `GetMetaDataVersionStamp` documents "On ACCESSED_UNREADABLE
+  errors (FDB code 1036), marks the stamp as dirty and returns nil" — which is further
+  evidence that the record layer's real 1036 exposure is known and handled, and that the
+  hunt's failure is somewhere else.
+
+  INFERRED, and the thing to instrument first: `postCommitReset` is what clears the sim's
+  unreadable set, and it runs on only two paths (`conflict.go:50` read-only fast path,
+  `:173` success). Every error return deliberately leaves the handle untouched. The failing
+  hunt run took THREE faults. So a handle retried after an injected commit fault would carry
+  an unreadable set forward that no real client has. Whoever runs the container arm should
+  instrument exactly that: when the sim's unreadable set becomes non-empty relative to the
+  record layer's read, and whether it survives a failed commit and a retry.
+
+  M4 (1007 minted from the simulated clock), M6 (mutation and conflict-range size overhead,
+  and the size-before-too-old ordering) and M8b (present-empty `Set(k, nil)`) were green and
+  are recoverable from `de1da5f17`; re-land them once the 1036 question has an answer rather
+  than piecemeal. M8a (cancellation on every read entry point) is already re-landed, with
+  `GetRangeSplitPoints` added to the set and the metrics paths' inverted-range-before-cancel
+  precedence pinned.
+
 ## DST findings
 
 The query-engine defects the RFC-199 Tier-2 hunts surfaced, and what closed each. This is
@@ -6759,6 +6811,19 @@ harness: a serializable-snapshot backend whose conflict verdicts are validated a
 read-modify-write across two explicit transactions can be replayed byte-for-byte. Use it to pin the
 read-your-writes semantics and the read-conflict verdicts before touching the executor; the real-FDB tests
 then confirm rather than discover.
+
+**Acceptance criteria must INJECT the rare verdicts, not wait for them.** For as long as the 1007-clock item
+(F4, in the RFC-199 section above) stays booked, this item's acceptance criteria MUST reach `transaction_too_old`
+(1007) and BOTH branches of `commit_unknown_result` (1021 — mutations durable, and mutations never applied) by
+explicit `InjectOnce`, never by natural occurrence. The reason is specific, not procedural: the M4 fix that mints
+versions from the simulated clock is exactly what was reverted with `de1da5f17`, so today SimFDB's version counter
+has no relationship to time and 1007 is unreachable by anything a caller can do — a criterion that says "a
+long-held transaction gets 1007" would pass while never once executing the path. The 1021 branch is chosen by a
+per-seed coin (`conflict.go`), so a criterion that merely runs seeds certifies whichever branch it happened to
+draw and silently leaves the other — the one where the retry has to redo the work, which is the branch an
+explicit-transaction COMMIT retry actually lands on — unexercised. Both are the same failure: a green acceptance
+run that has not reached the case it claims to cover. When F4 lands and 1007 becomes naturally reachable, a
+natural-occurrence arm may be ADDED; the injected arms stay either way, because they are the deterministic ones.
 
 Two SimFDB tests are direct inputs to the semantics decision this item has to make, and they deliberately
 pin TODAY's behaviour rather than a desired end state (it matches Java today, so it is not a bug to fix

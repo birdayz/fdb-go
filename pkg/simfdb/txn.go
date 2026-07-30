@@ -311,6 +311,16 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 }
 
 func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
+	// transaction_cancelled(1025) before anything else, as on every other read entry point: the
+	// client reaches it through ensureReadVersion, whose FIRST act is checkCancelled
+	// (client/transaction.go:662-665), and getRangeDir calls ensureReadVersion before its own
+	// legal-range and limit validation (client/transaction.go:1252-1268). Get and GetKey already
+	// gate here; GetRange did not, so a cancelled transaction could still scan the keyspace — and
+	// a sim that answers reads no real client answers lets a test "verify" behaviour that does
+	// not exist.
+	if tx.cancelled {
+		return &readyRangeResult{err: fdb.Error{Code: 1025}}
+	}
 	tx.ensureReadVersion()
 	beginSel, endSel := r.FDBRangeKeySelectors()
 	view := tx.buildView()
@@ -452,6 +462,12 @@ func reverseKVs(kvs []fdb.KeyValue) {
 }
 
 func (tx *simTxn) GetReadVersion() fdb.FutureInt64 {
+	// The client's GetReadVersion is ensureReadVersion + a field read
+	// (client/transaction.go:2435-2447), and ensureReadVersion opens with checkCancelled
+	// (client/transaction.go:662-665).
+	if tx.cancelled {
+		return newReadyInt64(0, fdb.Error{Code: 1025})
+	}
 	tx.ensureReadVersion()
 	return newReadyInt64(tx.readVersion, nil)
 }
@@ -523,9 +539,20 @@ func (s simSnapshot) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (an
 }
 
 func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
-	tx.ensureReadVersion()
 	begin, end := r.FDBRangeKeys()
 	b, e := []byte(begin.FDBKey()), []byte(end.FDBKey())
+	// The client's precedence, verbatim (client/metrics.go:29-38): inverted_range(2005) FIRST —
+	// libfdb_c's KeyRangeRef constructor throws before the metric op runs — and only then
+	// transaction_cancelled(1025), which this path must gate EXPLICITLY because it never fetches a
+	// read version and so never passes through ensureReadVersion's checkCancelled. Adding the
+	// cancel gate without the 2005 above it would invert the order the client reports.
+	if bytes.Compare(b, e) > 0 {
+		return newReadyInt64(0, fdb.Error{Code: 2005}) // inverted_range
+	}
+	if tx.cancelled {
+		return newReadyInt64(0, fdb.Error{Code: 1025})
+	}
+	tx.ensureReadVersion()
 	tx.db.mu.Lock()
 	kvs := tx.db.store.rangeAt(b, e, tx.readVersion)
 	tx.db.mu.Unlock()
@@ -537,6 +564,16 @@ func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 }
 
 func (tx *simTxn) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.FutureKeyArray {
+	// Same entry-point precedence as its sibling GetEstimatedRangeSizeBytes
+	// (client/metrics.go:177-187): inverted_range(2005), then transaction_cancelled(1025), gated
+	// explicitly because this path fetches no read version either.
+	begin, end := r.FDBRangeKeys()
+	if bytes.Compare([]byte(begin.FDBKey()), []byte(end.FDBKey())) > 0 {
+		return newReadyKeyArray(nil, fdb.Error{Code: 2005}) // inverted_range
+	}
+	if tx.cancelled {
+		return newReadyKeyArray(nil, fdb.Error{Code: 1025})
+	}
 	// Single logical shard: no interior split points (begin/end only, per FDB when the range
 	// is smaller than a shard). v1 returns the empty set of interior boundaries.
 	return newReadyKeyArray(nil, nil)
@@ -630,7 +667,11 @@ func (tx *simTxn) addWriteConflict(begin, end []byte) {
 // caller asked for the conflict or not.
 func (tx *simTxn) AddReadConflictRange(er fdb.ExactRange) error {
 	b, e := er.FDBRangeKeys()
-	tx.addFilteredReadConflict([]byte(b.FDBKey()), []byte(e.FDBKey()))
+	begin, end, ok, err := clampConflictRange([]byte(b.FDBKey()), []byte(e.FDBKey()))
+	if err != nil || !ok {
+		return err
+	}
+	tx.addFilteredReadConflict(begin, end)
 	return nil
 }
 
@@ -639,9 +680,22 @@ func (tx *simTxn) AddReadConflictKey(key fdb.KeyConvertible) error {
 	return nil
 }
 
+// AddWriteConflictRange records an EXPLICIT write conflict, validated exactly as the client
+// validates it (client/transaction.go:3153-3176).
+//
+// An UNVALIDATED inverted range is not inert here — it is actively harmful. rangesOverlap
+// (conflict.go) is the plain half-open predicate `a.begin < b.end && b.begin < a.end`, which an
+// inverted [hi, lo) satisfies against any read range that STRADDLES it: an explicit write
+// conflict of ["n","c") "overlaps" a reader's ["a","z") and aborts it with not_committed(1020).
+// So the sim answered a caller error with a spurious conflict verdict — in the harness whose one
+// job is to certify conflict verdicts.
 func (tx *simTxn) AddWriteConflictRange(er fdb.ExactRange) error {
 	b, e := er.FDBRangeKeys()
-	tx.addWriteConflict([]byte(b.FDBKey()), []byte(e.FDBKey()))
+	begin, end, ok, err := clampConflictRange([]byte(b.FDBKey()), []byte(e.FDBKey()))
+	if err != nil || !ok {
+		return err
+	}
+	tx.addWriteConflict(begin, end)
 	return nil
 }
 

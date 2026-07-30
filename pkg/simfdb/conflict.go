@@ -13,12 +13,55 @@ const (
 	valueSizeLimit = 100_000    // value_too_large (2103)
 	keySizeLimit   = 10_000     // key_too_large (2102) — the ~10KB key limit
 	txnSizeLimit   = 10_000_000 // transaction_too_large (2101)
+	// systemKeySizeLimit / tenantPrefixSize complete getMaxClearKeySize (below). Mirrors
+	// CLIENT_KNOBS->SYSTEM_KEY_SIZE_LIMIT and TenantAPI::PREFIX_SIZE (client/sizelimits.go:18,20).
+	systemKeySizeLimit = 30_000
+	tenantPrefixSize   = 8
 	// mvccWindow = MAX_WRITE_TRANSACTION_LIFE_VERSIONS = 5 * VERSIONS_PER_SECOND. A read
 	// version older than (latestCommit - mvccWindow) yields transaction_too_old(1007). SimFDB
 	// never actually GCs history (retaining it is strictly safer); the window is pure version
 	// arithmetic here.
 	mvccWindow = 5_000_000
 )
+
+// getMaxClearKeySize is NativeAPI.actor.cpp's getMaxClearKeySize == getMaxKeySize ==
+// getMaxWriteKeySize(key, hasRawAccess=true) — the bound an explicit conflict range's endpoints
+// are CLAMPED to (client/sizelimits.go:31-45). System keys get the larger limit; everything else
+// gets the key limit plus the tenant-prefix slack raw access allows.
+func getMaxClearKeySize(key []byte) int {
+	if len(key) > 0 && key[0] == 0xFF {
+		return systemKeySizeLimit
+	}
+	return keySizeLimit + tenantPrefixSize
+}
+
+// clampConflictRange applies the shared validation both explicit conflict-range entry points
+// perform, in the client's order (client/transaction.go:3103-3128 read, :3153-3176 write):
+// inverted_range(2005) first, then the oversized-endpoint clamp, then the drop when the clamp
+// collapses the range to empty. ok=false means the caller returns nil without recording anything.
+//
+// The 2004 (key_outside_legal_range) check that sits between the two in the client is
+// deliberately NOT ported: it compares the endpoints against getMaxReadKey/getMaxWriteKey, which
+// are functions of the ACCESS_SYSTEM_KEYS / READ_SYSTEM_KEYS / RAW_ACCESS options, and SimFDB
+// accepts all three as no-ops (options.go). Porting the check without the access model behind it
+// would invent a verdict rather than reproduce one.
+func clampConflictRange(begin, end []byte) (nb, ne []byte, ok bool, err error) {
+	// Inverted first: in libfdb_c the KeyRangeRef constructor throws before any other check runs,
+	// so an inverted range is 2005 even when it would also fail a later check.
+	if bytes.Compare(begin, end) > 0 {
+		return nil, nil, false, fdb.Error{Code: 2005} // inverted_range
+	}
+	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
+		begin = begin[:bmax+1]
+	}
+	if emax := getMaxClearKeySize(end); len(end) > emax {
+		end = end[:emax+1]
+	}
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, nil, false, nil // C++ r.empty() → returns without recording a conflict range
+	}
+	return begin, end, true, nil
+}
 
 // commit resolves tx under serializable snapshot isolation, applies its writes, and assigns a
 // commit version. Serialized by db.mu so exactly one transaction commits at a time — any serial

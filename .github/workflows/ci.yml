@@ -45,9 +45,22 @@ jobs:
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
 
+      # `--define gotags=fdbdocker` turns the SimFDB differential's missing-container
+      # skip into a FAILURE (pkg/simfdb/differential_docker_required.go). The Docker
+      # preflight above proves the daemon answers; the tag proves the differential
+      # actually RAN. They are not the same check — a container can fail to start on a
+      # runner whose daemon is perfectly healthy, and that lands on the sanctioned
+      # `FDB not available (no Docker)` skip. The differential is the ONLY test that
+      # checks SimFDB against real FDB rather than against itself, so skipping it
+      # yields a green suite that has verified nothing about fidelity.
+      #
+      # The flag is ADDITIVE to `.bazelrc`'s `--@rules_go//go/config:tags=` list
+      # (rules_go go/private/context.bzl:998-1000 appends `--define gotags` to it), so
+      # `bazelrunfiles` and `stress` still hold. Passing the label flag directly would
+      # have to restate them and would silently drop any tag later added there.
       - name: Build, lint & test
         id: test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
       # Report/upload run on test success OR failure (always() lost the report on a
       # red suite) — but NOT when the test step was SKIPPED (e.g. the Docker preflight
