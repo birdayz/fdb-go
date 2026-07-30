@@ -104,8 +104,17 @@ type conflictScenario struct {
 	probe    int // the concurrently-written key
 }
 
+// selectorKinds is the number of selector shapes the sweeps draw from.
+const selectorKinds = 6
+
 // selectorFor maps a selector kind to the selector over base. Shared by the GetKey arm and
-// the selector-range arm so both cover the identical four kinds.
+// the selector-range arm so both cover the identical kinds.
+//
+// The four named constructors all have |Offset| <= 1, which is the only case the client can
+// resolve WITHOUT issuing a GetKey — so a sweep restricted to them never exercises the
+// multi-step offset walk, where the resolved key is several keys away from the anchor and the
+// conflict span is correspondingly wide. Kinds 4 and 5 are the explicit large-offset forms, one
+// forward and one backward.
 func selectorFor(kind int, base fdb.Key) fdb.KeySelector {
 	switch kind {
 	case 0:
@@ -114,8 +123,15 @@ func selectorFor(kind int, base fdb.Key) fdb.KeySelector {
 		return fdb.FirstGreaterThan(base)
 	case 2:
 		return fdb.LastLessOrEqual(base)
-	default:
+	case 3:
 		return fdb.LastLessThan(base)
+	case 4:
+		// Three keys past the anchor: needs a real offset walk to resolve.
+		return fdb.KeySelector{Key: base, OrEqual: false, Offset: 3}
+	default:
+		// Three keys before the anchor: the backward walk, where an extent computed from the
+		// anchor instead of the resolved key misses everything in between.
+		return fdb.KeySelector{Key: base, OrEqual: false, Offset: -2}
 	}
 }
 
@@ -127,6 +143,13 @@ func runConflictScenario(t *testing.T, db fdb.BackendDatabase, s conflictScenari
 	kk := func(i int) fdb.Key { return fdb.Key(fmt.Sprintf("%sk%02d", s.prefix, i)) }
 
 	if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		// Boundary sentinels: an offset selector walks past the k-window and must land on a key
+		// inside THIS prefix, not on whatever the shared real cluster happens to hold there. See
+		// sentinelPad.
+		for i := 0; i < sentinelPad; i++ {
+			tx.Set(fdb.Key(fmt.Sprintf("%sa%02d", s.prefix, i)), []byte("lo"))
+			tx.Set(fdb.Key(fmt.Sprintf("%sz%02d", s.prefix, i)), []byte("hi"))
+		}
 		for i := 0; i < nKeys; i++ {
 			if s.seeded[i] {
 				tx.Set(kk(i), []byte{byte(i)})
@@ -216,8 +239,8 @@ func runDifferentialConflictOutcome(t *testing.T, seed uint64, scenarios int) {
 			seeded:   seeded,
 			readMode: rng.IntN(4), // point Get / GetKey / exact-key range / SELECTOR range
 			readPt:   rng.IntN(nKeys),
-			selKind:  rng.IntN(4),
-			selKind2: rng.IntN(4),
+			selKind:  rng.IntN(selectorKinds),
+			selKind2: rng.IntN(selectorKinds),
 			readLo:   lo,
 			readHi:   hi,
 			limit:    rng.IntN(6), // 0..5 (0 = unlimited)

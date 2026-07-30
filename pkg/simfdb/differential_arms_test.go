@@ -87,10 +87,25 @@ func equalRows(a, b []string) bool {
 
 func armKey(prefix string, i int) fdb.Key { return fdb.Key(fmt.Sprintf("%sk%02d", prefix, i)) }
 
-// seedArmKeys writes the masked keys in one committed transaction.
+// sentinelPad is the number of always-present keys seeded on each side of the k00..k19 window,
+// inside the scenario prefix.
+//
+// A key selector with an OFFSET walks that many existing keys from its anchor, and the walk does
+// not stop at a prefix boundary — it lands on whatever key is physically there. On the shared
+// real cluster that is another scenario's (or another parallel arm's) data; on a per-arm SimDB
+// there is nothing, so the two backends legitimately disagree and the harness reports a defect
+// that is its own. Sentinels give every walk something to land on WITHIN the prefix, which is
+// what makes the comparison meaningful. Pad > max |offset| used by selectorFor.
+const sentinelPad = 5
+
+// seedArmKeys writes the masked keys plus the boundary sentinels in one committed transaction.
 func seedArmKeys(t *testing.T, db fdb.BackendDatabase, prefix string, mask [nKeys]bool) {
 	t.Helper()
 	if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		for i := 0; i < sentinelPad; i++ {
+			tx.Set(fdb.Key(fmt.Sprintf("%sa%02d", prefix, i)), []byte("lo"))
+			tx.Set(fdb.Key(fmt.Sprintf("%sz%02d", prefix, i)), []byte("hi"))
+		}
 		for i := 0; i < nKeys; i++ {
 			if mask[i] {
 				tx.Set(armKey(prefix, i), []byte{byte(i)})
@@ -256,7 +271,7 @@ func TestDifferentialArm_AtomicSelector(t *testing.T) {
 				mask := randMask(rng)
 				lo := rng.IntN(nKeys)
 				hi := lo + 1 + rng.IntN(nKeys-lo)
-				k1, k2 := rng.IntN(4), rng.IntN(4)
+				k1, k2 := rng.IntN(selectorKinds), rng.IntN(selectorKinds)
 				atomicKey := rng.IntN(nKeys)
 				atomicKind := rng.IntN(4) // Add / Max / Min / ByteMax
 				probe := rng.IntN(nKeys)
