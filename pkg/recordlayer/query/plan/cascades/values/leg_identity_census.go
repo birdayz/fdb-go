@@ -264,17 +264,20 @@ type LegIdentityCensus struct {
 	UnstatedSamples []string
 
 	// NeitherSamples is the same service for the Neither population, and it is
-	// collected ONLY at the sites where Neither is the asserted-zero
-	// (LegSiteNeitherMustBeZero). At a genuine COMPARISON site Neither is the
-	// ordinary scan traffic every lookup pays walking to its own leg — a large,
-	// per-row population whose witnesses say nothing and whose sampling would put
-	// a mutex in the row loop. At the identity-PAIR sites it is the failure itself:
-	// a leg whose two spellings name different things.
+	// collected at the sites where Neither is DIAGNOSTIC rather than traffic
+	// (LegSiteNeitherSampled). At a genuine COMPARISON site Neither is the ordinary
+	// scan cost every lookup pays walking to its own leg — a large, per-row
+	// population whose witnesses say nothing and whose sampling would put a mutex
+	// in the row loop. At the identity-PAIR sites the pair is two spellings of ONE
+	// leg, so Neither means those two spellings name different things.
 	//
 	// This exists because it was needed: retyping the nested-loop join plan's leg
 	// identities reported Neither = 12 over ~80k firings, and a bare 12 cannot be
-	// diagnosed. The rule generalizes — whichever population a site's assertion
-	// requires to be zero is the population that must name its witnesses.
+	// diagnosed. That site is sampled for exactly that reason even though its
+	// Neither is NOT asserted to be zero — the diagnosis is the point, and the site
+	// whose number motivated the sampler was the one site the first form of it
+	// skipped. The rule: a site whose pair is two spellings of one leg names its
+	// witnesses, whether or not its zero is enforced.
 	NeitherSamples []string
 
 	// RetiredVerdictDivergent is the pairs on which the predicate the site USED TO
@@ -373,6 +376,30 @@ func LegSiteNeitherMustBeZero(site LegIdentitySite) bool {
 	}
 }
 
+// LegSiteNeitherSampled reports whether a site's Neither witnesses are worth
+// retaining.
+//
+// It is a SUPERSET of LegSiteNeitherMustBeZero, and the gap between them is the
+// whole reason it is a separate predicate. Sampling used to be tied to the
+// assertion, which meant the one site whose Neither = 12 motivated building the
+// sampler — LegSiteNLJPlanAlias, whose Neither is deliberately not asserted
+// because a stale source alias is a reason to prefer the quantifier rather than a
+// failure — never sampled. The number that justified the instrument was the number
+// the instrument could not explain.
+//
+// The criterion is "is the pair two spellings of ONE leg?", not "is its zero
+// enforced?": at those sites a Neither is diagnostic no matter what the gate does
+// with it. Everywhere else Neither is per-row lookup traffic and sampling it would
+// put a mutex in the row loop.
+func LegSiteNeitherSampled(site LegIdentitySite) bool {
+	switch site {
+	case LegSiteNLJPlanAlias:
+		return true
+	default:
+		return LegSiteNeitherMustBeZero(site)
+	}
+}
+
 // legIdentitySampleCap bounds the retained witness set. A handful names the
 // producer; an unbounded set would let a hot row path grow the slice without
 // limit.
@@ -435,7 +462,7 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 		recordSample(site, legName, corrName, sampleFoldOnly)
 	default:
 		atomic.AddInt64(&c.Neither, 1)
-		if LegSiteNeitherMustBeZero(site) {
+		if LegSiteNeitherSampled(site) {
 			recordSample(site, legName, corrName, sampleNeither)
 		}
 	}
@@ -508,7 +535,7 @@ func RecordLegIdentityPair(site LegIdentitySite, leg, corr CorrelationIdentifier
 		recordSample(site, leg.Name(), corr.Name(), sampleFoldOnly)
 	default:
 		atomic.AddInt64(&c.Neither, 1)
-		if LegSiteNeitherMustBeZero(site) {
+		if LegSiteNeitherSampled(site) {
 			recordSample(site, leg.Name(), corr.Name(), sampleNeither)
 		}
 	}

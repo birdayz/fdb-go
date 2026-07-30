@@ -953,8 +953,20 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 // spans carry the leg types). A leg folded away entirely is ABSENT from the
 // map — no baked reference to it can exist in the RC, so evaluating the RC
 // never consults its binding and no adapter is needed.
-func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*values.RecordType {
+//
+// It ASSERTS the width-agreement invariant itself rather than leaving it to the
+// caller: every reference to one leg is a copy of the one planner-constructed
+// typed QOV, so two references disagreeing on that leg's width is a malformed
+// plan. This walk used to overwrite silently (last-wins), and the only explicit
+// assert lived in the caller's RC-specific bare-QOV loop — so the BARE arm, which
+// calls this and nothing else, had no assert at all, and even on the RC path a
+// leg referenced twice by two BAKED refs of different widths passed. Asserting
+// here covers both arms with one check, which is also why
+// widenLegTypesFromPredicates can keep its first-wins widening: it is the
+// widening source, and this is the assertion its doc points at.
+func legTypesFromResultValue(rv values.Value) (map[values.CorrelationIdentifier]*values.RecordType, error) {
 	legs := make(map[values.CorrelationIdentifier]*values.RecordType)
+	var err error
 	values.WalkValue(rv, func(n values.Value) bool {
 		fv, isFV := n.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -964,12 +976,27 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 		if !isQOV {
 			return true
 		}
-		if rt, isRT := qov.Type().(*values.RecordType); isRT {
+		rt, isRT := qov.Type().(*values.RecordType)
+		if !isRT {
+			return true
+		}
+		prev, seen := legs[qov.Correlation]
+		if !seen {
 			legs[qov.Correlation] = rt
+			return true
+		}
+		if len(prev.Fields) != len(rt.Fields) && err == nil {
+			err = fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the "+
+				"result value's baked references — all references must copy the one "+
+				"planner-constructed typed QOV (planner bug; malformed plan)",
+				qov.Correlation, len(prev.Fields), len(rt.Fields))
 		}
 		return true
 	})
-	return legs
+	if err != nil {
+		return nil, err
+	}
+	return legs, nil
 }
 
 // ordinalJoinBuild is the per-cursor ordinal-BUILD state, computed ONCE at
@@ -1090,7 +1117,15 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 		// with equijoin predicates and a projected EXISTS: declining executes and
 		// returns ZERO rows where three are correct. Enabled, the legs bind
 		// exactly as for an RC and the one value is evaluated against them.
-		bare := &ordinalJoinBuild{Enabled: true, Bare: rv, LegTypes: legTypesFromResultValue(rv)}
+		// The width-agreement assert runs on THIS path too — it lives inside
+		// legTypesFromResultValue, so the Bare arm gets it without a copy of the RC
+		// arm's loop. It used to be RC-only, which left the arm that has exactly one
+		// leg-type source with no check on that source at all.
+		bareLegTypes, err := legTypesFromResultValue(rv)
+		if err != nil {
+			return nil, err
+		}
+		bare := &ordinalJoinBuild{Enabled: true, Bare: rv, LegTypes: bareLegTypes}
 		widenLegTypesFromPredicates(bare.LegTypes, preds)
 		return bare, nil
 	}
@@ -1101,7 +1136,10 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// RV alone left the dropped leg typeless, and the leg
 	// adapted to a ZERO-WIDTH binding that blew up the predicate
 	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
-	legTypes := legTypesFromResultValue(rc)
+	legTypes, err := legTypesFromResultValue(rc)
+	if err != nil {
+		return nil, err
+	}
 	// Bare QOV fields carry their leg's type directly (the positional-merge
 	// shape's `_i` columns and the mixed upper's untranslated leg): without
 	// this a bare-QOV leg is typeless and its adapter degrades to an all-nil

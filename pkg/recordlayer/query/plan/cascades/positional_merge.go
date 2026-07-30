@@ -73,7 +73,14 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	fields := make([]values.RecordConstructorField, len(live))
 	mergedFields := make([]values.Field, len(live))
 	for i, a := range live {
-		fov := aliasToQ[a].GetFlowedObjectValueTyped()
+		fov, err := aliasToQ[a].GetFlowedObjectValueTyped()
+		if err != nil {
+			// The quantifier's own reference has members flowing DIFFERENT row shapes,
+			// so no member is authoritative and there is no honest merge slot type to
+			// pick. Decline the rule rather than choose by insertion order — Java
+			// Verify-fails at the same point (Reference.java:504-513).
+			return nil
+		}
 		if _, typed := fov.Type().(*values.RecordType); !typed {
 			if rt := legTypes[a]; rt != nil {
 				fov = values.NewQuantifiedObjectValueOfType(a, rt)

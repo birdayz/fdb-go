@@ -189,10 +189,22 @@ func TestPositionalMergeRowSlotsAreTyped(t *testing.T) {
 // It may be one — the whole result value being a single baked reference, which is
 // the select flowing ONE value as its entire output (executor's
 // ordinalJoinBuild.Bare evaluates it and flows the row or wraps the scalar).
-// Anything else — a baked reference buried inside an arithmetic value, a
-// comparison, a nested constructor that is not the row — has no defined output
-// row shape at a join node, and would reach the build as a value it cannot turn
-// into a row.
+//
+// WHAT THIS GATE IS, precisely, because the obvious reading of it is wrong. It is
+// a PLAN-LEVEL NARROWING, not an executor impossibility. The Bare arm defines an
+// output row shape for ANY value: a row flows as itself, a scalar wraps into the
+// 1-slot `_0` row, NULL flows as a nil row. So a baked ordinal buried inside an
+// arithmetic value would not reach a build that cannot handle it — it would build
+// a 1-slot row perfectly well.
+//
+// The gate exists because that row would be a shape no PLANNER path intends. Java
+// mints exactly two things here (ImplementNestedLoopJoinRule.java:187,201,214 pass
+// the select's result value verbatim; PartitionSelectRule.java:281,319 mint the
+// bare whole-value reference), and a buried baked ordinal is neither. Keeping the
+// bare shape narrowed to a whole-value reference is what makes the executor's Bare
+// arm a bounded contract rather than a catch-all: if a new rule starts emitting a
+// computed value with baked ordinals inside it, that is a rule to look at, and
+// this gate is how it gets noticed instead of silently producing a 1-slot row.
 //
 // Planning-only, so it needs no FDB / Docker.
 func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T) {
@@ -211,8 +223,11 @@ func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T)
 			t.Errorf("%s: %s result value carries baked ordinals and is not an RC, but is a %T "+
 				"(%s) rather than a baked reference.\n"+
 				"A non-RC join result value is legitimate only as the WHOLE value the select "+
-				"flows — a single baked reference the build evaluates and flows. A baked ordinal "+
-				"buried in a computed value has no defined output row shape at a join node.\n"+
+				"flows — a single baked reference the build evaluates and flows. The executor's "+
+				"Bare arm WOULD build a row from a computed value (it wraps any scalar into the "+
+				"1-slot _0 row), which is why this is a plan-level narrowing rather than a "+
+				"crash: the row it would build is a shape no planner path intends, and Java "+
+				"mints only the whole-value reference here.\n"+
 				"  sql: %s", name, j.kind, j.rv, j.rv.Name(), sql)
 			return
 		}

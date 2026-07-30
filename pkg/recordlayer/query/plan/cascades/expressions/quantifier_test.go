@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -124,5 +125,112 @@ func TestQuantifierKind_DoesNotAffectFlowedObjectValue(t *testing.T) {
 	}
 	if existential.GetFlowedObjectValue().(*values.QuantifiedObjectValue).Correlation != alias {
 		t.Fatal("Existential flowed-object alias mismatch")
+	}
+}
+
+// typedStubExpr is a stub whose result value carries a chosen ROW type, so a
+// Reference can be given members that AGREE or DISAGREE on the row they flow.
+type typedStubExpr struct {
+	name string
+	typ  *values.RecordType
+}
+
+func (s *typedStubExpr) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(s.name), s.typ)
+}
+func (s *typedStubExpr) GetQuantifiers() []Quantifier    { return nil }
+func (s *typedStubExpr) CanCorrelate() bool              { return false }
+func (s *typedStubExpr) ChildrenAsSet() bool             { return false }
+func (s *typedStubExpr) HashCodeWithoutChildren() uint64 { return 0 }
+func (s *typedStubExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (s *typedStubExpr) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+	o, ok := other.(*typedStubExpr)
+	return ok && o.name == s.name
+}
+
+func (s *typedStubExpr) WithQuantifiers(_ []Quantifier) RelationalExpression { return s }
+
+func rowOf(names ...string) *values.RecordType {
+	fields := make([]values.Field, len(names))
+	for i, n := range names {
+		fields[i] = values.Field{Name: n, FieldType: values.NotNullLong, Ordinal: i}
+	}
+	// Nullable, because a QuantifiedObjectValue reports its row type as nullable
+	// (rows pass through as nullable -- a LEFT JOIN's right side). Building the
+	// expectation the same way keeps this test about member AGREEMENT rather than
+	// about that policy.
+	return &values.RecordType{Nullable: true, Fields: fields}
+}
+
+// TestGetFlowedObjectType_VerifiesMemberAgreement pins the ported half of Java's
+// Reference.getResultType(): the row type is resolved by REDUCING over every
+// member with `Verify.verify(left.equals(right))` (Reference.java:504-513), so
+// "any member is authoritative" is a conclusion the verification earns rather
+// than an assumption.
+//
+// Go used to read members[0] and cite that verification without performing it. On
+// a memo where two members of one equivalence class flow different row shapes,
+// that picks a row shape by INSERTION ORDER — and the shape feeds the positional
+// merge's slot types, where a wrong row is a wrong-slot read with no error.
+func TestGetFlowedObjectType_VerifiesMemberAgreement(t *testing.T) {
+	t.Parallel()
+	ab := rowOf("A", "B")
+
+	// AGREEING members: the type resolves, and it resolves to the agreed row.
+	agree := InitialOf(&typedStubExpr{name: "m1", typ: ab})
+	agree.Insert(&typedStubExpr{name: "m2", typ: rowOf("A", "B")})
+	if len(agree.AllMembers()) < 2 {
+		t.Fatalf("fixture: reference holds %d members, need 2 for the agreement to be "+
+			"tested at all", len(agree.AllMembers()))
+	}
+	q := NamedForEachQuantifier(values.NamedCorrelationIdentifier("Q"), agree)
+	got, err := q.GetFlowedObjectType()
+	if err != nil {
+		t.Fatalf("agreeing members returned error %v, want the agreed row type", err)
+	}
+	if got == nil || !got.Equals(ab) {
+		t.Fatalf("agreeing members resolved %v, want %v", got, ab)
+	}
+
+	// DISAGREEING members: an explicit error, never members[0].
+	disagree := InitialOf(&typedStubExpr{name: "d1", typ: ab})
+	disagree.Insert(&typedStubExpr{name: "d2", typ: rowOf("A", "B", "C")})
+	if len(disagree.AllMembers()) < 2 {
+		t.Fatalf("fixture: disagreeing reference holds %d members, need 2",
+			len(disagree.AllMembers()))
+	}
+	qd := NamedForEachQuantifier(values.NamedCorrelationIdentifier("QD"), disagree)
+	got, err = qd.GetFlowedObjectType()
+	if got != nil {
+		t.Errorf("disagreeing members resolved %v — a row shape chosen by memo "+
+			"insertion order is exactly what the verification forbids", got)
+	}
+	var de *MemberResultTypeDisagreementError
+	if !errors.As(err, &de) {
+		t.Fatalf("disagreeing members returned err=%v, want a "+
+			"*MemberResultTypeDisagreementError naming the quantifier and both types", err)
+	}
+	if de.Alias.Name() != "QD" {
+		t.Errorf("error names alias %q, want QD", de.Alias.Name())
+	}
+
+	// GetFlowedObjectValueTyped must propagate it rather than degrade to the
+	// untyped QOV: the untyped fallback is the "no type yet" case, and collapsing
+	// the two would restore the exact silent path the typed accessor exists to close.
+	v, err := qd.GetFlowedObjectValueTyped()
+	if err == nil {
+		t.Errorf("GetFlowedObjectValueTyped returned %v with no error on disagreeing "+
+			"members — a disagreement must not read as 'type unavailable'", v)
+	}
+
+	// And the ordinary no-type case still reports (nil, nil): an untyped member
+	// contradicts nothing, so the reporting gap stays a gap and not an error.
+	untyped := NamedForEachQuantifier(values.NamedCorrelationIdentifier("QU"),
+		InitialOf(&stubExpr{name: "T"}))
+	if got, err := untyped.GetFlowedObjectType(); got != nil || err != nil {
+		t.Errorf("untyped member gave (%v, %v), want (nil, nil)", got, err)
 	}
 }

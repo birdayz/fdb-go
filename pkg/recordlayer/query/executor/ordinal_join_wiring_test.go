@@ -2,6 +2,7 @@ package executor
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -1037,4 +1038,181 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 	if v, found := read("A", "AID", 0); !found || v != int64(10) {
 		t.Fatalf("A.AID = (%v, %v), want 10", v, found)
 	}
+}
+
+// TestOrdinalJoinBuild_BareArmNullLeg falsifies the Bare arm's `case nil`.
+//
+// That arm was reachable only through the join's own machinery, so nothing
+// distinguished "NULL flows as a nil row" from "this branch is dead". A nil arm
+// no test constructs is a claim, and the claim here is load-bearing: it is the
+// NULL-leg extension for a LEFT/FULL join whose result value is a single baked
+// reference rather than a record constructor. If it returned a 1-slot row holding
+// nil instead of a nil row, a null-extended pair would emit a ROW where the join
+// must emit nothing-of-that-leg, and the two paths would disagree about what NULL
+// is.
+//
+// So both paths are asserted TOGETHER: the Bare arm's nil row and the RC arm's
+// NULL-PADDED row over the same NULL binding. They are deliberately different
+// shapes — the RC arm knows its output width and pads it, the Bare arm has one
+// value and no width to pad — and pinning them side by side is what keeps that
+// difference intentional.
+func TestOrdinalJoinBuild_BareArmNullLeg(t *testing.T) {
+	t.Parallel()
+	legA, _, qovA, qovB, _ := ojWiringLegs(t)
+
+	// The Bare shape: the join's result value is the WHOLE leg-A row, baked.
+	bare, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	build, err := newOrdinalJoinBuild(bare, nil)
+	if err != nil {
+		t.Fatalf("bare build: %v", err)
+	}
+	if build.Bare == nil {
+		t.Fatalf("fixture: build took the RC arm (RC=%v), so this test would not "+
+			"reach the Bare nil case at all", build.RC)
+	}
+
+	// A is the NULL leg: present in the binder with a nil row, which is the
+	// sanctioned nil-binding the LEFT/FULL padding produces.
+	nullA := &twoLegBinder{
+		outerID: qovA.Correlation, innerID: qovB.Correlation,
+		outer: nil, inner: NewPositionalRow(legA),
+	}
+	row, err := build.evaluateBound(nullA)
+	if err != nil {
+		t.Fatalf("bare arm over a NULL leg: %v", err)
+	}
+	if row != nil {
+		t.Errorf("bare arm over a NULL leg returned row %v, want a NIL row.\n"+
+			"  Wrapping NULL into a 1-slot row would make a null-extended pair emit a\n"+
+			"  present row whose single slot is nil — a different answer from the RC\n"+
+			"  path's, for the same binding.", row)
+	}
+
+	// The RC arm over the SAME NULL binding pads its known width instead. Both
+	// behaviours are correct and they are not the same behaviour.
+	rcBuild, err := newOrdinalJoinBuild(buildOrdinalJoinRC(t, qovA, qovB), nil)
+	if err != nil {
+		t.Fatalf("rc build: %v", err)
+	}
+	rcRow, err := rcBuild.evaluateBound(nullA)
+	if err != nil {
+		t.Fatalf("rc arm over a NULL leg: %v", err)
+	}
+	if rcRow == nil {
+		t.Fatal("rc arm over a NULL leg returned a nil row — the RC path knows its " +
+			"output width and must pad it with NULLs, not vanish")
+	}
+	if len(rcRow.Slots) != len(rcBuild.OutputType.Fields) {
+		t.Fatalf("rc arm padded row has %d slots, want %d (its full output width)",
+			len(rcRow.Slots), len(rcBuild.OutputType.Fields))
+	}
+	// Leg A's slots are the NULL-padded ones; leg B's still carry its row.
+	for i := 0; i < len(legA.Fields); i++ {
+		if rcRow.Slots[i] != nil {
+			t.Errorf("rc arm slot %d = %v over a NULL leg A, want nil", i, rcRow.Slots[i])
+		}
+	}
+}
+
+// TestOrdinalJoinBuild_WidthAgreementOnBothArms pins the leg width-agreement
+// assert on the BARE arm as well as the RC arm.
+//
+// Every reference to one leg is supposed to be a copy of the single
+// planner-constructed typed QOV, so two references disagreeing on that leg's
+// width is a malformed plan. The assert used to live only inside the RC arm's
+// bare-QOV loop, which meant the Bare arm — whose ONLY leg-type source is
+// legTypesFromResultValue — asserted nothing, while
+// widenLegTypesFromPredicates' doc pointed at "the RV-side collection the caller
+// already ran" as the place the invariant is checked. It also meant that even on
+// the RC path two BAKED references to one leg at different widths passed, because
+// that walk overwrote last-wins.
+//
+// The assert now lives in the walk, so both arms are covered by one check. A
+// silent last-wins here adapts a leg to the WRONG width: too narrow and a
+// predicate's ordinal blows up loudly, too wide and it reads a neighbouring
+// leg's slot, which does not.
+func TestOrdinalJoinBuild_WidthAgreementOnBothArms(t *testing.T) {
+	t.Parallel()
+	legA := ojLegTypeAV()
+	// Two QOVs for the SAME leg at DIFFERENT widths — the malformed-plan shape.
+	wide := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
+	narrow := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+		&values.RecordType{Fields: []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		}})
+	if len(legA.Fields) == 1 {
+		t.Fatal("fixture: the two leg types must differ in width or the assert cannot fire")
+	}
+	bakedWide, err := values.NewFieldValueOfOrdinal(wide, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal(wide): %v", err)
+	}
+	bakedNarrow, err := values.NewFieldValueOfOrdinal(narrow, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal(narrow): %v", err)
+	}
+
+	// BARE arm: one value carrying both references. An arithmetic value is used
+	// because the bare arm's shape is "not an RC" — the plan-level gate narrows
+	// which non-RC shapes the planner may emit, but the executor's assert must not
+	// depend on that narrowing holding.
+	t.Run("bare arm", func(t *testing.T) {
+		t.Parallel()
+		bare := &values.ArithmeticValue{Op: values.OpAdd, Left: bakedWide, Right: bakedNarrow}
+		if _, isRC := values.Value(bare).(*values.RecordConstructorValue); isRC {
+			t.Fatal("fixture: the bare-arm value must not be an RC")
+		}
+		build, err := newOrdinalJoinBuild(bare, nil)
+		if err == nil {
+			t.Fatalf("bare arm accepted DIVERGENT widths for leg A (build=%+v).\n"+
+				"  Its only leg-type source is legTypesFromResultValue; with no assert there\n"+
+				"  the wider or narrower type wins by walk order and the leg adapts to a\n"+
+				"  width the references disagree about.", build)
+		}
+		if !strings.Contains(err.Error(), "DIVERGENT") {
+			t.Errorf("bare arm error = %q, want one naming the divergent widths", err)
+		}
+	})
+
+	// RC arm with two BAKED references (not the bare-QOV pairing the old assert
+	// covered): this is the case the RC path also used to let through.
+	t.Run("rc arm two baked refs", func(t *testing.T) {
+		t.Parallel()
+		rc := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "X", Value: bakedWide},
+			values.RecordConstructorField{Name: "Y", Value: bakedNarrow},
+		)
+		build, err := newOrdinalJoinBuild(rc, nil)
+		if err == nil {
+			t.Fatalf("RC arm accepted DIVERGENT widths for leg A across two BAKED "+
+				"references (build=%+v) — the old assert only compared a bare QOV against "+
+				"the baked collection, so this pairing overwrote last-wins", build)
+		}
+	})
+
+	// The AGREEING case must still build: an assert that rejects the legitimate
+	// shape is worse than none.
+	t.Run("agreeing widths build", func(t *testing.T) {
+		t.Parallel()
+		alsoWide, err := values.NewFieldValueOfOrdinal(
+			values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA), 1)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		rc := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "X", Value: bakedWide},
+			values.RecordConstructorField{Name: "Y", Value: alsoWide},
+		)
+		build, err := newOrdinalJoinBuild(rc, nil)
+		if err != nil {
+			t.Fatalf("two references at the SAME width must build: %v", err)
+		}
+		if got := build.LegTypes[values.NamedCorrelationIdentifier("A")]; got == nil ||
+			len(got.Fields) != len(legA.Fields) {
+			t.Fatalf("leg A type = %v, want the %d-field type", got, len(legA.Fields))
+		}
+	})
 }

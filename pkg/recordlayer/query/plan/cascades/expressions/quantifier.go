@@ -1,6 +1,8 @@
 package expressions
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -234,34 +236,95 @@ func (q Quantifier) GetFlowedObjectValue() values.Value {
 	return values.NewQuantifiedObjectValue(q.alias)
 }
 
+// MemberResultTypeDisagreementError reports that a Reference's members do not
+// agree on their result type, so no member is authoritative for the quantifier's
+// flowed row.
+//
+// Java's counterpart is a Verify failure (Reference.java:504-513 reduces the
+// members' result types with `Verify.verify(left.equals(right))`), i.e. a crash.
+// Go returns it as an error so the caller decides, but the caller must NOT treat
+// it as "type unavailable" and fall back to an untyped row: an untyped merge slot
+// leaves a reference source-relative, a source-relative operand pushed into a
+// leg's scan evaluates to NULL against the build-bound row, and the join returns
+// zero rows with no error. A disagreement is a memo defect — two members of one
+// equivalence class flowing different row shapes — and it must surface as one.
+type MemberResultTypeDisagreementError struct {
+	Alias values.CorrelationIdentifier
+	Left  values.Type
+	Right values.Type
+}
+
+func (e *MemberResultTypeDisagreementError) Error() string {
+	return fmt.Sprintf("quantifier %s: reference members disagree on result type (%v vs %v)",
+		e.Alias.Name(), e.Left, e.Right)
+}
+
 // GetFlowedObjectType returns the ROW type of the rows flowing along this
 // quantifier — Java's Quantifier.getFlowedObjectType() (Quantifier.java:806-810:
 // the ranged-over Reference's result type, unwrapped from its RELATION wrapper).
-// Java resolves it from the Reference, where every member is asserted to agree
-// (Reference.java:504-513), so any member is authoritative; Go reads the
-// canonical member's result value type the same way.
 //
-// nil when there is nothing to report: no reference, no member, or a result
-// value whose type is not a row type. Java Verify-fails on the last case
+// Java resolves it from the Reference, whose getResultType() REDUCES over every
+// member expression and verifies each pair agrees (Reference.java:504-513). That
+// verification is the reason "any member is authoritative" is a sound step, so it
+// is ported rather than cited: every member's row type is compared, and a
+// disagreement is returned as an error instead of silently taking members[0].
+// Taking the first member on a disagreement would pick a row shape by memo
+// insertion order, which is exactly the kind of choice that produces a
+// wrong-slot read that no test can predict.
+//
+// (nil, nil) when there is nothing to report: no reference, no member, or a
+// result value whose type is not a row type. Java Verify-fails on the last case
 // because every Java expression carries a typed result value; Go's logical
 // expressions do not all reach that yet, so callers treat nil as "type
 // unavailable" and keep the untyped QOV they used before. That is a REPORTING
-// gap, never a substitute — a caller that needs the type to bake an ordinal
-// must not invent one.
-func (q Quantifier) GetFlowedObjectType() *values.RecordType {
+// gap, never a substitute — a caller that needs the type to bake an ordinal must
+// not invent one.
+func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 	ref := q.GetRangesOver()
 	if ref == nil {
-		return nil
+		return nil, nil
 	}
-	member := ref.Get()
-	if member == nil {
-		return nil
+	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
+	// the one a physical plan is built from, so excluding it would verify the
+	// agreement over exactly the members that do not end up in the plan.
+	members := ref.AllMembers()
+	if len(members) == 0 {
+		return nil, nil
 	}
-	rv := member.GetResultValue()
-	if rv == nil {
-		return nil
+	var found *values.RecordType
+	var foundRaw values.Type
+	for _, member := range members {
+		if member == nil {
+			continue
+		}
+		rv := member.GetResultValue()
+		if rv == nil {
+			continue
+		}
+		rt := rowTypeOf(rv.Type())
+		if rt == nil {
+			// An untyped member cannot contradict a typed one — it reports nothing.
+			// Java has no such member; Go's logical expressions do, and the reporting
+			// gap is documented above.
+			continue
+		}
+		if found == nil {
+			found, foundRaw = rt, rv.Type()
+			continue
+		}
+		if !found.Equals(rt) {
+			return nil, &MemberResultTypeDisagreementError{
+				Alias: q.alias, Left: foundRaw, Right: rv.Type(),
+			}
+		}
 	}
-	switch t := rv.Type().(type) {
+	return found, nil
+}
+
+// rowTypeOf unwraps a member's result type to its ROW type, through the RELATION
+// wrapper a relational expression's result value carries. nil when it is neither.
+func rowTypeOf(t values.Type) *values.RecordType {
+	switch t := t.(type) {
 	case *values.RecordType:
 		return t
 	case *values.RelationType:
@@ -283,11 +346,20 @@ func (q Quantifier) GetFlowedObjectType() *values.RecordType {
 // expression identity across the whole planner. Callers that BAKE ORDINALS
 // against the flowed row — the ones for which an untyped QOV silently degrades
 // a reference to source-relative and then to NULL at runtime — use this.
-func (q Quantifier) GetFlowedObjectValueTyped() values.Value {
-	if rt := q.GetFlowedObjectType(); rt != nil {
-		return values.NewQuantifiedObjectValueOfType(q.alias, rt)
+//
+// The error is the member DISAGREEMENT (see MemberResultTypeDisagreementError),
+// never the ordinary "no type yet": that returns the untyped QOV and a nil error,
+// as before. A caller must not collapse the two — falling back to the untyped
+// value on a disagreement is choosing a row shape by memo insertion order.
+func (q Quantifier) GetFlowedObjectValueTyped() (values.Value, error) {
+	rt, err := q.GetFlowedObjectType()
+	if err != nil {
+		return nil, err
 	}
-	return values.NewQuantifiedObjectValue(q.alias)
+	if rt != nil {
+		return values.NewQuantifiedObjectValueOfType(q.alias, rt), nil
+	}
+	return values.NewQuantifiedObjectValue(q.alias), nil
 }
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner
