@@ -111,7 +111,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// from this branch made precisely this call for real, to mint an ordinal. A
 	// diagnostic that survived its deleted sibling is how the move gets
 	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:389": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:474": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
 }
 
 type fieldDecisionSite struct {

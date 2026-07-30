@@ -2725,134 +2725,116 @@ func rebaseOuterLegValue(
 						panic(fmt.Sprintf("rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — an ordinal join was routed into the lazy rebase machinery instead of the ordinal one (planner bug)",
 							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
 					}
-					// NO LEG-LOCAL BAKE HERE. There was one, and it minted the
-					// leg-local ordinal by resolving the reference's DISPLAY NAME
-					// against the leg's row type
-					// (`legType.FieldIndex(ToUpper(fv.Field))`). That is RFC-197's
-					// forbidden move verbatim — a name deciding a column's identity —
-					// and it was invisible to the `.Field` decision gate because a type
-					// lookup by name is neither a comparison nor a map key, which is the
-					// second blind spot `field_name_decision_test.go` documents about
-					// itself. Two columns sharing a leaf name are one column to it, and
-					// the leg it indexed was chosen by the same name that reached the
-					// mint below.
+					// NO LEG-LOCAL BAKE HERE, in the sense the deleted one meant.
+					// There was one, and it minted the leg-local ordinal by
+					// resolving the reference's DISPLAY NAME against the leg's row
+					// type (`legType.FieldIndex(ToUpper(fv.Field))`). That is
+					// RFC-197's forbidden move verbatim — a name deciding a column's
+					// identity — and it was invisible to the `.Field` decision gate
+					// because a type lookup by name is neither a comparison nor a map
+					// key, which is the second blind spot
+					// `field_name_decision_test.go` documents about itself. Two
+					// columns sharing a leaf name are one column to it, and the leg it
+					// indexed was chosen by the same name that reached the mint below.
 					//
-					// The layout the bake wanted is real and Java does use it — but Java
-					// keys the rebase by the quantifier's ORDINAL position, never by a
-					// name: PartitionSelectRule.java:296-303 builds
-					// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)` per lower alias,
-					// and translateCorrelations replays exactly that. The ordinal
-					// authority in this function is the IDENTITY-keyed lookup below
-					// (legSlotIdentity → legLayout), which derives the slot from the
-					// quantifier the value reads rather than from what the column is
-					// called. It stays the only one.
+					// Nothing has to be re-minted, because the reference ARRIVES
+					// carrying its ordinal. The resolver's correlated arm builds
+					// `QuantifiedObjectValue.of(alias, flowedRow)` the way Java's
+					// Quantifier.java:801-803 always has, so a leg-correlated read is
+					// a single accessor at a non-negative ordinal in a domain that IS
+					// the leg's own row layout — measured, all 126 firings over the
+					// real-FDB corpus. The work at this site is therefore to STOP
+					// DESTROYING that ordinal, not to mint a new one.
 					//
-					// So every read falls through to the qualified mint until CQ-63
-					// supplies typed leg QOVs, at which point the reference itself can
-					// state an identity in its own leg's domain and the bake returns
-					// keyed on identity. legLocalTypes survives that deletion because the
-					// census still needs it: it is the LAYOUT half of the question, and
-					// measuring it is how CQ-63's acceptance number stays honest.
-					if values.LegIdentityCensusEnabled() {
-						// The lookup lives INSIDE the guard, not above it: the census's
-						// stated contract is that a disabled census costs the planner
-						// nothing, and legLocalTypes is consulted for no other purpose
-						// here — its two readers are both this witness. Hoisting it
-						// above the guard made the disabled path pay a map probe per
-						// leg-match firing, which is the one path the gate exists to
-						// keep free.
-						legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
-						// The mint is the outcome, stated rather than inferred. A census
-						// that re-derived "bakeable" from the type would report this arm
-						// deletable the moment CQ-63 types the legs, while the mint was
-						// still the only thing it emits.
-						recordLegLocalBakeability(legLocalBakeMinted, qov.Correlation,
-							legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
-							strings.ToUpper(fv.Field), legLocalTypeKeys(legLocalTypes)...)
-						// The SECOND cut of the same firing: what the read states
-						// about its own identity, which is what a bake would have to
-						// index. legSlotIdentity is asked here rather than
-						// re-derived in the census, so the witness and the bake ask
-						// one question.
-						_, identityInLegDomain := legSlotIdentity(fv)
-						why := ""
-						if !identityInLegDomain {
-							why = describeLegIdentityDecline(fv, qov, legTypeFor, haveLegType)
-						}
-						recordMintedReadIdentity(qov.Correlation, strings.ToUpper(fv.Field),
-							fv.Resolved != nil, identityInLegDomain, why)
-					}
+					// THE THREE ARMS, in Java's own order.
+					//
+					//  1. The MERGED RE-ANCHOR wins where the merged row's layout is
+					//     derivable. This is Java verbatim:
+					//     PartitionSelectRule.java:296-303 collapses the lowers into
+					//     one quantifier and rewrites every reference to a collapsed
+					//     alias as `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`,
+					//     so the sibling alias CEASES TO EXIST. Where Go can state the
+					//     merged layout it does the same thing, and it must go first:
+					//     an alias Java would have deleted may not be left live merely
+					//     because the reference could also have resolved through it.
+					//  2. The LEG-ALIAS PASS-THROUGH, only where (1) cannot answer.
+					//     Go's two-level NLJ→FlatMap lowering reaches this site
+					//     without a stated merged layout on the EXISTS-over-join and
+					//     RFC-153 buried-leg paths, and there the reference's own
+					//     leg-local ordinal is the honest answer: the runtime binder
+					//     (executor.bindMergedOuterLegs) binds each leg of the merged
+					//     row under its OWN correlation, so `QOV(leg)#ord` resolves
+					//     against that leg's window exactly as it would have against
+					//     an unmerged source. Keeping N sibling aliases live is the
+					//     Go-only widening booked in DIVERGENCES.md; this arm is what
+					//     uses it, and it retires with the widening when (1) covers
+					//     every shape reaching this cursor.
+					//  3. The DECLINE, for a read that states no identity at all.
+					//     There USED to be a lazy qualified mint here — it re-anchored
+					//     such a read onto the merge correlation as
+					//     `QOV(merged)."LEG.COL"` and left the merged row's binder to
+					//     find it by that string. That is the RFC-197 channel itself,
+					//     and it is deleted: over the whole real-FDB corpus the
+					//     population that reached it is ZERO (asserted, see the census's
+					//     Minted zero), because every read arriving here carries its
+					//     ordinal. A read that somehow does not is a reference that
+					//     reached the planner UNRESOLVED, which closes at the producer
+					//     that minted it and never here — so this arm hands it back
+					//     untouched rather than inventing a name for it.
+					//
+					// legLocalTypes is not consulted by any of the three. It is the
+					// LAYOUT half of the census's question — "does this leg state a
+					// row" — which is a different question from "can this read state
+					// an ordinal in it", and conflating the two is what scheduled a
+					// whole migration step against a proxy (see LayoutAvailable).
+					id, identityInLegDomain := legSlotIdentity(fv)
 					qualField := corr + "." + strings.ToUpper(fv.Field)
-					// Structural first (WS-N slice 4): when the merged
-					// outer row's positional layout is derivable, the
-					// rebased reference is BORN BAKED — the global
-					// ordinal reads the merged row's slot directly
-					// (the RC concat is positional; the qualified
-					// display name rides along for Explain only).
-					// The slot is found by the reference's own
-					// IDENTITY in its leg's row layout — the same
-					// derivation the layout was BUILT with
-					// (legSlotIdentity), so the two ends cannot key it
-					// differently, and a reference that cannot state
-					// an identity finds nothing rather than finding
-					// whatever its display name happens to spell. With the
-					// name-keyed leg-local bake deleted above, this is the
-					// ONLY place in this function that produces an ordinal,
-					// and it produces it from an identity.
-					// WHAT IS DEAD HERE IS THE BAKE, NOT THE ARM.
-					// This legLayout != nil lookup is dead-in-effect on
-					// every covered surface (yamsql, embedded, full FDB
-					// driver incl. the RFC-153 matrix): a panic wired into
-					// it is reached only by
-					// TestRebaseOuterLegValue_OrdinalFirst, because the
-					// only callers holding a layout are the ordinal-seed
-					// paths and those rebase through
-					// rebaseOuterLegRefsOrdinal instead. It stays as the
-					// fail-closed net for shapes that arrive layout-bearing.
+
+					// ARM 1 — the merged re-anchor. The slot is found by the
+					// reference's own IDENTITY in its leg's row layout, the same
+					// derivation the layout was BUILT with (legSlotIdentity), so the
+					// two ends cannot key it differently and a reference that cannot
+					// state an identity finds nothing rather than finding whatever its
+					// display name happens to spell.
 					//
-					// The ENCLOSING leg-match arm is live. It is reached
-					// while planning the buried / N-way / four-leg
-					// projected-EXISTS family, from
-					// implementJoinWithExistential's nil-layout call for
-					// non-windowed step-1 result values, and the lazy mint
-					// below is what it produces there.
-					//
-					// Two facts, two pins, and neither follows from the
-					// other — the arm's prose asserted the first one
-					// backwards for a while precisely because the second
-					// makes the first invisible:
-					//   - The arm is REACHED:
-					//     TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName
-					//     fires this rule on the shape OnMatch routes here and
-					//     asserts the mint appears in a yielded plan EVEN
-					//     THOUGH both legs' layouts are derivable — the
-					//     layout is not what decides here, and pinning it on
-					//     a derivable shape is what keeps that true.
-					//   - Its product WINS NOTHING today:
-					//     TestLazyLegMintReachesNoWinningPlan measures zero
-					//     dotted merged-row keys in the winning plan for
-					//     every shape above.
-					// The candidate carrying the mint loses and
-					// OptimizeGroup prunes finals to the winner, so the
-					// mint survives in neither the winning plan nor the
-					// post-planning memo. That is why no row-level test
-					// over those shapes can detect this code being
-					// deleted, and why the reachability pin fires the rule
-					// directly instead of planning SQL.
-					if legLayout != nil {
-						if id, idOK := legSlotIdentity(fv); idOK {
-							if ord, ok := legLayout[id]; ok {
-								return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-									values.NewQuantifiedObjectValue(mergedCorr),
-									qualField, ord, fv.Typ,
-								)
-							}
+					// DEAD-IN-EFFECT on every covered surface (yamsql, embedded, full
+					// FDB driver incl. the RFC-153 matrix): a panic wired into it is
+					// reached only by TestRebaseOuterLegValue_OrdinalFirst, because
+					// the only callers holding a layout are the ordinal-seed paths and
+					// those rebase through rebaseOuterLegRefsOrdinal instead. It stays
+					// as the fail-closed net for shapes that arrive layout-bearing,
+					// and it stays FIRST because that is the precedence Java states.
+					if legLayout != nil && identityInLegDomain {
+						if ord, ok := legLayout[id]; ok {
+							recordRebaseOuterLegArm(legLocalBakeMinted, fv, qov,
+								legLocalTypes, true)
+							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+								values.NewQuantifiedObjectValue(mergedCorr),
+								qualField, ord, fv.Typ,
+							)
 						}
 					}
-					return values.NewFieldValue(
-						values.NewQuantifiedObjectValue(mergedCorr),
-						qualField, fv.Typ,
-					)
+
+					// ARM 2 — the pass-through. The read already names its leg and
+					// already carries its ordinal in that leg's domain; re-anchoring
+					// it onto the merge correlation would replace a stated identity
+					// with a name, which is a strict loss of information at a site
+					// whose entire purpose is to stop losing it.
+					if identityInLegDomain {
+						recordRebaseOuterLegArm(legLocalBakeBaked, fv, qov,
+							legLocalTypes, false)
+						return v
+					}
+
+					// ARM 3 — the decline. Nothing is minted and nothing is moved:
+					// the reference keeps its own leg correlation, which
+					// bindMergedOuterLegs binds, and whatever it could not state
+					// about its own column it still cannot state — which is the
+					// truthful outcome, and the one that leaves the defect visible
+					// at the producer instead of papered over with a string here.
+					recordRebaseOuterLegArm(legLocalBakeDeclined, fv, qov,
+						legLocalTypes, false)
+					return v
 				}
 			}
 		}

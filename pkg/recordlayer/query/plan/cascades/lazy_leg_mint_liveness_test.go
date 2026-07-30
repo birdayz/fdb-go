@@ -47,10 +47,21 @@ func buildTwoLegExistentialSelect() ([]expressions.RelationalExpression, express
 	// E.OUTER_ID = L.ID — an inner↔outer correlation predicate, the only kind
 	// existsInnerCorrelation lifts, and the one whose outer half must be
 	// rebased onto the merged row.
+	//
+	// The OUTER half is built BAKED — a single accessor at the column's ordinal
+	// in the leg's own row layout — because that is the shape production
+	// produces. It used to be built lazy, which predates the resolver carrying
+	// the row its correlated quantifier object flows
+	// (Quantifier.java:801-803's `QuantifiedObjectValue.of(getAlias(),
+	// getFlowedObjectType())`); measured over the real-FDB corpus, every one of
+	// the arm's firings arrives with a resolved path in its leg's own domain and
+	// none arrives lazy. A lazy fixture therefore drove the arm's DECLINE while
+	// claiming to cover the path production takes.
 	innerRef := values.NewFieldValue(
 		values.NewQuantifiedObjectValueOfType(existAlias, eType), "OUTER_ID", values.UnknownType)
-	outerLegRef := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(legA, aType), "ID", values.UnknownType)
+	outerLegRef := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValueOfType(legA, aType), "ID", 0, values.UnknownType,
+		values.OrdinalDomainOfType(aType))
 
 	sel := expressions.NewSelectExpressionWithAliases(
 		values.NewQuantifiedObjectValue(legA),
@@ -202,28 +213,27 @@ func legLocalLegRefsOf(yielded []expressions.RelationalExpression, leg values.Co
 	return out
 }
 
-// TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName pins the
-// leg-match arm's disposition on a shape whose leg layouts ARE derivable: the read
-// is re-anchored onto the merge correlation as a qualified "LEG.COL" key anyway.
+// TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead pins the leg-match
+// arm's disposition on a shape whose leg layouts ARE derivable and that the rule
+// actually routes here: the read keeps its OWN leg correlation and its OWN
+// leg-local ordinal, and no qualified merged-row key is minted anywhere.
 //
-// The layout is not what decides here, and pinning that on a DERIVABLE shape is
-// the only way to keep it true. There was briefly a leg-local bake at this arm
-// that resolved the read's display NAME against the derived leg type to mint an
-// ordinal; it was deleted because a display name may not decide a column's
-// identity (RFC-197), and because a lookup by name is precisely the conflation the
-// `.Field` decision gate exists for and precisely the shape that gate cannot see.
-// Java's own re-anchor keys on the quantifier's ORDINAL POSITION, never on a name
-// (PartitionSelectRule.java:296-303), and Go's ordinal authority in this function
-// is the identity-keyed layout lookup — pinned separately by
-// TestRebaseOuterLegValue_OrdinalFirst, including the two ways it can be wrong (a
-// sibling leg's identical column answering, and the wrong slot answering).
+// It is the retarget the version before it asked for by name. That version
+// asserted the opposite — that the read was re-anchored onto the merge
+// correlation as a lazy "LEG.COL" key — and said in its own failure text that a
+// bake keyed on the reference's IDENTITY (never on its display name) was the one
+// legitimate reason to change it. That is what happened: the reference now
+// ARRIVES carrying a leg-local ordinal in its leg's own domain, because the
+// resolver's correlated arm builds `QuantifiedObjectValue.of(alias,
+// getFlowedObjectType())` the way Java's Quantifier.java:801-803 always has, so
+// there is nothing left for the arm to mint and the qualified-name mint is
+// deleted rather than kept as a fallback.
 //
-// The test this replaced asserted the bake. Its failure message named a
-// conversion as the one legitimate reason to retarget it, which is why it is
-// retargeted here rather than deleted: the shape it reaches is the one the rule
-// actually routes, and that reach is worth keeping. What changed is the expected
-// disposition, and the reason is a correctness argument, not a measurement.
-func TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName(t *testing.T) {
+// The REACH is still what this test buys, and it is still pinned on a DERIVABLE
+// shape: the layout is not what decides here, and only a derivable fixture keeps
+// that honest — on an underivable one every assertion below would hold for the
+// wrong reason.
+func TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead(t *testing.T) {
 	t.Parallel()
 
 	yielded, qA, qB := buildTwoLegExistentialSelect()
@@ -260,122 +270,126 @@ func TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName(t *testing.T
 			"vacuous.", layouts[legL].Fields)
 	}
 
-	// The qualified merged-row key IS minted, and it is LAZY: nothing bakes an
-	// ordinal from the layout above.
-	var lazy, baked []string
+	// NO qualified merged-row key is minted, lazy or baked. That string is the
+	// RFC-197 channel and this arm no longer has it.
+	var dotted []string
 	for _, fv := range dottedLegRefsOf(yielded) {
-		if fv.Resolved == nil {
-			lazy = append(lazy, fv.Field)
-		} else {
-			baked = append(baked, fv.Field)
-		}
+		dotted = append(dotted, fv.Field)
 	}
-	if len(baked) > 0 {
-		t.Fatalf("a merged-row qualified key is BAKED: %v. The only ordinal authority "+
-			"in this arm is the identity-keyed legLayout lookup, and this call path "+
-			"passes no layout — a baked key here means an ordinal was minted from "+
-			"something else, and the only other thing in hand is the display name.",
-			baked)
+	if len(dotted) > 0 {
+		t.Fatalf("qualified merged-row keys reached a yielded plan: %v.\n"+
+			"  The leg-match arm's qualified mint is DELETED — a reference arriving here\n"+
+			"  already carries its leg-local ordinal, so there is nothing to mint, and a\n"+
+			"  fallback that spells a leg into a column name is how this channel survives\n"+
+			"  the migration meant to end it. If a key is back, find the arm that emitted\n"+
+			"  it rather than widening this expectation.", dotted)
 	}
-	if len(lazy) == 0 {
-		t.Fatalf("no qualified merged-row key was minted in any of the %d yielded "+
-			"plans, on a shape whose leg layouts are both derivable (%v). Either the "+
-			"arm stopped being reached — re-derive the shape from OnMatch's "+
-			"len(quants)==3 dispatch — or a leg-local bake came back. If a bake came "+
-			"back, it may key on the reference's IDENTITY and nothing else; a bake "+
-			"keyed on the column's display name is what this test was retargeted "+
-			"from.", len(yielded), layouts)
-	}
-	var sawLegLKey bool
-	for _, f := range lazy {
-		if strings.EqualFold(f, "L.ID") {
-			sawLegLKey = true
-		}
-	}
-	if !sawLegLKey {
-		t.Fatalf("the minted keys are %v, none of them L.ID. The existential's "+
+
+	// The read the arm exists to place SURVIVES on its own leg correlation, with
+	// its own leg-local ordinal. This is the assertion that replaced "the whole
+	// read moved to the merge correlation": the merged row's binder
+	// (executor.bindMergedOuterLegs) binds every leg of the merged outer under
+	// its OWN correlation, so the read resolves against leg L's window exactly as
+	// it would have against an unmerged source.
+	refs := legLocalLegRefsOf(yielded, legL)
+	if len(refs) == 0 {
+		t.Fatalf("no read correlated to leg L survives in any of the %d yielded plans, "+
+			"on a shape whose leg layouts are both derivable (%v). The existential's "+
 			"correlation predicate is E.OUTER_ID = L.ID, so that read is the one this "+
-			"arm exists to place, and the merged row's binder resolves it by exactly "+
-			"this spelling.", lazy)
+			"arm exists to place — its absence means either the arm stopped being "+
+			"reached (re-derive the shape from OnMatch's len(quants)==3 dispatch) or the "+
+			"read was moved somewhere this walk does not look.", len(yielded), layouts)
 	}
-
-	// And no LEG-LOCAL read on L survives: the whole read moved to the merge
-	// correlation. A surviving leg-correlated read below the FlatMap would be
-	// unbound at the point the predicate is lifted, which is the silent-NULL
-	// failure the re-anchor exists to prevent.
-	if refs := legLocalLegRefsOf(yielded, legL); len(refs) > 0 {
-		var fields []string
-		for _, fv := range refs {
-			fields = append(fields, fv.Field)
+	for _, fv := range refs {
+		if !strings.EqualFold(fv.Field, "ID") {
+			t.Errorf("a surviving leg-L read names %q, want the BARE column ID — a "+
+				"qualified spelling on a leg-correlated read is the merged-row key under "+
+				"another anchor", fv.Field)
 		}
-		t.Fatalf("reads still correlated to leg L survive in a yielded plan: %v. The "+
-			"step-2 FlatMap binds the MERGED row, so a leg-correlated read lifted into "+
-			"it resolves against a binding the planner did not put there.", fields)
+		if fv.Resolved == nil {
+			t.Errorf("the surviving leg-L read %q carries NO ordinal. The pass-through's "+
+				"whole justification is that the reference already states its column in "+
+				"its own leg's domain; one that does not is a reference the arm should "+
+				"have declined, and it will resolve at runtime by whatever its display "+
+				"name spells.", fv.Field)
+		}
 	}
 }
 
-// TestRebaseOuterLegValue_QualifiedMintSurvivesWithoutALegLayout is the other
-// direction. It is no longer a different OUTCOME from the test above — both mint —
-// and that is the point of keeping both: the two inputs differ (layout present vs
-// absent) and the disposition must not start depending on which.
+// TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity pins the arm's
+// residue disposition on the two inputs that used to produce the qualified mint:
+// a read with no resolved path at all, once with NO leg layout in hand and once
+// with a layout that DECLARES the read's column.
 //
-// It is also the unit-level statement of the same fact, reached without firing a
-// rule, so a change that alters the arm shows up here as well as in the plan.
-func TestRebaseOuterLegValue_QualifiedMintSurvivesWithoutALegLayout(t *testing.T) {
-	t.Parallel()
-
-	legA := values.NamedCorrelationIdentifier("L")
-	merged := values.UniqueCorrelationIdentifier()
-	aType := values.Type(nljTestLayouts["OUTER"]) // ID, CATEGORY
-
-	read := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(legA, aType), "ID", values.UnknownType)
-
-	// No leg layouts at all: nothing to state an ordinal in even in principle.
-	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, nil)
-	assertQualifiedLegMint(t, out, merged, "L.ID",
-		"no leg layout was supplied at all")
-}
-
-// TestRebaseOuterLegValue_TypedLegStillMintsAndCensusRecordsTheMint is F8's
-// behavioural half, and it is the axis the two tests above cannot cover: a leg
-// whose layout is present AND declares the read's column, handed to the arm
-// directly.
+// Both inputs are kept, and keeping both is the point: they differ on the layout
+// and the disposition must not start depending on it. A layout answers "does
+// this LEG have a row"; a bake needs "can this READ state an ordinal in it". The
+// two came apart once already — LayoutAvailable reached 126 of 126 while
+// IdentityInLegDomain was zero, and a migration step was scheduled against the
+// proxy — so a fixture that has the layout and lacks the identity is the exact
+// shape that must not silently start being rewritten.
 //
-// This is the state CQ-63 creates for every leg. If the mint survives it — which
-// it must, until the bake returns keyed on identity — then the census must record
-// a MINT for it and not a convertible read, or the acceptance instrument will
-// report the channel retired on the day the legs get types and nothing else
-// changes.
-func TestRebaseOuterLegValue_TypedLegStillMintsAndCensusRecordsTheMint(t *testing.T) {
+// The former disposition was `QOV(merged)."L.ID"`: the read's DISPLAY NAME
+// standing in for the identity it could not state, resolved at runtime by string
+// against the merged row. That is the RFC-197 channel itself, and it is deleted
+// rather than kept as a fallback — a fallback that spells a name is how such a
+// channel survives the migration meant to end it. What is left is the truth: the
+// arm cannot place this read, so it does not move it, and the defect stays
+// visible at the producer that built the reference unresolved.
+func TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity(t *testing.T) {
 	t.Parallel()
 
 	legA := values.NamedCorrelationIdentifier("L")
 	merged := values.UniqueCorrelationIdentifier()
 	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
 
-	read := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "ID", values.UnknownType)
+	for _, tc := range []struct {
+		name     string
+		legTypes map[values.CorrelationIdentifier]*values.RecordType
+		because  string
+	}{
+		{"no leg layout", nil, "no leg layout was supplied at all"},
+		{
+			"layout declaring the column",
+			map[values.CorrelationIdentifier]*values.RecordType{legA: aType},
+			"a layout for leg L WAS supplied and declares ID",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			read := values.NewFieldValue(
+				values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "ID", values.UnknownType)
+			out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, tc.legTypes)
+			if out != values.Value(read) {
+				t.Fatalf("the arm rewrote a read that states NO identity to %v (%s).\n"+
+					"  It has nothing to place the read BY except the display name, and\n"+
+					"  minting a qualified merged-row key from that name is the channel this\n"+
+					"  arm no longer has. A read arriving here unresolved is a PRODUCER\n"+
+					"  defect — find the producer; do not restore the mint.", out, tc.because)
+			}
+		})
+	}
 
-	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType}
-	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, legTypes)
-	assertQualifiedLegMint(t, out, merged, "L.ID",
-		"a layout for leg L WAS supplied and declares ID")
-
-	// The census's own classification of that firing. The outcome dominates: a
-	// minted read with a resolvable layout is LAYOUT-AVAILABLE — a mint that could
-	// have been an ordinal — and never Baked.
-	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "ID"); got != legLocalBakeClassLayoutAvailable {
-		t.Fatalf("a MINTED read with a layout declaring its column classified as %v, "+
-			"want legLocalBakeClassLayoutAvailable. Recording it as Baked (or dropping "+
-			"it) would let the census report the qualified-name channel deletable while "+
-			"the mint is the only thing the arm emits.", got)
+	// The census's own classification of the three outcomes. The outcome the arm
+	// STATES dominates the type it happens to hold — inverting that is how a
+	// census comes to report a live channel as retired.
+	if got := classifyLegLocalBake(legLocalBakeDeclined, values.Type(aType), "ID"); got != legLocalBakeClassDeclined {
+		t.Fatalf("a DECLINED read with a layout declaring its column classified as %v, "+
+			"want legLocalBakeClassDeclined. Folding a decline into a mint or a bake "+
+			"loses the one residue this census asserts at zero.", got)
 	}
 	if got := classifyLegLocalBake(legLocalBakeBaked, values.Type(aType), "ID"); got != legLocalBakeClassBaked {
 		t.Fatalf("a BAKED read classified as %v, want legLocalBakeClassBaked — the "+
 			"outcome the arm states has to dominate the type it happens to hold", got)
 	}
-	// And the untyped/absent split still refines a mint rather than replacing it.
+	// And the layout split still refines a MINT rather than replacing it. Minted
+	// is now the merged re-anchor (Java's PartitionSelectRule.java:296-303 move),
+	// dead-in-effect on the corpus but the one arm that still spells a leg into a
+	// column name — so its reasons stay measured.
+	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "ID"); got != legLocalBakeClassLayoutAvailable {
+		t.Fatalf("a MINTED read with a layout declaring its column classified as %v, "+
+			"want legLocalBakeClassLayoutAvailable", got)
+	}
 	if got := classifyLegLocalBake(legLocalBakeMinted, values.UnknownType, "ID"); got != legLocalBakeClassUntypedLeg {
 		t.Fatalf("a MINTED read with no layout classified as %v, want untypedLeg", got)
 	}
@@ -385,71 +399,41 @@ func TestRebaseOuterLegValue_TypedLegStillMintsAndCensusRecordsTheMint(t *testin
 	}
 }
 
-// assertQualifiedLegMint is the shared shape assertion: the arm produced a LAZY
-// qualified "LEG.COL" FieldValue over the merge correlation, with no baked ordinal.
-func assertQualifiedLegMint(t *testing.T, out values.Value, merged values.CorrelationIdentifier, wantField, because string) {
-	t.Helper()
-	fv, isFV := out.(*values.FieldValue)
-	if !isFV {
-		t.Fatalf("rebaseOuterLegValue returned %T, want a *values.FieldValue (%s)", out, because)
-	}
-	if fv.Resolved != nil {
-		t.Fatalf("the read baked ordinal %d (%s). The only ordinal authority in this "+
-			"arm is the identity-keyed legLayout lookup, and no layout was passed on "+
-			"this path — a bake here was minted from the reference's display name or "+
-			"its child type, which is the name channel under another spelling.",
-			fv.Resolved.Root().Ordinal, because)
-	}
-	if !strings.EqualFold(fv.Field, wantField) {
-		t.Fatalf("minted field %q, want the qualified %s key (%s) — the merged row's "+
-			"binder resolves the leg by exactly this key, so a different spelling binds "+
-			"a different leg or nothing", fv.Field, wantField, because)
-	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-	if !isQOV || qov.Correlation != merged {
-		t.Fatalf("mint anchored on %v, want the merge correlation %v (%s) — a qualified "+
-			"key is only resolvable against the merged row", fv.Child, merged, because)
-	}
-}
-
-// TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead pins the shape
-// the CORPUS actually produces, which neither test above covers.
+// TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead pins the
+// shape the CORPUS actually produces, which the test above does not cover, and
+// it is the retarget that test's predecessor asked for by name.
 //
-// The two above hand the arm a LAZY read (Resolved == nil) over a TYPED leg QOV.
-// Production is the mirror image of that, and the difference is the whole
-// finding. MEASURED over the real-FDB sqldriver corpus, all 126 firings of this
-// arm report:
+// The test above hands the arm a LAZY read (Resolved == nil). Production is the
+// mirror image: MEASURED over the real-FDB sqldriver corpus, every firing of
+// this arm arrives with a single accessor at a non-negative ordinal in a stated
+// domain that IS the leg's own row layout, and none arrives lazy.
 //
-//	accessors=1 rootOrdinal>=0 pathDomainKnown=true
-//	qovTypeDomainKnown=false legTypeDomainKnown=true legTypeDomainMatches=true
+// It used to report `qovTypeDomainKnown=false` on all 126 of them — the ordinal
+// was right and the reference's own quantifier object was UNTYPED, so
+// legSlotIdentity's frontier was unknown and OrdinalIn failed closed. Typing the
+// resolver's correlated mints (Quantifier.java:801-803's
+// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`) moved the corpus
+// from identityInLegDomain 0 to identityInLegDomain 126, and this arm from
+// DEGRADING every such read — ordinal in, lazy dotted "LEG.COL" out — to handing
+// it back untouched.
 //
-// The read is already BAKED — single accessor, non-negative ordinal, and a
-// stated domain that IS the leg's own row layout — while the QuantifiedObjectValue
-// child it hangs off is UNTYPED, because that is how the resolver mints it
-// (expr.go's correlated arm builds NewQuantifiedObjectValue, whose Typ is
-// UnknownType).
+// The predecessor's instruction, followed here verbatim: assert the read passes
+// through with its ordinal and its own leg alias intact, AND make sure the
+// runtime binder binds that alias for the shape in question. The second half is
+// not assertable at this scale, so it is pinned where it is observable —
+// TestFDB_SelfJoinTwinLegCorrelatedRead runs a real self-join at FDB whose two
+// legs share the column name, the leg-relative ordinal AND the ordinal domain,
+// leaving the correlation as the only thing that can pick one, on rows where the
+// two possible answers are complements.
 //
-// Two consequences, and this test exists to keep both from being re-argued:
-//
-//   - legSlotIdentity DECLINES every one of them. It derives its frontier from
-//     fv.Child's stored type, so an untyped child makes the frontier unknown and
-//     OrdinalIn fails closed — even though the ordinal beside it is correct and
-//     indexes exactly the layout the leg flows. The bakeability census's
-//     layoutAvailable 126/126 is therefore NOT the bake's precondition: the leg
-//     having a layout and the read being able to state an ordinal in it are
-//     different questions, and only the first is answered.
-//   - the arm DEGRADES the read. A correct leg-local ordinal reference goes in;
-//     a LAZY dotted "LEG.COL" name over the merge correlation comes out. So
-//     CQ-53 phase 2's job at this site is not to re-land a bake — there is
-//     nothing to re-land, the reference already carries the ordinal — it is to
-//     stop destroying the one that arrives.
-//
-// WHEN THIS GOES RED it means the degradation stopped, which is the goal. Do not
-// relax it: RETARGET it to assert the read passes through with its ordinal and
-// its own leg alias intact, and make sure the runtime binder
-// (bindMergedOuterLegs) binds that alias for the shape in question — the read is
-// only correct if the leg alias resolves to the leg's window at eval time.
-func TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead(t *testing.T) {
+// WHAT THAT PIN DOES NOT SHOW, measured and stated so it is not read as more
+// than it is: the arm's product reaches NO winning plan. Replacing this
+// pass-through with a deliberate bind to the TWIN leg leaves the whole real-FDB
+// sqldriver corpus green, exactly as TestLazyLegMintReachesNoWinningPlan says of
+// the mint it replaced. The candidate carrying it loses. So the disposition here
+// is pinned at RULE level, and the runtime question it answers is one the corpus
+// cannot currently ask.
+func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testing.T) {
 	t.Parallel()
 
 	legA := values.NamedCorrelationIdentifier("L")
@@ -486,10 +470,17 @@ func TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead(t *testing.T) 
 			"whole identity channel back on the qualified name.")
 	}
 
-	// The degradation itself: ordinal in, lazy dotted name out.
+	// The pass-through: the SAME value comes back, so the ordinal, the domain and
+	// the leg correlation are all intact by identity rather than by re-derivation.
 	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType}
 	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, legTypes)
-	assertQualifiedLegMint(t, out, merged, "L.CATEGORY",
-		"a read that ALREADY carried the right leg-local ordinal was re-anchored "+
-			"onto the merge correlation as a lazy qualified name")
+	if out != values.Value(read) {
+		t.Fatalf("a read that ALREADY carried the right leg-local ordinal was rewritten "+
+			"to %v.\n"+
+			"  Whatever it was rewritten to, it can state at most what the read already\n"+
+			"  stated, and the one thing this site used to produce — a lazy\n"+
+			"  QOV(merged).\"L.CATEGORY\" — states strictly less: a name where an ordinal\n"+
+			"  was. The merged RE-ANCHOR is the one legitimate rewrite here and it needs a\n"+
+			"  merged layout, which this call path does not pass.", out)
+	}
 }

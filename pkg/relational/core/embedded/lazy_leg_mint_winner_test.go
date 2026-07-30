@@ -13,30 +13,28 @@ import (
 // TestLazyLegMintReachesNoWinningPlan is the measured NEGATIVE half of the
 // leg-rebase channel's disposition, and it is load-bearing for two decisions.
 //
-// The rebase arm in rule_implement_nested_loop_join.go mints a dotted
+// The rebase arm in rule_implement_nested_loop_join.go used to mint a dotted
 // merged-row key (`QOV(merged)."LEG.COL"`) that the FlatMap inner's binder
-// resolves by string. That arm IS reached while planning the shapes below
-// (TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName pins the
-// reachability at rule level, on a shape whose leg layouts are DERIVABLE —
-// having a layout is not what decides the mint). What is pinned HERE is that
-// its product never reaches a WINNING
-// plan: on every one of these shapes the surviving physical plan addresses
-// each leg through the leg's OWN correlation, so no dotted key is looked up
-// at execution.
+// resolved by string. That mint is DELETED — the arm now hands a leg-correlated
+// read back on its own correlation with its own leg-local ordinal — and this
+// test is what licensed deleting it: the mint never reached a WINNING plan on
+// any shape that drives the arm, so nothing at execution depended on it.
 //
-// Why it must be a test and not a note:
+// The zero is kept, and it is not a formality now that the producer is gone. It
+// is the standing statement that the merged row's DOTTED KEY is absent from what
+// executes, and there are other producers of that spelling
+// (exists_gathered_cluster_wrap.go, unnest_gather.go). If one starts reaching a
+// winner, the channel has become load-bearing at execution and its retirement
+// stops being a deletion.
 //
-//   - It is the reason no row-level test can detect the mint's removal. The
-//     candidate carrying it loses, and OptimizeGroup prunes each group's
-//     finals to the winner, so the mint is absent from both the winning plan
-//     and the post-planning memo. Anyone who deletes the mint and sees green
-//     rows has learned nothing; this test states why.
-//   - It is the baseline for retiring the channel. The dotted producers can
-//     only delete once nothing depends on them; "zero dotted keys in the
-//     winner" is exactly that precondition, and it has to be a fact under
-//     watch rather than a fact someone measured once. If a dotted key starts
-//     appearing in a winner, the channel has become load-bearing at execution
-//     and the retirement is no longer a deletion.
+// WHAT THE SAME MEASUREMENT ALSO SAYS, and it is sharper than the zero: the
+// arm's product reaches no winner in EITHER form. Replacing the pass-through
+// with a deliberate bind to the WRONG leg leaves the whole real-FDB sqldriver
+// corpus green (measured), so the candidate carrying whatever this arm emits
+// loses on every covered shape. That is why no row-level test can detect a
+// change at this site, and why its disposition is pinned at RULE level
+// (TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead,
+// TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead) rather than by rows.
 //
 // A movement here in EITHER direction is a real change in what executes, not
 // a representation detail.
@@ -47,7 +45,8 @@ func TestLazyLegMintReachesNoWinningPlan(t *testing.T) {
 CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))
 CREATE TABLE r (rid BIGINT, PRIMARY KEY (rid))
 CREATE TABLE s (sid BIGINT, PRIMARY KEY (sid))
-CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid))`
+CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid))
+CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 
 	// The shapes measured to reach the rebase arm during planning. The first is
 	// TestFDB_BuriedInnerJoinProjectedExists's query verbatim; the others are
@@ -64,6 +63,13 @@ CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid))`
 			"FROM p, q, r WHERE q.qid = p.id AND r.rid = p.id"},
 		{"four-leg", "SELECT p.v, EXISTS (SELECT 1 FROM e WHERE e.eid = p.id) " +
 			"FROM p, q, r, s WHERE q.qid = p.id AND r.rid = p.id AND s.sid = p.id"},
+		// The SELF-JOIN TWIN, correlated to the SECOND leg: both legs of the
+		// self-join carry the same column at the same leg-relative ordinal in the
+		// same row layout, so a dotted `TW.K` key reaching a winner would be a
+		// spelling that names BOTH of them. TestFDB_SelfJoinTwinLegCorrelatedRead
+		// runs the same shape for its rows.
+		{"self-join-twin-second-leg", "SELECT a.id, EXISTS (SELECT 1 FROM e WHERE e.eid = b.k) " +
+			"FROM tw AS a JOIN tw AS b ON b.id = a.partner JOIN q ON q.qid = a.id"},
 	}
 
 	// Positive control. Every assertion below is a ZERO, and a zero proves

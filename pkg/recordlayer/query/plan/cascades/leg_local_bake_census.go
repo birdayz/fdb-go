@@ -60,21 +60,43 @@ const (
 	// `QOV(merged)."LEG.COL"`. The only outcome this arm produces today.
 	legLocalBakeMinted legLocalBakeOutcome = iota
 	// legLocalBakeBaked: the read kept its own leg alias and carried a leg-local
-	// ordinal. Nothing in the planner passes this today by construction — there is
-	// no leg-local bake arm. It exists so the arm CQ-63 restores has to STATE that
-	// it baked instead of letting the census infer it from a type.
+	// ordinal — the PASS-THROUGH, and the arm's whole live population now that
+	// every reference arrives carrying its ordinal.
 	legLocalBakeBaked
+	// legLocalBakeDeclined: the read stated NO identity, so there was nothing to
+	// keep and nothing honest to mint. The arm hands it back untouched.
+	//
+	// This is a RESIDUE and it is asserted at zero. It is not a gap in this arm:
+	// a reference that reaches a planner rule without a resolved path was minted
+	// unresolved by its producer, and no rewrite here can supply what the
+	// producer did not. The arm used to mint `QOV(merged)."LEG.COL"` for exactly
+	// this case — a display name standing in for an identity, which is the
+	// channel RFC-197 exists to remove — and the mint is deleted rather than
+	// kept as a fallback, because a fallback that spells a name is how the
+	// channel survives a migration that was supposed to end it.
+	legLocalBakeDeclined
 )
 
 type legLocalBakeCounters struct {
 	// Total is every firing of the leg-match arm.
 	Total int
-	// Baked: reads the arm converted to a leg-local ordinal on their own alias.
-	// Zero on this branch by construction; see legLocalBakeBaked.
+	// Baked: reads that KEPT their own leg alias and their own leg-local ordinal
+	// — the pass-through. The arm's live population.
 	Baked int
-	// Minted: reads that were re-anchored onto the merge correlation with the leg
-	// packed into the column name. The channel's actual live traffic.
+	// Minted: reads re-anchored onto the merge correlation at a MERGED ordinal,
+	// with the leg's qualified name riding along as a display string.
+	//
+	// This is Java's own move (PartitionSelectRule.java:296-303) and not a
+	// residue, so it is reported rather than asserted at zero — but it is the
+	// only thing left in this arm that spells a leg into a name, and the name it
+	// spells is load-bearing for nothing: TestLazyLegMintReachesNoWinningPlan
+	// measures zero dotted merged-row keys in the WINNING plan for every shape
+	// that reaches here.
 	Minted int
+	// Declined: reads that stated no identity at all. Asserted ZERO — see
+	// legLocalBakeDeclined for why this is a producer's residue and not this
+	// arm's.
+	Declined int
 	// The rest classify MINTED reads only — why the mint was reached.
 	//
 	// UntypedLeg: no layout for this leg at all, so no leg-local ordinal could
@@ -249,6 +271,18 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 	switch class {
 	case legLocalBakeClassBaked:
 		legLocalBakeCounts.Baked++
+		// A witness, not a bare increment. Baked is the population the qualified
+		// name channel's retirement rests on, and a count alone cannot say WHICH
+		// reads reached it — which is the fact a reviewer of that retirement needs,
+		// and the fact a shape-level test has to be able to find its own firing by.
+		addLegLocalBakeWitness(fmt.Sprintf("LEG-LOCAL %s.%s (kept its own correlation "+
+			"and its own ordinal; leg type %v)", leg.Name(), column, legTyp))
+		return
+	case legLocalBakeClassDeclined:
+		legLocalBakeCounts.Declined++
+		addLegLocalBakeWitness(fmt.Sprintf("DECLINED %s.%s (states no identity — the "+
+			"reference reached the planner unresolved; leg type %v)",
+			leg.Name(), column, legTyp))
 		return
 	case legLocalBakeClassUntypedLeg:
 		legLocalBakeCounts.Minted++
@@ -263,6 +297,53 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 		legLocalBakeCounts.LayoutAvailable++
 		addLegLocalBakeWitness(fmt.Sprintf("LAYOUT-AVAILABLE-BUT-MINTED %s.%s (leg columns %v)", leg.Name(), column, recordTypeFieldNames(legTyp.(*values.RecordType))))
 	}
+}
+
+// recordRebaseOuterLegArm records ONE firing of rebaseOuterLegValue's leg-match
+// arm, from the arm that decided it.
+//
+// It is one entry point rather than the two the arm used to call in sequence,
+// and that is not tidying: the two calls used to run BEFORE the arms, so the
+// census stated an outcome the function had not decided yet. That was harmless
+// only while every path produced the same outcome. It stops being harmless the
+// moment the arm has a second disposition — which is exactly what the
+// pass-through is — because the census would then report a mint for every read
+// the arm handed back untouched, and the number the channel's retirement rests
+// on would be the number of FIRINGS rather than the number of MINTS.
+//
+// The outcome is STATED by the deciding arm and the identity cut is PASSED
+// rather than recomputed, for one reason in both cases: a census that
+// re-derives its own subject answers a question the code did not ask.
+//
+// The census gate is checked here, before the legLocalTypes probe, because the
+// gate's stated contract is that a disabled census costs the planner nothing
+// and legLocalTypes is consulted for no other purpose at this site.
+func recordRebaseOuterLegArm(
+	outcome legLocalBakeOutcome,
+	fv *values.FieldValue,
+	qov *values.QuantifiedObjectValue,
+	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
+	identityInLegDomain bool,
+) {
+	if !values.LegIdentityCensusEnabled() {
+		return
+	}
+	legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
+	column := strings.ToUpper(fv.Field)
+	recordLegLocalBakeability(outcome, qov.Correlation,
+		legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
+		column, legLocalTypeKeys(legLocalTypes)...)
+	// The three identity counters partition MINTED reads and nothing else, so a
+	// baked read must not reach them — see the partition assertion that pins it.
+	if outcome != legLocalBakeMinted {
+		return
+	}
+	why := ""
+	if !identityInLegDomain {
+		why = describeLegIdentityDecline(fv, qov, legTypeFor, haveLegType)
+	}
+	recordMintedReadIdentity(qov.Correlation, column,
+		fv.Resolved != nil, identityInLegDomain, why)
 }
 
 // mintedReadIdentity is what a MINTED read states about its OWN column
@@ -366,6 +447,7 @@ type legLocalBakeClass int
 
 const (
 	legLocalBakeClassBaked legLocalBakeClass = iota
+	legLocalBakeClassDeclined
 	legLocalBakeClassUntypedLeg
 	legLocalBakeClassColumnAbsent
 	legLocalBakeClassLayoutAvailable
@@ -379,8 +461,11 @@ const (
 // ordering is the whole content of this function — inverting it is how a census
 // comes to report a live channel as retired.
 func classifyLegLocalBake(outcome legLocalBakeOutcome, legTyp values.Type, column string) legLocalBakeClass {
-	if outcome == legLocalBakeBaked {
+	switch outcome {
+	case legLocalBakeBaked:
 		return legLocalBakeClassBaked
+	case legLocalBakeDeclined:
+		return legLocalBakeClassDeclined
 	}
 	rt, isRT := legTyp.(*values.RecordType)
 	if !isRT {
@@ -612,10 +697,10 @@ func LegLocalBakeCensus() (legLocalBakeCounters, []string) {
 func FormatLegLocalBakeCensus() string {
 	c, witnesses := LegLocalBakeCensus()
 	var b strings.Builder
-	fmt.Fprintf(&b, "leg-local bakeability: total %d (baked %d, minted %d); "+
+	fmt.Fprintf(&b, "leg-local bakeability: total %d (baked %d, minted %d, declined %d); "+
 		"minted residue: untypedLeg %d, columnAbsent %d, layoutAvailable %d; "+
 		"legs: flowed %d, underivable %d, memberDisagreement %d",
-		c.Total, c.Baked, c.Minted,
+		c.Total, c.Baked, c.Minted, c.Declined,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
 	fmt.Fprintf(&b, "; minted reads by OWN identity: identityInLegDomain %d, "+
@@ -687,14 +772,15 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *LegLocalBakeFloors) bool {
 	failed := false
 
-	if got := c.Baked + c.Minted; got != c.Total {
+	if got := c.Baked + c.Minted + c.Declined; got != c.Total {
 		failed = true
-		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + Minted(%d) = %d, but Total = %d.\n"+
-			"  Every firing of the leg-match arm is one or the other, so a gap means a\n"+
-			"  firing was counted into Total and classified into neither — or a new\n"+
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + Minted(%d) + Declined(%d) = %d, "+
+			"but Total = %d.\n"+
+			"  Every firing of the leg-match arm is exactly one of the three, so a gap\n"+
+			"  means a firing was counted into Total and classified into none — or a new\n"+
 			"  outcome was added without a counter. The residue percentages this census\n"+
 			"  feeds are computed against Total, so they are wrong by exactly the gap.\n",
-			c.Baked, c.Minted, got, c.Total)
+			c.Baked, c.Minted, c.Declined, got, c.Total)
 	}
 
 	if got := c.UntypedLeg + c.ColumnAbsent + c.LayoutAvailable; got != c.Minted {
@@ -775,6 +861,17 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 				"  the derivation: there is no second authority to absorb a leg the\n" +
 				"  quantifier stops stating, so a regression lands here rather than\n" +
 				"  disappearing into a fallback.",
+		},
+		{
+			"Declined", c.Declined,
+			"A leg-correlated read reached the rebase arm stating NO column identity —\n" +
+				"  no resolved path at all, so its display name is the only thing it\n" +
+				"  carries. The arm used to mint `QOV(merged).\"LEG.COL\"` for exactly this\n" +
+				"  case; that mint is DELETED, because a fallback that spells a name is how\n" +
+				"  the RFC-197 channel survives the migration meant to end it. The defect is\n" +
+				"  at the PRODUCER that built the reference unresolved, and no rewrite here\n" +
+				"  can supply what the producer did not — find the producer, do not restore\n" +
+				"  the mint.",
 		},
 		{
 			"UntypedLeg", c.UntypedLeg,
