@@ -10559,11 +10559,18 @@ None is speculative: each was re-verified against the tree before booking.
   - ordinalSlotInLegWindow converted (the last Group-A folding reader);
     measured foldOnly 0 over 105 comparisons. Name's retirement condition is
     now crisp: dotted-text consumers plus the seed-window map keys, nothing
-    else. finalizeSeedWindows stays TEXT for a structural reason — the fold
-    DISCARDED the identifier, so there is no typed counterparty and routing
-    it through SameLeg would launder a re-mint. The earlier "the producers
-    disagree on case" justification is withdrawn: the census cannot observe
-    it and reports foldOnly 0 there over 1263 comparisons.
+    else. finalizeSeedWindows stays TEXT because its comparison is NOT an
+    identity question: it asks "is this buried leg the box run's RIGHTMOST
+    LEAF?" and knows by the sourceBinding convention that a box run's NAME is
+    its rightmost leaf's name, while the two IDENTITIES (box quantifier vs
+    leaf) are legitimately different. Converting it to
+    SameLeg(leg.Alias, w.Alias) fails TestThreeWayBoxCrossAgreement with
+    "3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)" —
+    measured, so the earlier report of a red at this site was right and the
+    reproduction that found it green was the one that missed. Both previous
+    justifications are withdrawn: the census reports foldOnly 0 over 1263
+    comparisons there (so "the producers disagree on case" is unobservable),
+    and the reason is not merely that the map key discarded the identifier.
 
   FOUND WHILE FOLDING, NOT FIXED HERE — a live planner defect. A 3-way comma
   join with a projected EXISTS whose legs are tied by equijoin predicates

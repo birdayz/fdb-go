@@ -182,27 +182,33 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 				RecordLegIdentityComparison(LegSiteFinalizeSeedWindows, leg.Name, alias)
 				RecordLegIdentityLeg(leg)
 			}
-			// This comparison stays TEXT, and the reason is structural rather than
-			// empirical: its counterparty is `alias`, the KEY this window is filed
-			// under, and a map key is not a correlation. The keys of this map are the
-			// UPPER FOLD of the seed's correlations — the fold DISCARDED the identifier,
-			// so at this point there is no typed counterparty left to compare against.
+			// This comparison stays TEXT because it is NOT an identity question, and
+			// that is the whole reason — not a compromise about namespaces.
 			//
-			// Routing it through SameLeg anyway would mean re-minting an identifier from
-			// the key, and a comparison between a real identity and one manufactured
-			// from text is a text comparison wearing the type. It would read as an
-			// identity check while proving nothing, which is worse than the honest text
-			// comparison it replaced. The right fix is upstream: the seed rebake (CQ-53)
-			// replaces this text-keyed namespace with windows bound to the physical
-			// quantifiers, and then the comparison HAS a counterparty and becomes an
-			// identity check for real.
+			// It asks "is this buried leg the box run's RIGHTMOST LEAF?", and the way it
+			// knows is the sourceBinding convention: a box run's NAME is its rightmost
+			// leaf's name. So the name coincidence IS the predicate. The box run's
+			// IDENTITY is something else entirely — the box quantifier's own correlation
+			// — and the rightmost leaf's identity is the leaf's. Those two identifiers
+			// are legitimately DIFFERENT for the very leg this branch exists to serve.
 			//
-			// An earlier version of this comment claimed the producers disagree on case
-			// and that converting therefore drops the rightmost-leaf sub-window. The
-			// instrument here cannot observe that: over 1263 comparisons at this site the
-			// fold-only population is ZERO, and every leg this authority emits satisfies
-			// Name == Alias.Name(). A hazard the census would have to have seen, and did
-			// not, is not the reason to keep the fold — the missing counterparty is.
+			// Converting it to SameLeg(leg.Alias, w.Alias) therefore asks a different
+			// question and answers NO for the leaf that IS the box's, which sends it down
+			// the already-taken branch and drops the rightmost-leaf sub-window. Measured,
+			// not argued: that conversion fails TestThreeWayBoxCrossAgreement with
+			// "3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)",
+			// i.e. the planner's leg walk and this builder disagree on a box column's
+			// absolute slot, which is the wrong-rows failure leg windows exist to
+			// prevent.
+			//
+			// Two earlier justifications for keeping the text form are withdrawn. It is
+			// not that the producers disagree on case — the census reports fold-only ZERO
+			// over 1263 comparisons here and Name == Alias.Name() on every leg this
+			// authority emits, so that hazard is unobservable. Nor is it merely that the
+			// map key discarded the identifier. It is that the identifiers on the two
+			// sides are supposed to differ, so an identity comparison is the wrong
+			// instrument no matter how clean the namespaces get. The seed rebake (CQ-53)
+			// is what replaces the convention itself.
 			if leg.Name != alias {
 				if _, taken := windows[leg.Name]; taken {
 					continue
@@ -230,12 +236,17 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 			windows[leg.Name] = OrdinalSeedLegWindow{
 				Offset: w.Offset + leg.Start,
 				Typ:    &RecordType{Nullable: w.Typ.Nullable, Fields: sub},
-				// Filed under the BURIED leg's own name — the whole point of a
+				// Filed under the BURIED leg's own NAME — the whole point of a
 				// sub-window is that a read qualified by the buried binding addresses
-				// the buried source, not the box run carrying it. Identity is that same
-				// name, keeping this map's invariant that a window's Alias is the key it
-				// is reached by.
-				Alias: NamedCorrelationIdentifier(leg.Name),
+				// the buried source, not the box run carrying it, and the readers arrive
+				// holding that text.
+				//
+				// Its IDENTITY, though, is the buried leg's own: carried, not minted
+				// from the key. The two are separate here exactly as they are on
+				// OrdinalSeedLegWindow itself — a typed identity for consumers asking
+				// which leg this is, an upper-folded key for consumers still arriving
+				// with a string.
+				Alias: leg.Alias,
 			}
 		}
 	}
@@ -249,8 +260,11 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 		if len(w.Typ.Legs) > 0 {
 			continue // box run: its subs are their own windows above
 		}
-		// Name == Alias.Name() by construction: the map key IS the window's own
-		// alias text (see the window builder above).
+		// The KEY supplies Name and the window supplies Alias. They agree on every
+		// leg this authority emits — the text-vs-identity census reports
+		// Name == Alias.Name() on all of them — but they are read from their own
+		// sources rather than one from the other, so a producer that made them
+		// diverge would be measured instead of laundered.
 		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Alias, alias, w.Offset, len(w.Typ.Fields)))
 	}
 	sort.Slice(mergedLegs, func(i, j int) bool {
