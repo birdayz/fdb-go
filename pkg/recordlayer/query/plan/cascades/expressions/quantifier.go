@@ -458,9 +458,35 @@ func legTablesAgree(a, b []values.RecordTypeLeg) bool {
 }
 
 // refineFieldTypes is refineRowTypes for one field: the more resolved of two
-// types, or (nil, false) when both are stated and they differ. Nested records
-// recurse, because a row whose only difference is an unresolved field two levels
-// down is the same row for exactly the same reason it is one level down.
+// types, or (nil, false) when both are stated and they differ.
+//
+// It recurses into every type that CARRIES another type, because the rule that
+// makes the recursion necessary does not care about depth or container: an
+// unstated type states nothing, so it cannot contradict a stated one, and a row
+// whose only difference is an unresolved type two levels down is the same row for
+// exactly the reason it is one level down. Stopping at RECORD only was an
+// accident of which container the first misreport happened to be found in.
+//
+//   - RECORD recurses field-wise (refineRowTypes).
+//   - ARRAY recurses into the element. An array's ElementType is nil while
+//     inference has not filled it in — the type's own doc says so — and Go does
+//     not infer array element types far, so `ARRAY<?>` against `ARRAY<INT>` is
+//     the single commonest shape this rule exists for. Nullability is compared
+//     strictly, as it is on a row.
+//   - RELATION recurses into the inner row. An ERASED relation (nil inner) is the
+//     unstated case and refines to the stated one.
+//
+// ENUM deliberately does NOT recurse, and the decision is worth stating because
+// it looks like an omission next to RECORD's anonymous name. An enum's content is
+// a DECLARED value list: there is no "not inferred yet" enum member the way there
+// is an unresolved field type. Its EnumName can be empty, but the type's own doc
+// calls that an anonymous enum — "rare in real schemas but legal" — a legal schema
+// state rather than an unfilled inference slot, which is the exact opposite of
+// RecordName's "not bound to a named struct yet". Go's own type merge declines
+// anonymous-enum handling for the same reason (values/type.go). So two enums
+// either state the same type or they state different ones, and Equals above
+// already decides that. Pinned by
+// TestGetFlowedObjectType_AnAnonymousEnumIsNotUnstated so this stays a decision.
 func refineFieldTypes(a, b values.Type) (values.Type, bool) {
 	switch {
 	case isUnstatedType(a):
@@ -470,16 +496,42 @@ func refineFieldTypes(a, b values.Type) (values.Type, bool) {
 	case a.Equals(b):
 		return a, true
 	}
-	if ar, aok := a.(*values.RecordType); aok {
-		if br, bok := b.(*values.RecordType); bok {
-			return refineRowTypes(ar, br)
+	switch at := a.(type) {
+	case *values.RecordType:
+		if bt, ok := b.(*values.RecordType); ok {
+			return refineRowTypes(at, bt)
 		}
+	case *values.ArrayType:
+		bt, ok := b.(*values.ArrayType)
+		if !ok || at.Nullable != bt.Nullable {
+			return nil, false
+		}
+		elem, agree := refineFieldTypes(at.ElementType, bt.ElementType)
+		if !agree {
+			return nil, false
+		}
+		return &values.ArrayType{Nullable: at.Nullable, ElementType: elem}, true
+	case *values.RelationType:
+		bt, ok := b.(*values.RelationType)
+		if !ok {
+			return nil, false
+		}
+		inner, agree := refineFieldTypes(at.InnerType, bt.InnerType)
+		if !agree {
+			return nil, false
+		}
+		return &values.RelationType{InnerType: inner}, true
 	}
 	return nil, false
 }
 
 // isUnstatedType reports whether t carries no type information — Go's
 // "inference has not reached here", which Java has no counterpart for.
+//
+// nil is included because the containers spell the gap that way: an ArrayType
+// whose element inference has not reached carries a nil ElementType, and an
+// ERASED RelationType carries a nil InnerType. Both mean the same thing
+// UnknownType means in a record field.
 func isUnstatedType(t values.Type) bool {
 	return t == nil || t.Code() == values.TypeCodeUnknown
 }

@@ -461,3 +461,167 @@ func TestGetFlowedObjectType_RefinesNestedUnresolvedFields(t *testing.T) {
 		t.Errorf("nested refinement resolved %v, want %v", got, nestedResolved)
 	}
 }
+
+// TestGetFlowedObjectType_RefinesInsideEveryContainer pins that the refinement
+// reaches through ARRAY and RELATION, not only through RECORD.
+//
+// The rule that forces the recursion is indifferent to which container it is
+// crossing — an unstated type states nothing — so stopping at RECORD was an
+// accident of where the first misreport was found. The array case is not exotic:
+// ArrayType.ElementType is nil while inference has not filled it in, and Go does
+// not infer array element types far, so `ARRAY<?>` meeting `ARRAY<INT>` on two
+// members of one class is the commonest shape of all. Reported as a disagreement,
+// it costs a plan — the caller treats the error as a STOP.
+func TestGetFlowedObjectType_RefinesInsideEveryContainer(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(e values.Type) values.Type { return &values.ArrayType{Nullable: true, ElementType: e} }
+	relationOf := func(e values.Type) values.Type { return &values.RelationType{InnerType: e} }
+
+	for _, tc := range []struct {
+		name           string
+		unstated, said values.Type
+	}{
+		{
+			"array with an uninferred element",
+			arrayOf(nil), arrayOf(values.NotNullLong),
+		},
+		{
+			"array whose element is UNKNOWN rather than nil",
+			arrayOf(values.UnknownType), arrayOf(values.NotNullString),
+		},
+		{
+			// The nested case: an array OF records differing one field down.
+			// Two containers deep is where a single-level recursion still fails.
+			"array of records with an unresolved leaf",
+			arrayOf(rowOfTypes("N", values.UnknownType)),
+			arrayOf(rowOfTypes("N", values.NotNullLong)),
+		},
+		{
+			"erased relation",
+			relationOf(nil), relationOf(rowOfTypes("N", values.NotNullLong)),
+		},
+		{
+			"relation whose inner row has an unresolved leaf",
+			relationOf(rowOfTypes("N", values.UnknownType)),
+			relationOf(rowOfTypes("N", values.NotNullLong)),
+		},
+	} {
+		// BOTH ORDERS: the more resolved container must win regardless of which
+		// member the memo scan reaches first.
+		for _, order := range []struct {
+			label string
+			a, b  values.Type
+		}{
+			{"unstated first", tc.unstated, tc.said},
+			{"stated first", tc.said, tc.unstated},
+		} {
+			got, err := flowedTypeOf(t,
+				&typedStubExpr{name: "c1", typ: rowOfTypes("F", order.a)},
+				&typedStubExpr{name: "c2", typ: rowOfTypes("F", order.b)})
+			if err != nil || got == nil {
+				t.Errorf("%s / %s: reported (%v, %v).\n"+
+					"  The two members differ only in a type the container has not inferred.\n"+
+					"  An unstated type cannot contradict a stated one at ANY depth, in ANY\n"+
+					"  container — a refinement that recurses into RECORD alone reports a row\n"+
+					"  as disagreeing with itself the moment the gap is one container over.",
+					tc.name, order.label, got, err)
+				continue
+			}
+			if !got.Fields[0].FieldType.Equals(tc.said) {
+				t.Errorf("%s / %s: refined to %v, want the more RESOLVED %v",
+					tc.name, order.label, got.Fields[0].FieldType, tc.said)
+			}
+		}
+	}
+}
+
+// TestGetFlowedObjectType_ContainersStillCatchRealDisagreements keeps the arms
+// above from degrading into "containers always agree". A container that recurses
+// must still report a conflict its contents genuinely have, or the recursion has
+// bought a misreport in the other direction — two members flowing different rows
+// merged into one, which is the wrong-slot read the whole verification exists to
+// refuse.
+func TestGetFlowedObjectType_ContainersStillCatchRealDisagreements(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(n bool, e values.Type) values.Type {
+		return &values.ArrayType{Nullable: n, ElementType: e}
+	}
+
+	for _, tc := range []struct {
+		name string
+		a, b values.Type
+	}{
+		{
+			"array elements both STATED and different",
+			arrayOf(true, values.NotNullLong), arrayOf(true, values.NotNullString),
+		},
+		{
+			// An array that admits NULL and one that does not are different
+			// columns, exactly as two rows are.
+			"array nullability differs",
+			arrayOf(true, values.UnknownType), arrayOf(false, values.NotNullLong),
+		},
+		{
+			"array of records with a conflicting stated leaf",
+			arrayOf(true, rowOfTypes("N", values.NotNullLong)),
+			arrayOf(true, rowOfTypes("N", values.NotNullString)),
+		},
+		{
+			"relation inner rows conflict on a stated leaf",
+			&values.RelationType{InnerType: rowOfTypes("N", values.NotNullLong)},
+			&values.RelationType{InnerType: rowOfTypes("N", values.NotNullString)},
+		},
+		{
+			// Different CONTAINERS are a disagreement, not something to unwrap.
+			"array versus relation",
+			arrayOf(true, values.NotNullLong),
+			&values.RelationType{InnerType: rowOfTypes("N", values.NotNullLong)},
+		},
+	} {
+		got, err := flowedTypeOf(t,
+			&typedStubExpr{name: "k1", typ: rowOfTypes("F", tc.a)},
+			&typedStubExpr{name: "k2", typ: rowOfTypes("F", tc.b)})
+		var de *MemberResultTypeDisagreementError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: resolved to (%v, %v), want a disagreement — recursing into a "+
+				"container must not turn it into a container that always agrees",
+				tc.name, got, err)
+		}
+	}
+}
+
+// TestGetFlowedObjectType_AnAnonymousEnumIsNotUnstated pins the container that
+// deliberately does NOT recurse, so its absence stays a decision.
+//
+// Next to RECORD's anonymous name this looks like an omission, and it is not. A
+// record's empty name is documented as "not bound to a named struct" — an
+// inference gap, which is why it refines. An enum's empty name is documented as an
+// anonymous enum, "rare in real schemas but legal" — a legal schema state, the
+// exact opposite. And an enum has no other content to refine: its value list is
+// DECLARED, with no "not inferred yet" member. Go's own type merge declines
+// anonymous-enum handling for the same reason.
+//
+// So two enums either state the same type or different ones, and if this ever
+// becomes wrong the fix is a rule about enum names, not another recursion arm.
+func TestGetFlowedObjectType_AnAnonymousEnumIsNotUnstated(t *testing.T) {
+	t.Parallel()
+
+	vals := []values.EnumValue{{Name: "A", Number: 0}, {Name: "B", Number: 1}}
+	anonymous := &values.EnumType{EnumName: "", Nullable: true, Values: vals}
+	named := &values.EnumType{EnumName: "E", Nullable: true, Values: vals}
+
+	got, err := flowedTypeOf(t,
+		&typedStubExpr{name: "e1", typ: rowOfTypes("F", values.Type(anonymous))},
+		&typedStubExpr{name: "e2", typ: rowOfTypes("F", values.Type(named))})
+	var de *MemberResultTypeDisagreementError
+	if !errors.As(err, &de) {
+		t.Errorf("an ANONYMOUS enum and a NAMED one resolved to (%v, %v) instead of "+
+			"disagreeing.\n"+
+			"  If an enum-name refinement arm was added, that is a change of position, not\n"+
+			"  a cleanup: an empty EnumName is a legal anonymous enum, not an inference gap\n"+
+			"  the way an empty RecordName is. Say so where the arm goes in, and retarget\n"+
+			"  this test — do not delete it.", got, err)
+	}
+}
