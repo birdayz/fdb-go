@@ -51,19 +51,33 @@ func (r *PartitionSelectRule) positionalMergeCase(
 
 	// The collapsed lower's result value: the nested positional merge row.
 	// Field types flow the legs' whole row types (record-of-records — the
-	// shape the executor evaluates). Go's Quantifier.GetFlowedObjectValue
-	// is UNTYPED (Java's is always typed) — recover each leg's row type from
-	// the select's own value surfaces, where every baked reference is a copy
-	// of the one planner-constructed typed leg QOV: an untyped merge slot
-	// would strip the leg types the executor's span recovery and downstream
-	// fused references resolve through.
+	// shape the executor evaluates). An untyped merge slot would strip the leg
+	// types the executor's span recovery and downstream fused references resolve
+	// through — and worse, silently: a reference the bake could not type stays
+	// SOURCE-RELATIVE, and a source-relative operand pushed into a leg's scan as
+	// a SARG evaluates to NULL against the build-bound row, so the scan matches
+	// nothing and the join returns zero rows with no error.
+	//
+	// The QUANTIFIER is the authority for its own row type, exactly as in Java
+	// (`quantifier.getFlowedObjectValue()` is `QuantifiedObjectValue.of(alias,
+	// getFlowedObjectType())` — Quantifier.java:801-803, always typed).
+	// legRowTypes remains as the fallback for a quantifier whose reference
+	// carries no typed result value yet; it scavenges the select's own value
+	// surfaces, where every baked reference is a copy of the one
+	// planner-constructed typed leg QOV. It cannot be the primary source: when
+	// the select's result value is itself an untyped flowed row (the
+	// single-live-lower arm's `getFlowedObjectValue()`) there is no baked
+	// reference anywhere to scavenge, which is precisely the shape that lost the
+	// types.
 	legTypes := legRowTypes(resultValue, sel.GetPredicates())
 	fields := make([]values.RecordConstructorField, len(live))
 	mergedFields := make([]values.Field, len(live))
 	for i, a := range live {
-		fov := aliasToQ[a].GetFlowedObjectValue()
-		if rt := legTypes[a]; rt != nil {
-			fov = values.NewQuantifiedObjectValueOfType(a, rt)
+		fov := aliasToQ[a].GetFlowedObjectValueTyped()
+		if _, typed := fov.Type().(*values.RecordType); !typed {
+			if rt := legTypes[a]; rt != nil {
+				fov = values.NewQuantifiedObjectValueOfType(a, rt)
+			}
 		}
 		fields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
 		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}

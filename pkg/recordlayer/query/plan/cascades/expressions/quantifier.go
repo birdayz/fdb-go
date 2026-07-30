@@ -234,6 +234,62 @@ func (q Quantifier) GetFlowedObjectValue() values.Value {
 	return values.NewQuantifiedObjectValue(q.alias)
 }
 
+// GetFlowedObjectType returns the ROW type of the rows flowing along this
+// quantifier — Java's Quantifier.getFlowedObjectType() (Quantifier.java:806-810:
+// the ranged-over Reference's result type, unwrapped from its RELATION wrapper).
+// Java resolves it from the Reference, where every member is asserted to agree
+// (Reference.java:504-513), so any member is authoritative; Go reads the
+// canonical member's result value type the same way.
+//
+// nil when there is nothing to report: no reference, no member, or a result
+// value whose type is not a row type. Java Verify-fails on the last case
+// because every Java expression carries a typed result value; Go's logical
+// expressions do not all reach that yet, so callers treat nil as "type
+// unavailable" and keep the untyped QOV they used before. That is a REPORTING
+// gap, never a substitute — a caller that needs the type to bake an ordinal
+// must not invent one.
+func (q Quantifier) GetFlowedObjectType() *values.RecordType {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	member := ref.Get()
+	if member == nil {
+		return nil
+	}
+	rv := member.GetResultValue()
+	if rv == nil {
+		return nil
+	}
+	switch t := rv.Type().(type) {
+	case *values.RecordType:
+		return t
+	case *values.RelationType:
+		if rt, isRT := t.InnerType.(*values.RecordType); isRT {
+			return rt
+		}
+	}
+	return nil
+}
+
+// GetFlowedObjectValueTyped is GetFlowedObjectValue carrying the quantifier's
+// flowed ROW type when that type is resolvable — Java's getFlowedObjectValue()
+// exactly (`QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`,
+// Quantifier.java:801-803), which is ALWAYS typed.
+//
+// It is a separate accessor rather than a change to GetFlowedObjectValue
+// because the untyped form is what ~40 GetResultValue() implementations return
+// and what the memo has interned on; typing every one of them at once changes
+// expression identity across the whole planner. Callers that BAKE ORDINALS
+// against the flowed row — the ones for which an untyped QOV silently degrades
+// a reference to source-relative and then to NULL at runtime — use this.
+func (q Quantifier) GetFlowedObjectValueTyped() values.Value {
+	if rt := q.GetFlowedObjectType(); rt != nil {
+		return values.NewQuantifiedObjectValueOfType(q.alias, rt)
+	}
+	return values.NewQuantifiedObjectValue(q.alias)
+}
+
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner
 // expression depends on — the Quantifier's transitive correlation set,
 // delegating to the ranged-over Reference exactly as Java's

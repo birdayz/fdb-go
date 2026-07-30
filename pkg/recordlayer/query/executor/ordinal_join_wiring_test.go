@@ -2,7 +2,6 @@ package executor
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -202,18 +201,97 @@ func TestOrdinalJoinBuild_Constructor(t *testing.T) {
 		}
 	})
 
-	t.Run("baked non-RC is a loud error", func(t *testing.T) {
+	// A BARE (non-RC) baked result value is a LEGITIMATE select output, not a
+	// malformed plan: PartitionSelectRule's single-live-lower arm flows one leg's
+	// whole row (PartitionSelectRule.java:281) and a later positional-merge round
+	// translates that bare QOV into `ofOrdinal(QOV(merge), i)` (:319), which then
+	// reaches RecordQueryFlatMapPlan verbatim (ImplementNestedLoopJoinRule.java:187,
+	// 201,214). The build must stay ENABLED for it — see Bare. What must NOT
+	// happen is a nil build: that routes the cursor down the non-build path, which
+	// binds the outer by name instead of adapting it to the merge layout the
+	// inner's pushed SARGs read by ordinal, and returns zero rows.
+	t.Run("baked non-RC builds enabled on the Bare arm", func(t *testing.T) {
 		t.Parallel()
 		bakedBare, err := values.NewFieldValueOfOrdinal(qovA, 0)
 		if err != nil {
 			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
 		}
 		build, err := newOrdinalJoinBuild(bakedBare, nil)
-		if err == nil || build != nil {
-			t.Fatalf("baked non-RC = (%v, %v), want a loud error — an ordinal result value that is not an RC is a planner bug", build, err)
+		if err != nil {
+			t.Fatalf("bare baked build: %v — a bare baked result value is a legitimate select output", err)
 		}
-		if !strings.Contains(err.Error(), "ordinal join build") {
-			t.Fatalf("error %q must identify the ordinal join build check", err)
+		if !build.enabled() {
+			t.Fatal("bare baked build must be ENABLED: a nil build routes the cursor down the " +
+				"non-build path, which binds the outer by NAME rather than adapting it to the " +
+				"merge layout the inner's pushed-down SARGs read by ordinal — measured as zero " +
+				"rows on TestFDB_CommaJoin3ProjectedExistsWithEquijoins")
+		}
+		if build.RC != nil || build.Bare != bakedBare {
+			t.Fatalf("bare build = {RC: %v, Bare: %v}, want RC nil and Bare the result value — the two are mutually exclusive", build.RC, build.Bare)
+		}
+		if build.WindowsOK {
+			t.Fatal("a bare result value publishes NO leg windows: its output is one flowed value, not a merge")
+		}
+		if _, present := build.LegTypes[qovA.Correlation]; !present {
+			t.Fatal("bare LegTypes must recover leg A from the baked reference — the leg still has to adapt")
+		}
+	})
+
+	// The bare arm's OUTPUT SHAPE follows from what the value evaluated to, never
+	// from a plan flag. A whole-leg reference yields the leg's ROW and that row
+	// flows through as ITSELF; re-wrapping it in a 1-slot row would double-nest it
+	// and a downstream ordinal read of column i would land on the whole record.
+	t.Run("bare arm flows a row through and wraps a scalar", func(t *testing.T) {
+		t.Parallel()
+		mergedLeg := &values.RecordType{Fields: []values.Field{
+			{Name: "_0", FieldType: legA, Ordinal: 0},
+			{Name: "_1", FieldType: legB, Ordinal: 1},
+		}}
+		mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedLeg)
+		wholeLeg, err := values.NewFieldValueOfOrdinal(mergeQOV, 0)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		build, err := newOrdinalJoinBuild(wholeLeg, nil)
+		if err != nil {
+			t.Fatalf("bare build: %v", err)
+		}
+		legRow := NewPositionalRow(legA)
+		legRow.Slots[0] = int64(7)
+		legRow.Slots[1] = int64(9)
+		mergeRow := NewPositionalRow(mergedLeg)
+		mergeRow.Slots[0] = legRow
+		got, err := build.evaluateBound(&twoLegBinder{
+			outerID: values.NamedCorrelationIdentifier("m"),
+			outer:   mergeRow,
+		})
+		if err != nil {
+			t.Fatalf("bare evaluate: %v", err)
+		}
+		if got != legRow {
+			t.Fatalf("bare evaluate = %v, want the leg row ITSELF (%v) — wrapping it in a 1-slot row "+
+				"double-nests it, and a downstream ordinal read of column i then lands on the whole record", got, legRow)
+		}
+
+		// A bare reference naming a COLUMN, not a leg, is a scalar output and wraps
+		// into the 1-slot row every other scalar-output path uses.
+		col, err := values.NewFieldValueOfOrdinal(qovA, 1)
+		if err != nil {
+			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		}
+		scalarBuild, err := newOrdinalJoinBuild(col, nil)
+		if err != nil {
+			t.Fatalf("scalar bare build: %v", err)
+		}
+		aRow := NewPositionalRow(legA)
+		aRow.Slots[0] = int64(1)
+		aRow.Slots[1] = int64(42)
+		scalarGot, err := scalarBuild.evaluateBound(&twoLegBinder{outerID: qovA.Correlation, outer: aRow})
+		if err != nil {
+			t.Fatalf("scalar bare evaluate: %v", err)
+		}
+		if len(scalarGot.Slots) != 1 || scalarGot.Slots[0] != int64(42) {
+			t.Fatalf("scalar bare evaluate = %v, want a 1-slot row holding 42", scalarGot.Slots)
 		}
 	})
 }

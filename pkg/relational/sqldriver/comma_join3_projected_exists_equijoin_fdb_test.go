@@ -1,45 +1,38 @@
 package sqldriver_test
 
 // The 3-way COMMA join with a PROJECTED EXISTS and equijoin predicates — the
-// shape whose plan carries a join result value that is a bare baked FieldValue
-// rather than a RecordConstructorValue.
+// shape that returned NO ROWS AT ALL, in two independent ways at once.
 //
-// TestJoinResultValueWithBakedOrdinalsIsAlwaysAnRC found that structurally, at
-// planning time. This runs it, because a structural finding about a plan is only
-// a bug if executing the plan is a bug: executor.newOrdinalJoinBuild refuses to
-// build an ordinal join whose result value carries baked ordinals and is not an
-// RC, so if the cursor is reached, the query fails with the internal
-// "planner bug" error rather than returning rows.
+// Both were pre-existing, verified by running these arms at this branch's base
+// commit, and both had to be fixed for a single row to come out:
 //
-// That internal error was sighted once during a full-suite run and never
-// reproduced in isolation. These two queries are the isolation: both fail,
-// deterministically, and they fail identically at this branch's base commit — the
-// defect is PRE-EXISTING, not introduced by the leg-identity retyping.
-//
-// The fix is not here. Which result value that rule arm hands its FlatMap decides
-// which row the parent reads, so it is a Cascades planner change and belongs with
-// the planner gate, not inside a leg-identity retyping.
-//
-// So what these arms pin is the CURRENT DISPOSITION, exactly: the query must fail
-// with THAT error. That is a two-way tripwire, and deliberately so.
-//
-//   - If the error text or class changes, this goes red — a silent demotion to a
-//     non-build cursor would be far worse than the error, because the cursor would
-//     read leg slots off a row with no leg windows and return WRONG ROWS instead of
-//     failing.
-//   - If the query starts WORKING, this goes red too, with the row expectations
-//     it must then satisfy stated right here. A fix cannot land unnoticed, and
-//     whoever lands it gets the assertion for free.
+//  1. The lowest join — the positional-merge lower of `FROM A, B` — flowed a row
+//     whose MERGE SLOTS WERE UNTYPED, because PartitionSelectRule's
+//     single-live-lower arm hands its select an untyped flowed row and the merge
+//     round then scavenged the leg types off that value and found none. Untyped,
+//     the equijoin operand pushed into B's scan could not bake to a pinned
+//     ordinal; a source-relative operand evaluates to NULL against the
+//     build-bound row, so the scan matched nothing. Zero rows, NO error. Fixed
+//     by taking the leg type from the QUANTIFIER, which is what Java does
+//     (Quantifier.java:801-803 — getFlowedObjectValue() is always typed).
+//  2. The MIDDLE join's result value is a bare baked `ofOrdinal(QOV(merge), 0)`
+//     — legitimate, and exactly what PartitionSelectRule.java:281+319 mints —
+//     but executor.newOrdinalJoinBuild refused to build an ordinal join whose
+//     result value was not a RecordConstructorValue, so the query failed
+//     outright with an internal "planner bug" error. Fixed by the build's Bare
+//     arm; declining the build instead was measured at zero rows.
 //
 // The row expectations are not decoration: the data makes a mis-bound leg window
 // visible. EE holds CK 100 and 300, so the projected EXISTS must be TRUE, FALSE,
 // TRUE across the three surviving triples — a window one slot off answers
-// UNIFORMLY, which is the failure a row-count check would miss.
+// UNIFORMLY, which is the failure a row-count check would miss. Rows are rendered
+// POSITIONALLY, so the assertion pins the slot ORDER too: a name-keyed rendering
+// would pass with two columns swapped.
 
 import (
 	"context"
+	"fmt"
 	"sort"
-	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -138,7 +131,7 @@ func TestFDB_CommaJoin3ProjectedExistsWithEquijoins(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, unnestSprint(executor.RowValue(r)))
+				out = append(out, positionalSprint(r))
 			}
 			return nil, nil
 		})
@@ -152,53 +145,55 @@ func TestFDB_CommaJoin3ProjectedExistsWithEquijoins(t *testing.T) {
 	t.Run("two_column_projection", func(t *testing.T) {
 		rows, plan, err := runQ(t, `SELECT A."K", EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") `+
 			`FROM A, B, EEV WHERE A."AID" = B."BID" AND B."BID" = EEV."VK"`)
-		assertKnownNonRCJoinFailureOrRows(t, rows, plan, err,
+		assertJoin3Rows(t, rows, plan, err,
 			[]string{"[100 true]", "[200 false]", "[300 true]"})
 	})
 
 	// The SINGLE-column form is the one for which a bare (non-RC) result value is
-	// even representable, so it is the arm that can reach newOrdinalJoinBuild's
-	// non-RC error. Its EXISTS still varies per row.
+	// representable at the TOP as well, so it exercises the build's Bare arm at two
+	// levels. Its EXISTS still varies per row.
 	t.Run("single_column_projection", func(t *testing.T) {
 		rows, plan, err := runQ(t, `SELECT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") `+
 			`FROM A, B, EEV WHERE A."AID" = B."BID" AND B."BID" = EEV."VK"`)
-		assertKnownNonRCJoinFailureOrRows(t, rows, plan, err,
+		assertJoin3Rows(t, rows, plan, err,
 			[]string{"[false]", "[true]", "[true]"})
 	})
 }
 
-// assertKnownNonRCJoinFailureOrRows is the two-way tripwire for a shape on
-// knownNonRCJoinResultValueDebt: it must fail with the ordinal-join-build error,
-// and if it ever stops failing it must return `want`.
-func assertKnownNonRCJoinFailureOrRows(t *testing.T, rows []string, plan string, err error, want []string) {
-	t.Helper()
-	const knownErr = "ordinal join build: result value contains baked ordinal references"
-	if err != nil {
-		if !strings.Contains(err.Error(), knownErr) {
-			t.Fatalf("failed with an UNEXPECTED error: %v\n"+
-				"The known disposition for this shape is a loud refusal from "+
-				"executor.newOrdinalJoinBuild (%q). A different failure means something else "+
-				"changed; a SILENT success with wrong rows would be worse still, because the "+
-				"cursor would read leg slots off a row that has no leg windows.\n  %s",
-				err, knownErr, plan)
-		}
-		return
+// positionalSprint renders a result row from its POSITIONAL slots, so the
+// assertion pins the slot ORDER as well as the values. A name-keyed rendering
+// (unnestSprint over the row map) passes with two columns swapped and hides
+// exactly the mis-bound-window failure these arms exist to catch.
+func positionalSprint(r executor.QueryResult) string {
+	if r.Positional == nil {
+		return unnestSprint(executor.RowValue(r))
 	}
-	// It works now. That is the outcome we want — assert the rows and delete the
-	// debt entry.
+	return fmt.Sprint(r.Positional.Slots)
+}
+
+// assertJoin3Rows requires the shape to EXECUTE and to return exactly want. Any
+// error is a failure now: the two defects that made this shape unrunnable are
+// fixed, and the specific error each produced is quoted so a regression is
+// recognizable at a glance rather than merely red.
+func assertJoin3Rows(t *testing.T, rows []string, plan string, err error, want []string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("must EXECUTE, failed with: %v\n"+
+			"Two regressions produce a failure here. %q means the ordinal join build "+
+			"stopped accepting a bare (non-RC) baked result value — the shape "+
+			"PartitionSelectRule legitimately mints. Anything else, start from the plan.\n  %s",
+			err, "ordinal join build: result value contains baked ordinal references", plan)
+	}
 	if len(rows) != len(want) {
-		t.Fatalf("the shape now EXECUTES (good) but rows = %v, want %v.\n"+
-			"Delete this shape from knownNonRCJoinResultValueDebt and turn this arm into a "+
-			"plain row assertion.\n  %s", rows, want, plan)
+		t.Fatalf("rows = %v, want %v.\nZERO rows with no error is the untyped-merge-slot "+
+			"regression: an equijoin operand that cannot bake to a pinned ordinal evaluates to "+
+			"NULL against the build-bound row, so the pushed-down scan matches nothing.\n  %s",
+			rows, want, plan)
 	}
 	for i := range want {
 		if rows[i] != want[i] {
-			t.Fatalf("the shape now EXECUTES (good) but rows = %v, want %v — a leg window one "+
-				"slot off answers the EXISTS uniformly instead of per row.\n  %s",
-				rows, want, plan)
+			t.Fatalf("rows = %v, want %v — a leg window one slot off answers the EXISTS "+
+				"uniformly instead of per row.\n  %s", rows, want, plan)
 		}
 	}
-	t.Errorf("the shape now EXECUTES and returns the right rows — the defect is FIXED.\n" +
-		"Delete its entry from knownNonRCJoinResultValueDebt and replace this call with a " +
-		"plain row assertion, so the fix is recorded as a fix rather than as debt.")
 }

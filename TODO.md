@@ -10572,42 +10572,63 @@ None is speculative: each was re-verified against the tree before booking.
     comparisons there (so "the producers disagree on case" is unobservable),
     and the reason is not merely that the map key discarded the identifier.
 
-  FOUND WHILE FOLDING, NOT FIXED HERE — a live planner defect. A 3-way comma
-  join with a projected EXISTS whose legs are tied by equijoin predicates
-  plans a correlated-FlatMap chain whose MIDDLE FlatMap carries a bare baked
-  FieldValue where the merged row belongs, and executing it fails with
-  executor.newOrdinalJoinBuild's "result value contains baked ordinal
-  references but is a *values.FieldValue ... planner bug". This is the error
-  that was sighted once during a census run and could not be reproduced; it is
-  now DETERMINISTIC and PRE-EXISTING (verified at this branch's base commit).
-  Reproducers, both green as two-way tripwires that fire when the disposition
-  changes in either direction:
-  sqldriver/join_result_value_is_rc_test.go (plan-level, with the violating
-  shapes on knownNonRCJoinResultValueDebt) and
-  sqldriver/comma_join3_projected_exists_equijoin_fdb_test.go (execution, with
-  the row expectations a fix must satisfy).
-  ROOT CAUSE LOCATED, fix scoped but NOT applied. Java is unambiguous about
-  where it does NOT belong: ImplementNestedLoopJoinRule.java:187,201,214 pass
-  selectExpression.getResultValue() to RecordQueryFlatMapPlan VERBATIM in all
-  three arms, and RecordQueryFlatMapPlan's contract is only that the value "is
-  evaluated in a context where both the outer and inner quantifier aliases are
-  bound" — nothing about its shape. So the join rule is not where a result value
-  is chosen; the SELECT is. The defect is upstream: the intermediate merge select
-  ($m"N outer, third leg inner) carries a result value narrowed to a single baked
-  column while its consumer binds that FlatMap's output as a leg row and reads a
-  column out of it.
-  MEASURED, and it rules out the tempting executor-side fix: relaxing
-  newOrdinalJoinBuild to treat a non-RC result value as a scalar projection (no
-  build, let the non-build path bind the legs) makes both reproducer arms EXECUTE
-  and return ZERO rows where three are correct. The loud guard is therefore the
-  only thing preventing a silent wrong-rows answer, and it must stay until the
-  select is fixed — its comment now records that measurement so the next attempt
-  does not repeat it.
-  NEXT STEP: find the pass that narrows that intermediate select's result value
-  (the merge-select construction around the $m"N alias mint, memo.go:199) and
-  give it the positional merge RC Java's equivalent carries. The reproducers and
-  the row expectations are in place, and the plan-level debt list fails on a
-  stale entry so the fix cannot land unrecognized.
+  FOUND WHILE FOLDING, NOW FIXED. A 3-way comma join with a projected EXISTS
+  whose legs are tied by equijoin predicates returned NO ROWS, and for TWO
+  independent pre-existing reasons (both verified at this branch's base commit).
+  Both fixes are in; the earlier writeup of this item mis-located the defect and
+  is superseded below.
+  DEFECT 1 — UNTYPED POSITIONAL-MERGE SLOTS (zero rows, NO error, the worse of
+  the two). PartitionSelectRule's single-live-lower arm gave its lower select an
+  UNTYPED flowed row (`Quantifier.GetFlowedObjectValue()`), and a later
+  positional-merge round derived the collapsed legs' row types by SCAVENGING the
+  select's own value surfaces (positional_merge.go legRowTypes) — which finds
+  nothing precisely when the result value is itself an untyped flowed row. The
+  merge slots went UNKNOWN, so the equijoin operand pushed into the B leg's scan
+  could not bake to a pinned ordinal; a source-relative operand evaluates to NULL
+  against the build-bound row, the scan matched nothing, and the lowest join
+  emitted zero rows silently. Java never has this: the QUANTIFIER carries its own
+  row type (Quantifier.java:801-803 — `getFlowedObjectValue()` is
+  `QuantifiedObjectValue.of(alias, getFlowedObjectType())`, always typed). Fixed
+  by porting that: `Quantifier.GetFlowedObjectType` /
+  `GetFlowedObjectValueTyped` (expressions/quantifier.go), used as the AUTHORITY
+  for the merge slots, with legRowTypes kept only as the fallback for a reference
+  that carries no typed result value yet. MEASURED: typing the CASE-2 lower
+  select's result value as well (the other site that calls
+  GetFlowedObjectValue) is WRONG — it drifts 7151 plan-shape golden lines,
+  inserts a spurious Map over a filter, and regresses
+  TestFDB_JoinMerge_OuterColumn_NotDropped,
+  TestFDB_ArrayUnnestOrdinality/gathered_flat_multi-source_unnest,
+  yamsql join_three_way_predicate and rowdiff seed 5 to zero rows. The merge-slot
+  site alone drifts NO goldens.
+  DEFECT 2 — the middle FlatMap's result value is a bare baked
+  `ofOrdinal(QOV(merge), 0)` and `executor.newOrdinalJoinBuild` refused to build
+  an ordinal join whose result value was not a RecordConstructorValue. That
+  refusal was itself the bug, not a guard: Java imposes no RC requirement
+  anywhere — ImplementNestedLoopJoinRule.java:187,201,214 pass
+  selectExpression.getResultValue() VERBATIM in all three arms, and
+  PartitionSelectRule.java:281,319 legitimately MINTS the bare shape (a
+  single-live-lower select flows one leg's whole row; a later merge round
+  translates that bare QOV into `ofOrdinal(QOV(merge), i)`). Fixed with the
+  build's `Bare` arm: the build stays ENABLED (so the legs bind and the outer is
+  adapted to the merge layout the inner's pushed SARGs read by ordinal) and the
+  one value is evaluated — a row flows through AS ITSELF, a scalar wraps into the
+  1-slot row. The previously-measured "decline the build" fix is still wrong and
+  for the recorded reason (zero rows), and re-wrapping the flowed row is wrong
+  too (measured: `ordinal resolution: field "K" not resolvable ... row columns
+  [_0]`); both are pinned.
+  GATES: the plan-level file's old invariant (`ContainsBakedOrdinal ⟹ RC`) was
+  FALSE and is gone with its debt list. It is replaced by two gates that are
+  true and each red without its fix — `TestPositionalMergeRowSlotsAreTyped`
+  (every positional-merge slot flows a TYPED leg row; red with defect 1
+  reintroduced) and
+  `TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference` (a baked
+  non-RC join result value must be the WHOLE value, a single baked reference over
+  a leg QOV) — plus vacuity guards on both so a planner change that stops
+  producing either shape cannot leave them silently trivial.
+  `TestFDB_CommaJoin3ProjectedExistsWithEquijoins` is now a plain row assertion
+  rendering rows POSITIONALLY (a name-keyed rendering passes with two columns
+  swapped), and `TestOrdinalJoinBuild_Constructor` pins the Bare arm's
+  construction and its row-vs-scalar output shape.
 
 - [ ] **CQ-62 (S, bug fourteen: false prose over a live channel) —
   rule_implement_nested_loop_join.go:2380-2387 declares the leg-match arm

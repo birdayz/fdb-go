@@ -845,6 +845,39 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	return row, nil
 }
 
+// evaluateOrdinalJoinBareRow builds the emitted row for a BARE (non-RC) baked
+// result value — see ordinalJoinBuild.Bare. The value is evaluated ONCE against
+// the leg bindings and the OUTPUT SHAPE follows from what it produced, not from
+// a plan flag:
+//
+//   - a ROW (the leg row the reference names — every leg adapter produces a
+//     *PositionalRow) flows through AS ITSELF, keeping its own type and any leg
+//     windows that type carries. Re-wrapping it into a 1-slot row would
+//     double-nest it: a downstream ordinal read of column i would land on the
+//     whole record instead of the column, which is precisely how the non-build
+//     path returns zero rows for this shape;
+//   - anything else is a scalar column and wraps into the 1-slot `_0` row every
+//     other scalar-output path uses (scalarPositionalRow);
+//   - NULL flows as a nil row (the deliberately-NULL leg's extension).
+//
+// A wrongly-shaped binding still fails LOUD inside Evaluate: a baked ordinal
+// read against a row that cannot serve it is an OrdinalResolutionError, so
+// dropping the RC-only construction check trades no silence for reach.
+func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinder) (*PositionalRow, error) {
+	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings)}
+	out, err := v.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	switch row := out.(type) {
+	case nil:
+		return nil, nil
+	case *PositionalRow:
+		return row, nil
+	}
+	return scalarPositionalRow(out), nil
+}
+
 // --- cursor-side build wiring ------------------------------------------------
 
 // rcOutputType derives an RC's OUTPUT row type: a RAW *RecordType (duplicate
@@ -947,8 +980,17 @@ type ordinalJoinBuild struct {
 	// (values.ContainsBakedOrdinal, deep). A nil/lazy result value yields a nil
 	// *ordinalJoinBuild instead — use the nil-safe enabled().
 	Enabled bool
-	// RC is the result value as the RC the build evaluates per-field.
+	// RC is the result value as the RC the build evaluates per-field. Nil
+	// exactly when Bare is set.
 	RC *values.RecordConstructorValue
+	// Bare is the result value when it is NOT an RC — a single baked value the
+	// select flows as its whole output (PartitionSelectRule's single-live-lower
+	// row translated onto a merge quantifier: `ofOrdinal(QOV(merge), i)`). The
+	// built row is that ONE value's evaluation, not an assembled slot list, so
+	// there is no OutputType and no leg window to publish: a row-shaped result
+	// flows through as itself (the merged leg row it names, windows and all) and
+	// a scalar wraps into a 1-slot row. Mutually exclusive with RC.
+	Bare values.Value
 	// OutputType is the built positional row's single authoritative type
 	// (rcOutputType; == ordinalJoinSpans' mergedType for the pristine seed).
 	OutputType *values.RecordType
@@ -985,31 +1027,31 @@ type ordinalJoinBuild struct {
 
 // newOrdinalJoinBuild probes a join plan's result value at cursor
 // construction. nil (disabled) when rv is nil or carries no baked ordinal —
-// the non-build cursor path (identity pass-through / fold). A LOUD error when
-// rv contains baked ordinals but is not a *RecordConstructorValue: anything
-// else is a malformed plan and must die at construction, never be silently
-// demoted to a non-build cursor.
+// the non-build cursor path (identity pass-through / fold).
 //
-// That error IS reachable, and the loudness is load-bearing rather than
-// defensive. A 3-way comma join with a projected EXISTS whose legs are tied by
-// equijoin predicates plans a correlated-FlatMap chain whose MIDDLE FlatMap
-// carries a bare baked FieldValue where the merged row belongs, and it fails
-// here. Demoting that case to the non-build path instead was tried and
-// MEASURED: the query then executes and returns ZERO rows where three are
-// correct. So this error is the only thing standing between a mis-planned shape
-// and a silent wrong-rows answer, and it stays until the plan is fixed.
+// Two ENABLED shapes, discriminated by the result value's own structure:
 //
-// The fix is NOT to relax this check, and Java says where it belongs. Java's
-// ImplementNestedLoopJoinRule passes selectExpression.getResultValue() to
-// RecordQueryFlatMapPlan verbatim in all three of its arms, so the rule is not
-// where a result value is chosen — the SELECT is. The defect is therefore
-// upstream, in the intermediate merge select whose result value was narrowed to
-// a single baked column while its consumer still binds that FlatMap's output as
-// a leg row and reads a column out of it. Reproducers:
-// sqldriver.TestFDB_CommaJoin3ProjectedExistsWithEquijoins (execution, carrying
-// the rows a fix must produce) and
-// sqldriver.TestJoinResultValueWithBakedOrdinalsIsAlwaysAnRC (plan-level, over
-// the shape class, with the violating shapes on a two-way debt ratchet).
+//   - an RC — the leg-concat seed or a folded projection: the built row is one
+//     slot per RC field, with leg windows when the seed is pristine;
+//   - a BARE (non-RC) baked value — the select flows ONE value as its whole
+//     output: the built row is that value's evaluation (see Bare and
+//     evaluateOrdinalJoinBareRow). Java imposes no RC requirement at any point;
+//     ImplementNestedLoopJoinRule.java:187,201,214 hand
+//     selectExpression.getResultValue() to RecordQueryFlatMapPlan verbatim in
+//     all three arms, and PartitionSelectRule.java:281,319 mints exactly this
+//     shape — a single-live-lower select flows one leg's whole row, and a later
+//     positional-merge round translates that bare QOV into
+//     `ofOrdinal(QOV(merge), i)`.
+//
+// The bare arm must stay ENABLED and must not be turned back into either an
+// error or a decline. Both were MEASURED on the 3-way comma join with equijoin
+// predicates and a projected EXISTS
+// (sqldriver.TestFDB_CommaJoin3ProjectedExistsWithEquijoins, which carries the
+// three correct rows): erroring fails the query outright, and declining to the
+// non-build path executes and returns ZERO rows, because that path binds the
+// outer by name rather than adapting it to the merge layout the inner's
+// pushed-down SARGs read by ordinal, then wraps the flowed leg row in a 1-slot
+// scalar row.
 func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBuild, error) {
 	// Two build triggers:
 	//   - a FrontierPinned baked reference anywhere in the RV (the flat
@@ -1023,7 +1065,31 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	}
 	rc, isRC := rv.(*values.RecordConstructorValue)
 	if !isRC {
-		return nil, fmt.Errorf("ordinal join build: result value contains baked ordinal references but is a %T, want *RecordConstructorValue (seed or folded projection RC) — planner bug", rv)
+		// A BARE (non-RC) baked result value: the select's output is not an
+		// assembled row but a SINGLE flowed value read out of a leg. Java's
+		// RecordQueryFlatMapPlan has no RC requirement at all — it evaluates
+		// selectExpression.getResultValue() against the bound legs whatever its
+		// shape (ImplementNestedLoopJoinRule.java:187,201,214 pass the select's
+		// result value verbatim in all three arms) — and PartitionSelectRule
+		// legitimately MINTS this shape: its single-live-lower arm flows one
+		// leg's whole row (`quantifier.getFlowedObjectValue()`,
+		// PartitionSelectRule.java:281), and a later positional-merge round
+		// translates that bare QOV onto the merge quantifier
+		// (`resultValue.translateCorrelations(translationMap)`, :319), leaving
+		// `ofOrdinal(QOV(merge), i)` — a bare baked reference — as the upper
+		// select's whole result value.
+		//
+		// The build stays ENABLED for it, and that is the load-bearing part:
+		// DECLINING (returning a nil build) routes the cursor down the non-build
+		// path, which binds the outer by name instead of adapting it to the merge
+		// layout the inner's pushed-down SARGs read by ordinal, and wraps the
+		// flowed row in a 1-slot scalar row. Measured on the 3-way comma join
+		// with equijoin predicates and a projected EXISTS: declining executes and
+		// returns ZERO rows where three are correct. Enabled, the legs bind
+		// exactly as for an RC and the one value is evaluated against them.
+		bare := &ordinalJoinBuild{Enabled: true, Bare: rv, LegTypes: legTypesFromResultValue(rv)}
+		widenLegTypesFromPredicates(bare.LegTypes, preds)
+		return bare, nil
 	}
 	spans, _, windowsOK := ordinalJoinSpans(rc)
 	// LegTypes come from the RESULT VALUE *and* the join PREDICATES: a
@@ -1061,6 +1127,26 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 			}
 		}
 	}
+	widenLegTypesFromPredicates(legTypes, preds)
+	return &ordinalJoinBuild{
+		Enabled:    true,
+		RC:         rc,
+		OutputType: rcOutputType(rc),
+		Spans:      spans,
+		WindowsOK:  windowsOK,
+		LegTypes:   legTypes,
+		RawLegs:    rawLegs,
+	}, nil
+}
+
+// widenLegTypesFromPredicates adds the leg types the join PREDICATES carry to
+// an already-collected map. A folded projection RV can DROP a leg entirely
+// while a baked cross-leg ON predicate still references it; collecting from the
+// RV alone leaves the dropped leg typeless, and it then adapts to a ZERO-WIDTH
+// binding that blows up the predicate. FIRST-WINS rather than a divergence
+// assert: this is the widening SOURCE, and the RV-side collection the caller
+// already ran is the one that asserts width agreement.
+func widenLegTypesFromPredicates(legTypes map[values.CorrelationIdentifier]*values.RecordType, preds []predicates.QueryPredicate) {
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
 			fv, isFV := v.(*values.FieldValue)
@@ -1077,15 +1163,6 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 			return v
 		})
 	}
-	return &ordinalJoinBuild{
-		Enabled:    true,
-		RC:         rc,
-		OutputType: rcOutputType(rc),
-		Spans:      spans,
-		WindowsOK:  windowsOK,
-		LegTypes:   legTypes,
-		RawLegs:    rawLegs,
-	}, nil
 }
 
 // enabled is the nil-safe Enabled read — a non-build cursor stores a nil
@@ -1335,13 +1412,16 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 // from evaluate so the NLJ cursor can share one legRows adaptation between
 // the predicate context and the build.
 func (b *ordinalJoinBuild) evaluateLegs(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, base values.CorrelationBinder) (*PositionalRow, error) {
-	return evaluateOrdinalJoinRow(b.RC, b.OutputType, &buildLegBinder{legs: legs, raw: raw, base: base})
+	return b.evaluateBound(&buildLegBinder{legs: legs, raw: raw, base: base})
 }
 
 // evaluateBound builds the positional row from any pre-built leg binder — the
 // zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (no per-pair
 // map, no per-pair re-adaptation).
 func (b *ordinalJoinBuild) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
+	if b.Bare != nil {
+		return evaluateOrdinalJoinBareRow(b.Bare, bindings)
+	}
 	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
 }
 
