@@ -44,6 +44,9 @@ type legLocalBakeCounters struct {
 	// UntypedLeg: the leg QOV flows no record type, so no leg-local ordinal can
 	// be resolved. These are the reads that would have to DECLINE.
 	UntypedLeg int
+	// UnderivableLegs counts LEGS (not reads) whose physical plan states no row
+	// layout at all, so every read correlated to them falls through.
+	UnderivableLegs int
 	// ColumnAbsent: the leg is typed but the read's column is not one of its
 	// declared columns — a read whose name does not name a column of the leg it
 	// claims to come from.
@@ -112,6 +115,21 @@ func legTypeOrUntyped(legType *values.RecordType, haveLegType bool, refType valu
 	return refType
 }
 
+// recordUnderivableLegLayout names a leg whose physical plan states no row
+// layout, by the plan's own shape.
+//
+// This is the residue's cause rather than its symptom. The bakeability counters
+// say how many reads still need the qualified name; this says WHY — which plan
+// shapes the layout derivation has no arm for. Kept separate from the counters
+// because it is per-LEG, not per-READ: one underivable leg accounts for every
+// read correlated to it.
+func recordUnderivableLegLayout(alias values.CorrelationIdentifier, plan any) {
+	legLocalBakeMu.Lock()
+	defer legLocalBakeMu.Unlock()
+	legLocalBakeCounts.UnderivableLegs++
+	addLegLocalBakeWitness(fmt.Sprintf("NO-LAYOUT leg %s: plan %T states no row layout", alias.Name(), plan))
+}
+
 func recordTypeFieldNames(rt *values.RecordType) []string {
 	out := make([]string, len(rt.Fields))
 	for i, f := range rt.Fields {
@@ -138,8 +156,8 @@ func LegLocalBakeCensus() (legLocalBakeCounters, []string) {
 func FormatLegLocalBakeCensus() string {
 	c, witnesses := LegLocalBakeCensus()
 	var b strings.Builder
-	fmt.Fprintf(&b, "leg-local bakeability: total %d, bakeable %d, untypedLeg %d, columnAbsent %d",
-		c.Total, c.Bakeable, c.UntypedLeg, c.ColumnAbsent)
+	fmt.Fprintf(&b, "leg-local bakeability: total %d, bakeable %d, untypedLeg %d, columnAbsent %d, underivableLegs %d",
+		c.Total, c.Bakeable, c.UntypedLeg, c.ColumnAbsent, c.UnderivableLegs)
 	if len(witnesses) > 0 {
 		sorted := append([]string{}, witnesses...)
 		sort.Strings(sorted)

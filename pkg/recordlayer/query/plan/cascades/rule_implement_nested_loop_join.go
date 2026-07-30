@@ -2352,6 +2352,26 @@ func physicalLegRowTypes(legs ...struct {
 		}
 		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.Plan, leg.Alias, 0)
 		if !ok || len(concatFields) == 0 {
+			// The scan-leaf walk reduces scans, filters and INNER nested-loop
+			// joins. It has no arm for a leg that is itself a FlatMap — the
+			// accumulated side of an N-way join — and that is the ENTIRE measured
+			// residue of this derivation (32 underivable legs over the real-FDB
+			// corpus, every one of them a *plans.RecordQueryFlatMapPlan).
+			//
+			// A FlatMap's row is whatever its result value computes, so there is
+			// nothing to walk to; the layout is the result value's to state. These
+			// legs' result values state nothing, because they flow an UNTYPED
+			// quantifier object — which is the defect booked as CQ-63, and the
+			// reason the qualified-name channel cannot close here. Reading the
+			// layout off a seeded result value was tried and declines on every one
+			// of them, so no arm is added on speculation.
+			if values.LegIdentityCensusEnabled() {
+				// The residue's CAUSE, recorded where it is decided. A leg whose
+				// layout cannot be stated is why a read correlated to it still has
+				// to be re-anchored, and knowing WHICH plan shape declines is the
+				// difference between an actionable gap and a mystery.
+				recordUnderivableLegLayout(leg.Alias, leg.Plan)
+			}
 			continue
 		}
 		var nested []values.RecordTypeLeg
@@ -2359,33 +2379,40 @@ func physicalLegRowTypes(legs ...struct {
 			nested = buriedLegs
 		}
 		out[leg.Alias] = &values.RecordType{Fields: concatFields, Legs: nested}
-		// A leg that is itself a join carries its BURIED sources' windows, and
-		// those sources bind under their own correlations too (the merged row's
-		// leg table carries every buried sub-window, so the runtime binder serves
-		// them). Give each its own layout, sliced from the concat at its window,
-		// so a read correlated to a buried source states an ordinal in the row it
-		// will actually be bound to rather than in the box that carries it.
-		for _, bl := range nested {
-			end := bl.Start + bl.Width
-			if bl.Alias.IsZero() || bl.Start < 0 || end > len(concatFields) || bl.Start >= end {
-				continue
-			}
-			if _, taken := out[bl.Alias]; taken {
-				continue
-			}
-			sub := make([]values.Field, end-bl.Start)
-			for k := range sub {
-				f := concatFields[bl.Start+k]
-				f.Ordinal = k
-				sub[k] = f
-			}
-			out[bl.Alias] = &values.RecordType{Fields: sub}
-		}
+		addBuriedLegLayouts(out, concatFields, nested)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// addBuriedLegLayouts gives each BURIED source of a leg its own layout, sliced
+// from the leg's concat at that source's window.
+//
+// A leg that is itself a join binds its buried sources under their own
+// correlations too — the merged row's leg table carries every buried sub-window,
+// so the runtime binder serves them — and a read correlated to a buried source
+// must state its ordinal in the row it will actually be bound to, not in the box
+// that carries it. A malformed or already-claimed window contributes nothing; a
+// first-claim wins, matching the leg table's own first-match rule.
+func addBuriedLegLayouts(out map[values.CorrelationIdentifier]*values.RecordType, concat []values.Field, legs []values.RecordTypeLeg) {
+	for _, bl := range legs {
+		end := bl.Start + bl.Width
+		if bl.Alias.IsZero() || bl.Start < 0 || end > len(concat) || bl.Start >= end {
+			continue
+		}
+		if _, taken := out[bl.Alias]; taken {
+			continue
+		}
+		sub := make([]values.Field, end-bl.Start)
+		for k := range sub {
+			f := concat[bl.Start+k]
+			f.Ordinal = k
+			sub[k] = f
+		}
+		out[bl.Alias] = &values.RecordType{Fields: sub}
+	}
 }
 
 func rebaseOuterLegRefsToMerged(
