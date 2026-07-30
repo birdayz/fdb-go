@@ -5631,7 +5631,23 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 		if legCols == nil {
 			return nil
 		}
-		legs = append(legs, values.RecordTypeLeg{Name: aliases[i], Start: off, Width: len(legCols)})
+		// The leg's IDENTITY is the quantifier's own alias — the identifier a
+		// correlation-bearing reader will hold. The select's parallel sourceAliases
+		// entry is the leg's TEXT, which the dotted channel still matches against;
+		// the two are recorded separately rather than one being derived from the
+		// other, so a divergence between them is measurable instead of silent.
+		//
+		// It IS measured: this is the one producer whose two spellings come from
+		// genuinely independent places (a quantifier vs. the select's parallel alias
+		// slice), so the census records the pair here rather than relying on a
+		// downstream reader happening to walk these legs.
+		if values.LegIdentityCensusEnabled() {
+			values.RecordLegIdentityComparison(
+				values.LegSiteSelectOutputLegs, aliases[i], q.GetAlias().Name())
+		}
+		legs = append(legs, values.RecordTypeLeg{
+			Alias: q.GetAlias(), Name: aliases[i], Start: off, Width: len(legCols),
+		})
 		off += len(legCols)
 	}
 	if off != flatCount {
@@ -5863,7 +5879,9 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
 		return nil
 	}
-	return []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(cols)}}
+	return []values.RecordTypeLeg{{
+		Alias: values.NamedCorrelationIdentifier(alias), Name: alias, Start: 0, Width: len(cols),
+	}}
 }
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no

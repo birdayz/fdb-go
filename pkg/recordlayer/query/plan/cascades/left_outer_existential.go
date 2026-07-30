@@ -83,7 +83,17 @@ func rebaseOuterLegValueOrdinal(
 			// unreachable while windows and merged Legs stay in lockstep.
 			if rt, ok := mergedQOV.Type().(*values.RecordType); ok {
 				for _, leg := range rt.Legs {
-					if leg.Name == alias {
+					if values.LegIdentityCensusEnabled() {
+						values.RecordLegIdentityComparison(
+							values.LegSiteLeftOuterExistential, leg.Name, qov.Correlation.Name())
+						values.RecordLegIdentityLeg(leg)
+					}
+					// The drift check asks an IDENTITY question — "is this correlation a
+					// known leg boundary?" — so it is answered by the leg's identity
+					// against the reference's own correlation, not by the upper fold of
+					// one side against the text of the other. Folding here would let the
+					// tripwire mistake a case-variant alias for the leg it is guarding.
+					if values.SameLeg(leg.Alias, qov.Correlation) {
 						failed = true
 						break
 					}

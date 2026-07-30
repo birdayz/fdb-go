@@ -350,7 +350,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			}
 			outerBinding = row
 		default:
-			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
+			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 		}
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
 		// Java FlatMapPipelinedCursor (:210-220): the initial inner
@@ -440,8 +440,8 @@ func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier)
 // SAME slots (the Slots are shared — values are read, never mutated; only the
 // type gains the alias window). Returns the row unchanged when the alias is
 // empty or the type is absent.
-func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
-	if row == nil || row.Type == nil || alias == "" {
+func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifier) *PositionalRow {
+	if row == nil || row.Type == nil || alias.IsZero() {
 		return row
 	}
 	// A MERGED outer row (a clustered join outer — e.g. a FULL OUTER JOIN A,B)
@@ -458,7 +458,9 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 		RecordName: row.Type.RecordName,
 		Nullable:   row.Type.Nullable,
 		Fields:     row.Type.Fields,
-		Legs:       []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(row.Type.Fields)}},
+		Legs: []values.RecordTypeLeg{{
+			Alias: alias, Name: alias.Name(), Start: 0, Width: len(row.Type.Fields),
+		}},
 	}
 	return &PositionalRow{Type: qualified, Slots: row.Slots}
 }
@@ -497,7 +499,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			innerBinding = innerRow.Positional
 		}
 	}
-	outerBinding := qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
+	outerBinding := qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerBinding).
 		WithBinding(c.innerAlias, innerBinding)
@@ -599,7 +601,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			// correct when the row IS the outer source's own layout, which is
 			// why this arm is gated on outerIdentityPassthrough (both layout
 			// probes nil AND identity RV).
-			out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
+			out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 		} else {
 			// The identity output IS the outer row — flow its own Positional
 			// through.
@@ -629,7 +631,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// arm without needing a separate probe.
 	if isIdentityInnerRV(c.resultValue, c.innerAlias) {
 		out := QueryResult{Record: innerRow.Record, PrimaryKey: innerRow.PrimaryKey}
-		out.Positional = qualifyOuterPositional(innerRow.Positional, c.innerAlias.Name())
+		out.Positional = qualifyOuterPositional(innerRow.Positional, c.innerAlias)
 		return c.withInheritedOuterProperties(outerRow, out), nil
 	}
 	return c.withInheritedOuterProperties(outerRow, QueryResult{Positional: foldPos}), nil

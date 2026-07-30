@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -16,7 +17,7 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	t.Parallel()
 	outer := dmap(map[string]any{"AK": int64(100)})
 	inner := dmap(map[string]any{"CV": int64(900)})
-	merged := mergeRows(outer, inner, "C", "CC2")
+	merged := mergeRows(outer, inner, values.NamedCorrelationIdentifier("C"), values.NamedCorrelationIdentifier("CC2"))
 	if v, ok := legRead(merged.Positional, "C", "AK"); !ok || v != int64(100) {
 		t.Fatalf("C.AK = %v, want 100 (leg window)", v)
 	}

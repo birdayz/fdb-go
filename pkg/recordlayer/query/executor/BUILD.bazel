@@ -67,6 +67,7 @@ go_test(
         "in_union_empty_test.go",
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
+        "leg_identity_binding_test.go",
         "limit_envelope_test.go",
         "limit_extension_test.go",
         "memory_budget_test.go",
@@ -182,6 +183,7 @@ go_test(
         "merge_sort_heap_error_test.go",
         "merge_sort_heap_pop_error_test.go",
         "aggregate_output_slot_identity_test.go",
+        "leg_identity_binding_test.go",
     ],
     deps = [
         "//gen",

@@ -2511,7 +2511,7 @@ func TestMergeRows_BothMaps(t *testing.T) {
 	t.Parallel()
 	outer := dmapPK(tuple.Tuple{int64(1)}, map[string]any{"A": 1, "B": 2})
 	inner := dmapPK(tuple.Tuple{int64(2)}, map[string]any{"C": 3, "D": 4})
-	merged := mergeRows(outer, inner, "", "")
+	merged := mergeRows(outer, inner, values.CorrelationIdentifier{}, values.CorrelationIdentifier{})
 	m, _ := rowMapOK(merged)
 	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
 		t.Fatalf("unexpected merged datum: %v", m)
@@ -2525,7 +2525,7 @@ func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	t.Parallel()
 	outer := dmap(map[string]any{"K": "outer"})
 	inner := dmap(map[string]any{"K": "inner"})
-	merged := mergeRows(outer, inner, "", "")
+	merged := mergeRows(outer, inner, values.CorrelationIdentifier{}, values.CorrelationIdentifier{})
 	m, _ := rowMapOK(merged)
 	if m["K"] != "inner" {
 		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
@@ -2539,7 +2539,7 @@ func TestMergeRows_ScalarOuter(t *testing.T) {
 	t.Parallel()
 	outer := QueryResult{Positional: scalarPositionalRow("string-datum"), PrimaryKey: tuple.Tuple{int64(1)}}
 	inner := dmap(map[string]any{"C": 3})
-	merged := mergeRows(outer, inner, "", "")
+	merged := mergeRows(outer, inner, values.CorrelationIdentifier{}, values.CorrelationIdentifier{})
 	if got := rowVal(merged, "_0"); got != "string-datum" {
 		t.Fatalf("expected scalar outer leg preserved, got %v", got)
 	}
@@ -4014,7 +4014,7 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 		"IDB": int64(4),
 	})
 
-	merged := mergeRows(outer, inner, "SQ1", "B")
+	merged := mergeRows(outer, inner, values.NamedCorrelationIdentifier("SQ1"), values.NamedCorrelationIdentifier("B"))
 	// Qualified reads resolve leg-locally through the alias windows (a baked
 	// QOV(alias).col reference through the row's own leg metadata — legRead).
 	if v, ok := legRead(merged.Positional, "SQ1", "X"); !ok || v != int64(1) {

@@ -362,7 +362,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 		// leg windows (concatLegPositionals → Type.Legs), so
 		// passesJoinPredicatesLegs derives them (spansFromMergedLegs) and the
 		// baked leg predicate resolves correctly. B#1=100 over B(1,100) is TRUE.
-		combined := mergeRows(outerRows[0], innerRows[0], "A", "B")
+		combined := mergeRows(outerRows[0], innerRows[0], values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
 		passes, perr := passesJoinPredicatesLegs(combined, []predicates.QueryPredicate{bakedPred}, EmptyEvaluationContext(), nil)
 		if perr != nil {
 			t.Fatalf("baked predicate over the merged row's own leg windows must resolve, got error %v", perr)
@@ -896,7 +896,11 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1}, // buried B's ID — the first-match trap
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2}, // the leaf E's own ID
 		},
-		Legs: []values.RecordTypeLeg{{Name: "B", Start: 0, Width: 2}, {Name: "E", Start: 2, Width: 1}},
+		// Each buried leg STATES its identity — that is what the leg binder compares.
+		Legs: []values.RecordTypeLeg{
+			{Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 0, Width: 2},
+			{Alias: corrE, Name: "E", Start: 2, Width: 1},
+		},
 	}
 	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
 	qovE := values.NewQuantifiedObjectValueOfType(corrE, boxTyp)

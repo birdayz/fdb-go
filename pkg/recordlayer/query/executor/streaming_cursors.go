@@ -1452,7 +1452,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// downstream qualified ref to the inner side resolves, and
 						// the absent outer side reads NULL.
 						qr := QueryResult{Record: c.innerRows[i].Record, PrimaryKey: c.innerRows[i].PrimaryKey}
-						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerAlias)
+						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerCorr)
 						if c.build.enabled() {
 							pos, berr := c.build.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
@@ -1581,7 +1581,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			idx := c.innerCandidateIndex(c.innerIdx)
 			innerRow := c.innerRows[idx]
 			c.innerIdx++
-			combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
+			combined := mergeRows(*c.currentOuter, innerRow, c.outerCorr, c.innerCorr)
 			// For an ordinal-build cursor the predicate row context carries
 			// the per-leg bindings from the PRE-adapted legs (nil binder =
 			// today's path bit-identically); the same binder builds the
@@ -1638,7 +1638,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// never an error) when active; otherwise the outer's own
 				// positional qualified under its alias, the absent inner side NULL.
 				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
-				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
+				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerCorr)
 				if c.build.enabled() {
 					pos, berr := c.build.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {

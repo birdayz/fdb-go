@@ -1908,8 +1908,14 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]val
 			if !isRT || len(rt.Fields) == 0 {
 				return nil, nil, false
 			}
+			// The leg's identity is the identifier its own QuantifiedObjectValue
+			// carries, which reconstructFoldStep1Seed mints as the UPPER fold of the
+			// plan's alias — so the fold belongs to the MINT here, once, and not to a
+			// comparison downstream. Alias and Name are therefore the same spelling
+			// by construction; Name stays for the text channel's readers.
+			legAlias := values.NamedCorrelationIdentifier(strings.ToUpper(alias))
 			return rt.Fields, []values.RecordTypeLeg{
-				{Name: strings.ToUpper(alias), Start: base, Width: len(rt.Fields)},
+				{Alias: legAlias, Name: legAlias.Name(), Start: base, Width: len(rt.Fields)},
 			}, true
 		case *plans.RecordQueryPredicatesFilterPlan:
 			inner = pl.GetInner()

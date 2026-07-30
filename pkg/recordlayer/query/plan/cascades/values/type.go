@@ -370,9 +370,39 @@ type RecordType struct {
 // RecordTypeLeg is one buried source's boundary within a clustered box leg's
 // flat ordinal concat (see RecordType.Legs).
 type RecordTypeLeg struct {
-	Name  string // UPPER binding of the source
-	Start int    // its first slot within the carrying type
-	Width int    // its column count
+	// Alias is the leg's IDENTITY: the CorrelationIdentifier of the quantifier
+	// whose row occupies [Start, Start+Width). It is the field every consumer
+	// asking "does this correlation name this leg?" must compare, through
+	// SameLeg — so that question has exactly one answer, arrived at the same way
+	// Java arrives at it (CorrelationIdentifier.equals is Objects.equals on the
+	// raw id; Java never case-folds an alias anywhere, and its runtime binding is
+	// keyed by the identifier object, not by text).
+	//
+	// It is SOURCED at construction from the identifier the leg's own quantifier
+	// or QuantifiedObjectValue carries — never re-minted from Name downstream. A
+	// re-mint is how a leg acquires a second spelling, and a second spelling is
+	// how a lookup silently binds the wrong row's slots.
+	Alias CorrelationIdentifier
+
+	// Name is the leg's binding as TEXT, conventionally UPPER.
+	//
+	// It is NOT the identity — Alias is. Name survives because a distinct family
+	// of consumers still addresses legs by text: the dotted channel, where the
+	// qualifier is embedded inside a column-name string ("A.ID") and so can only
+	// be matched as a string. Those consumers retire with the seed rebake that
+	// replaces the dotted channel; this field retires with them.
+	//
+	// Consumers whose counterparty is a correlation must use Alias. A comparison
+	// against Name is a text match dressed as an identity check, and text
+	// matching is what folds the deliberately case-DISJOINT alias namespaces
+	// together (user correlations are upper-folded at the semantic scope's
+	// registration chokepoint; UniqueCorrelationIdentifier mints the machine
+	// counter lowercase, so a quoted "q$5" must not be able to forge a
+	// planner-minted q$5 — see SameLeg).
+	Name string
+
+	Start int // its first slot within the carrying type
+	Width int // its column count
 }
 
 // NewRecordType constructs a RecordType. The Fields slice is

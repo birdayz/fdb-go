@@ -268,11 +268,15 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	for _, s := range spans {
 		if len(s.LegType.Legs) > 0 {
 			for _, sub := range s.LegType.Legs {
-				mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+				mergedLegs = append(mergedLegs, values.RecordTypeLeg{
+					Alias: sub.Alias, Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width,
+				})
 			}
 			continue
 		}
-		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: s.Alias.Name(), Start: s.Offset, Width: s.Width})
+		mergedLegs = append(mergedLegs, values.RecordTypeLeg{
+			Alias: s.Alias, Name: s.Alias.Name(), Start: s.Offset, Width: s.Width,
+		})
 	}
 	return mergedLegs
 }
@@ -559,17 +563,16 @@ type legWindowBinder struct {
 //     misread a leg-local ordinal against an earlier buried leg's slots);
 //  2. a BURIED leg inside any span serves its sub-window at the buried offset.
 func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
-	alias := id.Name()
 	for _, s := range b.spans {
-		// Exact: both sides live in the correlation-key namespace
-		// (canonical UPPER for user aliases, verbatim lowercase q$N for
-		// machine mints). A fold here would let a quoted "q$5" user
-		// alias cross into the machine namespace.
-		if s.Alias.Name() != alias {
+		// Exact, via the one identity comparison: both sides are correlation
+		// IDENTIFIERS (canonical UPPER for user aliases, verbatim lowercase q$N for
+		// machine mints). A fold here would let a quoted "q$5" user alias cross into
+		// the machine namespace.
+		if !values.SameLeg(s.Alias, id) {
 			continue
 		}
 		if s.LegType != nil {
-			if w, ok := buriedLegWindow(b.row, s, alias); ok {
+			if w, ok := buriedLegWindow(b.row, s, id); ok {
 				return w, true
 			}
 		}
@@ -581,7 +584,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 		if s.LegType == nil {
 			continue
 		}
-		if w, ok := buriedLegWindow(b.row, s, alias); ok {
+		if w, ok := buriedLegWindow(b.row, s, id); ok {
 			return w, true
 		}
 	}
@@ -596,9 +599,13 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // Malformed bounds are a MISS (never the run-wide window — a whole-concat read
 // would silently serve another leg's slots; the caller's miss disposition is
 // loud downstream).
-func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindowRow, bool) {
+func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationIdentifier) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
-		if bl.Name != alias {
+		if values.LegIdentityCensusEnabled() {
+			values.RecordLegIdentityComparison(values.LegSiteBuriedLegWindow, bl.Name, alias.Name())
+			values.RecordLegIdentityLeg(bl)
+		}
+		if !values.SameLeg(bl.Alias, alias) {
 			continue
 		}
 		end := bl.Start + bl.Width
@@ -868,10 +875,14 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 				// RIGHT-box collision: "D.ID" first-matched the box run and
 				// read the null-supplying leg's slot). Subs only.
 				for _, sub := range rt.Legs {
-					legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+					legs = append(legs, values.RecordTypeLeg{
+						Alias: sub.Alias, Name: sub.Name, Start: i + sub.Start, Width: sub.Width,
+					})
 				}
 			} else {
-				legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
+				legs = append(legs, values.RecordTypeLeg{
+					Alias: qov.Correlation, Name: corr, Start: i, Width: len(rt.Fields),
+				})
 			}
 		}
 	}
@@ -1412,11 +1423,16 @@ type rowLegsBinder struct {
 // duplicate leg names mirrors RecordType.FieldIndex's first-match rule.
 func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	if b.row != nil && b.row.Type != nil {
-		name := id.Name()
 		for _, leg := range b.row.Type.Legs {
-			// Exact: correlation-key namespace on both sides (see
-			// legWindowBinder).
-			if leg.Name != name {
+			if values.LegIdentityCensusEnabled() {
+				values.RecordLegIdentityComparison(values.LegSiteRowLegsBinder, leg.Name, id.Name())
+				values.RecordLegIdentityLeg(leg)
+			}
+			// The leg's IDENTITY decides, through the one comparison every identity
+			// proof routes through. Not its Name: matching text here would be an
+			// identity claim made by string equality, and the alias namespaces are
+			// deliberately case-DISJOINT precisely so that claim cannot be forged.
+			if !values.SameLeg(leg.Alias, id) {
 				continue
 			}
 			end := leg.Start + leg.Width

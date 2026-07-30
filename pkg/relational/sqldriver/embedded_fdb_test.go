@@ -19,6 +19,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -69,7 +70,43 @@ func TestMain(m *testing.M) {
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	os.Exit(runWithOptionalLegIdentityCensus(m))
+}
+
+// runWithOptionalLegIdentityCensus runs the suite, optionally under the
+// leg-identity census (LEG_IDENTITY_CENSUS=1).
+//
+// The census answers "does any leg get STORED under one spelling and LOOKED UP
+// under another?" — the question that decides whether making the leg-identity
+// comparisons EXACT (values.SameLeg, matching Java) changes which row they bind.
+// That question is about the traffic of the WHOLE corpus, not of any one test:
+// the leg-window sites only see rows whose type carries leg boundaries, so a
+// handful of hand-written shapes measures almost nothing. Running the entire FDB
+// suite under the counters is what makes the population real.
+//
+// It is env-GATED and off by default. Two of the counted sites are on the per-row
+// executor path, so an always-on census would put a contended atomic increment in
+// the row loop; and the report is a diagnostic dump, not an assertion. The
+// standing always-green assertion lives in
+// leg_identity_census_fdb_test.go.
+func runWithOptionalLegIdentityCensus(m *testing.M) int {
+	if os.Getenv("LEG_IDENTITY_CENSUS") != "1" {
+		return m.Run()
+	}
+	values.ResetLegIdentityCensus()
+	values.SetLegIdentityCensusEnabled(true)
+	code := m.Run()
+	values.SetLegIdentityCensusEnabled(false)
+	fmt.Fprintln(os.Stderr, "=== LEG IDENTITY CENSUS ===")
+	for _, site := range values.LegIdentitySites() {
+		c := values.LegIdentityCensusOf(site)
+		fmt.Fprintf(os.Stderr, "%-52s total=%-8d exact=%-8d foldOnly=%-4d neither=%d\n",
+			site.String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
+		if len(c.FoldOnlySamples) > 0 {
+			fmt.Fprintf(os.Stderr, "    fold-only witnesses: %v\n", c.FoldOnlySamples)
+		}
+	}
+	return code
 }
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose
