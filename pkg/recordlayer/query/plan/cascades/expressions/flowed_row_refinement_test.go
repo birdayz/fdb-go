@@ -144,6 +144,140 @@ func TestGetFlowedObjectType_StillCatchesRealDisagreements(t *testing.T) {
 	}
 }
 
+// withLegs returns rt carrying the given buried-leg boundary table.
+func withLegs(rt *values.RecordType, legs ...values.RecordTypeLeg) *values.RecordType {
+	out := *rt
+	out.Legs = legs
+	return &out
+}
+
+// legOf is a boundary entry whose four fields are all stated, so a fixture can
+// vary exactly one of them.
+func legOf(name string, start, width int) values.RecordTypeLeg {
+	return values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(name), name, start, width)
+}
+
+// TestGetFlowedObjectType_CarriesTheBuriedLegTable pins that the member
+// refinement does not drop RecordType.Legs on its way through.
+//
+// The merged row this returns is what the leg-layout derivation hands to
+// addBuriedLegLayouts, what the translator's `len(rt.Legs)` gate reads, and what
+// the seed-window authority walks in finalizeSeedWindows. All three get NOTHING
+// from a row rebuilt field-by-field without its leg table — and none of them
+// fails loudly on an empty one: a buried source simply stops having a window, and
+// the read filed against it falls back to the qualified NAME channel. So the
+// symptom is a silent return to the channel RFC-197 exists to remove, on exactly
+// the clustered-box shapes the boundary table was added for.
+//
+// This is the same defect values.WithNullability's comment already warns about on
+// the nullability flip; the refinement is the second rebuild of a RecordType on
+// this path and it had the identical hole.
+func TestGetFlowedObjectType_CarriesTheBuriedLegTable(t *testing.T) {
+	t.Parallel()
+
+	table := []values.RecordTypeLeg{legOf("L", 0, 2)}
+	resolved := withLegs(rowOfTypes("A", values.NotNullLong, "X", values.NotNullLong), table...)
+	unresolved := withLegs(rowOfTypes("A", values.NotNullLong, "X", values.UnknownType), table...)
+
+	// Both orders, and both must take the SLOW path: the two rows differ in a
+	// field, so the Equals fast path cannot return one of them verbatim and the
+	// rebuild is what has to carry the table.
+	for _, tc := range []struct {
+		name string
+		a, b *values.RecordType
+	}{
+		{"unresolved first", unresolved, resolved},
+		{"resolved first", resolved, unresolved},
+	} {
+		if tc.a.Equals(tc.b) {
+			t.Fatalf("fixture %s: the two members are Equals, so the fast path returns one "+
+				"verbatim and this test cannot see whether the REBUILD carries the table",
+				tc.name)
+		}
+		got, err := flowedTypeOf(t,
+			&typedStubExpr{name: "g1", typ: tc.a},
+			&typedStubExpr{name: "g2", typ: tc.b})
+		if err != nil || got == nil {
+			t.Fatalf("%s: two members carrying the SAME leg table reported (%v, %v)",
+				tc.name, got, err)
+		}
+		if !legTablesAgree(got.Legs, table) {
+			t.Errorf("%s: the merged row carries Legs %v, want the members' own table %v.\n"+
+				"  The refinement rebuilt the row without its buried-leg boundaries, so every\n"+
+				"  consumer of them — addBuriedLegLayouts, the translator's len(rt.Legs) gate,\n"+
+				"  finalizeSeedWindows — sees a row with no buried sources and the reads filed\n"+
+				"  against them fall back to the qualified NAME channel, silently.",
+				tc.name, got.Legs, table)
+		}
+	}
+}
+
+// TestGetFlowedObjectType_DifferentLegTablesAreADisagreement is the other
+// direction of the same fix, and it is the one the Equals FAST PATH swallowed.
+//
+// RecordType.Equals ignores Legs on purpose — the table is layout metadata and
+// carries no identity semantics. So two members stating identical FIELDS under
+// DIFFERENT boundary tables are Equals, the fast path returned whichever member
+// the memo scan reached first, and the buried windows of the losing member simply
+// vanished. That is a row layout picked by insertion order, which is the precise
+// thing this whole member verification exists to refuse.
+//
+// The table is not subject to the unstated/stated rule the field types are: an
+// EMPTY table says "this row has no buried-leg boundaries", a statement about the
+// row's structure rather than a gap in inference. So the empty-vs-stated pair is
+// a disagreement too, and it is included.
+func TestGetFlowedObjectType_DifferentLegTablesAreADisagreement(t *testing.T) {
+	t.Parallel()
+
+	base := rowOfTypes("A", values.NotNullLong, "X", values.NotNullLong)
+
+	for _, tc := range []struct {
+		name string
+		a, b *values.RecordType
+	}{
+		{
+			// The FAST-PATH case: identical fields, so a.Equals(b) is true.
+			"same fields, different leg WIDTHS",
+			withLegs(base, legOf("L", 0, 2)),
+			withLegs(base, legOf("L", 0, 1)),
+		},
+		{
+			"same fields, different leg START",
+			withLegs(base, legOf("L", 0, 1)),
+			withLegs(base, legOf("L", 1, 1)),
+		},
+		{
+			"same fields, different leg IDENTITY",
+			withLegs(base, legOf("L", 0, 2)),
+			withLegs(base, legOf("M", 0, 2)),
+		},
+		{
+			"same fields, one member states boundaries the other denies",
+			withLegs(base, legOf("L", 0, 2)),
+			base,
+		},
+		{
+			// A SLOW-PATH case: the fields also differ, so the disagreement has to
+			// be caught by the rebuild rather than before it.
+			"differing unresolved field AND different leg tables",
+			withLegs(rowOfTypes("A", values.NotNullLong, "X", values.UnknownType), legOf("L", 0, 2)),
+			withLegs(base, legOf("M", 0, 2)),
+		},
+	} {
+		got, err := flowedTypeOf(t,
+			&typedStubExpr{name: "l1", typ: tc.a},
+			&typedStubExpr{name: "l2", typ: tc.b})
+		var de *MemberResultTypeDisagreementError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: resolved to (%v, %v), want a disagreement.\n"+
+				"  RecordType.Equals ignores Legs, so a fast path that trusts it resolves a\n"+
+				"  boundary-table conflict by memo insertion order — the losing member's\n"+
+				"  buried windows disappear and the reads filed against them silently\n"+
+				"  re-anchor onto the qualified name channel.", tc.name, got, err)
+		}
+	}
+}
+
 // TestGetFlowedObjectType_RefinesNestedUnresolvedFields pins that the refinement
 // reaches BELOW the top level. A row whose only difference is an unresolved field
 // two levels down is the same row for exactly the reason it is one level down, and

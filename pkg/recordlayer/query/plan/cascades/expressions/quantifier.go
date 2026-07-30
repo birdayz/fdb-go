@@ -366,8 +366,32 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 //
 // The result is the more RESOLVED row, so a later member cannot un-resolve what
 // an earlier one established.
+//
+// The LEG TABLE (RecordType.Legs) is carried through, and it is checked BEFORE
+// the equality fast path rather than after. Both halves matter. Carrying it
+// matters because the merged row is what the leg-layout derivation hands to
+// addBuriedLegLayouts and what the translator's `len(rt.Legs)` gate and the
+// seed-window authority read: a merge that rebuilt the row without Legs would
+// silently strip the buried-leg boundary table, which is the same defect
+// WithNullability's comment warns about on the nullability flip (values/type.go).
+// Checking it before the fast path matters because RecordType.Equals IGNORES Legs
+// — deliberately, Legs carries no identity semantics — so two members stating the
+// SAME fields under DIFFERENT leg tables satisfy Equals, and the fast path would
+// then resolve a boundary-table conflict by returning whichever member the memo
+// scan reached first. That is exactly the pick-by-insertion-order this whole
+// verification exists to refuse.
+//
+// The leg table is not subject to the unstated/stated rule the FIELD types are.
+// An unstated field type means "inference has not reached here"; an EMPTY leg
+// table means "this row has no buried-leg boundaries", which is a statement about
+// the row's structure, not a gap in inference. So two members must carry
+// IDENTICAL tables, and a mismatch — including one member stating boundaries the
+// other denies — is a genuine conflict and surfaces as one.
 func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
 	if a == nil || b == nil {
+		return nil, false
+	}
+	if !legTablesAgree(a.Legs, b.Legs) {
 		return nil, false
 	}
 	if a.Equals(b) {
@@ -388,7 +412,23 @@ func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
 		}
 		merged[i] = values.Field{Name: af.Name, FieldType: ft, Ordinal: af.Ordinal}
 	}
-	return &values.RecordType{RecordName: a.RecordName, Nullable: a.Nullable, Fields: merged}, true
+	return &values.RecordType{RecordName: a.RecordName, Nullable: a.Nullable, Fields: merged, Legs: a.Legs}, true
+}
+
+// legTablesAgree reports whether two members state the SAME buried-leg boundary
+// table. nil and empty are the same statement ("no boundaries"); anything else is
+// compared element-wise on all four fields, because a leg differing only in Start
+// or Width relocates every buried read filed against it.
+func legTablesAgree(a, b []values.RecordTypeLeg) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // refineFieldTypes is refineRowTypes for one field: the more resolved of two
