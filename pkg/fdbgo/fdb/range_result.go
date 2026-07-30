@@ -148,6 +148,20 @@ func (rr goRangeResult) Iterator() RangeIterator {
 	}
 }
 
+// BatchSize returns the number of rows to fetch for a given streaming mode and iteration
+// number (1-based). Exported because the SimFDB backend (pkg/simfdb) is a third implementation
+// of this interface and has to batch IDENTICALLY: batch boundaries are where a range read takes
+// its per-batch read-conflict range and where a cursor's continuation lands, so a sim that
+// batched differently would disagree with the client about both. Duplicating the rule there
+// would let the two drift silently.
+func BatchSize(mode StreamingMode, iteration int, remaining int) int {
+	return batchSize(mode, iteration, remaining)
+}
+
+// EffectiveRowLimit returns the row budget for a range read: Limit 0 and -1 both mean
+// unlimited. Exported for the same reason as BatchSize.
+func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
+
 // batchSize returns the number of rows to fetch for a given streaming mode
 // and iteration number. Matches the C client's behavior:
 //   - WANT_ALL: fetch everything

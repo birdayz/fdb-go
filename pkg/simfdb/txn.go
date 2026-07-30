@@ -336,49 +336,52 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 		// and a cursor over SimFDB sees a different exhaustion signal than over real FDB.
 		more = true
 	}
-	if !snapshot {
-		// The read conflict range is the RESOLVED [begin,end) clamped exactly as the pure-Go
-		// client / libfdb_c clamp it (rangeConflictExtent). Only a limit-truncated (more)
-		// non-empty read narrows to the returned data; an exhausted or EMPTY read keeps the full
-		// resolved range so a concurrent insert ANYWHERE in it — including the leading/trailing
-		// gaps and an entirely empty range — still conflicts (phantom / write-skew protection).
-		//
-		// RESOLVED, not the raw selector anchors: the real backend resolves a non-trivial
-		// selector to a key BEFORE issuing the read and derives the conflict extent from that
-		// (fdb/range_result.go resolveRange). Taking the anchor instead under-conflicts on a
-		// backward selector — LastLessThan(k) resolves BELOW k, so rows the transaction really
-		// read fall outside the recorded range and a concurrent write to them does not conflict.
-		bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
-		reqBegin := resolveRangeBound(view, bks)
-		reqEnd := resolveRangeBound(view, eks)
+	// The conflict extent is derived from the RESOLVED [begin,end), not the raw selector
+	// anchors: the real backend resolves a non-trivial selector to a key BEFORE issuing the
+	// read (fdb/range_result.go resolveRange). Taking the anchor instead under-conflicts on a
+	// backward selector — LastLessThan(k) resolves BELOW k, so rows the transaction really read
+	// fall outside the recorded range and a concurrent write to them does not conflict.
+	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
+	reqBegin := resolveRangeBound(view, bks)
+	reqEnd := resolveRangeBound(view, eks)
 
-		// Resolving a non-trivial bound is itself a READ. The real backend turns such a bound
-		// into a key by issuing a non-snapshot GetKey (fdb/range_result.go resolveRange ->
-		// resolveSelector), and that GetKey takes its own conflict range over the span it had
-		// to scan. Omitting it under-conflicts in a way the range extent alone cannot express:
-		// when both bounds resolve to the SAME key the range is empty and contributes nothing,
-		// yet the resolution still read the keyspace between each anchor and its resolved key.
-		// A concurrent write there conflicts on real FDB and did not here.
+	if !snapshot {
+		// Resolving a non-trivial bound is itself a READ, and it happens at GetRange() time —
+		// before any data batch — so its conflict is recorded here rather than deferred with
+		// the extent. The real backend turns such a bound into a key by issuing a non-snapshot
+		// GetKey (fdb/range_result.go resolveRange -> resolveSelector), and that GetKey takes
+		// its own conflict range over the span it had to scan. Omitting it under-conflicts in a
+		// way the range extent alone cannot express: when both bounds resolve to the SAME key
+		// the range is empty and contributes nothing, yet the resolution still read the
+		// keyspace between each anchor and its resolved key. A concurrent write there conflicts
+		// on real FDB and did not here.
 		for _, ks := range [2]fdb.KeySelector{bks, eks} {
 			if selectorResolvesViaGetKey(ks) {
 				tx.addGetKeyConflictRange(ks, resolveRangeBound(view, ks))
 			}
 		}
-
-		// The client's two guards, both of which matter once selectors can invert a range:
-		// an INVERTED requested range records nothing at all, and a computed extent that is
-		// not strictly increasing records nothing either (client/transaction.go:1290-1293).
-		// Without them a degenerate or inverted [begin,end) reaches the conflict list, where
-		// rangesOverlap can still match it against a real write range and abort a transaction
-		// that read nothing.
-		if bytes.Compare(reqBegin, reqEnd) <= 0 {
-			cBegin, cEnd := rangeConflictExtent(reqBegin, reqEnd, kvs, more, options.Reverse)
-			if bytes.Compare(cBegin, cEnd) < 0 {
-				tx.addFilteredReadConflict(cBegin, cEnd)
-			}
-		}
 	}
-	return newReadyRangeResult(kvs)
+
+	// The client's guard: an INVERTED requested range records no data conflict at all
+	// (client/transaction.go:1290-1293). Without it a degenerate or inverted [begin,end)
+	// reaches the conflict list, where rangesOverlap can still match it against a real write
+	// range and abort a transaction that read nothing. Collapse it to an empty extent so the
+	// deferred registration finds nothing to record.
+	if bytes.Compare(reqBegin, reqEnd) > 0 {
+		reqBegin, reqEnd = nil, nil
+	}
+
+	// The extent is registered when the result is CONSUMED, not here — per fetched batch for an
+	// iterator, in one go for GetSlice. See readyRangeResult.
+	return &readyRangeResult{
+		tx:       tx,
+		snapshot: snapshot,
+		kvs:      kvs,
+		more:     more,
+		options:  options,
+		reqBegin: reqBegin,
+		reqEnd:   reqEnd,
+	}
 }
 
 // resolveRangeBound returns the byte key a GetRange bound resolves to, mirroring the real
