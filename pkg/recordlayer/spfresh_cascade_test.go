@@ -172,7 +172,15 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		// nonce generator is random (nil env → crypto/rand), not constant.
 		Expect(a).To(ContainSubstring(nonce))
 		Expect(nonce).NotTo(BeEmpty())
-		Expect(spfreshProcessNonce(nil)).NotTo(Equal(spfreshProcessNonce(nil)))
+		// It is a PROCESS nonce: stable within this process, drawn (not a constant) so two
+		// processes differ. This spec used to require two calls to differ, which pinned a
+		// per-CALL draw — a production behaviour change the DST seam introduced while claiming
+		// to be byte-identical to the pre-seam code. Cross-process uniqueness needs the value to
+		// be drawn, not to be re-drawn; spfreshOwnerSeq is what separates runs within a process,
+		// as the two owners above show. Both directions are pinned precisely in
+		// dst_nonce_seam_test.go.
+		Expect(spfreshProcessNonce(nil)).To(Equal(nonce))
+		Expect(newSPFreshProcessNonce(nil)).NotTo(Equal(nonce))
 
 		// Simulation reproducibility: the nonce is drawn through the DST
 		// randomness seam, so two runs of one seed mint the same nonce — the

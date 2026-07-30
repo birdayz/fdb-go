@@ -64,7 +64,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
-				rtx := recordlayer.NewFDBRecordContext(tx1)
+				rtx := recordlayer.NewFDBRecordContext(tx1, nil)
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -100,7 +100,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				tx2, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
-				rtx := recordlayer.NewFDBRecordContext(tx2)
+				rtx := recordlayer.NewFDBRecordContext(tx2, nil)
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -338,7 +338,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
-				rtx := recordlayer.NewFDBRecordContext(tx1)
+				rtx := recordlayer.NewFDBRecordContext(tx1, nil)
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
