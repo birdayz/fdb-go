@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1188,6 +1189,11 @@ func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey t
 	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
 
+// Env exposes the record context's DST environment to index maintainers.
+// Nil-safe (a nil *dst.Env means production); index maintainers draw persisted
+// nonces through it so a simulation run is byte-reproducible.
+func (store *FDBRecordStore) Env() *dst.Env { return store.context.Env() }
+
 // lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
 func (store *FDBRecordStore) AcquireWriteLock(key string) { store.context.locks.WriteLock(key) }
 func (store *FDBRecordStore) ReleaseWriteLock(key string) { store.context.locks.WriteUnlock(key) }
@@ -1444,7 +1450,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 		return &RecordStoreStateNotLoadedError{}
 	}
 	store.storeHeader.UserVersion = &version
-	lastUpdateTime := uint64(time.Now().UnixMilli())
+	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	store.storeHeader.LastUpdateTime = &lastUpdateTime
 	return store.writeStoreHeader(store.storeHeader)
 }
@@ -1593,7 +1599,7 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
-	ts := time.Now().UnixMilli()
+	ts := store.context.Env().Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
 		LockState: &state,
 		Reason:    &reason,
@@ -1875,7 +1881,8 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 		// by dynamic messages (dynamicpb — SQL rows), whose default marshal iterates fields in Go
 		// map order and so serializes the same row to DIFFERENT bytes across writes. Java always
 		// writes fields in ascending number order, so Deterministic:true is what matches the wire
-		// and makes a given record's stored bytes reproducible.
+		// and makes a given record's stored bytes reproducible. Surfaced by the RFC-199 SQL
+		// workload's determinism oracle, which replays a seed and diffs the persisted bytes.
 		innerBytes, err = proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	}
 	if err != nil {

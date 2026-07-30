@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -56,7 +57,25 @@ type FDBDatabase struct {
 	// Default: PassThroughRecordStoreStateCache (no caching).
 	// Matches Java's FDBDatabase.storeStateCache field.
 	storeStateCache FDBRecordStoreStateCache
+
+	// env is the DST Tier-0 environment (Clock + Randomness + Buggify) inherited by every
+	// FDBRecordContext this database opens. Nil means production (wall clock, crypto/rand,
+	// buggify off) — the nil-safe *dst.Env accessors handle that. A simulation sets a
+	// seeded env via SetEnv so persisted timestamps/nonces are reproducible (RFC-179 Tier 0).
+	env *dst.Env
 }
+
+// SetEnv installs the DST environment inherited by every context this database opens. A
+// simulation driver calls this with dst.NewSim(seed) right after constructing the database
+// (typically over a SimFDB backend); production leaves it unset. Returns d for chaining.
+func (d *FDBDatabase) SetEnv(env *dst.Env) *FDBDatabase {
+	d.env = env
+	return d
+}
+
+// Env returns the database's DST environment, or nil (which the *dst.Env accessors treat
+// as production).
+func (d *FDBDatabase) Env() *dst.Env { return d.env }
 
 // FDBDatabaseFactory caches FDBDatabase instances by cluster file path.
 // Thread-safe. Matches Java's FDBDatabaseFactory.getDatabase(clusterFile).
@@ -210,6 +229,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -289,6 +309,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -330,6 +351,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -503,6 +525,12 @@ type FDBRecordContext struct {
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
 
+	// env is the DST Tier-0 environment inherited from the FDBDatabase (Clock + Randomness +
+	// Buggify). Nil means production; read it through Env() which is nil-safe. Persisted-byte
+	// sites (store header LastUpdateTime, lock-state timestamp, heartbeats, nonces) route
+	// their time/randomness through here so a simulation run is byte-reproducible.
+	env *dst.Env
+
 	// Client-side transaction size thresholds. Zero = disabled.
 	txSizeWarnBytes  int64
 	txSizeErrorBytes int64
@@ -549,6 +577,18 @@ type FDBRecordContext struct {
 	// stores.
 	sessionMu sync.Mutex
 	session   map[string]any
+}
+
+// Env returns the DST environment for this context (Clock + Randomness + Buggify),
+// inherited from the FDBDatabase. Never nil in the sense that matters: the returned *dst.Env
+// may be nil, and the *dst.Env accessors (Now/Read/Fault) treat nil as production. Use this
+// at every persisted-byte site instead of time.Now / crypto.rand so a simulation run is
+// byte-reproducible.
+func (rc *FDBRecordContext) Env() *dst.Env {
+	if rc == nil {
+		return nil
+	}
+	return rc.env
 }
 
 // Session returns the transaction-scoped value stored under key, or nil.

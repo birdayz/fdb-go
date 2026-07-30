@@ -53,7 +53,8 @@ func newMutualIndexBuilder(oi *OnlineIndexer) (*mutualIndexBuilder, error) {
 	hb := NewIndexingHeartbeat(
 		"MUTUAL_BY_RECORDS",
 		oi.leaseLengthMs,
-		true, // allowMutual
+		true,        // allowMutual
+		oi.db.Env(), // DST env: seeds the indexer UUID + persisted heartbeat timestamps
 	)
 
 	m := &mutualIndexBuilder{

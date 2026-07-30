@@ -24,13 +24,13 @@ package recordlayer
 import (
 	"bytes"
 	"container/heap"
-	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"math"
 	"math/bits"
 	"sort"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -667,7 +667,9 @@ func aggregateVectors(samples []aggregatedVector) (aggregatedVector, error) {
 // affect the order-independent aggregate.
 func (s *hnswStorage) appendSampledVector(tx fdb.WritableTransaction, count int, vec []float64) error {
 	var uniq [16]byte
-	if _, err := cryptorand.Read(uniq[:]); err != nil {
+	// Draw the unique key element through the DST randomness seam (crypto/rand
+	// in production, the seeded source in simulation) so a run is reproducible.
+	if _, err := s.env.Read(uniq[:]); err != nil {
 		return fmt.Errorf("hnsw stats: sample key entropy: %w", err)
 	}
 	key := s.samplesSubspace.Pack(tuple.Tuple{int64(count), uniq[:]})
@@ -1610,6 +1612,12 @@ type hnswStorage struct {
 	// transient-vs-absent handling of the single-key reads (access info, layer-0
 	// existence probe) is deterministically reachable without a live FDB transaction.
 	get func(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error)
+
+	// env is the DST Tier-0 environment routing sample-key nonce entropy. Nil
+	// means production (crypto/rand); the maintainer sets it from the record
+	// context so a simulation run mints reproducible SAMPLES keys. The *dst.Env
+	// accessors are nil-safe, so leaving it unset keeps production byte-identical.
+	env *dst.Env
 }
 
 // scanIter opens a range iterator, honoring the test seam (s.scan) when set and

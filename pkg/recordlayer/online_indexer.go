@@ -1622,7 +1622,10 @@ func (oi *OnlineIndexer) BlockIndex(ctx context.Context, blockID string, ttl tim
 				stamp.BlockID = proto.String("")
 			}
 			if ttl > 0 {
-				stamp.BlockExpireEpochMilliSeconds = proto.Uint64(uint64(time.Now().Add(ttl).UnixMilli()))
+				// Persisted lease-expiry: route through the context clock seam (RFC-179
+				// Tier 0) so a simulation run writes a reproducible expiry. A nil env
+				// (production) reads the wall clock — byte-identical to the prior time.Now().
+				stamp.BlockExpireEpochMilliSeconds = proto.Uint64(uint64(rtx.Env().Now().Add(ttl).UnixMilli()))
 			} else {
 				stamp.BlockExpireEpochMilliSeconds = nil
 			}

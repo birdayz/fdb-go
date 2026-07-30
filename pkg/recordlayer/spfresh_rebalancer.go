@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
@@ -33,17 +33,22 @@ import (
 // spfreshOwnerSeq disambiguates rebalancer invocations within a process.
 var spfreshOwnerSeq atomic.Int64
 
-// spfreshProcessNonce makes lease owners unique ACROSS processes. Every
-// process counts spfreshOwnerSeq from zero, so without a process-unique
-// component two live workers on different machines both mint
+// spfreshProcessNonce mints a nonce that makes lease owners unique ACROSS
+// processes. Every process counts spfreshOwnerSeq from zero, so without a
+// process-unique component two live workers on different machines both mint
 // "rebalance-<index>-1" and the same-owner reclaim in spfreshTaskClaim
 // voids mutual exclusion. Lease expiry does NOT cover this: it protects
 // against DEAD owners, not live name collisions.
-var spfreshProcessNonce = newSPFreshProcessNonce()
-
-func newSPFreshProcessNonce() string {
+//
+// The nonce is drawn per rebalancer run through the DST randomness seam
+// (crypto/rand in production, the seeded source in simulation) so a run
+// reproduces its owner strings. A previous package-global minted once at
+// import time defeated that replay: the byte-determinism the RFC calls out.
+// Re-drawing per run costs nothing — spfreshOwnerSeq already disambiguates
+// runs within a process, so a fresh nonce is strictly no less unique.
+func spfreshProcessNonce(env *dst.Env) string {
 	var b [8]byte
-	if _, err := cryptorand.Read(b[:]); err != nil {
+	if _, err := env.Read(b[:]); err != nil {
 		// crypto/rand read cannot fail on supported platforms; if it ever
 		// does, pid+walltime still beats a constant.
 		return fmt.Sprintf("%d.%d", os.Getpid(), time.Now().UnixNano())
@@ -56,8 +61,8 @@ func newSPFreshProcessNonce() string {
 // across invocations: the claim keeps same-owner reclaim (in-executor
 // retries), so shared names give zero mutual exclusion between concurrent
 // executors.
-func spfreshRebalanceOwner(indexName string) string {
-	return fmt.Sprintf("rebalance-%s-%s-%d", indexName, spfreshProcessNonce, spfreshOwnerSeq.Add(1))
+func spfreshRebalanceOwner(indexName, processNonce string) string {
+	return fmt.Sprintf("rebalance-%s-%s-%d", indexName, processNonce, spfreshOwnerSeq.Add(1))
 }
 
 // spfreshTaskRef is one scanned task: kind, id, and (for fine lifecycles)
@@ -380,7 +385,7 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 	// on the same tasks: one executor's coarse split races another's chunked
 	// split mid-drain, writing children into a cell the first just cleared —
 	// the 300k fill orphaned ~3/4 of its entries exactly this way.
-	owner := spfreshRebalanceOwner(indexName)
+	owner := spfreshRebalanceOwner(indexName, spfreshProcessNonce(db.Env()))
 	total := 0
 	drained := false
 	for round := 0; round < maxRounds; round++ {

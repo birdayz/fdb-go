@@ -127,6 +127,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -198,6 +199,8 @@ go_test(
         "database_runctx_test.go",
         "database_test.go",
         "dedup_cursor_test.go",
+        "dst_nonce_seam_test.go",
+        "dst_wiring_test.go",
         "edge_case_test.go",
         "error_path_test.go",
         "errors_test.go",
@@ -367,6 +370,7 @@ go_test(
     embedsrcs = ["index.go"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -374,6 +378,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",

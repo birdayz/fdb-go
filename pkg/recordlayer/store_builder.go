@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -295,7 +296,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	storeHeader.MetaDataversion = &newVersion
 	fmtVersion := int32(formatVersionCurrent)
 	storeHeader.FormatVersion = &fmtVersion
-	lastUpdateTime := uint64(time.Now().UnixMilli())
+	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	storeHeader.LastUpdateTime = &lastUpdateTime
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return fmt.Errorf("update store header after rebuild: %w", err)
@@ -480,10 +481,10 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 // createStoreHeader creates a DataStoreInfo header for a new record store.
 // Includes RecordCountKey from metadata if present, matching Java's
 // checkPossiblyRebuildRecordCounts which sets it during store creation.
-func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData) *gen.DataStoreInfo {
+func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env) *gen.DataStoreInfo {
 	formatVersion := int32(formatVersionCurrent)
 	userVersion := int32(0) // Default user version
-	lastUpdateTime := uint64(time.Now().UnixMilli())
+	lastUpdateTime := uint64(env.Now().UnixMilli())
 
 	header := &gen.DataStoreInfo{
 		FormatVersion:   &formatVersion,
@@ -779,7 +780,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	}
 
 	// Create and write store header
-	storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData)
+	storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return nil, err
 	}
@@ -851,7 +852,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData)
+		storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}

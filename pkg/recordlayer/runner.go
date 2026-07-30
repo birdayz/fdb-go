@@ -134,6 +134,7 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	recordCtx := &FDBRecordContext{
 		tx:  tx,
 		ctx: ctx,
+		env: r.db.env,
 	}
 
 	// Apply context config
@@ -195,6 +196,7 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 	recordCtx := &FDBRecordContext{
 		tx:  tx,
 		ctx: ctx,
+		env: r.db.env,
 	}
 
 	if r.ContextConfig != nil {

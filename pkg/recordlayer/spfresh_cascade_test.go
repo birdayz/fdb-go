@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
@@ -159,18 +160,24 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		// Reverting to a fixed per-index owner re-opens the bypass: the
 		// same-owner reclaim in spfreshTaskClaim would let two concurrent
 		// RebalanceSPFreshIndex calls steal each other's live leases.
-		a := spfreshRebalanceOwner("idx")
-		b := spfreshRebalanceOwner("idx")
+		nonce := spfreshProcessNonce(nil)
+		a := spfreshRebalanceOwner("idx", nonce)
+		b := spfreshRebalanceOwner("idx", nonce)
 		Expect(a).NotTo(Equal(b))
 
 		// Cross-PROCESS uniqueness: every process counts the
-		// sequence from zero, so the owner must embed a per-process random
+		// sequence from zero, so the owner must embed a per-run random
 		// nonce or two live workers on different machines collide on
-		// "rebalance-idx-1". Pin: the owner contains this process's nonce,
-		// and the nonce generator is random, not constant.
-		Expect(a).To(ContainSubstring(spfreshProcessNonce))
-		Expect(spfreshProcessNonce).NotTo(BeEmpty())
-		Expect(newSPFreshProcessNonce()).NotTo(Equal(newSPFreshProcessNonce()))
+		// "rebalance-idx-1". Pin: the owner contains the nonce, and the
+		// nonce generator is random (nil env → crypto/rand), not constant.
+		Expect(a).To(ContainSubstring(nonce))
+		Expect(nonce).NotTo(BeEmpty())
+		Expect(spfreshProcessNonce(nil)).NotTo(Equal(spfreshProcessNonce(nil)))
+
+		// Simulation reproducibility: the nonce is drawn through the DST
+		// randomness seam, so two runs of one seed mint the same nonce — the
+		// byte-determinism the global crypto/rand nonce defeated.
+		Expect(spfreshProcessNonce(dst.NewSim(99))).To(Equal(spfreshProcessNonce(dst.NewSim(99))))
 
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-lease").Sub("uniq"), 1)
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

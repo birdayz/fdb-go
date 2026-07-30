@@ -274,6 +274,7 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 		return cached
 	}
 	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage.env = m.store.Env()
 	m.storageCache[key] = storage
 	return storage
 }
