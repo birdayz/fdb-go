@@ -948,6 +948,14 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 		}
 	}
 
+	// The census's comparison context for the positional walk below. Built only
+	// when the census is counting: it is a per-call allocation on a planning hot
+	// path, and the comparison does not depend on it.
+	var censusContext []values.Value
+	if orderingComparisonCensusOn() {
+		censusContext = orderingPartValues(orderingParts)
+	}
+
 	opIdx := 0
 	for _, reqPart := range ro.GetParts() {
 		reqValue := reqPart.Value
@@ -964,7 +972,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 				continue
 			}
 
-			if orderingValuesEqual(reqValue, op.GetValue()) {
+			if orderingValuesEqualIn(censusContext, reqValue, op.GetValue()) {
 				reqSort := reqPart.SortOrder
 				if reqSort != properties.RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
@@ -1038,9 +1046,19 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // it is the only arm that decides such a pair, and on today's corpus that count
 // is zero — unexercised, not unreachable, which is why it stays.
 func orderingValuesEqual(left, right values.Value) bool {
+	return orderingValuesEqualIn(nil, left, right)
+}
+
+// orderingValuesEqualIn is orderingValuesEqual told which LIST the caller is
+// scanning. The comparison itself does not depend on it — only the census does,
+// because the root-wildcard ambiguity it counts is a property of a whole list and
+// not of a pair (see recordRootWildcard). Every production call site supplies
+// one; the census counts the ones that do not, so a site added without a context
+// cannot quietly shrink the population the ambiguity assertion covers.
+func orderingValuesEqualIn(context []values.Value, left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteRequestedVsCandidate, left, right,
-		values.CanBridgeOrderingValueRoots,
+		values.CanBridgeOrderingValueRoots, context,
 	)
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
@@ -1053,11 +1071,22 @@ func orderingValuesEqual(left, right values.Value) bool {
 
 func orderingValueListContains(haystack []values.Value, needle values.Value) bool {
 	for _, value := range haystack {
-		if orderingValuesEqual(value, needle) {
+		if orderingValuesEqualIn(haystack, value, needle) {
 			return true
 		}
 	}
 	return false
+}
+
+// orderingPartValues is the census context for SatisfiesRequestedOrdering's
+// positional walk: the candidate's whole matched-ordering-part list, which is the
+// ordering SET the requested keys are resolved against.
+func orderingPartValues(parts []*MatchedOrderingPart) []values.Value {
+	out := make([]values.Value, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, part.GetValue())
+	}
+	return out
 }
 
 // SatisfiesAnyRequestedOrderings filters requestedOrderings to those

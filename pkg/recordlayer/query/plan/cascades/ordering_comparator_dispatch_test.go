@@ -358,4 +358,135 @@ func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
 				c.name, values.ExplainValue(unknownDomain))
 		}
 	}
+
+	// The ROOT axis carries the SAME defect this test cured on the domain axis,
+	// and it is not fixed. Probing only one axis is what let it through, so the
+	// second axis is probed here, in the same file, from the same triple shape.
+	assertRootAxisWitnessStillIntransitive(t)
+}
+
+// selfJoinRootCollision returns the three ordering keys of the root-axis
+// witness: ONE childless key and TWO QOV-rooted keys over the same column of the
+// same layout, read off two DIFFERENT quantifiers.
+//
+// This is a self-join's shape. `o.A` and `i.A` share a layout token (both
+// quantifiers range over the same table, and OrdinalDomain is derived from the
+// layout's CONTENT, so the same table yields the same token) and share an
+// ordinal, and they are different columns. The childless key is what a candidate
+// mint and a source-relative request produce.
+func selfJoinRootCollision(t *testing.T) (childless, outerA, innerA values.Value) {
+	t.Helper()
+
+	row := values.NewRecordType("", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	domain := values.OrdinalDomainOfType(row)
+	if !domain.IsKnown() {
+		t.Fatalf("test setup: the self-join row has no domain token")
+	}
+
+	outer := values.NamedCorrelationIdentifier("O")
+	inner := values.NamedCorrelationIdentifier("I")
+
+	childless = values.NewFieldValueWithResolvedOrdinalInDomain(
+		"A", 0, values.UnknownType, domain)
+	outerA = values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(outer), "A", 0, values.UnknownType, domain)
+	innerA = values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(inner), "A", 0, values.UnknownType, domain)
+
+	// All three STATE a column identity. This is the property that makes the
+	// witness invisible to the corpus census's FieldPairsDecided bucket, and it
+	// is what distinguishes the root axis from the domain axis: no dispatch
+	// change can reach this defect, because every pair below is already decided
+	// by the FINAL identity arm.
+	for _, v := range []values.Value{childless, outerA, innerA} {
+		if !values.StatesOrderingColumn(v) {
+			t.Fatalf("test setup: %q states NO column identity, so this triple is "+
+				"the domain-axis witness again rather than the root-axis one; all "+
+				"three keys must be decided by the identity arm for the root "+
+				"asymmetry to be the only thing under test",
+				values.ExplainValue(v))
+		}
+	}
+
+	return childless, outerA, innerA
+}
+
+// assertRootAxisWitnessStillIntransitive records a defect that is REAL, MEASURED
+// and NOT YET FIXED, in the same blocked-negative form the domain-axis witness
+// used before its fix landed: it asserts the WRONG behaviour on purpose so the
+// defect cannot be forgotten, and it goes RED the moment the fix arrives.
+//
+// values.SameOrderingColumn treats the ZERO correlation as a WILDCARD: a
+// childless key bridges to a QOV-rooted one, while two DIFFERENT named
+// quantifiers decline. In a self-join that is exactly the intransitive triple
+// type dispatch removed from the domain axis:
+//
+//	C    = childless [0] in D(R)      states an identity
+//	o.A  = [0] in D(R) off quantifier O   states an identity
+//	i.A  = [0] in D(R) off quantifier I   states an identity
+//
+// C ≡ o.A (wildcard), C ≡ i.A (wildcard), o.A ≢ i.A (two named quantifiers are
+// different columns). All three are decided INSIDE the final identity arm, so
+// unlike the domain axis no dispatch change can reach this — and the corpus
+// census lumps all three pairs into FieldPairsDecided, where they are invisible.
+//
+// THE FIX IS NOT TO DELETE THE WILDCARD. The childless bridge is load-bearing:
+// a candidate mints its ordering keys childless while a request scoped to its
+// owning quantifier does not, and removing the bridge would decline every such
+// match. The fix is to give the childless side a real correlation — CQ-55-A2's
+// correlation-space translation, which resolves a source-relative root to the
+// quantifier it actually reads — at which point the wildcard has nothing left to
+// do and the triple collapses.
+//
+// What keeps this a PIN rather than a live hazard is measured, not argued:
+// pkg/relational/conformance/explaindiff's ordering-census test counts the
+// childless↔QOV bridges whose comparison context also holds a second distinct
+// QOV root — the population where this triple could actually form — and asserts
+// that count is ZERO over the corpus.
+//
+// When A2 lands, both assertions below go RED. Delete this function and fold the
+// root triple into the transitivity closure above.
+func assertRootAxisWitnessStillIntransitive(t *testing.T) {
+	t.Helper()
+
+	childless, outerA, innerA := selfJoinRootCollision(t)
+
+	for _, c := range []struct {
+		name string
+		eq   func(a, b values.Value) bool
+	}{
+		{"intersectionValuesEqual", intersectionValuesEqual},
+		{"orderingValuesEqual", orderingValuesEqual},
+	} {
+		// The separation that is CORRECT and must not regress: two named
+		// quantifiers over the same table are different columns.
+		if c.eq(outerA, innerA) {
+			t.Errorf("%s equates %q and %q — two DIFFERENT quantifiers over the "+
+				"same table. That is a self-join conflation and a REGRESSION, not "+
+				"progress on the intransitivity below.",
+				c.name, values.ExplainValue(outerA), values.ExplainValue(innerA))
+			continue
+		}
+
+		// The defect: the zero correlation bridges to BOTH of them.
+		toOuter := c.eq(childless, outerA)
+		toInner := c.eq(childless, innerA)
+		if !toOuter || !toInner {
+			t.Errorf("%s no longer bridges the childless key %q to BOTH named "+
+				"quantifiers (%q: %v, %q: %v).\n\n"+
+				"If that is because the childless root now carries a real "+
+				"correlation (CQ-55-A2's correlation-space translation), the defect "+
+				"this pin records is FIXED: delete assertRootAxisWitnessStillIntransitive "+
+				"and fold this triple into the transitivity closure above. If instead "+
+				"the wildcard was simply deleted, check that candidate-vs-request "+
+				"ordering matches still form at all — the bridge is load-bearing "+
+				"and removing it declines every source-relative candidate key.",
+				c.name, values.ExplainValue(childless),
+				values.ExplainValue(outerA), toOuter,
+				values.ExplainValue(innerA), toInner)
+		}
+	}
 }

@@ -167,9 +167,16 @@ func (c ColumnIdentity) WithCorrelation(corr CorrelationIdentifier) ColumnIdenti
 //
 // The correlation is the element that keeps two quantifiers over the SAME
 // table apart: `o.a` and `i.a` in a self-join share a domain and an ordinal
-// and are different columns. A childless value carries the ZERO correlation,
-// which is Go's canonical source-relative root (see
-// RequestedOrdering.NormalizeRootsTo).
+// and are different columns.
+//
+// A childless value carries the ZERO correlation, which is what the
+// match-candidate mint produces: cascades' bakeOrderingColumnIn resolves an
+// index column against the record row layout with no quantifier attached
+// (match_candidate_index.go:158-173). The zero is therefore not a third kind of
+// quantifier but an UNSTATED one — a root the producer never resolved. Callers
+// comparing it against a named quantifier must read SameOrderingColumn's root
+// rule, which is where that gap is currently absorbed and where its cost is
+// documented.
 func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 	fv, isField := v.(*FieldValue)
 	if !isField || fv == nil {
@@ -195,6 +202,28 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 	}, true
 }
 
+// OrderingFieldPair reports whether both ordering values are plain FieldValue
+// column reads. It is the TYPE test that dispatches the two ordering comparators:
+// a pair inside this class is decided by SameOrderingColumn and by nothing else,
+// with no fallthrough.
+//
+// Finality is what the type test buys, and finality is NOT the same as being an
+// equivalence relation — the two were once conflated in this file's prose. It
+// removes exactly ONE intransitivity: the one where an UNKNOWN-domain FieldValue
+// fell through to the domain-blind structural arm and bridged two distinct
+// layouts (StatesOrderingColumn carries that witness). It does nothing about the
+// ROOT axis, which is intransitive INSIDE the arm it makes final — see
+// SameOrderingColumn, which is where that hazard and its pins are documented.
+//
+// A CardinalityValue wrapping a field is deliberately OUTSIDE the class. It is
+// not a column of any row layout, so it has no column identity to state and is
+// matched as a whole Value instead.
+func OrderingFieldPair(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	return aIsField && bIsField && af != nil && bf != nil
+}
+
 // SameOrderingColumn reports whether two ORDERING Values denote the same
 // column by identity: the same ordinal path in the same STATED layout, read off
 // a compatible root. Both sides must have stated an identity; a side that has
@@ -212,27 +241,44 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 // hypothetical, and it reads as authoritative — which is strictly worse than
 // the name comparison it would replace.
 //
-// The ROOT rule permits one asymmetry: a childless value against a
-// QOV-rooted one. A childless bake is Go's canonical source-relative root (see
-// RequestedOrdering.NormalizeRootsTo), and the match-candidate side is
-// childless by construction while a request scoped to its owning quantifier is
-// not. Two DIFFERENT named quantifiers are different columns and decline: that
-// is what keeps `o.a` and `i.a` apart in a self-join.
-// OrderingFieldPair reports whether both ordering values are plain FieldValue
-// column reads. It is the TYPE test that dispatches the two ordering
-// comparators: a pair inside this class is decided by SameOrderingColumn and by
-// nothing else, so the class is an equivalence relation (see
-// StatesOrderingColumn for the intransitivity that availability dispatch had).
+// # The root rule, and the one axis on which this is NOT an equivalence relation
 //
-// A CardinalityValue wrapping a field is deliberately OUTSIDE the class. It is
-// not a column of any row layout, so it has no column identity to state and is
-// matched as a whole Value instead.
-func OrderingFieldPair(a, b Value) bool {
-	af, aIsField := a.(*FieldValue)
-	bf, bIsField := b.(*FieldValue)
-	return aIsField && bIsField && af != nil && bf != nil
-}
-
+// The DOMAIN axis is exact: two known domains are equal or they are not, so
+// SameColumnPath is reflexive, symmetric and transitive.
+//
+// The ROOT axis is NOT. The zero correlation is treated as a WILDCARD: a
+// childless value matches any named quantifier, while two DIFFERENT named
+// quantifiers decline each other. Both halves are load-bearing. The wildcard: the
+// match-candidate side is childless by construction (cascades'
+// bakeOrderingColumnIn, match_candidate_index.go:158-173) while a request scoped
+// to its owning quantifier is not, so declining the pair would lose every
+// candidate-vs-request ordering match — 876 of them on the measured corpus. The
+// decline: it is what keeps `o.a` and `i.a` apart in a self-join.
+//
+// Those two rules together are intransitive. With C childless, and `o.A`/`i.A`
+// read off two quantifiers over the SAME table (so they share a domain token,
+// which is content-derived, and an ordinal): C ≡ o.A, C ≡ i.A, o.A ≢ i.A. All
+// three STATE an identity, so unlike the domain-axis intransitivity that type
+// dispatch removed, NO dispatch change can reach this — it lives inside the final
+// arm, and the corpus census's decided-pairs bucket cannot see it.
+//
+// It is a PINNED KNOWN DEFECT, not an accepted design:
+//
+//   - cascades' ordering_comparator_dispatch_test.go asserts the asymmetry EXISTS,
+//     in the blocked-negative form, so it cannot be forgotten and goes red the
+//     moment it is fixed.
+//   - pkg/relational/conformance/explaindiff's ordering-census test counts the
+//     bridges whose comparison context also holds a second distinct quantifier
+//     root — the population where the triple can actually form — and asserts that
+//     count is ZERO over the corpus. That is what makes the defect UNREACHABLE
+//     rather than merely unobserved, and cascades'
+//     ordering_comparison_census_test.go pins that the detector can fire, so the
+//     zero is not a dead instrument.
+//   - the fix is CQ-55-A2's correlation-space translation: resolve a
+//     source-relative root to the quantifier it actually reads. Then every root is
+//     stated, the wildcard has nothing left to bridge, and the triple collapses.
+//     Deleting the wildcard on its own is NOT the fix — it trades an unreachable
+//     intransitivity for 876 lost matches.
 func SameOrderingColumn(a, b Value) bool {
 	af, aIsField := a.(*FieldValue)
 	bf, bIsField := b.(*FieldValue)
@@ -248,6 +294,21 @@ func SameOrderingColumn(a, b Value) bool {
 		return false
 	}
 	return SameColumnPath(af.Resolved, bf.Resolved)
+}
+
+// OrderingRootCorrelationOf is orderingRootCorrelation over a Value — the root
+// element of the identity triple, asked of one ordering key.
+//
+// It exists so that the census measuring SameOrderingColumn's ROOT decisions
+// reads the root from the SAME producer the comparator does. A census that
+// re-derived the root itself would drift from the rule it is auditing, and the
+// count it reports would stop being about the comparator.
+func OrderingRootCorrelationOf(v Value) (CorrelationIdentifier, bool) {
+	f, isField := v.(*FieldValue)
+	if !isField || f == nil {
+		return CorrelationIdentifier{}, false
+	}
+	return orderingRootCorrelation(f)
 }
 
 // orderingRootCorrelation returns the quantifier a flat ordering reference

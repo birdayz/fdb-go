@@ -862,7 +862,7 @@ func comparisonKeyContainsFreePrimaryKey(
 
 func containsIntersectionValue(haystack []values.Value, needle values.Value) bool {
 	for _, value := range haystack {
-		if intersectionValuesEqual(value, needle) {
+		if intersectionValuesEqualIn(haystack, value, needle) {
 			return true
 		}
 	}
@@ -892,9 +892,19 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 // fire would read as a live fallback for the very class the identity arm was
 // made final over.
 func intersectionValuesEqual(left, right values.Value) bool {
+	return intersectionValuesEqualIn(nil, left, right)
+}
+
+// intersectionValuesEqualIn is intersectionValuesEqual told which LIST the caller
+// is scanning — the `seen` dedup's accepted keys, the partition's comparison-key
+// or equality-bound list. Only the census reads it, and only for the root-wildcard
+// ambiguity, which is a property of a whole list rather than of a pair: an
+// intransitive triple costs a nondeterministic comparison key exactly when all
+// three of its members sit in ONE of these lists.
+func intersectionValuesEqualIn(context []values.Value, left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteIntersectionKeys, left, right,
-		values.CanBridgeOrderingFieldValues,
+		values.CanBridgeOrderingFieldValues, context,
 	)
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
