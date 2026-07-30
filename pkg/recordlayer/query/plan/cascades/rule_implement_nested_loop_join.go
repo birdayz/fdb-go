@@ -2364,24 +2364,27 @@ type legRowTypeSource struct {
 // DIVERGENCE: it reconstructs a concat from the chosen plan's scan leaves, which
 // is a different question from what the quantifier flows. It is consulted only
 // where the quantifier declines, because a leg whose reference members are all
-// untyped can still have a physical plan whose scan leaves are typed. Every such
+// untyped could still have a physical plan whose scan leaves are typed. Every such
 // leg is counted (WALK-ONLY) so the second authority's continued existence stays a
 // measurement rather than a habit; if that count reaches zero the walk goes.
 //
-// MEASURED over the real-FDB corpus, 846 leg derivations:
+// MEASURED over the real-FDB corpus, 848 leg derivations:
 //
-//	flowed 656, walkOnly 108, underivable 82, memberDisagreement 0
+//	flowed 848, walkOnly 0, underivable 0, memberDisagreement 0
 //
-// So neither derivation subsumes the other. The quantifier answers 656 and closes
-// 40 of the 122 the walk alone could not state; the walk answers 108 the
-// quantifier cannot, and those are not exotic — the witnesses are plain
+// The quantifier now answers for EVERY leg. Before the flowed object value
+// carried its row type, the same corpus measured flowed 656 / walkOnly 108 /
+// underivable 82 out of 846 — and the walk's 108 were not exotic, they were plain
 // RecordQueryScanPlan and RecordQueryPredicatesFilterPlan legs whose LOGICAL
-// members carry an untyped result value while the physical scan is typed. That
-// gap is CQ-63 seen from the other side, and it is why the walk stays.
+// members carried an untyped result value while the physical scan was typed.
+// Typing the flowed value closed both residues at once: those 108 legs' logical
+// members now state the row, so the walk is asked nothing.
 //
-// A leg neither can state contributes nothing rather than a guess, and is counted:
-// those 82 are CQ-63's acceptance number, over 3 distinct witnesses, every one a
-// *plans.RecordQueryFlatMapPlan flowing a bare untyped quantifier object.
+// The stated retirement condition is therefore MET on this corpus, and the walk
+// is kept only because "zero on the one corpus where the census gate is enabled"
+// is not "zero everywhere" — the census is process-global and self-corrects the
+// moment another harness turns the gate on. What retires it is that measurement,
+// not another reading of this one.
 func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.CorrelationIdentifier]*values.RecordType {
 	out := make(map[values.CorrelationIdentifier]*values.RecordType, len(legs))
 	for _, leg := range legs {

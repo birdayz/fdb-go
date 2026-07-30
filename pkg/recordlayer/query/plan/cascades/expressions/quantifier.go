@@ -230,10 +230,30 @@ func (q Quantifier) IsStrictSingle() bool { return q.strictSingle }
 // owning expression use this Value (via FieldValue accesses) to refer
 // to columns of the inner expression's output.
 //
-// Equivalent to Java's `Quantifier.getFlowedObjectValue()`. Implemented
-// via QuantifiedObjectValue, which already exists in cascades/values/.
+// Java's `Quantifier.getFlowedObjectValue()` verbatim (Quantifier.java:801-803):
+// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`, i.e. ALWAYS
+// carrying the row type when the ranged-over reference states one.
+//
+// It used to mint the alias with no type, and the reason recorded for that was
+// that typing it "changes expression identity across the whole planner". That is
+// measured FALSE and pinned: a QuantifiedObjectValue's identity is its
+// CORRELATION in all three paths that decide it — EqualsWithoutChildren,
+// SemanticEqualsUnderAliasMap, and SemanticHashCode, which folds the tag "qov"
+// with the alias excluded. Typing one changes what it SAYS, never which
+// expression it IS. (TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity.)
+//
+// On a member DISAGREEMENT this returns the alias with no type, because it has no
+// error channel to report one through. That is NOT the collapse
+// GetFlowedObjectValueTyped's doc forbids: a caller that BAKES AN ORDINAL against
+// this row must use that accessor and refuse to proceed, because for it a row
+// shape chosen by memo insertion order is a wrong-slot read. A caller merely
+// reporting what flows loses type information it never had.
 func (q Quantifier) GetFlowedObjectValue() values.Value {
-	return values.NewQuantifiedObjectValue(q.alias)
+	rt, err := q.GetFlowedObjectType()
+	if err != nil || rt == nil {
+		return values.NewQuantifiedObjectValue(q.alias)
+	}
+	return values.NewQuantifiedObjectValueOfType(q.alias, rt)
 }
 
 // MemberResultTypeDisagreementError reports that a Reference's members do not
@@ -412,22 +432,23 @@ func rowTypeOf(t values.Type) *values.RecordType {
 	return nil
 }
 
-// GetFlowedObjectValueTyped is GetFlowedObjectValue carrying the quantifier's
-// flowed ROW type when that type is resolvable — Java's getFlowedObjectValue()
-// exactly (`QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`,
-// Quantifier.java:801-803), which is ALWAYS typed.
+// GetFlowedObjectValueTyped is GetFlowedObjectValue with the member DISAGREEMENT
+// surfaced instead of swallowed. Both accessors type the value; they differ only
+// in what they do when the reference's members cannot agree on the row they flow.
 //
-// It is a separate accessor rather than a change to GetFlowedObjectValue
-// because the untyped form is what ~40 GetResultValue() implementations return
-// and what the memo has interned on; typing every one of them at once changes
-// expression identity across the whole planner. Callers that BAKE ORDINALS
-// against the flowed row — the ones for which an untyped QOV silently degrades
-// a reference to source-relative and then to NULL at runtime — use this.
+// So the choice between them is NOT "do I want the type" — it is "can I proceed
+// without one". Callers that BAKE ORDINALS against the flowed row use this and
+// refuse to proceed on the error, because for them an invented row shape is a
+// wrong-slot read that no test can predict; an untyped QOV degrades a reference
+// to source-relative, and a source-relative operand pushed into a scan evaluates
+// to NULL against the build-bound row, so the join returns zero rows with no
+// error. Callers merely reporting what flows take GetFlowedObjectValue and lose
+// type information they never had.
 //
-// The error is the member DISAGREEMENT (see MemberResultTypeDisagreementError),
-// never the ordinary "no type yet": that returns the untyped QOV and a nil error,
-// as before. A caller must not collapse the two — falling back to the untyped
-// value on a disagreement is choosing a row shape by memo insertion order.
+// The error is the DISAGREEMENT only (see MemberResultTypeDisagreementError),
+// never the ordinary "no type yet": that returns the untyped QOV and a nil error.
+// A caller must not collapse the two — falling back to the untyped value on a
+// disagreement is choosing a row shape by memo insertion order.
 func (q Quantifier) GetFlowedObjectValueTyped() (values.Value, error) {
 	rt, err := q.GetFlowedObjectType()
 	if err != nil {

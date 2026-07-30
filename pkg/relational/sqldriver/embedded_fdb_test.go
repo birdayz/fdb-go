@@ -338,10 +338,12 @@ func mergedLegReadIsAlarm(reads int) bool {
 // read as an achievement while measuring nothing.
 //
 // Measured on this tree: Total 126 (minted 126 = untypedLeg 0 + columnAbsent 0 +
-// layoutAvailable 126), LegDerivations 848 (flowed 740 + walkOnly 108 +
+// layoutAvailable 126), LegDerivations 848 (flowed 848 + walkOnly 0 +
 // underivable 0 + disagreement 0). Before the flowed value carried its type the
 // same corpus measured untypedLeg 92 / layoutAvailable 34 and underivable 82 out
-// of 846 — the 92 reads that had no honest alternative to the qualified name.
+// of 846 — the 92 reads that had no honest alternative to the qualified name —
+// and the subordinate physical-plan walk answered for 108 legs the quantifier
+// could not. It now answers for none.
 var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,
