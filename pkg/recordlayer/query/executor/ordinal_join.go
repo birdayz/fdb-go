@@ -986,11 +986,30 @@ type ordinalJoinBuild struct {
 // newOrdinalJoinBuild probes a join plan's result value at cursor
 // construction. nil (disabled) when rv is nil or carries no baked ordinal —
 // the non-build cursor path (identity pass-through / fold). A LOUD error when
-// rv contains baked ordinals but is not a *RecordConstructorValue: every shape
-// the planner can legitimately produce for an ordinal-build join is an RC
-// (the seed, or the wrapper-merge-folded projection RC — the drift asserts
-// pin that); anything else is a planner bug and must die at construction,
-// never be silently demoted to a non-build cursor.
+// rv contains baked ordinals but is not a *RecordConstructorValue: anything
+// else is a malformed plan and must die at construction, never be silently
+// demoted to a non-build cursor.
+//
+// That error IS reachable, and the loudness is load-bearing rather than
+// defensive. A 3-way comma join with a projected EXISTS whose legs are tied by
+// equijoin predicates plans a correlated-FlatMap chain whose MIDDLE FlatMap
+// carries a bare baked FieldValue where the merged row belongs, and it fails
+// here. Demoting that case to the non-build path instead was tried and
+// MEASURED: the query then executes and returns ZERO rows where three are
+// correct. So this error is the only thing standing between a mis-planned shape
+// and a silent wrong-rows answer, and it stays until the plan is fixed.
+//
+// The fix is NOT to relax this check, and Java says where it belongs. Java's
+// ImplementNestedLoopJoinRule passes selectExpression.getResultValue() to
+// RecordQueryFlatMapPlan verbatim in all three of its arms, so the rule is not
+// where a result value is chosen — the SELECT is. The defect is therefore
+// upstream, in the intermediate merge select whose result value was narrowed to
+// a single baked column while its consumer still binds that FlatMap's output as
+// a leg row and reads a column out of it. Reproducers:
+// sqldriver.TestFDB_CommaJoin3ProjectedExistsWithEquijoins (execution, carrying
+// the rows a fix must produce) and
+// sqldriver.TestJoinResultValueWithBakedOrdinalsIsAlwaysAnRC (plan-level, over
+// the shape class, with the violating shapes on a two-way debt ratchet).
 func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBuild, error) {
 	// Two build triggers:
 	//   - a FrontierPinned baked reference anywhere in the RV (the flat

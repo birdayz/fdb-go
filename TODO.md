@@ -10585,9 +10585,29 @@ None is speculative: each was re-verified against the tree before booking.
   sqldriver/join_result_value_is_rc_test.go (plan-level, with the violating
   shapes on knownNonRCJoinResultValueDebt) and
   sqldriver/comma_join3_projected_exists_equijoin_fdb_test.go (execution, with
-  the row expectations a fix must satisfy). Choosing which result value that
-  rule arm hands its FlatMap is a Cascades planner change and needs the
-  planner review gate; it does not belong inside a leg-identity retyping.
+  the row expectations a fix must satisfy).
+  ROOT CAUSE LOCATED, fix scoped but NOT applied. Java is unambiguous about
+  where it does NOT belong: ImplementNestedLoopJoinRule.java:187,201,214 pass
+  selectExpression.getResultValue() to RecordQueryFlatMapPlan VERBATIM in all
+  three arms, and RecordQueryFlatMapPlan's contract is only that the value "is
+  evaluated in a context where both the outer and inner quantifier aliases are
+  bound" — nothing about its shape. So the join rule is not where a result value
+  is chosen; the SELECT is. The defect is upstream: the intermediate merge select
+  ($m"N outer, third leg inner) carries a result value narrowed to a single baked
+  column while its consumer binds that FlatMap's output as a leg row and reads a
+  column out of it.
+  MEASURED, and it rules out the tempting executor-side fix: relaxing
+  newOrdinalJoinBuild to treat a non-RC result value as a scalar projection (no
+  build, let the non-build path bind the legs) makes both reproducer arms EXECUTE
+  and return ZERO rows where three are correct. The loud guard is therefore the
+  only thing preventing a silent wrong-rows answer, and it must stay until the
+  select is fixed — its comment now records that measurement so the next attempt
+  does not repeat it.
+  NEXT STEP: find the pass that narrows that intermediate select's result value
+  (the merge-select construction around the $m"N alias mint, memo.go:199) and
+  give it the positional merge RC Java's equivalent carries. The reproducers and
+  the row expectations are in place, and the plan-level debt list fails on a
+  stale entry so the fix cannot land unrecognized.
 
 - [ ] **CQ-62 (S, bug fourteen: false prose over a live channel) —
   rule_implement_nested_loop_join.go:2380-2387 declares the leg-match arm
