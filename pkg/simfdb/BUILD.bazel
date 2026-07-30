@@ -55,6 +55,7 @@ go_test(
         "integration_test.go",
         "interleave_test.go",
         "range_batch_test.go",
+        "range_lazy_test.go",
         "range_limit_conflict_test.go",
         "ryw_conflict_test.go",
         "selector_conflict_test.go",

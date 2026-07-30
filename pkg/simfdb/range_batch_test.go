@@ -139,14 +139,27 @@ func TestCursorBatchSizesFollowTheStreamingMode(t *testing.T) {
 			seed(db, kvs...)
 			tx := db.newTxn()
 			it := tx.GetRange(fdb.KeyRange{Begin: k("k"), End: k("l")},
-				fdb.RangeOptions{Mode: tc.mode}).Iterator().(*rangeIter)
+				fdb.RangeOptions{Mode: tc.mode}).Iterator()
 
-			var sizes []int
-			last := 0
+			// The trace log is the client's own per-fetch surface, so reading batch sizes
+			// through it pins the batching AND the iteration numbering the client reports:
+			// the client traces `ri.iteration-1` AFTER incrementing, so the first fetch is
+			// iteration 1 (fdb/range_result.go:255-257). A sim that numbered from 0 would
+			// mislabel every trace a continuation bug was being chased through.
+			var sizes, iters []int
+			it.SetTraceLog(func(iteration, _, returned int, _ bool, _ error) {
+				if returned == 0 {
+					return // the trailing empty fetch returns no rows
+				}
+				sizes = append(sizes, returned)
+				iters = append(iters, iteration)
+			})
 			for it.Advance() {
-				if it.batchEnd != last {
-					sizes = append(sizes, it.batchEnd-last)
-					last = it.batchEnd
+			}
+			for i, n := range iters {
+				if n != i+1 {
+					t.Fatalf("trace iteration numbers = %v, want 1-based consecutive "+
+						"(the client traces iteration-1 after incrementing)", iters)
 				}
 			}
 			if len(sizes) != len(tc.batch) {
@@ -166,40 +179,60 @@ func TestCursorBatchSizesFollowTheStreamingMode(t *testing.T) {
 	}
 }
 
-// TestIteratorRejectsInvalidRangeOptions pins the two validations the client's Iterator()
-// performs: a row limit below ROW_LIMIT_UNLIMITED(-1) is range_limits_invalid(2012), and EXACT
-// without a limit is exact_mode_without_limits(2210) (libfdb_c
-// validate_and_update_parameters). Without them a Limit of -2 silently returned zero rows.
-func TestIteratorRejectsInvalidRangeOptions(t *testing.T) {
+// TestRangeOptionValidationPerSurface pins the range-option validation on BOTH consumption
+// paths, and pins that they are DIFFERENT — which is the part that is easy to get wrong in
+// either direction.
+//
+//   - A row limit below ROW_LIMIT_UNLIMITED(-1) is range_limits_invalid(2012) on BOTH. Iterator
+//     checks it inline (fdb/range_result.go:122-125); GetSlice reaches it through getRangeDir
+//     (client/transaction.go:1265-1268), which every doRangeWithLimit call funnels through.
+//     GetSlice used to skip it here and silently returned every row for a Limit of -2.
+//   - EXACT without a row limit is exact_mode_without_limits(2210) on the ITERATOR ONLY.
+//     GetSlice ignores the streaming mode in both real backends — the pure-Go client's
+//     GetSliceWithError never passes Mode to getRangeDir, and Apple's binding OVERRIDES it
+//     before the C layer can validate — so raising 2210 from GetSlice would invent an error no
+//     real backend returns. TestDifferential_RangeOptionValidation measures both cells against
+//     a real cluster.
+func TestRangeOptionValidationPerSurface(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
 	seed(db, "a", "1")
 	for _, tc := range []struct {
-		name string
-		opts fdb.RangeOptions
-		want int
+		name                string
+		opts                fdb.RangeOptions
+		wantIter, wantSlice int
 	}{
-		{"limit -2", fdb.RangeOptions{Limit: -2}, 2012},
-		{"exact without limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210},
-		{"exact with limit is fine", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: 1}, 0},
-		{"limit -1 is unlimited", fdb.RangeOptions{Limit: -1}, 0},
+		{"limit -2", fdb.RangeOptions{Limit: -2}, 2012, 2012},
+		{"limit -7 with exact", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -7}, 2012, 2012},
+		{"exact without limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210, 0},
+		{"exact with limit -1", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -1}, 2210, 0},
+		{"exact with limit is fine", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: 1}, 0, 0},
+		{"limit -1 is unlimited", fdb.RangeOptions{Limit: -1}, 0, 0},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			check := func(surface string, want int, err error) {
+				t.Helper()
+				if want == 0 {
+					if err != nil {
+						t.Fatalf("%s: %v, want no error", surface, err)
+					}
+					return
+				}
+				if code := errCode(t, err); code != want {
+					t.Fatalf("%s error code = %d, want %d", surface, code, want)
+				}
+			}
 			tx := db.newTxn()
-			it := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, tc.opts).Iterator()
+			rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, tc.opts)
+			it := rr.Iterator()
 			it.Advance()
 			_, err := it.Get()
-			if tc.want == 0 {
-				if err != nil {
-					t.Fatalf("Get: %v, want no error", err)
-				}
-				return
-			}
-			if code := errCode(t, err); code != tc.want {
-				t.Fatalf("Get error code = %d, want %d", code, tc.want)
-			}
+			check("Iterator", tc.wantIter, err)
+
+			_, err = tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, tc.opts).GetSliceWithError()
+			check("GetSliceWithError", tc.wantSlice, err)
 		})
 	}
 }

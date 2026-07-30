@@ -179,6 +179,52 @@ func (tx *simTxn) buildView() []fdb.KeyValue {
 			applyMutationToView(m, mut)
 		}
 	}
+	return sortedView(m)
+}
+
+// buildViewRange is buildView restricted to [begin, end) — the RYW-merged, sorted, live rows in
+// that window as of the write buffer's CURRENT contents.
+//
+// This is what a single fetch resolves against, and it is deliberately recomputed per fetch
+// rather than shared: the whole point of a lazy range read is that a write issued between two
+// fetches is visible to the second one. Windowing is not just an optimization over buildView
+// either — the store scan is a binary search plus a walk to `end`, so a batch costs the size of
+// the window it reads rather than the size of the whole keyspace.
+func (tx *simTxn) buildViewRange(begin, end []byte) []fdb.KeyValue {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
+	}
+	m := make(map[string][]byte)
+	tx.db.mu.Lock()
+	rows := tx.db.store.rangeAt(begin, end, tx.readVersion)
+	tx.db.mu.Unlock()
+	for _, kv := range rows {
+		m[string(kv.Key)] = kv.Value
+	}
+	if !tx.rywDisabled {
+		for _, mut := range tx.buffer {
+			// Mutations outside the window are skipped so they cannot introduce a key beyond
+			// it; applyMutationToView's clear-range arm only walks keys already in the map, so
+			// an overlapping clear range trims to the intersection on its own.
+			if mutationOverlaps(mut, begin, end) {
+				applyMutationToView(m, mut)
+			}
+		}
+	}
+	return sortedView(m)
+}
+
+// mutationOverlaps reports whether mut can change the contents of [begin, end).
+func mutationOverlaps(mut mutation, begin, end []byte) bool {
+	if mut.kind == mutClearRange {
+		return bytes.Compare(mut.key, end) < 0 && bytes.Compare(begin, mut.end) < 0
+	}
+	return bytes.Compare(mut.key, begin) >= 0 && bytes.Compare(mut.key, end) < 0
+}
+
+// sortedView turns the transient per-key map into the sorted slice the readers consume. The
+// re-sort is what makes iteration order deterministic regardless of Go's randomized map order.
+func sortedView(m map[string][]byte) []fdb.KeyValue {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -189,6 +235,26 @@ func (tx *simTxn) buildView() []fdb.KeyValue {
 		out[i] = fdb.KeyValue{Key: fdb.Key(k), Value: m[k]}
 	}
 	return out
+}
+
+// rangeRows resolves ONE fetch: the RYW-merged rows of [begin, end) as of now, in the read's own
+// direction, truncated to limit. `more` reports that the limit was MET, not that more rows are
+// known to exist — C++ getExactRange sets output.more = (data.size() == limit) unconditionally
+// at the limit (client/readpath.go:745-751 ports this), because a real storage server stops at
+// the limit and cannot know whether the next key exists. SimFDB holds the whole result set and
+// could tell, but reporting more=false at exactly-the-limit is a DIVERGENCE with two
+// consequences: the conflict extent stays the full requested range instead of narrowing to the
+// returned data (over-conflict), and a cursor over SimFDB sees a different exhaustion signal
+// than over real FDB.
+func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.KeyValue, bool) {
+	rows := tx.buildViewRange(begin, end)
+	if reverse {
+		reverseKVs(rows)
+	}
+	if limit > 0 && len(rows) >= limit {
+		return rows[:limit], true
+	}
+	return rows, false
 }
 
 // applyMutationToView folds one pending mutation into the merged-view map.
@@ -310,61 +376,51 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 	return tx.getRange(r, options, false)
 }
 
+// getRange returns a LAZY handle. Nothing is read here — not the rows, not the bounds, not even
+// the read version — exactly as the client's GetRange returns a bare goRangeResult{tx, r,
+// options} (fdb/range_result.go:39-45). All of it happens at consumption, in
+// resolveRangeForRead and rangeRows. See simRangeResult for why that ordering is the whole
+// point.
 func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
+	return &simRangeResult{tx: tx, r: r, options: options, snapshot: snapshot}
+}
+
+// resolveRangeForRead turns a range request's selectors into the raw [begin, end) a fetch reads
+// over, and records the conflict ranges that resolution itself takes. It is the sim's
+// resolveRange (fdb/range_result.go), and like it, it runs at CONSUMPTION — once per
+// GetSliceWithError call and once per Iterator() call — never at GetRange() time.
+func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []byte, err error) {
 	// transaction_cancelled(1025) before anything else, as on every other read entry point: the
 	// client reaches it through ensureReadVersion, whose FIRST act is checkCancelled
 	// (client/transaction.go:662-665), and getRangeDir calls ensureReadVersion before its own
-	// legal-range and limit validation (client/transaction.go:1252-1268). Get and GetKey already
-	// gate here; GetRange did not, so a cancelled transaction could still scan the keyspace — and
-	// a sim that answers reads no real client answers lets a test "verify" behaviour that does
-	// not exist.
+	// legal-range and limit validation (client/transaction.go:1252-1268). Checking it HERE
+	// rather than in getRange also matches the client's timing: a transaction cancelled after
+	// GetRange() but before the result is consumed fails the read, because the read had not
+	// happened yet.
 	if tx.cancelled {
-		return &readyRangeResult{err: fdb.Error{Code: 1025}}
+		return nil, nil, fdb.Error{Code: 1025}
 	}
 	tx.ensureReadVersion()
 	beginSel, endSel := r.FDBRangeKeySelectors()
-	view := tx.buildView()
-	bi := clampIndex(resolveSelector(view, beginSel.FDBKeySelector()), len(view))
-	ei := clampIndex(resolveSelector(view, endSel.FDBKeySelector()), len(view))
-	var kvs []fdb.KeyValue
-	if bi < ei {
-		kvs = append(kvs, view[bi:ei]...)
-	}
-	if options.Reverse {
-		reverseKVs(kvs)
-	}
-	more := false
-	if options.Limit > 0 && len(kvs) >= options.Limit {
-		kvs = kvs[:options.Limit]
-		// more is true whenever the limit was MET, not only when strictly more rows exist.
-		// C++ getExactRange sets output.more = (data.size() == limit) unconditionally when the
-		// limit is reached (client/readpath.go:745-751 ports this) — a real storage server
-		// stops at the limit and cannot know whether the next key exists, so it always reports
-		// more. SimFDB holds the whole result set and could tell, but reporting more=false at
-		// exactly-the-limit is a DIVERGENCE with two consequences: the conflict extent stays
-		// the full requested range instead of narrowing to the returned data (over-conflict),
-		// and a cursor over SimFDB sees a different exhaustion signal than over real FDB.
-		more = true
-	}
-	// The conflict extent is derived from the RESOLVED [begin,end), not the raw selector
-	// anchors: the real backend resolves a non-trivial selector to a key BEFORE issuing the
-	// read (fdb/range_result.go resolveRange). Taking the anchor instead under-conflicts on a
-	// backward selector — LastLessThan(k) resolves BELOW k, so rows the transaction really read
-	// fall outside the recorded range and a concurrent write to them does not conflict.
 	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
-	reqBegin := resolveRangeBound(view, bks)
-	reqEnd := resolveRangeBound(view, eks)
+
+	// The bounds are the RESOLVED keys, not the raw selector anchors: the real backend resolves
+	// a non-trivial selector to a key BEFORE issuing the read (fdb/range_result.go
+	// resolveRange). Taking the anchor instead under-conflicts on a backward selector —
+	// LastLessThan(k) resolves BELOW k, so rows the transaction really read fall outside the
+	// recorded range and a concurrent write to them does not conflict.
+	view := tx.buildView()
+	begin = resolveRangeBound(view, bks)
+	end = resolveRangeBound(view, eks)
 
 	if !snapshot {
-		// Resolving a non-trivial bound is itself a READ, and it happens at GetRange() time —
-		// before any data batch — so its conflict is recorded here rather than deferred with
-		// the extent. The real backend turns such a bound into a key by issuing a non-snapshot
-		// GetKey (fdb/range_result.go resolveRange -> resolveSelector), and that GetKey takes
-		// its own conflict range over the span it had to scan. Omitting it under-conflicts in a
-		// way the range extent alone cannot express: when both bounds resolve to the SAME key
-		// the range is empty and contributes nothing, yet the resolution still read the
-		// keyspace between each anchor and its resolved key. A concurrent write there conflicts
-		// on real FDB and did not here.
+		// Resolving a non-trivial bound is itself a READ. The real backend turns such a bound
+		// into a key by issuing a non-snapshot GetKey (fdb/range_result.go resolveRange ->
+		// resolveSelector), and that GetKey takes its own conflict range over the span it had
+		// to scan. Omitting it under-conflicts in a way the range extent alone cannot express:
+		// when both bounds resolve to the SAME key the range is empty and contributes nothing,
+		// yet the resolution still read the keyspace between each anchor and its resolved key.
+		// A concurrent write there conflicts on real FDB and did not here.
 		for _, ks := range [2]fdb.KeySelector{bks, eks} {
 			if selectorResolvesViaGetKey(ks) {
 				tx.addGetKeyConflictRange(ks, resolveRangeBound(view, ks))
@@ -375,23 +431,12 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 	// The client's guard: an INVERTED requested range records no data conflict at all
 	// (client/transaction.go:1290-1293). Without it a degenerate or inverted [begin,end)
 	// reaches the conflict list, where rangesOverlap can still match it against a real write
-	// range and abort a transaction that read nothing. Collapse it to an empty extent so the
-	// deferred registration finds nothing to record.
-	if bytes.Compare(reqBegin, reqEnd) > 0 {
-		reqBegin, reqEnd = nil, nil
+	// range and abort a transaction that read nothing. Collapse it to an empty extent, which
+	// also makes every fetch over it return nothing.
+	if bytes.Compare(begin, end) > 0 {
+		begin, end = nil, nil
 	}
-
-	// The extent is registered when the result is CONSUMED, not here — per fetched batch for an
-	// iterator, in one go for GetSlice. See readyRangeResult.
-	return &readyRangeResult{
-		tx:       tx,
-		snapshot: snapshot,
-		kvs:      kvs,
-		more:     more,
-		options:  options,
-		reqBegin: reqBegin,
-		reqEnd:   reqEnd,
-	}
+	return begin, end, nil
 }
 
 // resolveRangeBound returns the byte key a GetRange bound resolves to, mirroring the real
@@ -443,16 +488,6 @@ func rangeConflictExtent(begin, end []byte, kvs []fdb.KeyValue, more, reverse bo
 		return last, end
 	}
 	return begin, keyAfter(last)
-}
-
-func clampIndex(i, n int) int {
-	if i < 0 {
-		return 0
-	}
-	if i > n {
-		return n
-	}
-	return i
 }
 
 func reverseKVs(kvs []fdb.KeyValue) {

@@ -419,7 +419,100 @@ func TestDifferentialArm_ClearRangeExtent(t *testing.T) {
 	}
 }
 
-// ---- ARM 6: injected commit_unknown_result vs the reality it stands for ----------------------
+// ---- ARM 6: read STARTED, then a local write, then the read CONSUMED -------------------------
+
+// TestDifferentialArm_ReadThenLocalWrite crosses the write with the read in the ORDER the
+// local-write arm never uses: the range read is ISSUED (and, for the iterator shapes, partly
+// drained) BEFORE the write lands, and consumed after it.
+//
+// That ordering is the whole point. TestDifferentialArm_LocalWriteThenRead always writes first,
+// so a backend that resolves the entire range at GetRange() call time answers identically to one
+// that resolves each batch at consumption — the buffer is already complete when the read is
+// issued either way. It takes a write BETWEEN issue and consumption to tell them apart, and the
+// difference is observable twice over: in the rows (a real client's RangeResult is lazy, so the
+// write shows up in whatever has not been fetched yet) and in the commit outcome (the read
+// conflict is filtered through the write map at consumption, so a read that answered from
+// storage must not have its span subtracted as locally-satisfied).
+//
+// The record layer's scan-and-update cursors are exactly this shape, which is why the iterator
+// variants prefetch a variable number of rows before writing.
+func TestDifferentialArm_ReadThenLocalWrite(t *testing.T) {
+	t.Parallel()
+	for _, s := range armSeeds() {
+		s := s
+		t.Run(s.name, func(t *testing.T) {
+			t.Parallel()
+			runArm(t, "readthenwrite", s.seed, s.n, func(rng *mrand.Rand) armProgram {
+				mask := randMask(rng)
+				key := rng.IntN(nKeys)
+				probe := rng.IntN(nKeys)
+				writeKind := rng.IntN(5) // 0 Set, 1 Clear, 2 ClearRange, 3 Add, 4 Set-then-Add
+				readShape := rng.IntN(3) // 0 GetSlice, 1 iterator, 2 iterator prefetched
+				prefetch := rng.IntN(5)
+				reverse := rng.IntN(2) == 0
+				limit := rng.IntN(6)
+				lo := rng.IntN(nKeys)
+				hi := lo + 1 + rng.IntN(nKeys-lo)
+				clo := rng.IntN(nKeys)
+				chi := clo + 1 + rng.IntN(nKeys-clo)
+				return func(t *testing.T, db fdb.BackendDatabase, prefix string) (bool, []string) {
+					seedArmKeys(t, db, prefix, mask)
+					tx, err := db.CreateWritableTransaction()
+					if err != nil {
+						t.Fatalf("create: %v", err)
+					}
+					k := armKey(prefix, key)
+					write := func() {
+						switch writeKind {
+						case 0:
+							tx.Set(k, []byte("mine"))
+						case 1:
+							tx.Clear(k)
+						case 2:
+							tx.ClearRange(fdb.KeyRange{Begin: armKey(prefix, clo), End: armKey(prefix, chi)})
+						case 3:
+							tx.Add(k, []byte{1, 0, 0, 0, 0, 0, 0, 0})
+						default:
+							tx.Set(k, []byte{0, 0, 0, 0, 0, 0, 0, 0})
+							tx.Add(k, []byte{1, 0, 0, 0, 0, 0, 0, 0})
+						}
+					}
+					rr := tx.GetRange(fdb.KeyRange{
+						Begin: armKey(prefix, lo), End: armKey(prefix, hi),
+					}, fdb.RangeOptions{Limit: limit, Reverse: reverse, Mode: fdb.StreamingModeIterator})
+
+					var rows []string
+					switch readShape {
+					case 0:
+						// The write lands between GetRange() and GetSliceWithError().
+						write()
+						for _, kv := range rr.GetSliceOrPanic() {
+							rows = append(rows, string(kv.Key)+"="+string(kv.Value))
+						}
+					default:
+						it := rr.Iterator()
+						if readShape == 2 {
+							for i := 0; i < prefetch && it.Advance(); i++ {
+								kv := it.MustGet()
+								rows = append(rows, string(kv.Key)+"="+string(kv.Value))
+							}
+						}
+						write()
+						for it.Advance() {
+							kv := it.MustGet()
+							rows = append(rows, string(kv.Key)+"="+string(kv.Value))
+						}
+					}
+					concurrentSet(t, db, armKey(prefix, probe), []byte{0xEE})
+					tx.Set(armKey(prefix, nKeys+5), []byte("x"))
+					return tx.Commit().Get() == nil, rows
+				}
+			})
+		})
+	}
+}
+
+// ---- ARM 7: injected commit_unknown_result vs the reality it stands for ----------------------
 
 // TestDifferentialArm_CommitUnknownMatchesReality is the fault arm. A fault cannot be injected
 // into a real cluster, so the comparison is made against what each of 1021's two branches CLAIMS
@@ -523,4 +616,60 @@ func dumpRange(t *testing.T, db fdb.BackendDatabase, prefix string) []string {
 		t.Fatalf("dump: %v", err)
 	}
 	return out.([]string)
+}
+
+// ---- ARM 8: range-option validation, per consumption surface --------------------------------
+
+// TestDifferential_RangeOptionValidation measures which range-option errors each consumption
+// surface raises, against a real cluster.
+//
+// It exists because the two surfaces genuinely disagree, and reasoning about it from the API
+// docs gets it backwards. A row limit below -1 is range_limits_invalid(2012) on BOTH — Iterator
+// checks it inline, GetSlice reaches the same check through getRangeDir. But EXACT-without-limit
+// is exact_mode_without_limits(2210) on the ITERATOR ONLY: GetSlice never passes the streaming
+// mode down (Apple's binding goes further and overwrites it), so no real backend can raise 2210
+// from it. Adding the check to SimFDB's GetSlice "for symmetry" would have invented an error,
+// which is the same class of defect as omitting the 2012 one — a sim answering differently from
+// every real client.
+func TestDifferential_RangeOptionValidation(t *testing.T) {
+	t.Parallel()
+	real := getRealDB(t)
+	sim := simfdb.New(nil)
+	prefix := fmt.Sprintf("optvalid/%d/", os.Getpid())
+
+	for _, tc := range []struct {
+		name string
+		opts fdb.RangeOptions
+	}{
+		{"limit -2", fdb.RangeOptions{Limit: -2}},
+		{"limit -7 with exact", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -7}},
+		{"exact without limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact}},
+		{"exact with limit -1", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -1}},
+		{"exact with limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: 1}},
+		{"limit -1 unlimited", fdb.RangeOptions{Limit: -1}},
+	} {
+		tc := tc
+		probe := func(db fdb.BackendDatabase) (sliceCode, iterCode int) {
+			_, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+				rng := fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}
+				_, sErr := rtx.GetRange(rng, tc.opts).GetSliceWithError()
+				sliceCode = codeOf(sErr)
+				it := rtx.GetRange(rng, tc.opts).Iterator()
+				it.Advance()
+				_, iErr := it.Get()
+				iterCode = codeOf(iErr)
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("[%s] probe transaction: %v", tc.name, err)
+			}
+			return sliceCode, iterCode
+		}
+		simSlice, simIter := probe(sim)
+		realSlice, realIter := probe(real)
+		if simSlice != realSlice || simIter != realIter {
+			t.Errorf("[%s] validation diverged: sim{GetSlice:%d Iterator:%d} real{GetSlice:%d Iterator:%d}",
+				tc.name, simSlice, simIter, realSlice, realIter)
+		}
+	}
 }
