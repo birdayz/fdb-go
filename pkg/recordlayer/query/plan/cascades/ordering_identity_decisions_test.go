@@ -42,6 +42,84 @@ package cascades
 //
 // The first test is the regression net: if a provider ever stops carrying its
 // ordinal, it goes red and the 93% disagreement is back.
+//
+// ---------------------------------------------------------------------------
+// THE CENSUS, AND WHERE IT LIVES
+// ---------------------------------------------------------------------------
+//
+// This file is named as the harness for the CQ-55 corpus numbers, and it can only
+// be half of one. A corpus census has to PLAN the corpus, the corpus harness
+// (pkg/relational/conformance/explaindiff) imports this package, and an internal
+// test in this package therefore cannot import it back — the cycle is
+// structural, not stylistic. So the split is:
+//
+//   - the corpus-driven counts live in
+//     pkg/relational/conformance/explaindiff/ordering_census_test.go, next to the
+//     harness that can run the corpus, reading counters this package exports from
+//     ordering_comparison_census.go;
+//   - the white-box pins that need no corpus live here and in
+//     ordering_comparator_dispatch_test.go.
+//
+// MEASURED AT THE TWO COMPARATOR SITES (this pass, one isolated corpus pass, 2485
+// queries — the corpus has grown from the 2481 the numbers above were taken on).
+// These are the AT-SITE counts, which no earlier census covered; the prior pass
+// counted the merge path, the set membership and the resolving keyFor cells, and
+// those are different cells:
+//
+//	                                  orderingValuesEqual   intersectionValuesEqual
+//	  comparisons                            8659                    862
+//	  both operands plain FieldValue         8658                    403
+//	  ... and both state an identity         8658                    403
+//	  DECLINE RESIDUAL                          0                      0
+//	  non-FieldValue pairs                      1                    459
+//	  decided by the NAME bridge alone           0                      0
+//
+// The decline residual is the number type dispatch depends on: a FieldValue pair
+// where either side states no identity is DECLINED, with no fallthrough, so a
+// nonzero residual is a lost set-operation merge. It was NOT zero when this pass
+// started — 43 pairs at the intersection site, 12 of which the retired
+// availability dispatch matched, every one of them a domained index key against a
+// LAZY primary-key column. The three producers minting those lazy keys
+// (TranslatePrimaryKeyToValues via the metadata index def, the PlanContext
+// name-only fallback, and the primary-scan candidate's own PK values) are all
+// layout-free by construction, so the bake went where the layout first exists:
+// bakeIntersectionPrimaryKeyValues, over the partition's one common record row.
+//
+// The `decided by the NAME bridge alone` column is why the intersector's bridge
+// arm is gone. At that site it is not merely unused, it is unreachable —
+// CanBridgeOrderingFieldValues requires both operands to be FieldValues, and that
+// class now returns from the identity arm above it.
+//
+// NUMBERS CARRIED FROM EARLIER PASSES, not re-measured here, with their source so
+// the provenance is not lost: the merge/set-membership/keyFor zeros and the 61-of-61
+// merge-path string decisions going to zero are recorded in commit cb2c8e6ec; the
+// deleted ordinal-free bridge arm's 5289 → 0 is recorded at
+// properties/rich_ordering.go, and its justification — that every pair the deleted
+// arm could resolve the surviving root arm still resolves — is pinned by
+// properties.TestOrderingKeyForStillResolvesAnUnstatedProvidedKeyByName rather
+// than by a count.
+//
+// THE GROUPBY DECOMPOSITION, AND ITS NEGATIVE RESULT. The requested-ordering push
+// through a GROUP BY was changed in the same pass as the identity work, and the
+// question asked of it was whether its effect on these counts is just
+// EXPLORATION VOLUME — more or fewer comparisons of the same kind. Re-censused
+// with ONLY that change reverted and everything else in place:
+//
+//	                                  orderingValuesEqual   intersectionValuesEqual
+//	  comparisons                       8659 -> 8675             862 -> 862
+//	  DECLINE RESIDUAL                     0 -> 5                  0 -> 0
+//	  ... of which matched before           0 -> 3                  0 -> 0
+//	  plan-shape golden                    clean -> 3 lines differ
+//
+// It is NOT volume. Reverting it changes DECISIONS: five FieldValue pairs arrive
+// with no identity, three of which used to match, and the plan-shape golden moves
+// — the same query that motivated the change loses Fetch(IndexScan(IDX_CUST_STATUS))
+// for InMemorySort(Scan(ORDERS)). So the two changes are COUPLED, not
+// independent: pushing the GROUPING KEY (input space, domained) instead of the
+// request part (output space) is a PRECONDITION of the decline residual being
+// zero at orderingValuesEqual, because an output-space part has no identity the
+// candidate side can meet. That coupling is the finding; it is not an
+// exploration-volume artifact and must not be recorded as one.
 
 import (
 	"testing"

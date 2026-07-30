@@ -105,20 +105,69 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 	}
 }
 
-// synthesizeGroupByOrdering checks that every ordering part matches a
-// grouping key and returns a synthesized ordering covering all grouping
-// keys. Returns nil if the ordering is incompatible.
-func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKeys []values.Value) *properties.RequestedOrdering {
-	// Build a map of grouping key field names for quick lookup.
+// synthesizeGroupByOrdering translates the requested ordering into the child's
+// row space, requires every translated part to be one of the grouping keys, and
+// returns the ordering covering all of them. nil means incompatible — do not
+// push.
+//
+// THE MATCH IS STILL BY ACCESSOR NAME PATH, and converting it to Java's shape is
+// BLOCKED — on a divergence one level down, which is worth stating precisely
+// because it looks like a matching problem and is not.
+//
+// Java translates before it matches. It pushes the request through the group-by's
+// result value unconditionally (:108-110, "we need to do that in any case") and
+// then matches the PUSHED part against the grouping values by Value equality
+// (:152-153), which works because Java's result value IS the aggregate's output
+// row: GroupByExpression.getResultValue() returns
+// resultValueFunction.apply(groupingValue, aggregateValue)
+// (GroupByExpression.java:129), a RecordConstructorValue of the grouping and
+// aggregate columns (:756-759). Pushing an output-slot reference through that
+// yields the grouping value, so the two sides meet as one Value.
+//
+// Go's GroupByExpression.GetResultValue() returns e.inner.GetFlowedObjectValue()
+// — the INPUT row, not the output row. So RequestedOrdering.PushDownThroughValue
+// through it is the IDENTITY, measured over the corpus: a request for
+// CUSTOMER_ID#0 (output slot 0) pushes to CUSTOMER_ID#0 and the grouping key is
+// CUSTOMER_ID#1 (input slot 1). Value equality then fails on every group-by in
+// the corpus, the rule pushes nothing, and the index that served the grouping
+// order is replaced by a materialized sort —
+// SELECT customer_id, COUNT(*) FROM orders WHERE status = 'shipped'
+// GROUP BY customer_id ORDER BY customer_id loses
+// Fetch(IndexScan(IDX_CUST_STATUS)) for InMemorySort(Scan(ORDERS)).
+//
+// So the prerequisite is making GetResultValue() return the output row as Java
+// does. That changes what every consumer of the group-by's result value sees —
+// its result type and the space downstream references are baked against — so it
+// is its own reviewed unit, not a rider on a comparator change. Until then the
+// name-path match stays, and it is the one remaining name comparison on this
+// path; the test named for this records what unblocks it.
+//
+// Java's DISTINCTNESS GATE AT :161 IS DELIBERATELY NOT PORTED, and that is a
+// finding rather than an omission. The gate reads
+// `!pushedRequestedOrdering.isDistinct() || requiredOrderingValues.isEmpty()`,
+// and its left disjunct is a tautology: `pushedRequestedOrdering` is the result
+// of `RequestedOrdering.pushDown`, whose ONLY implementation returns either
+// `preserve()` (RequestedOrdering.java:289) or an ordering built with
+// `Distinctness.PRESERVE_DISTINCTNESS` (:236). So `isDistinct()` is false on
+// every value that reaches :161, the gate always admits, and porting it would
+// add a branch that is dead in Java. It would not be dead HERE, though, which is
+// the point — it only looks live because Go used to propagate the ORIGINAL
+// request's distinctness into the synthesized ordering. Taking the distinctness
+// from the pushed ordering, as Java does, is what makes the gate vacuous in Go
+// too, and that is the divergence actually worth closing.
+func synthesizeGroupByOrdering(
+	reqOrd *properties.RequestedOrdering,
+	groupingKeys []values.Value,
+) *properties.RequestedOrdering {
+	// Key by full accessor path, not leaf name (RFC-187 S9): a nested grouping
+	// key must not be satisfied by an ordering on a same-leaf-named top-level
+	// column.
 	type groupKeyEntry struct {
 		index int
 		value values.Value
 	}
 	groupKeyMap := make(map[string]groupKeyEntry, len(groupingKeys))
 	for i, gk := range groupingKeys {
-		// Key by full accessor path, not leaf name (RFC-187 S9): a nested
-		// grouping key must not be satisfied by an ordering on a same-leaf-named
-		// top-level column.
 		key, ok := values.AccessorNamePathKey(gk)
 		if !ok {
 			// Non-column / ambiguous grouping key — can't match ordering parts.
@@ -127,47 +176,37 @@ func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKey
 		groupKeyMap[key] = groupKeyEntry{index: i, value: gk}
 	}
 
+	// Java :148-158: requiredOrderingValues is a MUTABLE set of the grouping
+	// values, and each part must REMOVE one from it. A part matching nothing
+	// makes the pushed and required orderings incompatible, and a second part
+	// matching an already-consumed key fails the same way — a LinkedHashSet
+	// cannot yield the same element twice.
 	consumed := make([]bool, len(groupingKeys))
 	parts := make([]properties.RequestedOrderingPart, 0, len(groupingKeys))
-
 	for _, p := range reqOrd.GetParts() {
 		key, ok := values.AccessorNamePathKey(p.Value)
 		if !ok {
 			return nil
 		}
 		entry, found := groupKeyMap[key]
-		if !found {
-			// Ordering part doesn't match any grouping key — incompatible.
-			return nil
-		}
-		if consumed[entry.index] {
-			// Duplicate ordering part referencing same grouping key.
+		if !found || consumed[entry.index] {
 			return nil
 		}
 		consumed[entry.index] = true
-		// Push the GROUPING KEY's Value, not the requested part's. The
-		// requested part is stated in the aggregate's OUTPUT row (an ORDER BY
-		// above a GROUP BY addresses output slots); the child below this
-		// quantifier speaks the INPUT row. Java does this as an explicit
-		// translation before it matches at all —
-		// PushRequestedOrderingThroughGroupByRule.java:108-110 pushes the
-		// requested ordering down through the group-by's result value ("we need
-		// to do that in any case") and :152-153 then matches the PUSHED part
-		// against the grouping values by Value equality, so the part it pushes
-		// IS the grouping value.
-		//
-		// Pushing the output-space Value instead leaves the ordering match at
-		// the access path with two values from two different rows, reconcilable
-		// only by their spelling — and once both sides state an ordinal, that
-		// spelling bridge is exactly what an ordinal-across-layouts conflation
-		// hides behind.
+		// Push the GROUPING KEY's Value, not the requested part's: the part is
+		// stated in the OUTPUT row and the child speaks the INPUT row. Java adds
+		// the PUSHED part at :153, which is the same value because its pushDown
+		// really translated; here the grouping key is the only one of the two
+		// that is in the child's space at all.
 		parts = append(parts, properties.RequestedOrderingPart{
 			Value:     entry.value,
 			SortOrder: p.SortOrder,
 		})
 	}
 
-	// Append remaining grouping keys with ANY sort order.
+	// Java :162-166: the grouping keys no pushed part claimed, in the order they
+	// were written, with ANY sort order — streaming aggregation needs them
+	// contiguous, not in a particular direction.
 	for i, gk := range groupingKeys {
 		if !consumed[i] {
 			parts = append(parts, properties.RequestedOrderingPart{
@@ -177,7 +216,14 @@ func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKey
 		}
 	}
 
-	return properties.NewRequestedOrdering(parts, reqOrd.GetDistinctness(), reqOrd.IsExhaustive())
+	// Java :167-168: the distinctness of the PUSHED ordering (always
+	// PRESERVE_DISTINCTNESS, see the gate note above) and exhaustive=false,
+	// hardcoded there. Go previously forwarded the ORIGINAL request's
+	// distinctness and its exhaustive flag, so a DISTINCT or exhaustive request
+	// above a GROUP BY imposed a constraint on the child that Java never
+	// imposes.
+	return properties.NewRequestedOrdering(
+		parts, properties.DistinctnessPreserveDistinctness, false)
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughGroupByRule)(nil)

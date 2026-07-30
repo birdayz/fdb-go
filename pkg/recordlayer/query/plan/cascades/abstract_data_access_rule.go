@@ -1010,22 +1010,37 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // producers — an SQL sort request against a row layout, a candidate against its
 // index metadata — and never arrive as one node.
 //
-// The decision is by column IDENTITY wherever both sides state one, and it is
-// then FINAL: an identity that says "different column" must not be overridden
-// by a weaker comparison. That is not conservatism, it is the whole point.
-// ValuesStructurallyEqual sends two baked FieldValues through
-// FieldPath.Equals, which compares ordinals and NOT the layout they index, so
-// it reports ordinal 0 of an aggregate's output row and ordinal 0 of a record
-// row as the same column — measured on the corpus, and a wrong sort elision if
-// the enclosing decision goes the other way. The name bridge below has the
-// mirror-image failure and is reachable only where no identity exists.
+// Dispatch is by VALUE TYPE. A pair of plain FieldValues is decided by column
+// IDENTITY and by NOTHING ELSE — identity-or-decline, no fallthrough, ever.
+// Everything else is matched as a whole Value.
 //
-// The remaining arms are for values that have NOT stated an identity: structural
-// equality (which also covers non-FieldValue keys and the CardinalityValue
-// wrapper), then the flat lazy-vs-baked / quantifier-root name bridge that a
-// candidate column with no resolvable layout still needs.
+// Type dispatch is not a stylistic preference over dispatching on whether the
+// two sides happen to STATE an identity; the availability form is intransitive
+// and this one is not. values.StatesOrderingColumn carries the witness: a
+// baked path [0] whose layout is UNKNOWN compares EQUAL to [0]-in-D1 and to
+// [0]-in-D2 through the structural arm, while identity keeps D1 and D2 apart.
+// A comparator that is not an equivalence relation makes orderingValueListContains
+// answer differently depending on the order the list was built in, and the
+// ordering sets built on top of it become insertion-order-dependent — a
+// nondeterministic plan, which is a worse failure than the lost elision the
+// fallthrough was there to avoid.
+//
+// What makes the FieldValue arm safe to make final is a MEASUREMENT, not an
+// argument: every FieldValue arriving here states an identity, so the decline
+// residual is empty and nothing is lost by refusing to fall through. The count
+// is kept honest by the corpus census (ordering_comparison_census.go), which
+// also asserts that this dispatch and the retired one agree pair-for-pair.
+//
+// The structural arm remains for values that are not column reads at all — the
+// *RecordTypeValue discriminators, arithmetic and function keys, the
+// CardinalityValue wrapper — followed by the quantifier-root bridge those
+// wrapped shapes still cross.
 func orderingValuesEqual(left, right values.Value) bool {
-	if values.BothStateOrderingIdentity(left, right) {
+	recordOrderingComparison(
+		OrderingSiteRequestedVsCandidate, left, right,
+		values.CanBridgeOrderingValueRoots,
+	)
+	if values.StatesOrderingColumn(left) && values.StatesOrderingColumn(right) {
 		return values.SameOrderingColumn(left, right)
 	}
 	if values.ValuesStructurallyEqual(left, right) {

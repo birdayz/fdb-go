@@ -18,6 +18,7 @@ go_test(
     srcs = [
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
+        "ordering_census_test.go",
         "plan_shape_golden_test.go",
         "reachability_test.go",
     ],

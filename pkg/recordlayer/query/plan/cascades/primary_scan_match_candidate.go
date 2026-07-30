@@ -209,12 +209,25 @@ func (c *PrimaryScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	return c.primaryKeyValues
 }
 
+// orderingKeyLayout returns the ONE row layout this scan's ordering keys may be
+// domained in — the record row the scan flows — or nil when that is not a record
+// type. It is the primary-scan half of orderingKeyLayoutProvider, so an
+// intersection partition can domain its comparison keys against a leg that is a
+// primary scan exactly as it does against an index leg.
+func (c *PrimaryScanMatchCandidate) orderingKeyLayout() *values.RecordType {
+	rt, isRecord := c.baseType.(*values.RecordType)
+	if !isRecord {
+		return nil
+	}
+	return rt
+}
+
 // bakeOrderingColumn resolves a primary-key column name to a domained ordinal
 // in the record row layout this scan flows. Same authority and same
 // unique-match rule as the index candidate's — see bakeOrderingColumnIn.
 func (c *PrimaryScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
-	rt, isRecord := c.baseType.(*values.RecordType)
-	if !isRecord {
+	rt := c.orderingKeyLayout()
+	if rt == nil {
 		return values.NewFieldValue(nil, name, values.UnknownType)
 	}
 	return bakeOrderingColumnIn(rt, name)

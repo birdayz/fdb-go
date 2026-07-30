@@ -195,33 +195,6 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 	}, true
 }
 
-// SameColumnPath reports whether two RESOLVED accessor paths denote the same
-// column. It is the ORDINAL-PATH element of the identity triple asked BETWEEN
-// two references, rather than resolved into a caller's stated layout the way
-// IdentityIn is — the shape a matcher holding both operands needs. The
-// CORRELATION element is not covered here: a matcher that admits two different
-// child shapes (a childless source-relative bake against a QOV-qualified read of
-// the same source) must prove the correlation its own way, and one that does not
-// admit them should be comparing whole values.
-//
-// Java's FieldPath.equals is element-wise ordinal equality with the per-step
-// name excluded (FieldValue.java:411-420, over ResolvedAccessor.equals at
-// :676-685, which is getOrdinal()-only). Go needs two proofs on top, both for
-// shapes Java cannot express:
-//
-//   - the DOMAIN, KNOWN on both sides and equal. Java's childValue is non-null
-//     and typed, so the layout an ordinal indexes is always derivable; Go mints
-//     childless bakes, and two ordinal-equal paths can address two different
-//     layouts. An ordinal conflation reads as authoritative, which is strictly
-//     worse than the name conflation it would replace.
-//   - a NON-NEGATIVE ordinal at every step. Java asserts ordinal >= 0 at
-//     construction (FieldValue.java:651); Go mints Ordinal -1 name-only
-//     accessors at its unnest/gather/index-expansion seeds. Two of those are
-//     ordinal-equal BY CONSTRUCTION, so an ordinal comparison over them is
-//     vacuous and would bind two distinct nested fields as one.
-//
-// Both declines are the fail-closed direction: a refused match costs a rewrite,
-// an accepted one binds the wrong column.
 // SameOrderingColumn reports whether two ORDERING Values denote the same
 // column by identity: the same ordinal path in the same STATED layout, read off
 // a compatible root. Both sides must have stated an identity; a side that has
@@ -245,6 +218,21 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 // childless by construction while a request scoped to its owning quantifier is
 // not. Two DIFFERENT named quantifiers are different columns and decline: that
 // is what keeps `o.a` and `i.a` apart in a self-join.
+// OrderingFieldPair reports whether both ordering values are plain FieldValue
+// column reads. It is the TYPE test that dispatches the two ordering
+// comparators: a pair inside this class is decided by SameOrderingColumn and by
+// nothing else, so the class is an equivalence relation (see
+// StatesOrderingColumn for the intransitivity that availability dispatch had).
+//
+// A CardinalityValue wrapping a field is deliberately OUTSIDE the class. It is
+// not a column of any row layout, so it has no column identity to state and is
+// matched as a whole Value instead.
+func OrderingFieldPair(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	return aIsField && bIsField && af != nil && bf != nil
+}
+
 func SameOrderingColumn(a, b Value) bool {
 	af, aIsField := a.(*FieldValue)
 	bf, bIsField := b.(*FieldValue)
@@ -280,23 +268,42 @@ func orderingRootCorrelation(f *FieldValue) (CorrelationIdentifier, bool) {
 	}
 }
 
-// BothStateOrderingIdentity reports whether both values have STATED a
-// comparable column identity — the precondition under which SameOrderingColumn
-// is a DECISION rather than a "cannot tell". A caller that gets true and false
-// from the two must not fall through to a weaker comparison: the answer is no.
-func BothStateOrderingIdentity(a, b Value) bool {
-	af, aIsField := a.(*FieldValue)
-	bf, bIsField := b.(*FieldValue)
-	if !aIsField || !bIsField || af == nil || bf == nil {
+// StatesOrderingColumn reports whether ONE ordering value has stated a column
+// identity SameOrderingColumn can read — a flat-or-nested resolved path in a
+// known layout, off a root that is absent or a quantifier.
+//
+// It is deliberately a ONE-VALUE predicate, and that shape is the whole point.
+// The pairwise form it replaced ("do BOTH sides state an identity?") was used to
+// DISPATCH: identity decided the pair when both stated one, and a pair where
+// either side did not fell through to the domain-blind structural comparison.
+// That dispatch is INTRANSITIVE inside the FieldValue class. Witness, all three
+// values baked at ordinal path [0]:
+//
+//	A = [0] in layout D1          states an identity
+//	B = [0] in layout D2          states an identity
+//	U = [0], layout UNKNOWN       states none
+//
+// Identity separates A from B (different layouts, EqualsWithoutChildren's
+// FieldValue arm never looks at the layout). Availability dispatch sends both
+// A~U and B~U to the structural arm, which compares ordinals only and says
+// EQUAL. So U≡A, U≡B, A≢B — and a comparator that is not an equivalence
+// relation makes every set it builds depend on INSERTION ORDER, which is a
+// nondeterministic plan.
+//
+// So dispatch is by TYPE — both operands *FieldValue means identity decides and
+// the decision is FINAL — and this predicate exists only to CLASSIFY the
+// population, never to choose an arm. A value that does not state an identity is
+// UNADDRESSABLE: the comparator declines it, and the fix belongs at the producer
+// that minted it without a layout.
+func StatesOrderingColumn(v Value) bool {
+	f, isField := v.(*FieldValue)
+	if !isField || f == nil {
 		return false
 	}
-	if _, ok := orderingRootCorrelation(af); !ok {
+	if _, ok := orderingRootCorrelation(f); !ok {
 		return false
 	}
-	if _, ok := orderingRootCorrelation(bf); !ok {
-		return false
-	}
-	return statesColumnPath(af.Resolved) && statesColumnPath(bf.Resolved)
+	return statesColumnPath(f.Resolved)
 }
 
 // statesColumnPath reports whether a resolved path is one SameColumnPath can
@@ -313,6 +320,33 @@ func statesColumnPath(p *FieldPath) bool {
 	return true
 }
 
+// SameColumnPath reports whether two RESOLVED accessor paths denote the same
+// column. It is the ORDINAL-PATH element of the identity triple asked BETWEEN
+// two references, rather than resolved into a caller's stated layout the way
+// IdentityIn is — the shape a matcher holding both operands needs. The
+// CORRELATION element is not covered here: a matcher that admits two different
+// child shapes (a childless source-relative bake against a QOV-qualified read of
+// the same source) must prove the correlation its own way, and one that does not
+// admit them should be comparing whole values.
+//
+// Java's FieldPath.equals is element-wise ordinal equality with the per-step
+// name excluded (FieldValue.java:411-420, over ResolvedAccessor.equals at
+// :676-685, which is getOrdinal()-only). Go needs two proofs on top, both for
+// shapes Java cannot express:
+//
+//   - the DOMAIN, KNOWN on both sides and equal. Java's childValue is non-null
+//     and typed, so the layout an ordinal indexes is always derivable; Go mints
+//     childless bakes, and two ordinal-equal paths can address two different
+//     layouts. An ordinal conflation reads as authoritative, which is strictly
+//     worse than the name conflation it would replace.
+//   - a NON-NEGATIVE ordinal at every step. Java asserts ordinal >= 0 at
+//     construction (FieldValue.java:651); Go mints Ordinal -1 name-only
+//     accessors at its unnest/gather/index-expansion seeds. Two of those are
+//     ordinal-equal BY CONSTRUCTION, so an ordinal comparison over them is
+//     vacuous and would bind two distinct nested fields as one.
+//
+// Both declines are the fail-closed direction: a refused match costs a rewrite,
+// an accepted one binds the wrong column.
 func SameColumnPath(a, b *FieldPath) bool {
 	if a == nil || b == nil || len(a.Accessors) == 0 || len(a.Accessors) != len(b.Accessors) {
 		return false
