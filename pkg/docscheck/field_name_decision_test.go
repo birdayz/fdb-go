@@ -288,7 +288,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// channel, whose producers are executor-side (CQ-53), plus the group-key
 	// qualification probe.
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:132":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2366": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2398": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:769":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
@@ -645,7 +645,7 @@ func isFieldSelector(e ast.Expr) bool {
 //
 // Keyed by the parser's *ast.Object — the DECLARATION — and never by spelling,
 // which is a measured correction rather than tidiness. Keying by name reports
-// rule_implement_nested_loop_join.go:2237-2238, where a second, unrelated
+// rule_implement_nested_loop_join.go:2269-2270, where a second, unrelated
 // `key := leg.Name + "." + strings.ToUpper(fields[…].Name)` in a sibling block
 // of the same function is keyed into a map. That key is built from a record
 // constructor's column names and never touches a FieldValue, so the report is a

@@ -297,7 +297,7 @@ func f(v values.Value) (string, bool) {
 			// and wrote the layout under it. The gate was named for that function
 			// and could not see it. The name-built key is GONE (the function is
 			// now keyed by values.ColumnIdentity —
-			// pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2194),
+			// pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2226),
 			// so the fixture is the only surviving statement of the shape.
 			name: "map key via a local derived from the name",
 			want: "a map key via local key derived from the name",
@@ -534,7 +534,7 @@ func TestFieldDecisionDetectorSeesUnqualifiedFieldValueInValuesPackage(t *testin
 
 // The taint follows the DECLARATION, never the spelling.
 //
-// Keying it by name reports rule_implement_nested_loop_join.go:2237-2238, where
+// Keying it by name reports rule_implement_nested_loop_join.go:2269-2270, where
 // a second `key := leg.Name + "." + strings.ToUpper(fields[…].Name)` in a
 // sibling block of the same function is keyed into a map. That key is built from
 // a record constructor's column names and never touches a FieldValue, so the

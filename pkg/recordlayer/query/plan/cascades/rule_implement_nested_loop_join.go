@@ -1817,24 +1817,56 @@ func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentif
 }
 
 // mergedOuterLegAliases returns the set of source-leg aliases the inner-join's
-// merged outer row anchors columns for: the two top-level quantifier aliases
-// (an ordinal seed's legs are the quantifiers themselves). RFC-142.
-func mergedOuterLegAliases(leftAlias, rightAlias string) []string {
+// merged outer row anchors columns for. RFC-142.
+//
+// It takes BOTH the source-alias TEXT and the leg IDENTITIES, and emits both
+// spellings, because its consumers match it against two different things. The
+// dotted rebase (rebaseOuterLegValue) compares each entry against a reference's
+// own QOV CORRELATION name, and those references are correlated to the select's
+// QUANTIFIERS — so the identity spelling is the one that can match. The text
+// spelling stays because the same set feeds the dotted "LEG.COL" key namespace,
+// which is upper-folded.
+//
+// Building it from the text ALONE was a latent mismatch on two axes, and the
+// verification set beside it (existLegCorrs) already worked around one of them by
+// adding the quantifier aliases explicitly:
+//
+//   - the two channels can name different things. Measured over the FDB corpus,
+//     the select's source-alias slice carries a RE-MINTED identifier while its
+//     quantifier keeps the user alias on 12 of ~80k firings (witnesses "q$N vs
+//     E"). There the text set matches no reference at all;
+//   - the fold is one-way. Every entry was upper-folded while a reference's
+//     correlation is verbatim, so a LOWERCASE machine-minted alias could not
+//     match its own entry even when the two channels agreed.
+//
+// A miss is not loud here: the reference stays pointing at a leg alias that is no
+// longer bound inside the FlatMap, evaluates to NULL, and an EXISTS correlation
+// that never matches drops rows. Emitting both spellings can only make the rebase
+// match MORE references, and every extra one is a reference that genuinely names
+// a leg of this merge. The text half retires with the dotted channel (CQ-53's
+// seed rebake); the identity half is what survives it.
+func mergedOuterLegAliases(leftAlias, rightAlias string, legCorrs ...values.CorrelationIdentifier) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(a string) {
 		if a == "" {
 			return
 		}
-		up := strings.ToUpper(a)
-		if _, ok := seen[up]; ok {
+		if _, ok := seen[a]; ok {
 			return
 		}
-		seen[up] = struct{}{}
-		out = append(out, up)
+		seen[a] = struct{}{}
+		out = append(out, a)
 	}
-	add(leftAlias)
-	add(rightAlias)
+	// The dotted-text namespace: upper-folded, as its keys are.
+	add(strings.ToUpper(leftAlias))
+	add(strings.ToUpper(rightAlias))
+	// The identity namespace: VERBATIM. Folding it here is what would let a
+	// quoted "q$5" and a minted q$5 be treated as one leg, and it is also what
+	// kept a minted leg from matching itself.
+	for _, c := range legCorrs {
+		add(c.Name())
+	}
 	return out
 }
 
@@ -3275,7 +3307,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// below — the spliced buried-leg windows.) Every residual/projected
 	// reference to one of these reads the merged row's verbatim "LEG.COL"
 	// key. RFC-142.
-	outerLegAliases := mergedOuterLegAliases(leftAlias, rightAlias)
+	outerLegAliases := mergedOuterLegAliases(leftAlias, rightAlias, leftCorr, rightCorr)
 
 	// Step 2: build the existential level as a PURE-MAP FlatMap (RFC-141 —
 	// no EXISTS join mode). The inner is the existential subplan filtered by
