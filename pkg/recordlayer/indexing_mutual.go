@@ -3,10 +3,12 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"math/rand"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -146,12 +148,38 @@ func (m *mutualIndexBuilder) computeFragments() error {
 	// Random starting point and step.
 	// Step must be coprime with fragmentCount (use a prime that doesn't divide it).
 	// Matches Java's getPrimeStep(fragmentNum, rn).
-	rng := rand.New(rand.NewSource(rand.Int63()))
+	rng := rand.New(rand.NewSource(mutualFragmentSeed(m.indexer.db.Env())))
 	m.fragmentFirst = rng.Intn(m.fragmentCount)
 	m.fragmentCur = m.fragmentFirst
 	m.fragmentStep = findCoprimeStep(m.fragmentCount, rng)
 
 	return nil
+}
+
+// mutualFragmentSeed picks the seed for a mutual build's fragment visit order.
+//
+// The order is not cosmetic under fault injection, which is the whole point of a simulation.
+// A build that runs to completion indexes every fragment and lands on the same index whatever
+// order it walked them in — that much is true. A build INTERRUPTED partway has recorded a
+// different SUBSET of fragments in the persisted built-range set depending on where the walk
+// had got to, and the range set is durable state a later builder resumes from. So the order
+// decides persisted bytes exactly when a fault schedule is in play, and a seeded run has to be
+// able to reproduce it.
+//
+// A nil env keeps the raw math/rand draw: this site has always used math/rand, and routing the
+// production arm through the crypto-backed nil default would change production behaviour rather
+// than make it more deterministic.
+func mutualFragmentSeed(env *dst.Env) int64 {
+	if env == nil {
+		return rand.Int63()
+	}
+	var b [8]byte
+	if _, err := env.Read(b[:]); err != nil {
+		return rand.Int63()
+	}
+	// Clear the sign bit: rand.NewSource takes a seed, and a negative one is legal but makes
+	// the seed's relationship to the drawn bytes needlessly hard to read in a repro.
+	return int64(binary.BigEndian.Uint64(b[:]) &^ (1 << 63))
 }
 
 // findCoprimeStep finds a step value coprime with n for uniform iteration.

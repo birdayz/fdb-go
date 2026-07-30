@@ -241,13 +241,20 @@ func TestCommitUnknownBranchIsSeededAndReachesBothWays(t *testing.T) {
 
 	sawApplied, sawDiscarded := false, false
 	for s := uint64(1); s <= 32; s++ {
-		if applied(s) {
+		first := applied(s)
+		if first {
 			sawApplied = true
 		} else {
 			sawDiscarded = true
 		}
-		if got := applied(s); got != applied(s) {
-			t.Fatalf("seed %d is not reproducible", s)
+		// Reproducibility: a SECOND run at the same seed must reach the same branch. This
+		// compared applied(s) against applied(s) — two fresh calls, neither of them the run
+		// whose outcome was just recorded above — so it could not detect a seed whose FIRST
+		// run disagreed with its later ones, which is the only interesting way to be
+		// irreproducible here.
+		if again := applied(s); again != first {
+			t.Fatalf("seed %d is not reproducible: applied=%v on the first run, %v on the "+
+				"second", s, first, again)
 		}
 	}
 	if !sawApplied || !sawDiscarded {

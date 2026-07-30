@@ -143,6 +143,20 @@ of which reaches a persisted byte — **except one**:
   replay bit-exactly; everything else does. Seaming it is real work (23 sites, several on paths
   with no `*FDBRecordContext` in hand), not a formality, and it is deliberately not claimed done.
 
+**Model-fidelity ledger — the named SimFDB-vs-real-FDB gaps.** Separate from the seam ledger above,
+which is about determinism. These are places where SimFDB is deterministic but does not yet model
+what a real client does. Each is guarded by the differential arms (`pkg/simfdb/differential_arms_test.go`)
+in the sense that closing the gap must not change any arm's verdict.
+
+- **Read-conflict range coalescing.** A real client merges overlapping/adjacent read-conflict
+  ranges as it records them; SimFDB appends each one. The COVERAGE is identical, so no commit
+  verdict differs, and every conflict test in the package is now written against outcomes rather
+  than against the recorded list — the package was verified to stay green under a coalescing
+  implementation. What is not yet modelled is the transaction SIZE the ranges contribute, which is
+  what makes this worth closing: a scan that records one range per batch reports a larger
+  transaction than the same scan on a real client, so `transaction_too_large` fires at a different
+  point. Until then, size-limit behaviour on range-heavy transactions is approximate.
+
 Two further caveats on the *randomness* seam, already stated at `pkg/dst/rand.go`: a seeded source
 makes the POOL of drawn bytes deterministic, but under goroutine fan-out (indexer / spfresh) which
 goroutine draws which value is scheduler-dependent, so per-node assignment is not bit-exact until

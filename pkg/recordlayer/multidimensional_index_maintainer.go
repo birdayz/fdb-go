@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/big"
 	"strconv"
-	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -657,7 +656,7 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 			}
 			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, cont)
 		}
-		if c.props.TimeLimit > 0 && c.hadFreePass() && time.Since(c.scanState.StartTime()) >= c.props.TimeLimit {
+		if c.props.TimeLimit > 0 && c.hadFreePass() && c.scanState.Elapsed() >= c.props.TimeLimit {
 			cont, cerr := c.limitContinuation()
 			if cerr != nil {
 				return RecordCursorResult[*IndexEntry]{}, cerr

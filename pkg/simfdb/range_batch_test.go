@@ -170,10 +170,22 @@ func TestCursorBatchSizesFollowTheStreamingMode(t *testing.T) {
 					t.Fatalf("batches = %v, want %v", sizes, tc.batch)
 				}
 			}
-			// Every batch takes exactly one conflict range (no self-writes here to split it).
-			if len(tx.readConflicts) != len(tc.batch) {
-				t.Fatalf("recorded %d conflict ranges %v, want one per batch (%d)",
-					len(tx.readConflicts), conflictStrings(tx), len(tc.batch))
+			// The COVERAGE of the drained scan, not the number of recorded ranges. Counting
+			// them would pin a representation: one range per batch and their union are the
+			// same behaviour, and the count assertion would have to be relaxed the day
+			// SimFDB coalesces read-conflict ranges the way a real client does. The batching
+			// itself is already pinned above, through the client's own trace surface.
+			if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
+				w.Set(k("kz"), []byte("phantom")) // inside [k,l), never returned by any batch
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("concurrent write: %v", err)
+			}
+			tx.Set(k("zzz"), []byte("x"))
+			if code := errCode(t, tx.Commit().Get()); code != 1020 {
+				t.Fatalf("commit code = %d, want 1020: a fully drained scan conflicts over the "+
+					"whole requested range, trailing gap included (conflicts were %v)",
+					code, conflictStrings(tx))
 			}
 		})
 	}

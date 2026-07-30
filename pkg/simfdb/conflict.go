@@ -94,17 +94,30 @@ func (db *SimDB) commit(tx *simTxn) error {
 		return nil
 	}
 
+	// Size limits (terminal / non-retryable) come FIRST, before every server-side verdict.
+	//
+	// The order is not cosmetic when a transaction qualifies for both. Size limits are enforced
+	// CLIENT-SIDE, at the mutation that crosses them, long before a commit reaches a resolver;
+	// transaction_too_old and not_committed come back FROM the resolver. A transaction that is
+	// both over-size and too old therefore reports the size error on a real cluster. The two
+	// differ in KIND, not just in code — 1007 is retryable and 2101 is not — so answering 1007
+	// first sends a retry loop spinning where a real client gives up.
+	//
+	// This ran after the 1007 check until now, and nothing could have caught it: reaching the
+	// disagreement needs a read version more than mvccWindow (5,000,000) versions behind the
+	// latest commit, and SimFDB mints one version per commit from a counter starting at zero, so
+	// a run would have to commit five million transactions before ANY transaction could be too
+	// old. The only way there is a test setting db.lastVersion directly — which is exactly how
+	// TestSizeLimitBeatsTooOld reaches it.
+	if err := checkSizeLimits(tx); err != nil {
+		return err
+	}
+
 	// transaction_too_old(1007): a read version below the MVCC window. A distinct, earlier
 	// verdict than not_committed — and it never fires for a write-only transaction (one with no
 	// read conflict ranges), matching FDB (SkipList.cpp:837 gates on read_conflict_ranges.size()).
 	if len(tx.readConflicts) > 0 && tx.readVersion < db.lastVersion-mvccWindow {
 		return fdb.Error{Code: 1007}
-	}
-
-	// Size limits (terminal / non-retryable): checked before the conflict resolution, matching
-	// the client rejecting an over-limit mutation/transaction.
-	if err := checkSizeLimits(tx); err != nil {
-		return err
 	}
 
 	// SSI: a read conflict range read at readVersion conflicts iff some transaction that

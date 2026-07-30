@@ -19,6 +19,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1624,7 +1625,12 @@ func (r *paginatingRows) pageRowBudget() int {
 }
 
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
-	props := recordlayer.DefaultExecuteProperties()
+	// Anchor the scan/time budget on the database's env clock. This path ALWAYS arms a time
+	// limit (txPageTimeLimit below), and that limit decides where a page ends and therefore
+	// which continuation the caller gets — so a wall-clock anchor would make a simulated run
+	// page differently depending on how fast the machine was. A nil env (production) is the
+	// wall clock, unchanged.
+	props := recordlayer.DefaultExecutePropertiesIn(r.env())
 
 	// DRY RUN is statement-scoped (carried on paginatingRows from the
 	// cascadesPlan), NOT a connection option — read the field, never
@@ -5665,4 +5671,14 @@ func rowsOrEmpty(rows driver.Rows) driver.Rows {
 		return emptyRows{}
 	}
 	return rows
+}
+
+// env returns the DST environment of the database this page reads from, or nil when the
+// connection has no session/database (a construction the resource-limit unit tests use). nil is
+// production: wall clock, unchanged behaviour.
+func (r *paginatingRows) env() *dst.Env {
+	if r.conn == nil || r.conn.sess == nil || r.conn.sess.DB == nil {
+		return nil
+	}
+	return r.conn.sess.DB.Env()
 }

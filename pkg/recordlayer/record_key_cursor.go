@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -75,7 +74,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 	// mode (CursorLimitManager.java:138 has no `|| failOnScanLimitReached`) — but a halt here still
 	// throws under fail mode, matching Java's shared post-halt tail (:141-144: ANY halted* reason
 	// throws under failOnScanLimitReached, not just the scanned-records one).
-	if ep.TimeLimit > 0 && c.keysScanned > 0 && time.Since(c.scanState.StartTime()) >= ep.TimeLimit {
+	if ep.TimeLimit > 0 && c.keysScanned > 0 && c.scanState.Elapsed() >= ep.TimeLimit {
 		if ep.FailOnScanLimitReached {
 			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: TimeLimitReached}
 		}

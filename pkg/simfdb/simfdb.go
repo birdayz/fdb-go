@@ -63,6 +63,16 @@ type SimDB struct {
 //
 // It is an ORACLE input, never a control input: nothing in the system under test may consult it
 // to decide what to do, or the run stops modelling a real client.
+//
+// SINGLE-COMMIT SCOPE. It reports the LAST 1021, not the one you are asking about, and the mutex
+// protects the field, not that correspondence. Two goroutines committing concurrently can both
+// take the 1021 branch, and whichever commits second overwrites the answer the first is about to
+// read — a data race the race detector cannot see, because there is no unsynchronised access,
+// only a stale one. Read it from the same goroutine that made the commit, before that goroutine
+// issues another, which is what a sim driver does anyway: SimFDB's transactions are
+// single-goroutine by construction (see simTxn) and the whole point of the sim is a serialized
+// driver. The exported name is where this has to be said, because a caller holding a *SimDB has
+// no other reason to look at simTxn.
 func (db *SimDB) LastCommitUnknownApplied() bool {
 	db.mu.Lock()
 	defer db.mu.Unlock()

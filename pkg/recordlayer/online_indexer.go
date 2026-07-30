@@ -730,7 +730,11 @@ func unpackRangeEndBoundary(b []byte) (tuple.Tuple, EndpointType, error) {
 // then marks READABLE. Returns the number of records indexed.
 // Matches Java's OnlineIndexer.buildIndex().
 func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
-	startTime := time.Now()
+	// The build clock, not a metric: this anchor is what throttleBetweenRanges measures the
+	// configured timeLimit against, so it decides when the build stops and therefore HOW MANY
+	// RANGES end up durably recorded in the built-range set. It has to come off the env clock
+	// or a simulated build stops at a wall-clock-determined, unreproducible point.
+	startTime := oi.db.Env().Now()
 
 	// Step 1: Mark all target indexes as WRITE_ONLY.
 	if err := oi.markWriteOnly(ctx); err != nil {
@@ -943,7 +947,10 @@ func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime ti
 	}
 	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, logDelayMs)
 	if oi.timeLimit > 0 {
-		if elapsed := time.Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
+		// Same clock the anchor was minted on. Measuring a sim-clock anchor against the wall
+		// clock does not merely lose determinism — it compares two unrelated epochs, so the
+		// limit trips on the first range or never.
+		if elapsed := oi.db.Env().Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
 			return &TimeLimitExceededError{TimeLimit: oi.timeLimit, Elapsed: elapsed}
 		}
 	}

@@ -274,3 +274,48 @@ func TestAddReadConflictRangeExplicit(t *testing.T) {
 		t.Fatalf("explicit read conflict range: got %d, want 1020", code)
 	}
 }
+
+// TestSizeLimitBeatsTooOld pins the ORDER of the two terminal verdicts a commit can reach, for a
+// transaction that qualifies for both.
+//
+// Size limits are enforced client-side, at the mutation that crosses them, long before a commit
+// reaches a resolver; transaction_too_old comes back FROM the resolver. So a real client reports
+// the size error, and the difference matters beyond the code: 1007 is retryable and 2103 is not,
+// so answering 1007 first sends a retry loop spinning where a real client gives up immediately.
+//
+// SimFDB answered 1007 here until the checks were reordered. Nothing could have caught it
+// incidentally — the disagreement needs a read version five million versions behind the latest
+// commit, which only a test reaching into db.lastVersion can arrange.
+func TestSizeLimitBeatsTooOld(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		mut  func(tx *simTxn)
+		want int
+	}{
+		{"value_too_large", func(tx *simTxn) {
+			tx.Set(k("x"), make([]byte, valueSizeLimit+1))
+		}, 2103},
+		{"key_too_large", func(tx *simTxn) {
+			tx.Set(fdb.Key(make([]byte, keySizeLimit+1)), []byte("v"))
+		}, 2102},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := New(nil)
+			db.lastVersion = mvccWindow + 100
+			tx := db.newTxn()
+			tx.SetReadVersion(0)     // ancient: qualifies for 1007
+			tx.Get(k("x")).MustGet() // ...but only with a read conflict range
+			tc.mut(tx)               // ...and over-size: qualifies for the terminal code too
+			if code := errCode(t, tx.Commit().Get()); code != tc.want {
+				t.Fatalf("commit code = %d, want %d — a transaction that is BOTH over-size and "+
+					"too old reports the size error on a real cluster, because the size check "+
+					"is client-side and runs before any resolver sees the commit. Answering "+
+					"the retryable 1007 instead makes a retry loop spin on a transaction that "+
+					"can never succeed", code, tc.want)
+			}
+		})
+	}
+}

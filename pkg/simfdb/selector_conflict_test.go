@@ -135,64 +135,129 @@ func TestSelectorRange_ForwardBeginDoesNotOverConflict(t *testing.T) {
 	}
 }
 
-// TestSelectorRange_ConflictExtentMatchesResolvedKeys inspects the recorded range
-// directly. The behavioural tests above can only observe a conflict verdict; this one
-// names the bounds, so an extent that is merely "wide enough to pass" — rather than
-// equal to the resolved range — is reported as such.
+// TestSelectorRange_ResolvedBoundsDecideWhatConflicts pins the CONFLICT COVERAGE of a range
+// whose bounds resolve by two different mechanisms, and pins it behaviourally — by what a
+// concurrent writer does to the reader's commit — rather than by the shape of the recorded list.
 //
-// The two ends resolve by DIFFERENT mechanisms, deliberately: LastLessThan needs the
-// GetKey lookup and lands on an existing key ("b"), while FirstGreaterThan resolves in
-// the KEY SPACE to keyAfter("f") = "f\x00" with no lookup at all. Asserting "h" here
-// would be asserting a bug: it would drag the gap between "f\x00" and "h" into the
-// conflict range and over-conflict on an insert at, say, "g".
-func TestSelectorRange_ConflictExtentMatchesResolvedKeys(t *testing.T) {
+// The two ends resolve differently, deliberately: LastLessThan needs the GetKey lookup and lands
+// on an existing key ("b"), while FirstGreaterThan resolves in the KEY SPACE to keyAfter("f") =
+// "f\x00" with no lookup at all. Treating the end as "h" would be a bug: it would drag the gap
+// between "f\x00" and "h" into the coverage and abort an insert at "g".
+//
+// This test used to assert the exact COUNT and ORDER of the recorded ranges — ["b","d") for the
+// resolving GetKey, then ["b","f\x00") for the extent — with the justification that "the two
+// spans are not nested". They ARE nested: ["b","d") sits wholly inside ["b","f\x00"). Nothing
+// observable distinguishes recording them separately from recording their union, so the count
+// assertion was pinning a representation, not a behaviour, and it stood in the way of teaching
+// SimFDB to coalesce read-conflict ranges the way a real client does. What actually matters is
+// the COVERAGE, which is what is asserted here.
+//
+// The case where the resolution read is genuinely NOT covered by the extent — where dropping it
+// would lose a real conflict — is TestSelectorRange_ResolutionReadConflictsOutsideTheExtent.
+func TestSelectorRange_ResolvedBoundsDecideWhatConflicts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		probe string
+		want  int
+		why   string
+	}{
+		{"a", 0, "below the resolved begin \"b\": never read"},
+		{"b", 1020, "the resolved begin itself"},
+		{"c", 1020, "inside the span the resolving GetKey scanned AND inside the extent"},
+		{"e", 1020, "inside the extent"},
+		{"f", 1020, "the last key inside the extent (end resolves to f\\x00)"},
+		{"g", 0, "in the gap ABOVE the key-space-resolved end: resolving to \"h\" would over-conflict here"},
+		{"h", 0, "beyond the resolved end"},
+	} {
+		tc := tc
+		t.Run(tc.probe, func(t *testing.T) {
+			t.Parallel()
+			db := New(nil)
+			seedKeys(t, db, "b", "f", "h")
+
+			handle, err := db.CreateWritableTransaction()
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			tx := handle.(*simTxn)
+			rr := tx.GetRange(fdb.SelectorRange{
+				Begin: fdb.LastLessThan(k("d")),     // GetKey resolution -> "b"
+				End:   fdb.FirstGreaterThan(k("f")), // key-space resolution -> "f\x00"
+			}, fdb.RangeOptions{})
+			if _, err := rr.GetSliceWithError(); err != nil {
+				t.Fatalf("range read: %v", err)
+			}
+
+			if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
+				w.Set(k(tc.probe), []byte("concurrent"))
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("concurrent write: %v", err)
+			}
+			tx.Set(k("sentinel"), []byte("1"))
+			got := 0
+			if err := tx.Commit().Get(); err != nil {
+				got = errCode(t, err)
+			}
+			if got != tc.want {
+				t.Fatalf("concurrent write at %q gave commit code %d, want %d (%s); recorded "+
+					"conflicts were %v", tc.probe, got, tc.want, tc.why, conflictStrings(tx))
+			}
+		})
+	}
+}
+
+// TestSelectorRange_ResolutionReadConflictsOutsideTheExtent is the case that makes the
+// resolving GetKey's own conflict range load-bearing rather than redundant.
+//
+// Here the two bounds resolve to the SAME key, so the range extent is EMPTY and contributes
+// nothing at all. The backward begin bound still had to be resolved by a real GetKey, and that
+// GetKey scanned the keyspace between its anchor and the key it landed on. A concurrent write
+// in THAT span conflicts on real FDB, and would not conflict here if the resolution read were
+// dropped — which is precisely what a reader looking at the nested case above might conclude was
+// safe.
+func TestSelectorRange_ResolutionReadConflictsOutsideTheExtent(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	seedKeys(t, db, "b", "f", "h")
+	seedKeys(t, db, "b", "h")
 
 	handle, err := db.CreateWritableTransaction()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	tx := handle.(*simTxn)
-
+	// LastLessThan("d") resolves to "b" (a GetKey over ["b","d")); the end resolves to "b" too,
+	// so the extent is ["b","b") — empty.
 	rr := tx.GetRange(fdb.SelectorRange{
-		Begin: fdb.LastLessThan(k("d")),     // GetKey resolution -> "b"
-		End:   fdb.FirstGreaterThan(k("f")), // key-space resolution -> "f\x00"
+		Begin: fdb.LastLessThan(k("d")),
+		End:   fdb.FirstGreaterOrEqual(k("b")),
 	}, fdb.RangeOptions{})
-	if _, err := rr.GetSliceWithError(); err != nil {
+	kvs, err := rr.GetSliceWithError()
+	if err != nil {
 		t.Fatalf("range read: %v", err)
 	}
+	if len(kvs) != 0 {
+		t.Fatalf("expected an empty read, got %d rows — the range shape changed", len(kvs))
+	}
 
-	// TWO contributions are expected, and the second is the one a reader is most likely to
-	// think is a bug:
-	//
-	//  1. Resolving LastLessThan("d") costs a real GetKey on the backend, and that GetKey is a
-	//     READ — it takes its own conflict range over the span it scanned, ["b","d").
-	//     FirstGreaterThan("f") costs no GetKey (it is keyAfter("f") client-side), so it adds
-	//     nothing here.
-	//  2. The range extent itself, over the RESOLVED bounds: ["b", "f\x00").
-	//
-	// Asserting a single merged range would be wrong — the two spans are not nested, and
-	// collapsing them would either drop the resolution read or widen the extent.
-	want := [][2]string{
-		{"b", "d"},     // GetKey resolution of LastLessThan("d")
-		{"b", "f\x00"}, // the range extent over resolved bounds
+	// "c" lies in the span the resolving GetKey scanned and in no extent whatsoever.
+	if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
+		w.Set(k("c"), []byte("concurrent"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("concurrent write: %v", err)
 	}
-	if len(tx.readConflicts) != len(want) {
-		var got [][2]string
-		for _, rc := range tx.readConflicts {
-			got = append(got, [2]string{string(rc.begin), string(rc.end)})
-		}
-		t.Fatalf("recorded %d read-conflict ranges %v, want %d %v (one for the GetKey that "+
-			"resolves the backward bound, one for the range extent)",
-			len(tx.readConflicts), got, len(want), want)
+	tx.Set(k("sentinel"), []byte("1"))
+	err = tx.Commit().Get()
+	got := 0
+	if err != nil {
+		got = errCode(t, err)
 	}
-	for i, w := range want {
-		got := tx.readConflicts[i]
-		if string(got.begin) != w[0] || string(got.end) != w[1] {
-			t.Errorf("conflict range %d = [%q,%q), want [%q,%q)", i, got.begin, got.end, w[0], w[1])
-		}
+	if got != 1020 {
+		t.Fatalf("commit code = %d, want 1020: the range extent is EMPTY, so the only thing "+
+			"that can conflict here is the GetKey that resolved the backward bound — dropping "+
+			"it silently loses a conflict real FDB takes (conflicts were %v)",
+			got, conflictStrings(tx))
 	}
 }
 

@@ -45,6 +45,17 @@ func (e *Env) Now() time.Time {
 	return e.Clock.Now()
 }
 
+// Since returns the time elapsed since t on the environment's clock — the seam-aware analog of
+// time.Since, and the spelling every ELAPSED-TIME decision must use.
+//
+// It exists because a duration is where a wall clock hides best. Now() at a site that persists a
+// timestamp is obvious; time.Since at a site that only compares against a budget looks like
+// instrumentation, and is not, whenever the comparison decides how much work gets done — and
+// therefore how many bytes are durably recorded. Mixing the two spellings is worse than either:
+// an expiry minted on the sim clock and measured against the wall clock is not merely
+// nondeterministic, it is decided by the gap between two unrelated epochs.
+func (e *Env) Since(t time.Time) time.Duration { return e.Now().Sub(t) }
+
 // Read fills p from the environment's randomness source, treating a nil Env or nil Random as
 // production (crypto/rand).
 func (e *Env) Read(p []byte) (int, error) {

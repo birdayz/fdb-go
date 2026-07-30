@@ -47,11 +47,15 @@ func TestSimFDB_InterleavedTransactionsConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create txB: %v", err)
 	}
-	storeA, err := openStore(recordlayer.NewFDBRecordContext(txA, nil), md, sub)
+	// db.Env(), not nil: these contexts belong to a SEEDED simulation, and a nil env puts every
+	// persisted-byte site they touch (store header timestamps, indexer identity) back on the
+	// wall clock and crypto/rand. The test would still pass — it asserts a conflict verdict, not
+	// bytes — while quietly writing the one thing this package exists to make reproducible.
+	storeA, err := openStore(recordlayer.NewFDBRecordContext(txA, db.Env()), md, sub)
 	if err != nil {
 		t.Fatalf("open store A: %v", err)
 	}
-	storeB, err := openStore(recordlayer.NewFDBRecordContext(txB, nil), md, sub)
+	storeB, err := openStore(recordlayer.NewFDBRecordContext(txB, db.Env()), md, sub)
 	if err != nil {
 		t.Fatalf("open store B: %v", err)
 	}

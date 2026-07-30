@@ -55,10 +55,45 @@ func TestWriteBetweenGetRangeAndGetSliceIsVisible(t *testing.T) {
 			"stored value, i.e. the result was materialized at GetRange() time", got, "mine")
 	}
 	// The conflict filter subtracted e's slot. That is correct ONLY because the row above
-	// really did come from the buffer; asserting the pair together is what keeps the two in
-	// step. A concurrent writer of e must therefore not abort this transaction.
-	assertConflicts(t, tx, `["a","e")`, `["e\x00","z")`)
+	// really did come from the buffer, so the two are asserted together: a concurrent writer of
+	// e must not abort this reader. The rest of the coverage is probed by
+	// TestWriteBetweenGetRangeAndGetSliceCoverage.
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
+}
+
+// TestWriteBetweenGetRangeAndGetSliceCoverage is the conflict half of shape A, stated as
+// OUTCOMES rather than as the shape of the recorded list.
+//
+// A span is subtracted from the read conflict IFF the buffer answered the read that span
+// covers. Recording ["a","e") and ["e\x00","z") separately and recording their union are the
+// same behaviour — only the coverage is observable — so asserting the list would pin a
+// representation and stand in the way of teaching SimFDB to coalesce read-conflict ranges the
+// way a real client does.
+func TestWriteBetweenGetRangeAndGetSliceCoverage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		probe string
+		want  int
+		why   string
+	}{
+		{"e", 0, "the buffer answered this row, so the read never depended on storage"},
+		{"d", 1020, "resolved from storage, so a concurrent writer must abort the reader"},
+		{"a", 1020, "resolved from storage"},
+		{"zz", 0, "outside the requested range"},
+	} {
+		tc := tc
+		t.Run(tc.probe, func(t *testing.T) {
+			t.Parallel()
+			db := New(nil)
+			seedLazy(db)
+			tx := db.newTxn()
+			rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{})
+			tx.Set(k("e"), []byte("mine"))
+			rr.GetSliceOrPanic()
+			t.Log(tc.why)
+			commitAfterConcurrentSet(t, db, tx, tc.probe, tc.want)
+		})
+	}
 }
 
 // TestWriteMidIterationIsVisibleInLaterBatches is shape B — the record layer's scan-and-update
@@ -98,15 +133,48 @@ func TestWriteMidIterationIsVisibleInLaterBatches(t *testing.T) {
 		t.Fatalf("row a = %q, want \"db\" — a was returned by a batch fetched BEFORE the write; "+
 			"a lazy read does not rewrite pages it has already handed back", got)
 	}
-	// The conflict ledger, batch by batch. Batch 1 ([a,b\x00)) was taken while the buffer was
-	// empty, so it covers a in full even though a is written later — the row really did come
-	// from storage. The batches fetched after the writes have e's slot subtracted and a's is
-	// already banked. This is the whole invariant in one assertion: a span is subtracted iff
-	// the buffer answered the read that span covers.
-	assertConflicts(t, tx,
-		`["a","b\x00")`, `["b\x00","e")`, `["e\x00","f\x00")`, `["f\x00","z")`)
-	// a was read from storage and IS conflicted: a concurrent writer of a must abort us.
+	// a was returned by a batch fetched BEFORE the write to a landed, so its conflict was
+	// already banked against storage and a concurrent writer of a must abort us — even though a
+	// is in the write buffer by the time the transaction commits.
 	commitAfterConcurrentSet(t, db, tx, "a", 1020)
+}
+
+// TestWriteMidIterationCoverage is the conflict half of shape B: a span is subtracted from the
+// read conflict IFF the buffer answered the read that span covers. Stated as commit outcomes,
+// so it says nothing about how the ranges happen to be grouped.
+func TestWriteMidIterationCoverage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		probe string
+		want  int
+		why   string
+	}{
+		{"a", 1020, "returned by a batch fetched BEFORE the write to a, so it came from storage"},
+		{"b", 1020, "returned by the first batch, from storage"},
+		{"e", 0, "fetched AFTER the write to e, so the buffer answered it"},
+		{"d", 1020, "fetched after the writes but resolved from storage"},
+	} {
+		tc := tc
+		t.Run(tc.probe, func(t *testing.T) {
+			t.Parallel()
+			db := New(nil)
+			seedLazy(db)
+			tx := db.newTxn()
+			it := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")},
+				fdb.RangeOptions{Mode: fdb.StreamingModeIterator}).Iterator()
+			for i := 0; i < 2; i++ {
+				if !it.Advance() {
+					t.Fatalf("iterator exhausted after %d rows", i)
+				}
+			}
+			tx.Set(k("e"), []byte("mine"))
+			tx.Set(k("a"), []byte("late"))
+			for it.Advance() {
+			}
+			t.Log(tc.why)
+			commitAfterConcurrentSet(t, db, tx, tc.probe, tc.want)
+		})
+	}
 }
 
 // TestWriteMidIterationShiftsWhichRowsALimitReturns is the sharper form of shape B: with a row
@@ -186,7 +254,6 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	if got := valueOf(kvs, "e"); got != "mine" {
 		t.Fatalf("row e = %q, want \"mine\"", got)
 	}
-	assertConflicts(t, tx, `["a","e")`, `["e\x00","z")`)
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
 }
 
@@ -209,20 +276,6 @@ func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
 	it.Advance()
 	if _, err := it.Get(); errCode(t, err) != 1025 {
 		t.Fatalf("Iterator Get after Cancel = %v, want transaction_cancelled(1025)", err)
-	}
-}
-
-// assertConflicts compares the transaction's recorded read-conflict ranges to want, in order.
-func assertConflicts(t *testing.T, tx *simTxn, want ...string) {
-	t.Helper()
-	got := conflictStrings(tx)
-	if len(got) != len(want) {
-		t.Fatalf("read conflicts = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("read conflicts = %v, want %v", got, want)
-		}
 	}
 }
 
