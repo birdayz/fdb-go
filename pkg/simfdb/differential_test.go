@@ -58,10 +58,29 @@ func getRealDB(t *testing.T) fdb.BackendDatabase {
 		realDB = d
 	})
 	if realDBErr != nil || realDB == nil {
+		if simfdb.DockerRequired {
+			t.Fatalf("FDB container unavailable under the fdbdocker build tag: %v.\n"+
+				"    This build asserts the differential RAN. Skipping it produces a green suite "+
+				"in which nothing has checked SimFDB against real FDB — every other test in this "+
+				"package asks SimFDB whether SimFDB is right.", realDBErr)
+		}
 		t.Skipf("FDB not available (no Docker): %v", realDBErr)
 	}
 	return realDB
 }
+
+// differentialSeed returns the seed for a randomized differential arm.
+//
+// It ROTATES: a fixed seed sweeps the same few hundred scenarios forever, so the arm stops
+// finding anything the day it first goes green, and the space it does not cover is invisible.
+// Rotating means every CI run explores somewhere new. The seed is time-derived, which is fine
+// precisely because this arm runs OUTSIDE the simulation — it is the oracle, not the subject —
+// and every failure message carries the seed so the run replays exactly.
+//
+// A fixed-seed arm runs alongside it (TestSimFDB_DifferentialConflictOutcome_FixedSeed) so
+// there is always a deterministic regression floor that cannot go green by drawing an easier
+// sample.
+func differentialSeed() uint64 { return uint64(time.Now().UnixNano()) }
 
 const nKeys = 20
 
@@ -165,10 +184,26 @@ func runConflictScenario(t *testing.T, db fdb.BackendDatabase, s conflictScenari
 // linking cgo.
 func TestSimFDB_DifferentialConflictOutcome(t *testing.T) {
 	t.Parallel()
-	real := getRealDB(t)
-	rng := mrand.New(mrand.NewPCG(1, 0))
+	runDifferentialConflictOutcome(t, differentialSeed(), 400)
+}
 
-	const scenarios = 400
+// TestSimFDB_DifferentialConflictOutcome_FixedSeed is the regression floor: the same scenarios
+// every run, so a fix stays fixed. The rotating arm above is the explorer; this one is the net.
+func TestSimFDB_DifferentialConflictOutcome_FixedSeed(t *testing.T) {
+	t.Parallel()
+	runDifferentialConflictOutcome(t, 1, 200)
+}
+
+func runDifferentialConflictOutcome(t *testing.T, seed uint64, scenarios int) {
+	t.Helper()
+	real := getRealDB(t)
+	// One SimDB for the whole sweep: the real cluster keeps every previous scenario's keys, and
+	// a selector range can resolve OUTSIDE its own prefix (a backward bound lands on whatever
+	// key precedes it). A fresh sim per scenario therefore gives the two backends different
+	// histories and manufactures a divergence that looks like a sim defect. See runArm.
+	sim := simfdb.New(nil)
+	rng := mrand.New(mrand.NewPCG(seed, 0))
+
 	for i := 0; i < scenarios; i++ {
 		var seeded [nKeys]bool
 		for j := 0; j < nKeys; j++ {
@@ -177,7 +212,7 @@ func TestSimFDB_DifferentialConflictOutcome(t *testing.T) {
 		lo := rng.IntN(nKeys)
 		hi := lo + 1 + rng.IntN(nKeys-lo) // (lo, nKeys]
 		s := conflictScenario{
-			prefix:   fmt.Sprintf("diff/%d/%d/", os.Getpid(), i),
+			prefix:   fmt.Sprintf("diff/%d/%d/%d/", os.Getpid(), seed, i),
 			seeded:   seeded,
 			readMode: rng.IntN(4), // point Get / GetKey / exact-key range / SELECTOR range
 			readPt:   rng.IntN(nKeys),
@@ -189,11 +224,13 @@ func TestSimFDB_DifferentialConflictOutcome(t *testing.T) {
 			reverse:  rng.IntN(2) == 0,
 			probe:    rng.IntN(nKeys),
 		}
-		simOut := runConflictScenario(t, simfdb.New(nil), s)
+		simOut := runConflictScenario(t, sim, s)
 		realOut := runConflictScenario(t, real, s)
 		if simOut != realOut {
-			t.Fatalf("scenario %d %+v: SimFDB committed=%v, real FDB committed=%v — SSI conflict-outcome divergence",
-				i, s, simOut, realOut)
+			t.Fatalf("seed %d scenario %d %+v: SimFDB committed=%v, real FDB committed=%v — SSI "+
+				"conflict-outcome divergence. Replay with "+
+				"runDifferentialConflictOutcome(t, %d, %d).",
+				seed, i, s, simOut, realOut, seed, scenarios)
 		}
 	}
 }

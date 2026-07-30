@@ -7,13 +7,24 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
-// TestSimFDB_ConflictOutcomeParity checks SimFDB's SSI conflict-outcome against the outcomes real
-// FDB + libfdb_c produce (the go-vs-cgo conflict-outcome differential is the ground truth; the
-// read-conflict extent is the pure-Go client's rangeConflictExtent). It is the differential's
-// oracle encoded as known outcomes — validating the subtlest SSI-fidelity point (how a GetRange's
-// read conflict range is clamped) without cgo or a container. The adversarial cases (empty-range
-// and gap probes) are the write-skew / phantom axis: an empty or exhausted read must conflict on
-// the FULL requested range so a concurrent insert in a gap still aborts.
+// TestSimFDB_ConflictOutcomeParity pins fourteen named SSI conflict outcomes.
+//
+// The expectations are HAND-DERIVED from the pure-Go client's documented clamping rule
+// (rangeConflictExtent) — they were not observed on a cluster, and the header used to say they
+// were. That mattered: an expectation derived from the same reading of the rule that the
+// implementation was derived from cannot independently confirm the rule, and calling it
+// "the differential's oracle" invited exactly that mistake.
+//
+// What it IS good for is naming the cases. Fourteen labelled shapes — empty range, leading gap,
+// trailing gap, limit met exactly, probe just outside — say which situations are covered in a
+// way a randomized sweep cannot, and they run without Docker. The independent confirmation comes
+// from the container-driven differential (differential_test.go, differential_arms_test.go),
+// which sweeps these same shapes against a real cluster with a rotating seed; if the two ever
+// disagree, the cluster is right.
+//
+// The adversarial cases (empty-range and gap probes) are the write-skew / phantom axis: an empty
+// or exhausted read must conflict on the FULL requested range so a concurrent insert in a gap
+// still aborts.
 func TestSimFDB_ConflictOutcomeParity(t *testing.T) {
 	t.Parallel()
 	kk := func(i int) fdb.Key { return fdb.Key(fmt.Sprintf("k%02d", i)) }
@@ -115,7 +126,7 @@ func TestSimFDB_ConflictOutcomeParity(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := run(c.seed, c.read, c.probe); got != c.wantCommit {
-			t.Errorf("%s: committed=%v, want %v — SimFDB SSI conflict-outcome diverges from real FDB",
+			t.Errorf("%s: committed=%v, want %v — SimFDB diverges from the client's documented clamping rule",
 				c.name, got, c.wantCommit)
 		}
 	}
