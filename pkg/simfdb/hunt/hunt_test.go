@@ -304,6 +304,16 @@ func TestBruteHunt(t *testing.T) {
 	if firstBad != nil {
 		t.Fatalf("brute hunt found a bug:\n%s", firstBad)
 	}
+	// A WORK-DONE FLOOR. Without it this test passes when it checks ZERO seeds — a harness
+	// that silently stopped producing runs is indistinguishable from one that found no bug,
+	// and the second reading is the one everyone takes.
+	if got := checked.Load(); got == 0 {
+		t.Fatal("brute hunt checked ZERO seeds: the sweep produced no runs at all, so \"no bug " +
+			"found\" says nothing about the code")
+	} else if deadline.IsZero() && got < smokeSeeds {
+		t.Fatalf("brute hunt checked %d of %d smoke seeds: the sweep stopped early without "+
+			"reporting a bug, which reads as a clean run and is not one", got, smokeSeeds)
+	}
 }
 
 // FuzzHunt is the coverage-guided driver: libFuzzer mutates the seed bytes, Go saves any

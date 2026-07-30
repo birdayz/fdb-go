@@ -13,6 +13,7 @@ import (
 // 54F01. This test asserts CORRECTNESS: the paged result (scanned-rows-limit=1) equals the unpaged result
 // as a multiset (UNION ALL keeps duplicates; no order contract).
 func TestUnionAllContinuation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h, err := newHarness(997)
 	if err != nil {

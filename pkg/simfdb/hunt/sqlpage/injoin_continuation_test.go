@@ -13,6 +13,7 @@ import (
 // 54F01. This test asserts CORRECTNESS: the paged result (scanned-rows-limit=1, forcing a resume after
 // almost every scanned row) equals the unpaged result as a multiset.
 func TestInJoinContinuation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h, err := newHarness(998)
 	if err != nil {
@@ -67,6 +68,7 @@ func TestInJoinContinuation(t *testing.T) {
 // the limit once at the concat (matching executeInUnion and Java RecordQueryInJoinPlan). A per-branch
 // limit would let each branch emit up to LIMIT rows, so the total would exceed LIMIT.
 func TestInJoinLimit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h, err := newHarness(996)
 	if err != nil {

@@ -16,11 +16,20 @@ func TestClean(t *testing.T) {
 		w := p.Cfg.Workload.(Workload)
 		t.Run(p.Name, func(t *testing.T) {
 			t.Parallel()
+			var pages int
 			for seed := uint64(0); seed < 200; seed++ {
 				res := w.run(seed)
 				if res.Report.Failed() {
 					t.Fatalf("seed %d: %s", seed, res.Report)
 				}
+				pages += res.Pages
+			}
+			// A WORK-DONE FLOOR. A sweep that paged NOTHING passes this loop trivially — no
+			// run can fail if no run reads anything — and a harness that quietly stopped
+			// producing pages is then indistinguishable from a clean run.
+			if pages == 0 {
+				t.Fatal("the sweep scanned zero pages: nothing was continuation-resumed, so a "+
+					"green result says nothing")
 			}
 		})
 	}
