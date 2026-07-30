@@ -10,11 +10,13 @@
 // SSI resolver.
 //
 // The oracle stays airtight because, for keys laid out at ascending tuple-encoded indices, byte-
-// range overlap maps EXACTLY onto integer half-open-interval overlap: a point key i is the interval
-// [i, i+1); a range [lo, hi) is the interval [lo, hi); and two byte ranges overlap iff their index
-// intervals overlap (keyAfter(k_i) sorts strictly between k_i and k_{i+1}, so it never bridges a
-// gap). So the model can resolve conflicts over plain integer intervals — a far simpler
-// representation than the resolver's byte ranges, and that gap is its teeth.
+// range overlap maps EXACTLY onto integer half-open-interval overlap over DOUBLED indices: key i
+// sits at position 2i and keyAfter(k_i) at 2i+1, so a key is [2i, 2i+1) and the gap after it is
+// [2i+1, 2i+2). Two byte ranges overlap iff their position intervals do. So the model resolves
+// conflicts over plain integer intervals — a far simpler representation than the resolver's byte
+// ranges, and that gap is its teeth. (The doubling is not decoration: read conflicts are filtered
+// through the RYW write map, which cuts a range at keyAfter(k) for every key the transaction
+// wrote, and that cut lands inside a gap. See step.span.)
 //
 // Two intrinsic oracles, no external reference:
 //
@@ -31,7 +33,9 @@
 //
 // Unlimited GetRange reads (no row limit) keep the read-conflict extent the full requested span
 // (SimFDB narrows it only for a limit-truncated read), so the interval model matches the resolver
-// exactly. Fault-free by design — the resolver is what's under test.
+// exactly — after the write-map filter is applied to it, which the model does by subtracting each
+// transaction's own prior writes from its later reads. Fault-free by design — the resolver is
+// what's under test.
 package rangeconflict
 
 import (
@@ -93,7 +97,7 @@ type Result struct {
 	opsRun    int
 }
 
-// interval is a half-open [lo,hi) span in key-index space.
+// interval is a half-open [lo,hi) span in DOUBLED key-index space — see step.span.
 type interval struct{ lo, hi int }
 
 func (a interval) overlaps(b interval) bool { return a.lo < b.hi && b.lo < a.hi }
@@ -101,11 +105,11 @@ func (a interval) overlaps(b interval) bool { return a.lo < b.hi && b.lo < a.hi 
 type opKind int
 
 const (
-	opPointGet   opKind = iota // read conflict [i, i+1)
-	opRangeGet                 // read conflict [lo, hi)
-	opPointSet                 // write [i, i+1); stores val
-	opPointClear               // write [i, i+1); removes key i
-	opRangeClear               // write [lo, hi); removes keys [lo, hi)
+	opPointGet   opKind = iota // read conflict on key i
+	opRangeGet                 // read conflict over keys [lo, hi)
+	opPointSet                 // write on key i; stores val
+	opPointClear               // write on key i; removes it
+	opRangeClear               // write over keys [lo, hi); removes them
 )
 
 func (k opKind) isRead() bool  { return k == opPointGet || k == opRangeGet }
@@ -118,11 +122,29 @@ type step struct {
 	val  []byte // set value (opPointSet)
 }
 
-func (s step) span() interval {
-	if s.kind.isRange() {
-		return interval{s.lo, s.hi}
+// span returns the step's byte-position interval. Positions are DOUBLED key indices: key i
+// occupies position 2i, and 2i+1 is keyAfter(k_i) — the byte position strictly between k_i and
+// k_{i+1}. So key i alone is [2i, 2i+1) and the GAP after it is [2i+1, 2i+2).
+//
+// The doubling is what keeps the model exact once conflict ranges are filtered through the RYW
+// write map. Before the filter, every recorded range began and ended at a key, so plain indices
+// sufficed. The filter cuts a read range at keyAfter(k) for each key the transaction wrote,
+// which lands INSIDE a gap — and the gap is not covered by that write, so it stays a conflict.
+// A model at whole-key granularity treats key i as [i, i+1), swallows the gap into the key, and
+// then disagrees with the resolver whenever a concurrent ClearRange spans one: it predicts no
+// conflict where the resolver correctly finds one. Doubling makes gaps first-class.
+//
+// keys is the key-domain size, needed because a range whose hi reaches the domain end is issued
+// as [k_lo, keyAfter(k_last)) — position 2*(keys-1)+1, not 2*keys — see rangeOf.
+func (s step) span(keys int) interval {
+	if !s.kind.isRange() {
+		return interval{2 * s.lo, 2*s.lo + 1}
 	}
-	return interval{s.lo, s.lo + 1}
+	hi := 2 * s.hi
+	if s.hi >= keys {
+		hi = 2*(keys-1) + 1
+	}
+	return interval{2 * s.lo, hi}
 }
 
 type txnState struct {
@@ -134,6 +156,9 @@ type txnState struct {
 	rvPinned bool
 	reads    []interval
 	writes   []interval
+	// covered is the union of the intervals this transaction has written or cleared so far —
+	// the model of the RYW write map that later reads are filtered against.
+	covered []interval
 }
 
 type committedTxn struct {
@@ -301,9 +326,19 @@ func (w Workload) execStep(ts *txnState, keyBytes [][]byte, modelVersion int64, 
 			ts.readVer = modelVersion
 			ts.rvPinned = true
 		}
-		ts.reads = append(ts.reads, s.span())
+		// A read is a read conflict only over the part of its span the transaction had NOT
+		// already written or cleared itself: those parts were answered out of the RYW buffer
+		// with no database read (the write-map filter, simfdb/ryw_conflict.go — C++
+		// updateConflictMap). Every write this workload issues is a plain Set / Clear /
+		// ClearRange, all INDEPENDENT, so the model's subtraction is the whole of it; a
+		// dependent write (a standalone atomic) would still conflict and this driver has none.
+		//
+		// Subtracting at the INTERVAL level keeps the oracle independent of the resolver: the
+		// model still never looks at a byte range.
+		ts.reads = append(ts.reads, subtractCovered(s.span(w.Keys), ts.covered)...)
 	} else {
-		ts.writes = append(ts.writes, s.span())
+		ts.writes = append(ts.writes, s.span(w.Keys))
+		ts.covered = addCovered(ts.covered, s.span(w.Keys))
 	}
 	if s.kind.isRange() {
 		res.RangeOps++
@@ -507,4 +542,47 @@ func Profiles() []hunt.Profile {
 		{Name: "rangeconflict-hot", Cfg: hunt.Config{Workload: Workload{Keys: 4, Txns: 6, OpsPerTxn: 4, MaxSpan: 4}}},
 		{Name: "rangeconflict-wide", Cfg: hunt.Config{Workload: Workload{Keys: 12, Txns: 5, OpsPerTxn: 5, MaxSpan: 8}}},
 	}
+}
+
+// addCovered unions s into the sorted, non-overlapping cover list.
+func addCovered(cover []interval, s interval) []interval {
+	merged := s
+	out := cover[:0:0]
+	for _, c := range cover {
+		if c.hi < merged.lo || merged.hi < c.lo {
+			out = append(out, c)
+			continue
+		}
+		if c.lo < merged.lo {
+			merged.lo = c.lo
+		}
+		if c.hi > merged.hi {
+			merged.hi = c.hi
+		}
+	}
+	out = append(out, merged)
+	sort.Slice(out, func(i, j int) bool { return out[i].lo < out[j].lo })
+	return out
+}
+
+// subtractCovered returns the parts of s not already in cover.
+func subtractCovered(s interval, cover []interval) []interval {
+	segments := []interval{s}
+	for _, c := range cover {
+		var next []interval
+		for _, seg := range segments {
+			if c.hi <= seg.lo || seg.hi <= c.lo {
+				next = append(next, seg)
+				continue
+			}
+			if seg.lo < c.lo {
+				next = append(next, interval{seg.lo, c.lo})
+			}
+			if c.hi < seg.hi {
+				next = append(next, interval{c.hi, seg.hi})
+			}
+		}
+		segments = next
+	}
+	return segments
 }

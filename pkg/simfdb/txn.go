@@ -157,7 +157,7 @@ func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice
 	tx.ensureReadVersion()
 	k := []byte(key.FDBKey())
 	if !snapshot {
-		tx.addReadConflict(k, keyAfter(k))
+		tx.addFilteredReadConflictKey(k)
 	}
 	return newReadyByteSlice(tx.resolveKey(k), nil)
 }
@@ -288,7 +288,7 @@ func (tx *simTxn) addGetKeyConflictRange(ks fdb.KeySelector, resolved []byte) {
 		cEnd = keyAfter(resolved)
 	}
 	if bytes.Compare(cBegin, cEnd) < 0 {
-		tx.addReadConflict(cBegin, cEnd)
+		tx.addFilteredReadConflict(cBegin, cEnd)
 	}
 }
 
@@ -374,7 +374,7 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 		if bytes.Compare(reqBegin, reqEnd) <= 0 {
 			cBegin, cEnd := rangeConflictExtent(reqBegin, reqEnd, kvs, more, options.Reverse)
 			if bytes.Compare(cBegin, cEnd) < 0 {
-				tx.addReadConflict(cBegin, cEnd)
+				tx.addFilteredReadConflict(cBegin, cEnd)
 			}
 		}
 	}
@@ -620,15 +620,19 @@ func (tx *simTxn) addWriteConflict(begin, end []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, keyRange{append([]byte(nil), begin...), append([]byte(nil), end...)})
 }
 
+// AddReadConflictRange records an EXPLICIT read conflict. It is filtered through the write map
+// exactly like an implicit one: C++ addReadConflictRange runs updateConflictMap
+// (ReadYourWrites.actor.cpp:1986, ported at client/transaction.go:3140), because a segment the
+// transaction already wrote independently was satisfied with no database read whether the
+// caller asked for the conflict or not.
 func (tx *simTxn) AddReadConflictRange(er fdb.ExactRange) error {
 	b, e := er.FDBRangeKeys()
-	tx.addReadConflict([]byte(b.FDBKey()), []byte(e.FDBKey()))
+	tx.addFilteredReadConflict([]byte(b.FDBKey()), []byte(e.FDBKey()))
 	return nil
 }
 
 func (tx *simTxn) AddReadConflictKey(key fdb.KeyConvertible) error {
-	k := []byte(key.FDBKey())
-	tx.addReadConflict(k, keyAfter(k))
+	tx.addFilteredReadConflictKey([]byte(key.FDBKey()))
 	return nil
 }
 
