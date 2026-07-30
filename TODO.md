@@ -10237,15 +10237,55 @@ None is speculative: each was re-verified against the tree before booking.
     did NOT imply the binder was inactive. Those are different questions and
     only one of them was being asked.
 
-    What the binder does NOT have is a READER. Over the same run its bindings
-    are looked up **3 times**, all for one single-leg unnest alias and none on a
-    box-gather shape; neutering the binder entirely, and separately binding every
-    leg to the WRONG window, both leave the whole suite green. So the suite's
-    greenness on the live shapes is "nothing reads them", not "the bindings are
-    correct" — both halves are now pinned at FDB level by
-    `TestFDB_MergedLegBinding_LiveBoxGatherShape`, and the standing numbers are
+    The binder DOES have a reader, and an earlier version of this entry was
+    wrong about it: it said the 3 lookups over a full run were "all for one
+    single-leg unnest alias and none on a box-gather shape". Measured with the
+    row's leg count stamped by the binder itself, **all 3 are on a MULTI-LEG
+    merged row** — the `foldable_colliding_answers` shape in
+    `TestFDB_ExistsInnerShadow`, `SELECT OT."K" FROM ST, OT WHERE EXISTS
+    (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`. The fold is
+    what makes it the reader: the colliding reference never survives into the
+    join predicate, so the inner is planned as its own two-source merge. The
+    near-identical cousin `colliding_plain` binds the identical windows and
+    reads NONE of them, so the shape had to be measured, not guessed.
+
+    That reader is NOT load-bearing: neutering the binder entirely, and
+    separately binding every leg to the WRONG window, both leave the whole
+    suite green, and `TestFDB_MergedLegBinding_ReaderShapeIsRedundant` runs
+    that exact query down BOTH resolution routes in one process
+    (`EvaluationContext.WithMergedLegReadBypass`) and asserts the rows agree.
+    So the suite's greenness is "the reads are redundant", not "the bindings
+    are correct". The box-gather half is pinned by
+    `TestFDB_MergedLegBinding_LiveBoxGatherShape`; the standing numbers are
     reported by `executor.FormatMergedLegBindingCensus` from the sqldriver
     `TestMain`.
+
+    The absence of a load-bearing reader is CAUSAL, so this is an ACTIVATION
+    path and not dead weight to delete: the binder's only planner-side producer
+    is the leg-local bake (deleted in this same branch by review ruling, see
+    the next bullet, and returning with CQ-63), and a channel whose only
+    producer is absent cannot have a consumer that depends on it. Scope of the
+    claim: the **sqldriver corpus**, the one place the census gate is enabled —
+    the census is process-global and self-corrects the moment another harness
+    turns the gate on.
+
+    Both facts are enforced, not narrated. `assertMergedLegBindingCensus` in
+    the sqldriver `TestMain` floors total reads at ≥1 (a dead read counter
+    would otherwise manufacture the headline "0 READ" beside a full bind tally)
+    and asserts the activation criterion: *a read on a MULTI-LEG merged row,
+    outside a reader shape PROVEN redundant in this run, implies
+    `LegLocalBakeCensus.Baked > 0`*. The one exclusion is a registration the
+    redundancy pin makes on its passing path only, so a divergence between the
+    two routes fails the pin, empties the registry, and turns those same reads
+    into a red gate in the same run.
+
+    **Criterion amended on post-ACK evidence; re-confirmation pending.** The
+    double-ACK'd form was a bare *merged-shape read ⇒ Baked > 0*, resting on
+    the "3 single-leg-unnest reads" claim above. That claim is refuted, and the
+    bare form is unsatisfiable on this tree (3 multi-leg reads with Baked = 0
+    by construction). The amendment — the proven-redundant exclusion and its
+    pin — has NOT been through the architecture reviewer; it goes as a single
+    question.
 
     Consequence for CQ-53's remainder: the shadowing and first-claim-wins
     semantics are, on the shapes that run, UNOBSERVABLE — and the

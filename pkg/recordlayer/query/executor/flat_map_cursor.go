@@ -545,19 +545,42 @@ func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.C
 		if bindings == nil {
 			bindings = ec.cloneBindings(len(row.Type.Legs))
 		}
-		bindings[leg.Alias] = &legWindowRow{
+		w := &legWindowRow{
 			parent:           row,
 			parentType:       row.Type,
 			offset:           leg.Start,
 			width:            leg.Width,
 			fromMergedBinder: true,
 		}
+		if values.LegIdentityCensusEnabled() {
+			// Whether this window DISPLACES an existing binding is read from the
+			// INCOMING context, before the clone is written: it is the fact that the
+			// alias was already resolvable without the binder, which is what makes a
+			// read of this window redundant rather than load-bearing. The clone
+			// cannot answer it — first-claim-wins means the alias is written once,
+			// but the clone already carries the enclosing binding as its own entry.
+			if prev, existed := ec.bindings[leg.Alias]; existed {
+				w.shadowsExisting = true
+				w.shadowed = prev
+			}
+		}
+		bindings[leg.Alias] = w
 	}
 	if bindings == nil {
 		return ec
 	}
 	out := ec.withBindings(bindings)
 	if values.LegIdentityCensusEnabled() {
+		// Stamp the box-gather shape onto the windows themselves. It is a property
+		// of the ROW (how many legs this merged concat carries) and the reader only
+		// ever holds a WINDOW, so the producer is the only site that can state it.
+		if len(claimed) >= 2 {
+			for _, alias := range claimed {
+				if w, isWindow := bindings[alias].(*legWindowRow); isWindow && w != nil {
+					w.siblingLegs = true
+				}
+			}
+		}
 		// Recorded from the RETURNED context's own map, on the return path, and
 		// deliberately NOT from the loop's decisions. Those are two different
 		// claims: the loop says what the binder chose, the returned context says

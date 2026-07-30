@@ -45,7 +45,68 @@ var (
 	mergedLegMu    sync.Mutex
 	mergedLegBinds = map[MergedLegBinding]int{}
 	mergedLegReads = map[string]int{}
+	// mergedLegMergedRowReads is the subset of mergedLegReads whose merged row
+	// bound TWO OR MORE legs — sibling legs — as opposed to a merged row carrying
+	// a single leg.
+	//
+	// The classification is STAMPED BY THE PRODUCER (legWindowRow.siblingLegs), not
+	// reconstructed from the bind tallies by alias, because alias names COLLIDE
+	// across queries — the corpus binds twenty unrelated legs under the outer name
+	// `X` — so an alias-keyed reconstruction attributes one query's shape to
+	// another query's read. Measured: it did.
+	mergedLegMergedRowReads = map[string]int{}
+	// mergedLegUnshadowedMergedRowReads is the ALARM population: a multi-leg read
+	// of a window that shadowed NOTHING, so the binder was the alias's only
+	// binding and the read had no other route.
+	//
+	// Splitting it out of mergedLegMergedRowReads is what makes the activation
+	// criterion honest. The corpus's standing reads are all SHADOWING reads — the
+	// alias was already resolvable, and neutering the binder leaves the answers
+	// unchanged — so counting them as consumer-arrival would leave the gate
+	// permanently red and say nothing. An UNSHADOWED multi-leg read is the real
+	// event: the binder is the only route, so its correctness has become
+	// load-bearing.
+	//
+	// The exclusion of shadowing reads is licensed by a PIN, not by this comment:
+	// TestFDB_MergedLegBinding_ShadowedReadIsRedundant runs the corpus's reader
+	// shape both ways and fails if the two routes ever disagree.
+	mergedLegUnshadowedMergedRowReads = map[string]int{}
+	// mergedLegRedundantReaders names the aliases a live test has DEMONSTRATED,
+	// in this run, to resolve identically with and without the binder's window —
+	// the reader shapes whose reads are therefore not evidence of a load-bearing
+	// consumer.
+	//
+	// It is populated by proof, not by declaration. The activation criterion
+	// excludes exactly this set, so the exclusion's license is the pin that filled
+	// it: if the pin's two routes ever disagree it fails BEFORE registering, the
+	// set is empty, and the same reads it used to excuse turn the gate red. There
+	// is no way to keep the exclusion while losing the proof.
+	mergedLegRedundantReaders = map[string]string{}
 )
+
+// RegisterRedundantMergedLegReader records that alias's binder-produced reads
+// were proven redundant — identical rows with the binder's window active and
+// with it bypassed — by the named proof. Call it ONLY from the passing path of
+// that proof.
+//
+// why is the test's own identity, carried so the activation gate can name what
+// is excusing a read rather than asserting it on the census's authority.
+func RegisterRedundantMergedLegReader(alias, why string) {
+	mergedLegMu.Lock()
+	defer mergedLegMu.Unlock()
+	mergedLegRedundantReaders[alias] = why
+}
+
+// RedundantMergedLegReaders returns a copy of the proven-redundant registry.
+func RedundantMergedLegReaders() map[string]string {
+	mergedLegMu.Lock()
+	defer mergedLegMu.Unlock()
+	out := make(map[string]string, len(mergedLegRedundantReaders))
+	for k, v := range mergedLegRedundantReaders {
+		out[k] = v
+	}
+	return out
+}
 
 // recordMergedLegBindings counts the leg windows a FINISHED bindMergedOuterLegs
 // context actually carries, for the aliases it claimed.
@@ -80,10 +141,21 @@ func recordMergedLegBindings(ec *EvaluationContext, outerAlias values.Correlatio
 // bindMergedOuterLegs produced. This is the number the "nothing reads it" claim
 // rests on, so it is counted at the binding lookup itself rather than inferred
 // from the shape of the plan.
-func recordMergedLegRead(alias string) {
+//
+// siblingLegs says whether the window's merged row carried two or more legs, and
+// shadowsExisting whether it displaced a binding the incoming context already
+// had. Both are passed through from the window rather than derived here, because
+// the binder stamped them and the binder is the only site that held the row.
+func recordMergedLegRead(alias string, siblingLegs, shadowsExisting bool) {
 	mergedLegMu.Lock()
 	defer mergedLegMu.Unlock()
 	mergedLegReads[alias]++
+	if siblingLegs {
+		mergedLegMergedRowReads[alias]++
+		if !shadowsExisting {
+			mergedLegUnshadowedMergedRowReads[alias]++
+		}
+	}
 }
 
 // MergedLegBindingCensus returns copies of the bind and read tallies.
@@ -101,12 +173,46 @@ func MergedLegBindingCensus() (map[MergedLegBinding]int, map[string]int) {
 	return binds, reads
 }
 
-// ResetMergedLegBindingCensus clears both tallies.
+// MergedRowLegReads returns a copy of the MULTI-LEG subset of the read tally —
+// the reads that resolved to a window on a merged row carrying sibling legs.
+func MergedRowLegReads() map[string]int {
+	mergedLegMu.Lock()
+	defer mergedLegMu.Unlock()
+	return copyReadTally(mergedLegMergedRowReads)
+}
+
+// UnshadowedMergedRowLegReads returns a copy of the ALARM subset — multi-leg
+// reads of a window that shadowed nothing, so the binder was the alias's only
+// binding.
+//
+// Separate accessor rather than a return value of MergedLegBindingCensus because
+// it answers a different question and has a different consumer: the activation
+// gate, which alarms on a read the binder alone could serve while no leg-local
+// bake produced anything.
+func UnshadowedMergedRowLegReads() map[string]int {
+	mergedLegMu.Lock()
+	defer mergedLegMu.Unlock()
+	return copyReadTally(mergedLegUnshadowedMergedRowReads)
+}
+
+// copyReadTally copies a read tally. Caller holds the mutex.
+func copyReadTally(in map[string]int) map[string]int {
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// ResetMergedLegBindingCensus clears all tallies.
 func ResetMergedLegBindingCensus() {
 	mergedLegMu.Lock()
 	defer mergedLegMu.Unlock()
 	mergedLegBinds = map[MergedLegBinding]int{}
 	mergedLegReads = map[string]int{}
+	mergedLegMergedRowReads = map[string]int{}
+	mergedLegUnshadowedMergedRowReads = map[string]int{}
+	mergedLegRedundantReaders = map[string]string{}
 }
 
 // FormatMergedLegBindingCensus renders the census for a harness to log.
@@ -123,9 +229,16 @@ func FormatMergedLegBindingCensus() string {
 		shapes = append(shapes, fmt.Sprintf("%s<-%s[%d,%d) x%d",
 			b.OuterAlias, b.LegAlias, b.Offset, b.Offset+b.Width, n))
 	}
+	onMerged := MergedRowLegReads()
+	unshadowed := UnshadowedMergedRowLegReads()
 	readParts := make([]string, 0, len(reads))
 	for a, n := range reads {
 		totalReads += n
+		if m := onMerged[a]; m > 0 {
+			readParts = append(readParts, fmt.Sprintf("%s x%d (%d multi-leg, %d of those UNSHADOWED)",
+				a, n, m, unshadowed[a]))
+			continue
+		}
 		readParts = append(readParts, fmt.Sprintf("%s x%d", a, n))
 	}
 	sort.Strings(shapes)

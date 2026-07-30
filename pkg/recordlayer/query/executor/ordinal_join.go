@@ -543,6 +543,30 @@ type legWindowRow struct {
 	// built by legWindowBinder (which serves an already-established span table)
 	// are a different producer and are not counted here.
 	fromMergedBinder bool
+	// siblingLegs marks a window whose merged row bound TWO OR MORE legs — the
+	// box-gather shape, as opposed to a merged row carrying a single leg.
+	//
+	// Stamped by the producer, which is the only place the row's leg COUNT is in
+	// hand: a reader holds one window and cannot tell a lone leg from one of
+	// several, and the aliases it could ask about collide across queries. It is
+	// set only while the leg-identity census gate is on, because its sole consumer
+	// is that census's activation criterion.
+	siblingLegs bool
+	// shadowsExisting marks a window that DISPLACED a binding the incoming context
+	// already carried for the same alias, and shadowed holds what it displaced.
+	//
+	// This is the structural marker for "a second resolution route exists". The
+	// binder's shadowing semantics are documented in DIVERGENCES.md; what was never
+	// recorded is that when a window shadows, the alias was already resolvable
+	// WITHOUT the binder, so a read of that window is redundant rather than
+	// load-bearing — and the corpus's only reads are of exactly this kind. A window
+	// that shadows NOTHING is the opposite case: the binder is the alias's only
+	// binding, so a read of it is a genuine consumer.
+	//
+	// Recorded only while the leg-identity census gate is on; the map probe is not
+	// something the per-outer-row path should pay for in production.
+	shadowsExisting bool
+	shadowed        any
 }
 
 // Get reads the leg-relative ordinal: merged slot offset+ord. Out-of-range leg

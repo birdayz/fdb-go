@@ -34,27 +34,31 @@ import (
 // binds. That is the branch profile production runs, and nothing exercised it
 // end to end.
 //
-// # The verdict this test records: NOTHING READS THEM
+// # The verdict this test records: NOTHING READS THEM *HERE*
 //
 // The binder is LIVE — it executes on this shape, and across the whole sqldriver
 // suite it binds windows over ten thousand times. It is not dormant, and the
 // docs that called it consumer-free were wrong about that.
 //
-// But its bindings are not READ. Measured three ways on the full sqldriver
+// Its bindings ARE read — but not on this shape. Measured on the full sqldriver
 // corpus:
 //
 //   - Instrumenting the binding lookup: over a full run, exactly THREE lookups
-//     resolve to a binder-produced window, all for one single-leg unnest alias,
-//     and NONE on any box-gather shape.
+//     resolve to a binder-produced window. All three are on the
+//     `foldable_colliding_answers` shape in TestFDB_ExistsInnerShadow, a
+//     two-leg `FROM ST, OT` merge — NOT, as an earlier version of this comment
+//     claimed, on a single-leg unnest. None is on a box-gather shape.
 //   - Replacing the whole body with `return ec` (bind nothing at all): the
-//     entire suite stays green.
+//     entire suite stays green, including that reader's own test.
 //   - Pointing every window at slot 0 of the merged row (bind everything WRONG):
 //     the entire suite stays green.
 //
 // So the suite's greenness on this shape is NOT evidence the bindings are
-// correct. It is evidence nothing consults them. That distinction is the whole
-// finding: a correct-looking mechanism whose correctness no test can currently
-// observe, sitting on a per-outer-row path.
+// correct. It is evidence nothing consults them here, and that where something
+// does consult them, it has a second route to the same answer
+// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant proves that directly). That
+// distinction is the whole finding: a correct-looking mechanism whose
+// correctness no test can currently observe, sitting on a per-outer-row path.
 //
 // This test therefore asserts BOTH halves, because either alone misleads:
 //
@@ -250,16 +254,22 @@ func TestFDB_MergedLegBinding_LiveBoxGatherShape(t *testing.T) {
 		}
 	}
 
-	// (4) THE VERDICT. Nothing reads these bindings. If this assertion starts
-	// failing, the finding has changed and the docs must change with it.
+	// (4) THE VERDICT. Nothing reads these bindings on a BOX-GATHER shape — and
+	// the reason is CAUSAL: the only planner-side producer of such a read, the
+	// leg-local bake, is deleted on this branch and returns with CQ-63. So the
+	// criterion is COUPLED to that producer rather than a bare zero: a read with
+	// no producer is a change of finding and fires; a read once the bake is back
+	// is CQ-53 phase 2 working and must not. The corpus-wide form of the same
+	// implication runs in the sqldriver TestMain, where both censuses are
+	// complete, and carries the one exclusion this shape does not need.
 	for _, leg := range []string{"MLBA", "MLBB"} {
-		if n := reads[leg]; n != 0 {
+		if n := reads[leg]; mergedLegReadIsAlarm(n) {
 			t.Fatalf("leg %s's binder-produced window was READ %d time(s).\n\n"+
 				"  This is a CHANGE OF FINDING, not necessarily a bug. The merged-leg\n"+
 				"  binder was measured to have NO reader on any box-gather shape: over a\n"+
-				"  full sqldriver run its bindings were looked up three times, none here,\n"+
-				"  and both neutering it and pointing every window at the wrong slot left\n"+
-				"  the whole suite green.\n\n"+
+				"  full sqldriver run its bindings were looked up three times, all on a\n"+
+				"  two-leg FROM ST, OT merge and none here, and both neutering it and\n"+
+				"  pointing every window at the wrong slot left the whole suite green.\n\n"+
 				"  A reader existing changes three things at once:\n"+
 				"    - the SHADOWING semantics in DIVERGENCES.md (a leg shadows an\n"+
 				"      enclosing binding for the duration of the inner) stop being\n"+

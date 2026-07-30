@@ -15,6 +15,37 @@ type EvaluationContext struct {
 	bindings         map[values.CorrelationIdentifier]any
 	params           []any
 	scalarSubqueries map[values.CorrelationIdentifier]any
+	// mergedLegReadBypass names aliases whose binder-produced leg window
+	// GetCorrelationBinding must DECLINE to serve, so the same query can be driven
+	// down the alias's OTHER resolution route. See WithMergedLegReadBypass.
+	//
+	// It rides the CONTEXT rather than a package global on purpose: the suite is
+	// parallel and several tests use the same table names, so a process-wide switch
+	// would reach into a concurrently running test's execution. Every With* copy is
+	// a struct copy, so it propagates down the whole execution the way the other
+	// fields do — including through bindMergedOuterLegs' own derived context, which
+	// is what makes it reach the read it is aimed at.
+	mergedLegReadBypass map[string]bool
+}
+
+// WithMergedLegReadBypass returns a copy in which lookups of the named aliases
+// DECLINE any window bindMergedOuterLegs produced, falling back to whatever that
+// window displaced (nothing, for a window that displaced nothing).
+//
+// It exists for one caller: the redundancy pin, which has to run the SAME query
+// down BOTH resolution routes and compare. A build-tagged neuter cannot do that
+// job — it removes the binder from the whole binary, so the two routes never
+// coexist in one run, and their agreement is the entire content of the pin.
+//
+// Honoured only while the leg-identity census gate is on (the read site's gate),
+// so production never consults it.
+func (ec *EvaluationContext) WithMergedLegReadBypass(aliases ...string) *EvaluationContext {
+	cp := *ec
+	cp.mergedLegReadBypass = make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		cp.mergedLegReadBypass[a] = true
+	}
+	return &cp
 }
 
 // EmptyEvaluationContext returns a context with no bindings.
@@ -191,7 +222,19 @@ func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifi
 		// place a correlation binding is consulted. Gated because this is the
 		// per-reference-per-row path.
 		if w, isWindow := v.(*legWindowRow); isWindow && w != nil && w.fromMergedBinder {
-			recordMergedLegRead(id.Name())
+			// The redundancy pin's bypass: decline the binder's window and hand back
+			// what it shadowed, so the same query can be driven down the alias's
+			// OTHER resolution route in the same run. A bypassed lookup is not a
+			// read of a binder window, so it is not counted as one.
+			if ec.mergedLegReadBypass[id.Name()] {
+				return w.shadowed, w.shadowsExisting
+			}
+			// siblingLegs and shadowsExisting are stamped by the binder, which is
+			// the only site that holds the row's leg COUNT and the incoming
+			// context's prior binding; a reader has one window and cannot tell a
+			// lone leg from one of several, and the aliases it could ask about
+			// collide across queries.
+			recordMergedLegRead(id.Name(), w.siblingLegs, w.shadowsExisting)
 		}
 	}
 	return v, ok
