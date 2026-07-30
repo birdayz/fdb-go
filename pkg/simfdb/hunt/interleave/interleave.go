@@ -35,13 +35,19 @@
 //
 // By default the driver runs fault-free: the resolver itself is under test. Setting Faults > 0
 // activates SimFDB's commit BUGGIFY, which adds the fault dimension the record workload's single
-// writer cannot reach — a commit_unknown(1021) transaction whose writes ARE durable but whose outcome
-// is ambiguous, RACING with other open transactions. The state oracle is unchanged (every program
-// still applies exactly once: a 1021 applied and is not retried; a 1020/1007 applied nothing and is
-// retry-drained), and the verdict oracle goes one-directional (a real conflict still surfaces as 1020
-// because the resolver runs before fault injection, but an injected fault on a clean transaction is
-// not predicted). This is what proves a 1021 transaction correctly PARTICIPATES in concurrent
-// conflict detection and applies exactly once — a property no single-writer workload exercises.
+// writer cannot reach — a commit_unknown(1021) transaction RACING with other open transactions.
+// 1021 has two real branches: the writes are durable but the answer was lost, or the commit never
+// reached the proxy. The state oracle is unchanged (every program still applies exactly once: an
+// APPLIED 1021 is not retried; a DISCARDED 1021, a 1020, or a 1007 applied nothing and is
+// retry-drained), and the verdict oracle goes one-directional (a real conflict still surfaces as
+// 1020 because the resolver runs before fault injection, but an injected fault on a clean
+// transaction is not predicted). This is what proves a 1021 transaction correctly PARTICIPATES in
+// concurrent conflict detection and applies exactly once — a property no single-writer workload
+// exercises.
+//
+// Which branch a 1021 took is simulator ground truth (SimDB.LastCommitUnknownApplied) and is read
+// only by the oracle, never by the transactions themselves: a real client cannot know, which is
+// the whole reason the error exists.
 package interleave
 
 import (
@@ -74,11 +80,12 @@ type Workload struct {
 
 	// Faults, when > 0, activates SimFDB's commit BUGGIFY at that probability so commits are hit by
 	// injected not_committed(1020) / transaction_too_old(1007) BEFORE apply and commit_unknown(1021)
-	// AFTER apply. 0 (default) is the clean, fault-free path — the pristine resolver oracle. With
-	// faults on, the 1021 path is the point: a commit_unknown transaction APPLIED its writes and took
-	// a commit version, so it must participate in later conflict detection and count once toward the
-	// state total, and must NOT be retried (retrying would double-apply its atomic adds). See the
-	// package doc's fault-mode note.
+	// on either of its two branches. 0 (default) is the clean, fault-free path — the pristine
+	// resolver oracle. With faults on, the 1021 path is the point: on the APPLIED branch the
+	// transaction took a commit version, so it must participate in later conflict detection, count
+	// once toward the state total, and NOT be retried (retrying would double-apply its atomic adds);
+	// on the DISCARDED branch it applied nothing and must be drained like a 1020. See the package
+	// doc's fault-mode note.
 	Faults float64
 }
 
@@ -117,12 +124,13 @@ func (w Workload) withDefaults() Workload {
 // plus resolver-exercise metrics the tests assert on (Conflicts must be > 0 for the RMW profile —
 // the NO-FAKE-CHECKBOX proof that 1020 truly fires).
 type Result struct {
-	Report      *hunt.Report
-	Conflicts   int // phase-1 transactions SimFDB aborted with 1020 (real + injected)
-	Predicted   int // phase-1 transactions the verdict oracle predicted would abort
-	Applied1021 int // phase-1 transactions that returned commit_unknown(1021) — applied-but-ambiguous
-	Txns        int
-	opsRun      int
+	Report        *hunt.Report
+	Conflicts     int // phase-1 transactions SimFDB aborted with 1020 (real + injected)
+	Predicted     int // phase-1 transactions the verdict oracle predicted would abort
+	Applied1021   int // phase-1 transactions whose commit_unknown(1021) took the APPLIED branch
+	Discarded1021 int // phase-1 transactions whose commit_unknown(1021) took the DISCARDED branch
+	Txns          int
+	opsRun        int
 }
 
 // opKind is one program step.
@@ -250,17 +258,28 @@ func (w Workload) run(seed uint64) *Result {
 			))
 			return res
 		}
-		switch code {
-		case 0, 1021:
-			// Committed and APPLIED. A commit_unknown(1021) applied its writes and took a commit
-			// version exactly like a clean commit, so it joins the committed log (later transactions
-			// must conflict against it) and counts once toward the state total. It is NOT retried.
+		switch {
+		case code == 0:
 			modelVersion++
 			committed = append(committed, committedTxn{version: modelVersion, writeSet: copySet(ts.writeSet)})
-			if code == 1021 {
+		case code == 1021:
+			// commit_unknown_result has two real branches and the oracle has to know which one
+			// happened to predict the final keyspace. The APPLIED branch took a commit version
+			// exactly like a clean commit, so it joins the committed log (later transactions
+			// must conflict against it), counts once toward the state total, and is NOT retried.
+			// The DISCARDED branch applied nothing, so it is drained like a 1020/1007.
+			//
+			// The branch is simulator ground truth, not something the transaction could infer —
+			// which is why it is read off the SimDB and used ONLY here, in the oracle.
+			if db.LastCommitUnknownApplied() {
+				modelVersion++
+				committed = append(committed, committedTxn{version: modelVersion, writeSet: copySet(ts.writeSet)})
 				res.Applied1021++
+			} else {
+				res.Discarded1021++
+				aborted = append(aborted, ts)
 			}
-		case 1020:
+		case code == 1020:
 			res.Conflicts++
 			aborted = append(aborted, ts)
 		default: // 1007 transaction_too_old (injected) — nothing applied; retry
@@ -356,10 +375,15 @@ func (w Workload) drain(db *simfdb.SimDB, ts *txnState, keyBytes [][]byte) strin
 		if other != nil {
 			return fmt.Sprintf("drain txn %d: unexpected commit error %v", ts.id, other)
 		}
-		switch code {
-		case 0, 1021:
+		switch {
+		case code == 0:
 			return "" // applied exactly once
-		case 1020:
+		case code == 1021:
+			if db.LastCommitUnknownApplied() {
+				return "" // applied exactly once
+			}
+			// Discarded branch: nothing applied; retry.
+		case code == 1020:
 			if w.Faults == 0 {
 				return fmt.Sprintf("txn %d spuriously aborted (1020) during SERIAL drain: no concurrent "+
 					"writer exists, so the resolver must not abort it", ts.id)

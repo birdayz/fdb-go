@@ -41,16 +41,63 @@ type SimDB struct {
 	// pendingInject, when non-zero, forces the next commit to return that FDB error code — a
 	// deterministic, targeted fault (the analog of chaos.InjectOnce but with SimFDB's TRUE
 	// rollback). A retryable code (1020/1007) fires BEFORE the mutations apply; commit_unknown
-	// (1021) fires AFTER they apply — the data is durable but the caller sees an ambiguous
-	// result and retries, the exact non-idempotency surface. Cleared after firing once.
+	// (1021) resolves to one of its two branches — applied or discarded — so the caller sees an
+	// ambiguous result over a store that either did or did not take the write, the exact
+	// non-idempotency surface. Cleared after firing once.
 	pendingInject int
 	injectQueue   []int // faults scheduled for successive commits (InjectSequence)
+
+	// lastUnknownApplied records which branch the most recent commit_unknown_result took. See
+	// LastCommitUnknownApplied().
+	lastUnknownApplied bool
 }
+
+// LastCommitUnknownApplied reports, for the most recent commit that returned
+// commit_unknown_result(1021), whether that commit's mutations were applied.
+//
+// This is SIMULATOR GROUND TRUTH. No FDB client can learn it — the impossibility is the entire
+// reason the error exists — and it is exposed here for one purpose: a model-based oracle has to
+// predict the store's contents, and after a 1021 the contents depend on a branch the seed chose.
+// A harness that could not ask would have to either guess (and start certifying wrong verdicts
+// again) or drop the fault dimension.
+//
+// It is an ORACLE input, never a control input: nothing in the system under test may consult it
+// to decide what to do, or the run stops modelling a real client.
+func (db *SimDB) LastCommitUnknownApplied() bool {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.lastUnknownApplied
+}
+
+// injectCommitUnknownApplied / injectCommitUnknownDiscarded are the two BRANCH-EXPLICIT forms
+// of commit_unknown_result. They are not FDB error codes — they are sentinels understood only
+// by the injection queue, which turns each into a 1021 with the named outcome. Plain 1021 lets
+// the per-seed coin choose; these pin a branch so a test can assert one specific reality.
+//
+// The values sit far outside FDB's error-code space so a mis-plumbed sentinel surfaces as an
+// obviously bogus code rather than a plausible one.
+const (
+	injectCommitUnknownApplied   = -1021
+	injectCommitUnknownDiscarded = -1022
+)
+
+// CommitUnknownApplied and CommitUnknownDiscarded name the two real outcomes behind
+// commit_unknown_result(1021): the mutations were durable but the answer was lost, or the
+// commit never reached the proxy. Pass either to InjectOnce/InjectSequence to pin the branch;
+// a plain 1021 leaves the choice to the run's seed.
+//
+// Both are real FDB. A harness that only ever exercises one of them is not testing 1021
+// handling, it is testing half of it.
+const (
+	CommitUnknownApplied   = injectCommitUnknownApplied
+	CommitUnknownDiscarded = injectCommitUnknownDiscarded
+)
 
 // InjectOnce schedules fault code to be returned by the NEXT commit. Deterministic (no seed):
 // 1020 (not_committed) / 1007 (transaction_too_old) fire before apply; 1021 (commit_unknown)
-// fires after apply. Use to reproduce a precise fault at a chosen point when hunting real
-// record-layer retry/idempotency bugs.
+// resolves its applied/discarded branch by the run's seeded coin, or by the branch named with
+// CommitUnknownApplied / CommitUnknownDiscarded. Use to reproduce a precise fault at a chosen
+// point when hunting real record-layer retry/idempotency bugs.
 func (db *SimDB) InjectOnce(code int) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -135,7 +182,13 @@ func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, e
 		}
 		var fe fdb.Error
 		if attempt < maxRetries && errors.As(err, &fe) && fdb.IsOnErrorRetryable(fe.Code) {
-			tx.Reset()
+			// Route the retry through OnError, not a bare Reset: OnError is where the
+			// MAYBE_COMMITTED write→read conflict promotion lives, and a retry loop that
+			// skips it re-applies a possibly-already-durable transaction instead of
+			// conflicting on it. The real backends' Transact loops call OnError too.
+			if oerr := tx.OnError(fe).Get(); oerr != nil {
+				return nil, oerr
+			}
 			continue
 		}
 		return nil, err

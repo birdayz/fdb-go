@@ -168,18 +168,33 @@ func TestInjectOnce(t *testing.T) {
 		t.Fatal("1020 fired before apply, but x was written")
 	}
 
-	// 1021 (commit_unknown_result) fires AFTER apply: the commit "fails" but the data IS durable —
-	// the non-idempotent-retry surface a real workload must survive.
-	db.InjectOnce(1021)
+	// 1021 (commit_unknown_result) has two real branches. The APPLIED branch leaves the data
+	// durable while the caller is told nothing — the non-idempotent-retry surface a real
+	// workload must survive.
+	db.InjectOnce(CommitUnknownApplied)
 	tx2 := db.newTxn()
 	tx2.Set(k("y"), []byte("v"))
 	if code := errCode(t, tx2.Commit().Get()); code != 1021 {
-		t.Fatalf("InjectOnce(1021): got %d, want 1021", code)
+		t.Fatalf("InjectOnce(CommitUnknownApplied): got %d, want 1021", code)
 	}
 	if got, _ := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
 		return string(rtx.Get(k("y")).MustGet()), nil
 	}); got.(string) != "v" {
-		t.Fatal("1021 fired after apply, but y was NOT durable")
+		t.Fatal("the applied branch of 1021 left y NOT durable")
+	}
+
+	// The DISCARDED branch is the other half: the commit never reached the proxy, so nothing
+	// is written even though the caller sees the same 1021.
+	db.InjectOnce(CommitUnknownDiscarded)
+	tx3 := db.newTxn()
+	tx3.Set(k("y2"), []byte("v"))
+	if code := errCode(t, tx3.Commit().Get()); code != 1021 {
+		t.Fatalf("InjectOnce(CommitUnknownDiscarded): got %d, want 1021", code)
+	}
+	if got, _ := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return rtx.Get(k("y2")).MustGet(), nil
+	}); got.([]byte) != nil {
+		t.Fatal("the discarded branch of 1021 wrote y2 anyway")
 	}
 
 	// Injection is consumed after one commit — the next commit succeeds cleanly.

@@ -706,15 +706,51 @@ func (tx *simTxn) Reset() {
 	tx.versionstamp = nil
 }
 
+// maybeCommitted reports whether code is in C++'s FDB_ERROR_PREDICATE_MAYBE_COMMITTED set —
+// the errors after which the transaction's mutations MAY already be durable. Same two codes
+// the client's OnError special-cases (client/transaction.go:2382, ErrCommitUnknownResult /
+// ErrClusterVersionChanged).
+func maybeCommitted(code int) bool {
+	return code == 1021 || code == 1039
+}
+
 // OnError classifies e: for a retryable code it resets the transaction (fresh read version,
 // dropped buffer) and resolves success so the runner retries; otherwise it resolves the error.
 // Matches FDB Transaction.onError.
+//
+// A MAYBE_COMMITTED error additionally makes the retry SELF-CONFLICTING: the write conflict
+// ranges of the attempt that may have landed are carried over as READ conflict ranges, so if
+// that commit did land, the retry sees its own write as a concurrent one and aborts 1020
+// instead of applying the mutations a second time. This is the client's behaviour
+// (client/transaction.go:2382-2400) and it is the only thing that makes a non-idempotent
+// mutation — an Add — survive a 1021 retry with the right value.
+//
+// The sim is synchronous, so the specific interleaving the client guards against — a commit
+// still in flight at the retry's GRV — cannot arise here. The port is load-bearing anyway,
+// because the promoted ranges are ORDINARY read conflicts and are resolved as such: a
+// write-only transaction (an atomic Add takes no read conflict of its own) that is retried
+// after a maybe-committed error carries a read conflict on the keys it wrote, so a concurrent
+// writer landing after the retry's read version aborts it. Without the promotion that retry
+// has an empty read-conflict set and overwrites the concurrent write — a lost update SimFDB
+// would certify and a real client would not.
 func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
-	if fdb.IsOnErrorRetryable(e.Code) {
+	if !fdb.IsOnErrorRetryable(e.Code) {
+		return newReadyNil(e)
+	}
+	if !maybeCommitted(e.Code) {
 		tx.Reset()
 		return newReadyNil(nil)
 	}
-	return newReadyNil(e)
+	selfConflicts := make([]keyRange, len(tx.writeConflicts))
+	for i, wr := range tx.writeConflicts {
+		selfConflicts[i] = keyRange{
+			begin: append([]byte(nil), wr.begin...),
+			end:   append([]byte(nil), wr.end...),
+		}
+	}
+	tx.Reset()
+	tx.readConflicts = append(tx.readConflicts, selfConflicts...)
+	return newReadyNil(nil)
 }
 
 func (tx *simTxn) SetReadVersion(version int64) {

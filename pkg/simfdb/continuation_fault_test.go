@@ -21,25 +21,30 @@ import (
 // case: a scan mints a continuation on page 1, then a between-page write to un-scanned data commits
 // through a targeted fault, and the scan resumes from the continuation bytes in a fresh transaction.
 // The resume must reflect the fault's TRUE outcome — SimFDB gives true rollback, so a not_committed
-// (1020) leaves the data untouched and a commit_unknown (1021) leaves the write durable — with no
-// duplicate or lost record either way. This pairs the continuation path with the fault path, which
-// only SimFDB's deterministic true-rollback backend can replay reproducibly.
+// (1020) leaves the data untouched, and a commit_unknown (1021) leaves it durable or not depending on
+// which of the error's two real branches occurred — with no duplicate or lost record in any case.
+// This pairs the continuation path with the fault path, which only SimFDB's deterministic
+// true-rollback backend can replay reproducibly.
 //
 // The between-page write uses a RAW, single-commit transaction (not db.Run) on purpose: 1020/1021/1007
 // are all retryable, so db.Run would retry the fault away. The raw commit surfaces the fault's outcome
-// exactly once, which is what makes the two cases (rolled back vs applied) observable.
+// exactly once, which is what makes the branches observable.
 func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 	t.Parallel()
 
 	// pk 10 is un-scanned at the page-1 continuation (page 1 is 0..4); it is what the faulted write
 	// deletes. want10 is whether it should survive the fault.
+	// commit_unknown_result has TWO branches and both are real FDB, so both are cases here: the
+	// caller sees the same 1021 either way and the data either landed or did not.
 	cases := []struct {
-		name   string
-		fault  int
-		want10 bool // pk 10 present in the resumed result?
+		name     string
+		inject   int
+		wantCode int
+		want10   bool // pk 10 present in the resumed result?
 	}{
-		{"not_committed(1020) rolls the delete back — pk 10 survives", 1020, true},
-		{"commit_unknown(1021) applied the delete — pk 10 is gone", 1021, false},
+		{"not_committed(1020) rolls the delete back — pk 10 survives", 1020, 1020, true},
+		{"commit_unknown(1021), applied branch — pk 10 is gone", simfdb.CommitUnknownApplied, 1021, false},
+		{"commit_unknown(1021), discarded branch — pk 10 survives", simfdb.CommitUnknownDiscarded, 1021, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -112,11 +117,11 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 			if _, err := store.DeleteRecord(tuple.Tuple{int64(10)}); err != nil {
 				t.Fatalf("delete: %v", err)
 			}
-			sim.InjectOnce(tc.fault)
+			sim.InjectOnce(tc.inject)
 			errCommit := tx.Commit().Get()
 			var fe fdb.Error
-			if !errors.As(errCommit, &fe) || fe.Code != tc.fault {
-				t.Fatalf("commit = %v, want injected code %d", errCommit, tc.fault)
+			if !errors.As(errCommit, &fe) || fe.Code != tc.wantCode {
+				t.Fatalf("commit = %v, want code %d", errCommit, tc.wantCode)
 			}
 
 			// Resume from the continuation to exhaustion.
@@ -127,7 +132,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 				cont = next
 			}
 
-			// Expected: 0..19, minus pk 10 iff the delete was applied (1021).
+			// Expected: 0..19, minus pk 10 iff the delete was applied.
 			var want []int64
 			for i := int64(0); i < 20; i++ {
 				if i == 10 && !tc.want10 {
@@ -149,18 +154,20 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 
 // TestSimFDB_ContinuationResumeAcrossFaultedInsert is the insert complement: a between-page INSERT of
 // an un-scanned tail key commits through a targeted fault, and the resume must reflect the fault's
-// true outcome — a rolled-back (1020) insert never appears, an applied (1021) insert does — with the
-// resumed sequence otherwise intact. Insert (a phantom in the tail) is the mirror of delete and a
-// distinct continuation-resume path from the delete case above.
+// true outcome — a rolled-back (1020) insert never appears, an applied 1021 does, a discarded 1021
+// does not — with the resumed sequence otherwise intact. Insert (a phantom in the tail) is the
+// mirror of delete and a distinct continuation-resume path from the delete case above.
 func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name   string
-		fault  int
-		want25 bool // newly-inserted pk 25 present in the resumed result?
+		name     string
+		inject   int
+		wantCode int
+		want25   bool // newly-inserted pk 25 present in the resumed result?
 	}{
-		{"not_committed(1020) rolls the insert back — pk 25 never appears", 1020, false},
-		{"commit_unknown(1021) applied the insert — pk 25 appears in the tail", 1021, true},
+		{"not_committed(1020) rolls the insert back — pk 25 never appears", 1020, 1020, false},
+		{"commit_unknown(1021), applied branch — pk 25 appears in the tail", simfdb.CommitUnknownApplied, 1021, true},
+		{"commit_unknown(1021), discarded branch — pk 25 never appears", simfdb.CommitUnknownDiscarded, 1021, false},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -227,11 +234,11 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(25), Price: proto.Int32(25)}); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			sim.InjectOnce(tc.fault)
+			sim.InjectOnce(tc.inject)
 			errCommit := tx.Commit().Get()
 			var fe fdb.Error
-			if !errors.As(errCommit, &fe) || fe.Code != tc.fault {
-				t.Fatalf("commit = %v, want injected code %d", errCommit, tc.fault)
+			if !errors.As(errCommit, &fe) || fe.Code != tc.wantCode {
+				t.Fatalf("commit = %v, want code %d", errCommit, tc.wantCode)
 			}
 
 			all := append([]int64(nil), page1...)

@@ -27,7 +27,8 @@
 //   - TAIL-DELETE UNDER AN INJECTED FAULT — the same tail delete, but committed through a targeted
 //     fault (InjectOnce) in a raw single-commit transaction (db.Run would retry the fault away): the
 //     resume must reflect the fault's TRUE outcome — not_committed(1020) rolls the delete back (tail
-//     unchanged), commit_unknown(1021) leaves it durable (tail minus the key).
+//     unchanged), and commit_unknown(1021) leaves it durable or not depending on which of its two
+//     real branches fired (tail minus the key, or tail unchanged).
 //
 // The continuation itself is a fault (each page boundary is a "the transaction ended, resume from
 // bytes" event) as is the between-page version bump; the fourth check adds a targeted commit fault on
@@ -174,10 +175,11 @@ func (w Workload) run(seed uint64) *Result {
 
 	// ---- Oracle 4: tail-delete under an INJECTED between-page fault (record forward) ----
 	// The between-page delete commits through a targeted fault: not_committed(1020) rolls it back
-	// (tail unchanged), commit_unknown(1021) leaves it applied (tail minus the key). Pairs the
-	// continuation resume with true-rollback fault injection across the seeded sweep.
-	for _, faultCode := range []int{1020, 1021} {
-		v, pages, err := w.tailDeleteUnderFault(ctx, seed, recs, model["record-fwd"], faultL, faultDel, faultCode)
+	// (tail unchanged), and commit_unknown(1021) does one or the other depending on which of its two
+	// real branches was injected. Pairs the continuation resume with true-rollback fault injection
+	// across the seeded sweep.
+	for _, inject := range []int{1020, simfdb.CommitUnknownApplied, simfdb.CommitUnknownDiscarded} {
+		v, pages, err := w.tailDeleteUnderFault(ctx, seed, recs, model["record-fwd"], faultL, faultDel, inject)
 		if err != nil {
 			rep.Err = err.Error()
 			return res
@@ -259,7 +261,7 @@ func (w Workload) tailDeleteReflected(ctx context.Context, seed uint64, recs []r
 // fault hits, and resumes. The tail must reflect the fault's TRUE outcome: not_committed(1020) rolls
 // the delete back so the tail is unchanged; commit_unknown(1021) leaves it applied so the tail loses
 // that key. The raw transaction is required — db.Run would retry the retryable fault away.
-func (w Workload) tailDeleteUnderFault(ctx context.Context, seed uint64, recs []rec, recordFwd []string, tailL, delIdx, faultCode int) (string, int, error) {
+func (w Workload) tailDeleteUnderFault(ctx context.Context, seed uint64, recs []rec, recordFwd []string, tailL, delIdx, inject int) (string, int, error) {
 	sim, db, sub, md, _, err := w.setup(seed, recs)
 	if err != nil {
 		return "", 0, fmt.Errorf("tail-fault setup: %w", err)
@@ -270,9 +272,9 @@ func (w Workload) tailDeleteUnderFault(ctx context.Context, seed uint64, recs []
 		return "", 1, fmt.Errorf("tail-fault page1: %w", err)
 	}
 	delPK := pkFromRow(recordFwd[delIdx])
-	applied, err := deleteUnderFault(ctx, db, sim, md, sub, delPK, faultCode)
+	applied, err := deleteUnderFault(ctx, db, sim, md, sub, delPK, inject)
 	if err != nil {
-		return "", 1, fmt.Errorf("tail-fault delete pk=%d code=%d: %w", delPK, faultCode, err)
+		return "", 1, fmt.Errorf("tail-fault delete pk=%d inject=%d: %w", delPK, inject, err)
 	}
 	tail, pages, err := w.drainWithLimit(ctx, db, md, sub, sc, cont, len(recordFwd), 3)
 	if err != nil {
@@ -283,16 +285,21 @@ func (w Workload) tailDeleteUnderFault(ctx context.Context, seed uint64, recs []
 		want = removeRow(recordFwd[tailL:], recordFwd[delIdx])
 	}
 	if d := diff(want, tail); d != "" {
-		return fmt.Sprintf("tail-delete under fault %d (applied=%v): resumed tail wrong for pk=%d (idx %d) — %s",
-			faultCode, applied, delPK, delIdx, d), 1 + pages, nil
+		return fmt.Sprintf("tail-delete under injected fault %d (applied=%v): resumed tail wrong for pk=%d (idx %d) — %s",
+			inject, applied, delPK, delIdx, d), 1 + pages, nil
 	}
 	return "", 1 + pages, nil
 }
 
 // deleteUnderFault deletes pk in a RAW single-commit transaction with an injected fault, returning
-// whether the delete APPLIED: commit_unknown(1021) applies after the fault, not_committed(1020) /
-// transaction_too_old(1007) roll back before it. The injected code must be the one that surfaces.
-func deleteUnderFault(ctx context.Context, db *recordlayer.FDBDatabase, sim *simfdb.SimDB, md *recordlayer.RecordMetaData, sub subspace.Subspace, pk int64, faultCode int) (bool, error) {
+// whether the delete APPLIED.
+//
+// The fault is injected by NAMED branch, not by bare error code: commit_unknown_result has two real
+// outcomes (durable-but-unacknowledged, and never-reached-the-proxy) and the oracle has to know
+// which one it asked for in order to predict the tail. not_committed(1020) and
+// transaction_too_old(1007) roll back before apply and have only one outcome. The code that
+// surfaces must be the one the injected branch maps to.
+func deleteUnderFault(ctx context.Context, db *recordlayer.FDBDatabase, sim *simfdb.SimDB, md *recordlayer.RecordMetaData, sub subspace.Subspace, pk int64, inject int) (bool, error) {
 	tx, err := db.CreateWritableTransaction()
 	if err != nil {
 		return false, err
@@ -304,12 +311,26 @@ func deleteUnderFault(ctx context.Context, db *recordlayer.FDBDatabase, sim *sim
 	if _, err := store.DeleteRecord(tuple.Tuple{pk}); err != nil {
 		return false, err
 	}
-	sim.InjectOnce(faultCode)
+	sim.InjectOnce(inject)
+	wantCode, applied := faultSurface(inject)
 	var fe fdb.Error
-	if cerr := tx.Commit().Get(); !errors.As(cerr, &fe) || fe.Code != faultCode {
-		return false, fmt.Errorf("commit = %v, want injected code %d", cerr, faultCode)
+	if cerr := tx.Commit().Get(); !errors.As(cerr, &fe) || fe.Code != wantCode {
+		return false, fmt.Errorf("commit = %v, want code %d", cerr, wantCode)
 	}
-	return faultCode == 1021, nil
+	return applied, nil
+}
+
+// faultSurface maps an injection request to the error code the caller sees and whether the
+// mutations landed.
+func faultSurface(inject int) (code int, applied bool) {
+	switch inject {
+	case simfdb.CommitUnknownApplied:
+		return 1021, true
+	case simfdb.CommitUnknownDiscarded:
+		return 1021, false
+	default:
+		return inject, false
+	}
 }
 
 // ---- scan plumbing --------------------------------------------------------------------------

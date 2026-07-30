@@ -10,26 +10,31 @@ import (
 )
 
 // TestFaultsApply1021 is the NO-FAKE-CHECKBOX proof for the fault mode: with commit BUGGIFY on, the
-// commit_unknown(1021) path — a transaction whose writes are durable but whose outcome is ambiguous,
-// racing other open transactions — MUST actually fire, and every fault-mode run must still pass both
-// oracles (a 1021 transaction applies exactly once and participates in conflict detection). If not one
-// 1021 lands across the band, the fault dimension is not being exercised.
+// commit_unknown(1021) path — a transaction whose outcome is ambiguous, racing other open
+// transactions — MUST actually fire on BOTH of its branches, and every fault-mode run must still
+// pass both oracles (each program applies exactly once and an applied 1021 participates in conflict
+// detection). Requiring both branches is what keeps a one-branch model from passing this suite: an
+// "always applied" 1021 makes the discarded count zero.
 func TestFaultsApply1021(t *testing.T) {
 	t.Parallel()
 	w := Workload{Keys: 4, Txns: 4, OpsPerTxn: 3, AddPct: 50, Faults: 0.35}
-	var applied, conflicts int
+	var applied, discarded, conflicts int
 	for seed := uint64(0); seed < 4000; seed++ {
 		res := w.run(seed)
 		if res.Report.Failed() {
 			t.Fatalf("seed %d: %s", seed, res.Report)
 		}
 		applied += res.Applied1021
+		discarded += res.Discarded1021
 		conflicts += res.Conflicts
 	}
 	if applied == 0 {
-		t.Fatal("no commit_unknown(1021) fired across 4000 fault-enabled seeds: the fault dimension is not being exercised")
+		t.Fatal("no APPLIED commit_unknown(1021) fired across 4000 fault-enabled seeds: half the fault dimension is not being exercised")
 	}
-	t.Logf("faults: %d commit_unknown(1021) applied-and-committed + %d 1020 aborts across 4000 seeds (state + verdict oracles held)", applied, conflicts)
+	if discarded == 0 {
+		t.Fatal("no DISCARDED commit_unknown(1021) fired across 4000 fault-enabled seeds: the branch where the commit never reached the proxy is unreachable, so a one-branch model would pass this suite unchanged")
+	}
+	t.Logf("faults: %d applied + %d discarded commit_unknown(1021) + %d 1020 aborts across 4000 seeds (state + verdict oracles held)", applied, discarded, conflicts)
 }
 
 // TestFaultsDeterminism: even with BUGGIFY on, a run is a pure function of its seed — the fault
@@ -42,9 +47,9 @@ func TestFaultsDeterminism(t *testing.T) {
 		if a.Report.Failed() || b.Report.Failed() {
 			t.Fatalf("seed %d unexpectedly failed: %s", seed, a.Report)
 		}
-		if a.Report.Fingerprint != b.Report.Fingerprint || a.Applied1021 != b.Applied1021 {
-			t.Fatalf("seed %d nondeterministic under faults: fp %s/%s, 1021 %d/%d",
-				seed, a.Report.Fingerprint, b.Report.Fingerprint, a.Applied1021, b.Applied1021)
+		if a.Report.Fingerprint != b.Report.Fingerprint || a.Applied1021 != b.Applied1021 || a.Discarded1021 != b.Discarded1021 {
+			t.Fatalf("seed %d nondeterministic under faults: fp %s/%s, 1021 applied %d/%d discarded %d/%d",
+				seed, a.Report.Fingerprint, b.Report.Fingerprint, a.Applied1021, b.Applied1021, a.Discarded1021, b.Discarded1021)
 		}
 	}
 }

@@ -81,37 +81,96 @@ func (db *SimDB) commit(tx *simTxn) error {
 		}
 	}
 
-	// Targeted injection (InjectOnce/InjectSequence): a deterministic fault for this commit.
-	// 1021 fires after apply (below); everything else (1020/1007/1009/size codes) fires here,
-	// before any mutation applies.
+	// BUGGIFY: seed-chosen commit-time faults so retry/idempotency paths are exercised
+	// deterministically (RFC-199 Tier 1 item 7). Conflict/too-old fire BEFORE apply (nothing
+	// committed); commit_unknown is resolved after them, below.
+	//
+	// All three draws happen HERE, unconditionally, before the targeted-injection check and
+	// before any branch that could skip one. Injection is a SIM TOOL, not part of the modelled
+	// system, so it must not move the seeded schedule: with the draws behind an early return
+	// (or behind a `cond || db.env.Fault(site)` short-circuit) a run with InjectOnce sees a
+	// different fault schedule from the same seed without it, and a reproducer stops
+	// reproducing as soon as anyone adds an injection to the harness. The seed is supposed to
+	// determine the schedule by itself.
+	faultConflict := db.env.Fault("simfdb.commit.conflict")
+	faultTooOld := db.env.Fault("simfdb.commit.too_old")
+	faultUnknown := db.env.Fault("simfdb.commit.unknown")
+
+	// Targeted injection (InjectOnce/InjectSequence): a deterministic fault for this commit,
+	// which overrides the seeded verdict. 1021 is resolved below (it has two branches);
+	// everything else (1020/1007/1009/size codes) fires here, before any mutation applies.
 	inject := db.takeInject()
-	if inject != 0 && inject != 1021 {
+	if inject != 0 && inject != 1021 && inject != injectCommitUnknownApplied && inject != injectCommitUnknownDiscarded {
 		return fdb.Error{Code: inject}
 	}
 
-	// BUGGIFY: seed-chosen commit-time faults so retry/idempotency paths are exercised
-	// deterministically (RFC-199 Tier 1 item 7). Conflict/too-old fire BEFORE apply (nothing
-	// committed); commit_unknown fires AFTER apply (the write is durable but the caller must
-	// treat the outcome as ambiguous — the non-idempotent-Add surface).
-	if db.env.Fault("simfdb.commit.conflict") {
+	if faultConflict {
 		return fdb.Error{Code: 1020}
 	}
-	if db.env.Fault("simfdb.commit.too_old") {
+	if faultTooOld {
 		return fdb.Error{Code: 1007}
+	}
+
+	// commit_unknown_result(1021) has TWO real branches, and modelling only one certifies a
+	// wrong verdict. Real FDB returns 1021 when the client cannot learn the commit proxy's
+	// answer: the mutations may be durable, or the commit may never have reached the proxy at
+	// all. A sim that always applies them lets a caller "verify" that its 1021 handling is
+	// correct while never once exercising the case where the retry has to redo the work.
+	//
+	// The branch is a per-seed coin (a modelling choice, not a fault), so a run is reproducible
+	// and a hunt over seeds reaches both. Tests that need a NAMED branch inject it explicitly.
+	unknown := inject == 1021 || faultUnknown
+	applied := true
+	switch {
+	case inject == injectCommitUnknownApplied:
+		unknown, applied = true, true
+	case inject == injectCommitUnknownDiscarded:
+		unknown, applied = true, false
+	case unknown:
+		applied = db.env.Coin("simfdb.commit.unknown.applied")
+	}
+
+	if unknown {
+		db.lastUnknownApplied = applied
+	}
+
+	if unknown && !applied {
+		// The commit never reached the proxy: nothing is written, no version is consumed, and
+		// — as on every error return — the handle is untouched.
+		return fdb.Error{Code: 1021}
 	}
 
 	cv := db.lastVersion + 1
 	wcr := db.applyMutations(tx, cv)
 	db.recentWrites = append(db.recentWrites, committedWrites{version: cv, ranges: wcr})
 	db.lastVersion = cv
+
+	if unknown {
+		// The mutations are durable but the OUTCOME IS UNKNOWN TO THE CLIENT, so the handle
+		// must NOT be advanced into the committed state. The client only sets hasCommitted on
+		// the success path (client/transaction.go:1908-1925) and runs postCommitReset there
+		// too. Marking the handle committed here had three consequences, each of which lets
+		// SimFDB certify a wrong verdict:
+		//
+		//   - GetCommittedVersion/GetVersionstamp succeed after 1021. On a real client they
+		//     raise used_during_commit(2017), because there IS no known committed version.
+		//   - postCommitReset nils the buffer, so a re-Commit() after 1021 hits the
+		//     "committed && empty buffer" idempotent-no-op arm and returns SUCCESS having
+		//     written nothing. An explicit-transaction COMMIT retry — the RFC-198 path — lands
+		//     exactly there and silently loses the whole transaction.
+		//   - The read version and conflict ranges are dropped, so a retry on the same handle
+		//     resolves against reads it no longer remembers.
+		//
+		// Leaving the handle alone means a re-Commit re-sends the same buffer, which is what a
+		// real retry does — and what makes the applied branch's DOUBLE APPLY observable, the
+		// whole point of the non-idempotent-Add surface.
+		return fdb.Error{Code: 1021}
+	}
+
 	tx.committed = true
 	tx.committedVersion = cv
 	tx.versionstamp = versionstampBytes(cv, 0)
 	tx.postCommitReset()
-
-	if inject == 1021 || db.env.Fault("simfdb.commit.unknown") {
-		return fdb.Error{Code: 1021} // commit_unknown_result — data applied, outcome "unknown"
-	}
 	return nil
 }
 

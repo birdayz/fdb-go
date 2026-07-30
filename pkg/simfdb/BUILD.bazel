@@ -26,6 +26,7 @@ go_test(
         "atomic_test.go",
         "bunchedmap_conflict_test.go",
         "commit_reset_test.go",
+        "commit_unknown_test.go",
         "conflict_outcome_test.go",
         "continuation_fault_test.go",
         "continuation_replay_test.go",
