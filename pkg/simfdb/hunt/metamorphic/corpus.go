@@ -129,7 +129,7 @@ func SeedCorpus() []Scenario {
 			},
 		},
 	}
-	return []Scenario{base, joins(), nulls()}
+	return []Scenario{base, joins(), nulls(), indexed()}
 }
 
 // nulls targets three-valued-logic (SQL NULL) semantics head-on — the classic engine-divergence
@@ -346,4 +346,86 @@ func parseScenarios(b []byte) ([]Scenario, error) {
 		return nil, err
 	}
 	return []Scenario{one}, nil
+}
+
+// indexed is the SECONDARY-INDEX scenario. Every other seed scenario runs over bare tables, so
+// the relations only ever exercised the full-scan path — and the planner's index-backed paths are
+// exactly where all three checked-in findings came from (an aggregate index dropping an all-NULL
+// group, aggregate-index edge sums, a DISTINCT/GROUP BY divergence). A corpus that could not
+// build an index could not have found any of them a second time.
+//
+// The relations are index-INVARIANCE relations: each pair asks the same question two ways, one of
+// which the planner can answer from an index and one of which it cannot, so a wrong index entry —
+// a dropped group, a missed NULL, a wrong extremum, a stale entry after an update — shows up as a
+// row difference. They are equivalences of MEANING, so they hold whatever the planner chooses;
+// that is what makes them safe to assert without pinning a plan shape.
+func indexed() Scenario {
+	return Scenario{
+		Name: "indexed",
+		Seed: 4,
+		Tables: []string{
+			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX by_v ON t (v)",
+			"CREATE INDEX by_g_v ON t (g, v)",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g",
+		},
+		Data: []string{
+			"INSERT INTO t (id, g, v) VALUES (1, 1, 10)",
+			"INSERT INTO t (id, g, v) VALUES (2, 1, 20)",
+			"INSERT INTO t (id, g, v) VALUES (3, 2, NULL)", // all-NULL group: an index may drop it
+			"INSERT INTO t (id, g, v) VALUES (4, 2, NULL)",
+			"INSERT INTO t (id, g, v) VALUES (5, 3, 100)",
+			"INSERT INTO t (id, g, v) VALUES (6, 3, -100)", // sums to zero: distinguishes 0 from absent
+			"INSERT INTO t (id, g, v) VALUES (7, NULL, 5)", // NULL group key
+			"INSERT INTO t (id, g, v) VALUES (8, 4, 42)",
+			"UPDATE t SET v = 25 WHERE id = 2", // an index entry that must have been maintained
+			"DELETE FROM t WHERE id = 8",       // an index entry that must have been removed
+			"INSERT INTO t (id, g, v) VALUES (9, 4, 7)",
+		},
+		Groups: []Group{
+			{
+				Name:   "index-scan-equals-filtered-scan",
+				Reason: "a range predicate on an indexed column selects the same rows however it is planned; the index-eligible form and the arithmetic form the planner cannot use an index for must agree",
+				Queries: []string{
+					"SELECT id FROM t WHERE v > 10",
+					"SELECT id FROM t WHERE v - 10 > 0",
+				},
+			},
+			{
+				Name:   "indexed-order-equals-unindexed-order",
+				Reason: "ORDER BY on an indexed column ≡ the same order derived through an expression the index cannot serve; NULLS FIRST on both",
+				Queries: []string{
+					"SELECT id FROM t ORDER BY v, id",
+					"SELECT id FROM t ORDER BY v + 0, id",
+				},
+				Ordered: true,
+			},
+			{
+				Name:   "aggregate-index-count-equals-derived-count",
+				Reason: "COUNT(*) GROUP BY g counts every row in each group including all-NULL value groups; an index that skips NULL values would undercount",
+				Queries: []string{
+					"SELECT g, COUNT(*) FROM t GROUP BY g",
+					"SELECT g, COUNT(*) FROM t WHERE id IS NOT NULL GROUP BY g",
+				},
+			},
+			{
+				Name:   "covering-projection-equals-full-projection",
+				Reason: "a projection the (g,v) index covers ≡ the same projection the planner must fetch records for; index entries must have been maintained across the UPDATE and DELETE above",
+				Queries: []string{
+					"SELECT g, v FROM t ORDER BY g, v, id",
+					"SELECT g, v FROM t WHERE id + 0 = id ORDER BY g, v, id",
+				},
+				Ordered: true,
+			},
+			{
+				Name:   "indexed-equality-equals-in-singleton",
+				Reason: "v = 25 ≡ v IN (25) on an indexed column; the row is one the UPDATE moved, so a stale index entry at the old value diverges",
+				Queries: []string{
+					"SELECT id FROM t WHERE v = 25",
+					"SELECT id FROM t WHERE v IN (25)",
+				},
+			},
+		},
+	}
 }

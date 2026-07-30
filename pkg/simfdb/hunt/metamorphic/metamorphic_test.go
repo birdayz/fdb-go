@@ -26,6 +26,62 @@ func TestSeedCorpus(t *testing.T) {
 	}
 }
 
+// findingsDir holds the scenarios the adversarial metamorphic loop produced. They are checked in
+// as data; this is what makes them TESTS.
+const findingsDir = "testdata/findings"
+
+// TestFindingsAreRegressionSentinels runs every checked-in finding and requires ZERO violations.
+//
+// These scenarios were minted when the loop caught real engine bugs. Those bugs are fixed, so
+// each file's equivalence now HOLDS — which makes the file a regression sentinel, and a sentinel
+// that nothing runs is a text file. Shipping them as data with a README saying "not wired into
+// any test, RED until the engine bugs are fixed" left three reproducers guarding nothing, while
+// the README's claim was false at HEAD (the judge reports no inequivalence for any of them).
+//
+// A violation here means an engine regression on a shape that was already broken once — the
+// highest-value signal this suite can produce. Do not silence it and do not delete the file:
+// find the regression.
+func TestFindingsAreRegressionSentinels(t *testing.T) {
+	t.Parallel()
+	scenarios, err := LoadDir(findingsDir)
+	if err != nil {
+		t.Fatalf("load %s: %v", findingsDir, err)
+	}
+	// A count floor, so deleting or renaming a finding file cannot silently empty this test.
+	// Every .json in the directory is a scenario someone paid for with a real bug.
+	files, err := os.ReadDir(findingsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", findingsDir, err)
+	}
+	var jsonCount int
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
+			jsonCount++
+		}
+	}
+	if jsonCount == 0 {
+		t.Fatalf("%s holds no .json scenarios: the reproducer corpus is empty", findingsDir)
+	}
+	if len(scenarios) < jsonCount {
+		t.Fatalf("loaded %d scenarios from %d .json files — a reproducer failed to parse and "+
+			"would have been silently skipped", len(scenarios), jsonCount)
+	}
+
+	for _, s := range scenarios {
+		s := s
+		t.Run(s.Name, func(t *testing.T) {
+			t.Parallel()
+			viols, err := Check(s)
+			if err != nil {
+				t.Fatalf("check setup: %v", err)
+			}
+			for _, v := range viols {
+				t.Errorf("REGRESSION on a known-bug reproducer: %s", v)
+			}
+		})
+	}
+}
+
 // TestTeeth proves the oracle catches a real inequivalence: two queries that are NOT equivalent
 // must produce a violation. Without this, a green seed corpus could mean a toothless checker.
 func TestTeeth(t *testing.T) {
