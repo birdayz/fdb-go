@@ -816,15 +816,23 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 // `LEG.COL` while the physical leg emits the merged row those names address.
 // First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
 func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
+	census := values.LegIdentityCensusEnabled()
 	if i, ok := rt.FieldIndex(name); ok {
+		if census {
+			recordLegColumnProvenance(rt, name, true, nil, "")
+		}
 		return i, true
 	}
 	di := strings.IndexByte(name, '.')
 	if di <= 0 || len(rt.Legs) == 0 {
+		if census {
+			recordLegColumnProvenance(rt, name, false, nil, "")
+		}
 		return 0, false
 	}
 	qual, col := name[:di], name[di+1:]
-	for _, leg := range rt.Legs {
+	for i := range rt.Legs {
+		leg := rt.Legs[i]
 		if !strings.EqualFold(leg.Name, qual) {
 			continue
 		}
@@ -834,10 +842,19 @@ func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
 		}
 		for k := leg.Start; k < end; k++ {
 			if strings.EqualFold(rt.Fields[k].Name, col) {
+				// The census is told WHICH leg answered, so it can ask whether
+				// that leg also states an identity — the fact that decides
+				// whether this reader can be re-keyed off the name.
+				if census {
+					recordLegColumnProvenance(rt, name, false, &leg, qual)
+				}
 				return k, true
 			}
 		}
 		break
+	}
+	if census {
+		recordLegColumnProvenance(rt, name, false, nil, qual)
 	}
 	return 0, false
 }

@@ -115,7 +115,15 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// binder is what a leg-correlated read resolves THROUGH at runtime, and its
 	// read count is how much of that channel is load-bearing.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatMergedLegBindingCensus())
+	// The leg-column PROVENANCE census: the executor's last live reader of a
+	// dotted leg-qualified column name, cut by whether the leg it matched by TEXT
+	// also states an IDENTITY. That is the fact the reader's retirement rests on,
+	// and it is a different fact from how often the reader fires.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatLegColumnProvenanceCensus())
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := executor.AssertLegColumnProvenanceCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	// The bakeability census is ASSERTED, not merely printed. It was printed
