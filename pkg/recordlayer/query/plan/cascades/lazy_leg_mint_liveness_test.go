@@ -411,3 +411,82 @@ func assertQualifiedLegMint(t *testing.T, out values.Value, merged values.Correl
 			"key is only resolvable against the merged row", fv.Child, merged, because)
 	}
 }
+
+// TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead pins the shape
+// the CORPUS actually produces, which neither test above covers.
+//
+// The two above hand the arm a LAZY read (Resolved == nil) over a TYPED leg QOV.
+// Production is the mirror image of that, and the difference is the whole
+// finding. MEASURED over the real-FDB sqldriver corpus, all 126 firings of this
+// arm report:
+//
+//	accessors=1 rootOrdinal>=0 pathDomainKnown=true
+//	qovTypeDomainKnown=false legTypeDomainKnown=true legTypeDomainMatches=true
+//
+// The read is already BAKED — single accessor, non-negative ordinal, and a
+// stated domain that IS the leg's own row layout — while the QuantifiedObjectValue
+// child it hangs off is UNTYPED, because that is how the resolver mints it
+// (expr.go's correlated arm builds NewQuantifiedObjectValue, whose Typ is
+// UnknownType).
+//
+// Two consequences, and this test exists to keep both from being re-argued:
+//
+//   - legSlotIdentity DECLINES every one of them. It derives its frontier from
+//     fv.Child's stored type, so an untyped child makes the frontier unknown and
+//     OrdinalIn fails closed — even though the ordinal beside it is correct and
+//     indexes exactly the layout the leg flows. The bakeability census's
+//     layoutAvailable 126/126 is therefore NOT the bake's precondition: the leg
+//     having a layout and the read being able to state an ordinal in it are
+//     different questions, and only the first is answered.
+//   - the arm DEGRADES the read. A correct leg-local ordinal reference goes in;
+//     a LAZY dotted "LEG.COL" name over the merge correlation comes out. So
+//     CQ-53 phase 2's job at this site is not to re-land a bake — there is
+//     nothing to re-land, the reference already carries the ordinal — it is to
+//     stop destroying the one that arrives.
+//
+// WHEN THIS GOES RED it means the degradation stopped, which is the goal. Do not
+// relax it: RETARGET it to assert the read passes through with its ordinal and
+// its own leg alias intact, and make sure the runtime binder
+// (bindMergedOuterLegs) binds that alias for the shape in question — the read is
+// only correct if the leg alias resolves to the leg's window at eval time.
+func TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead(t *testing.T) {
+	t.Parallel()
+
+	legA := values.NamedCorrelationIdentifier("L")
+	merged := values.UniqueCorrelationIdentifier()
+	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
+	legDomain := values.OrdinalDomainOfType(values.Type(aType))
+
+	// The production shape: baked against the LEG's own layout, hung off an
+	// UNTYPED quantifier object exactly as the resolver mints it.
+	read := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(legA), "CATEGORY", 1, values.UnknownType, legDomain)
+
+	// Premise 1: the read DOES state a correct leg-local identity — asked in the
+	// leg's real layout, which is what a bake would index.
+	id, stated := read.CorrelatedIdentityIn(legDomain)
+	if !stated || id.Ordinal != 1 || id.Correlation != legA {
+		t.Fatalf("the fixture is not the production shape: CorrelatedIdentityIn in the "+
+			"leg's own layout gave (%+v, %v), want ordinal 1 on leg L. Every claim below "+
+			"is about a read that already carries its ordinal; a fixture that does not "+
+			"carry one tests something else.", id, stated)
+	}
+
+	// Premise 2: legSlotIdentity — the arm's OWN identity derivation — declines it
+	// anyway, because it reads the frontier off the untyped child.
+	if _, ok := legSlotIdentity(read); ok {
+		t.Fatal("legSlotIdentity ANSWERED for a read whose quantifier object is " +
+			"untyped. The corpus measures the opposite on all 126 firings " +
+			"(qovTypeDomainKnown=false), and that decline is the entire reason the " +
+			"identity-keyed bake reports zero convertible reads while the layout census " +
+			"reports 126 available layouts. If this now answers, the QOV children got " +
+			"typed upstream — re-measure the census before concluding anything else.")
+	}
+
+	// The degradation itself: ordinal in, lazy dotted name out.
+	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType}
+	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, legTypes)
+	assertQualifiedLegMint(t, out, merged, "L.CATEGORY",
+		"a read that ALREADY carried the right leg-local ordinal was re-anchored "+
+			"onto the merge correlation as a lazy qualified name")
+}
