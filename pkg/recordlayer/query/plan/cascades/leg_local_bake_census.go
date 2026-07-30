@@ -446,6 +446,18 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 				"  defect as the above seen from the mint side: the reason there is no\n" +
 				"  layout to bake against.",
 		},
+		{
+			"WalkOnlyLegs", c.WalkOnlyLegs,
+			"A leg the QUANTIFIER could not state and the subordinate physical-plan walk\n" +
+				"  answered for instead. The walk is a documented DIVERGENCE — it rebuilds a\n" +
+				"  concat from the chosen plan's scan leaves, which is a different question\n" +
+				"  from what the quantifier flows — and it is kept only as a fallback for\n" +
+				"  legs whose logical members carry no row type. There are none: the\n" +
+				"  quantifier answers for every leg. A non-zero here is the second authority\n" +
+				"  being CONSULTED again, which is a quantifier that stopped stating its\n" +
+				"  row, and it is asserted rather than reported so that arrives as a\n" +
+				"  failure instead of as a silent fallback to a different answer.",
+		},
 	} {
 		if z.got != 0 {
 			failed = true
