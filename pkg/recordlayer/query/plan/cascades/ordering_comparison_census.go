@@ -9,18 +9,18 @@ import (
 // This file is the MEASUREMENT half of the ordering-value comparators. The two
 // comparators — orderingValuesEqual (a requested ordering key against a match
 // candidate's) and intersectionValuesEqual (a primary-key intersection's own
-// key lists) — decide whether two ordering Values are the same column. TODAY
-// both dispatch on whether the two sides STATE an identity (an UNKNOWN-domain
-// FieldValue pair falls through to the domain-blind structural arm — the
-// intransitive availability form; values.StatesOrderingColumn documents the
-// witness). The DESTINATION is CQ-60's type dispatch: a pair of plain
-// FieldValues decided by column identity and nothing else, no fallthrough.
+// key lists) — decide whether two ordering Values are the same column. Both
+// dispatch by TYPE: a pair of plain FieldValues is decided by column identity
+// and nothing else, with no fallthrough. The retired alternative dispatched on
+// whether the two sides STATE an identity, which let an UNKNOWN-domain
+// FieldValue pair fall through to the domain-blind structural arm and was
+// intransitive there (values.StatesOrderingColumn documents the witness).
 //
-// The flip's precondition is a MEASUREMENT, not an argument: every FieldValue
-// reaching either site must have STATED an identity, because under type
-// dispatch a decline at these sites costs a set-operation merge. The census
-// below is what keeps "the decline residual is zero" true — it is the
-// acceptance instrument CQ-60 lands against, and it already reads zero.
+// Type dispatch's precondition is a MEASUREMENT, not an argument: every
+// FieldValue reaching either site must have STATED an identity, because a
+// decline at these sites costs a set-operation merge. The census below is what
+// keeps "the decline residual is zero" true, and it is the standing acceptance
+// instrument for that claim — not a one-off check that landed with the flip.
 //
 // So it is counted, on the real corpus, by
 // pkg/relational/conformance/explaindiff's ordering-census test — which is where

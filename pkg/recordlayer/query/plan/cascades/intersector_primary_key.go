@@ -884,6 +884,7 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 // different bindings on different runs. That is not a lost merge, it is a
 // nondeterministic plan — which is why the FieldValue arm may not fall through
 // even when it declines.
+//
 // The ordinal-free NAME bridge that used to sit under the structural arm is
 // GONE, and it is unreachable rather than merely unused:
 // CanBridgeOrderingFieldValues requires BOTH operands to be *FieldValue, and
@@ -895,13 +896,10 @@ func intersectionValuesEqual(left, right values.Value) bool {
 		OrderingSiteIntersectionKeys, left, right,
 		values.CanBridgeOrderingFieldValues,
 	)
-	if values.StatesOrderingColumn(left) && values.StatesOrderingColumn(right) {
+	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
 	}
-	if values.ValuesStructurallyEqual(left, right) {
-		return true
-	}
-	return values.CanBridgeOrderingFieldValues(left, right)
+	return values.ValuesStructurallyEqual(left, right)
 }
 
 func plainFieldComparisonParts(parts []properties.ProvidedOrderingPart) bool {

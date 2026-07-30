@@ -240,47 +240,36 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 	}
 }
 
-// TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain records a
-// defect that is REAL, MEASURED and NOT YET FIXED, so that it cannot be
-// forgotten and cannot be rediscovered from scratch.
+// TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain asserts the property
+// type dispatch exists to buy, on the exact triple that used to break it.
 //
-// Both comparators currently dispatch on whether both operands HAPPEN TO STATE an
-// identity: identity decides when both do, and otherwise the pair falls through to
-// the domain-blind structural comparison. That dispatch is not an equivalence
-// relation. All three values below bake ordinal path [0]:
+// The retired dispatch asked whether both operands HAPPENED TO STATE an identity:
+// identity decided when both did, and otherwise the pair fell through to the
+// domain-blind structural comparison. That is not an equivalence relation. All
+// three values below bake ordinal path [0]:
 //
 //	A = [0] in layout D1          states an identity
 //	B = [0] in layout D2          states an identity
 //	U = [0], layout UNKNOWN       states none
 //
-// Identity separates A from B. U falls through and compares EQUAL to both. So
-// U≡A and U≡B with A≢B, and a comparator that is not transitive makes every set
-// built through it depend on INSERTION ORDER — including
-// adjustedIntersectionOrdering's `seen` dedup, which decides the intersection's
-// comparison keys and their bindings. Order-dependent comparison keys are a
-// nondeterministic plan.
+// Identity separates A from B. Under availability dispatch U fell through and
+// compared EQUAL to both, so U≡A and U≡B with A≢B. A comparator that is not
+// transitive makes every set built through it depend on INSERTION ORDER —
+// including adjustedIntersectionOrdering's `seen` dedup, which decides the
+// intersection's comparison keys and their bindings. Order-dependent comparison
+// keys are a nondeterministic plan.
 //
-// THE FIX IS DISPATCH BY VALUE TYPE: both operands *FieldValue means
-// SameOrderingColumn decides and the decision is FINAL, with U declined instead of
-// bridged. That is measured to be FREE in production — over the corpus, the
-// decline residual at both comparators is ZERO and no pair changes its answer
-// (pkg/relational/conformance/explaindiff/ordering_census_test.go).
+// Type dispatch closes it by declining U instead of bridging it: both operands
+// *FieldValue means SameOrderingColumn decides and the decision is FINAL. The
+// decline costs nothing in production — over the corpus neither comparator ever
+// sees a FieldValue pair with a non-stating operand, and
+// pkg/relational/conformance/explaindiff's ordering-census test keeps that
+// residual pinned at ZERO.
 //
-// What blocks it is not the planner, it is this package's FIXTURES. The doubles in
-// abstract_data_access_rule_test.go mint matched ordering parts and requested
-// ordering parts as BARE NAMES (&values.FieldValue{Field: col}), modelling the
-// world before the producers carried ordinals; real candidates route through
-// bakeOrderingColumnIn against the row layout the scan flows. Type dispatch
-// declines a name-only key, so 24 tests in this package go red — not because the
-// planner regressed, but because the doubles double something that no longer
-// exists. Making them state a layout requires the fixture's synthetic index
-// columns to BE fields of a shared record row, which is a fixture redesign, not a
-// call-site change.
-//
-// This test asserts the CURRENT, WRONG behaviour on purpose. When the fixtures are
-// reworked and the dispatch flipped, it goes RED — at which point delete it and
-// assert transitivity instead.
-func TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain(t *testing.T) {
+// The assertion below is transitivity over the whole triple rather than the three
+// pairs, because the three pairs are what availability dispatch also satisfied
+// individually; only the closure exposes it.
+func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
 	t.Parallel()
 
 	inD1, inD2 := twoLayoutOrdinalCollision(t)
@@ -292,6 +281,29 @@ func TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain(t *testin
 			"minting domain-free bakes for the witness to exist",
 			values.ExplainValue(unknownDomain))
 	}
+	// The premise, asserted rather than assumed: the structural arm CANNOT tell
+	// the domain-free bake from either stated layout, so the only thing that can
+	// make the triple transitive is refusing to consult that arm for a FieldValue
+	// pair. Without this the assertion below could pass on a triple the weaker
+	// arm happened to separate anyway.
+	for _, stated := range []values.Value{inD1, inD2} {
+		if !values.ValuesStructurallyEqual(stated, unknownDomain) {
+			t.Fatalf("test setup: the structural comparison SEPARATES %q from the "+
+				"domain-free bake %q, so this triple no longer witnesses the "+
+				"intransitivity type dispatch removed and every assertion below is "+
+				"vacuous.",
+				values.ExplainValue(stated), values.ExplainValue(unknownDomain))
+		}
+	}
+
+	triple := []struct {
+		name  string
+		value values.Value
+	}{
+		{"[0] in D1", inD1},
+		{"[0] in D2", inD2},
+		{"[0] in an UNKNOWN layout", unknownDomain},
+	}
 
 	for _, c := range []struct {
 		name string
@@ -300,22 +312,50 @@ func TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain(t *testin
 		{"intersectionValuesEqual", intersectionValuesEqual},
 		{"orderingValuesEqual", orderingValuesEqual},
 	} {
+		// The separation the identity arm exists for. Stated first because a
+		// comparator that equated these would make the transitivity closure below
+		// pass while conflating two different columns.
 		if c.eq(inD1, inD2) {
-			t.Errorf("%s equates ordinal 0 of two DIFFERENT layouts. That is the "+
-				"conflation the identity arm exists to refuse, and it is a "+
-				"REGRESSION, not progress on the intransitivity below.", c.name)
+			t.Errorf("%s equates ordinal 0 of two DIFFERENT layouts (%q vs %q). "+
+				"That is the conflation the identity arm refuses.",
+				c.name, values.ExplainValue(inD1), values.ExplainValue(inD2))
 			continue
 		}
-		if !c.eq(inD1, unknownDomain) || !c.eq(inD2, unknownDomain) {
-			t.Errorf("%s no longer bridges the domain-free bake %q to BOTH stated "+
-				"layouts (%q: %v, %q: %v).\n\n"+
-				"If that is because dispatch is now by TYPE and the domain-free "+
-				"value is DECLINED, the defect this test records is FIXED: delete "+
-				"this test and assert transitivity directly. Confirm the fixtures "+
-				"were reworked rather than the corpus getting luckier.",
-				c.name, values.ExplainValue(unknownDomain),
-				values.ExplainValue(inD1), c.eq(inD1, unknownDomain),
-				values.ExplainValue(inD2), c.eq(inD2, unknownDomain))
+
+		for _, a := range triple {
+			for _, b := range triple {
+				for _, d := range triple {
+					if !c.eq(a.value, b.value) || !c.eq(b.value, d.value) {
+						continue
+					}
+					if c.eq(a.value, d.value) {
+						continue
+					}
+					t.Errorf("%s is NOT TRANSITIVE: %s ≡ %s and %s ≡ %s, but "+
+						"%s ≢ %s.\n\n"+
+						"A comparator that is not an equivalence relation makes "+
+						"orderingValueListContains (and the intersection's `seen` "+
+						"dedup built on it) answer differently depending on the order "+
+						"the list was built in, which is a nondeterministic plan. The "+
+						"cause is a FieldValue pair reaching an arm below the identity "+
+						"arm: dispatch on the TYPE, and decline the operand that "+
+						"states no identity rather than bridging it.",
+						c.name, a.name, b.name, b.name, d.name, a.name, d.name)
+				}
+			}
+		}
+
+		// The decline is TOTAL, not a weaker match: the domain-free bake is
+		// unaddressable, so it is not even equal to itself. Pinned because it is
+		// what makes the closure above hold — a reflexive-but-otherwise-declining U
+		// would still be transitive here, and this says which of the two we have.
+		if c.eq(unknownDomain, unknownDomain) {
+			t.Errorf("%s equates the domain-free bake %q with ITSELF.\n\n"+
+				"An unaddressable ordering key has no column identity to match on, so "+
+				"the comparator has nothing to decide with; if this starts passing, a "+
+				"structural or name arm is deciding FieldValue pairs again and the "+
+				"transitivity above holds only by luck of which pairs were probed.",
+				c.name, values.ExplainValue(unknownDomain))
 		}
 	}
 }

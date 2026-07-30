@@ -1010,37 +1010,39 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // producers — an SQL sort request against a row layout, a candidate against its
 // index metadata — and never arrive as one node.
 //
-// DESTINATION (CQ-60, not yet landed): dispatch by VALUE TYPE — a pair of
-// plain FieldValues decided by column IDENTITY and nothing else,
-// identity-or-decline, no fallthrough. TODAY the code beneath dispatches on
-// whether both sides STATE an identity, and an UNKNOWN-domain FieldValue
-// pair still falls through to the structural arm — the availability form,
-// which is INTRANSITIVE: a baked path [0] whose layout is UNKNOWN compares
-// EQUAL to [0]-in-D1 and to [0]-in-D2 through the structural arm, while
-// identity keeps D1 and D2 apart
-// (TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain pins
-// this as CURRENT behavior and converts to a transitivity assertion when
-// CQ-60 lands). A comparator that is not an equivalence relation makes
-// orderingValueListContains answer differently depending on the order the
-// list was built in — insertion-order-dependent ordering sets, a
+// Dispatch is by VALUE TYPE: a pair of plain FieldValues is decided by column
+// IDENTITY and nothing else — identity-or-decline, no fallthrough. The
+// alternative, dispatching on whether both sides HAPPEN TO STATE an identity
+// and letting the rest fall through to the structural arm, is INTRANSITIVE
+// inside the FieldValue class: a baked path [0] whose layout is UNKNOWN
+// compares EQUAL to [0]-in-D1 and to [0]-in-D2 through the structural arm,
+// while identity keeps D1 and D2 apart
+// (TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain pins the
+// closure on that triple). A comparator that is not an equivalence relation
+// makes orderingValueListContains answer differently depending on the order
+// the list was built in — insertion-order-dependent ordering sets, a
 // nondeterministic plan.
 //
-// The flip is measured FREE in production (the decline residual is zero at
-// both comparator sites, kept honest by the corpus census in
-// ordering_comparison_census.go) and is blocked ONLY by test fixtures that
-// mint bare-name doubles — CQ-60 carries the fixture-redesign path. Until
-// it lands, this comment states the destination, not the code.
+// Declining costs nothing in production: over the corpus neither comparator
+// ever sees a FieldValue pair with a non-stating operand, kept honest by the
+// census in ordering_comparison_census.go. A key that states no identity is
+// UNADDRESSABLE, and the fix for one belongs at the producer that minted it
+// without the layout its ordinal indexes — never in a fallthrough here.
 //
 // The structural arm remains for values that are not column reads at all — the
 // *RecordTypeValue discriminators, arithmetic and function keys, the
-// CardinalityValue wrapper — followed by the quantifier-root bridge those
-// wrapped shapes still cross.
+// CardinalityValue wrapper — followed by the quantifier-root bridge. That
+// bridge is kept rather than deleted because it stays REACHABLE: its
+// FieldValue-pair half cannot fire any more (the arm above returns first), but
+// a CardinalityValue-wrapped pair still crosses it. The census counts how often
+// it is the only arm that decides such a pair, and on today's corpus that count
+// is zero — unexercised, not unreachable, which is why it stays.
 func orderingValuesEqual(left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteRequestedVsCandidate, left, right,
 		values.CanBridgeOrderingValueRoots,
 	)
-	if values.StatesOrderingColumn(left) && values.StatesOrderingColumn(right) {
+	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
 	}
 	if values.ValuesStructurallyEqual(left, right) {
