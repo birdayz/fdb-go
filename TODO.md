@@ -6,6 +6,150 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## IN PROGRESS — RFC-199 deterministic simulation testing (DST) revival
+
+Branch **`feat/dst-revival`**, PR #462. Owner-directed revival of the dormant DST
+work, reconstructed onto current master. Not merged: the review lap is the gate.
+
+- [ ] **RFC-199 DST — Tier 0/1/2 landed on master's HEAD, awaiting review.** `pkg/dst`
+  (seeded Clock/Randomness/Buggify behind a nil-means-production `Env` seam),
+  `pkg/simfdb` (deterministic in-memory MVCC `fdb.BackendDatabase` with SSI, RYW, 12
+  atomic ops, true rollback and seeded fault injection), and the Tier-2 hunt harnesses
+  (`pkg/simfdb/hunt`, `cmd/dst-hunt`, `cmd/dst-generate`). The RFC was drafted and
+  ACK'd as 179; master reassigned that number, so the document is now
+  `rfcs/199-deterministic-simulation-testing.md`.
+
+  **Why this matters beyond DST:** SimFDB is the acceptance harness for the RFC-198
+  explicit-transaction work (see the read-your-writes item below, which now carries it
+  as a gate). RFC-198 has to prove a set of conflict verdicts is correct, and conflict
+  verdicts are exactly what a real cluster makes unreproducible.
+
+  Four real SimFDB conflict defects were fixed during the revival — all of them
+  under- or over-conflict against real FDB, i.e. the class that would make the harness
+  certify a wrong answer: a committed handle keeping its read version, `GetRange`
+  computing conflict extents from raw selector anchors instead of resolved keys,
+  selector resolution not taking the `GetKey` conflict range it costs on the real
+  backend, and `more` reported false when a range read exactly met its row limit. The
+  last two were found by extending the live differential's selector-range axis, which
+  had swept 400 scenarios across a range axis and a selector axis without ever
+  crossing them.
+
+- [ ] **F4 — re-land the reverted client-fidelity commit, 1036 last and only with an
+  answer.** `de1da5f17` ported four client-fidelity gaps; `302ea8a67` reverted all four
+  because ONE of them — M5, `accessed_unreadable`(1036) on a read that reaches a pending
+  versionstamped write — turned the Tier-2 hunt red:
+
+  ```
+  hunt: seed=42 FAILED after 9 ops (3 faults)
+    error: op 8 saveNew: load old record version for index update:
+           failed to load record version: accessed_unreadable (1036)
+    reproduce: hunt.Run(42, cfg)          (also seed 0, at op 24)
+  ```
+
+  Three explanations, none settled: **(a)** the record layer would get 1036 against a real
+  cluster too, and no existing test reaches it because only the hunt runs many
+  version-writing ops inside one transaction; **(b)** it sets `BYPASS_UNREADABLE` somewhere
+  the sim does not model — grep finds no such call; **(c)** the ordering that makes it safe
+  on real FDB is one the sim does not reproduce.
+
+  **Timing evidence, and it points at (c).** MEASURED: `flushVersionMutations`
+  (`database.go:850-863`) is what turns a queued `AddVersionMutation` into an actual
+  `tx.SetVersionstampedKey/Value`, and it defers every one of them to just before commit.
+  There are SIX call sites, not seven — the seventh `grep` hit is the definition itself —
+  and ALL SIX are commit-adjacent: `database.go:253`, `:330`, `:374`, `:719`
+  (`CommitWithHooks`), `:1067` (`CommitWithVersionstamp`) and `runner.go:174` each sit
+  immediately after `runCommitChecks()` and immediately before the commit. The
+  record-version key the hunt died on goes through that queue (`store_version.go:52`,
+  `:78`), so nothing the record layer reads mid-transaction can reach a key the REAL client
+  would have marked unreadable. That is the shape of a sim application-point divergence,
+  not of a live record-layer bug.
+
+  Two sites do bypass the queue and write a versionstamped value mid-transaction:
+  `database.go:1025` (`SetMetaDataVersionStamp`) and `spfresh_storage.go:520`. The first
+  already handles the error — `GetMetaDataVersionStamp` documents "On ACCESSED_UNREADABLE
+  errors (FDB code 1036), marks the stamp as dirty and returns nil" — which is further
+  evidence that the record layer's real 1036 exposure is known and handled, and that the
+  hunt's failure is somewhere else.
+
+  INFERRED, and the thing to instrument first: `postCommitReset` is what clears the sim's
+  unreadable set, and it runs on only two paths (`conflict.go:50` read-only fast path,
+  `:173` success). Every error return deliberately leaves the handle untouched. The failing
+  hunt run took THREE faults. So a handle retried after an injected commit fault would carry
+  an unreadable set forward that no real client has. Whoever runs the container arm should
+  instrument exactly that: when the sim's unreadable set becomes non-empty relative to the
+  record layer's read, and whether it survives a failed commit and a retry.
+
+  M4 (1007 minted from the simulated clock), M6 (mutation and conflict-range size overhead,
+  and the size-before-too-old ordering) and M8b (present-empty `Set(k, nil)`) were green and
+  are recoverable from `de1da5f17`; re-land them once the 1036 question has an answer rather
+  than piecemeal. M8a (cancellation on every read entry point) is already re-landed, with
+  `GetRangeSplitPoints` added to the set and the metrics paths' inverted-range-before-cancel
+  precedence pinned.
+
+## DST findings
+
+The query-engine defects the RFC-199 Tier-2 hunts surfaced, and what closed each. This is
+the writeup `pkg/simfdb/hunt/metamorphic/testdata/findings/README.md`,
+`pkg/simfdb/hunt/metamorphic/corpus.go` and RFC-199 §7a cite. Every entry here is a real
+wrong-answer defect found by a SimFDB-backed oracle, not by a hand-written test — which is
+the point: none of them had an owner or a reproducer before the hunt ran.
+
+The oracles are two. The **SQL-pagination oracle** (`pkg/simfdb/hunt/sqlpage`) runs a query
+unpaged, then re-runs it at a scanned-rows limit of 1 so every row forces a continuation
+round-trip, and demands the two agree. The **metamorphic oracle**
+(`pkg/simfdb/hunt/metamorphic`) runs sets of queries that must be equivalent under SQL
+three-valued logic and demands they return the same relation; scenarios carry `ordered: true`
+when the equivalence is over an ordered sequence rather than a multiset.
+
+- [x] **Streaming DISTINCT dropped its dedup state across a resume.** The hash DISTINCT
+  operator kept its seen-set in memory per page, so a resume across a scanned-rows boundary
+  re-admitted values it had already emitted: `SELECT DISTINCT` returned duplicate rows when
+  paginated, even with `ORDER BY`. GROUP BY was unaffected (different dedup machinery), which
+  is why no existing test saw it. Fixed by carrying the seen-set through the continuation
+  (`executeHashDistinct` over `gen.DistinctHashContinuation`). Pinned by
+  `TestDistinctContinuationDedups` (`pkg/simfdb/hunt/sqlpage/distinct_continuation_test.go`),
+  which checks GROUP BY over the same data alongside it so a regression names which operator
+  broke; bare DISTINCT is back in the oracle's query sweep.
+
+- [x] **Multi-value `IN` and `UNION ALL` errored 54F01 instead of resuming.** A multi-value
+  `IN (a, b)` plans as an InJoin over a concat of per-value index scans, and `UNION ALL` plans
+  as a `RecordQueryUnionPlan` over that same concat combinator. The concat had no continuation
+  of its own, so a branch stopped mid-scan by the execution scanned-rows limit could not mint a
+  resumable token and the statement failed. Java's `InJoinCursor` resumes. Fixed by having the
+  concat serialize {active-branch index, that branch's child continuation}. Pinned as
+  correctness (paged result equals unpaged as a multiset) by `TestInJoinContinuation` and
+  `TestUnionAllContinuation`, plus `TestInJoinLimit` for the composition with `LIMIT` — a
+  per-branch limit would let each branch emit up to LIMIT rows, so the limit is cleared on each
+  inner branch and applied once at the concat, matching `executeInUnion` and Java's
+  `RecordQueryInJoinPlan`.
+
+- [x] **Aggregate-index MIN/MAX dropped an all-NULL group.** SQL `MIN`/`MAX` mapped to a
+  `MIN_EVER_LONG`/`MAX_EVER_LONG` index, which skips NULL values — so a group whose every row
+  has a NULL measure had no index entry at all and vanished from the result, while the
+  scan-backed plan for the identical query returned it with a NULL extremum. An index must not
+  change which groups exist. Fixed by mapping to `PERMUTED_MIN`/`PERMUTED_MAX`, matching Java's
+  `NumericAggregationValue.Min`/`.Max`. Pinned by
+  `pkg/simfdb/hunt/metamorphic/aggindex_sum_nullgroup_test.go` and the
+  `aggindex-minmax-allnull-group-dropped` scenario, whose two queries differ only by a no-op
+  `WHERE id IS NOT NULL` over a NOT NULL primary key — identical rows, so identical groups.
+
+- [x] **`GROUP BY … ORDER BY` placed NULLs last while `DISTINCT … ORDER BY` placed them
+  first.** The same relation under the same `ORDER BY a` came back in two different orders
+  depending on which operator produced the distinct values. NULL placement is a property of the
+  ORDER BY clause (ASC ⇒ NULLS FIRST, the Java default, and what FDB tuple encoding yields on
+  the plain-scan path), not of the chosen plan, so this was an internal inconsistency in the
+  GROUP BY aggregation+sort path. Fixed; the seed corpus now asserts the equivalence directly
+  in both directions (`groupby-orderby-null-first-matches-distinct`,
+  `groupby-orderby-desc-null-last-matches-distinct`, and the multi-key variant, all with
+  `Ordered: true` — a multiset comparison is structurally blind to this defect).
+
+**Status of the reproducer corpus (measured 2026-07-30):** all three scenarios under
+`pkg/simfdb/hunt/metamorphic/testdata/findings/` now judge clean — `3 scenarios, 10 groups |
+0 INEQUIVALENCE (real) | 0 errored | 0 setup-err` — and `go test
+./pkg/simfdb/hunt/metamorphic/... ./pkg/simfdb/hunt/sqlpage/...` passes. They are kept as
+durable reproducers rather than deleted: each one is the exact shape that broke, and the
+`ordered: true` flags are what make them able to express the defect at all.
+
 ## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
 
 Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at
@@ -6656,6 +6800,37 @@ executor's scan through `activeTx.rctx` when one is open AND solve the spurious-
 serializable reads) — a Cascades/executor + driver-tx architecture change (Graefe). Until then it's a real
 read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
 probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
+
+**Gate — acceptance harness: SimFDB (RFC-199).** This item's hard part is not making an in-tx SELECT read
+through `activeTx.rctx`; it is proving the conflict behaviour that follows is right, and doing it
+*deterministically*. Binding in-tx reads to the user's write transaction adds read-conflict ranges, so the
+change is only correct if every resulting conflict/no-conflict verdict is the one real FDB gives — and those
+verdicts are exactly what a real cluster makes nondeterministic and unreproducible. `pkg/simfdb` is that
+harness: a serializable-snapshot backend whose conflict verdicts are validated against real FDB by a
+400-scenario live differential, with seed-reproducible fault injection (1020/1021/1007) so a
+read-modify-write across two explicit transactions can be replayed byte-for-byte. Use it to pin the
+read-your-writes semantics and the read-conflict verdicts before touching the executor; the real-FDB tests
+then confirm rather than discover.
+
+**Acceptance criteria must INJECT the rare verdicts, not wait for them.** For as long as the 1007-clock item
+(F4, in the RFC-199 section above) stays booked, this item's acceptance criteria MUST reach `transaction_too_old`
+(1007) and BOTH branches of `commit_unknown_result` (1021 — mutations durable, and mutations never applied) by
+explicit `InjectOnce`, never by natural occurrence. The reason is specific, not procedural: the M4 fix that mints
+versions from the simulated clock is exactly what was reverted with `de1da5f17`, so today SimFDB's version counter
+has no relationship to time and 1007 is unreachable by anything a caller can do — a criterion that says "a
+long-held transaction gets 1007" would pass while never once executing the path. The 1021 branch is chosen by a
+per-seed coin (`conflict.go`), so a criterion that merely runs seeds certifies whichever branch it happened to
+draw and silently leaves the other — the one where the retry has to redo the work, which is the branch an
+explicit-transaction COMMIT retry actually lands on — unexercised. Both are the same failure: a green acceptance
+run that has not reached the case it claims to cover. When F4 lands and 1007 becomes naturally reachable, a
+natural-occurrence arm may be ADDED; the injected arms stay either way, because they are the deterministic ones.
+
+Two SimFDB tests are direct inputs to the semantics decision this item has to make, and they deliberately
+pin TODAY's behaviour rather than a desired end state (it matches Java today, so it is not a bug to fix
+under this item's nose): `TestSQLFault_UpdateRelative_DoubleApply` and the durably-committed-insert 23505
+case. Both are 1021 (`commit_unknown_result`) autocommit hazards — a statement whose write is durable while
+the client is told the outcome is unknown. RFC-198 is what decides whether an explicit transaction changes
+that, so read them as the problem statement, not as failing tests.
 
 ### [x] DDL error classification — duplicate-column + PK-over-unknown-column now clean 42-class errors (2026-06-28)
 

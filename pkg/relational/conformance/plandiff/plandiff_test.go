@@ -129,9 +129,9 @@ func TestClassify_GoError(t *testing.T) {
 	}
 }
 
-// TestClassify_GoError_WhenJavaUnimplemented pins the subtle branch
-// reviewer flagged: when Go errors AND Java is the stub, Status must
-// be StatusGoError (not StatusBothError) so a Go-only CI tolerant
+// TestClassify_GoError_WhenJavaUnimplemented pins the subtle branch:
+// when Go errors AND Java is the stub, Status must be StatusGoError
+// (not StatusBothError) so a Go-only CI tolerant
 // path doesn't lose the real Go failure behind the stub-Java noise.
 // Detail must surface BOTH the Go error and the Java stub message
 // so the operator can confirm both sides at a glance.

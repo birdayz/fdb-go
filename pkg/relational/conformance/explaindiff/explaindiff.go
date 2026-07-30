@@ -71,7 +71,7 @@ type Entry struct {
 	// File is the corpus file's base name (e.g. "aggregate_expr.yaml").
 	File string
 	// Index is the 0-based position of the test within that file's
-	// `tests:` sequence. File+Index is the diff key: it points a reviewer
+	// `tests:` sequence. File+Index is the diff key: it points a reader
 	// straight at the exact stanza.
 	Index int
 	// SQL is the query text, whitespace-collapsed onto one line.

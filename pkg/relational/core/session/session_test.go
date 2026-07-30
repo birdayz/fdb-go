@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -180,4 +181,57 @@ func TestNew_InitializesSchemaCache(t *testing.T) {
 	}
 	// Must be usable immediately without calling ResetSchemaCache.
 	s.SchemaCache[SchemaCacheKey("/a", "b")] = nilSchema
+}
+
+// TestBeginStatement_ClockSeam proves the RFC-199 Tier-0 Clock seam on the
+// statement-start timestamp: a nil Clock (production) reads the wall clock,
+// byte-identical to the pre-seam time.Now().UTC(); a dst.SimClock pins the
+// captured StatementTime to a deterministic instant reproducible from the seed.
+func TestBeginStatement_ClockSeam(t *testing.T) {
+	t.Parallel()
+
+	// Production: nil Clock → wall clock. The captured StatementTime must be a
+	// recent instant (proves the fallback path is live) and must NOT be the sim
+	// Epoch (proves we did not hard-wire the deterministic value).
+	prod := &Session{}
+	before := time.Now().UTC()
+	done := prod.BeginStatement()
+	after := time.Now().UTC()
+	if prod.StatementTime.Before(before) || prod.StatementTime.After(after) {
+		t.Fatalf("production StatementTime %v not within [%v, %v] — wall-clock fallback broken",
+			prod.StatementTime, before, after)
+	}
+	if prod.StatementTime.Equal(dst.Epoch) {
+		t.Fatal("production StatementTime is the sim Epoch — the wall-clock fallback is broken")
+	}
+	// StatementNow returns the captured value while the statement is in flight.
+	if !prod.StatementNow().Equal(prod.StatementTime) {
+		t.Fatalf("StatementNow %v != captured StatementTime %v", prod.StatementNow(), prod.StatementTime)
+	}
+	done()
+	if !prod.StatementTime.IsZero() {
+		t.Fatal("cleanup did not restore the zero StatementTime")
+	}
+
+	// Simulation: a SimClock pinned at Epoch → StatementTime is exactly Epoch,
+	// deterministic and reproducible.
+	sim := &Session{Clock: dst.NewSimClock(dst.Epoch)}
+	sim.BeginStatement()
+	if !sim.StatementTime.Equal(dst.Epoch) {
+		t.Fatalf("sim StatementTime = %v, want Epoch %v", sim.StatementTime, dst.Epoch)
+	}
+	if !sim.StatementTime.Equal(dst.Epoch.UTC()) {
+		t.Fatalf("sim StatementTime not UTC-normalized: %v", sim.StatementTime)
+	}
+
+	// Outside a statement, StatementNow falls through to now(): the SimClock
+	// yields Epoch, a nil session/clock yields a live wall-clock time.
+	fresh := &Session{Clock: dst.NewSimClock(dst.Epoch)}
+	if !fresh.StatementNow().Equal(dst.Epoch) {
+		t.Fatalf("sim StatementNow (no stmt) = %v, want Epoch %v", fresh.StatementNow(), dst.Epoch)
+	}
+	var nilSess *Session
+	if got := nilSess.StatementNow(); got.IsZero() {
+		t.Fatal("nil-session StatementNow returned zero time — expected wall clock")
+	}
 }

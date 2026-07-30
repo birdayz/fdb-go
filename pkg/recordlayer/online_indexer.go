@@ -116,7 +116,14 @@ func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp 
 
 // isTypeStampBlocked returns true if the stamp has an active block.
 // Matches Java's IndexingBase.isTypeStampBlocked().
-func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp) bool {
+//
+// now comes from the DST clock seam, not time.Now. The WRITE side of this field already does
+// (rtx.Env().Now().Add(ttl) where the stamp's expiry is minted), so a wall-clock read compares
+// a simulated timestamp against real time — and the simulated clock starts at a fixed epoch far
+// in the past, so under a sim env every expiry it wrote reads back as ALREADY EXPIRED. The
+// branch a simulation exercises is then the opposite of the branch it wrote, which is worse than
+// no coverage: the run looks like it tested the blocked path and tested the unblocked one.
+func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp, now time.Time) bool {
 	if !stamp.GetBlock() {
 		return false
 	}
@@ -124,7 +131,7 @@ func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp) bool {
 	if expiry == 0 {
 		return true // permanent block
 	}
-	return expiry > uint64(time.Now().UnixMilli())
+	return expiry > uint64(now.UnixMilli())
 }
 
 // areSimilarStamps returns true if two stamps differ only in block-related fields.
@@ -723,7 +730,11 @@ func unpackRangeEndBoundary(b []byte) (tuple.Tuple, EndpointType, error) {
 // then marks READABLE. Returns the number of records indexed.
 // Matches Java's OnlineIndexer.buildIndex().
 func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
-	startTime := time.Now()
+	// The build clock, not a metric: this anchor is what throttleBetweenRanges measures the
+	// configured timeLimit against, so it decides when the build stops and therefore HOW MANY
+	// RANGES end up durably recorded in the built-range set. It has to come off the env clock
+	// or a simulated build stops at a wall-clock-determined, unreproducible point.
+	startTime := oi.db.Env().Now()
 
 	// Step 1: Mark all target indexes as WRITE_ONLY.
 	if err := oi.markWriteOnly(ctx); err != nil {
@@ -936,7 +947,10 @@ func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime ti
 	}
 	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, logDelayMs)
 	if oi.timeLimit > 0 {
-		if elapsed := time.Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
+		// Same clock the anchor was minted on. Measuring a sim-clock anchor against the wall
+		// clock does not merely lose determinism — it compares two unrelated epochs, so the
+		// limit trips on the first range or never.
+		if elapsed := oi.db.Env().Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
 			return &TimeLimitExceededError{TimeLimit: oi.timeLimit, Elapsed: elapsed}
 		}
 	}
@@ -1101,7 +1115,7 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, c
 	}
 
 	// Step 5: Check if blocked.
-	if isTypeStampBlocked(savedStamp) {
+	if isTypeStampBlocked(savedStamp, store.context.Env().Now()) {
 		if policy == nil || !policy.ShouldAllowUnblock(savedStamp.GetBlockID()) {
 			return oi.newPartlyBuiltError(savedStamp, newStamp, index,
 				"this index was partly built, and blocked")
@@ -1622,7 +1636,10 @@ func (oi *OnlineIndexer) BlockIndex(ctx context.Context, blockID string, ttl tim
 				stamp.BlockID = proto.String("")
 			}
 			if ttl > 0 {
-				stamp.BlockExpireEpochMilliSeconds = proto.Uint64(uint64(time.Now().Add(ttl).UnixMilli()))
+				// Persisted lease-expiry: route through the context clock seam (RFC-199
+				// Tier 0) so a simulation run writes a reproducible expiry. A nil env
+				// (production) reads the wall clock — byte-identical to the prior time.Now().
+				stamp.BlockExpireEpochMilliSeconds = proto.Uint64(uint64(rtx.Env().Now().Add(ttl).UnixMilli()))
 			} else {
 				stamp.BlockExpireEpochMilliSeconds = nil
 			}

@@ -140,9 +140,9 @@ func otelSpanContext(sc types.SpanContext) oteltrace.SpanContext {
 	var sid oteltrace.SpanID
 	copy(tid[:], sc.TraceID[:])
 	// Little-endian to stay CONSISTENT with the traceID, whose 16 bytes are the wire
-	// UID's two little-endian uint64 halves copied verbatim above (@claude #303). The
-	// otel IDs only need to be deterministic for correlation; LE keeps the spanID's byte
-	// order matching the wire's uint64 encoding rather than mixing endiannesses.
+	// UID's two little-endian uint64 halves copied verbatim above. The otel IDs only
+	// need to be deterministic for correlation; LE keeps the spanID's byte order
+	// matching the wire's uint64 encoding rather than mixing endiannesses.
 	binary.LittleEndian.PutUint64(sid[:], sc.SpanID)
 	var flags oteltrace.TraceFlags
 	if isSampled(sc) {

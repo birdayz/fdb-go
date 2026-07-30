@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1188,6 +1189,11 @@ func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey t
 	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
 
+// Env exposes the record context's DST environment to index maintainers.
+// Nil-safe (a nil *dst.Env means production); index maintainers draw persisted
+// nonces through it so a simulation run is byte-reproducible.
+func (store *FDBRecordStore) Env() *dst.Env { return store.context.Env() }
+
 // lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
 func (store *FDBRecordStore) AcquireWriteLock(key string) { store.context.locks.WriteLock(key) }
 func (store *FDBRecordStore) ReleaseWriteLock(key string) { store.context.locks.WriteUnlock(key) }
@@ -1444,7 +1450,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 		return &RecordStoreStateNotLoadedError{}
 	}
 	store.storeHeader.UserVersion = &version
-	lastUpdateTime := uint64(time.Now().UnixMilli())
+	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	store.storeHeader.LastUpdateTime = &lastUpdateTime
 	return store.writeStoreHeader(store.storeHeader)
 }
@@ -1593,7 +1599,7 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
-	ts := time.Now().UnixMilli()
+	ts := store.context.Env().Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
 		LockState: &state,
 		Reason:    &reason,
@@ -1870,7 +1876,24 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if vm, ok := record.(interface{ MarshalVT() ([]byte, error) }); ok {
 		innerBytes, err = vm.MarshalVT()
 	} else {
-		innerBytes, err = proto.Marshal(record)
+		// Deterministic marshal so the persisted record bytes are BYTE-STABLE: the same record
+		// value marshals to the same bytes every time, so rewriting a row whose content did not
+		// change produces bytes that did not change. Generated protos take the VT paths above,
+		// which emit a fixed, code-generated field order; this reflection path is hit by dynamic
+		// messages (dynamicpb — SQL rows), whose default marshal iterates fields in Go map order
+		// and so serializes the same row to DIFFERENT bytes across writes.
+		//
+		// Stability is the whole of what Deterministic:true buys — NOT a canonical encoding. It
+		// selects order.LegacyFieldOrder (extensions first, then non-oneof fields before oneof
+		// fields, then by field number) and sorts map entries by key; upstream explicitly
+		// disclaims that this output is canonical across languages or stable across releases.
+		// So this is not a claim that the bytes match what Java emits for the same record. Wire
+		// compatibility does not need one: any permutation of top-level fields is a valid
+		// encoding of the same message, and decoders — Java's included — are order-agnostic.
+		//
+		// Surfaced by the RFC-199 SQL workload's determinism oracle, which replays a seed and
+		// diffs the persisted bytes.
+		innerBytes, err = proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	}
 	if err != nil {
 		return nil, err

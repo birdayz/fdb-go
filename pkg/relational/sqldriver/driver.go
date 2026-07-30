@@ -72,6 +72,20 @@ const defaultClusterFilePath = "/etc/foundationdb/fdb.cluster"
 // cluster files get distinct entries.
 var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
 
+// RegisterBackend associates an already-built FDBDatabase with a cluster_file key, so a DSN of
+// the form "fdbsql:///db?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
+// executor → record layer) over that backend instead of opening a real cluster. It returns a
+// func that unregisters the key.
+//
+// This is the seam for deterministic-simulation harnesses that back the SQL stack with SimFDB
+// (RFC-199 DST): register a SimFDB-backed FDBDatabase, open a `fdbsql` DSN against its key, and
+// the whole relational layer runs in-process with no Docker. It only exposes the cache
+// population that connect() already performs internally — production behavior is unchanged.
+func RegisterBackend(key string, db *recordlayer.FDBDatabase) (unregister func()) {
+	fdbDBCache.Store(key, db)
+	return func() { fdbDBCache.Delete(key) }
+}
+
 // Driver is the database/sql/driver.Driver for fdbsql.
 //
 // Implements driver.Driver and driver.DriverContext.

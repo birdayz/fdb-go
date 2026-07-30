@@ -99,7 +99,7 @@ func TestLimitContinuation_RejectsGarbage(t *testing.T) {
 
 	// Nil-inner blob with trailing junk: the encoder writes nothing after the
 	// nil-inner marker, so any trailing byte is malformed and must be rejected
-	// (symmetric with the present-inner length check above; @claude #326).
+	// (symmetric with the present-inner length check above).
 	nilTrail, _ := encodeLimitContinuation(nil, 0, 1)
 	nilTrail = append(nilTrail, 0xFF)
 	if _, _, _, err := decodeLimitContinuation(nilTrail, 0, 0); err == nil {

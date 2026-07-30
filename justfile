@@ -126,6 +126,20 @@ run-conformance-server:
 conformance-sql:
     bazelisk test //pkg/relational/conformance/yamsql:yamsql_test --test_output=streamed --test_arg=-test.v
 
+# Check SQL engine behavior against the committed golden baselines (plan + result rows
+# over SimFDB). Fails on any drift; part of `just test` too. See pkg/simfdb/hunt/golden.
+golden:
+    bazelisk test //pkg/simfdb/hunt/golden:golden_test --test_output=errors --nocache_test_results
+
+# Regenerate the SQL golden baselines after an INTENTIONAL engine change, then REVIEW the diff:
+#   just golden-update && git diff pkg/simfdb/hunt/golden/testdata/
+# A result-row change is almost always a bug; a plan change is a query-engine change (the
+# architectural review gate covers it). Capture is deterministic over SimFDB, so a rerun with
+# no engine change is a no-op.
+golden-update:
+    GOLDEN_UPDATE=1 go test ./pkg/simfdb/hunt/golden/ -run TestGolden -count=1
+    @echo "review the baseline diff:  git diff pkg/simfdb/hunt/golden/testdata/"
+
 # Regenerate BUILD files after adding/removing Go files or deps
 gazelle:
     bazelisk run //:gazelle

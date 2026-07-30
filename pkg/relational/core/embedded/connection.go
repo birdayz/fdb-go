@@ -509,7 +509,7 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 		return nil, err
 	}
 	fdbTx.Options().SetReadSystemKeys()
-	rctx := recordlayer.NewFDBRecordContext(fdbTx)
+	rctx := recordlayer.NewFDBRecordContext(fdbTx, c.sess.DB.Env())
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx
 	return tx, nil

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
@@ -90,6 +91,23 @@ type Session struct {
 	// value is used while a statement is executing, and time.Now()
 	// is used outside. Zero value means "no statement in flight".
 	StatementTime time.Time
+
+	// Clock is the RFC-199 Tier-0 time seam for the statement-start
+	// timestamp. Nil (the default) means the wall clock — production
+	// behavior is unchanged. A simulation installs a dst.SimClock so
+	// the CURRENT_TIMESTAMP-family value captured by BeginStatement is
+	// deterministic and reproducible from the sim seed.
+	Clock dst.Clock
+}
+
+// now returns the session's current time in UTC, routed through the
+// Clock seam. A nil Session or nil Clock (production) reads the wall
+// clock, byte-identical to a bare time.Now().UTC().
+func (s *Session) now() time.Time {
+	if s != nil && s.Clock != nil {
+		return s.Clock.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // StatementNow returns the timestamp captured at the top of the
@@ -98,7 +116,7 @@ type Session struct {
 // values within a statement use this instead of time.Now() directly.
 func (s *Session) StatementNow() time.Time {
 	if s == nil || s.StatementTime.IsZero() {
-		return time.Now().UTC()
+		return s.now()
 	}
 	return s.StatementTime
 }
@@ -110,7 +128,7 @@ func (s *Session) StatementNow() time.Time {
 // for the life of the statement.
 func (s *Session) BeginStatement() func() {
 	prior := s.StatementTime
-	s.StatementTime = time.Now().UTC()
+	s.StatementTime = s.now()
 	return func() { s.StatementTime = prior }
 }
 

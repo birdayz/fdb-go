@@ -1,0 +1,30 @@
+# scenario: setops (seed 5)
+#   CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE INDEX cat_idx ON t (cat)
+#   CREATE INDEX max_by_cat AS SELECT MAX(v) FROM t GROUP BY cat
+#   CREATE INDEX min_by_cat AS SELECT MIN(v) FROM t GROUP BY cat
+
+=== SELECT id FROM t WHERE cat IN (1, 2) ORDER BY id
+PLAN: Project([ID#0], InMemorySort([ID ASC], Fetch(InJoin(IndexScan(CAT_IDX, [=]), binding ASC))))
+ROWS(4) cols=[ID]:
+  [1]
+  [2]
+  [3]
+  [4]
+
+=== SELECT cat, MAX(v) FROM t GROUP BY cat ORDER BY cat
+PLAN: Project([CAT#0, MAX(V)#1], AggregateIndex(MAX, MAX_BY_CAT, [CAT], T))
+ROWS(4) cols=[CAT, MAX(V)]:
+  [1, 20]
+  [2, 40]
+  [3, 50]
+  [4, NULL]
+
+=== SELECT cat, MIN(v) FROM t GROUP BY cat ORDER BY cat
+PLAN: Project([CAT#0, MIN(V)#1], AggregateIndex(MIN, MIN_BY_CAT, [CAT], T))
+ROWS(4) cols=[CAT, MIN(V)]:
+  [1, 10]
+  [2, 30]
+  [3, 50]
+  [4, NULL]
+

@@ -200,11 +200,12 @@ func TestConcurrent_SetIsAtomic(t *testing.T) {
 	}
 }
 
-// TestBuildCommitRequest_TenantNoAlias is the FDB-C reviewer's ask: after the
-// snapshot-under-lock change, the tenant path must STILL copy mutation headers
-// into a scratch slice before prefixing — it must never write the tenant prefix
-// THROUGH the alias into tx.mutations' backing array (RFC-010 #4). Build twice
-// and assert the persistent buffer is untouched and not double-prefixed.
+// TestBuildCommitRequest_TenantNoAlias pins a requirement validated against
+// the C++ source (libfdb_c 7.3.77): after the snapshot-under-lock change, the
+// tenant path must STILL copy mutation headers into a scratch slice before
+// prefixing — it must never write the tenant prefix THROUGH the alias into
+// tx.mutations' backing array (RFC-010 #4). Build twice and assert the
+// persistent buffer is untouched and not double-prefixed.
 func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 	t.Parallel()
 	const tenantID = 7
@@ -245,8 +246,9 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 }
 
 // TestBuildCommitRequest_MarshalsValidatedSnapshot pins the validation-consistency
-// fix (FDB-C reviewer): the marshal ships EXACTLY the validated mutation snapshot
-// Commit threads in — never a live re-read of tx.mutations. Models a Set that
+// fix, validated against the C++ source (libfdb_c 7.3.77): the marshal ships EXACTLY
+// the validated mutation snapshot Commit threads in — never a live re-read of
+// tx.mutations. Models a Set that
 // landed on another goroutine AFTER Commit validated but BEFORE the marshal: the
 // validated snapshot has one mutation, tx.mutations has grown to two; the shipped
 // request must carry only the validated one, so a racing unvalidated mutation can

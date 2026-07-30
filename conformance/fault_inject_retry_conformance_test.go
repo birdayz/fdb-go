@@ -161,8 +161,8 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 	It("does NOT retry commit_unknown_result (1021) — a maybe-committed write must never be replayed", func() {
 		// A single 1021 with budget to spare: if 1021 were (wrongly) retried,
 		// the second attempt would succeed and return the row. It must instead
-		// surface immediately — this is the reviewer-caught hole the
-		// isRetryableNotCommitted predicate closes.
+		// surface immediately — this is the hole the isRetryableNotCommitted
+		// predicate closes.
 		_, err := invoke(1, fdbCommitUnknownResult)
 		Expect(err).To(HaveOccurred(), "1021 commit_unknown_result must NOT be retried")
 		var je *JavaError

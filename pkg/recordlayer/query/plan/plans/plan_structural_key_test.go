@@ -88,7 +88,8 @@ func assertPlanKeyUnequal(t *testing.T, a, b RecordQueryPlan) {
 
 // TestMigratedPlans_StructuralKeyContract pins each additionally-migrated plan:
 // equal instances agree (and hash equal), and every identifying field is
-// load-bearing. One block per plan — the per-plan net the reviewers asked for.
+// load-bearing. One block per plan — a per-plan net that pins every
+// identifying field individually.
 func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	t.Parallel()
 	scan := NewRecordQueryScanPlan(nil, nil, false)

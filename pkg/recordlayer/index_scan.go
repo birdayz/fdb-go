@@ -528,7 +528,7 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 	// FDBRecordContext.getTransactionCreateTime(). noNextOrFail (not a raw NewResultNoNext): Java
 	// throws on ANY halted limit under failOnScanLimitReached, not just the scanned-records one
 	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
 		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 

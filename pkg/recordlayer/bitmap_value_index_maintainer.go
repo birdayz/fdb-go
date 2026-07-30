@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -572,7 +571,7 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 	// this cursor's own construction time. Free pass unconditional (Java never suppresses it);
 	// noNextOrFail because Java throws on ANY halted limit under FailOnScanLimitReached
 	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
 		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 

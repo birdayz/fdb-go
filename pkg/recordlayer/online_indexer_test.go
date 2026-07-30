@@ -3622,7 +3622,7 @@ var _ = Describe("OnlineIndexer", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				hb := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
+				hb := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true, nil)
 
 				// Write heartbeat in a transaction.
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
@@ -3658,8 +3658,8 @@ var _ = Describe("OnlineIndexer", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				hb1 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false) // exclusive
-				hb2 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false) // exclusive
+				hb1 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false, nil) // exclusive
+				hb2 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false, nil) // exclusive
 
 				// First heartbeat writes successfully.
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
@@ -3690,8 +3690,8 @@ var _ = Describe("OnlineIndexer", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				hb1 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
-				hb2 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
+				hb1 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true, nil)
+				hb2 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true, nil)
 
 				// First heartbeat writes.
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
@@ -3730,7 +3730,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Write a heartbeat with an old timestamp (beyond the 10s lease).
-				staleHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
+				staleHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false, nil)
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					// Manually write a heartbeat proto with an old timestamp.
 					hbProto := &gen.IndexBuildHeartbeat{
@@ -3746,7 +3746,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// A new exclusive heartbeat should succeed because the existing one is stale.
-				freshHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
+				freshHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false, nil)
 				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, freshHB.CheckAndUpdate(tx, ks, priceIndex)
 				})

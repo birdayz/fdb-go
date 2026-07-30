@@ -484,10 +484,9 @@ func TestIntegration_RecordDelete_UnknownTypeRefused(t *testing.T) {
 	}
 }
 
-// meta apply is idempotent and race-guarded (reviewer impl-review + FDB
-// C++ dev C5): re-applying current metadata is a no-op success, and the
-// save transaction re-checks that the store still holds exactly what the
-// operator confirmed against.
+// meta apply is idempotent and race-guarded: re-applying current
+// metadata is a no-op success, and the save transaction re-checks that
+// the store still holds exactly what the operator confirmed against.
 func TestIntegration_MetaApply_AlreadyCurrentAndRaceGuard(t *testing.T) {
 	requireFixture(t)
 	const metaKeyspace = "/frl/meta-apply-race-test"

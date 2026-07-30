@@ -13,7 +13,7 @@ import (
 // to avoid depending on ObjectWriter/NewWriter/WriteMessage/WriteStruct which are deleted.
 
 // TestReadVectorInt32_NestedStruct tests ReadVectorInt32 on a nested struct.
-// REVIEW NOTE: The reviewer flagged this as CRITICAL #1 (wrong RelOff calculation),
+// REVIEW NOTE: this was reported as CRITICAL #1 (wrong RelOff calculation),
 // but r.object = data[objPos:] (extends to end of buffer), so r.object[off+relOff]
 // IS the correct absolute position. The code is correct but lacks bounds checks.
 // This test verifies correctness and also that bounds checking doesn't panic.
@@ -54,7 +54,7 @@ func TestReadVectorInt32_NestedStruct(t *testing.T) {
 }
 
 // TestReadOptionalInt32_NestedStruct tests ReadOptionalInt32 on a nested struct.
-// Same as above — code is correct, reviewer was wrong about CRITICAL #2.
+// Same as above — code is correct; CRITICAL #2 was also a false positive.
 func TestReadOptionalInt32_NestedStruct(t *testing.T) {
 	// Pre-captured wire data for a message (fileID=12345) with:
 	//   msgVT = {10, 16, 4, 8, 12}    (3 fields: bytes, bytes, nested struct)

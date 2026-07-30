@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -100,7 +99,7 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 	// CursorLimitManager.tryRecordScan(). noNextOrFail (not a raw NewResultNoNext): Java throws on
 	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
 	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
 		result, err := noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
 		if err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err

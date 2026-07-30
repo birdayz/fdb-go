@@ -10,7 +10,7 @@ import (
 // TestAnsiRosterIntegrity pins the hand-authored roster's structural facts: the
 // SQL:2023 Core row count (176 per PostgreSQL 18), unique IDs, Core-only, and
 // every declared subfeature resolving to a real roster row. A wrong/duplicated
-// ID — the "pinned fact" a reviewer would catch — fails here.
+// ID — the "pinned fact" a reader would catch — fails here.
 func TestAnsiRosterIntegrity(t *testing.T) {
 	t.Parallel()
 	const wantCount = 176 // PostgreSQL 18 Core (was 177 in PG13–15; F812 dropped in PG16)
@@ -37,9 +37,9 @@ func TestAnsiRosterIntegrity(t *testing.T) {
 			}
 		}
 	}
-	// @claude L2: a parent marked Java=Full must not have a subfeature marked
-	// Java=None — that is a contradiction (the feature can't be fully supported
-	// while a subfeature is absent). Catches an inconsistent hand-authored fact.
+	// A parent marked Java=Full must not have a subfeature marked Java=None —
+	// that is a contradiction (the feature can't be fully supported while a
+	// subfeature is absent). Catches an inconsistent hand-authored fact.
 	byID := make(map[string]AnsiFeature, len(ansiCoreRoster))
 	for _, f := range ansiCoreRoster {
 		byID[f.ID] = f
@@ -71,9 +71,9 @@ func TestAnsiLedgerEvidenceExists(t *testing.T) {
 	}
 }
 
-// TestAnsiPhantomIDBites pins the phantom-ID guard (@claude M1): a corpus tag for
-// an ID not in the roster (a typo like `E0511`) must be flagged, not silently
-// dropped — else the real feature stays untested and the typo is invisible.
+// TestAnsiPhantomIDBites pins the phantom-ID guard: a corpus tag for an ID not
+// in the roster (a typo like `E0511`) must be flagged, not silently dropped —
+// else the real feature stays untested and the typo is invisible.
 func TestAnsiPhantomIDBites(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

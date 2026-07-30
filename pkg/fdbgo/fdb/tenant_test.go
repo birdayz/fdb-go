@@ -148,9 +148,9 @@ func TestTenant_Reset_PreservesTenantScoping(t *testing.T) {
 	}
 }
 
-// TestTenant_Transact_AppliesDatabaseDefaults closes the dimensional-coverage gap
-// @claude flagged: Tenant.Transact (→ TransactCtx → applyTxDefaults, a different
-// call site than Tenant.CreateTransaction) also inherits DB-level option defaults.
+// TestTenant_Transact_AppliesDatabaseDefaults closes a dimensional-coverage gap:
+// Tenant.Transact (→ TransactCtx → applyTxDefaults, a different call site
+// than Tenant.CreateTransaction) also inherits DB-level option defaults.
 // A 1ms database timeout must time out a tenant Transact.
 func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 	t.Parallel()

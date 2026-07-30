@@ -568,8 +568,8 @@ var _ = Describe("Edge case hardening", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx2.Cancel()
 
-			rtx1 := NewFDBRecordContext(tx1)
-			rtx2 := NewFDBRecordContext(tx2)
+			rtx1 := NewFDBRecordContext(tx1, nil)
+			rtx2 := NewFDBRecordContext(tx2, nil)
 
 			store1, err := NewStoreBuilder().
 				SetContext(rtx1).SetMetaDataProvider(md).SetSubspace(ks).Open()

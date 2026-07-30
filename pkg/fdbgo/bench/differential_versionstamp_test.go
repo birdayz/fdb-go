@@ -367,7 +367,7 @@ func TestDifferential_VersionstampErrors(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	base := fmt.Sprintf("vserr_%d_%s_", os.Getpid(), ns)
-	clearPrefix(t, base) // the valid_tight case commits a key; clear for consistency with the other VS helpers and -count=2 (@claude)
+	clearPrefix(t, base) // the valid_tight case commits a key; clear for consistency with the other VS helpers and -count=2
 
 	negOffset := func() []byte { // body=10 placeholder, offset = 0xFFFFFFFF (negative int32)
 		b := make([]byte, 14)
@@ -509,7 +509,7 @@ func TestDifferential_VersionstampMultiOp(t *testing.T) {
 	if goHex != cgoHex {
 		t.Fatalf("multiop masked keys differ: go=%s cgo=%s", goHex, cgoHex)
 	}
-	// The differential corrected a reviewer assumption ("two ops → different batch ids"): in FDB
+	// The differential disproves the assumption that "two ops → different batch ids": in FDB
 	// the 10-byte stamp identifies the TRANSACTION (commit version + batch order), not the
 	// operation, so BOTH versionstamped ops in one txn get the IDENTICAL stamp — the user
 	// differentiates them via the tuple user version, not the batch id. Pin that invariant AND

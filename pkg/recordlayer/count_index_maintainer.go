@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -197,7 +196,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	// suppresses it), measured against the shared scanState's anchor rather than this cursor's own
 	// construction time. noNextOrFail: Java throws on ANY halted limit under
 	// FailOnScanLimitReached, not just the scanned-records one (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+	if executeProps.TimeLimit > 0 && c.returned > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
 		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 

@@ -302,7 +302,7 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		// and fences only NEW copies after the closure. So if a pk's whole closure is
 		// concurrently sealing AND no current copy is in it, every candidate is
 		// dropped ⇒ newSet empty. The move must NOT then clear `current` and orphan
-		// the vector (@claude review). Construct it: seal the pk's entire closure and
+		// the vector. Construct it: seal the pk's entire closure and
 		// point its membership at a fine the router never returns.
 		ks := specSubspace()
 		idx := newVecIndex("spf_refine_orphan", 2)

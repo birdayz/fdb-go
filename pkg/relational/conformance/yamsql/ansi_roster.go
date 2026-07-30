@@ -19,8 +19,8 @@ package yamsql
 // The Go column is DERIVED from `# ansi:` corpus tags (ansiledger.go) and is
 // NEVER set here — a status cannot be hand-typed. That is the whole anti-rot point.
 //
-// Where a Java assessment is non-obvious it carries a Note; reviewers (and the
-// growing A3 cross-engine coverage) refine individual Java facts over time.
+// Where a Java assessment is non-obvious it carries a Note; individual Java
+// facts get refined over time as the A3 cross-engine coverage grows.
 var ansiCoreRoster = []AnsiFeature{
 	// ── E011 Numeric data types ── Java: no DECIMAL/NUMERIC, no SMALLINT/REAL.
 	{

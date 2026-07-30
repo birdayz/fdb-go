@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "atomicops",
+    srcs = ["atomicops.go"],
+    importpath = "fdb.dev/pkg/simfdb/hunt/atomicops",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+    ],
+)
+
+go_test(
+    name = "atomicops_test",
+    srcs = ["atomicops_test.go"],
+    embed = [":atomicops"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+    ],
+)

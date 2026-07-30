@@ -25,6 +25,12 @@ go_library(
 
 go_test(
     name = "plandiff_test",
+    # timeout="long" => 900s. The target runs in ~19s solo but starved past the default
+    # medium 300s once the suite grew the RFC-199 hunt targets, which are CPU-bound and
+    # scheduled alongside it. Nothing here got slower; the runner got busier. Same
+    # right-sizing the rowdiff, sqldriver, chaos and conformance targets carry, and the
+    # same reason: medium is only safe for a target that runs close to alone.
+    timeout = "long",
     srcs = [
         "catalog_aware_test.go",
         "column_conform_test.go",

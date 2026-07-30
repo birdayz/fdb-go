@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "dst-hunt_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/dst-hunt",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/simfdb/hunt",
+        "//pkg/simfdb/hunt/atomicops",
+        "//pkg/simfdb/hunt/continuation",
+        "//pkg/simfdb/hunt/interleave",
+        "//pkg/simfdb/hunt/rangeconflict",
+        "//pkg/simfdb/hunt/sqlhunt",
+        "//pkg/simfdb/hunt/sqlpage",
+    ],
+)
+
+go_binary(
+    name = "dst-hunt",
+    embed = [":dst-hunt_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "dst-hunt_test",
+    srcs = ["main_test.go"],
+    embed = [":dst-hunt_lib"],
+    deps = ["//pkg/simfdb/hunt"],
+)

@@ -816,8 +816,8 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 	// DOUBLE and FLOAT are eligible grouping keys. They were restricted to
 	// BIGINT, which meant the harness could not reach a signed-zero GROUP BY
 	// at all: the D/E columns seed -0.0, but a grouping key was never chosen
-	// from them, so a reviewer had to find by reading what the generator was
-	// structurally incapable of generating.
+	// from them, so the gap was invisible except by reading what the
+	// generator was structurally incapable of generating.
 	//
 	// Safe now that grouping is settled: -0.0 and +0.0 are two groups on every
 	// path (packedDedupKey's doc comment has the argument), and the oracle

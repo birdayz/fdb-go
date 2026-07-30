@@ -274,6 +274,7 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 		return cached
 	}
 	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage.env = m.store.Env()
 	m.storageCache[key] = storage
 	return storage
 }
@@ -975,7 +976,7 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 		var inner []byte
 		// len() > 0, not != nil: an empty-but-non-nil InnerContinuation would pass
 		// a nil check, make newVectorSearchCursor take the fresh path with nil
-		// entries, and silently skip the resumed partition (@claude Finding 1).
+		// entries, and silently skip the resumed partition.
 		if len(c.pendingInner) > 0 {
 			// Resumed partition: replay from the saved inner continuation; no
 			// fresh HNSW search needed (matches Java's replay-from-continuation).
@@ -1005,7 +1006,7 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 // Errors are PROPAGATED, never swallowed into a nil result: a nil continuation
 // on a HasNext row reads downstream as end-of-scan, so swallowing a marshal
 // failure here would silently truncate results (return fewer rows than exist
-// with no error) — a silent-data-loss path (@claude review). In practice neither
+// with no error) — a silent-data-loss path. In practice neither
 // step fails — the inner is a BytesContinuation whose ToBytes is infallible, and
 // FlatMapContinuation marshals two []byte fields — but we surface any failure as
 // a cursor error rather than a short read.
@@ -1048,7 +1049,7 @@ func (c *vectorMultiPartitionCursor) findNextPartition() (tuple.Tuple, bool, err
 	// elements is malformed — surface it as an error rather than silently
 	// terminating the fan-out (which would skip every partition after it).
 	// The write path always writes full partition prefixes, so this never fires
-	// in practice (@claude Finding 2).
+	// in practice.
 	if len(t) < c.partitionSize {
 		return nil, false, fmt.Errorf("VECTOR index %q multi-partition skip-scan: key has %d tuple elements, need partition prefix of %d",
 			c.m.index.Name, len(t), c.partitionSize)

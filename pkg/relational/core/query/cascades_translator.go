@@ -8710,8 +8710,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
 	// gate below never length-matched, the temp table stayed keyed by the base
 	// columns, and a recursive reference to `a` was a silent NULL under the name
-	// model / a loud OrdinalResolutionError under the ordinal model (review P2 +
-	// reviewer's pre-existing corner). Derive the seed
+	// model / a loud OrdinalResolutionError under the ordinal model (a gap in
+	// alias-list handling that predates the ordinal model). Derive the seed
 	// schema from the operator's output — table columns for a scan
 	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
 	// onto it.

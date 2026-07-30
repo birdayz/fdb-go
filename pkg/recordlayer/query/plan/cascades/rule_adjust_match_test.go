@@ -368,8 +368,8 @@ func candHasAdjustedMatch(ref *expressions.Reference, mc MatchCandidate, parentR
 	return false
 }
 
-// TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted pins @claude
-// RFC-076-step-1 finding 1: AdjustPartialMatchesForRef must adjust matches that
+// TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted pins
+// RFC-076-step-1: AdjustPartialMatchesForRef must adjust matches that
 // are seeded AFTER an earlier candidate's matches were already adjusted (matches
 // arrive in waves across repeated pushDataAccessTasks calls). The retired coarse
 // `refHasAdjustedMatch` short-circuit skipped the whole ref once ANY match was

@@ -95,6 +95,24 @@ func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
 	if err != nil {
 		return nil, convertError(err)
 	}
+	// EXACT with no row budget is exact_mode_without_limits(2210) on THIS surface too, not just on
+	// Iterator. It is tempting to reason that GetSlice cannot reach the check because it consumes
+	// the whole range and never needs the streaming mode — that reasoning is wrong, and it is wrong
+	// about the C client specifically: Apple's binding issues the FIRST batch's future eagerly
+	// inside getRange with the CALLER's mode (bindings/go/src/fdb/transaction.go:296), and
+	// GetSliceWithError's mode rewrite only reaches the batches it fetches itself. So the first
+	// fetch carries EXACT with no budget straight into validate_and_update_parameters.
+	// TestDifferential_ExactModeWithoutLimits measures it: libfdb_c raises 2210 from GetSlice for
+	// both spellings of "no budget" (Limit 0 and Limit -1); this client used to return every row.
+	//
+	// The spelling is "0 or -1" rather than the Iterator's "<= 0" because the two surfaces raise
+	// range_limits_invalid(2012) in different places: Iterator rejects Limit < -1 inline just above
+	// its own EXACT check, while here 2012 comes later, from getRangeDir. A "<= 0" test would
+	// answer 2210 for Limit -7, where libfdb_c answers 2012 — the C gate compares against
+	// ROW_LIMIT_UNLIMITED, so a limit below it is invalid rather than unlimited.
+	if rr.options.Mode == StreamingModeExact && (rr.options.Limit == 0 || rr.options.Limit == -1) {
+		return nil, Error{Code: 2210} // exact_mode_without_limits
+	}
 	limit := effectiveLimit(rr.options.Limit)
 	kvs, _, err := rr.doRangeWithLimit(begin, end, limit)
 	if err != nil {
@@ -132,8 +150,8 @@ func (rr goRangeResult) Iterator() RangeIterator {
 	}
 	// StreamingModeExact requires a row limit (or a byte target, which the pure-Go client doesn't
 	// support): EXACT with no limit is exact_mode_without_limits (2210), matching libfdb_c
-	// validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998). Only the explicit-Exact
-	// Iterator path is affected — GetSliceWithError ignores Mode. Limit<=0 here means unlimited
+	// validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998). GetSliceWithError raises the
+	// same code for the same input — measured, see the note there. Limit<=0 here means unlimited
 	// (0 or -1; a Limit < -1 already returned range_limits_invalid above).
 	if rr.options.Mode == StreamingModeExact && rr.options.Limit <= 0 {
 		return &goRangeIterator{err: Error{Code: 2210}} // exact_mode_without_limits
@@ -147,6 +165,20 @@ func (rr goRangeResult) Iterator() RangeIterator {
 		index:     -1,
 	}
 }
+
+// BatchSize returns the number of rows to fetch for a given streaming mode and iteration
+// number (1-based). Exported because the SimFDB backend (pkg/simfdb) is a third implementation
+// of this interface and has to batch IDENTICALLY: batch boundaries are where a range read takes
+// its per-batch read-conflict range and where a cursor's continuation lands, so a sim that
+// batched differently would disagree with the client about both. Duplicating the rule there
+// would let the two drift silently.
+func BatchSize(mode StreamingMode, iteration int, remaining int) int {
+	return batchSize(mode, iteration, remaining)
+}
+
+// EffectiveRowLimit returns the row budget for a range read: Limit 0 and -1 both mean
+// unlimited. Exported for the same reason as BatchSize.
+func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
 
 // batchSize returns the number of rows to fetch for a given streaming mode
 // and iteration number. Matches the C client's behavior:

@@ -26,8 +26,8 @@ import (
 // way already (see comparePrimaryScanVsIndexScan's and compareInPlan's doc
 // comments, and TestCriterion7_RankIsATotalPreorder in
 // primary_vs_index_transitivity_test.go). This file makes the property
-// self-checking instead of relying on the next one being caught by a
-// reviewer: it runs reflexivity / antisymmetry / transitivity /
+// self-checking instead of relying on the next violation being caught by
+// inspection: it runs reflexivity / antisymmetry / transitivity /
 // indifference-transitivity / fold-stability over generated candidate sets
 // for every criterion function this package exposes, and composes them for
 // the full comparator too.

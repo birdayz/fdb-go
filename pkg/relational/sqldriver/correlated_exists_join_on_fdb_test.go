@@ -172,8 +172,8 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 		}
 	})
 
-	// WHERE NOT EXISTS + JOIN-ON (the polarity × join-in-inner combination @claude
-	// flagged as inferable-but-unpinned). NOT EXISTS is the mirror of q5's projected
+	// WHERE NOT EXISTS + JOIN-ON (the polarity × join-in-inner combination,
+	// inferable-but-unpinned). NOT EXISTS is the mirror of q5's projected
 	// form as a filter: p.id=1's inner join is empty → NOT EXISTS true → kept;
 	// p.id=2 matches → NOT EXISTS false → excluded; p.id=3 no e → kept. A dropped ON
 	// makes p.id=1's inner non-empty → NOT EXISTS false → wrongly excludes v=10.
@@ -198,8 +198,8 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 		}
 	})
 
-	// A bare RIGHT-JOIN-direct inner (the mirror of left_join_preserves_row; @claude
-	// flagged RIGHT's executor RIGHT→LEFT normalization warrants an end-to-end row).
+	// A bare RIGHT-JOIN-direct inner (the mirror of left_join_preserves_row;
+	// RIGHT's executor RIGHT→LEFT normalization warrants an end-to-end row).
 	// The ON f.fid=e.fid is inner-inner (stays on the RIGHT node); the correlation
 	// e.eid=p.id lifts. e RIGHT JOIN f = {(e2,f88)} (f88 matches e2; no unmatched f):
 	//   p.id=1 → e.eid=1 → no row → false; a DROPPED ON (bare e×f) → e1 matches → true.

@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlhunt",
+    srcs = [
+        "indexhunt.go",
+        "nullhunt.go",
+        "querycorrectness.go",
+        "sqlhunt.go",
+    ],
+    importpath = "fdb.dev/pkg/simfdb/hunt/sqlhunt",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+    ],
+)
+
+go_test(
+    name = "sqlhunt_test",
+    srcs = [
+        "indexhunt_test.go",
+        "nullhunt_test.go",
+        "querycorrectness_test.go",
+        "sqlhunt_test.go",
+    ],
+    embed = [":sqlhunt"],
+    deps = ["//pkg/simfdb/hunt"],
+)

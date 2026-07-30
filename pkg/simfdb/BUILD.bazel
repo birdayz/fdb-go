@@ -1,0 +1,78 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "simfdb",
+    srcs = [
+        "atomic.go",
+        "conflict.go",
+        "differential_docker_optional.go",
+        # keep: gazelle evaluates `fdbdocker` as FALSE (it is not in the root
+        # BUILD.bazel's `gazelle:build_tags` list) and drops any file whose
+        # constraint does not hold, so a regen deletes this line. Adding the tag
+        # to that list is not the fix — it would flip the verdict and drop the
+        # `!fdbdocker` file above instead, which is the caveat that list already
+        # documents. Both files must stay in srcs unconditionally: rules_go
+        # applies the build constraints itself at compile time (`--define
+        # gotags=fdbdocker`), and it is what selects between them. Without this
+        # line `bazelisk build //pkg/simfdb:simfdb_test --define
+        # gotags=fdbdocker` fails with `undefined: simfdb.DockerRequired` — the
+        # tagged build that asserts the differential RAN could not be built at
+        # all, so the gate was inert.
+        "differential_docker_required.go",  # keep
+        "futures.go",
+        "options.go",
+        "range_result.go",
+        "ryw_conflict.go",
+        "simfdb.go",
+        "store.go",
+        "txn.go",
+    ],
+    importpath = "fdb.dev/pkg/simfdb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+    ],
+)
+
+go_test(
+    name = "simfdb_test",
+    srcs = [
+        "atomic_test.go",
+        "bunchedmap_conflict_test.go",
+        "cancel_conflict_range_test.go",
+        "commit_reset_test.go",
+        "commit_unknown_test.go",
+        "conflict_outcome_test.go",
+        "conflict_range_internal_test.go",
+        "continuation_fault_test.go",
+        "continuation_replay_test.go",
+        "differential_arms_test.go",
+        "differential_test.go",
+        "explicit_tx_env_test.go",
+        "fault_repro_test.go",
+        "fuzz_test.go",
+        "integration_test.go",
+        "interleave_test.go",
+        "range_batch_test.go",
+        "range_lazy_test.go",
+        "range_limit_conflict_test.go",
+        "ryw_conflict_test.go",
+        "selector_conflict_test.go",
+        "simfdb_more_test.go",
+        "simfdb_test.go",
+        "snapshot_test.go",
+    ],
+    embed = [":simfdb"],
+    deps = [
+        "//gen",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/simfdb/hunt",
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

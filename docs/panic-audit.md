@@ -89,6 +89,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
 | `pkg/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
+| `cmd/dst-hunt/main.go` | 1 | RFC-199 DST overnight hunter: a panicking seed → recorded finding, sweep continues (never aborts an unattended run). Surfaced on the finding, never swallowed. |
 
 None silently swallow: each maps to a returned error / failed future / logged-and-failed conn.
 

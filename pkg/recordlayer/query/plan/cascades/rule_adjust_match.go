@@ -93,8 +93,8 @@ func AdjustPartialMatchesForRef(ref *expressions.Reference) {
 	// candidate's matches were already adjusted). A ref-level "any adjusted match
 	// exists → skip the whole ref" guard would skip those later seeds entirely —
 	// their matchedOrderingParts stay empty, so they can never satisfy an ORDER BY
-	// and sort elimination silently degrades to a full scan + sort (@claude
-	// finding 1). Instead the round loop runs every time: re-adjusting an
+	// and sort elimination silently degrades to a full scan + sort.
+	// Instead the round loop runs every time: re-adjusting an
 	// already-absorbed match produces a content-equivalent match that the dedup
 	// rejects (adjustPartialMatch returns false → no progress → the loop
 	// converges in one round), while a freshly-seeded match IS absorbed. This

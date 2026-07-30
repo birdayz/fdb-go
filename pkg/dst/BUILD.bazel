@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dst",
+    srcs = [
+        "buggify.go",
+        "clock.go",
+        "env.go",
+        "rand.go",
+    ],
+    importpath = "fdb.dev/pkg/dst",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "dst_test",
+    srcs = [
+        "buggify_isolation_test.go",
+        "dst_test.go",
+    ],
+    embed = [":dst"],
+)

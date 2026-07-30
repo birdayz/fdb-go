@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -185,7 +184,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Check time limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one record before enforcing (free initial pass — Java's timeScanLimiter branch
 	// never suppresses usedInitialPass, even in fail mode: CursorLimitManager.java:138 has no
-	// `|| failOnScanLimitReached` term). time.Since(c.scanState.StartTime()) is measured against the
+	// `|| failOnScanLimitReached` term). c.scanState.Elapsed() is measured against the
 	// (possibly shared) execution-wide anchor, not this cursor's own construction time — so a
 	// many-leg IN-join/IN-union actually trips this once the AGGREGATE time across every leg crosses
 	// the limit, matching Java's TimeScanLimiter anchored to FDBRecordContext.getTransactionCreateTime()
@@ -193,7 +192,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
 	// (CursorLimitManager.java:141-144: the throw is in tryRecordScan's shared tail, after all three
 	// halted* flags are computed).
-	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
 		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 

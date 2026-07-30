@@ -37,7 +37,7 @@ import (
 // outside the allowlist below.
 //
 // Adding an entry is deliberately annoying: it needs a one-line justification,
-// and the reviewer question is always "why can Resolved not answer this?"
+// and the standing question is always "why can Resolved not answer this?"
 //
 // The exemption is per SITE (file:line, with a count), never per file. A
 // whole-file exemption is not an allowlist, it is a hole with a comment on it:
@@ -277,7 +277,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// to cascades_generator.go:4122 below, and it is filed with it rather than
 	// with the binder it sits inside, because the debt is the flat
 	// representation, not the lookup around it.
-	"pkg/relational/core/query/cascades_translator.go:993": {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4141"},
+	"pkg/relational/core/query/cascades_translator.go:993": {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4147"},
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
@@ -295,7 +295,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// consumers by TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
 	// TestGatheredExplodeOwnerEdgeReachesMatchEnumerator, whose name-model arms
 	// go red if the slice is ever restored.
-	"pkg/relational/core/embedded/cascades_generator.go:4141": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
+	"pkg/relational/core/embedded/cascades_generator.go:4147": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
 	//
 	// clustered_outer_scalar.go:189/402/405/406 MIGRATED (RFC-197 item 6). The
 	// pull-up bake and the outer-ref classifier attribute a reference to a leg by
@@ -367,14 +367,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// two buckets was the misfiling, and the upstream fix that retires all four
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
-	"pkg/relational/core/embedded/cascades_generator.go:3176":       {1, "translator: parsed column ref matched against declared inner columns"},
+	"pkg/relational/core/embedded/cascades_generator.go:3182":       {1, "translator: parsed column ref matched against declared inner columns"},
 	"pkg/relational/core/query/cascades_translator.go:5768":         {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5763, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5774; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5774":         {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5936, reached through a local leaf"},
 	"pkg/relational/core/query/cascades_translator.go:5816":         {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5809, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5946":         {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5930, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 5954; retired upstream by CQ-52"},
 	"pkg/relational/core/query/cascades_translator.go:5954":         {1, "translator: multi-leg baker, column membership within the matched leg window"},
 	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131": {1, "translator: QUALIFIER segment of a parsed identifier, gathered-EXISTS wrap -- the QOV-shaped and composed-read arms are taken FIRST (the `Child != nil → bail` at 126 sits directly above), so the dotted arm sees only a lazy carrier from parsed text, and a match emits NewFieldValueOfOrdinal against the box QOV. Its leaf segment is invisible to this gate -- see the Typ.FieldIndex blind spot in the header above; retired upstream by CQ-52"},
-	"pkg/relational/core/embedded/cascades_generator.go:3190":       {1, "translator: same inner-column lookup as 3192, leg-qualified arm -- the map key is a CONCATENATION, which is why the sibling entry was recorded and this one was not"},
+	"pkg/relational/core/embedded/cascades_generator.go:3202":       {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3196":       {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6767":        {1, "translator: join-side name set during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:2060":         {1, "translator: unnest element alias resolution, flat arm; the sibling arm consults the ordinal"},

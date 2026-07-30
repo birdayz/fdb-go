@@ -60,7 +60,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	// Nonexistent (unqualified) table → 42F01 (matches INSERT INTO notable).
 	wantCode("delete_nonexistent_table_42F01", "s_dnt", "DELETE FROM notable WHERE id = 1", "42F01")
 	wantCode("update_nonexistent_table_42F01", "s_unt", "UPDATE notable SET a = 1 WHERE id = 1", "42F01")
-	// WHERE-independence (@claude): the table check fires even with NO WHERE clause.
+	// WHERE-independence: the table check fires even with NO WHERE clause.
 	wantCode("delete_nonexistent_table_no_where_42F01", "s_dntn", "DELETE FROM notable", "42F01")
 	wantCode("update_nonexistent_table_no_where_42F01", "s_untn", "UPDATE notable SET a = 1", "42F01")
 	// Active-schema-qualified missing table: a VALID qualifier (the

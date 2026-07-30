@@ -414,8 +414,9 @@ func (f *fakeClient) DeleteMessage(context.Context, int) error                  
 func (f *fakeClient) AcquireJobs(_ context.Context, ids []int64) ([]int64, error) { return ids, nil }
 func (f *fakeClient) Session() scaleset.RunnerScaleSetSession                     { return f.session }
 
-// TestTimeoutClientBoundsHangingPoll pins reviewer PUSHBACK 1 (a): a half-open poll
-// is bounded by --poll-timeout rather than hanging forever.
+// TestTimeoutClientBoundsHangingPoll pins the half-open-poll case: a poll
+// that never receives must be bounded by --poll-timeout rather than
+// hanging forever.
 func TestTimeoutClientBoundsHangingPoll(t *testing.T) {
 	t.Parallel()
 
@@ -434,10 +435,11 @@ func TestTimeoutClientBoundsHangingPoll(t *testing.T) {
 	}
 }
 
-// TestListenerRunReturnsOnGetMessageError pins reviewer PUSHBACK 1 (b): listener.Run
-// propagates a GetMessage error out (so the process exits and systemd restarts),
-// rather than retrying internally. If the Public-Preview library ever changes this,
-// this test fails and we must add an in-process self-exit watchdog.
+// TestListenerRunReturnsOnGetMessageError pins the propagate-not-retry
+// contract: listener.Run propagates a GetMessage error out (so the
+// process exits and systemd restarts), rather than retrying internally.
+// If the Public-Preview library ever changes this, this test fails and
+// we must add an in-process self-exit watchdog.
 func TestListenerRunReturnsOnGetMessageError(t *testing.T) {
 	t.Parallel()
 

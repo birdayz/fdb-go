@@ -111,7 +111,7 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 	}
 }
 
-// PIN (@claude/reviewer REQUIRED-2, the EXISTS/FOD twin of review P2-2): a
+// PIN (the EXISTS/FOD twin of the leaked-sub-join-correlation case): a
 // correlated EXISTS whose FlatMap sits over an upper join. The EXISTS FlatMap binds
 // its outer with the plan's real outer alias (NamedForEachQuantifier(mergedOuterCorr
 // / outerCorrelation)) and its FOD inner with NamedPhysicalQuantifier(existCorr /

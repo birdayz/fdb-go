@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/session"
 )
 
 // TestRFC106a_DefaultSafety is the default-safety gate: a
@@ -180,5 +182,49 @@ func TestRFC106a_StatementTimeoutVsCallerDeadline(t *testing.T) {
 	// caller's by construction → propagate.
 	if out := translateExecErrorCtx(context.Background(), context.DeadlineExceeded); !errors.Is(out, context.DeadlineExceeded) {
 		t.Fatalf("unwrapped ctx deadline = %v, want propagated context.DeadlineExceeded", out)
+	}
+}
+
+// TestPageBudgetAnchorsOnTheDatabaseEnvClock pins that the per-page scan/time budget is anchored
+// on the DATABASE's DST clock, not the wall clock.
+//
+// This path always arms a time limit — txPageTimeLimit, clamped so the FDB 5s wall is never
+// crossed — and that limit decides where a page ends and what continuation the caller gets. So a
+// wall-clock anchor makes a simulated run page differently depending on how fast the host was:
+// nondeterminism in the layer RFC-199 exists to make reproducible, on every single statement.
+//
+// The seam gate cannot see this one. There is no raw time.Now here to flag; the whole mistake
+// would be calling the env-less constructor, which looks perfectly ordinary. It needs its own
+// assertion.
+func TestPageBudgetAnchorsOnTheDatabaseEnvClock(t *testing.T) {
+	t.Parallel()
+
+	clock := dst.NewSimClock(dst.Epoch)
+	env := &dst.Env{Clock: clock}
+	conn := &EmbeddedConnection{sess: &session.Session{
+		DB: (&recordlayer.FDBDatabase{}).SetEnv(env),
+	}}
+	state := (&paginatingRows{conn: conn}).executeProps().ScanState
+	if state == nil {
+		t.Fatal("executeProps produced no ScanState; the page budget has nothing to charge against")
+	}
+	if !state.StartTime().Equal(dst.Epoch) {
+		t.Fatalf("page budget anchored at %v, want the database's sim Epoch %v — the anchor "+
+			"must come off the env clock or a simulated run pages by wall-clock luck",
+			state.StartTime(), dst.Epoch)
+	}
+	clock.Advance(2 * time.Second)
+	if got := state.Elapsed(); got != 2*time.Second {
+		t.Fatalf("elapsed after advancing the sim clock 2s = %v, want 2s", got)
+	}
+
+	// A connection with no session/database is production: wall clock, unchanged. The unit
+	// tests above construct exactly that shape, so this arm also pins that they keep working.
+	prod := (&paginatingRows{conn: &EmbeddedConnection{}}).executeProps().ScanState
+	if prod == nil {
+		t.Fatal("env-less connection produced no ScanState")
+	}
+	if prod.StartTime().Equal(dst.Epoch) {
+		t.Fatal("env-less connection anchored at the sim Epoch — a nil env must be the wall clock")
 	}
 }

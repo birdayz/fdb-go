@@ -342,8 +342,8 @@ func segDump(s []rywSegment) string {
 // TestRYWSegCursor_EquivalentToMaterializer is the RFC-057 load-bearing faithfulness
 // check: over many random (writes, cleared, cache) states the lazy cursor must yield the
 // IDENTICAL segment partition the materializer does — forward (seek+next), per-probe
-// (seek to a key → containing segment), and backward (prev reverses). Seeded with the
-// reviewer-flagged successor-collision + shared-boundary cases.
+// (seek to a key → containing segment), and backward (prev reverses). Seeded with
+// successor-collision + shared-boundary cases.
 func TestRYWSegCursor_EquivalentToMaterializer(t *testing.T) {
 	t.Parallel()
 	hi := []byte("\xff")

@@ -37,6 +37,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -230,6 +231,7 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/wire",

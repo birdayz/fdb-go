@@ -35,7 +35,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			ss := specSubspace()
 
 			// Write a heartbeat from indexer A.
-			hbA := NewIndexingHeartbeat("MUTUAL_A", 60_000, true)
+			hbA := NewIndexingHeartbeat("MUTUAL_A", 60_000, true, nil)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -46,7 +46,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Indexer B in mutual mode should succeed despite A's heartbeat.
-			hbB := NewIndexingHeartbeat("MUTUAL_B", 60_000, true)
+			hbB := NewIndexingHeartbeat("MUTUAL_B", 60_000, true, nil)
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -62,7 +62,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 		It("succeeds when no other heartbeats exist", func() {
 			ss := specSubspace()
 
-			hb := NewIndexingHeartbeat("EXCLUSIVE", 60_000, false)
+			hb := NewIndexingHeartbeat("EXCLUSIVE", 60_000, false, nil)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -77,7 +77,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			ss := specSubspace()
 
 			// Indexer A writes heartbeat.
-			hbA := NewIndexingHeartbeat("EXCLUSIVE_A", 60_000, false)
+			hbA := NewIndexingHeartbeat("EXCLUSIVE_A", 60_000, false, nil)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -88,7 +88,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Indexer B in non-mutual mode should fail.
-			hbB := NewIndexingHeartbeat("EXCLUSIVE_B", 60_000, false)
+			hbB := NewIndexingHeartbeat("EXCLUSIVE_B", 60_000, false, nil)
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -107,7 +107,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 		It("allows when only own heartbeat exists", func() {
 			ss := specSubspace()
 
-			hb := NewIndexingHeartbeat("EXCLUSIVE", 60_000, false)
+			hb := NewIndexingHeartbeat("EXCLUSIVE", 60_000, false, nil)
 
 			// First CheckAndUpdate.
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -135,7 +135,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 		It("removes this indexer's heartbeat", func() {
 			ss := specSubspace()
 
-			hb := NewIndexingHeartbeat("CLEANUP_TEST", 60_000, false)
+			hb := NewIndexingHeartbeat("CLEANUP_TEST", 60_000, false, nil)
 
 			// Write heartbeat.
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -159,7 +159,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Another non-mutual indexer should succeed now.
-			hb2 := NewIndexingHeartbeat("AFTER_CLEANUP", 60_000, false)
+			hb2 := NewIndexingHeartbeat("AFTER_CLEANUP", 60_000, false, nil)
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -176,8 +176,8 @@ var _ = Describe("IndexingHeartbeat", func() {
 			ss := specSubspace()
 
 			// Write heartbeats from two indexers.
-			hbA := NewIndexingHeartbeat("ALL_A", 60_000, true)
-			hbB := NewIndexingHeartbeat("ALL_B", 60_000, true)
+			hbA := NewIndexingHeartbeat("ALL_A", 60_000, true, nil)
+			hbB := NewIndexingHeartbeat("ALL_B", 60_000, true, nil)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -202,7 +202,7 @@ var _ = Describe("IndexingHeartbeat", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Non-mutual indexer should succeed.
-			hbC := NewIndexingHeartbeat("AFTER_CLEAR", 60_000, false)
+			hbC := NewIndexingHeartbeat("AFTER_CLEAR", 60_000, false, nil)
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -218,8 +218,8 @@ var _ = Describe("IndexingHeartbeat", func() {
 		It("reads all heartbeats for an index", func() {
 			ss := specSubspace()
 
-			hbA := NewIndexingHeartbeat("READ_A", 60_000, true)
-			hbB := NewIndexingHeartbeat("READ_B", 60_000, true)
+			hbA := NewIndexingHeartbeat("READ_A", 60_000, true, nil)
+			hbB := NewIndexingHeartbeat("READ_B", 60_000, true, nil)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {

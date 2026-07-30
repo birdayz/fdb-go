@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/big"
 	"strconv"
-	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -197,6 +196,7 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 	}
 
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
+	storage.env = m.store.Env()
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
@@ -224,6 +224,7 @@ func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpr
 	keySuffix = append(keySuffix, trimmedPK...)
 
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
+	storage.env = m.store.Env()
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
@@ -389,6 +390,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 
 	// 5. Create R-tree iterator (lazy — fetches leaf nodes on demand).
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
+	storage.env = m.store.Env()
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)}
@@ -521,6 +523,7 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 		rtSubspace = m.indexSubspace.Sub(prefix...)
 	}
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
+	storage.env = m.store.Env()
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
@@ -653,7 +656,7 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 			}
 			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, cont)
 		}
-		if c.props.TimeLimit > 0 && c.hadFreePass() && time.Since(c.scanState.StartTime()) >= c.props.TimeLimit {
+		if c.props.TimeLimit > 0 && c.hadFreePass() && c.scanState.Elapsed() >= c.props.TimeLimit {
 			cont, cerr := c.limitContinuation()
 			if cerr != nil {
 				return RecordCursorResult[*IndexEntry]{}, cerr

@@ -31,6 +31,18 @@ go_library(
 
 go_test(
     name = "yamsql_test",
+    # timeout="long" => 900s. This target is in the CI race job's //pkg/relational/... scope.
+    # Measured: 15s race-instrumented solo on a 24-thread box, but it TIMED OUT at 315s on
+    # the CI runner, which is memory-capped (--local_resources=memory=HOST_RAM*0.6 on a
+    # 7.6 GB box), simultaneously hosting FDB testcontainers, and running 4 test actions at
+    # once. Same >20x contention factor the sqldriver target already documents (~25s local,
+    # ~65s solo CI, starved past 300s contended).
+    #
+    # This is the worst kind of red: the race gate went red reporting ZERO data races, so it
+    # reads as a concurrency bug and is actually a clock. Right-sized to the convention the
+    # rowdiff, sqldriver, chaos, conformance and plandiff targets already carry rather than
+    # cutting scenarios — a race gate that cannot finish is not a race gate.
+    timeout = "long",
     srcs = [
         "ansiledger_internal_test.go",
         "ansiledger_test.go",

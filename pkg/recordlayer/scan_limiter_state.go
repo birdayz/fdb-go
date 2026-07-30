@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"time"
+
+	"fdb.dev/pkg/dst"
 )
 
 // ScanLimiterState holds the mutable, execution-scoped counters that the
@@ -71,6 +73,14 @@ type ScanLimiterState struct {
 	recordsScanned int
 	bytesScanned   int64
 	startTime      time.Time
+
+	// env supplies the clock BOTH the anchor and every elapsed measurement are taken on. It is
+	// stored rather than passed per call so the two cannot come from different clocks: an
+	// anchor minted on the wall clock and compared against a simulated Now is not merely
+	// nondeterministic, it is the difference between two unrelated epochs, so the time limit
+	// trips on the first record or never. A nil env is production (wall clock), which is what
+	// every caller that does not run under a simulation gets.
+	env *dst.Env
 }
 
 // resolveScanLimiterState returns props.ScanState when the caller threaded
@@ -80,6 +90,19 @@ type ScanLimiterState struct {
 // (bypassing DefaultExecuteProperties, which always mints a ScanState) —
 // identical to the pre-fix per-cursor-local counters, so those call sites
 // are unaffected by this change.
+//
+// The fallback anchors on the WALL CLOCK (NewScanLimiterState passes a nil env), which is a hole
+// in the DST claim that a simulated run takes every clock read from the env: nothing in the type
+// system stops a raw-literal ExecuteProperties from reaching a leaf cursor inside a simulation.
+// Closing it structurally is not a small change and would not actually close it — a struct
+// literal always compiles with a nil pointer field, so "required" could only mean panicking in a
+// constructor that cannot return an error, and there are ~70 literal sites.
+//
+// What makes it harmless is a fact about call sites: the clock only DECIDES anything here through
+// the time budget (which is what ends a page and picks the continuation), and the one production
+// site that arms a time limit builds its properties with DefaultExecutePropertiesIn. That fact is
+// gated, not merely asserted — pkg/docscheck TestScanLimiterStateArmingIsSeamed fails the build
+// if any production function arms a time limit without the seamed constructor.
 func resolveScanLimiterState(props ExecuteProperties) *ScanLimiterState {
 	if props.ScanState != nil {
 		return props.ScanState
@@ -93,7 +116,19 @@ func resolveScanLimiterState(props ExecuteProperties) *ScanLimiterState {
 // shared by every TimeScanLimiter minted for that transaction
 // (CursorLimitManager.java:93).
 func NewScanLimiterState() *ScanLimiterState {
-	return &ScanLimiterState{startTime: time.Now()}
+	return NewScanLimiterStateIn(nil)
+}
+
+// NewScanLimiterStateIn is NewScanLimiterState anchored on env's clock.
+//
+// The time budget is not instrumentation: it decides whether a leaf cursor stops with
+// TimeLimitReached, and therefore WHERE THE PAGE ENDS and what continuation the caller gets
+// back. The SQL layer arms it on every single statement (paginatingRows.executeProps clamps to
+// a per-transaction page budget so the FDB 5s wall is never crossed), so a wall-clock anchor
+// means a simulated run pages differently depending on how fast the machine happened to be —
+// nondeterminism in the exact layer RFC-199 exists to make reproducible.
+func NewScanLimiterStateIn(env *dst.Env) *ScanLimiterState {
+	return &ScanLimiterState{startTime: env.Now(), env: env}
 }
 
 // RecordsScanned returns the number of records charged against this state so
@@ -134,9 +169,24 @@ func (s *ScanLimiterState) AddBytesScanned(n int64) {
 // leaf cursor sharing it measures TimeLimit against. A nil receiver returns
 // the zero Time; callers must not call this on a nil state for a live time
 // check (leaf cursors fall back to a private, non-nil state first).
+//
+// Use Elapsed for a live limit check. Reading the anchor and subtracting it from some other
+// clock is the mistake this type now makes structurally impossible.
 func (s *ScanLimiterState) StartTime() time.Time {
 	if s == nil {
 		return time.Time{}
 	}
 	return s.startTime
+}
+
+// Elapsed reports how long this state has been running, on the SAME clock its anchor was minted
+// on. Every leaf cursor's TimeLimit check goes through here.
+//
+// A nil receiver reports zero, which reads as "no time has passed" and so never trips a limit —
+// the safe direction for a state that was never configured.
+func (s *ScanLimiterState) Elapsed() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.env.Since(s.startTime)
 }

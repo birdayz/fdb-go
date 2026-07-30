@@ -140,7 +140,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			key := []byte("ukey")
 			val := []byte("initial")
 			rctx.UpdateVersionMutation(MutationTypeSetVersionstampedValue, key, val, func(old, new []byte) []byte {
@@ -156,7 +156,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			key := []byte("ukey2")
 			rctx.AddVersionMutation(MutationTypeSetVersionstampedValue, key, []byte("short"))
 
@@ -177,7 +177,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			key := []byte("ukey3")
 			rctx.AddVersionMutation(MutationTypeSetVersionstampedValue, key, []byte("old"))
 			// nil merge should just overwrite
@@ -406,7 +406,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			Expect(rctx).NotTo(BeNil())
 			Expect(rctx.Transaction()).To(Equal(tx))
 			Expect(rctx.Context()).NotTo(BeNil())
@@ -417,7 +417,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			Expect(rctx.ClaimLocalVersion()).To(Equal(0))
 			Expect(rctx.ClaimLocalVersion()).To(Equal(1))
 		})
@@ -427,7 +427,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			Expect(rctx.HasVersionMutations()).To(BeFalse())
 			Expect(rctx.HasDirtyStoreState()).To(BeFalse())
 			Expect(rctx.Timer()).To(BeNil())
@@ -441,7 +441,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
 		})
 
@@ -450,7 +450,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			rctx.txSizeWarnBytes = 1_000_000
 			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
 		})
@@ -460,7 +460,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			rctx.txSizeWarnBytes = 1 // 1 byte = always warn after any write
 
 			ks := specSubspace()
@@ -482,7 +482,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			rctx.txSizeErrorBytes = 1 // 1 byte = always error after any write
 
 			ks := specSubspace()
@@ -505,7 +505,7 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rctx := NewFDBRecordContext(tx)
+			rctx := NewFDBRecordContext(tx, nil)
 			rctx.txSizeWarnBytes = 1
 			rctx.txSizeErrorBytes = 1
 

@@ -339,7 +339,7 @@ func (r *sqlRunner) execute(stmt string) error {
 	start := time.Now()
 	if isQuery(stmt) {
 		// Remember the statement for `\explain` — verbatim EXPLAIN
-		// re-run, no plan interpretation (RFC-174 reviewer G3). EXPLAINs
+		// re-run, no plan interpretation (RFC-174). EXPLAINs
 		// themselves are not remembered, so repeated \explain stays
 		// idempotent instead of explaining the explain.
 		if fields := strings.Fields(strings.ToUpper(stmt)); len(fields) > 0 && fields[0] != "EXPLAIN" {
@@ -573,8 +573,8 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 		fmt.Fprintln(r.out, r.st.muted.Render("timing is "+state))
 	case `\explain`:
 		// Verbatim EXPLAIN re-run of the previous query — rendering only,
-		// never interpretation (RFC-174 reviewer G3: plan-shape analysis is
-		// a query-engine feature, not a CLI one).
+		// never interpretation (RFC-174: plan-shape analysis is a
+		// query-engine feature, not a CLI one).
 		if r.lastStmt == "" {
 			fmt.Fprintln(r.errOut, r.st.muted.Render("no previous query to explain — run one first"))
 			return false

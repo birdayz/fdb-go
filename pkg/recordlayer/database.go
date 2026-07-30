@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -56,6 +57,30 @@ type FDBDatabase struct {
 	// Default: PassThroughRecordStoreStateCache (no caching).
 	// Matches Java's FDBDatabase.storeStateCache field.
 	storeStateCache FDBRecordStoreStateCache
+
+	// env is the DST Tier-0 environment (Clock + Randomness + Buggify) inherited by every
+	// FDBRecordContext this database opens. Nil means production (wall clock, crypto/rand,
+	// buggify off) — the nil-safe *dst.Env accessors handle that. A simulation sets a
+	// seeded env via SetEnv so persisted timestamps/nonces are reproducible (RFC-199 Tier 0).
+	env *dst.Env
+}
+
+// SetEnv installs the DST environment inherited by every context this database opens. A
+// simulation driver calls this with dst.NewSim(seed) right after constructing the database
+// (typically over a SimFDB backend); production leaves it unset. Returns d for chaining.
+func (d *FDBDatabase) SetEnv(env *dst.Env) *FDBDatabase {
+	d.env = env
+	return d
+}
+
+// Env returns the database's DST environment, or nil (which the *dst.Env accessors treat
+// as production). Nil-safe on the receiver, like FDBRecordContext.Env: an accessor whose whole
+// contract is "nil means production" must not be the one call in the chain that panics.
+func (d *FDBDatabase) Env() *dst.Env {
+	if d == nil {
+		return nil
+	}
+	return d.env
 }
 
 // FDBDatabaseFactory caches FDBDatabase instances by cluster file path.
@@ -210,6 +235,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -289,6 +315,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -330,6 +357,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
 			ctx:           ctx,
+			env:           d.env,
 		}
 		lastCtx = recordCtx
 
@@ -503,6 +531,12 @@ type FDBRecordContext struct {
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
 
+	// env is the DST Tier-0 environment inherited from the FDBDatabase (Clock + Randomness +
+	// Buggify). Nil means production; read it through Env() which is nil-safe. Persisted-byte
+	// sites (store header LastUpdateTime, lock-state timestamp, heartbeats, nonces) route
+	// their time/randomness through here so a simulation run is byte-reproducible.
+	env *dst.Env
+
 	// Client-side transaction size thresholds. Zero = disabled.
 	txSizeWarnBytes  int64
 	txSizeErrorBytes int64
@@ -551,6 +585,18 @@ type FDBRecordContext struct {
 	session   map[string]any
 }
 
+// Env returns the DST environment for this context (Clock + Randomness + Buggify),
+// inherited from the FDBDatabase. Never nil in the sense that matters: the returned *dst.Env
+// may be nil, and the *dst.Env accessors (Now/Read/Fault) treat nil as production. Use this
+// at every persisted-byte site instead of time.Now / crypto.rand so a simulation run is
+// byte-reproducible.
+func (rc *FDBRecordContext) Env() *dst.Env {
+	if rc == nil {
+		return nil
+	}
+	return rc.env
+}
+
 // Session returns the transaction-scoped value stored under key, or nil.
 // Matches Java's FDBRecordContext.getSession.
 func (rc *FDBRecordContext) Session(key string) any {
@@ -570,12 +616,23 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 	rc.session[key] = value
 }
 
-// NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
-// This is primarily used for testing scenarios where direct transaction control is needed.
-func NewFDBRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
+// NewFDBRecordContext wraps an externally-created FDB transaction — the path SQL's explicit
+// BeginTx→COMMIT takes, plus direct-transaction-control tests.
+//
+// env is REQUIRED rather than defaulted, and that is the point. This is the sixth construction
+// site of an FDBRecordContext; the other five (Run/RunAsync/ReadOnly in this file and the two
+// in runner.go) all thread d.env, and this one silently did not. The consequence was that every
+// explicit transaction ran with env==nil — production seams, wall clock, crypto/rand — even
+// under a fully seeded simulation environment. That is precisely the path an explicit-COMMIT
+// semantics RFC needs to replay, so it was the one path the seam did not cover. A default here
+// would reintroduce the same silence; passing nil is allowed but has to be written down.
+//
+// Callers holding an *FDBDatabase should pass db.Env().
+func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordContext {
 	return &FDBRecordContext{
 		tx:  tx,
 		ctx: context.Background(),
+		env: env,
 	}
 }
 
