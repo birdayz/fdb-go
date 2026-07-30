@@ -93,7 +93,7 @@ func mustNLJCursor(
 	outer recordlayer.RecordCursor[QueryResult],
 	innerRows []QueryResult,
 	joinType plans.JoinType,
-	outerAlias, innerAlias string,
+	outerAlias, innerAlias values.CorrelationIdentifier,
 	preds []predicates.QueryPredicate,
 	resultValue values.Value,
 	evalCtx *EvaluationContext,
@@ -330,7 +330,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 	t.Run("lazy leg predicate + positional emission", func(t *testing.T) {
 		t.Parallel()
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{lazyPred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{lazyPred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		results := collectCursor(t, c)
 		if len(results) != 1 {
@@ -348,7 +348,7 @@ func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 		}
 		bakedPred := ojEqPred(bakedBW, &values.ConstantValue{Value: int64(100), Typ: values.NotNullLong})
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{bakedPred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{bakedPred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		results := collectCursor(t, c)
 		// B.W=100 matches for BOTH outer rows (no leg-A condition).
@@ -393,7 +393,7 @@ func TestNLJCursor_OrdinalBuild_HashPath(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("hash index was not built — this test must exercise the hash path")
@@ -430,7 +430,7 @@ func TestNLJCursor_OrdinalBuild_LeftOuterNullLeg(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinLeftOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 2 {
@@ -458,7 +458,7 @@ func TestNLJCursor_OrdinalBuild_FullDrain(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 2 {
@@ -492,7 +492,7 @@ func TestNLJCursor_OrdinalBuild_FullDrainHashCandidates(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("fixture must build the hash index")
@@ -556,7 +556,7 @@ func TestNLJCursor_BothSeedShapesEmitPositional(t *testing.T) {
 
 	collect := func(rv values.Value) []QueryResult {
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, rv, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, rv, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		return collectCursor(t, c)
 	}
@@ -631,7 +631,7 @@ func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 func TestDownstreamLegWindows(t *testing.T) {
 	t.Parallel()
 	_, _, qovA, qovB, seed := ojWiringLegs(t)
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "A", "B", seed)
+	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 
 	assertSpans := func(t *testing.T, label string, p plans.RecordQueryPlan) {
 		t.Helper()
@@ -697,7 +697,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 		folded := values.NewRawRecordConstructorValue(
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 		)
-		foldedNLJ := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "A", "B", folded)
+		foldedNLJ := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), folded)
 		if _, ok := downstreamLegWindows(foldedNLJ); ok {
 			t.Fatal("a folded-RV join must decline — its output is a plain projection row, no leg windows")
 		}
@@ -804,7 +804,7 @@ func TestNLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 	}
 
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, foldedRV, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, foldedRV, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 1 {

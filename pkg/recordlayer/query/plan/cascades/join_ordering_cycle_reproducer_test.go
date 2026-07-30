@@ -76,7 +76,7 @@ func TestCompareJoinOrdering_ShapeMismatchTransitivityHolds(t *testing.T) {
 	)
 	planB := plans.NewRecordQueryNestedLoopJoinPlan(
 		fullScanLeaf("B_outer"), fullScanLeaf("B_inner"),
-		[]predicates.QueryPredicate{pred}, plans.JoinInner, "O", "I", resVal)
+		[]predicates.QueryPredicate{pred}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), resVal)
 
 	planC := plans.NewRecordQueryFlatMapPlan(
 		fullScanLeaf("C_outer"), fullScanLeaf("C_inner"), aliasOuter, aliasInner, resVal, false)
@@ -189,7 +189,7 @@ func TestCompareJoinOrdering_RankIsATotalPreorder(t *testing.T) {
 	nlj := func(outerT, innerT string) plans.RecordQueryPlan {
 		return plans.NewRecordQueryNestedLoopJoinPlan(
 			fullScanLeaf(outerT), fullScanLeaf(innerT),
-			[]predicates.QueryPredicate{pred}, plans.JoinInner, "O", "I", resVal)
+			[]predicates.QueryPredicate{pred}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), resVal)
 	}
 
 	stats := properties.MapStatistics{PerType: map[string]float64{

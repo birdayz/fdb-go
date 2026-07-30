@@ -526,7 +526,10 @@ func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bo
 	if !ok || len(keyCols) == 0 {
 		return 0, false
 	}
-	innerAlias := values.NamedCorrelationIdentifier(p.GetInnerAlias())
+	// The plan carries the inner leg's identifier TYPED, so this reads it rather
+	// than re-minting one from text. A re-mint here decided the spelling itself,
+	// which is how an exact comparison downstream can still match the wrong leg.
+	innerAlias := p.GetInnerAlias()
 
 	// The key columns are the INNER LEG's, so their identity is read off the
 	// inner quantifier — the correlation element the metadata resolution has

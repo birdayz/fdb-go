@@ -100,7 +100,18 @@ func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 // inconsistency to fix at the source, not this helper's to mask. Masking it
 // here would trade a recoverable missed optimization for an unrecoverable
 // forged identity.
+// An UNSTATED identifier (the Go zero value, empty name) names nothing, and two
+// of them name nothing in common. Go's zero value has no Java analogue —
+// Quantifier.getAlias() is @Nonnull and a CorrelationIdentifier is never
+// constructed empty — so the only way to hold one here is a producer that forgot
+// to state an identity. Answering "same leg" for that pair is how an
+// unstated-identity leg binds a zero-value correlation and starts serving its
+// slots: every caller reads true as "this correlation names this leg". Declining
+// turns the omission into the miss it actually is.
 func SameLeg(a, b CorrelationIdentifier) bool {
+	if a.name == "" || b.name == "" {
+		return false
+	}
 	return a.name == b.name
 }
 

@@ -189,3 +189,119 @@ func TestRowLegsBinder_BoundWindowIsTheLegsOwnSlots(t *testing.T) {
 		}
 	}
 }
+
+// The buried-leg REBASE (spansFromMergedLegs) is a producer, and it was measured
+// SILENT: deleting `Alias:` from its legSpan literal left the entire suite green,
+// even though every consumer of a span answers "does this correlation name this
+// leg?" from that field (ordinal_join.go's span scan and buriedLegWindow both
+// compare it through SameLeg). A producer whose omission nothing detects is a
+// producer that will eventually omit.
+//
+// So this pins the rebase directly: the span's identity must be the LEG's
+// identity, carried, and the spans must still bind. The width/offset assertions
+// are what make the identity assertion meaningful — a span with the right alias
+// over the wrong window is the same wrong-rows answer.
+func TestSpansFromMergedLegs_CarriesLegIdentity(t *testing.T) {
+	t.Parallel()
+
+	// The machine namespace is lowercase and the text channel carries the UPPER
+	// fold, so a rebase that re-minted from Name would produce "Q$9" here and the
+	// identity assertion below would catch it — an exact-equality assertion on the
+	// alias is only a real check when the two spellings differ.
+	minted := values.NamedCorrelationIdentifier("q$9")
+	outer := values.NamedCorrelationIdentifier("E")
+	pos := &PositionalRow{
+		Type: &values.RecordType{
+			Fields: []values.Field{
+				{Name: "AK", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+				{Name: "EK", FieldType: values.NotNullLong, Ordinal: 2},
+			},
+			Legs: []values.RecordTypeLeg{
+				values.NewRecordTypeLeg(minted, "Q$9", 0, 2),
+				values.NewRecordTypeLeg(outer, "E", 2, 1),
+			},
+		},
+		Slots: []any{int64(1), int64(2), int64(3)},
+	}
+
+	spans := spansFromMergedLegs(pos)
+	if len(spans) != 2 {
+		t.Fatalf("spans = %d, want 2", len(spans))
+	}
+	for i, want := range []struct {
+		alias         values.CorrelationIdentifier
+		offset, width int
+	}{
+		{minted, 0, 2},
+		{outer, 2, 1},
+	} {
+		got := spans[i]
+		if got.Alias != want.alias {
+			t.Errorf("span %d Alias = %q, want %q — the rebase must CARRY the leg's "+
+				"identity, not re-mint one from its Name text. A re-mint gives the leg a "+
+				"second spelling, and a second spelling is how an alias-qualified read "+
+				"binds a different leg's slots than the one it names.",
+				i, got.Alias.Name(), want.alias.Name())
+		}
+		if got.Offset != want.offset || got.Width != want.width {
+			t.Errorf("span %d window = [%d,+%d), want [%d,+%d)",
+				i, got.Offset, got.Width, want.offset, want.width)
+		}
+	}
+
+	// And the identity a span carries must be the identity the buried-leg reader
+	// then finds. An alias-less span silently stops matching, which is the failure
+	// that stayed green.
+	for _, s := range spans {
+		sub, ok := buriedLegWindow(pos, legSpan{
+			Alias:   s.Alias,
+			LegType: &values.RecordType{Fields: pos.Type.Fields, Legs: pos.Type.Legs},
+			Offset:  0,
+			Width:   len(pos.Type.Fields),
+		}, s.Alias)
+		if !ok {
+			t.Errorf("buriedLegWindow declined the span's own alias %q — the identity the "+
+				"rebase carried is not the identity the reader looks up", s.Alias.Name())
+			continue
+		}
+		if sub == nil {
+			t.Errorf("buriedLegWindow returned ok with a nil window for %q", s.Alias.Name())
+		}
+	}
+}
+
+// The ZERO-VALUE hole. `SameLeg(zero, zero)` used to be true, so a leg that
+// stated no identity bound a correlation that also stated none — and both sides
+// are reachable: an unstated leg comes from a producer that forgot, and an
+// unstated query correlation from any caller holding a zero
+// values.CorrelationIdentifier.
+//
+// The bind would then serve that leg's slots to a value that names nothing,
+// which is a wrong-rows answer arrived at by two omissions agreeing. Go's zero
+// value has no Java analogue here (Quantifier.getAlias() is @Nonnull), so
+// declining is the type-honest disposition: unstated names nothing, and two
+// nothings are not the same leg.
+func TestRowLegsBinder_ZeroIdentityBindsNothing(t *testing.T) {
+	t.Parallel()
+
+	var unstated values.CorrelationIdentifier
+	legs := []values.RecordTypeLeg{
+		// A leg from a producer that forgot to state its identity. The constructor
+		// makes this a deliberate act rather than an omission, which is the point —
+		// but the runtime must still decline it.
+		values.NewRecordTypeLeg(unstated, "A", 0, 1),
+		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("B"), "B", 1, 1),
+	}
+	b := &rowLegsBinder{row: legRowFixture(legs)}
+
+	if _, ok := b.GetCorrelationBinding(unstated); ok {
+		t.Error("a leg that STATES NO identity bound the UNSTATED correlation — two " +
+			"omissions agreed and the binder served that leg's slots to a value that " +
+			"names nothing. `SameLeg(zero, zero)` must be false: unstated names nothing.")
+	}
+	// The sibling that stated its identity is unaffected: the decline is per-leg.
+	if _, ok := b.GetCorrelationBinding(values.NamedCorrelationIdentifier("B")); !ok {
+		t.Error("the sibling leg that stated its identity stopped binding")
+	}
+}

@@ -83,7 +83,7 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyEqualityJoin_MatchesOuterCardinali
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
@@ -124,7 +124,7 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyThroughFetch(t *testing.T) {
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
@@ -153,7 +153,7 @@ func TestNestedLoopJoinPlan_HintCost_CompositeUniqueKey_BothColumnsBound(t *test
 		equalityJoinPredicate(fieldOfAliasIn(innerLayout, "TENANT", "i"), fieldOfAliasIn(outerLayout, "TENANT_FK", "o")),
 		equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ORDER", "i"), fieldOfAliasIn(outerLayout, "ORDER_FK", "o")),
 	}
-	plan := NewRecordQueryNestedLoopJoinPlan(outerPlan, innerPlan, preds, JoinInner, "o", "i", nil)
+	plan := NewRecordQueryNestedLoopJoinPlan(outerPlan, innerPlan, preds, JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 2 {
 		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (2, true)", n, ok)
@@ -183,7 +183,7 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyPlusResidualPredicate(t *testing.T
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{keyPred, residual},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
@@ -213,7 +213,7 @@ func TestNestedLoopJoinPlan_HintCost_NonUniqueEqualityJoin_Unaffected(t *testing
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -241,7 +241,7 @@ func TestNestedLoopJoinPlan_HintCost_PartialCompositeKeyBind_Unaffected(t *testi
 		WithPrimaryKey(pkOf("TENANT", "ORDER"))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "TENANT", "i"), fieldOfAliasIn(outerLayout, "TENANT_FK", "o"))
-	plan := NewRecordQueryNestedLoopJoinPlan(outerPlan, innerPlan, []predicates.QueryPredicate{pred}, JoinInner, "o", "i", nil)
+	plan := NewRecordQueryNestedLoopJoinPlan(outerPlan, innerPlan, []predicates.QueryPredicate{pred}, JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
 		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (0, false) — only one of two PK columns bound", n, ok)
@@ -274,7 +274,7 @@ func TestNestedLoopJoinPlan_HintCost_BothOperandsInner_Unaffected(t *testing.T) 
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -325,7 +325,7 @@ func TestNestedLoopJoinPlan_HintCost_NestedFieldSameLeafName_Unaffected(t *testi
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -389,7 +389,7 @@ func TestNestedLoopJoinPlan_HintCost_SameLeafNameDifferentDomain_Unaffected(t *t
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -431,7 +431,7 @@ func TestNestedLoopJoinPlan_HintCost_LazyOperand_Unaffected(t *testing.T) {
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -454,7 +454,7 @@ func TestNestedLoopJoinPlan_HintCost_UntypedLeg_Unaffected(t *testing.T) {
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -480,7 +480,7 @@ func TestNestedLoopJoinPlan_HintCost_UnsafeIndexOrderingNames_Unaffected(t *test
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -511,7 +511,7 @@ func TestNestedLoopJoinPlan_HintCost_FullOuterJoin_Unaffected(t *testing.T) {
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinFullOuter, "o", "i", nil,
+		JoinFullOuter, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -544,7 +544,7 @@ func TestNestedLoopJoinPlan_HintCost_LeftOuterJoin_StillCorrected(t *testing.T) 
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinLeftOuter, "o", "i", nil,
+		JoinLeftOuter, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
@@ -601,7 +601,7 @@ func TestNestedLoopJoinPlan_HintCost_SameLayoutOtherCorrelation_Unaffected(t *te
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -639,7 +639,7 @@ func TestNestedLoopJoinPlan_HintCost_SameLayoutInnerCorrelation_StillCorrected(t
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "i", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
@@ -695,7 +695,7 @@ func TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg(t *testing.T
 	plan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{pred},
-		JoinInner, "o", "q$5", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("q$5"), nil,
 	)
 
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); ok || n != 0 {
@@ -714,7 +714,7 @@ func TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg(t *testing.T
 	samePlan := NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan,
 		[]predicates.QueryPredicate{same},
-		JoinInner, "o", "q$5", nil,
+		JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("q$5"), nil,
 	)
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(samePlan); !ok || n != 1 {
 		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — the genuine "+

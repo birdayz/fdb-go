@@ -235,9 +235,9 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 		if len(w.Typ.Legs) > 0 {
 			continue // box run: its subs are their own windows above
 		}
-		mergedLegs = append(mergedLegs, RecordTypeLeg{
-			Alias: w.Alias, Name: alias, Start: w.Offset, Width: len(w.Typ.Fields), // Name == Alias.Name() by construction
-		})
+		// Name == Alias.Name() by construction: the map key IS the window's own
+		// alias text (see the window builder above).
+		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Alias, alias, w.Offset, len(w.Typ.Fields)))
 	}
 	sort.Slice(mergedLegs, func(i, j int) bool {
 		if mergedLegs[i].Start != mergedLegs[j].Start {

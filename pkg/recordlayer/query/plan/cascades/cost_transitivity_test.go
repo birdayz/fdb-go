@@ -159,7 +159,7 @@ func nljPlan(name string, numPredicates int) plans.RecordQueryPlan {
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 		)
 	}
-	return plans.NewRecordQueryNestedLoopJoinPlan(outer, inner, preds, plans.JoinInner, "o", "i", nil)
+	return plans.NewRecordQueryNestedLoopJoinPlan(outer, inner, preds, plans.JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil)
 }
 
 // namedPlan pairs a plan with a label for failure reporting.

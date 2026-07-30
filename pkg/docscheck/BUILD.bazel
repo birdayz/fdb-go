@@ -15,6 +15,7 @@ go_test(
         "docs_consistency_test.go",
         "field_name_decision_detector_test.go",
         "field_name_decision_test.go",
+        "leg_identity_construction_test.go",
         "nightly_window_gate_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",

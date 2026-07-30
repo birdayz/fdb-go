@@ -405,6 +405,25 @@ type RecordTypeLeg struct {
 	Width int // its column count
 }
 
+// NewRecordTypeLeg constructs a leg boundary: the quantifier identified by
+// `alias` owns slots [start, start+width) of the carrying type's flat concat,
+// and `name` is that binding's text for the dotted channel.
+//
+// It exists to make the IDENTITY unforgettable. A composite literal lets a
+// producer state Name and omit Alias, and the result is not a compile error but
+// a leg whose identity is the zero CorrelationIdentifier — which every reader
+// then fails to bind, silently for a frontier-pinned reference (see
+// executor.buriedLegWindow's comment for the per-reference-kind disposition).
+// That is not hypothetical: deleting `Alias:` from two producers left the whole
+// suite green. Taking the identifier as the FIRST positional parameter makes the
+// omission a compile error instead.
+//
+// A docscheck AST scan (TestRecordTypeLegIsConstructed) keeps the composite
+// literal from coming back in non-test production code.
+func NewRecordTypeLeg(alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
+	return RecordTypeLeg{Alias: alias, Name: name, Start: start, Width: width}
+}
+
 // NewRecordType constructs a RecordType. The Fields slice is
 // defensively copied; callers' modifications to their input slice
 // won't affect the constructed type.

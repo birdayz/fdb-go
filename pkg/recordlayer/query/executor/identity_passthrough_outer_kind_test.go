@@ -41,7 +41,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 
 	// GATED ORDINAL OUTER: the step-1 NLJ carries the ordinal seed → outerMergedType
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
-	gatedOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", seed)
+	gatedOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 	cGated, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 		values.RecordConstructorField{Name: "A.ID", Value: &values.FieldValue{Field: "A.ID", Typ: values.NotNullLong}},
 		values.RecordConstructorField{Name: "B.ID", Value: &values.FieldValue{Field: "B.ID", Typ: values.NotNullLong}},
 	)
-	nameModelOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", nameModelRV)
+	nameModelOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nameModelRV)
 	cName, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
 	if err != nil {

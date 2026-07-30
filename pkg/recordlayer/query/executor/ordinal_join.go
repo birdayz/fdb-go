@@ -268,15 +268,15 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	for _, s := range spans {
 		if len(s.LegType.Legs) > 0 {
 			for _, sub := range s.LegType.Legs {
-				mergedLegs = append(mergedLegs, values.RecordTypeLeg{
-					Alias: sub.Alias, Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width,
-				})
+				// A REBASE, not a re-mint: the sub-leg's identity is carried
+				// verbatim and only its offset moves.
+				mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
+					sub.Alias, sub.Name, s.Offset+sub.Start, sub.Width))
 			}
 			continue
 		}
-		mergedLegs = append(mergedLegs, values.RecordTypeLeg{
-			Alias: s.Alias, Name: s.Alias.Name(), Start: s.Offset, Width: s.Width,
-		})
+		mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
+			s.Alias, s.Alias.Name(), s.Offset, s.Width))
 	}
 	return mergedLegs
 }
@@ -407,8 +407,13 @@ func collectJoinLegRVs(join plans.RecordQueryPlan, out map[values.CorrelationIde
 		addJoinLegRV(out, t.GetOuterAlias(), t.GetOuter())
 		addJoinLegRV(out, t.GetInnerAlias(), t.GetInner())
 	case *plans.RecordQueryNestedLoopJoinPlan:
-		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetOuterAlias()), t.GetOuter())
-		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetInnerAlias()), t.GetInner())
+		// Both join plans now hand over their leg identities TYPED, so the two arms
+		// are the same code. This arm used to mint an identifier from the NLJ's alias
+		// text, which put the leg-identity decision for the whole merge path in a
+		// consumer's hands: the mint chose the spelling, and an exact comparison
+		// against a spelling the comparer chose proves nothing.
+		addJoinLegRV(out, t.GetOuterAlias(), t.GetOuter())
+		addJoinLegRV(out, t.GetInnerAlias(), t.GetInner())
 	}
 }
 
@@ -892,14 +897,12 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 				// RIGHT-box collision: "D.ID" first-matched the box run and
 				// read the null-supplying leg's slot). Subs only.
 				for _, sub := range rt.Legs {
-					legs = append(legs, values.RecordTypeLeg{
-						Alias: sub.Alias, Name: sub.Name, Start: i + sub.Start, Width: sub.Width,
-					})
+					legs = append(legs, values.NewRecordTypeLeg(
+						sub.Alias, sub.Name, i+sub.Start, sub.Width))
 				}
 			} else {
-				legs = append(legs, values.RecordTypeLeg{
-					Alias: qov.Correlation, Name: corr, Start: i, Width: len(rt.Fields),
-				})
+				legs = append(legs, values.NewRecordTypeLeg(
+					qov.Correlation, corr, i, len(rt.Fields)))
 			}
 		}
 	}

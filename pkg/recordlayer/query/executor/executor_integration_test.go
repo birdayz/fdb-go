@@ -1753,7 +1753,7 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 			outerScan, innerScan,
 			nil,
 			plans.JoinInner,
-			"ORDER", "CUSTOMER",
+			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
 			nil,
 		)
 
@@ -1826,7 +1826,7 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 				),
 			},
 			plans.JoinInner,
-			"ORDER", "CUSTOMER",
+			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
 			nil,
 		)
 
@@ -1897,7 +1897,7 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 				),
 			},
 			plans.JoinLeftOuter,
-			"ORDER", "CUSTOMER",
+			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
 			nil,
 		)
 
@@ -3651,7 +3651,7 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 
 		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, "ORDER", "ORDER", nil)
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("ORDER"), nil)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
 				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),

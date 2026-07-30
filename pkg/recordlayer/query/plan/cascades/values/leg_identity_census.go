@@ -97,6 +97,34 @@ const (
 	// keeps the text-vs-identity zero from resting on an unmeasured producer.
 	LegSiteSelectOutputLegs
 
+	// LegSiteNLJPlanAlias is the materialized nested-loop join's own leg
+	// identifiers, recorded at the PLANNER where the plan is constructed.
+	//
+	// The plan used to hold these as strings, and the executor minted an
+	// identifier from each at the plan boundary — so the leg identities on the
+	// whole merge path were manufactured downstream of the quantifier that owned
+	// them. They are threaded from the select's quantifiers now, and this site
+	// records the substitution: the pair is the SOURCE-ALIAS text the plan used to
+	// carry against the quantifier identifier it carries instead.
+	//
+	// The substitution is NOT purely representational, and the measurement is why
+	// we know: over the FDB corpus the two disagree on 12 of 79040 firings, and the
+	// disagreement is total rather than a case variant — witnesses "q$N vs E". In
+	// those the select's source-alias slice carries a RE-MINTED identifier while its
+	// quantifier still carries the user alias, so the slice is the stale one and the
+	// quantifier is the authority. The old pairing was internally inconsistent
+	// there: the seed's QOVs were minted as ToUpper(alias) while the plan's leg
+	// identity kept the raw alias, so a lowercase q$N became Q$N in the seed and
+	// q$N in the plan, and values.SameLeg — exact — then bound neither.
+	// TestReconstructFoldStep1Seed_CarriesTheThreadedIdentityVerbatim pins that.
+	//
+	// So the zero this site asserts is FoldOnlyEqual, not Neither. Fold-only is the
+	// forgery population: a case-ONLY difference means one spelling is an upper fold
+	// of the other, which is precisely how ToUpper manufactured a Q$N that could
+	// forge a minted q$N leg. A wholly different name is a stale source alias, which
+	// threading the quantifier is the fix for.
+	LegSiteNLJPlanAlias
+
 	legIdentitySiteCount
 )
 
@@ -115,6 +143,8 @@ func (s LegIdentitySite) String() string {
 		return "finalizeSeedWindows (buried sub-window derivation)"
 	case LegSiteSelectOutputLegs:
 		return "expressionOutputLegs (producer: quantifier vs sourceAliases)"
+	case LegSiteNLJPlanAlias:
+		return "NLJ plan leg identity (planner: sourceAlias text vs quantifier)"
 	default:
 		return "unknown leg identity site"
 	}
@@ -145,6 +175,47 @@ type LegIdentityCensus struct {
 	// corrName" witnesses from the FoldOnlyEqual population, so a nonzero count
 	// names the offending pair instead of merely reporting a number.
 	FoldOnlySamples []string
+
+	// NeitherSamples is the same service for the Neither population, and it is
+	// collected ONLY at the sites where Neither is the asserted-zero
+	// (LegSiteNeitherMustBeZero). At a genuine COMPARISON site Neither is the
+	// ordinary scan traffic every lookup pays walking to its own leg — a large,
+	// per-row population whose witnesses say nothing and whose sampling would put
+	// a mutex in the row loop. At the identity-PAIR sites it is the failure itself:
+	// a leg whose two spellings name different things.
+	//
+	// This exists because it was needed: retyping the nested-loop join plan's leg
+	// identities reported Neither = 12 over 79040, and a bare 12 cannot be
+	// diagnosed. The rule generalizes — whichever population a site's assertion
+	// requires to be zero is the population that must name its witnesses.
+	NeitherSamples []string
+}
+
+// LegSiteNeitherMustBeZero reports whether a site's Neither population is a
+// FAILURE rather than ordinary traffic.
+//
+// It is true exactly at the sites whose recorded pair is two spellings of ONE
+// leg that must therefore denote the same thing: a leg's own (Name,
+// Alias.Name()). Everywhere else the pair is a lookup against a leg it is allowed
+// not to be, so Neither counts misses and only FoldOnlyEqual can indict.
+//
+// LegSiteNLJPlanAlias is deliberately NOT here even though its pair is also two
+// spellings of one leg: measured, the select's source-alias slice can carry a
+// re-minted identifier while its quantifier keeps the user alias, and that
+// divergence is the reason to prefer the quantifier rather than a reason to fail.
+// See that site's comment.
+//
+// The distinction is the reason FoldOnlyEqual == 0 was not enough on its own: a
+// producer that stores Name "X" against Alias "Y" lands in Neither and leaves the
+// fold-only count at zero while the text channel and the identity channel have
+// diverged.
+func LegSiteNeitherMustBeZero(site LegIdentitySite) bool {
+	switch site {
+	case LegSiteTextVsIdentity, LegSiteSelectOutputLegs:
+		return true
+	default:
+		return false
+	}
 }
 
 // legIdentitySampleCap bounds the retained witness set. A handful names the
@@ -200,25 +271,33 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 		atomic.AddInt64(&c.ExactEqual, 1)
 	case strings.EqualFold(legName, corrName):
 		atomic.AddInt64(&c.FoldOnlyEqual, 1)
-		recordFoldOnlySample(site, legName, corrName)
+		recordSample(site, legName, corrName, false)
 	default:
 		atomic.AddInt64(&c.Neither, 1)
+		if LegSiteNeitherMustBeZero(site) {
+			recordSample(site, legName, corrName, true)
+		}
 	}
 }
 
-// recordFoldOnlySample retains a distinct witness for the fold-only population.
-func recordFoldOnlySample(site LegIdentitySite, legName, corrName string) {
+// recordSample retains a distinct witness for one of a site's two indictable
+// populations.
+func recordSample(site LegIdentitySite, legName, corrName string, neither bool) {
 	w := legName + " vs " + corrName
 	legSampleMu.Lock()
 	defer legSampleMu.Unlock()
 	c := &legCensus[site]
-	for _, s := range c.FoldOnlySamples {
+	dst := &c.FoldOnlySamples
+	if neither {
+		dst = &c.NeitherSamples
+	}
+	for _, s := range *dst {
 		if s == w {
 			return
 		}
 	}
-	if len(c.FoldOnlySamples) < legIdentitySampleCap {
-		c.FoldOnlySamples = append(c.FoldOnlySamples, w)
+	if len(*dst) < legIdentitySampleCap {
+		*dst = append(*dst, w)
 	}
 }
 
@@ -238,6 +317,7 @@ func LegIdentityCensusOf(site LegIdentitySite) LegIdentityCensus {
 	c := &legCensus[site]
 	legSampleMu.Lock()
 	samples := append([]string(nil), c.FoldOnlySamples...)
+	neitherSamples := append([]string(nil), c.NeitherSamples...)
 	legSampleMu.Unlock()
 	return LegIdentityCensus{
 		Total:           atomic.LoadInt64(&c.Total),
@@ -245,6 +325,7 @@ func LegIdentityCensusOf(site LegIdentitySite) LegIdentityCensus {
 		FoldOnlyEqual:   atomic.LoadInt64(&c.FoldOnlyEqual),
 		Neither:         atomic.LoadInt64(&c.Neither),
 		FoldOnlySamples: samples,
+		NeitherSamples:  neitherSamples,
 	}
 }
 
@@ -269,5 +350,6 @@ func ResetLegIdentityCensus() {
 		atomic.StoreInt64(&c.FoldOnlyEqual, 0)
 		atomic.StoreInt64(&c.Neither, 0)
 		c.FoldOnlySamples = nil
+		c.NeitherSamples = nil
 	}
 }

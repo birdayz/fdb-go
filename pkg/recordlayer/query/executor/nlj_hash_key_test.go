@@ -77,7 +77,7 @@ func TestNLJCursor_HashPath_BytesKeys(t *testing.T) {
 			innerRows[i] = ojLegQR(t, legB, bkey(i), int64(i*10))
 		}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		t.Cleanup(func() { c.Close() })
 		return c, collectCursor(t, c)
 	}
@@ -131,7 +131,7 @@ func TestNLJCursor_HashPath_CrossNumericKeys(t *testing.T) {
 			innerRows[i] = ojLegQR(t, legB, float64(i), int64(i*10))
 		}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		t.Cleanup(func() { c.Close() })
 		return c, collectCursor(t, c)
 	}
@@ -191,7 +191,7 @@ func TestNLJCursor_HashPath_UnsignedKeys(t *testing.T) {
 			innerRows = append(innerRows, ojLegQR(t, legB, int64(1_000_000+i), int64(i)))
 		}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		t.Cleanup(func() { c.Close() })
 		return c, collectCursor(t, c)
 	}
@@ -237,7 +237,7 @@ func TestNLJCursor_HashPath_Float32VsFloat64Keys(t *testing.T) {
 	outerRows := []QueryResult{ojLegQR(t, legA, float32(5), int64(50))}
 
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("hash index was not built — mixed-width float keys must normalize, not decline")
@@ -265,7 +265,7 @@ func TestNLJCursor_HashPath_StringKeys(t *testing.T) {
 	outerRows := []QueryResult{ojLegQR(t, legA, "k005", int64(50))}
 
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	if c.hashIndex == nil {
 		t.Fatal("hash index was not built — string keys are hashable and exact, must not decline")
@@ -306,7 +306,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 		}
 		outerRows := []QueryResult{ojLegQR(t, legA, int64(5), int64(50))}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		if c.hashIndex != nil {
 			t.Fatal("an inner NaN key must DECLINE the hash index — its bucket would be unreachable, so the whole join falls back to the linear predicate")
@@ -330,7 +330,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 		}
 		outerRows := []QueryResult{ojLegQR(t, legA, math.NaN(), int64(50))}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		if c.hashIndex == nil {
 			t.Fatal("clean float inner keys must build the hash — only the NaN PROBE degrades")
@@ -362,7 +362,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 		}
 		outerRows := []QueryResult{ojLegQR(t, legA, math.NaN(), int64(50))}
 		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+			values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		if c.hashIndex != nil {
 			t.Fatal("an inner NaN key must DECLINE the hash index")

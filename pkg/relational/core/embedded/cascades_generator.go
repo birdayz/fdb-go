@@ -2940,11 +2940,11 @@ func collectLegMatches(p plans.RecordQueryPlan, alias string, acc bool, out []le
 			// where that mirror breaks — an interior duplicate therefore
 			// counts as a second match and the caller declines to the name
 			// fallbacks rather than trusting either binding.
-			if strings.EqualFold(n.GetOuterAlias(), alias) {
+			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
 				out = append(out, legMatch{n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter())})
 			}
 			out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
-			if strings.EqualFold(n.GetInnerAlias(), alias) {
+			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
 				out = append(out, legMatch{n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner())})
 			}
 			out = collectLegMatches(n.GetInner(), alias, innerNS, out)
@@ -3614,8 +3614,8 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 		return nil
 	}
 
-	outerAlias := strings.ToUpper(nlj.GetOuterAlias())
-	innerAlias := strings.ToUpper(nlj.GetInnerAlias())
+	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
+	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
 
 	firstCols, secondCols := outerCols, innerCols
 	firstAlias, secondAlias := outerAlias, innerAlias

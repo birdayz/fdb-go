@@ -1,55 +1,44 @@
 package sqldriver_test
 
-// Leg-identity census pass (CQ-61): the acceptance instrument for retyping
-// RecordTypeLeg's identity from TEXT to a CorrelationIdentifier.
+// The SQL-EXPRESSIBLE half of the leg-identity census (CQ-61, the retyping of
+// RecordTypeLeg's identity from TEXT to a CorrelationIdentifier).
 //
-// The sites that ask "does this correlation name that leg window?" do NOT agree
-// on how to compare leg identity. Two compare the leg's stored text EXACTLY
-// against the counterparty correlation's own spelling; two upper-FOLD one side
-// first. Routing all of them through values.SameLeg makes every one EXACT, which
-// is what Java does (CorrelationIdentifier.equals is Objects.equals on the raw
-// id, and Java never case-folds an alias anywhere).
+// The sites that ask "does this correlation name that leg window?" used to
+// disagree on how to compare leg identity: two compared the leg's stored text
+// EXACTLY against the counterparty correlation's own spelling, two upper-FOLDED
+// one side first. They all go through values.SameLeg now, which is EXACT, as Java
+// is (CorrelationIdentifier.equals is Objects.equals on the raw id; Java never
+// case-folds an alias anywhere). Making a folding comparison exact is a BEHAVIOR
+// CHANGE for any pair that folds equal but is not equal, so whether such a pair
+// occurs is a measurement — that is what the census is.
 //
-// Converting a folding comparison to an exact one is a BEHAVIOR CHANGE for any
-// pair that folds equal but is not equal. This test measures whether such a pair
-// occurs in real execution: it runs the join / buried-join / correlated-scalar /
-// lateral-unnest shapes the Group-A sites serve against a live FDB and asserts
-// the FoldOnlyEqual population is EMPTY at every site.
+// WHERE THE GATE ACTUALLY LIVES: in TestMain (assertLegIdentityCensus). The
+// census counters are package-scoped in values and Go orders no tests, so only
+// after m.Run() is the population complete; a test asserting mid-run sees a
+// floor. TestMain enforces both the per-site population FLOORS and the zeros.
 //
-// The zero is what makes the conversion free. A nonzero count is NOT a licence to
-// keep folding — it names a producer that stores a leg under one spelling and
-// looks it up under another, and the fix belongs there.
+// WHAT THIS TEST ADDS, and what it provably cannot: it drives the join /
+// buried-join / correlated-scalar / lateral-unnest shapes that the SQL DDL can
+// express, and asserts the invariants over whatever population exists when it
+// runs. Measured, running this test ALONE: five of the six sites report Total 0
+// and the sixth reports 4. That is not a fixable defect in the shapes below —
+// the per-row leg BINDERS only see rows whose type carries leg boundaries, and
+// those rows come from struct-array unnest chains that SQL DDL cannot build (see
+// the INSERT comment below: there is no array literal that type-checks against
+// an ARRAY column, so an unnest here iterates nothing). The binder population
+// comes from the metadata-driven tests that construct their records as dynamicpb
+// messages — TestFDB_ChainedUnnest, TestFDB_ChainedUnnestOrdinal,
+// TestFDB_ChainedStarBodyCTE and the buried-window tests. Hence TestMain, whose
+// corpus is all of them.
 //
-// Read the counts as LOWER BOUNDS. The census counters are package-scoped in
-// values and this test is t.Parallel(), so sibling tests planning or executing
-// their own corpora contribute too. That asymmetry is safe in the only direction
-// the assertion depends on: extra traffic can make FoldOnlyEqual==0 FAIL, never
-// falsely pass.
-//
-// What this test is and is NOT, stated plainly so its green is not over-read:
-//
-//   - It is the always-green FLOOR: whatever leg traffic the shapes below (plus
-//     any sibling running concurrently) generate, none of it may be fold-only.
-//   - It does NOT by itself reach the per-row leg BINDERS. Those sites only see
-//     rows whose type carries leg boundaries, and the shapes that produce such
-//     rows live across the wider suite rather than in any one fixture — measured:
-//     run this package with LEG_IDENTITY_CENSUS=1 (see TestMain) and the binder
-//     sites report thousands of comparisons, all exact. A single test that claimed
-//     to cover them would be asserting a zero over a population it never looked
-//     at, which is the one thing this census exists to avoid.
-//   - The binders' identity semantics are pinned DETERMINISTICALLY, not
-//     statistically, by the unit tests in the executor package
-//     (leg_identity_binding_test.go): a case-variant forgery must not bind, and a
-//     leg that states no identity must not bind by its Name.
-//
-// So the liveness check below requires only that SOME site was reached — enough to
-// prove the instrument is wired and running, which is the failure this test can
-// actually detect on its own.
+// The binders' identity semantics are additionally pinned DETERMINISTICALLY, not
+// statistically, by the unit tests in the executor package
+// (leg_identity_binding_test.go): a case-variant forgery must not bind, and a leg
+// that states no identity must not bind by its Name.
 
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -116,22 +105,12 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 		}
 	}
 
-	// Enable AFTER seeding so the DML path's own traffic is excluded, and reset so
-	// the pass starts from a known floor.
-	//
-	// The census gate is a PACKAGE-global, and this test runs in parallel with the
-	// rest of the suite — so when the whole-suite census owns the gate
-	// (LEG_IDENTITY_CENSUS=1, see TestMain) this test must not touch it. Resetting
-	// would discard every sibling's accumulated traffic, and disabling on cleanup
-	// would silently switch the census OFF partway through the run, leaving the
-	// whole-suite report a floor of zero that looks like a proof and is an artifact.
-	// That is not hypothetical: it is exactly what the first version of this test did.
-	ownsGate := os.Getenv("LEG_IDENTITY_CENSUS") != "1"
-	if ownsGate {
-		values.ResetLegIdentityCensus()
-		values.SetLegIdentityCensusEnabled(true)
-		t.Cleanup(func() { values.SetLegIdentityCensusEnabled(false) })
-	}
+	// This test does NOT touch the census gate. TestMain owns it for the whole run,
+	// and the counters are a package-global: resetting here would discard every
+	// sibling's accumulated traffic, and disabling on cleanup would switch the
+	// census OFF partway through, leaving TestMain's report a floor of zero that
+	// looks like a proof and is an artifact. That is not hypothetical — it is
+	// exactly what the first version of this test did.
 
 	// Each shape is a Group-A leg-window consumer. They are run for their leg
 	// TRAFFIC, so a query that legitimately declines to plan is not a failure of
@@ -203,14 +182,16 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 		}
 	}
 
-	var wired int
+	// Read these as LOWER BOUNDS in both directions: the counters are
+	// package-scoped and this test is t.Parallel(), so siblings contribute, and the
+	// suite is not finished. The asymmetry is safe for the only thing asserted here
+	// — a zero over a sum of non-negative terms is exact however many extra passes
+	// contribute, so extra traffic can make it FAIL, never falsely pass. The
+	// POPULATION floors are TestMain's job, because only it runs last.
 	for _, site := range values.LegIdentitySites() {
 		c := values.LegIdentityCensusOf(site)
 		t.Logf("site %-52s total=%-7d exact=%-7d foldOnly=%-3d neither=%d",
 			site.String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
-		if c.Total > 0 {
-			wired++
-		}
 		if c.FoldOnlyEqual != 0 {
 			t.Errorf("site %s: FoldOnlyEqual = %d, want 0 — a leg is STORED under one "+
 				"spelling and LOOKED UP under another, so making this site exact "+
@@ -239,9 +220,5 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 					"other.", site, c.Neither, c.Total)
 			}
 		}
-	}
-	if wired == 0 {
-		t.Fatal("every leg-identity site reported ZERO comparisons — the census is not " +
-			"wired, so its zero fold-only population is vacuous rather than evidence")
 	}
 }

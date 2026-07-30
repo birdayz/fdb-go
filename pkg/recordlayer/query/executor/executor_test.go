@@ -1206,7 +1206,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 		&values.ConstantValue{Value: "hello", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 	})
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, "", "", nil)
+	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1241,7 +1241,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_WithPredicate(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		plans.JoinInner,
-		"", "",
+		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
 		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1274,7 +1274,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_PredicateRejects(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinInner,
-		"", "",
+		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
 		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1307,7 +1307,7 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinLeftOuter,
-		"", "",
+		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
 		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -5038,7 +5038,7 @@ func TestNLJCursor_CloseIdempotent(t *testing.T) {
 	})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 
 	if c.IsClosed() {
 		t.Fatal("cursor should not be closed before Close()")
@@ -5066,7 +5066,7 @@ func TestNLJCursor_OnNextAfterClose(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -5091,7 +5091,7 @@ func TestNLJCursor_EmptyInner_InnerJoin(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	c := mustNLJCursor(t, outer, nil, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, nil, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5109,7 +5109,7 @@ func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
 	}
 	outer := recordlayer.FromList(outerRows)
 
-	c := mustNLJCursor(t, outer, nil, plans.JoinLeftOuter, "L", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, nil, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("L"), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5136,7 +5136,7 @@ func TestNLJCursor_EmptyOuter_InnerJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5151,7 +5151,7 @@ func TestNLJCursor_EmptyOuter_LeftJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1))}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinLeftOuter, "L", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("L"), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5166,7 +5166,7 @@ func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinCross, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinCross, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5191,7 +5191,7 @@ func TestNLJCursor_InnerJoin_CrossProduct(t *testing.T) {
 		qr("b", int64(20)),
 	}
 
-	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -5215,7 +5215,7 @@ func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
 
 	// Predicate that always rejects: INNER join should produce 0 rows.
 	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)}
-	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", preds, nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), preds, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)

@@ -78,7 +78,7 @@ func TestRFC153_Verifier_UnrecognizedNode_FailsClosed(t *testing.T) {
 	buriedPred := predicates.NewComparisonPredicate(rfc153BuriedFieldOfA(), predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 	nljWithBuried := plans.NewRecordQueryNestedLoopJoinPlan(
 		cleanScan, cleanScan, []predicates.QueryPredicate{buriedPred},
-		plans.JoinInner, "", "", resVal,
+		plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), resVal,
 	)
 	if !planReferencesAnyBuriedAlias(nljWithBuried, []string{"A"}) {
 		t.Fatal("FAIL-CLOSED BROKEN: an unrecognized node (NLJ) carrying the buried ref in its OWN predicate was reported CLEAN — the §2 wrong-rows trap")
@@ -87,7 +87,7 @@ func TestRFC153_Verifier_UnrecognizedNode_FailsClosed(t *testing.T) {
 	// Even an unrecognized node with NO buried reference fails closed (conservative
 	// over-decline into the correct-but-slow materialized NLJ — never under-catches).
 	cleanNLJ := plans.NewRecordQueryNestedLoopJoinPlan(
-		cleanScan, cleanScan, nil, plans.JoinInner, "", "", resVal,
+		cleanScan, cleanScan, nil, plans.JoinInner, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), resVal,
 	)
 	if !planReferencesAnyBuriedAlias(cleanNLJ, []string{"A"}) {
 		t.Error("an unrecognized node type must fail-CLOSED regardless of whether it carries a buried ref (conservative over-decline)")

@@ -124,7 +124,7 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 	rt := legRowType("X", "Y")
 	typedScan := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)
 	nlj := plans.NewRecordQueryNestedLoopJoinPlan(
-		typedScan, typedScan, nil, plans.JoinInner, "L", "R",
+		typedScan, typedScan, nil, plans.JoinInner, values.NamedCorrelationIdentifier("L"), values.NamedCorrelationIdentifier("R"),
 		values.NewRecordConstructorValue(),
 	)
 	if got := buriedLegOrdinalLayout(nlj); got != nil {

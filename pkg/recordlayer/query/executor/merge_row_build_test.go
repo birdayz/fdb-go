@@ -86,7 +86,7 @@ func TestMergeBuild_NLJCursor_Nested(t *testing.T) {
 		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "B", []predicates.QueryPredicate{pred}, s3MergeRC(qovA, qovB), EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, s3MergeRC(qovA, qovB), EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 1 {
@@ -479,7 +479,7 @@ func TestHashJoinDeclinesFusedPred(t *testing.T) {
 		s3FusedRef(t, mergeQOV, 0, 0),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-		"A", "M", []predicates.QueryPredicate{pred}, mixed, EmptyEvaluationContext(), nil)
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("M"), []predicates.QueryPredicate{pred}, mixed, EmptyEvaluationContext(), nil)
 	defer c.Close()
 	results := collectCursor(t, c)
 	if len(results) != 2 {

@@ -382,7 +382,7 @@ func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 		}
 		cursor, err := newNLJCursor(
 			recordlayer.Empty[QueryResult](), buf.Items(),
-			plans.JoinInner, "O", "I", preds, nil, EmptyEvaluationContext(), state,
+			plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, EmptyEvaluationContext(), state,
 		)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)

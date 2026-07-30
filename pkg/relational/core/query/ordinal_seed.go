@@ -66,10 +66,15 @@ func (t *cascadesTranslator) buriedLegBounds(j *logical.LogicalJoin, base int) [
 		if sj, isJ := sub.op.(*logical.LogicalJoin); isJ {
 			out = append(out, t.buriedLegBounds(sj, off)...)
 		} else if sub.binding != "" {
-			out = append(out, values.RecordTypeLeg{
-				Alias: values.NamedCorrelationIdentifier(sub.binding),
-				Name:  sub.binding, Start: off, Width: len(subTyp.Fields),
-			})
+			// A TEXT-BOUNDARY mint. The logical operator records its source's
+			// binding as a string and carries no quantifier, so there is no
+			// identifier in scope to thread — the identity is manufactured here,
+			// once, from the only spelling that exists. Name is that same string, so
+			// the two channels cannot diverge at this producer. The seed rebake
+			// (CQ-53) is what gives this layer a typed quantifier to carry instead.
+			out = append(out, values.NewRecordTypeLeg(
+				values.NamedCorrelationIdentifier(sub.binding),
+				sub.binding, off, len(subTyp.Fields)))
 		}
 		off += len(subTyp.Fields)
 	}

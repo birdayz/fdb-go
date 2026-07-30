@@ -28,7 +28,7 @@ func TestCursorResolvesFoldPositionally(t *testing.T) {
 	// downstreamLegWindows reads to derive the leg windows (A@0, B@2).
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, legB, false)
-	step1 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", seed)
+	step1 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 
 	// Cross-agreement strengthening: the EXECUTOR twin (ordinalJoinSpansOf, via
 	// downstreamLegWindows→joinPlanSpans) yields A@0 / B@2 for this seed — the

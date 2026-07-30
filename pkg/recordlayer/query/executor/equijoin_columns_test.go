@@ -45,7 +45,7 @@ func TestExtractEquijoinOperands_SideClassification(t *testing.T) {
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerOp},
 	)
 	gotOuter, gotInner := extractEquijoinOperands(
-		[]predicates.QueryPredicate{p}, "T1", "T2")
+		[]predicates.QueryPredicate{p}, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if gotOuter != values.Value(outerOp) || gotInner != values.Value(innerOp) {
 		t.Errorf("inner-on-LHS: got (outer=%v, inner=%v), want (T1.ID, T2.T1_ID)", gotOuter, gotInner)
 	}
@@ -56,7 +56,7 @@ func TestExtractEquijoinOperands_SideClassification(t *testing.T) {
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: innerOp},
 	)
 	gotOuter, gotInner = extractEquijoinOperands(
-		[]predicates.QueryPredicate{p2}, "T1", "T2")
+		[]predicates.QueryPredicate{p2}, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if gotOuter != values.Value(outerOp) || gotInner != values.Value(innerOp) {
 		t.Errorf("outer-on-LHS: got (outer=%v, inner=%v), want (T1.ID, T2.T1_ID)", gotOuter, gotInner)
 	}
@@ -109,7 +109,7 @@ func TestExtractEquijoinOperands_Declines(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			o, in := extractEquijoinOperands([]predicates.QueryPredicate{tc.pred}, "T1", "T2")
+			o, in := extractEquijoinOperands([]predicates.QueryPredicate{tc.pred}, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 			if o != nil || in != nil {
 				t.Errorf("%s: got (outer=%v, inner=%v), want decline (nil, nil)", tc.name, o, in)
 			}

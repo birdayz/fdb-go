@@ -9,7 +9,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"sort"
@@ -70,33 +72,36 @@ func TestMain(m *testing.M) {
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(runWithOptionalLegIdentityCensus(m))
+	os.Exit(runUnderLegIdentityCensus(m))
 }
 
-// runWithOptionalLegIdentityCensus runs the suite, optionally under the
-// leg-identity census (LEG_IDENTITY_CENSUS=1).
+// runUnderLegIdentityCensus runs the suite under the leg-identity census and
+// then ASSERTS its invariants. This is the standing gate for CQ-61's retyping of
+// RecordTypeLeg's identity from text to a CorrelationIdentifier.
 //
 // The census answers "does any leg get STORED under one spelling and LOOKED UP
-// under another?" — the question that decides whether making the leg-identity
-// comparisons EXACT (values.SameLeg, matching Java) changes which row they bind.
-// That question is about the traffic of the WHOLE corpus, not of any one test:
-// the leg-window sites only see rows whose type carries leg boundaries, so a
-// handful of hand-written shapes measures almost nothing. Running the entire FDB
-// suite under the counters is what makes the population real.
+// under another?" — the question that decides whether the leg-identity
+// comparisons being EXACT (values.SameLeg, matching Java, which never case-folds
+// an alias) binds a different row than folding would.
 //
-// It is env-GATED and off by default. Two of the counted sites are on the per-row
-// executor path, so an always-on census would put a contended atomic increment in
-// the row loop; and the report is a diagnostic dump, not an assertion. The
-// standing always-green assertion lives in
-// leg_identity_census_fdb_test.go.
-func runWithOptionalLegIdentityCensus(m *testing.M) int {
-	if os.Getenv("LEG_IDENTITY_CENSUS") != "1" {
-		return m.Run()
-	}
+// The gate lives HERE, in TestMain, rather than in a test, because the question
+// is about the traffic of the WHOLE corpus and Go gives tests no ordering: only
+// after m.Run() is the population complete. It is unconditional rather than
+// env-gated because a proof nothing in CI runs is not a proof — the previous
+// env-gated form reported the real numbers only under a manual
+// LEG_IDENTITY_CENSUS=1 invocation, while the in-CI assertion it delegated to
+// saw five of six sites at zero.
+//
+// Enabling the counters always is affordable HERE and nowhere else: the gate
+// exists so production never pays an atomic in the per-row executor loop, and a
+// test binary is not production. The measured cost is inside the run-to-run
+// noise of this suite.
+func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
+
 	fmt.Fprintln(os.Stderr, "=== LEG IDENTITY CENSUS ===")
 	for _, site := range values.LegIdentitySites() {
 		c := values.LegIdentityCensusOf(site)
@@ -105,8 +110,87 @@ func runWithOptionalLegIdentityCensus(m *testing.M) int {
 		if len(c.FoldOnlySamples) > 0 {
 			fmt.Fprintf(os.Stderr, "    fold-only witnesses: %v\n", c.FoldOnlySamples)
 		}
+		if len(c.NeitherSamples) > 0 {
+			fmt.Fprintf(os.Stderr, "    neither witnesses: %v\n", c.NeitherSamples)
+		}
+	}
+	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
+		code = 1
 	}
 	return code
+}
+
+// legIdentityFloors is the minimum population each site must report over the
+// whole suite. A site at ZERO makes every zero asserted about it vacuous, which
+// is precisely how the previous form of this gate passed while proving nothing.
+//
+// The floors are set an order of magnitude below the measured populations
+// (rowLegsBinder 285, buriedLegWindow 567, text-vs-identity 3115, hoist 1000,
+// finalizeSeedWindows 1263, expressionOutputLegs 3227 — identical across three
+// consecutive full-suite runs). That gap is deliberate: the corpus grows and
+// shrinks with unrelated work, and a floor set at the measured value would fail
+// on churn rather than on a site going dark. What the floor detects is COLLAPSE
+// — a producer stopping, a reader being routed around, a rule that no longer
+// fires — not drift.
+//
+// The hoist site's total counts Cascades rule FIRINGS, not queries, so it is the
+// most refire-sensitive of the six; its floor is the loosest for that reason.
+var legIdentityFloors = map[values.LegIdentitySite]int64{
+	values.LegSiteRowLegsBinder:        32,
+	values.LegSiteBuriedLegWindow:      64,
+	values.LegSiteTextVsIdentity:       256,
+	values.LegSiteLeftOuterExistential: 64,
+	values.LegSiteFinalizeSeedWindows:  128,
+	values.LegSiteSelectOutputLegs:     256,
+	values.LegSiteNLJPlanAlias:         4096,
+}
+
+// assertLegIdentityCensus checks the whole-suite census and reports whether it
+// failed. It is skipped when the corpus was NARROWED by -test.run: the floors
+// describe the full suite, so a filtered invocation would fail them for a reason
+// that says nothing about the code. The skip is announced, so a filtered run is
+// never mistaken for a passing gate.
+func assertLegIdentityCensus(w io.Writer) bool {
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite)\n",
+			f.Value.String())
+		return false
+	}
+	failed := false
+	for _, site := range values.LegIdentitySites() {
+		c := values.LegIdentityCensusOf(site)
+		if floor, ok := legIdentityFloors[site]; ok && c.Total < floor {
+			failed = true
+			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want >= %d.\n"+
+				"  A site the suite no longer reaches makes every zero asserted about it\n"+
+				"  VACUOUS. Either the shapes that drive it stopped being planned, or a\n"+
+				"  reader was routed around. Find out which before adjusting this floor.\n",
+				site, c.Total, floor)
+		}
+		if c.FoldOnlyEqual != 0 {
+			failed = true
+			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported FoldOnlyEqual = %d, want 0.\n"+
+				"  A leg is STORED under one spelling and LOOKED UP under another, so this\n"+
+				"  site being exact (values.SameLeg) binds a different row than folding would.\n"+
+				"  Witnesses: %v.\n"+
+				"  The fix belongs at the PRODUCER that normalizes one side, not in the\n"+
+				"  comparison: SameLeg is exact because the alias namespaces here are\n"+
+				"  case-DISJOINT (a quoted \"q$5\" must not forge a planner-minted q$5).\n",
+				site, c.FoldOnlyEqual, c.FoldOnlySamples)
+		}
+		if values.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
+			failed = true
+			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Neither = %d of Total = %d, want 0.\n"+
+				"  A leg's TEXT and its IDENTITY name different things. The readers compare\n"+
+				"  through the identity while the dotted channel still reads the text, so the\n"+
+				"  two channels have DIVERGED and Name can no longer be retired by asserting\n"+
+				"  they agree. Find the producer that sets one without the other — an empty\n"+
+				"  Alias against a stated Name lands here too. Witnesses: %v.\n",
+				site, c.Neither, c.Total, c.NeitherSamples)
+		}
+	}
+	return failed
 }
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose

@@ -2734,22 +2734,16 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias va
 	slots = append(slots, inner.Slots...)
 	legs := make([]values.RecordTypeLeg, 0, len(outer.Type.Legs)+len(inner.Type.Legs)+2)
 	if !outerAlias.IsZero() {
-		legs = append(legs, values.RecordTypeLeg{
-			Alias: outerAlias, Name: outerAlias.Name(), Start: 0, Width: nOuter,
-		})
+		legs = append(legs, values.NewRecordTypeLeg(outerAlias, outerAlias.Name(), 0, nOuter))
 	}
 	if !innerAlias.IsZero() {
-		legs = append(legs, values.RecordTypeLeg{
-			Alias: innerAlias, Name: innerAlias.Name(), Start: nOuter, Width: nInner,
-		})
+		legs = append(legs, values.NewRecordTypeLeg(innerAlias, innerAlias.Name(), nOuter, nInner))
 	}
-	for _, lg := range outer.Type.Legs {
-		legs = append(legs, lg)
-	}
+	legs = append(legs, outer.Type.Legs...)
 	for _, lg := range inner.Type.Legs {
-		legs = append(legs, values.RecordTypeLeg{
-			Alias: lg.Alias, Name: lg.Name, Start: lg.Start + nOuter, Width: lg.Width,
-		})
+		// The leg's identity is CARRIED, not re-minted: only its offset moves,
+		// because the inner row's slots now start at nOuter.
+		legs = append(legs, values.NewRecordTypeLeg(lg.Alias, lg.Name, lg.Start+nOuter, lg.Width))
 	}
 	return &PositionalRow{Type: &values.RecordType{Fields: fields, Legs: legs}, Slots: slots}
 }

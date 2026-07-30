@@ -5645,9 +5645,7 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 			values.RecordLegIdentityComparison(
 				values.LegSiteSelectOutputLegs, aliases[i], q.GetAlias().Name())
 		}
-		legs = append(legs, values.RecordTypeLeg{
-			Alias: q.GetAlias(), Name: aliases[i], Start: off, Width: len(legCols),
-		})
+		legs = append(legs, values.NewRecordTypeLeg(q.GetAlias(), aliases[i], off, len(legCols)))
 		off += len(legCols)
 	}
 	if off != flatCount {
@@ -5879,9 +5877,13 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
 		return nil
 	}
-	return []values.RecordTypeLeg{{
-		Alias: values.NamedCorrelationIdentifier(alias), Name: alias, Start: 0, Width: len(cols),
-	}}
+	// A TEXT-BOUNDARY mint: the caller reaches here holding an alias STRING (the
+	// select-level layout's key) and no quantifier, so the identity is
+	// manufactured once from the only spelling that exists, and Name is that same
+	// string. Retires with the dotted channel.
+	return []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(alias), alias, 0, len(cols)),
+	}
 }
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no

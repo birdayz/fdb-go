@@ -202,7 +202,7 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 
 	// Preserved-only: materialized NLJ (inner = bare Scan(B), scanned once).
-	preservedNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, "A", "B", resVal)
+	preservedNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), resVal)
 	// Preserved-only: re-scan FlatMap (inner re-scans full Scan(B) per outer row).
 	// LEFT-OUTER semantics live in the DefaultOnEmpty wrapper, as in production.
 	innerFilter := plans.NewRecordQueryPredicatesFilterPlan(scanB, []predicates.QueryPredicate{pred})
@@ -217,7 +217,7 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 		WithScanComparisons([]*predicates.ComparisonRange{eqRange})
 	probeDoE := plans.NewRecordQueryDefaultOnEmptyPlan(probeScanB, values.NewNullValue(values.UnknownType))
 	probeFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, probeDoE, aliasA, aliasB, resVal, false)
-	probeNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, "A", "B", resVal)
+	probeNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), resVal)
 	return
 }
 
