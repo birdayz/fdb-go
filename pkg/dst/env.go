@@ -62,3 +62,14 @@ func (e *Env) Fault(site string) bool {
 	}
 	return e.Buggify.Buggify(site)
 }
+
+// Coin flips the deterministic per-site coin (Buggifier.Coin) — the seam for a modelling
+// choice between two equally-real behaviours, as opposed to Fault, which injects a failure.
+// A nil Env has no seed and returns false; callers that must reach both branches without a
+// seeded Env choose the branch explicitly instead.
+func (e *Env) Coin(site string) bool {
+	if e == nil {
+		return false
+	}
+	return e.Buggify.Coin(site)
+}

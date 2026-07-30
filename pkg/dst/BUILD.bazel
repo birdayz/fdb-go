@@ -14,6 +14,9 @@ go_library(
 
 go_test(
     name = "dst_test",
-    srcs = ["dst_test.go"],
+    srcs = [
+        "buggify_isolation_test.go",
+        "dst_test.go",
+    ],
     embed = [":dst"],
 )

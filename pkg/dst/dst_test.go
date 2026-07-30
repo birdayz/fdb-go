@@ -137,7 +137,7 @@ func TestBuggifier_ProbZeroNeverProbOneAlwaysWhenActive(t *testing.T) {
 	t.Parallel()
 	b := NewBuggifier(99, true)
 	// Force the site active so we isolate the firing gate from activation.
-	b.activated["s"] = true
+	pinActivation(b, "s", true)
 	for i := 0; i < 500; i++ {
 		if b.BuggifyWithProb("s", 0.0) {
 			t.Fatal("fired at prob 0.0")
@@ -153,7 +153,7 @@ func TestBuggifier_ProbZeroNeverProbOneAlwaysWhenActive(t *testing.T) {
 func TestBuggifier_InactiveSiteNeverFires(t *testing.T) {
 	t.Parallel()
 	b := NewBuggifier(3, true)
-	b.activated["dead"] = false // pin inactive
+	pinActivation(b, "dead", false) // pin inactive
 	for i := 0; i < 500; i++ {
 		if b.BuggifyWithProb("dead", 1.0) {
 			t.Fatal("inactive site fired even at prob 1.0")
@@ -186,8 +186,11 @@ func TestBuggifier_ActivationCachedPerSite(t *testing.T) {
 
 func TestBuggifier_DeterministicSameSeed(t *testing.T) {
 	t.Parallel()
+	// Seed 3: with per-site streams, whether a site activates at all is a per-(seed,label)
+	// draw at p=0.25, so most seeds leave all three of these sites inactive and the
+	// non-degeneracy check below would be vacuous. This seed activates at least one.
 	seq := func() []bool {
-		b := NewBuggifier(1234, true)
+		b := NewBuggifier(3, true)
 		var out []bool
 		// Interleave several sites so both activation and firing rolls are exercised.
 		for i := 0; i < 200; i++ {
