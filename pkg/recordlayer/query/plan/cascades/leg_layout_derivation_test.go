@@ -112,7 +112,7 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 	// still admitted as a one-column element, because that is what a struct-array
 	// element looks like and there is no way to tell the two apart from the type
 	// alone. It is not the hazard above only because a LEG is no longer untyped —
-	// measured flowed 848 of 848 leg derivations, walkOnly 0, underivable 0, and
+	// measured flowed 848 of 848 leg derivations, underivable 0, and
 	// ASSERTED by the bakeability census gate. If that gate ever goes yellow, this
 	// is what it re-arms.
 	untypedPair := values.NewRecordConstructorValue(

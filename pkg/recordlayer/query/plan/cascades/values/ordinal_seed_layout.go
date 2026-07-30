@@ -323,8 +323,7 @@ func isMixedSeedElement(f RecordConstructorField) bool {
 // 2-slot record constructor of bare untyped quantifier objects was accepted
 // outright, at widths nobody had checked. Typing the flowed value closed that: a
 // leg reads as a RecordType and is rejected here, measured as flowed 848 of 848
-// leg derivations over the real-FDB corpus with walkOnly and underivable both at
-// zero. The bakeability census asserts those zeros, so the fact this proxy rests
+// leg derivations over the real-FDB corpus with underivable at zero. The bakeability census asserts those zeros, so the fact this proxy rests
 // on is enforced rather than assumed.
 //
 // What it does NOT do is demand a STATED type, and that is deliberate rather than

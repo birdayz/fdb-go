@@ -90,22 +90,26 @@ type legLocalBakeCounters struct {
 	// UnderivableLegs counts LEGS (not reads) neither derivation could state, so
 	// every read correlated to them falls through.
 	UnderivableLegs int
-	// FlowedLegs counts LEGS the FAITHFUL instrument stated — the quantifier's own
+	// FlowedLegs counts LEGS the ONE authority stated — the quantifier's own
 	// flowed object type, which is what Java's translateCorrelations rebases
-	// against. Reported beside WalkOnlyLegs because the pair is the whole question:
-	// zero here means the faithful instrument answers nowhere and every layout in
-	// hand came from the subordinate walk.
+	// against.
+	//
+	// It used to be reported beside a WALK-ONLY counter, which named legs the
+	// quantifier could not state and a SUBORDINATE walk over the chosen physical
+	// plan could. That walk was a documented divergence kept under a retirement
+	// condition of "walkOnly reaches zero"; the condition was met (flowed 848 of
+	// 848) and the walk was deleted, so the bucket is gone with it rather than
+	// kept asserting a zero no site can increment. What re-arms suspicion is
+	// UnderivableLegs: with one authority, a leg it cannot state has no second
+	// opinion and contributes no layout at all.
 	FlowedLegs int
-	// WalkOnlyLegs counts LEGS the faithful instrument could not state but the
-	// SUBORDINATE physical-plan walk could. Nonzero is the walk's justification.
-	WalkOnlyLegs int
 	// DisagreeingLegs counts LEGS whose reference members flow different row
 	// types — a memo defect, Java's Verify failure (Reference.java:504-513).
 	DisagreeingLegs int
 	// LegDerivations counts every leg that ENTERED the layout derivation with a
-	// stated alias. It is the denominator the four per-leg outcomes above must
+	// stated alias. It is the denominator the three per-leg outcomes above must
 	// sum to, and it exists so they can be asserted as a PARTITION rather than
-	// as four numbers that happen to be printed together.
+	// as three numbers that happen to be printed together.
 	//
 	// Without it, "underivable 82" is a count with no denominator: it reads as
 	// small next to 846 and would read exactly the same if the derivation had
@@ -248,23 +252,7 @@ func recordUnderivableLegLayout(alias values.CorrelationIdentifier, shape string
 	addLegLocalBakeWitness(fmt.Sprintf("NO-LAYOUT leg %s: %s states no row layout [%s]", alias.Name(), shape, escape))
 }
 
-// recordWalkOnlyLegLayout names a leg the FAITHFUL instrument (the quantifier's
-// flowed object type, Java's Quantifier.getFlowedObjectType) could not state and
-// the SUBORDINATE physical-plan walk could.
-//
-// This counter is the walk's entire justification. The two derivations are not
-// the same authority: the flowed type is what Java's translateCorrelations
-// rebases against, while the walk reconstructs a concat from the chosen plan's
-// scan leaves. Keeping a second authority is only defensible while it is
-// answering somewhere the first cannot, and this says how often.
-func recordWalkOnlyLegLayout(alias values.CorrelationIdentifier, plan any) {
-	legLocalBakeMu.Lock()
-	defer legLocalBakeMu.Unlock()
-	legLocalBakeCounts.WalkOnlyLegs++
-	addLegLocalBakeWitness(fmt.Sprintf("WALK-ONLY leg %s: plan %T states a layout the flowed object type does not", alias.Name(), plan))
-}
-
-// recordFlowedLegLayout names a leg the faithful instrument stated on its own.
+// recordFlowedLegLayout names a leg the one authority stated on its own.
 func recordFlowedLegLayout(alias values.CorrelationIdentifier, rt *values.RecordType) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
@@ -308,7 +296,7 @@ func recordTypeFieldNames(rt *values.RecordType) []string {
 // These counts are ASSERTED, not merely reported — see AssertLegLocalBakeCensus,
 // which the sqldriver TestMain runs over the whole corpus. Three partitions
 // (Total = Baked+Minted; Minted = the three mint reasons; LegDerivations = the
-// four per-leg outcomes) plus a population floor on both denominators. Before
+// three per-leg outcomes) plus a population floor on both denominators. Before
 // that existed the census was printed and nothing checked it, so every number
 // above could drift or collapse to zero with the suite still green — and a
 // residue that reaches zero by its arm going UNREACHED is indistinguishable,
@@ -327,10 +315,10 @@ func FormatLegLocalBakeCensus() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "leg-local bakeability: total %d (baked %d, minted %d); "+
 		"minted residue: untypedLeg %d, columnAbsent %d, layoutAvailable %d; "+
-		"legs: flowed %d, walkOnly %d, underivable %d, memberDisagreement %d",
+		"legs: flowed %d, underivable %d, memberDisagreement %d",
 		c.Total, c.Baked, c.Minted,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
-		c.FlowedLegs, c.WalkOnlyLegs, c.UnderivableLegs, c.DisagreeingLegs)
+		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
 	fmt.Fprintf(&b, "; legDerivations %d", c.LegDerivations)
 	if len(witnesses) > 0 {
 		sorted := append([]string{}, witnesses...)
@@ -379,6 +367,16 @@ type LegLocalBakeFloors struct {
 // filtered invocation checks them exactly as the full suite does.
 func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 	c, _ := LegLocalBakeCensus()
+	return assertLegLocalBakeCounters(w, c, floors)
+}
+
+// assertLegLocalBakeCounters is AssertLegLocalBakeCensus's decision, split out
+// from the process-global read exactly as classifyLegLocalBake is split out from
+// the counter mutation, and for the same reason: a gate is a claim about which
+// counter states FAIL, and a claim reachable only by driving the whole planner
+// into a defective state is a claim nothing pins. Every zero and every partition
+// below can now be shown red on the counter state that violates it.
+func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *LegLocalBakeFloors) bool {
 	failed := false
 
 	if got := c.Baked + c.Minted; got != c.Total {
@@ -401,16 +399,16 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 			c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable, got, c.Minted)
 	}
 
-	if got := c.FlowedLegs + c.WalkOnlyLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {
+	if got := c.FlowedLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {
 		failed = true
-		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Flowed(%d) + WalkOnly(%d) + "+
-			"Underivable(%d) + Disagreeing(%d) = %d, but LegDerivations = %d.\n"+
-			"  These four are the only outcomes a leg entering the derivation can\n"+
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Flowed(%d) + Underivable(%d) + "+
+			"Disagreeing(%d) = %d, but LegDerivations = %d.\n"+
+			"  These three are the only outcomes a leg entering the derivation can\n"+
 			"  reach, so they must partition it. A leg that reaches none of them left\n"+
 			"  the derivation by a path with no counter on it, and UnderivableLegs —\n"+
 			"  CQ-63's acceptance number — is then a count of the paths that ARE\n"+
 			"  instrumented rather than of the legs that cannot state a layout.\n",
-			c.FlowedLegs, c.WalkOnlyLegs, c.UnderivableLegs, c.DisagreeingLegs,
+			c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs,
 			got, c.LegDerivations)
 	}
 
@@ -424,10 +422,11 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 	// (Quantifier.java:801-803). One new untyped flowed value anywhere on this path
 	// puts them back.
 	//
-	// These are ZEROS, not floors, so they hold over any population — a narrowed run
-	// checks them exactly as the full suite does. At zero population they hold
-	// VACUOUSLY, which is what the population floors above exist to prevent; the two
-	// checks are only a proof together.
+	// These are ZEROS, not floors. A zero is only a claim about the population that
+	// was actually reached, which is why the population floors below exist and why
+	// a narrowed run announces the population it checked instead of claiming these
+	// hold universally: at zero population every one of them holds VACUOUSLY. The
+	// two checks are a proof only together.
 	for _, z := range []struct {
 		name string
 		got  int
@@ -438,7 +437,11 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 			"A leg whose row layout cannot be derived has no ordinal it can honestly\n" +
 				"  carry on its own alias, so every read through it falls through to the\n" +
 				"  qualified NAME — the channel RFC-197 exists to remove, kept alive by a\n" +
-				"  quantifier that will not say what it flows.",
+				"  quantifier that will not say what it flows. With the subordinate\n" +
+				"  physical-plan walk retired this is also the ONLY residue counter left on\n" +
+				"  the derivation: there is no second authority to absorb a leg the\n" +
+				"  quantifier stops stating, so a regression lands here rather than\n" +
+				"  disappearing into a fallback.",
 		},
 		{
 			"UntypedLeg", c.UntypedLeg,
@@ -447,16 +450,23 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 				"  layout to bake against.",
 		},
 		{
-			"WalkOnlyLegs", c.WalkOnlyLegs,
-			"A leg the QUANTIFIER could not state and the subordinate physical-plan walk\n" +
-				"  answered for instead. The walk is a documented DIVERGENCE — it rebuilds a\n" +
-				"  concat from the chosen plan's scan leaves, which is a different question\n" +
-				"  from what the quantifier flows — and it is kept only as a fallback for\n" +
-				"  legs whose logical members carry no row type. There are none: the\n" +
-				"  quantifier answers for every leg. A non-zero here is the second authority\n" +
-				"  being CONSULTED again, which is a quantifier that stopped stating its\n" +
-				"  row, and it is asserted rather than reported so that arrives as a\n" +
-				"  failure instead of as a silent fallback to a different answer.",
+			// A leg whose GetFlowedObjectType ERRORS gets no layout, exactly like an
+			// underivable one — and lands in the one bucket of the partition nothing
+			// asserted. Its cause is worse than an underivable leg's, not better: two
+			// members of one equivalence class flowing different rows is Java's Verify
+			// failure (Reference.java:504-513), a memo defect rather than a gap in
+			// inference. Leaving it unasserted meant the partition could stay exact
+			// while legs migrated from FlowedLegs into it, and the only visible effect
+			// would have been FlowedLegs drifting down against a floor set an order of
+			// magnitude below it.
+			"DisagreeingLegs", c.DisagreeingLegs,
+			"Two members of one equivalence class flowing DIFFERENT row shapes. The\n" +
+				"  derivation declines the leg — picking a member picks a row layout by memo\n" +
+				"  insertion order — so the leg contributes no layout and every read through\n" +
+				"  it falls back to the qualified name, the same cost as an underivable leg\n" +
+				"  for a strictly worse reason. Java Verify-fails here; Go counts it, and\n" +
+				"  asserting the count is what keeps a memo defect from hiding inside a\n" +
+				"  partition that still adds up.",
 		},
 	} {
 		if z.got != 0 {

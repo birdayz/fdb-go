@@ -331,19 +331,27 @@ func mergedLegReadIsAlarm(reads int) bool {
 // run with memo exploration order, and the corpus churns with unrelated work.
 // The floor detects a site going DARK, not drift.
 //
-// Both totals are floored because both are denominators. UnderivableLegs and
-// UntypedLeg are now asserted at ZERO by the census itself, and a zero is only a
-// proof over a population — a floor on one denominator and not the other leaves
-// half the arithmetic able to go vacuous, which is the state in which both zeros
-// read as an achievement while measuring nothing.
+// Both totals are floored because both are denominators. UnderivableLegs,
+// UntypedLeg and DisagreeingLegs are asserted at ZERO by the census itself, and a
+// zero is only a proof over a population — a floor on one denominator and not the
+// other leaves half the arithmetic able to go vacuous, which is the state in
+// which all three zeros read as an achievement while measuring nothing.
 //
 // Measured on this tree: Total 126 (minted 126 = untypedLeg 0 + columnAbsent 0 +
-// layoutAvailable 126), LegDerivations 848 (flowed 848 + walkOnly 0 +
-// underivable 0 + disagreement 0). Before the flowed value carried its type the
-// same corpus measured untypedLeg 92 / layoutAvailable 34 and underivable 82 out
-// of 846 — the 92 reads that had no honest alternative to the qualified name —
-// and the subordinate physical-plan walk answered for 108 legs the quantifier
-// could not. It now answers for none.
+// layoutAvailable 126), LegDerivations 848 (flowed 848 + underivable 0 +
+// disagreement 0). Before the flowed value carried its type the same corpus
+// measured untypedLeg 92 / layoutAvailable 34 and underivable 82 out of ~846 —
+// the 92 reads that had no honest alternative to the qualified name — and a
+// SUBORDINATE physical-plan walk answered for ~108 legs the quantifier could not.
+// It answered for none once the flowed value was typed, and has since been
+// deleted; the walkOnly bucket went with it rather than staying as a zero no site
+// can increment. The exact historical split is not reproducible run to run —
+// these are rule FIRINGS and the memo's exploration order varies — so the figures
+// above are the shape of the residue, not a checksum.
+//
+// With one authority left, a leg the quantifier stops stating has no second
+// opinion to absorb it: it lands in UnderivableLegs, which is asserted at zero.
+// That is what re-arms suspicion now.
 var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,
@@ -433,7 +441,10 @@ func assertLegIdentityCensus(w io.Writer) bool {
 		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
 			"The fold-only, unstated, retired-verdict-divergence, text-vs-identity and "+
-			"instrument-channel zeros ARE checked — they hold over any population.\n",
+			"instrument-channel zeros ARE still checked — over whatever population this "+
+			"filter reached. At zero they hold VACUOUSLY, which is exactly what the "+
+			"dropped floors exist to prevent; only the unfiltered suite makes them a "+
+			"proof.\n",
 			f.Value.String())
 		floors = nil
 	}
