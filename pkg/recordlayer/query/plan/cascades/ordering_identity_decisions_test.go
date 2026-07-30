@@ -74,6 +74,14 @@ package cascades
 //	  non-FieldValue pairs                      1                    459
 //	  decided by the NAME bridge alone           0                      0
 //
+// The intersection-site TOTALS above are a sample, not a constant: re-measuring
+// the same tree gives 855-863 comparisons and 401-403 FieldValue pairs. The
+// membership scans that drive them return on the FIRST match over a haystack
+// whose order comes from map iteration, so how many comparisons a partition costs
+// depends on iteration order. Only the ZEROS are exact — a zero over a sum of
+// non-negative terms cannot be inflated by order or by a concurrent pass — which
+// is why the decline residual and not the total is what any assertion rests on.
+//
 // The decline residual is the number type dispatch depends on: a FieldValue pair
 // where either side states no identity is DECLINED, with no fallthrough, so a
 // nonzero residual is a lost set-operation merge. It was NOT zero when this pass

@@ -10495,9 +10495,9 @@ None is speculative: each was re-verified against the tree before booking.
   input-row shape converted in the same change. Blocks the groupby rule's
   AccessorNamePathKey match becoming pushDown+Value.equals.
 
-- [ ] **CQ-60 (S/M) — the ordering-comparator type-dispatch flip is measured
+- [x] **CQ-60 (S/M) — the ordering-comparator type-dispatch flip is measured
   FREE in production (decline residual 0 at both sites) but blocked by 24
-  fixture tests minting bare-name FieldValue doubles**
+  fixture tests minting bare-name FieldValue doubles** DONE: flip landed — type dispatch at both comparators, transitivity closure asserted (27 triples + D1/D2 separation + total decline), census zero, golden untouched, stress identical; the real fixture blocker was the missing orderingKeyLayoutProvider on the test double, not the bare names; two pre-existing gaps fixed in passing (M5 same-index name guard untested on master — now red under mutation; M16 badPairs sieve recorded as performance-only with its limit documented).
   (abstract_data_access_rule_test.go:181,:195 pattern) that model the
   pre-identity world. Redesign the fixtures so synthetic index columns are
   fields of a shared record row (stating layouts), then land the flip:

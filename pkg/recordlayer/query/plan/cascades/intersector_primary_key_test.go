@@ -34,14 +34,6 @@ func (c *testPlanContextForIntersection) GetPrimaryKeyColumns(recordType string)
 	return c.pkColumns[recordType]
 }
 
-// testIntersectorRowType is the row layout the fixture scans flow —
-// production match-candidate scans always carry one, and the
-// comparison-key baking declines layout-less candidates.
-var testIntersectorRowType = values.NewRecordType("TestRecord", false, []values.Field{
-	{Name: "ID", FieldType: values.NullableLong},
-	{Name: "VERSION", FieldType: values.NullableLong},
-})
-
 func newTestPKContext(recordType string, cols []string) *testPlanContextForIntersection {
 	return &testPlanContextForIntersection{
 		pkColumns: map[string][]string{recordType: cols},
@@ -51,6 +43,37 @@ func newTestPKContext(recordType string, cols []string) *testPlanContextForInter
 // ---------------------------------------------------------------------------
 // Helper: build a Vectored[*SingleMatchedAccess] from a testPartialMatch
 // ---------------------------------------------------------------------------
+
+// distinctUnmatchedCompensation builds a POSSIBLE compensation whose
+// unmatched-aggregate set is unique to the given tag.
+//
+// It exists so a test can switch the partition-redundancy proof OFF for the
+// partitions it builds: that proof compares a partition's unmatched-id set
+// against its subpartitions', and gives up (fails open) when they differ. Legs
+// that all carry the same set — the default, since NoCompensation's set is empty
+// for every leg — make the sieve reject pairs on its own, which silently masks
+// whichever guard the test is actually about.
+//
+// All legs share ONE base quantifier so the compensations still INTERSECT to a
+// possible one; a leg over a different base makes the fold impossible and the
+// partition yields no expression at all.
+func distinctUnmatchedCompensation(
+	base expressions.Quantifier,
+	tag int64,
+) Compensation {
+	unmatched := NewCorrValueBiMap()
+	unmatched.Put(values.UniqueCorrelationIdentifier(), values.LiteralValue(tag))
+	return NewForMatchCompensation(
+		false,
+		NoCompensation,
+		StubPredicateCompensationMap(1),
+		[]expressions.Quantifier{base},
+		nil,
+		map[values.CorrelationIdentifier]struct{}{base.GetAlias(): {}},
+		NoResultCompensation(),
+		NewGroupByMappings(NewValueBiMap(), NewValueBiMap(), unmatched),
+	)
+}
 
 func makeVectoredAccess(pm *testPartialMatch, position int) Vectored[*SingleMatchedAccess] {
 	alias := values.UniqueCorrelationIdentifier()
@@ -72,8 +95,8 @@ func makeVectoredAccess(pm *testPartialMatch, position int) Vectored[*SingleMatc
 func TestIntersector_TwoAccesses_DifferentCandidates(t *testing.T) {
 	t.Parallel()
 
-	planA := &testPlan{name: "scanA", resultType: testIntersectorRowType}
-	planB := &testPlan{name: "scanB", resultType: testIntersectorRowType}
+	planA := &testPlan{name: "scanA", resultType: dataAccessTestRow}
+	planB := &testPlan{name: "scanB", resultType: dataAccessTestRow}
 	pmA := makeDataAccessTestPartialMatch("idxA", 2, planA)
 	pmB := makeDataAccessTestPartialMatch("idxB", 1, planB)
 
@@ -109,7 +132,7 @@ func TestIntersector_TwoAccesses_DifferentCandidates(t *testing.T) {
 func TestIntersector_SingleAccess_NoIntersection(t *testing.T) {
 	t.Parallel()
 
-	pm := makeDataAccessTestPartialMatch("only", 3, &testPlan{name: "scan", resultType: testIntersectorRowType})
+	pm := makeDataAccessTestPartialMatch("only", 3, &testPlan{name: "scan", resultType: dataAccessTestRow})
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 	intersector := WithPrimaryKeyIntersector(ctx)
 
@@ -126,7 +149,7 @@ func TestIntersector_SingleAccess_NoIntersection(t *testing.T) {
 func TestIntersector_SameCandidateSkipped(t *testing.T) {
 	t.Parallel()
 
-	plan := &testPlan{name: "scan", resultType: testIntersectorRowType}
+	plan := &testPlan{name: "scan", resultType: dataAccessTestRow}
 	pm := makeDataAccessTestPartialMatch("sameIdx", 2, plan)
 
 	// Both accesses share the same candidate (same *testPartialMatch).
@@ -152,9 +175,9 @@ func TestIntersector_SameCandidateSkipped(t *testing.T) {
 func TestIntersector_ThreeWay(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
-	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType})
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
+	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: dataAccessTestRow})
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 	intersector := WithPrimaryKeyIntersector(ctx)
@@ -198,7 +221,7 @@ func TestIntersector_ImpossibleLargerCompensationKeepsUsefulPair(
 	baseRef := expressions.InitialOf(
 		expressions.NewFullUnorderedScanExpression(
 			[]string{"TestRecord"},
-			testIntersectorRowType,
+			dataAccessTestRow,
 		),
 	)
 	leftBaseQ := expressions.NamedForEachQuantifier(
@@ -240,7 +263,7 @@ func TestIntersector_ImpossibleLargerCompensationKeepsUsefulPair(
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name, resultType: testIntersectorRowType},
+			&testPlan{name: name, resultType: dataAccessTestRow},
 		)
 		return NewVectored(
 			NewSingleMatchedAccess(
@@ -298,7 +321,7 @@ func TestIntersector_FourWay(t *testing.T) {
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+			&testPlan{name: name + "_scan", resultType: dataAccessTestRow},
 		)
 		accesses = append(accesses, makeVectoredAccess(pm, i))
 	}
@@ -343,14 +366,14 @@ func TestIntersector_JavaRedundancyExampleKeepsUsefulPair(t *testing.T) {
 			bindings[alias] = equalityRange
 			parts = append(parts, NewMatchedOrderingPart(
 				alias,
-				&values.FieldValue{Field: column, Typ: values.UnknownType},
+				dataAccessTestKey(column),
 				equalityRange,
 				MatchedSortOrderAscending,
 			))
 		}
 		parts = append(parts, NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
-			&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+			dataAccessTestKey("ID"),
 			nil,
 			MatchedSortOrderAscending,
 		))
@@ -360,7 +383,7 @@ func TestIntersector_JavaRedundancyExampleKeepsUsefulPair(t *testing.T) {
 				sargableAliases: aliases,
 				columnNames:     fixedColumns,
 				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name, resultType: testIntersectorRowType},
+				fixedPlan:       &testPlan{name: name, resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: parts,
@@ -406,14 +429,14 @@ func TestIntersector_MaxOneSingletonSuppressesIntersection(t *testing.T) {
 		alias := values.UniqueCorrelationIdentifier()
 		var scan plans.RecordQueryPlan = &testPlan{
 			name:       name,
-			resultType: testIntersectorRowType,
+			resultType: dataAccessTestRow,
 		}
 		if unique {
 			scan = plans.NewRecordQueryIndexPlan(
 				name,
 				[]*predicates.ComparisonRange{equalityRange},
 				[]string{"TestRecord"},
-				testIntersectorRowType,
+				dataAccessTestRow,
 				false,
 			)
 		}
@@ -430,13 +453,13 @@ func TestIntersector_MaxOneSingletonSuppressesIntersection(t *testing.T) {
 				orderingParts: []*MatchedOrderingPart{
 					NewMatchedOrderingPart(
 						alias,
-						&values.FieldValue{Field: column, Typ: values.UnknownType},
+						dataAccessTestKey(column),
 						equalityRange,
 						MatchedSortOrderAscending,
 					),
 					NewMatchedOrderingPart(
 						values.UniqueCorrelationIdentifier(),
-						&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+						dataAccessTestKey("ID"),
 						nil,
 						MatchedSortOrderAscending,
 					),
@@ -505,13 +528,15 @@ func TestPartitionRedundancy_UnmatchedMetadata(t *testing.T) {
 
 	x := values.UniqueCorrelationIdentifier()
 	y := values.UniqueCorrelationIdentifier()
-	aProvided := &values.FieldValue{Field: "A", Typ: values.UnknownType}
-	bProvided := &values.FieldValue{Field: "B", Typ: values.UnknownType}
-	// Separately allocated required Values pin structural, not pointer,
-	// equality in the proof.
+	aProvided := dataAccessTestKey("A")
+	bProvided := dataAccessTestKey("B")
+	// Separately allocated required Values pin IDENTITY, not pointer, equality
+	// in the proof: each side is baked independently against the fixture's row
+	// layout, so the proof succeeds only if the comparator reads the stated
+	// column identity off both operands.
 	required := []values.Value{
-		&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		&values.FieldValue{Field: "B", Typ: values.UnknownType},
+		dataAccessTestKey("A"),
+		dataAccessTestKey("B"),
 	}
 	partition := []Vectored[*SingleMatchedAccess]{
 		{Position: 0},
@@ -585,12 +610,12 @@ func TestCommonPrimaryKeyValues_MixedRecordTypes(t *testing.T) {
 	candidateA := &dataAccessTestCandidate{
 		name:        "idxA",
 		recordTypes: []string{"TypeA"},
-		fixedPlan:   &testPlan{name: "a", resultType: testIntersectorRowType},
+		fixedPlan:   &testPlan{name: "a", resultType: dataAccessTestRow},
 	}
 	candidateB := &dataAccessTestCandidate{
 		name:        "idxB",
 		recordTypes: []string{"TypeB"},
-		fixedPlan:   &testPlan{name: "b", resultType: testIntersectorRowType},
+		fixedPlan:   &testPlan{name: "b", resultType: dataAccessTestRow},
 	}
 
 	pmA := &testPartialMatch{candidate: candidateA, matchInfo: &testMatchInfo{}}
@@ -614,7 +639,7 @@ func TestCommonPrimaryKeyValues_MultipleRecordTypes(t *testing.T) {
 	candidate := &dataAccessTestCandidate{
 		name:        "multi",
 		recordTypes: []string{"TypeA", "TypeB"},
-		fixedPlan:   &testPlan{name: "multi", resultType: testIntersectorRowType},
+		fixedPlan:   &testPlan{name: "multi", resultType: dataAccessTestRow},
 	}
 	pm := &testPartialMatch{candidate: candidate, matchInfo: &testMatchInfo{}}
 	accesses := []Vectored[*SingleMatchedAccess]{
@@ -631,7 +656,7 @@ func TestCommonPrimaryKeyValues_NoPKColumns(t *testing.T) {
 	t.Parallel()
 
 	// Single record type but PlanContext returns empty PK columns.
-	pm := makeDataAccessTestPartialMatch("idx", 1, &testPlan{name: "scan", resultType: testIntersectorRowType})
+	pm := makeDataAccessTestPartialMatch("idx", 1, &testPlan{name: "scan", resultType: dataAccessTestRow})
 	accesses := []Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pm, 0),
 	}
@@ -646,7 +671,7 @@ func TestCommonPrimaryKeyValues_NoPKColumns(t *testing.T) {
 func TestCommonPrimaryKeyValues_Success(t *testing.T) {
 	t.Parallel()
 
-	pm := makeDataAccessTestPartialMatch("idx", 1, &testPlan{name: "scan", resultType: testIntersectorRowType})
+	pm := makeDataAccessTestPartialMatch("idx", 1, &testPlan{name: "scan", resultType: dataAccessTestRow})
 	accesses := []Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pm, 0),
 	}
@@ -683,7 +708,7 @@ func TestCommonPrimaryKeyValues_EmptyRecordTypes(t *testing.T) {
 	candidate := &dataAccessTestCandidate{
 		name:        "noTypes",
 		recordTypes: nil,
-		fixedPlan:   &testPlan{name: "x", resultType: testIntersectorRowType},
+		fixedPlan:   &testPlan{name: "x", resultType: dataAccessTestRow},
 	}
 	pm := &testPartialMatch{candidate: candidate, matchInfo: &testMatchInfo{}}
 	accesses := []Vectored[*SingleMatchedAccess]{
@@ -710,7 +735,7 @@ func TestCommonPrimaryKeyValuesForPartition_StructuralCandidateContract(
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name, resultType: testIntersectorRowType},
+			&testPlan{name: name, resultType: dataAccessTestRow},
 		)
 		if exposeStructural {
 			pm.candidate = &structuralPKTestCandidate{
@@ -836,7 +861,7 @@ func TestSlicesEqual(t *testing.T) {
 func TestCreateScanForAccess(t *testing.T) {
 	t.Parallel()
 
-	expectedPlan := &testPlan{name: "idx_scan", resultType: testIntersectorRowType}
+	expectedPlan := &testPlan{name: "idx_scan", resultType: dataAccessTestRow}
 	pm := makeDataAccessTestPartialMatch("idx", 2, expectedPlan)
 	access := NewSingleMatchedAccess(
 		pm,
@@ -896,18 +921,18 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 			sargableAliases: []values.CorrelationIdentifier{pidA},
 			columnNames:     []string{"A"},
 			recordTypes:     []string{"TestRecord"},
-			fixedPlan:       &testPlan{name: "scanA", resultType: testIntersectorRowType},
+			fixedPlan:       &testPlan{name: "scanA", resultType: dataAccessTestRow},
 		},
 		matchInfo: &testMatchInfo{
 			orderingParts: []*MatchedOrderingPart{
-				NewMatchedOrderingPart(pidA, &values.FieldValue{Field: "A", Typ: values.UnknownType}, ineqRange, MatchedSortOrderAscending),
-				NewMatchedOrderingPart(pidAPK, &values.FieldValue{Field: "ID", Typ: values.UnknownType}, nil, MatchedSortOrderAscending),
+				NewMatchedOrderingPart(pidA, dataAccessTestKey("A"), ineqRange, MatchedSortOrderAscending),
+				NewMatchedOrderingPart(pidAPK, dataAccessTestKey("ID"), nil, MatchedSortOrderAscending),
 			},
 			paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{pidA: ineqRange},
 		},
 	}
 	// idxB: equality-bound → pk-monotone (valid leg).
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 	intersector := WithPrimaryKeyIntersector(ctx)
@@ -921,7 +946,7 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	}
 
 	// Two equality-bound legs stay viable (the gate must not over-decline).
-	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType})
+	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: dataAccessTestRow})
 	result = intersector([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(pmB, 0),
 		makeVectoredAccess(pmC, 1),
@@ -949,14 +974,14 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 				sargableAliases: []values.CorrelationIdentifier{pid},
 				columnNames:     []string{name + "_col"},
 				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+				fixedPlan:       &testPlan{name: name + "_scan", resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: []*MatchedOrderingPart{
-					NewMatchedOrderingPart(pid, &values.FieldValue{Field: name + "_col", Typ: values.UnknownType}, eqRange, MatchedSortOrderAscending),
+					NewMatchedOrderingPart(pid, dataAccessTestKey(dataAccessTestColumn(name, 0)), eqRange, MatchedSortOrderAscending),
 					// The pk-suffix part carries the LOWERCASE field name
 					// verbatim, as real candidates do (FieldNames()).
-					NewMatchedOrderingPart(pkPid, &values.FieldValue{Field: "id", Typ: values.UnknownType}, nil, MatchedSortOrderAscending),
+					NewMatchedOrderingPart(pkPid, dataAccessTestKey("id"), nil, MatchedSortOrderAscending),
 				},
 				paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{pid: eqRange},
 			},
@@ -977,12 +1002,6 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
 	t.Parallel()
 
-	rowType := values.NewRecordType("TestRecord", false, []values.Field{
-		{Name: "ID", FieldType: values.NullableLong},
-		{Name: "A", FieldType: values.NullableLong},
-		{Name: "B", FieldType: values.NullableLong},
-		{Name: "SORT_KEY", FieldType: values.NullableLong},
-	})
 	equality := func(literal int64) *predicates.ComparisonRange {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 		return predicates.EmptyComparisonRange().Merge(&comparison).Range
@@ -1000,25 +1019,25 @@ func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
 				sargableAliases: []values.CorrelationIdentifier{fixedAlias},
 				columnNames:     []string{fixedColumn, "SORT_KEY"},
 				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name, resultType: rowType},
+				fixedPlan:       &testPlan{name: name, resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: []*MatchedOrderingPart{
 					NewMatchedOrderingPart(
 						fixedAlias,
-						&values.FieldValue{Field: fixedColumn, Typ: values.UnknownType},
+						dataAccessTestKey(fixedColumn),
 						fixedRange,
 						MatchedSortOrderAscending,
 					),
 					NewMatchedOrderingPart(
 						values.UniqueCorrelationIdentifier(),
-						&values.FieldValue{Field: "SORT_KEY", Typ: values.UnknownType},
+						dataAccessTestKey("SORT_KEY"),
 						nil,
 						MatchedSortOrderAscending,
 					),
 					NewMatchedOrderingPart(
 						values.UniqueCorrelationIdentifier(),
-						&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+						dataAccessTestKey("ID"),
 						nil,
 						MatchedSortOrderAscending,
 					),
@@ -1042,11 +1061,11 @@ func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
 			{
-				Value:     &values.FieldValue{Field: "SORT_KEY", Typ: values.UnknownType},
+				Value:     dataAccessTestKey("SORT_KEY"),
 				SortOrder: properties.RequestedSortOrderDescending,
 			},
 			{
-				Value:     &values.FieldValue{Field: "ID", Typ: values.UnknownType},
+				Value:     dataAccessTestKey("ID"),
 				SortOrder: properties.RequestedSortOrderDescending,
 			},
 		},
@@ -1140,10 +1159,11 @@ func TestIntersector_UsesTranslatedRequestedOrdering(t *testing.T) {
 			_ values.CorrelationIdentifier,
 			_ values.LeafValue,
 		) values.Value {
-			return &values.FieldValue{
-				Field: "ID",
-				Typ:   values.NullableLong,
-			}
+			// The translated request must state the SAME column identity the
+			// candidates' pk-suffix keys state, because that is the whole
+			// point of translating it: a request phrased over the query's top
+			// quantifier is rewritten into the row the candidates flow.
+			return dataAccessTestKey("ID")
 		},
 	)
 	topMap := topMapBuilder.Build()
@@ -1156,7 +1176,7 @@ func TestIntersector_UsesTranslatedRequestedOrdering(t *testing.T) {
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name, resultType: testIntersectorRowType},
+			&testPlan{name: name, resultType: dataAccessTestRow},
 		)
 		return NewVectored(
 			NewSingleMatchedAccess(
@@ -1203,13 +1223,13 @@ func TestIntersector_FanoutLegIsPrimaryKeyDistinct(t *testing.T) {
 	fanout := makeDataAccessTestPartialMatch(
 		"idx_fanout",
 		1,
-		&testPlan{name: "fanout", resultType: testIntersectorRowType},
+		&testPlan{name: "fanout", resultType: dataAccessTestRow},
 	)
 	fanout.candidate.(*dataAccessTestCandidate).createsDuplicates = true
 	plain := makeDataAccessTestPartialMatch(
 		"idx_plain",
 		1,
-		&testPlan{name: "plain", resultType: testIntersectorRowType},
+		&testPlan{name: "plain", resultType: dataAccessTestRow},
 	)
 
 	result := WithPrimaryKeyIntersector(
@@ -1258,10 +1278,7 @@ func TestIntersector_DeclinesNonNaturalComparisonDirections(t *testing.T) {
 		for i, order := range orders {
 			parts[i] = NewMatchedOrderingPart(
 				values.UniqueCorrelationIdentifier(),
-				&values.FieldValue{
-					Field: fields[i],
-					Typ:   values.NullableLong,
-				},
+				dataAccessTestKey(fields[i]),
 				nil,
 				order,
 			)
@@ -1272,7 +1289,7 @@ func TestIntersector_DeclinesNonNaturalComparisonDirections(t *testing.T) {
 				recordTypes: []string{"TestRecord"},
 				fixedPlan: &testPlan{
 					name:       name,
-					resultType: testIntersectorRowType,
+					resultType: dataAccessTestRow,
 				},
 			},
 			matchInfo: &testMatchInfo{orderingParts: parts},
@@ -1326,8 +1343,8 @@ func TestIntersector_DeclinesNonNaturalComparisonDirections(t *testing.T) {
 func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
 	ref := expressions.InitialOf(scan)
@@ -1361,7 +1378,7 @@ func TestPushCrossCandidateIntersection_MatchGrowthReachesFourWay(t *testing.T) 
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+			&testPlan{name: name + "_scan", resultType: dataAccessTestRow},
 		)
 		matches = append(matches, pm)
 		candidates = append(candidates, pm.GetMatchCandidate())
@@ -1395,9 +1412,9 @@ func TestPushCrossCandidateIntersection_MatchGrowthReachesFourWay(t *testing.T) 
 func TestShouldConsumeIntersection_TracksExactInputSet(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
-	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType})
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
+	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: dataAccessTestRow})
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
 	ref := expressions.InitialOf(scan)
@@ -1428,7 +1445,7 @@ func TestPushCrossCandidateIntersection_RestrictedCandidateCap(t *testing.T) {
 		pm := makeDataAccessTestPartialMatch(
 			name,
 			1,
-			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+			&testPlan{name: name + "_scan", resultType: dataAccessTestRow},
 		)
 		candidate := pm.GetMatchCandidate()
 		candidates = append(candidates, candidate)
@@ -1457,8 +1474,8 @@ func TestPushCrossCandidateIntersection_RestrictedCandidateCap(t *testing.T) {
 func TestIntersector_BakesComparisonKeys(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 
 	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
@@ -1511,8 +1528,8 @@ func TestIntersector_DeclinesLayoutlessLegs(t *testing.T) {
 func TestIntersector_BakesCompositePKKeys(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatchWithPK("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}, "ID", "VERSION")
-	pmB := makeDataAccessTestPartialMatchWithPK("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType}, "ID", "VERSION")
+	pmA := makeDataAccessTestPartialMatchWithPK("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow}, "ID", "VERSION")
+	pmB := makeDataAccessTestPartialMatchWithPK("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow}, "ID", "VERSION")
 	ctx := newTestPKContext("TestRecord", []string{"id", "version"})
 
 	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
@@ -1551,8 +1568,8 @@ func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
 	t.Parallel()
 
 	for name, accesses := range map[string][2]*testPartialMatch{
-		"layoutless_first":  {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA"}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})},
-		"layoutless_second": {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})},
+		"layoutless_first":  {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA"}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})},
+		"layoutless_second": {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})},
 	} {
 		accesses := accesses
 		t.Run(name, func(t *testing.T) {
@@ -1579,20 +1596,51 @@ func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
 // against A/B only at the memo (both are yielded here — the pair loop
 // guards identity of the INDEX, not of the access), so exactly the pairs
 // with distinct names survive.
+// Each access carries a compensation with a DISTINCT unmatched-aggregate id, and
+// that is load-bearing rather than decorative. isPrimaryKeyPartitionRedundant
+// proves a partition redundant when a subpartition fixes the same equalities AND
+// carries the same unmatched-id set; two matches on ONE index always fix
+// prefix-nested equalities, so with equal unmatched sets the redundancy sieve
+// rejects the A/A' pair on its own and the NAME guard this test is about becomes
+// undetectable — mutating the guard to key on the ACCESS instead of the index
+// leaves the suite GREEN. Distinct unmatched sets make that proof fail open, so
+// the guard is the only thing left that can reject the pair.
 func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 	t.Parallel()
 
-	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
-	pmA2 := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: testIntersectorRowType})
-	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow})
+	pmA2 := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: dataAccessTestRow})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow})
 
 	ctx := newTestPKContext("TestRecord", []string{"id"})
 	intersector := WithPrimaryKeyIntersector(ctx)
 
+	sharedBase := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("dup_name_base"),
+		expressions.InitialOf(expressions.NewFullUnorderedScanExpression(
+			[]string{"TestRecord"},
+			dataAccessTestRow,
+		)),
+	)
 	accesses := []Vectored[*SingleMatchedAccess]{
-		makeVectoredAccess(pmA, 0),
-		makeVectoredAccess(pmA2, 1),
-		makeVectoredAccess(pmB, 2),
+		NewVectored(NewSingleMatchedAccess(
+			pmA,
+			distinctUnmatchedCompensation(sharedBase, 1),
+			values.UniqueCorrelationIdentifier(),
+			false, EmptyTranslationMap(), nil,
+		), 0),
+		NewVectored(NewSingleMatchedAccess(
+			pmA2,
+			distinctUnmatchedCompensation(sharedBase, 2),
+			values.UniqueCorrelationIdentifier(),
+			false, EmptyTranslationMap(), nil,
+		), 1),
+		NewVectored(NewSingleMatchedAccess(
+			pmB,
+			distinctUnmatchedCompensation(sharedBase, 3),
+			values.UniqueCorrelationIdentifier(),
+			false, EmptyTranslationMap(), nil,
+		), 2),
 	}
 
 	result := intersector(accesses, nil)
@@ -1614,14 +1662,23 @@ func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 	}
 }
 
+// TestIntersector_FourWay_BadPairSieve asserts the ENUMERATION OUTCOME around a
+// duplicate-index pair, and its name overstates what it can see: the badPairs
+// sieve itself is unobservable from a result set. Replacing the sieve lookup with
+// an empty map leaves this whole package GREEN, because every partition the sieve
+// would have skipped is rejected again by the per-partition checks it exists to
+// SKIP (the same-index name guard, the redundancy proof). That is by design — the
+// sieve's own comment says it avoids rebuilding scans — so it is a performance
+// mechanism, not a semantic one, and no assertion here should be read as its net.
+// The name guard's net is TestIntersector_ThreeWay_DuplicateCandidateNameSkipped.
 func TestIntersector_FourWay_BadPairSieve(t *testing.T) {
 	t.Parallel()
 
 	accesses := []Vectored[*SingleMatchedAccess]{
-		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}), 0),
-		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: testIntersectorRowType}), 1),
-		makeVectoredAccess(makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType}), 2),
-		makeVectoredAccess(makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType}), 3),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: dataAccessTestRow}), 0),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: dataAccessTestRow}), 1),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: dataAccessTestRow}), 2),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: dataAccessTestRow}), 3),
 	}
 
 	result := WithPrimaryKeyIntersector(newTestPKContext("TestRecord", []string{"id"}))(accesses, nil)

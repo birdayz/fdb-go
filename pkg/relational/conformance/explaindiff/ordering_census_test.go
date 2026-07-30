@@ -48,14 +48,20 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 		cascades.OrderingSiteIntersectionKeys,
 	}
 
+	var totalRootWildcardBridges int64
+
 	for _, site := range sites {
 		c := cascades.OrderingComparisonCensusOf(site)
 
 		t.Logf("%v: total=%d fieldPairs=%d decided=%d declineResidual=%d "+
-			"residualLost=%d residualAgreed=%d nonFieldPairs=%d nonFieldBridgeOnly=%d",
+			"residualLost=%d residualAgreed=%d nonFieldPairs=%d nonFieldBridgeOnly=%d "+
+			"rootWildcardBridges=%d rootWildcardNoContext=%d rootWildcardContextRooted=%d "+
+			"rootWildcardMultiRoot=%d rootWildcardIntransitive=%d",
 			site, c.Total, c.FieldPairs, c.FieldPairsDecided, c.DeclineResidual,
 			c.ResidualMatchesLost, c.ResidualWeakerArmsAgreed,
-			c.NonFieldPairs, c.NonFieldBridgeOnly)
+			c.NonFieldPairs, c.NonFieldBridgeOnly,
+			c.RootWildcardBridges, c.RootWildcardNoContext, c.RootWildcardContextRooted,
+			c.RootWildcardMultiRoot, c.RootWildcardIntransitive)
 
 		if c.Total == 0 {
 			t.Errorf("%v made NO comparisons over the corpus.\n\n"+
@@ -87,5 +93,73 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 				"side through the translator's sort-key bakes) and give it the layout.",
 				site, c.DeclineResidual, c.FieldPairs, c.ResidualMatchesLost)
 		}
+
+		totalRootWildcardBridges += c.RootWildcardBridges
+
+		if c.RootWildcardNoContext != 0 {
+			t.Errorf("%v: %d of %d root-wildcard bridges were classified with NO "+
+				"comparison context.\n\n"+
+				"The two ambiguity zeros below are then zeros over a population the "+
+				"instrument never looked at. A comparator call site was added without "+
+				"threading the list it is scanning: use orderingValuesEqualIn / "+
+				"intersectionValuesEqualIn and pass the haystack.",
+				site, c.RootWildcardNoContext, c.RootWildcardBridges)
+		}
+
+		if c.RootWildcardMultiRoot != 0 || c.RootWildcardIntransitive != 0 {
+			t.Errorf("%v: %d of %d root-wildcard bridges sit in a comparison context "+
+				"holding a SECOND distinct quantifier root, and %d of those share the "+
+				"childless key's column path.\n\n"+
+				"values.SameOrderingColumn treats the ZERO correlation as a WILDCARD, "+
+				"so a childless key bridges to every named quantifier while two named "+
+				"quantifiers decline each other. With two of them in one list that is "+
+				"the intransitive triple (childless ≡ o.A, childless ≡ i.A, "+
+				"o.A ≢ i.A), and membership in the list then depends on the order it "+
+				"was built in — a nondeterministic plan, not a lost merge.\n\n"+
+				"The comparator behaviour is already pinned as a known defect by "+
+				"ordering_comparator_dispatch_test.go's root-axis witness; this count "+
+				"being zero is what keeps it UNREACHABLE. The fix is NOT to delete the "+
+				"wildcard (876 corpus matches rest on it — a candidate mints its keys "+
+				"childless while a scoped request does not). It is CQ-55-A2's "+
+				"correlation-space translation: resolve the childless root to the "+
+				"quantifier it actually reads, and the wildcard has nothing left to do.",
+				site, c.RootWildcardMultiRoot, c.RootWildcardBridges,
+				c.RootWildcardIntransitive)
+		}
+
+		if c.NonFieldBridgeOnly != 0 {
+			t.Errorf("%v: the ordinal-free NAME bridge is the ONLY arm deciding %d of "+
+				"%d non-FieldValue pairs EQUAL.\n\n"+
+				"That arm is kept below the structural comparison on the grounds that "+
+				"it is unexercised-but-reachable — the CardinalityValue wrapper is the "+
+				"only population that can still cross it "+
+				"(ordering_comparison_census_test.go pins that reachability). A "+
+				"nonzero count means production now DEPENDS on an ordinal-free name "+
+				"match at an ordering comparator, which is the comparison RFC-197 "+
+				"exists to remove. Find the pair and give it a column identity rather "+
+				"than accepting the name match.",
+				site, c.NonFieldBridgeOnly, c.NonFieldPairs)
+		}
+	}
+
+	// The root-axis zeros above are only evidence if the wildcard actually fires
+	// somewhere in the corpus. It does — the requested side is scoped to its owning
+	// quantifier while the candidate mints childless — and if it ever stops, the
+	// three zeros become a zero over an empty population and say nothing.
+	//
+	// This is asserted across BOTH sites rather than per site on purpose: the
+	// intersection site legitimately sees no cross-root pair at all (both of its
+	// operands are candidate-side bakes), so a per-site nonzero would pin an
+	// incidental fact instead of the instrument's liveness.
+	if totalRootWildcardBridges == 0 {
+		t.Errorf("neither comparator made a single root-wildcard bridge over the " +
+			"corpus.\n\n" +
+			"values.SameOrderingColumn's zero-correlation wildcard is then dead in " +
+			"production, and every root-axis zero asserted above is a zero over an " +
+			"empty set. Two possibilities, and they need different responses: the " +
+			"childless root now carries a real correlation (CQ-55-A2 landed — then " +
+			"DELETE the wildcard, delete the root-axis witness in " +
+			"ordering_comparator_dispatch_test.go, and these assertions with it), or " +
+			"the corpus stopped reaching the comparator at all.")
 	}
 }

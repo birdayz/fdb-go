@@ -11,6 +11,122 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// The fixture's record row
+// ---------------------------------------------------------------------------
+
+// dataAccessTestIndexNames declares every synthetic index the fixtures in this
+// package build a match candidate for. A name handed to
+// makeDataAccessTestPartialMatch and NOT listed here fails loudly at
+// dataAccessTestKey, because its columns are then absent from the row layout
+// below and the key it mints would state no column identity — which both
+// ordering comparators decline. A fixture that declines is not a fixture that
+// tests less; it is a fixture that tests nothing, so the failure is deliberate
+// and its message says what to add.
+var dataAccessTestIndexNames = []string{
+	"a", "b", "c",
+	"child_idx",
+	"idx", "idx1", "idx2", "idx3",
+	"idxA", "idxB", "idxC", "idxD", "idxE",
+	"idx_a", "idx_b",
+	"idx_fanout", "idx_plain",
+	"idxL", "idxM",
+	"idx_test",
+	"nilIdx", "only", "sameIdx",
+	"scan_a", "scan_b", "scan_c",
+}
+
+// dataAccessTestColumnsPerIndex is how many leading columns each declared index
+// gets. Every candidate's columns are DISTINCT from every other candidate's,
+// because the partition-redundancy sieve compares the legs' equality-bound
+// column sets: two legs binding the same column make each other redundant, and
+// a fixture that accidentally shared columns would sieve away the very
+// intersections it exists to produce.
+const dataAccessTestColumnsPerIndex = 5
+
+// dataAccessTestRow is the ONE record row layout the fixture's candidates bake
+// their ordering keys against, and the layout the fixture's scans flow.
+//
+// Production candidates do exactly this: ValueIndexScanMatchCandidate's
+// orderingKeyLayout is the RECORD's row layout, never the per-index entry
+// layout, and the primary-key intersection depends on it — two legs baking the
+// same primary-key column against two DIFFERENT layouts get two different
+// ordinal domain tokens, the comparators (which decide a FieldValue pair by
+// column identity and nothing else) call those keys different columns, and the
+// merged ordering comes out empty. So the fixture states one layout for one
+// record type with many indexes over it, which is the shape the planner
+// actually sees.
+//
+// ID and VERSION lead deliberately: the composite-pk tests assert the baked
+// comparison keys land on ordinals 0 and 1 of this layout.
+var dataAccessTestRow = newDataAccessTestRow()
+
+func newDataAccessTestRow() *values.RecordType {
+	fields := []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+		{Name: "VERSION", FieldType: values.NullableLong},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "SORT_KEY", FieldType: values.NullableLong},
+		{Name: "NAME", FieldType: values.NullableLong},
+		{Name: "DUP", FieldType: values.NullableLong},
+	}
+	for _, index := range dataAccessTestIndexNames {
+		for position := 0; position < dataAccessTestColumnsPerIndex; position++ {
+			fields = append(fields, values.Field{
+				Name:      dataAccessTestColumn(index, position),
+				FieldType: values.NullableLong,
+			})
+		}
+	}
+	return values.NewRecordType("TestRecord", false, fields)
+}
+
+// dataAccessTestColumn names one column of a declared index.
+func dataAccessTestColumn(index string, position int) string {
+	return index + "_col" + string(rune('a'+position))
+}
+
+// dataAccessTestDomain is dataAccessTestRow's ordinal domain token — the layout
+// a fixture key's ordinal indexes. Fixtures that need to state an ordinal the
+// row's own column order does not give them (a deliberate same-name/different-
+// slot pair, a request rooted at a named quantifier) bake into this domain
+// directly rather than inventing a second layout.
+var dataAccessTestDomain = values.OrdinalDomainOfType(dataAccessTestRow)
+
+// dataAccessTestOrdinal is the slot dataAccessTestRow states for a column.
+func dataAccessTestOrdinal(column string) int {
+	ordinal, unique := uniqueUpperFieldIndex(dataAccessTestRow, column)
+	if !unique {
+		panic("dataAccessTestOrdinal: dataAccessTestRow does not state exactly " +
+			"one column named " + column)
+	}
+	return ordinal
+}
+
+// dataAccessTestKey bakes one column of dataAccessTestRow the way a production
+// candidate's ordering-key mint does — bakeOrderingColumnIn against the record
+// row the scan flows — and asserts the result STATES a column identity.
+//
+// The assertion is the point. bakeOrderingColumnIn falls back to a lazy
+// name-only Value for a column the layout does not state, and a lazy key is
+// UNADDRESSABLE to both ordering comparators: they would decline it, the
+// fixture's intersection or ordering match would silently stop forming, and the
+// test would either pass vacuously or fail for a reason unrelated to what it
+// names. Fail here instead, where the message can say which column is missing.
+func dataAccessTestKey(column string) values.Value {
+	key := bakeOrderingColumnIn(dataAccessTestRow, column)
+	if !values.StatesOrderingColumn(key) {
+		panic("dataAccessTestKey: column " + column + " is not a field of " +
+			"dataAccessTestRow, so it bakes to a name-only key that both " +
+			"ordering comparators DECLINE. Add the column to " +
+			"newDataAccessTestRow (or the index name to " +
+			"dataAccessTestIndexNames) rather than letting the fixture mint a " +
+			"key with no layout behind its ordinal.")
+	}
+	return key
+}
+
+// ---------------------------------------------------------------------------
 // Test doubles
 // ---------------------------------------------------------------------------
 
@@ -56,6 +172,28 @@ func (c *dataAccessTestCandidate) ToScanPlan(
 	_ bool,
 ) plans.RecordQueryPlan {
 	return c.fixedPlan
+}
+
+// orderingKeyLayout names the ONE row layout this candidate's ordering keys are
+// domained in — the orderingKeyLayoutProvider contract both production
+// candidates implement. The double has to implement it too: the primary-key
+// intersector bakes the partition's comparison keys into the layout the legs
+// AGREE on, and a candidate that names none leaves those keys name-only, so they
+// state no column identity and the comparator declines them against the legs'
+// own baked keys.
+//
+// It reads the layout off the scan the candidate flows, so a fixture that
+// deliberately flows none (the layout-less decline tests) stays layout-less here
+// without a second knob to keep in sync.
+func (c *dataAccessTestCandidate) orderingKeyLayout() *values.RecordType {
+	if c.fixedPlan == nil {
+		return nil
+	}
+	rt, isRecord := c.fixedPlan.GetResultType().(*values.RecordType)
+	if !isRecord {
+		return nil
+	}
+	return rt
 }
 
 // testPlan is a minimal RecordQueryPlan for tests.
@@ -173,12 +311,12 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, numParts)
 	for i := 0; i < numParts; i++ {
 		pid := values.UniqueCorrelationIdentifier()
-		col := name + "_col" + string(rune('a'+i))
+		col := dataAccessTestColumn(name, i)
 		sargAliases[i] = pid
 		columnNames[i] = col
 		parts[i] = NewMatchedOrderingPart(
 			pid,
-			&values.FieldValue{Field: col, Typ: values.UnknownType},
+			dataAccessTestKey(col),
 			eqRange,
 			MatchedSortOrderAscending,
 		)
@@ -192,7 +330,7 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 	for _, pkField := range pkFields {
 		parts = append(parts, NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
-			&values.FieldValue{Field: pkField, Typ: values.UnknownType},
+			dataAccessTestKey(pkField),
 			nil,
 			MatchedSortOrderAscending,
 		))
@@ -307,10 +445,7 @@ func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
 	t.Parallel()
 
 	queryResult := values.LiteralValue("query_scalar")
-	candidateField := &values.FieldValue{
-		Field: "SORT_KEY",
-		Typ:   values.NullableLong,
-	}
+	candidateField := dataAccessTestKey("SORT_KEY")
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "SORT_KEY",
@@ -670,7 +805,7 @@ func TestSatisfiesRequestedOrdering_Preserve(t *testing.T) {
 func TestSatisfiesRequestedOrdering_SingleAscending(t *testing.T) {
 	t.Parallel()
 
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldA := dataAccessTestKey("A")
 
 	parts := []*MatchedOrderingPart{
 		NewMatchedOrderingPart(
@@ -702,7 +837,7 @@ func TestSatisfiesRequestedOrdering_SingleAscending(t *testing.T) {
 func TestSatisfiesRequestedOrdering_ReverseNeeded(t *testing.T) {
 	t.Parallel()
 
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldA := dataAccessTestKey("A")
 
 	parts := []*MatchedOrderingPart{
 		NewMatchedOrderingPart(
@@ -735,8 +870,8 @@ func TestSatisfiesRequestedOrdering_ReverseNeeded(t *testing.T) {
 func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
 	t.Parallel()
 
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	fieldA := dataAccessTestKey("A")
+	fieldB := dataAccessTestKey("B")
 
 	// First matched part is equality-bound (should be skipped).
 	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
@@ -784,8 +919,8 @@ func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
 func TestSatisfiesRequestedOrdering_NoMatch(t *testing.T) {
 	t.Parallel()
 
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	fieldA := dataAccessTestKey("A")
+	fieldB := dataAccessTestKey("B")
 
 	parts := []*MatchedOrderingPart{
 		NewMatchedOrderingPart(
@@ -815,8 +950,15 @@ func TestSatisfiesRequestedOrdering_NoMatch(t *testing.T) {
 func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
 	t.Parallel()
 
-	matched := values.NewFieldValueWithResolvedOrdinal("DUP", 0, values.UnknownType)
-	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinal("DUP", 1, values.UnknownType)
+	// The same display name in the same STATED layout at two different slots.
+	// Only the ordinal separates them, which is the whole claim: the comparator
+	// decides a FieldValue pair by column identity, and a display name is never
+	// consulted. Both sides state an identity, so the decline below comes from
+	// the identity arm and not from one operand being unaddressable.
+	matched := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"DUP", 0, values.UnknownType, dataAccessTestDomain)
+	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"DUP", 1, values.UnknownType, dataAccessTestDomain)
 	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
 		NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
@@ -839,15 +981,34 @@ func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
 	}
 }
 
-func TestSatisfiesRequestedOrdering_BridgesLazyAndBakedFlatField(t *testing.T) {
+// TestSatisfiesRequestedOrdering_DeclinesANameOnlyMatchedKey pins the contract
+// type dispatch replaced the lazy/baked NAME bridge with.
+//
+// A pair of plain FieldValues is decided by column identity and nothing else, so
+// a candidate that minted a name-only ordering key — bakeOrderingColumnIn's
+// fallback when the scan flows no layout, or when the column name is ambiguous
+// in it — is UNADDRESSABLE: the request does not match it and the ordered access
+// is not offered. The bridge that used to accept this pair on the strength of
+// equal names was INTRANSITIVE inside the FieldValue class (a name-only key
+// bridges to ordinal 0 of two different layouts, which identity keeps apart), and
+// an ordering set built through a non-equivalence relation depends on the order
+// it was built in.
+//
+// The cost of declining is measured, not assumed: over the whole corpus, neither
+// comparator ever sees a FieldValue pair with a non-stating operand
+// (pkg/relational/conformance/explaindiff's ordering-census test asserts that
+// residual is ZERO). If it ever stops being zero, the fix is at the producer that
+// minted the key without its layout — not here.
+func TestSatisfiesRequestedOrdering_DeclinesANameOnlyMatchedKey(t *testing.T) {
 	t.Parallel()
 
 	matched := &values.FieldValue{Field: "sort_key", Typ: values.UnknownType}
-	requestedBaked := values.NewFieldValueWithResolvedOrdinal(
-		"SORT_KEY",
-		3,
-		values.UnknownType,
-	)
+	if values.StatesOrderingColumn(matched) {
+		t.Fatalf("test setup: %q states a column identity, so it is not the "+
+			"name-only key this test is about",
+			values.ExplainValue(matched))
+	}
+	requestedBaked := dataAccessTestKey("SORT_KEY")
 	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
 		NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
@@ -865,22 +1026,42 @@ func TestSatisfiesRequestedOrdering_BridgesLazyAndBakedFlatField(t *testing.T) {
 		false,
 	)
 
-	dir := SatisfiesRequestedOrdering(pm, requested)
-	if dir == nil || *dir != ScanDirectionForward {
-		t.Fatalf("lazy/baked flat-field bridge direction = %v, want forward", dir)
+	// The premise, asserted rather than assumed: the retired arms DID accept
+	// this pair on the strength of the equal name, so the decline below is the
+	// dispatch and not some unrelated mismatch.
+	if !values.CanBridgeOrderingValueRoots(matched, requestedBaked) {
+		t.Fatalf("test setup: the name bridge no longer accepts %q against %q, "+
+			"so this test no longer demonstrates what type dispatch gave up",
+			values.ExplainValue(matched), values.ExplainValue(requestedBaked))
+	}
+
+	if dir := SatisfiesRequestedOrdering(pm, requested); dir != nil {
+		t.Fatalf("a name-only matched ordering key satisfied a request for the "+
+			"same column name (direction %v).\n\n"+
+			"That is the name bridge back inside the FieldValue class, and it is "+
+			"intransitive there: the same name-only key also bridges to ordinal 0 "+
+			"of a DIFFERENT layout, which identity keeps apart, so the ordering "+
+			"sets built through the comparator become insertion-order dependent.",
+			*dir)
 	}
 }
 
-func TestSatisfiesRequestedOrdering_BridgesQualifiedChildToLocalCandidate(t *testing.T) {
+// TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate
+// pins the ONE root asymmetry the identity arm permits: a childless candidate
+// key (Go's canonical source-relative root) against a request scoped to the
+// quantifier that owns it. Both state the same column of the same layout, so
+// identity accepts them — no name comparison is involved.
+func TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate(t *testing.T) {
 	t.Parallel()
 
-	matched := values.NewFlatFieldValue("name", values.UnknownType)
+	matched := dataAccessTestKey("NAME")
 	alias := values.NamedCorrelationIdentifier("C")
-	requestedQualified := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+	requestedQualified := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 		values.NewQuantifiedObjectValue(alias),
 		"NAME",
-		1,
+		dataAccessTestOrdinal("NAME"),
 		values.UnknownType,
+		dataAccessTestDomain,
 	)
 	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
 		NewMatchedOrderingPart(
@@ -901,15 +1082,17 @@ func TestSatisfiesRequestedOrdering_BridgesQualifiedChildToLocalCandidate(t *tes
 
 	dir := SatisfiesRequestedOrdering(pm, requested)
 	if dir == nil || *dir != ScanDirectionForward {
-		t.Fatalf("qualified/local ordering bridge direction = %v, want forward", dir)
+		t.Fatalf("a request rooted at the quantifier that owns the candidate's "+
+			"column did not match the candidate's source-relative key for the "+
+			"same column: direction = %v, want forward", dir)
 	}
 }
 
 func TestSatisfiesAnyRequestedOrderings_MixedResults(t *testing.T) {
 	t.Parallel()
 
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	fieldA := dataAccessTestKey("A")
+	fieldB := dataAccessTestKey("B")
 
 	parts := []*MatchedOrderingPart{
 		NewMatchedOrderingPart(
