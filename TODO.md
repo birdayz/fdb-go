@@ -10483,3 +10483,25 @@ None is speculative: each was re-verified against the tree before booking.
   "the translator branch" is applySortOverRef's positional bake
   (k.Value == nil && k.Pos > 0 arm), measured 0/2481 because
   upgradeSortKeyValues resolves positional keys upstream — pin THAT.
+
+- [ ] **CQ-59 (M, gated) — GroupByExpression.GetResultValue returns the INPUT
+  row where Java constructs the grouping+aggregate output row**
+  (GroupByExpression.java:129,:756-759 vs Go's inner.GetFlowedObjectValue()).
+  Measured: PushDownThroughValue through the Go shape is the identity, so
+  Java's push-then-match model cannot be ported at the groupby rule until
+  this is fixed; a direct port of Java's result-value shape lost
+  Fetch(IndexScan(IDX_CUST_STATUS)) to InMemorySort on the golden sentinel
+  and was reverted -- the fix must come WITH the consumers that expect the
+  input-row shape converted in the same change. Blocks the groupby rule's
+  AccessorNamePathKey match becoming pushDown+Value.equals.
+
+- [ ] **CQ-60 (S/M) — the ordering-comparator type-dispatch flip is measured
+  FREE in production (decline residual 0 at both sites) but blocked by 24
+  fixture tests minting bare-name FieldValue doubles**
+  (abstract_data_access_rule_test.go:181,:195 pattern) that model the
+  pre-identity world. Redesign the fixtures so synthetic index columns are
+  fields of a shared record row (stating layouts), then land the flip:
+  both-*FieldValue -> identity-or-DECLINE, no fallthrough. The D1/D2/UNKNOWN
+  transitivity witness test already exists and reds under availability
+  dispatch. The census machinery (ordering_comparison_census.go +
+  explaindiff/ordering_census_test.go) is the acceptance instrument.
