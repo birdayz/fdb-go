@@ -211,11 +211,21 @@ func legTypeOrUntyped(legType *values.RecordType, haveLegType bool, refType valu
 // the layout derivation has no answer for. Kept separate from the counters
 // because it is per-LEG, not per-READ: one underivable leg accounts for every
 // read correlated to it.
-func recordUnderivableLegLayout(alias values.CorrelationIdentifier, shape any, escape string) {
+//
+// shape is a RENDERED description, not the value itself, because the two call
+// sites do not discriminate the same way. A leg that HAS a plan is discriminated
+// by the plan's concrete type (`*plans.RecordQueryFlatMapPlan` is the finding).
+// A leg with NO plan is discriminated by nothing at all under `%T`:
+// expressions.Quantifier is a STRUCT, so every such witness renders the identical
+// type name and the whole no-plan population collapses to one witness per alias —
+// a census line that says only "some leg declined", which is what it was already
+// counting. Rendering is therefore the caller's, and the no-plan caller renders
+// the quantifier's own members (see describeLegQuantifier).
+func recordUnderivableLegLayout(alias values.CorrelationIdentifier, shape string, escape string) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
 	legLocalBakeCounts.UnderivableLegs++
-	addLegLocalBakeWitness(fmt.Sprintf("NO-LAYOUT leg %s: %T states no row layout [%s]", alias.Name(), shape, escape))
+	addLegLocalBakeWitness(fmt.Sprintf("NO-LAYOUT leg %s: %s states no row layout [%s]", alias.Name(), shape, escape))
 }
 
 // recordWalkOnlyLegLayout names a leg the FAITHFUL instrument (the quantifier's

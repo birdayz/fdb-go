@@ -2012,7 +2012,22 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			if !ok {
 				return nil, nil, false
 			}
-			return append(outerFields, innerFields...), append(outerLegs, innerLegs...), true
+			// FRESH slices, never append-onto-outer. The scan arm returns the
+			// plan's own rt.Fields, so outerFields can alias a plan's result
+			// type; `append(outerFields, ...)` then writes the inner's fields
+			// into that plan's backing array whenever it has spare capacity.
+			// Nothing re-slices a RecordType past its length, so the plan's own
+			// view survives — but two concats built over the SAME leg plan share
+			// that array, and the second append overwrites the first concat's
+			// tail. Allocating removes the sharing instead of reasoning about
+			// who appends when.
+			fields := make([]values.Field, 0, len(outerFields)+len(innerFields))
+			fields = append(fields, outerFields...)
+			fields = append(fields, innerFields...)
+			legs := make([]values.RecordTypeLeg, 0, len(outerLegs)+len(innerLegs))
+			legs = append(legs, outerLegs...)
+			legs = append(legs, innerLegs...)
+			return fields, legs, true
 		default:
 			return nil, nil, false
 		}
@@ -2395,7 +2410,8 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 		}
 		if leg.Plan == nil {
 			if values.LegIdentityCensusEnabled() {
-				recordUnderivableLegLayout(leg.Alias, leg.Quantifier, "no physical plan in hand")
+				recordUnderivableLegLayout(leg.Alias, describeLegQuantifier(leg.Quantifier),
+					"no physical plan in hand")
 			}
 			continue
 		}
@@ -2420,7 +2436,8 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 				// carries the ESCAPE that was tried and removed — reading the
 				// layout off the leg's result value as an ordinal seed — so its
 				// decline stays a measured fact rather than a remembered one.
-				recordUnderivableLegLayout(leg.Alias, leg.Plan, describeSeedEscape(leg.Plan))
+				recordUnderivableLegLayout(leg.Alias, fmt.Sprintf("%T", leg.Plan),
+					describeSeedEscape(leg.Plan))
 			}
 			continue
 		}
@@ -2448,12 +2465,71 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 // with another leg's column. Nothing in the planner needs it exported; a
 // cross-package pin does, and an agreement invariant with no test is a hope. nil
 // where the walk cannot reduce the plan (see legRowTypesFromQuantifiers).
+// The returned layout is a DEFENSIVE COPY, because the walk's single-leaf case
+// returns the leg plan's own `rt.Fields` slice verbatim — so handing that out
+// would give a caller in another package a writable view of a plan's result
+// type, where one `layout.Fields[i].Name = …` silently rewrites the plan. The
+// walk is planner-cold (once per leg per derivation) and the layouts are a
+// handful of fields, so copying costs nothing worth reasoning about, and it is
+// the only version of this contract that does not depend on every present and
+// future caller treating the result as read-only.
 func PlanLegConcatLayout(p plans.RecordQueryPlan, alias values.CorrelationIdentifier) *values.RecordType {
 	fields, legs, ok := planBuriedLegConcat(p, alias, 0)
 	if !ok || len(fields) == 0 {
 		return nil
 	}
-	return &values.RecordType{Fields: fields, Legs: legs}
+	outFields := make([]values.Field, len(fields))
+	copy(outFields, fields)
+	var outLegs []values.RecordTypeLeg
+	if len(legs) > 0 {
+		outLegs = make([]values.RecordTypeLeg, len(legs))
+		copy(outLegs, legs)
+	}
+	return &values.RecordType{Fields: outFields, Legs: outLegs}
+}
+
+// describeLegQuantifier renders a leg quantifier that reached the derivation with
+// NO physical plan, in terms that tell two such legs apart.
+//
+// The census witness it feeds used to render `%T` of the quantifier.
+// expressions.Quantifier is a struct, not an interface, so that rendered the same
+// eleven characters for every leg in the population — the witness list then
+// distinguished legs only by the alias it already printed, and said nothing about
+// WHY the quantifier could state no type. The question the residue turns on is
+// what the quantifier's reference MEMBERS flow, because GetFlowedObjectType
+// derives the layout from exactly those (it takes the agreed row type across
+// members, skipping members whose result value is untyped). So that is what this
+// reports: the kind, the member count, and each member's expression type paired
+// with the result type it flows — which separates "no members at all" from "all
+// members untyped" from "members disagree", three different defects that the
+// single collapsed witness could not tell apart.
+func describeLegQuantifier(q expressions.Quantifier) string {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return fmt.Sprintf("Quantifier(kind=%v, alias=%s) ranges over NOTHING",
+			q.Kind(), q.GetAlias().Name())
+	}
+	members := ref.AllMembers()
+	if len(members) == 0 {
+		return fmt.Sprintf("Quantifier(kind=%v, alias=%s) reference has NO members",
+			q.Kind(), q.GetAlias().Name())
+	}
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		if m == nil {
+			parts = append(parts, "<nil member>")
+			continue
+		}
+		rv := m.GetResultValue()
+		if rv == nil {
+			parts = append(parts, fmt.Sprintf("%T→<no result value>", m))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%T→%v", m, rv.Type()))
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("Quantifier(kind=%v, alias=%s) over %d member(s) [%s]",
+		q.Kind(), q.GetAlias().Name(), len(members), strings.Join(parts, ", "))
 }
 
 // describeSeedEscape states, for one leg the layout derivation declined, what the
@@ -2667,8 +2743,15 @@ func rebaseOuterLegValue(
 					// keyed on identity. legLocalTypes survives that deletion because the
 					// census still needs it: it is the LAYOUT half of the question, and
 					// measuring it is how CQ-63's acceptance number stays honest.
-					legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
 					if values.LegIdentityCensusEnabled() {
+						// The lookup lives INSIDE the guard, not above it: the census's
+						// stated contract is that a disabled census costs the planner
+						// nothing, and legLocalTypes is consulted for no other purpose
+						// here — its two readers are both this witness. Hoisting it
+						// above the guard made the disabled path pay a map probe per
+						// leg-match firing, which is the one path the gate exists to
+						// keep free.
+						legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
 						// The mint is the outcome, stated rather than inferred. A census
 						// that re-derived "bakeable" from the type would report this arm
 						// deletable the moment CQ-63 types the legs, while the mint was

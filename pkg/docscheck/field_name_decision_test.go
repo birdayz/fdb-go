@@ -77,6 +77,43 @@ import (
 // Both are non-detections, not exemptions: nothing suppresses them, the walk
 // simply never reaches them. Neither is counted in any bucket total, so the
 // arithmetic those totals feed is a floor rather than a census.
+//
+// The FieldIndex hole's known instances are enumerated in
+// fieldIndexBlindSpotDebt below and CHECKED, rather than described here in
+// prose. A blind spot recorded only in a comment is rediscovered rather than
+// tracked: the prose cannot notice the call moving, being deleted, or a new one
+// arriving beside it, so it decays into a claim about a tree that has moved on.
+
+// fieldIndexBlindSpotDebt enumerates the `FieldIndex(name)`-shaped lookups the
+// walk above CANNOT see, so the hole has an inventory instead of a paragraph.
+//
+// It is deliberately NOT knownFieldDecisionDebt: entries there must match a
+// decision the detector reports, and by construction none of these do. Merging
+// them would make every entry here permanently stale.
+//
+// TestFieldIndexBlindSpotSitesAreCurrent checks each recorded line still holds
+// the call it names, so drift fails the way the main ratchet does. What it
+// cannot do is prove the list is COMPLETE — that needs the detector widening
+// this list exists to justify.
+var fieldIndexBlindSpotDebt = map[string]string{
+	// The header bullet cited :131 for this file. That line is the QUALIFIER
+	// comparison, which the detector does see and which is already on the main
+	// ratchet — the invisible lookups are the two below. Prose naming the wrong
+	// line while claiming to name a blind spot is the decay this list replaces.
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:116": "translator: BARE column name resolved against a leg window's row type, gathered-EXISTS wrap. No qualifier to disambiguate, so two same-named columns in different windows are one column to this lookup. Retired upstream by CQ-52.",
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:135": "translator: the LEAF half of a parsed dotted identifier, resolved against the selected window's row type. Its qualifier half is on the main ratchet at :131; this half is what the ratchet cannot see. Retired upstream by CQ-52.",
+
+	// DIAGNOSTICS ONLY, and labelled so rather than quietly filed with the
+	// engine sites. This lookup decides nothing a plan can observe: it splits a
+	// census witness between COLUMN-ABSENT and LAYOUT-AVAILABLE. It is recorded
+	// because it is the exact move RFC-197 forbids — a column identified by its
+	// display name against a row type — and the leg-local bake that was DELETED
+	// from this branch made precisely this call for real, to mint an ordinal. A
+	// diagnostic that survived its deleted sibling is how the move gets
+	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
+	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:173": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+}
+
 type fieldDecisionSite struct {
 	site string // "path/to/file.go:LINE"
 	n    int    // decisions this line hosts
@@ -288,7 +325,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// channel, whose producers are executor-side (CQ-53), plus the group-key
 	// qualification probe.
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:132":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2608": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2684": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:794":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
@@ -1370,4 +1407,65 @@ func TestFieldNameNeverDecides(t *testing.T) {
 			"scanned %d files", strings.Join(offenses, "\n"), scanned)
 	}
 	t.Logf("no FieldValue.Field decisions outside the allowlist (%d files scanned)", scanned)
+}
+
+// TestFieldIndexBlindSpotSitesAreCurrent keeps the FieldIndex blind-spot
+// inventory honest about line drift.
+//
+// The main ratchet gets this for free: its entries must match a decision the
+// detector reports, so a moved line goes stale and fails. These entries have no
+// detector behind them by definition, so without this check the list would be
+// prose in a map — the same decay, one data structure further along.
+//
+// It asserts the recorded line still holds a FieldIndex-shaped lookup. It
+// deliberately does NOT assert the list is complete; that claim needs the
+// detector widening the list exists to justify, and pretending otherwise here
+// would be the vacuous-green failure the census gate documents at length.
+func TestFieldIndexBlindSpotSitesAreCurrent(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+
+	if len(fieldIndexBlindSpotDebt) == 0 {
+		t.Fatal("fieldIndexBlindSpotDebt is empty — either the hole closed (delete " +
+			"this test and the header bullet together) or the inventory was dropped, " +
+			"which is how a blind spot goes back to being rediscovered")
+	}
+
+	var problems []string
+	for site, why := range fieldIndexBlindSpotDebt {
+		rel, lineStr, found := strings.Cut(site, ":")
+		if !found {
+			problems = append(problems, fmt.Sprintf("%s: not in file:line form", site))
+			continue
+		}
+		line, err := strconv.Atoi(lineStr)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s: line is not a number", site))
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s: read: %v", site, err))
+			continue
+		}
+		lines := strings.Split(string(src), "\n")
+		if line < 1 || line > len(lines) {
+			problems = append(problems, fmt.Sprintf("%s: file has %d lines", site, len(lines)))
+			continue
+		}
+		if !strings.Contains(lines[line-1], "FieldIndex(") {
+			problems = append(problems, fmt.Sprintf(
+				"%s: line holds %q, which is not a FieldIndex lookup (reason on file: %s)",
+				site, strings.TrimSpace(lines[line-1]), why))
+		}
+	}
+
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		t.Fatalf("fieldIndexBlindSpotDebt has %d stale entry/entries:\n  %s\n\n"+
+			"If the call MOVED, update the line. If it is GONE, delete the entry — this "+
+			"inventory earns its keep by shrinking. If it was replaced by an ordinal "+
+			"lookup, that is the migration this list is tracking, so say so in the commit.",
+			len(problems), strings.Join(problems, "\n  "))
+	}
 }
