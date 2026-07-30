@@ -184,6 +184,16 @@ func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, b
 // comparison evaluation in the FlatMap execution path.
 func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	v, ok := ec.bindings[id]
+	if ok && values.LegIdentityCensusEnabled() {
+		// Count a lookup that resolved to a merged-leg window. This is the READ
+		// half of the merged-leg binding census: the binder's cost is per outer
+		// row, and whether that cost buys anything is decided HERE, at the only
+		// place a correlation binding is consulted. Gated because this is the
+		// per-reference-per-row path.
+		if w, isWindow := v.(*legWindowRow); isWindow && w != nil && w.fromMergedBinder {
+			recordMergedLegRead(id.Name())
+		}
+	}
 	return v, ok
 }
 

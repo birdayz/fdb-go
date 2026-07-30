@@ -102,9 +102,23 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Precedence, which the widening forces Go to define and Java never needs.** `concatLegPositionals` emits the two top-level leg windows first and appends buried sub-windows after, so an alias appearing twice resolves to its FIRST (widest) entry — matching `addBuriedLegLayouts` and every other reader of the leg table. A leg SHADOWS a same-named binding in the enclosing context for the duration of the inner (Java's chained-context lookup), and the enclosing context object is never mutated. All three are pinned in `merged_outer_leg_binding_test.go`.
 
-**Retirement condition.** This retires when the ordinal re-anchor covers every shape that reaches this cursor — i.e. when a leg-correlated read is rewritten to `ofOrdinalNumber` against the merged quantifier before execution, as `PartitionSelectRule` does, and no sibling alias needs to be resolvable at runtime at all. That is blocked on CQ-63 (a leg's quantifier states no row type, so there is no domain to state the ordinal in); `underivableLegs` in the leg-local bakeability census is the measured gate, **82** over the real-FDB corpus at the time of writing.
+**Retirement condition.** This retires when the ordinal re-anchor covers every shape that reaches this cursor — i.e. when a leg-correlated read is rewritten to `ofOrdinalNumber` against the merged quantifier before execution, as `PartitionSelectRule` does, and no sibling alias needs to be resolvable at runtime at all. That is blocked on CQ-63 (a leg's quantifier states no row type, so there is no domain to state the ordinal in); `underivableLegs` in the leg-local bakeability census is the measured gate, **82 of 846 leg derivations** over the real-FDB corpus at the time of writing.
 
-**Status:** no non-test consumer today. The planner arm whose product would exercise it reaches no winning plan (`TestLazyLegMintReachesNoWinningPlan` measures zero dotted merged-row keys in every winner), so the binder is unit-pinned and not yet e2e-active.
+**Status: the binder is LIVE, and its bindings are UNREAD. Those are two separate measurements and both matter.**
+
+An earlier version of this entry said "no non-test consumer today", which read as *dormant*. It is not dormant. It EXECUTES on the real-FDB corpus on every clustered-box gather: over one full `sqldriver` suite run it binds **15,641 leg windows across 288 distinct shapes** (`executor.FormatMergedLegBindingCensus`, reported by the sqldriver `TestMain`). The commonest single shape alone accounts for 6,513 of them. It runs once per OUTER ROW, so it is on the row-rate path, not the planning path.
+
+What it does not have is a READER. Over that same run, exactly **3** binding lookups resolve to a window this binder produced — all for one single-leg unnest alias, none on any box-gather shape. Two independent mutations confirm the bindings are not load-bearing anywhere in the corpus: replacing the whole body with `return ec` leaves the entire suite green, and pointing every window at slot 0 of the merged row (binding every leg WRONG) also leaves the entire suite green.
+
+**Consequence for the shadowing and precedence semantics above.** On the shapes that actually run, they are *unobservable*. The live shape is a clustered box gathering under a MINTED alias (`B$BOX`, `C$BOX`) whose legs keep the user aliases (`A`, `B`), so:
+
+- the *join's-own-alias skip* never engages — a minted box alias is never a leg alias, so every leg binds. The unit fixtures cover only the opposite (degenerate) case, where the join's alias equals a leg's;
+- *first-claim-wins* is reachable in principle — the corpus does produce a merged row with a repeated leg alias (`[$m"2, Q, $m"2]` under `R$BOX`) — but no read distinguishes the two claims;
+- *shadowing* is likewise never observed, because no lookup reaches a bound leg on these shapes.
+
+So the justification for these three semantics is currently **consistency with the leg table's other readers**, not any behaviour a test can see. That is a weaker footing than the earlier wording implied, and it is stated here rather than left to be rediscovered. `TestFDB_MergedLegBinding_LiveBoxGatherShape` pins both halves at FDB level: the live shape's bindings are the correct ones, AND the read count for it is zero, with a failure message naming what has to be re-justified the day it stops being zero.
+
+**Why the path is kept and made cheap rather than deleted.** Deleting it is a query-engine change requiring its own RFC and a Graefe ACK, and the hazard it guards is real if a consumer arrives (an unbound leg alias evaluates to NULL, and an EXISTS correlation that never matches silently drops rows). What was done instead is to stop paying for it: the per-outer-row allocation storm is gone (13→5 allocations on the dominant shape, 49→11 on a 6-leg one), so a path with no reader now costs close to nothing while the retirement question is settled.
 
 ### Reference: finalMembers partially aligned
 

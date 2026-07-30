@@ -10,6 +10,7 @@ go_library(
         "executor_new_plans.go",
         "flat_map_cursor.go",
         "memory_budget.go",
+        "merged_leg_binding_census.go",
         "ordinal_join.go",
         "position_replay_cursor.go",
         "positional_row.go",
@@ -190,6 +191,7 @@ go_test(
         "merged_outer_leg_binding_test.go",
         "leg_layout_cross_agreement_test.go",
         "merged_outer_leg_binding_bench_test.go",
+        "merged_leg_binding_census.go",
     ],
     deps = [
         "//gen",

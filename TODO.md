@@ -10226,11 +10226,38 @@ None is speculative: each was re-verified against the tree before booking.
   is BLOCKED ON CQ-63 by measurement, not by judgement. What landed:
 
   - **A runtime binder that keeps every merged leg alias resolvable**
-    (`executor.bindMergedOuterLegs`, `flat_map_cursor.go`). LANDED AND
-    UNIT-PINNED, WITH NO NON-TEST CONSUMER: the planner arm whose product would
-    exercise it reaches no winning plan (`TestLazyLegMintReachesNoWinningPlan`
-    measures zero dotted merged-row keys in every winner), so e2e activation
-    arrives with CQ-63. The checkbox stays honest about that.
+    (`executor.bindMergedOuterLegs`, `flat_map_cursor.go`). LANDED, AND **LIVE
+    IN PRODUCTION** — the earlier "NO NON-TEST CONSUMER" wording here was wrong
+    and read as dormant. Measured over one full `sqldriver` run: **15,641 leg
+    windows bound across 288 distinct shapes**, once per OUTER ROW, on every
+    clustered-box gather (`FROM A FULL OUTER JOIN B ON …, A.ARR AS X` and
+    friends). The trigger is any merged outer row carrying a leg table; it is
+    independent of the dotted mint, which is why
+    `TestLazyLegMintReachesNoWinningPlan` measuring zero dotted merged-row keys
+    did NOT imply the binder was inactive. Those are different questions and
+    only one of them was being asked.
+
+    What the binder does NOT have is a READER. Over the same run its bindings
+    are looked up **3 times**, all for one single-leg unnest alias and none on a
+    box-gather shape; neutering the binder entirely, and separately binding every
+    leg to the WRONG window, both leave the whole suite green. So the suite's
+    greenness on the live shapes is "nothing reads them", not "the bindings are
+    correct" — both halves are now pinned at FDB level by
+    `TestFDB_MergedLegBinding_LiveBoxGatherShape`, and the standing numbers are
+    reported by `executor.FormatMergedLegBindingCensus` from the sqldriver
+    `TestMain`.
+
+    Consequence for CQ-53's remainder: the shadowing and first-claim-wins
+    semantics are, on the shapes that run, UNOBSERVABLE — and the
+    join's-own-alias skip never engages there at all (the box gathers under a
+    minted `B$BOX` alias, which is never a leg alias). Their justification is
+    consistency with the leg table's other readers, not observed behaviour. See
+    DIVERGENCES.md.
+
+    The per-outer-row allocation storm this path carried has been removed
+    (13→5 allocations on the dominant shape, 49→11 on a 6-leg one, ~3x wall
+    clock), so a reader-less path on the row-rate path now costs close to
+    nothing while its retirement is settled.
 
     It is ALSO a divergence, not the port the earlier wording claimed. Java's
     `RecordQueryFlatMapPlan.java:135-140` binds the chained outer→inner PAIR,

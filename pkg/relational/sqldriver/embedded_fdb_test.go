@@ -21,6 +21,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -109,10 +110,70 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// could not carry. Reported beside the identity census because the two answer
 	// halves of the same question about this channel.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatLegLocalBakeCensus())
+	// The merged-leg binder's cost/benefit, reported beside the two censuses
+	// because it answers the question they raise about the same channel: the
+	// binder is what a leg-correlated read resolves THROUGH at runtime, and its
+	// read count is how much of that channel is load-bearing.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatMergedLegBindingCensus())
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	// The bakeability census is ASSERTED, not merely printed. It was printed
+	// only, which made its numbers — including CQ-63's acceptance number — a
+	// report nothing checked: the partition could stop holding and the
+	// population could collapse to zero with the gate still green.
+	if failed := assertLegLocalBakeCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	return code
+}
+
+// legLocalBakeFloors is the bakeability census's whole-suite population floor.
+//
+// Set an order of magnitude below the measured populations for the reason the
+// leg-identity floors state at length: these are RULE FIRINGS, they vary run to
+// run with memo exploration order, and the corpus churns with unrelated work.
+// The floor detects a site going DARK, not drift.
+//
+// Both totals are floored because both are denominators. UnderivableLegs gates
+// CQ-63 and is a share of LegDerivations; the minted residue is a share of
+// Total. A floor on one and not the other leaves half the arithmetic able to go
+// vacuous.
+// Measured on this tree: Total 126 (minted 126 = untypedLeg 92 + columnAbsent 0
+// + layoutAvailable 34), LegDerivations 846 (flowed 656 + walkOnly 108 +
+// underivable 82 + disagreement 0).
+var legLocalBakeFloors = cascades.LegLocalBakeFloors{
+	Total:          12,
+	LegDerivations: 80,
+}
+
+// assertLegLocalBakeCensus checks the bakeability census, dropping the
+// population floors when -test.run narrows the corpus.
+//
+// The partition checks still RUN under a filter, but the honest statement is
+// that they are only as strong as the population reached: this census is driven
+// from inside a Cascades rule, and a filter selecting tests that never plan a
+// multi-leg join leaves every counter at zero, where all three partitions hold
+// as 0 == 0. That was measured, not assumed — filtering to the merged-leg
+// binding test alone reports `total 0 … legDerivations 0`.
+//
+// So a narrowed run announces the population it actually checked rather than
+// claiming the partitions "hold over any population". A gate that reports itself
+// green while describing an empty corpus is the exact vacuity this census and
+// its sibling were rebuilt to stop.
+func assertLegLocalBakeCensus(w io.Writer) bool {
+	floors := &legLocalBakeFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		c, _ := cascades.LegLocalBakeCensus()
+		fmt.Fprintf(w, "leg-local bake census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
+			"The three PARTITION checks still run, over the population this filter "+
+			"actually reached: total %d, legDerivations %d. At zero they hold "+
+			"VACUOUSLY — only the unfiltered suite makes them a proof.\n",
+			f.Value.String(), c.Total, c.LegDerivations)
+		floors = nil
+	}
+	return cascades.AssertLegLocalBakeCensus(w, floors)
 }
 
 // legIdentityFloors is the minimum population each site must report over the

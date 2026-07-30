@@ -2388,6 +2388,11 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 		if leg.Alias.IsZero() {
 			continue
 		}
+		if values.LegIdentityCensusEnabled() {
+			// The DENOMINATOR, counted before any outcome is decided: the four
+			// per-leg outcomes below must partition exactly this.
+			recordLegDerivation()
+		}
 		flowed, err := leg.Quantifier.GetFlowedObjectType()
 		if err != nil {
 			// Two members of one equivalence class flowing different row shapes.

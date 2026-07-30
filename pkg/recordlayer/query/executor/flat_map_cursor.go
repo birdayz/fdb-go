@@ -546,16 +546,28 @@ func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.C
 			bindings = ec.cloneBindings(len(row.Type.Legs))
 		}
 		bindings[leg.Alias] = &legWindowRow{
-			parent:     row,
-			parentType: row.Type,
-			offset:     leg.Start,
-			width:      leg.Width,
+			parent:           row,
+			parentType:       row.Type,
+			offset:           leg.Start,
+			width:            leg.Width,
+			fromMergedBinder: true,
 		}
 	}
 	if bindings == nil {
 		return ec
 	}
-	return ec.withBindings(bindings)
+	out := ec.withBindings(bindings)
+	if values.LegIdentityCensusEnabled() {
+		// Recorded from the RETURNED context's own map, on the return path, and
+		// deliberately NOT from the loop's decisions. Those are two different
+		// claims: the loop says what the binder chose, the returned context says
+		// what a downstream lookup will actually find. Recording the choice let a
+		// mutation that dropped the result on the floor (`return ec` instead of
+		// the bound context) go unnoticed — the census still reported every
+		// window as bound while none of them reached anybody.
+		recordMergedLegBindings(out, outerAlias, claimed)
+	}
+	return out
 }
 
 // legAliasClaimed reports whether alias has already taken a binding in this

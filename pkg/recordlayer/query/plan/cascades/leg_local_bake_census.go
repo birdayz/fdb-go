@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -101,6 +102,16 @@ type legLocalBakeCounters struct {
 	// DisagreeingLegs counts LEGS whose reference members flow different row
 	// types — a memo defect, Java's Verify failure (Reference.java:504-513).
 	DisagreeingLegs int
+	// LegDerivations counts every leg that ENTERED the layout derivation with a
+	// stated alias. It is the denominator the four per-leg outcomes above must
+	// sum to, and it exists so they can be asserted as a PARTITION rather than
+	// as four numbers that happen to be printed together.
+	//
+	// Without it, "underivable 82" is a count with no denominator: it reads as
+	// small next to 846 and would read exactly the same if the derivation had
+	// stopped running on all but 82 legs. The acceptance number for CQ-63 is a
+	// RATIO, so the ratio's other half has to be measured too.
+	LegDerivations int
 }
 
 var (
@@ -203,6 +214,15 @@ func legTypeOrUntyped(legType *values.RecordType, haveLegType bool, refType valu
 	return refType
 }
 
+// recordLegDerivation counts one leg entering the layout derivation. Called
+// once per stated-alias leg, before any of the four outcomes is decided, so the
+// outcomes can be asserted to partition it.
+func recordLegDerivation() {
+	legLocalBakeMu.Lock()
+	defer legLocalBakeMu.Unlock()
+	legLocalBakeCounts.LegDerivations++
+}
+
 // recordUnderivableLegLayout names a leg whose quantifier states no row layout,
 // by the shape that declined.
 //
@@ -273,13 +293,26 @@ func recordTypeFieldNames(rt *values.RecordType) []string {
 
 // LegLocalBakeCensus reports the counters and the retained witnesses.
 //
-// The acceptance number for CQ-63 is UnderivableLegs: while a leg states no row
-// layout, every read correlated to it has no ordinal it could honestly carry, so
-// the qualified name is the only channel available to it. UntypedLeg is that same
-// residue counted per READ. LayoutAvailable is the reads a restored leg-local
-// bake could convert; it is the number that has to become the total before the
-// channel can retire, and it is reported separately from Baked precisely so a
-// future typed-but-still-minting state reads as what it is.
+// The acceptance number for CQ-63 is UnderivableLegs OVER LegDerivations, and
+// the denominator is not decoration. While a leg states no row layout, every
+// read correlated to it has no ordinal it could honestly carry, so the qualified
+// name is the only channel available to it — but "underivable is down to 8" says
+// nothing on its own, because it falls identically whether the derivation got
+// better or stopped being called. Quote the pair.
+//
+// UntypedLeg is that same residue counted per READ. LayoutAvailable is the reads
+// a restored leg-local bake could convert; it is the number that has to become
+// the total before the channel can retire, and it is reported separately from
+// Baked precisely so a future typed-but-still-minting state reads as what it is.
+//
+// These counts are ASSERTED, not merely reported — see AssertLegLocalBakeCensus,
+// which the sqldriver TestMain runs over the whole corpus. Three partitions
+// (Total = Baked+Minted; Minted = the three mint reasons; LegDerivations = the
+// four per-leg outcomes) plus a population floor on both denominators. Before
+// that existed the census was printed and nothing checked it, so every number
+// above could drift or collapse to zero with the suite still green — and a
+// residue that reaches zero by its arm going UNREACHED is indistinguishable,
+// in a printed report, from one that reaches zero by being fixed.
 func LegLocalBakeCensus() (legLocalBakeCounters, []string) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
@@ -298,6 +331,7 @@ func FormatLegLocalBakeCensus() string {
 		c.Total, c.Baked, c.Minted,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.WalkOnlyLegs, c.UnderivableLegs, c.DisagreeingLegs)
+	fmt.Fprintf(&b, "; legDerivations %d", c.LegDerivations)
 	if len(witnesses) > 0 {
 		sorted := append([]string{}, witnesses...)
 		sort.Strings(sorted)
@@ -305,6 +339,104 @@ func FormatLegLocalBakeCensus() string {
 			len(sorted), legLocalBakeWitnessCap, strings.Join(sorted, "\n    "))
 	}
 	return b.String()
+}
+
+// LegLocalBakeFloors is the minimum population the bakeability census must
+// report over a whole suite run, for the two totals every other number in it is
+// a share of.
+//
+// The reason it exists is the reason its sibling's floors exist, stated by that
+// one at length: an acceptance number that can reach zero by its arm going
+// UNREACHED is not an acceptance number. UnderivableLegs is CQ-63's gate. It
+// falls when the derivation gets better, and it falls exactly as fast when the
+// derivation stops being called at all — and only one of those is progress. A
+// bare "underivable is down to 8" reads as success in both cases.
+//
+// Set an order of magnitude below the measured populations, matching the
+// leg-identity floors and for the same reason: these counts are RULE FIRINGS,
+// the memo may explore one rule once or many times per query depending on
+// exploration order, and the corpus grows and shrinks with unrelated work. What
+// a floor detects is COLLAPSE, not drift.
+type LegLocalBakeFloors struct {
+	Total          int
+	LegDerivations int
+}
+
+// AssertLegLocalBakeCensus checks the bakeability census's invariants and
+// reports whether it failed, mirroring values.AssertLegIdentityCensus.
+//
+// The three partition checks are the point. Every other number this census
+// prints is a SHARE of one of two totals, and a share is only meaningful if the
+// shares add up: if Minted and the three mint-reason counters drift apart, the
+// residue can be read off the same report two ways and get two answers. That is
+// not a hypothetical failure mode for a census whose numbers are quoted into an
+// RFC as migration arithmetic — it is the ordinary consequence of adding a
+// fourth reason and forgetting one call site.
+//
+// floors is nil when the run is NARROWED (a -test.run filter), because the
+// floors describe a whole-suite population. The partition checks are NOT
+// dropped: they hold over any population, one firing or eighty thousand, so a
+// filtered invocation checks them exactly as the full suite does.
+func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
+	c, _ := LegLocalBakeCensus()
+	failed := false
+
+	if got := c.Baked + c.Minted; got != c.Total {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + Minted(%d) = %d, but Total = %d.\n"+
+			"  Every firing of the leg-match arm is one or the other, so a gap means a\n"+
+			"  firing was counted into Total and classified into neither — or a new\n"+
+			"  outcome was added without a counter. The residue percentages this census\n"+
+			"  feeds are computed against Total, so they are wrong by exactly the gap.\n",
+			c.Baked, c.Minted, got, c.Total)
+	}
+
+	if got := c.UntypedLeg + c.ColumnAbsent + c.LayoutAvailable; got != c.Minted {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: UntypedLeg(%d) + ColumnAbsent(%d) + "+
+			"LayoutAvailable(%d) = %d, but Minted = %d.\n"+
+			"  The three reasons classify MINTED reads and nothing else, so they must\n"+
+			"  partition Minted exactly. LayoutAvailable is the number CQ-63 has to\n"+
+			"  move; if the reasons do not sum, it is a share of an unknown whole.\n",
+			c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable, got, c.Minted)
+	}
+
+	if got := c.FlowedLegs + c.WalkOnlyLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Flowed(%d) + WalkOnly(%d) + "+
+			"Underivable(%d) + Disagreeing(%d) = %d, but LegDerivations = %d.\n"+
+			"  These four are the only outcomes a leg entering the derivation can\n"+
+			"  reach, so they must partition it. A leg that reaches none of them left\n"+
+			"  the derivation by a path with no counter on it, and UnderivableLegs —\n"+
+			"  CQ-63's acceptance number — is then a count of the paths that ARE\n"+
+			"  instrumented rather than of the legs that cannot state a layout.\n",
+			c.FlowedLegs, c.WalkOnlyLegs, c.UnderivableLegs, c.DisagreeingLegs,
+			got, c.LegDerivations)
+	}
+
+	if floors != nil {
+		for _, f := range []struct {
+			name  string
+			got   int
+			floor int
+		}{
+			{"Total", c.Total, floors.Total},
+			{"LegDerivations", c.LegDerivations, floors.LegDerivations},
+		} {
+			if f.got < f.floor {
+				failed = true
+				fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: %s = %d, want >= %d.\n"+
+					"  The census reached a population it cannot describe the corpus from.\n"+
+					"  Every other number it prints is a share of this one, so a collapse\n"+
+					"  here makes the residue counts — including UnderivableLegs, which\n"+
+					"  gates CQ-63 — look like PROGRESS while measuring nothing. Either the\n"+
+					"  shapes that drive this arm stopped being planned, or the arm stopped\n"+
+					"  being reached. Find out which before adjusting this floor.\n",
+					f.name, f.got, f.floor)
+			}
+		}
+	}
+	return failed
 }
 
 func legLocalTypeKeys(m map[values.CorrelationIdentifier]*values.RecordType) []string {

@@ -538,6 +538,11 @@ type legWindowRow struct {
 	parentType *values.RecordType
 	offset     int
 	width      int
+	// fromMergedBinder marks a window produced by bindMergedOuterLegs, so the
+	// merged-leg binding census can count LOOKUPS that resolve to one. Windows
+	// built by legWindowBinder (which serves an already-established span table)
+	// are a different producer and are not counted here.
+	fromMergedBinder bool
 }
 
 // Get reads the leg-relative ordinal: merged slot offset+ord. Out-of-range leg
