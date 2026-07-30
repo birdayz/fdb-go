@@ -10620,14 +10620,16 @@ None is speculative: each was re-verified against the tree before booking.
   by porting that: `Quantifier.GetFlowedObjectType` /
   `GetFlowedObjectValueTyped` (expressions/quantifier.go), used as the AUTHORITY
   for the merge slots, with legRowTypes kept only as the fallback for a reference
-  that carries no typed result value yet. MEASURED: typing the CASE-2 lower
-  select's result value as well (the other site that calls
-  GetFlowedObjectValue) is WRONG — it drifts 7151 plan-shape golden lines,
-  inserts a spurious Map over a filter, and regresses
-  TestFDB_JoinMerge_OuterColumn_NotDropped,
-  TestFDB_ArrayUnnestOrdinality/gathered_flat_multi-source_unnest,
-  yamsql join_three_way_predicate and rowdiff seed 5 to zero rows. The merge-slot
-  site alone drifts NO goldens.
+  that carries no typed result value yet. GetFlowedObjectType also ports Java's
+  member-agreement VERIFY (Reference.java:504-513 reduces over every member with
+  Verify.verify(left.equals(right))), which Go had cited without performing —
+  reading members[0] picks a row shape by memo insertion order, and that shape is
+  the merge slot's type. A disagreement is now an explicit error and the merge
+  declines the rule. The OTHER site that flows an untyped row
+  (rule_partition_select.go:645, the Case-2 arm) is NOT part of this item and is
+  booked as CQ-63 with its measured evidence: typing it drifts 7151 golden lines
+  and regresses four suites, which is a second defect downstream, not a reason to
+  leave it untyped.
   DEFECT 2 — the middle FlatMap's result value is a bare baked
   `ofOrdinal(QOV(merge), 0)` and `executor.newOrdinalJoinBuild` refused to build
   an ordinal join whose result value was not a RecordConstructorValue. That
@@ -10699,3 +10701,43 @@ None is speculative: each was re-verified against the tree before booking.
   (7 real-FDB tests break on deletion, measured) whose qualifier is
   embedded inside column-name strings; only the rebake removes the need.
   Order: CQ-61-reduced → CQ-53 (rebake + bindings + producers + Group B).
+
+- [ ] **CQ-63 (S/M, bug fifteen: something downstream depends on the ABSENCE
+  of a type) — PartitionSelectRule's Case-2 lower select flows an UNTYPED
+  result value, and typing it regresses four suites.** Java's quantifier
+  always carries its own row type
+  (Quantifier.java:801-803 — `getFlowedObjectValue()` is
+  `QuantifiedObjectValue.of(alias, getFlowedObjectType())`), so no Java site
+  flows an untyped row. Go has one left: rule_partition_select.go:645, the
+  Case-2 (≥2-live-lowers) arm's `Quantifier.GetFlowedObjectValue()`.
+
+  Its sibling — the SINGLE-live-lower arm feeding the positional merge's slot
+  types — was the CQ-61 defect and is FIXED (the merge slots take the
+  quantifier as the authority via GetFlowedObjectValueTyped). This item is the
+  residual: the other call site, which stays untyped.
+
+  MEASURED, and the measurement is the reason this is its own item rather than
+  a one-line follow-on. Typing the Case-2 lower select's result value as well:
+  drifts 7151 plan-shape golden lines, inserts a spurious Map over a filter,
+  and regresses TestFDB_JoinMerge_OuterColumn_NotDropped,
+  TestFDB_ArrayUnnestOrdinality/gathered_flat_multi-source_unnest, yamsql
+  join_three_way_predicate and rowdiff seed 5 to ZERO ROWS. The
+  merge-slot site alone drifts no goldens.
+
+  That is not a reason to leave it untyped — it is EVIDENCE OF A SECOND
+  DEFECT. Four independent suites cannot depend on a row type being absent
+  unless something downstream is keying on untypedness: a rule whose match
+  condition is "the result value has no row type", a bake that declines when
+  it can resolve, or an equality/interning path that distinguishes the typed
+  and untyped QOV as different expressions (the memo has interned on the
+  untyped form — ~40 GetResultValue implementations return it). Find WHICH,
+  by bisecting the four regressions against the golden drift; the spurious Map
+  over a filter is the most legible lead, since a Map appearing means some
+  rule started matching that did not before.
+
+  DO NOT close this by typing the site and re-blessing 7151 golden lines. The
+  golden movement is the symptom. Fix the downstream dependence, then the
+  typing should be inert — and if it is not, the remaining drift needs a
+  per-line justification.
+
+  Not gated on CQ-53: it touches no leg identity and no dotted channel.

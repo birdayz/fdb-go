@@ -31,7 +31,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"testing"
 
@@ -158,17 +157,6 @@ func TestFDB_CommaJoin3ProjectedExistsWithEquijoins(t *testing.T) {
 		assertJoin3Rows(t, rows, plan, err,
 			[]string{"[false]", "[true]", "[true]"})
 	})
-}
-
-// positionalSprint renders a result row from its POSITIONAL slots, so the
-// assertion pins the slot ORDER as well as the values. A name-keyed rendering
-// (unnestSprint over the row map) passes with two columns swapped and hides
-// exactly the mis-bound-window failure these arms exist to catch.
-func positionalSprint(r executor.QueryResult) string {
-	if r.Positional == nil {
-		return unnestSprint(executor.RowValue(r))
-	}
-	return fmt.Sprint(r.Positional.Slots)
 }
 
 // assertJoin3Rows requires the shape to EXECUTE and to return exactly want. Any

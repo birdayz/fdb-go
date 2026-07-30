@@ -109,7 +109,9 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, unnestSprint(executor.RowValue(r)))
+				// POSITIONAL, in slot order -- the map rendering this replaced printed the
+				// row by NAME, so permuting (Fields, Slots) together was invisible.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -143,7 +145,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 		if err != nil {
 			t.Fatalf("leftbox+conjunct multi-esq must plan (was a panic): %v", err)
 		}
-		want := []string{"map[X:7]"}
+		want := []string{"7"}
 		if strings.Join(rows, ",") != strings.Join(want, ",") {
 			t.Fatalf("leftbox+conjunct multi-esq rows = %v, want %v\n  %s", rows, want, plan)
 		}
@@ -248,7 +250,9 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, unnestSprint(executor.RowValue(r)))
+				// POSITIONAL, in slot order -- the map rendering this replaced printed the
+				// row by NAME, so permuting (Fields, Slots) together was invisible.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -273,20 +277,20 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 
 	// LEFT box + EXISTS on the PRESENT leg (A.K=100 matches EE) → {7,8}.
 	pin("leftK_present", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// EXISTS on the NULL-SUPPLIED leg (B.K=NULL → no match) → {}; a wrong-leg
 	// bind reads A.K=100 (matches) → {7,8} RED — the dup-named discriminator.
 	pin("rightK_nullsupplied", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
 	// NOT EXISTS on the null-supplied leg → keep → {7,8}; a wrong-leg bind
 	// drops → {} RED.
 	pin("notexists_rightK", `SELECT "X" `+from+` WHERE NOT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// element correlation E.V = X → only element 7 matches EEV → {7}.
 	pin("element_corr", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
-		"map[X:7]")
+		"7")
 	// single-source control (unchanged c5a-certified shape).
 	pin("ctl_single_source", `SELECT "X" FROM A, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 
 	// BAKEABLE box-leg CONJUNCT under EXISTS: `A.K = 100` is a box-leg conjunct
 	// (resolves in A's buried window → verdict Bakeable), AND EXISTS on A.K. The
@@ -294,7 +298,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// record (ofOrdinal on the buried window), instead of the name-model
 	// qualified-key rebase. A.K=100 → conjunct true, EXISTS matches → {7,8}.
 	pin("bakeable_conjunct_present", `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// the conjunct on the NULL-SUPPLIED leg (B.K IS NULL): `B.K = 110` is false
 	// (B.K=NULL) → no rows; a wrong-window bake reading A.K=100 → still no match
 	// on 110, so use a discriminating value. B.K=NULL so any equality is false →
@@ -311,7 +315,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// CORRECTNESS through the scalar-subquery pre-eval path (runQSub).
 	// MIN(EE.CK)=100=A.K → conjunct TRUE, EXISTS matches → {7,8}.
 	pinSub("subquery_conjunct_min_present", `SELECT "X" `+from+` WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// DISCRIMINATOR: COUNT(*)=1 (EE has one row) ≠ A.K=100 → conjunct FALSE → {}. A
 	// dropped subquery binding (silent NULL) would ALSO yield {} — so this alone
 	// can't distinguish bind-present from bind-absent; the _min_present TRUE arm
@@ -320,13 +324,13 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// FULL box variant: the FULL OUTER box's subquery conjunct bakes over the
 	// gather record identically (A survives FULL OUTER, null-supplied B) → {7,8}.
 	pinSub("subquery_conjunct_full_box", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// FULL box + Bakeable conjunct (D4-(ii): FULL admits ONLY at Bakeable): the
 	// FULL OUTER box's A.K=100 conjunct bakes over the gather record. A survives
 	// the FULL OUTER (AID=1≠BID=2, B null-supplied), A.K=100 → {7,8}.
 	const ffrom = `FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	pin("full_bakeable_conjunct", `SELECT "X" `+ffrom+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 
 	// CHECKS-4/5 AXIS: the admission omits the buried-outer-only and whole-row
 	// pre-checks the design named — these shapes ARE admitted and gathered.
@@ -336,11 +340,11 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// UNCORRELATED EXISTS (buried-outer-only / whole-row-independent): EE has a
 	// row → EXISTS always true → all unnested rows kept → {7,8}.
 	pin("uncorrelated_exists", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE)`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// COMPOUND buried correlation (arithmetic on the buried leg): A.K + 0 = 100
 	// matches EE.CK=100 → {7,8}; a mis-baked buried ref would misresolve → RED.
 	pin("arith_on_buried_leg", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K" + 0)`,
-		"map[X:7]", "map[X:8]")
+		"7", "8")
 	// TWO-TABLE esq spanning BOTH a leg (A.K) and the ELEMENT (X) — a
 	// pre-existing LOUD 0AF00 guard (multi-table EXISTS referencing the element
 	// is unsupported). FLIP-SENTINEL: if a future admission/rebase makes this
@@ -369,11 +373,11 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// drops (2nd false).
 	const innerFrom = `FROM A, B, A."ARR" AS "X"`
 	pin("multiesq_leg_and_element", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
-		"map[X:7]")
+		"7")
 	// NOT EXISTS second leg: EXISTS(EE.CK=A.K)=true AND NOT EXISTS(EEV.VK=X): X=7 →
 	// NOT(true)=false drops; X=8 → NOT(false)=true keeps → {8}.
 	pin("multiesq_notexists_element", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND NOT EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
-		"map[X:8]")
+		"8")
 	// 2nd existential correlates to B.K (NULL, unset): EXISTS(EE.CK=A.K)=true AND
 	// EXISTS(EE.CK=B.K=NULL)=false → the whole row drops → {}. A wrong-leg bind
 	// reading A.K would keep {7,8} RED.
@@ -386,12 +390,12 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	// → true) AND EXISTS(EEV.VK=X)`: X=7 keeps, X=8 drops → {7}. (Also pinned in
 	// TestBoxJoinMultiExistsPlanSweep's multiesq_left_box arm.)
 	pin("multiesq_leftbox_projection", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
-		"map[X:7]")
+		"7")
 	// FULL box multi-esq: A survives the FULL OUTER (AID=1≠BID=2, B null-supplied),
 	// unnest A.ARR=[7,8]; EXISTS(EE.CK=A.K=100)=true AND EXISTS(EEV.VK=X): X=7 keeps,
 	// X=8 drops → {7}. Same gather+peel+plan-time-bake path as LEFT/RIGHT.
 	pin("multiesq_fullbox_projection", `SELECT "X" `+ffrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
-		"map[X:7]")
+		"7")
 }
 
 // existsGatherSchemaMetadata builds the A/B/EE/EEV schema shared by the row cert (FDB

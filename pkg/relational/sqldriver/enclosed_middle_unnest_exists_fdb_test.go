@@ -142,20 +142,11 @@ func TestFDB_EnclosedMiddleUnnestExists(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
-					keys := make([]string, 0, len(m))
-					for k := range m {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					parts := make([]string, 0, len(keys))
-					for _, k := range keys {
-						parts = append(parts, unnestSprint(m[k]))
-					}
-					out = append(out, strings.Join(parts, "|"))
-				} else {
-					out = append(out, unnestSprint(executor.RowValue(r)))
-				}
+				// POSITIONAL, in slot order. The name-keyed form this replaced sorted
+				// the row map's keys, so permuting (Fields, Slots) together rendered
+				// identically -- blind in the one dimension a mis-bound leg window
+				// moves.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -190,21 +181,23 @@ func TestFDB_EnclosedMiddleUnnestExists(t *testing.T) {
 		want(t, `SELECT "X" FROM LA, LA."ARR" AS "X", LB WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = "X")`,
 			"7", "7")
 	})
-	// Multi-column projection incl. the OUTER array column LA."ARR": keys sort
-	// ARR|K|X. aid1 (arr[7,8]) contributes 4 rows, aid3 (arr[5]) 2 rows.
+	// Multi-column projection incl. the OUTER array column LA."ARR", rendered
+	// POSITIONALLY -- the SELECT order K|ARR|X, not the alphabetical ARR|K|X the
+	// map-keyed rendering produced. aid1 (arr[7,8]) contributes 4 rows, aid3 (arr[5]) 2 rows.
 	t.Run("proj_outer_array_and_key", func(t *testing.T) {
 		want(t, `SELECT LA."K", LA."ARR", "X" FROM LA, LA."ARR" AS "X", LB WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = LA."K")`,
-			"[5]|100|5", "[5]|100|5", "[7 8]|100|7", "[7 8]|100|7", "[7 8]|100|8", "[7 8]|100|8")
+			"100|[5]|5", "100|[5]|5", "100|[7 8]|7", "100|[7 8]|7", "100|[7 8]|8", "100|[7 8]|8")
 	})
 	// Element WHERE conjunct folded with the EXISTS: X>6 keeps 7,8 (drops 5).
 	t.Run("element_where_plus_exists", func(t *testing.T) {
 		want(t, `SELECT "X" FROM LA, LA."ARR" AS "X", LB WHERE "X" > 6 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = LA."K")`,
 			"7", "7", "8", "8")
 	})
-	// AT ordinality on the buried unnest: element + 1-based position, keys sort O|X.
+	// AT ordinality on the buried unnest: element + 1-based position, in SELECT
+	// order X|O (the map-keyed rendering sorted it O|X).
 	t.Run("at_ordinality", func(t *testing.T) {
 		want(t, `SELECT "X", "O" FROM LA, LA."ARR" AS "X" AT "O", LB WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = LA."K")`,
-			"1|5", "1|5", "1|7", "1|7", "2|8", "2|8")
+			"5|1", "5|1", "7|1", "7|1", "8|2", "8|2")
 	})
 	// Trailing-leg (LB) conjunct folded with the EXISTS: LB.K=5 keeps only bid1,
 	// so every surviving element appears ONCE (not doubled). Exercises the

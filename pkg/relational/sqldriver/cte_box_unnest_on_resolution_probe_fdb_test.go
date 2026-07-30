@@ -143,20 +143,11 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
-					keys := make([]string, 0, len(m))
-					for k := range m {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					parts := make([]string, 0, len(keys))
-					for _, k := range keys {
-						parts = append(parts, unnestSprint(m[k]))
-					}
-					out = append(out, strings.Join(parts, "|"))
-				} else {
-					out = append(out, unnestSprint(executor.RowValue(r)))
-				}
+				// POSITIONAL, in slot order. The name-keyed form this replaced sorted
+				// the row map's keys, so permuting (Fields, Slots) together rendered
+				// identically -- blind in the one dimension a mis-bound leg window
+				// moves.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -341,20 +332,11 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
-					keys := make([]string, 0, len(m))
-					for k := range m {
-						keys = append(keys, k)
-					}
-					sort.Strings(keys)
-					parts := make([]string, 0, len(keys))
-					for _, k := range keys {
-						parts = append(parts, unnestSprint(m[k]))
-					}
-					out = append(out, strings.Join(parts, "|"))
-				} else {
-					out = append(out, unnestSprint(executor.RowValue(r)))
-				}
+				// POSITIONAL, in slot order. The name-keyed form this replaced sorted
+				// the row map's keys, so permuting (Fields, Slots) together rendered
+				// identically -- blind in the one dimension a mis-bound leg window
+				// moves.
+				out = append(out, positionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -474,7 +456,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	})
 	t.Run("Q9d_on_over_plain_join_cte_pads", func(t *testing.T) {
 		check(t, `WITH "J" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "J"."AK", "CC2"."CV" FROM "J" LEFT JOIN CC AS "CC2" ON "J"."AK" = "CC2"."CID"`,
-			"<nil>|100", "<nil>|110")
+			"100|<nil>", "110|<nil>")
 	})
 	// The derived-table twin keeps its pre-existing LOUD 0AF00 (its schema
 	// derivation is not yet implemented); the message names the exact hazard
@@ -496,7 +478,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// The datum keys the subquery value twice (its rendered name + the
 		// positional _N key), so the joined COUNT appears in two slots.
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT LA."K", (SELECT COUNT(*) FROM "C" JOIN CC AS "C2" ON "C"."AK" = "C2"."CID") FROM LA WHERE LA."K" = 110`,
-			"0|110")
+			"110|0")
 	})
 	// Q11: an UNALIASED QUALIFIED projection in a multi-leg CTE body — the
 	// runtime row keys that slot by its qualified source name ("LA.K", no bare
@@ -548,7 +530,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// once declined this to 0AF00 by mistake.
 	t.Run("Q15_bare_ref_body_on_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"900|1", "<nil>|2")
+			"1|900", "2|<nil>")
 	})
 	// Q16: a DERIVED-SOURCE CTE body (`FROM (SELECT …) d` — zero joins, but
 	// declined by the global deriver for the derivedQuery reason) derives its
@@ -557,7 +539,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// deriver owned every zero-join shape).
 	t.Run("Q16_derived_source_body_on_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT "AID" FROM LA) AS "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
-			"900|1", "<nil>|2")
+			"1|900", "2|<nil>")
 	})
 	// Q17: a DUPLICATE join-bodied CTE name inside a SUBQUERY-nested WITH —
 	// the third registration loop (the empty-scope short-circuit routes a
@@ -622,29 +604,29 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// The read validation must pass when the inner emits bare keys.
 	t.Run("Q22_agg_over_derived_bare_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
-			"<nil>|2")
+			"2|<nil>")
 	})
 	// Q23: ANTI-OVER-DECLINE — a COMPUTED aliased item whose reads resolve in
 	// the inner's bare set stays derivable (harvestColumnRefs validates the
 	// expression's refs, it does not blanket-decline computed items).
 	t.Run("Q23_computed_over_derived_bare_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
-			"900|1", "<nil>|2")
+			"1|900", "2|<nil>")
 	})
 	// Q24: union-bodied CTE under ON — the union pathway NORMALIZES branch
 	// keys (branch-2 spelled qualified still resolves U.AID), for both a
 	// plain and a JOIN-SEEDED union. Pins that the union arm needs no decline.
-	// (Rows render sorted-by-key. The PLAIN union body's layout is derivable,
-	// so the parent's unique qualified projection leaves key BARE under the
-	// ordinal model — AID/CV, AID first. The JOIN-SEEDED body's layout is not
-	// derivable at emission (the resolver falls to the dotted name and the
-	// leg row itself carries the qualified key), so that variant keeps the
-	// name-model U.AID/C2.CV keys, CV first. Same values, same rows in both.)
+	// (Rows render POSITIONALLY, in SELECT order -- AID then CV -- for BOTH
+	// variants. Under the earlier name-keyed rendering the two differed: the
+	// PLAIN union body's derivable layout left the key BARE (AID sorting first)
+	// while the JOIN-SEEDED body kept the name-model U.AID/C2.CV keys (CV
+	// sorting first), so one expectation was column-swapped relative to the
+	// other for the same values. Positional rendering removes that artifact.)
 	t.Run("Q24_union_branch_keys_normalize", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
 			"1|900", "2|<nil>", "1|900", "3|<nil>")
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"900|1", "<nil>|2", "900|1", "<nil>|3")
+			"1|900", "2|<nil>", "1|900", "3|<nil>")
 	})
 	// Q25: computed item over a qualified-keyed derived row — the reads fail
 	// validation, decline (was already loud at translation; the decline moves
@@ -661,7 +643,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// silent-miss would pad ALL rows — the 700 row discriminates.
 	t.Run("Q26_bare_unnest_element_on_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "X" FROM LA, LA."ARR" AS "X") SELECT "U"."X", "C3"."XV" FROM "U" LEFT JOIN CD AS "C3" ON "U"."X" = "C3"."XK"`,
-			"700|7", "<nil>|8", "<nil>|9")
+			"7|700", "8|<nil>", "9|<nil>")
 	})
 	// Q27-Q29: the ON-ONLY-CTE-LEG hole. An ON-only CTE used as a FROM leg is
 	// neither a base table nor a derivedQuery — and
@@ -691,7 +673,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// doubles each AID row.
 	t.Run("Q30_derivable_cte_leg_resolves", func(t *testing.T) {
 		check(t, `WITH "W" AS (SELECT "AID" FROM LA), "U" AS (SELECT "AID" FROM "W", LB "L3") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"900|1", "900|1", "<nil>|2", "<nil>|2")
+			"1|900", "1|900", "2|<nil>", "2|<nil>")
 	})
 	// Q31: the backstop LIVES over enumerable legs — a genuinely ambiguous
 	// bare ref over a derivable-CTE leg + base leg still 42702s (proves the
@@ -709,7 +691,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// JOIN-shaped inner row is name-keyed and stays declined).
 	t.Run("Q33_single_table_qualified_inner_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
-			"900|1", "<nil>|2")
+			"1|900", "2|<nil>")
 	})
 	// Q34: a scalar subquery inside a computed item reads ITS OWN scope, not
 	// the derived source — harvestColumnRefsOutsideSubqueries stops at the
@@ -717,7 +699,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// checked against D's emitted set {AID} and spuriously declined).
 	t.Run("Q34_scalar_subquery_item_over_derived_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT (SELECT "K" FROM LB ORDER BY "K" DESC LIMIT 1) AS "Z", "AID" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"900|1", "<nil>|2")
+			"1|900", "2|<nil>")
 	})
 	// Q35: the hazard arm the boundary-stop must NOT unguard — a subquery
 	// CORRELATED into a JOIN-shaped (name-keyed) derived source. Admission
@@ -769,7 +751,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// cross-product doubles rows, an ON-drop or alias-desync pads BK.
 	t.Run("Q37_schema_qualified_legs_resolve", func(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID") SELECT "V"."AK", "V"."BK", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."AK" = "C2"."CID"`,
-			"<nil>|100|5", "<nil>|110|<nil>")
+			"100|5|<nil>", "110|<nil>|<nil>")
 	})
 	// Q38: the standalone (no CTE) schema-qualified explicit-join pins — the
 	// pre-existing silent cross-product class in its own right, all four
@@ -829,12 +811,13 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// is unambiguous — the validation's ambiguity arm now defers to the
 	// alias exactly like its ColumnNotFound arm always did. checkOrdered:
 	// K DESC = 2,2,1,1 in the K slot (the ordering itself is the assertion).
-	// (Rows render sorted-by-key: the ordinal model keys the unique qualified
-	// leaf LB.BID BARE — BID sorts before K — where the name model's LB.BID
-	// key sorted after K. Same values, same emission order.)
+	// (Rows render POSITIONALLY, in SELECT order: the K alias then LB.BID. The
+	// earlier name-keyed rendering sorted them BID-first under the ordinal model
+	// and K-first under the name model, for the same values -- an artifact of the
+	// rendering, not of the plan.)
 	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
 		checkOrdered(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
-			"1|2", "3|2", "1|1", "3|1")
+			"2|1", "2|3", "1|1", "1|3")
 	})
 	// Q43: the live resolver's strictness dividend, pinned against a
 	// leniency regression: a reference through the ALIASED-AWAY table name
@@ -861,10 +844,10 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// COUNT(*)=2 was value-degenerate with the table cardinality — the
 		// exact green-masking pattern Q49 below also demonstrates).
 		check(t, `SELECT LA."K", (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM LA WHERE LA."K" = 100`,
-			"1|100")
+			"100|1")
 		// differently-named control (never broken — isolates causation)
 		check(t, `SELECT LA."K", (WITH "W9" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "W9") FROM LA WHERE LA."K" = 100`,
-			"1|100")
+			"100|1")
 		// the WithCTECatalog-route twin (outer WITH forces the other chain)
 		check(t, `WITH "W0" AS (SELECT "AID" FROM LA) SELECT (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM "W0"`,
 			"1", "1")
@@ -878,7 +861,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// matches X=1), and the table-only column fails plan-time 42703.
 	t.Run("Q45_on_through_shadowing_cte", func(t *testing.T) {
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X", CC."CV" FROM "LA" JOIN CC ON "LA"."X" = CC."CID"`,
-			"900|1")
+			"1|900")
 		_, err := run(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA" JOIN CC ON "LA"."K" = CC."CID"`)
 		if err == nil || !strings.Contains(err.Error(), "42703") {
 			t.Fatalf("table-only column through a shadowing CTE's ON must fail plan-time 42703, got %v", err)
