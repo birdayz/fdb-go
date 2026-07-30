@@ -110,7 +110,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create txn: %v", err)
 			}
-			store, err := openStore(recordlayer.NewFDBRecordContext(tx), md, sub)
+			store, err := openStore(recordlayer.NewFDBRecordContext(tx, db.Env()), md, sub)
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
@@ -227,7 +227,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create txn: %v", err)
 			}
-			store, err := openStore(recordlayer.NewFDBRecordContext(tx), md, sub)
+			store, err := openStore(recordlayer.NewFDBRecordContext(tx, db.Env()), md, sub)
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}

@@ -28,8 +28,22 @@ chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on
   pure-Go client) — that's **Track B**, a separate RFC. SimFDB simulates the *backend contract*
   (`fdb.BackendDatabase`), not the wire transport.
 
+**"Bit-exactly" has named exceptions — say them when you claim a replay.** The claim is enforced by
+`pkg/docscheck`'s `TestDSTSeamGate`, which requires every raw `time.Now` / `crypto/rand` /
+`math/rand` call in `pkg/recordlayer` and `pkg/relational` to sit on an allowlist with a written
+reason. Read that allowlist before asserting a run replays; everything on it is a latency metric,
+in-memory cache bookkeeping, or an asymmetric seam's production arm — **except**:
+
+- **`spfreshNowMs`** (`pkg/recordlayer/spfresh_util.go`, 23 call sites) — SPFresh task/lease
+  timestamps DO reach persisted rows and are unseamed. A SPFresh-heavy run does not replay
+  bit-exactly.
+- **Goroutine fan-out** (indexer / spfresh) — a seeded source fixes the POOL of drawn bytes, but
+  which goroutine draws which value is scheduler-dependent, so per-node assignment is not bit-exact
+  until those paths run single-goroutine.
+
 When you say a bug is pinned, be precise about *which* replay you have: a hunt seed reproduces the
-record-layer run exactly; a chaos seed reproduces only the op stream.
+record-layer run exactly (modulo the two exceptions above); a chaos seed reproduces only the op
+stream.
 
 ## The two axes (how to think about any tool here)
 

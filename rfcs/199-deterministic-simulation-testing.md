@@ -1,9 +1,8 @@
 # RFC-199 — Deterministic Simulation Testing (DST) for the record & relational layers (Track A)
 
 **Status:** **Implemented** (Track A, Tiers 0→1→2). The four open questions are **resolved** (§9,
-validated against the C++/Java/Go sources) and the build order is committed (§7). Not a query-engine
-planner change, so the Graefe gate is **advisory** here, not mandatory. Track B (client transport) is a
-separate deliverable (§1a) and out of scope for this RFC.
+validated against the C++/Java/Go sources) and the build order is committed (§7). Track B (client
+transport) is a separate deliverable (§1a) and out of scope for this RFC.
 
 **Renumbered 179 → 199.** This document was drafted and ACK'd as RFC-179. While it sat
 dormant, 179 was reassigned on master to `rfcs/179-query-engine-correctness-audit.md`, so the
@@ -12,7 +11,7 @@ the 179-numbered text; the renumber is editorial and changed no design content. 
 skipped: they appear in no ref in the repository and are presumed reserved for unlanded work.
 
 **Consumer:** RFC-198 (explicit transactions / read-your-writes) uses SimFDB as its
-acceptance harness. The two 1021-autocommit hazard repros in §"known divergences"
+acceptance harness. The two 1021-autocommit hazard repros in §9a (known divergences)
 are RFC-198 inputs — they pin today's behaviour (which matches Java) rather than
 asserting a desired end state, because RFC-198 is what decides the semantics.
 
@@ -126,6 +125,31 @@ goroutine fan-out (indexer/spfresh) — held to be order-independent, but keep `
 client memory-race interleavings (Track B ceiling); (c) SimFDB-vs-real-FDB model-fidelity gaps
 (differential mode + conformance tests remain the guard). A hypervisor would add only (b) — the
 smallest, least bug-dense slice — for ~1000× the cost.
+
+**Seam ledger — the named exceptions to "bit-exact replay".** The Tier-0 claim is that every
+persisted-byte nondeterminism source draws through `*dst.Env`. That claim is now mechanically
+enforced (`pkg/docscheck`'s `TestDSTSeamGate`: every raw `time.Now` / `crypto/rand` / `math/rand`
+call in `pkg/recordlayer` and `pkg/relational` must sit on an allowlist with a written reason, and
+an allowlist entry that no longer matches a real site fails too). The gate exists because a
+hand-written list of four sites cannot defend a claim about the site someone adds tomorrow, and
+one of the sites that had silently regressed was not on it.
+
+The gate's allowlist is the honest ledger. Everything on it is either a latency metric, in-memory
+cache bookkeeping, a rate limiter, or the production arm of a deliberately asymmetric seam — none
+of which reaches a persisted byte — **except one**:
+
+- **`spfreshNowMs` (`pkg/recordlayer/spfresh_util.go`, 23 call sites).** SPFresh task and lease
+  timestamps DO reach persisted rows and are NOT seamed. A SPFresh-heavy run therefore does not
+  replay bit-exactly; everything else does. Seaming it is real work (23 sites, several on paths
+  with no `*FDBRecordContext` in hand), not a formality, and it is deliberately not claimed done.
+
+Two further caveats on the *randomness* seam, already stated at `pkg/dst/rand.go`: a seeded source
+makes the POOL of drawn bytes deterministic, but under goroutine fan-out (indexer / spfresh) which
+goroutine draws which value is scheduler-dependent, so per-node assignment is not bit-exact until
+those paths are driven single-goroutine. And production is spelled **`nil`** — there is
+deliberately no "production `Env`" constructor, because the asymmetric seam sites test `env != nil`
+and a hand-built production `Env` would put them on the simulation path while calling itself
+production.
 
 ## 2. The one insight that makes this tractable
 
@@ -694,8 +718,12 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     bugs:** (1) streaming `DISTINCT` drops its dedup state across a resume (returns duplicates paginated,
     even with ORDER BY; GROUP BY unaffected); (2) multi-value `IN (a,b)` (InJoin/concat) has no per-branch
     continuation, so it errors `54F01` under a tiny scanned-rows limit instead of resuming (same gap in
-    `executeInUnion`; Java's `InJoinCursor` resumes). Both recorded in TODO.md "## DST findings",
-    Graefe-gated, quarantined + pinned by fix-detectors; not fixed here.
+    `executeInUnion`; Java's `InJoinCursor` resumes). Both are recorded in TODO.md "## DST findings"
+    and both are now FIXED — the DISTINCT seen-set is carried through the continuation and the concat
+    serializes {active-branch index, child continuation} — so the fix-detectors that asserted the bugs
+    were still present have been converted into the correctness assertions they instructed their fixer
+    to write (`TestDistinctContinuationDedups`, `TestInJoinContinuation`, `TestUnionAllContinuation`,
+    `TestInJoinLimit`).
   - **Continuation across an INJECTED between-page fault ✅ BUILT** — both a fixed regression (`pkg/simfdb`
     `TestSimFDB_ContinuationResumeAcrossFaultedWrite`/`…Insert`, delete+insert × 1020/1021) and a **seeded
     sweep** (a fourth oracle in `pkg/simfdb/hunt/continuation`: a not-yet-scanned key is deleted in a raw
@@ -838,3 +866,55 @@ Each resolved against the C++/Java/Go sources; one-line rationale here, detail a
    the record/relational core uses zero watches, so a v1 SimFDB omits the method entirely with no
    coverage loss; the v2 model is fire-on-value-**change** armed at the committed version (RFC-170), not
    "fired at the committing mutation." (Tier 1 deferrable)
+
+## 9a. Known divergences
+
+Every place a SimFDB run is knowingly *not* the same as a real-FDB run, and every behaviour this
+work pins as-is rather than asserts as correct. The distinction matters because SimFDB's value is
+that its verdicts can be trusted: an undocumented divergence is a false green on exactly the class
+of bug DST exists to catch.
+
+**A. SimFDB vs. real FDB — deliberate, bounded.**
+
+- **Watches are absent, not stubbed.** `Watch` is off the `BackendDatabase` interface (RFC-109) and
+  the record/relational core uses zero watches, so v1 omits the method rather than modelling it
+  wrongly (§9.4). A caller that needs a watch fails to compile against the sim backend; it never
+  silently gets a watch that does not fire.
+- **The 5s MVCC window is a logical-version knob, not a real GC.** Versions are a monotone logical
+  counter with no version-storage reclamation, so `transaction_too_old` (1007) reaches the client by
+  BUGGIFY injection rather than by a version genuinely ageing out (§9.3). Retry/idempotency paths are
+  therefore exercised faithfully; version-lifetime *timing* is not modelled and must not be inferred
+  from a sim run.
+- **The version domain is isolated, so byte-for-byte differentials run narrowed.** SimFDB's versions
+  do not come from a real cluster's version source, which breaks the read-version pinning the
+  existing two-backend differentials rely on. Cross-backend byte parity therefore runs
+  serial-from-empty with all version bytes masked, and fault-injected runs are diffed only against
+  fault-free ones (§8). The conflict-outcome differential — commit/abort agreement, which is the
+  property SimFDB is trusted for — is *not* narrowed: it sweeps randomized scenarios against the pure
+  Go client on a real cluster.
+- **Client-goroutine scheduling is not replayed.** Determinism is bought at the backend seam, not by
+  determinizing the Go runtime (§3, §8 non-goals). Two sim runs of the same seed agree on persisted
+  bytes and on every commit verdict; they do not agree on goroutine interleaving, and no oracle here
+  may depend on one.
+
+**B. Behaviour pinned as-is, pending RFC-198 — the two 1021-autocommit hazards.**
+
+`commit_unknown_result` (1021) has an applied branch: the write is durable and the client is told
+nothing. Because 1021 is retryable and a SQL statement autocommits inside a retrying `Run`, the
+statement re-executes against data that already reflects it. Both repros live in
+`pkg/relational/sqldriver/sim_sql_fault_test.go`, made deterministic by `InjectOnce` placing the
+named branch at an exact commit:
+
+- `TestSQLFault_UpdateRelative_DoubleApply` — the silent half. `SET a = a + 1` re-derives from the
+  now-durable row, so +1 becomes +2. Wrong data, no error anywhere.
+- `TestSQLFault_InsertDurablyCommitted_Spurious23505` — the loud half. The retry re-inserts, finds
+  its own durable row, and returns 23505 for a statement that succeeded. Right data, wrong error.
+
+These are **not** Go defects: fdb-relational autocommits through the same retry-on-1021, so this is
+an inherited FDB hazard surfaced by composition, and "fixing" it here would be inventing semantics.
+They are pinned separately because a fix could plausibly reach one and not the other, and both
+assertions carry a failure message telling a future reader what to do when the behaviour changes.
+RFC-198 decides whether an explicit transaction changes them; read them as its problem statement.
+`TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce` is the control on the other 1021 branch —
+nothing durable, the same retry is correct — which is what makes the hazard about the applied
+branch rather than about retrying per se.

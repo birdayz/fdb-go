@@ -146,7 +146,7 @@ var _ = Describe("Bug Bounty Round 2", func() {
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 
 			// GetVersionstamp is called BEFORE commit (this is correct)
 			// But for a read-only tx, it will fail.

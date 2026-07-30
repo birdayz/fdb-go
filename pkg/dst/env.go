@@ -6,23 +6,23 @@ import "time"
 // through the record and relational layers. Threading one Env keeps the seam surface small:
 // a store, indexer, or session holds an *Env and reaches Clock/Random/Buggify off it.
 //
-// Production() is the drop-in default (wall clock, crypto/rand, buggify off) and is what
-// every non-simulation code path uses. NewSim(seed) builds a fully deterministic environment
-// for a simulation run. A nil *Env means "production" — use Env.orProduction accessors so a
-// nil field never panics.
+// PRODUCTION IS A NIL *Env. There is deliberately no constructor for it. Every accessor
+// (Now/Read/Fault/Coin) treats a nil Env — and a nil field within an Env — as wall clock,
+// crypto/rand, and never-fire, so an unset env is byte-identical to the code before the seam.
+// NewSim(seed) builds a fully deterministic environment for a simulation run.
+//
+// A "production Env" constructor existed and was dead, and its existence was actively harmful:
+// several seam sites are deliberately ASYMMETRIC — they divert only when an env is present,
+// because routing them through the nil-default would have CHANGED production bytes (the SPFresh
+// builder token used math/rand, not crypto/rand; the SPFresh process nonce was minted once per
+// process, not per call). Those sites test `env != nil`, so installing a hand-built
+// "production" Env would have flipped them onto the simulation path while claiming to be
+// production. With nil as the only spelling of production, `env != nil` means "a simulation
+// environment is installed", which is exactly what those guards intend.
 type Env struct {
 	Clock   Clock
 	Random  Randomness
 	Buggify *Buggifier
-}
-
-// Production returns the drop-in default environment: wall clock, crypto/rand, buggify off.
-func Production() *Env {
-	return &Env{
-		Clock:   RealClock{},
-		Random:  CryptoRandomness{},
-		Buggify: DisabledBuggifier(),
-	}
 }
 
 // NewSim returns a fully deterministic environment seeded by seed, with its logical clock

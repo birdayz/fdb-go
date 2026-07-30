@@ -40,13 +40,34 @@ var spfreshOwnerSeq atomic.Int64
 // voids mutual exclusion. Lease expiry does NOT cover this: it protects
 // against DEAD owners, not live name collisions.
 //
-// The nonce is drawn per rebalancer run through the DST randomness seam
-// (crypto/rand in production, the seeded source in simulation) so a run
-// reproduces its owner strings. A previous package-global minted once at
-// import time defeated that replay: the byte-determinism the RFC calls out.
-// Re-drawing per run costs nothing — spfreshOwnerSeq already disambiguates
-// runs within a process, so a fresh nonce is strictly no less unique.
+// Under a SIMULATION env the nonce is drawn per rebalancer run from the seeded
+// source, so a run reproduces its owner strings; a package-global minted once
+// at import defeats that replay.
+//
+// In PRODUCTION (nil env) it stays the package-global, minted once per process.
+// The guard is ASYMMETRIC on purpose, exactly like the SPFresh builder token
+// (spfresh_build.go): routing this through the nil-default accessor would draw
+// a FRESH nonce per call in production too, which is a different program from
+// the one before the seam — and the seam's whole claim is that an unset env is
+// byte-identical to pre-seam behaviour. A seam that quietly changes production
+// while advertising byte-identity is worse than no seam, because the claim is
+// what people rely on when they decide not to re-test.
+//
+// (Re-drawing per run would in fact have been no less unique — spfreshOwnerSeq
+// already separates runs within a process. That is an argument for why the
+// change was harmless, not for why the claim was true.)
 func spfreshProcessNonce(env *dst.Env) string {
+	if env == nil {
+		return spfreshProcessNonceGlobal
+	}
+	return newSPFreshProcessNonce(env)
+}
+
+// spfreshProcessNonceGlobal is the production nonce: minted ONCE at import, as
+// it was before the seam.
+var spfreshProcessNonceGlobal = newSPFreshProcessNonce(nil)
+
+func newSPFreshProcessNonce(env *dst.Env) string {
 	var b [8]byte
 	if _, err := env.Read(b[:]); err != nil {
 		// crypto/rand read cannot fail on supported platforms; if it ever

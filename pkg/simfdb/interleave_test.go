@@ -47,11 +47,11 @@ func TestSimFDB_InterleavedTransactionsConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create txB: %v", err)
 	}
-	storeA, err := openStore(recordlayer.NewFDBRecordContext(txA), md, sub)
+	storeA, err := openStore(recordlayer.NewFDBRecordContext(txA, nil), md, sub)
 	if err != nil {
 		t.Fatalf("open store A: %v", err)
 	}
-	storeB, err := openStore(recordlayer.NewFDBRecordContext(txB), md, sub)
+	storeB, err := openStore(recordlayer.NewFDBRecordContext(txB, nil), md, sub)
 	if err != nil {
 		t.Fatalf("open store B: %v", err)
 	}

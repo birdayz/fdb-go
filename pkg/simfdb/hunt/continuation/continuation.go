@@ -304,7 +304,7 @@ func deleteUnderFault(ctx context.Context, db *recordlayer.FDBDatabase, sim *sim
 	if err != nil {
 		return false, err
 	}
-	store, err := openStore(recordlayer.NewFDBRecordContext(tx), md, sub)
+	store, err := openStore(recordlayer.NewFDBRecordContext(tx, db.Env()), md, sub)
 	if err != nil {
 		return false, err
 	}

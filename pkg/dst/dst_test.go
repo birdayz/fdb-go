@@ -226,20 +226,28 @@ func TestBuggifier_SetProbabilitiesClamps(t *testing.T) {
 	}
 }
 
-func TestEnv_ProductionDefaults(t *testing.T) {
+// TestEnv_ProductionIsNil pins that production has exactly one spelling — a nil *Env — and
+// behaves like the pre-seam code on every accessor. A second spelling (a hand-built "production"
+// Env) would satisfy the `env != nil` guards at the deliberately asymmetric seam sites and put
+// them on the simulation path while calling itself production.
+func TestEnv_ProductionIsNil(t *testing.T) {
 	t.Parallel()
-	e := Production()
-	if _, ok := e.Clock.(RealClock); !ok {
-		t.Fatalf("Production clock = %T, want RealClock", e.Clock)
+	var e *Env
+	if e.Now().IsZero() {
+		t.Fatal("nil Env.Now must be the wall clock")
 	}
-	if _, ok := e.Random.(CryptoRandomness); !ok {
-		t.Fatalf("Production random = %T, want CryptoRandomness", e.Random)
+	p := make([]byte, 16)
+	if _, err := e.Read(p); err != nil {
+		t.Fatalf("nil Env.Read: %v", err)
 	}
-	if e.Buggify.Enabled() {
-		t.Fatal("Production buggify should be disabled")
+	if bytes.Equal(p, make([]byte, 16)) {
+		t.Fatal("nil Env.Read must fill from crypto/rand")
 	}
 	if e.Fault("anything") {
-		t.Fatal("Production Env.Fault fired")
+		t.Fatal("nil Env.Fault fired")
+	}
+	if e.Coin("anything") {
+		t.Fatal("nil Env.Coin flipped heads: with no seed it must be the fixed branch")
 	}
 }
 

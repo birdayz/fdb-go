@@ -163,12 +163,23 @@ func TestHNSWStorageEnv_DefaultsToProduction(t *testing.T) {
 func TestSPFreshProcessNonce_SeamedBothDirections(t *testing.T) {
 	t.Parallel()
 
+	// PRODUCTION IS A PROCESS NONCE, not a per-call draw. Before the seam this was a
+	// package-level var minted once at import; the seam's claim is that a nil env is
+	// byte-identical to that. Routing it through the nil-default accessor would draw fresh
+	// bytes on every call — no less unique, but a DIFFERENT PROGRAM, which is precisely what
+	// "byte-identical to pre-seam" says does not happen.
 	p1, p2 := spfreshProcessNonce(nil), spfreshProcessNonce(nil)
 	if p1 == "" {
 		t.Fatal("nil-env process nonce is empty")
 	}
-	if p1 == p2 {
-		t.Fatal("nil-env process nonces repeated — two live workers would mint the same lease owner")
+	if p1 != p2 {
+		t.Fatalf("nil-env process nonce changed between calls (%q vs %q): production must keep "+
+			"the once-per-process nonce it had before the seam, or the byte-identity claim the "+
+			"seam is sold on is false at this site", p1, p2)
+	}
+	// It still separates processes: the value is drawn (not a constant), just drawn once.
+	if p1 == newSPFreshProcessNonce(nil) {
+		t.Fatal("the process nonce is a constant — two processes would mint the same lease owner")
 	}
 
 	s1 := spfreshProcessNonce(dst.NewSim(21))

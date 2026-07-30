@@ -13,6 +13,7 @@ go_test(
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "docs_consistency_test.go",
+        "dst_seam_gate_test.go",
         "field_name_decision_detector_test.go",
         "field_name_decision_test.go",
         "leg_identity_construction_test.go",

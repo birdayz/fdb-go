@@ -144,7 +144,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			// Write something so the tx is not completely empty (avoids potential FDB quirks).
 			tx.Set(fdb.Key(specSubspace().Pack(tuple.Tuple{"cwvs-ro"})), []byte("x"))
 
@@ -159,7 +159,7 @@ var _ = Describe("FDBDatabase", func() {
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			key := ss.Pack(tuple.Tuple{"cwvs-mut"})
 			value := make([]byte, 14) // placeholder
 			rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, key, value)
@@ -176,7 +176,7 @@ var _ = Describe("FDBDatabase", func() {
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			tx.Set(fdb.Key(ss.Pack(tuple.Tuple{"cwvs-fail"})), []byte("should-not-persist"))
 			rtx.AddCommitCheck(func() error {
 				return errors.New("abort")
@@ -200,7 +200,7 @@ var _ = Describe("FDBDatabase", func() {
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			tx.Set(fdb.Key(specSubspace().Pack(tuple.Tuple{"cwvs-post"})), []byte("ok"))
 
 			postRan := false
@@ -218,7 +218,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			postRan := false
 			rtx.AddCommitCheck(func() error { return errors.New("nope") })
 			rtx.AddPostCommit(func() { postRan = true })
@@ -349,7 +349,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			// Should not panic on nil map.
 			rtx.RemoveVersionMutationsInRange(fdb.Key("a"), fdb.Key("z"))
 			Expect(rtx.HasVersionMutations()).To(BeFalse())
@@ -360,7 +360,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, []byte("bbb"), []byte("v1"))
 			rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, []byte("ccc"), []byte("v2"))
 
@@ -377,7 +377,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, []byte("aaa"), []byte("v"))
 
 			rtx.RemoveVersionMutationsInRange(fdb.Key("aaa"), fdb.Key("aaa"))
@@ -391,7 +391,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			// Should not panic on nil map.
 			rtx.RemoveLocalVersionsInRange(fdb.Key("a"), fdb.Key("z"))
 			_, ok := rtx.GetLocalVersion([]byte("a"))
@@ -403,7 +403,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			rtx.AddToLocalVersionCache([]byte("bbb"), 1)
 			rtx.AddToLocalVersionCache([]byte("ccc"), 2)
 
@@ -420,7 +420,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			rtx.AddToLocalVersionCache([]byte("aaa"), 5)
 
 			rtx.RemoveLocalVersionsInRange(fdb.Key("aaa"), fdb.Key("aaa"))
@@ -436,7 +436,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			key := []byte("same-key")
 
 			rtx.AddVersionMutation(MutationTypeSetVersionstampedValue, key, []byte("first"))
@@ -455,7 +455,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			// Remove from nil map.
 			rtx.RemoveVersionMutation([]byte("ghost"))
 			Expect(rtx.HasVersionMutations()).To(BeFalse())
@@ -473,7 +473,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			// Remove from nil map.
 			rtx.RemoveLocalVersion([]byte("ghost"))
 
@@ -492,7 +492,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			key := []byte("lv-key")
 			rtx.AddToLocalVersionCache(key, 10)
 			rtx.AddToLocalVersionCache(key, 20)
@@ -509,7 +509,7 @@ var _ = Describe("FDBDatabase", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
-			rtx := NewFDBRecordContext(tx)
+			rtx := NewFDBRecordContext(tx, nil)
 			rtx.SetMetaDataVersionStamp() // sets dirtyMetaDataVersionStamp = true
 
 			stamp, err := rtx.GetMetaDataVersionStamp()

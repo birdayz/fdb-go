@@ -775,7 +775,7 @@ var _ = Describe("Store State Cache", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx1.Cancel()
 
-			rtx1 := NewFDBRecordContext(tx1)
+			rtx1 := NewFDBRecordContext(tx1, nil)
 			store1, err := NewStoreBuilder().
 				SetContext(rtx1).
 				SetMetaDataProvider(md).
