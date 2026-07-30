@@ -20,7 +20,12 @@ import (
 // binds only the MERGED outer row, so a predicate reading QOV(L).ID has to be
 // re-anchored onto the merge correlation before it can be lifted, and
 // rebaseOuterLegRefsToMerged is what does the re-anchoring.
-func buildTwoLegExistentialSelect() []expressions.RelationalExpression {
+//
+// It returns the two leg QUANTIFIERS alongside the yielded plans so a test can
+// assert what the layout derivation says about this exact shape. Without that,
+// "the mint still fires" is unfalsifiable: it would also hold for a shape whose
+// layouts are underivable, which is the case that proves nothing.
+func buildTwoLegExistentialSelect() ([]expressions.RelationalExpression, expressions.Quantifier, expressions.Quantifier) {
 	legA := values.NamedCorrelationIdentifier("L")
 	legB := values.NamedCorrelationIdentifier("R")
 	existAlias := values.NamedCorrelationIdentifier("E")
@@ -57,7 +62,7 @@ func buildTwoLegExistentialSelect() []expressions.RelationalExpression {
 		},
 		[]string{"L", "R", "E"},
 	)
-	return FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	return FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel)), qA, qB
 }
 
 // dottedLegRefsOf collects every FieldValue reachable from the yielded plans
@@ -132,35 +137,96 @@ func dottedLegRefsOf(yielded []expressions.RelationalExpression) []*values.Field
 	return out
 }
 
-// TestRebaseOuterLegValue_LazyMintIsLive pins that ImplementNestedLoopJoinRule
-// REACHES rebaseOuterLegValue's leg-match arm, and that what the arm produces
-// there is the LAZY qualified mint — FieldValue{Child: QOV(merged),
-// Field: "LEG.COL"} with no resolved ordinal.
+// legLocalLegRefsOf collects every FieldValue reachable from the yielded plans
+// that reads a column off a LEG quantifier — the shape the leg-match arm now
+// produces when it can state the leg's layout. Mirrors dottedLegRefsOf's walk
+// exactly (same surfaces, same node kinds) so the two are comparable: a reference
+// counted by one and not the other has genuinely changed form.
+func legLocalLegRefsOf(yielded []expressions.RelationalExpression, leg values.CorrelationIdentifier) []*values.FieldValue {
+	var out []*values.FieldValue
+	visit := func(v values.Value) values.Value {
+		if fv, ok := v.(*values.FieldValue); ok {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation == leg {
+				out = append(out, fv)
+			}
+		}
+		return v
+	}
+	collectComparison := func(c *predicates.Comparison) {
+		if c != nil && c.Operand != nil {
+			values.Replace(c.Operand, visit)
+		}
+	}
+	collectRanges := func(crs []*predicates.ComparisonRange) {
+		for _, cr := range crs {
+			switch {
+			case cr.IsEquality():
+				collectComparison(cr.GetEqualityComparison())
+			case cr.IsInequality():
+				for _, c := range cr.GetInequalityComparisons() {
+					collectComparison(c)
+				}
+			}
+		}
+	}
+	for _, y := range yielded {
+		rp, ok := y.(plans.RecordQueryPlan)
+		if !ok {
+			continue
+		}
+		plans.Walk(rp, func(p plans.RecordQueryPlan) bool {
+			if rv := p.GetResultValue(); rv != nil {
+				values.Replace(rv, visit)
+			}
+			switch t := p.(type) {
+			case *plans.RecordQueryPredicatesFilterPlan:
+				for _, pr := range t.GetPredicates() {
+					predicates.ReplaceValues(pr, visit)
+				}
+			case *plans.RecordQueryFilterPlan:
+				for _, pr := range t.GetPredicates() {
+					predicates.ReplaceValues(pr, visit)
+				}
+			case *plans.RecordQueryNestedLoopJoinPlan:
+				for _, pr := range t.GetPredicates() {
+					predicates.ReplaceValues(pr, visit)
+				}
+			case *plans.RecordQueryScanPlan:
+				collectRanges(t.GetScanComparisons())
+			case *plans.RecordQueryIndexPlan:
+				collectRanges(t.GetScanComparisons())
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName pins the
+// leg-match arm's disposition on a shape whose leg layouts ARE derivable: the read
+// is re-anchored onto the merge correlation as a qualified "LEG.COL" key anyway.
 //
-// It exists because the arm's own comment declared the whole arm
-// "dead-in-effect TODAY … a panic wired into this lookup is reached only by
-// TestRebaseOuterLegValue_OrdinalFirst". That was false. Only the
-// legLayout != nil BAKE inside the arm is dead-in-effect; the enclosing arm is
-// reached, and reached from the nil-layout call implementJoinWithExistential
-// makes for non-windowed step-1 result values.
+// The layout is not what decides here, and pinning that on a DERIVABLE shape is
+// the only way to keep it true. There was briefly a leg-local bake at this arm
+// that resolved the read's display NAME against the derived leg type to mint an
+// ordinal; it was deleted because a display name may not decide a column's
+// identity (RFC-197), and because a lookup by name is precisely the conflation the
+// `.Field` decision gate exists for and precisely the shape that gate cannot see.
+// Java's own re-anchor keys on the quantifier's ORDINAL POSITION, never on a name
+// (PartitionSelectRule.java:296-303), and Go's ordinal authority in this function
+// is the identity-keyed layout lookup — pinned separately by
+// TestRebaseOuterLegValue_OrdinalFirst, including the two ways it can be wrong (a
+// sibling leg's identical column answering, and the wrong slot answering).
 //
-// Nothing else could catch a deletion of that mint. The arm is exercised
-// during planning of real shapes (the buried/N-way/four-leg projected-EXISTS
-// family in pkg/relational/sqldriver), but the physical candidate carrying its
-// output LOSES on every one of them, and OptimizeGroup prunes each group's
-// finals to the winner — so the mint is invisible both in the winning plan and
-// in the post-planning memo, and every row-level test over those shapes stays
-// green with the arm removed. Firing the rule directly is the repo's
-// established way to pin formation past that pruning.
-//
-// The companion negative — that the mint reaches no WINNING plan today — is
-// pinned by TestLazyLegMintReachesNoWinningPlan. The two together are the
-// whole truth about this channel: the code is live, its product is not
-// selected, and neither half may be inferred from the other.
-func TestRebaseOuterLegValue_LazyMintIsLive(t *testing.T) {
+// The test this replaced asserted the bake. Its failure message named a
+// conversion as the one legitimate reason to retarget it, which is why it is
+// retargeted here rather than deleted: the shape it reaches is the one the rule
+// actually routes, and that reach is worth keeping. What changed is the expected
+// disposition, and the reason is a correctness argument, not a measurement.
+func TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName(t *testing.T) {
 	t.Parallel()
 
-	yielded := buildTwoLegExistentialSelect()
+	yielded, qA, qB := buildTwoLegExistentialSelect()
 	if len(yielded) == 0 {
 		t.Fatal("ImplementNestedLoopJoinRule yielded nothing for the two-leg + " +
 			"trailing-Existential select: OnMatch no longer routes this shape to " +
@@ -169,6 +235,33 @@ func TestRebaseOuterLegValue_LazyMintIsLive(t *testing.T) {
 			"len(quants)==3 dispatch rather than deleting the test.")
 	}
 
+	// PRECONDITION, asserted rather than assumed: both legs state a layout. On a
+	// shape whose layouts are underivable the mint would be the only thing the arm
+	// COULD emit, and the assertion below would hold for the wrong reason.
+	legL := values.NamedCorrelationIdentifier("L")
+	legR := values.NamedCorrelationIdentifier("R")
+	layouts := legRowTypesFromQuantifiers(
+		legRowTypeSource{Quantifier: qA, Alias: legL},
+		legRowTypeSource{Quantifier: qB, Alias: legR},
+	)
+	for _, leg := range []values.CorrelationIdentifier{legL, legR} {
+		rt, ok := layouts[leg]
+		if !ok || rt == nil || len(rt.Fields) == 0 {
+			t.Fatalf("leg %s states no row layout, so this shape cannot pin that the "+
+				"mint fires DESPITE a layout — it would fire for want of one. Both legs "+
+				"range over a typed scan reference, so GetFlowedObjectType must answer; "+
+				"a decline here means the faithful instrument stopped covering the "+
+				"simplest possible leg. layouts = %v", leg.Name(), layouts)
+		}
+	}
+	if _, found := layouts[legL].FieldIndex("ID"); !found {
+		t.Fatalf("leg L's layout does not declare ID (%v). The correlation predicate "+
+			"reads L.ID, so a layout that cannot place it makes the precondition "+
+			"vacuous.", layouts[legL].Fields)
+	}
+
+	// The qualified merged-row key IS minted, and it is LAZY: nothing bakes an
+	// ordinal from the layout above.
 	var lazy, baked []string
 	for _, fv := range dottedLegRefsOf(yielded) {
 		if fv.Resolved == nil {
@@ -177,30 +270,144 @@ func TestRebaseOuterLegValue_LazyMintIsLive(t *testing.T) {
 			baked = append(baked, fv.Field)
 		}
 	}
-
-	if len(lazy) == 0 {
-		t.Fatalf("no LAZY dotted leg reference over a merge correlation in any of "+
-			"the %d yielded plans: rebaseOuterLegValue's leg-match arm was not "+
-			"reached, or it no longer mints the lazy qualified name (baked dotted "+
-			"refs found: %v).\nIf the shape now bakes instead, that is a real "+
-			"improvement — retarget this test deliberately. Do NOT conclude the "+
-			"arm is dead: its prose claimed exactly that once, and the claim was "+
-			"measurably wrong.", len(yielded), baked)
+	if len(baked) > 0 {
+		t.Fatalf("a merged-row qualified key is BAKED: %v. The only ordinal authority "+
+			"in this arm is the identity-keyed legLayout lookup, and this call path "+
+			"passes no layout — a baked key here means an ordinal was minted from "+
+			"something else, and the only other thing in hand is the display name.",
+			baked)
 	}
-
-	// The key is dotted BY CONSTRUCTION (corr + "." + upper(field)). Assert the
-	// leg half names the leg actually correlated to, so a change that keys the
-	// merged row some other way cannot pass while silently changing what the
-	// FlatMap inner's binder looks up.
-	foundLeg := false
+	if len(lazy) == 0 {
+		t.Fatalf("no qualified merged-row key was minted in any of the %d yielded "+
+			"plans, on a shape whose leg layouts are both derivable (%v). Either the "+
+			"arm stopped being reached — re-derive the shape from OnMatch's "+
+			"len(quants)==3 dispatch — or a leg-local bake came back. If a bake came "+
+			"back, it may key on the reference's IDENTITY and nothing else; a bake "+
+			"keyed on the column's display name is what this test was retargeted "+
+			"from.", len(yielded), layouts)
+	}
+	var sawLegLKey bool
 	for _, f := range lazy {
 		if strings.EqualFold(f, "L.ID") {
-			foundLeg = true
+			sawLegLKey = true
 		}
 	}
-	if !foundLeg {
-		t.Fatalf("the lazy mint fired but not for the correlated leg column: got %v, "+
-			"want an L.ID key — the existential correlates to L.ID, and the merged "+
-			"row's binder resolves it by exactly that qualified key", lazy)
+	if !sawLegLKey {
+		t.Fatalf("the minted keys are %v, none of them L.ID. The existential's "+
+			"correlation predicate is E.OUTER_ID = L.ID, so that read is the one this "+
+			"arm exists to place, and the merged row's binder resolves it by exactly "+
+			"this spelling.", lazy)
+	}
+
+	// And no LEG-LOCAL read on L survives: the whole read moved to the merge
+	// correlation. A surviving leg-correlated read below the FlatMap would be
+	// unbound at the point the predicate is lifted, which is the silent-NULL
+	// failure the re-anchor exists to prevent.
+	if refs := legLocalLegRefsOf(yielded, legL); len(refs) > 0 {
+		var fields []string
+		for _, fv := range refs {
+			fields = append(fields, fv.Field)
+		}
+		t.Fatalf("reads still correlated to leg L survive in a yielded plan: %v. The "+
+			"step-2 FlatMap binds the MERGED row, so a leg-correlated read lifted into "+
+			"it resolves against a binding the planner did not put there.", fields)
+	}
+}
+
+// TestRebaseOuterLegValue_QualifiedMintSurvivesWithoutALegLayout is the other
+// direction. It is no longer a different OUTCOME from the test above — both mint —
+// and that is the point of keeping both: the two inputs differ (layout present vs
+// absent) and the disposition must not start depending on which.
+//
+// It is also the unit-level statement of the same fact, reached without firing a
+// rule, so a change that alters the arm shows up here as well as in the plan.
+func TestRebaseOuterLegValue_QualifiedMintSurvivesWithoutALegLayout(t *testing.T) {
+	t.Parallel()
+
+	legA := values.NamedCorrelationIdentifier("L")
+	merged := values.UniqueCorrelationIdentifier()
+	aType := values.Type(nljTestLayouts["OUTER"]) // ID, CATEGORY
+
+	read := values.NewFieldValue(
+		values.NewQuantifiedObjectValueOfType(legA, aType), "ID", values.UnknownType)
+
+	// No leg layouts at all: nothing to state an ordinal in even in principle.
+	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, nil)
+	assertQualifiedLegMint(t, out, merged, "L.ID",
+		"no leg layout was supplied at all")
+}
+
+// TestRebaseOuterLegValue_TypedLegStillMintsAndCensusRecordsTheMint is F8's
+// behavioural half, and it is the axis the two tests above cannot cover: a leg
+// whose layout is present AND declares the read's column, handed to the arm
+// directly.
+//
+// This is the state CQ-63 creates for every leg. If the mint survives it — which
+// it must, until the bake returns keyed on identity — then the census must record
+// a MINT for it and not a convertible read, or the acceptance instrument will
+// report the channel retired on the day the legs get types and nothing else
+// changes.
+func TestRebaseOuterLegValue_TypedLegStillMintsAndCensusRecordsTheMint(t *testing.T) {
+	t.Parallel()
+
+	legA := values.NamedCorrelationIdentifier("L")
+	merged := values.UniqueCorrelationIdentifier()
+	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
+
+	read := values.NewFieldValue(
+		values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "ID", values.UnknownType)
+
+	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType}
+	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, legTypes)
+	assertQualifiedLegMint(t, out, merged, "L.ID",
+		"a layout for leg L WAS supplied and declares ID")
+
+	// The census's own classification of that firing. The outcome dominates: a
+	// minted read with a resolvable layout is LAYOUT-AVAILABLE — a mint that could
+	// have been an ordinal — and never Baked.
+	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "ID"); got != legLocalBakeClassLayoutAvailable {
+		t.Fatalf("a MINTED read with a layout declaring its column classified as %v, "+
+			"want legLocalBakeClassLayoutAvailable. Recording it as Baked (or dropping "+
+			"it) would let the census report the qualified-name channel deletable while "+
+			"the mint is the only thing the arm emits.", got)
+	}
+	if got := classifyLegLocalBake(legLocalBakeBaked, values.Type(aType), "ID"); got != legLocalBakeClassBaked {
+		t.Fatalf("a BAKED read classified as %v, want legLocalBakeClassBaked — the "+
+			"outcome the arm states has to dominate the type it happens to hold", got)
+	}
+	// And the untyped/absent split still refines a mint rather than replacing it.
+	if got := classifyLegLocalBake(legLocalBakeMinted, values.UnknownType, "ID"); got != legLocalBakeClassUntypedLeg {
+		t.Fatalf("a MINTED read with no layout classified as %v, want untypedLeg", got)
+	}
+	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "NOSUCH"); got != legLocalBakeClassColumnAbsent {
+		t.Fatalf("a MINTED read whose column the layout does not declare classified as "+
+			"%v, want columnAbsent", got)
+	}
+}
+
+// assertQualifiedLegMint is the shared shape assertion: the arm produced a LAZY
+// qualified "LEG.COL" FieldValue over the merge correlation, with no baked ordinal.
+func assertQualifiedLegMint(t *testing.T, out values.Value, merged values.CorrelationIdentifier, wantField, because string) {
+	t.Helper()
+	fv, isFV := out.(*values.FieldValue)
+	if !isFV {
+		t.Fatalf("rebaseOuterLegValue returned %T, want a *values.FieldValue (%s)", out, because)
+	}
+	if fv.Resolved != nil {
+		t.Fatalf("the read baked ordinal %d (%s). The only ordinal authority in this "+
+			"arm is the identity-keyed legLayout lookup, and no layout was passed on "+
+			"this path — a bake here was minted from the reference's display name or "+
+			"its child type, which is the name channel under another spelling.",
+			fv.Resolved.Root().Ordinal, because)
+	}
+	if !strings.EqualFold(fv.Field, wantField) {
+		t.Fatalf("minted field %q, want the qualified %s key (%s) — the merged row's "+
+			"binder resolves the leg by exactly this key, so a different spelling binds "+
+			"a different leg or nothing", fv.Field, wantField, because)
+	}
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV || qov.Correlation != merged {
+		t.Fatalf("mint anchored on %v, want the merge correlation %v (%s) — a qualified "+
+			"key is only resolvable against the merged row", fv.Child, merged, because)
 	}
 }

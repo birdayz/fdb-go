@@ -352,7 +352,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		default:
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 		}
-		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
+		correlatedCtx := bindMergedOuterLegs(
+			c.evalCtx.WithBinding(c.outerAlias, outerBinding), outerBinding, c.outerAlias)
 		// Java FlatMapPipelinedCursor (:210-220): the initial inner
 		// continuation stays ARMED across outer rows until the row whose
 		// check value matches (or either check value is absent) CONSUMES it
@@ -427,6 +428,186 @@ func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier)
 func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier) bool {
 	qov, ok := rv.(*values.QuantifiedObjectValue)
 	return ok && qov.Correlation == innerAlias
+}
+
+// bindMergedOuterLegs is Java's one-binding-per-quantifier namespace, restored
+// for Go's two-level NLJ→FlatMap lowering.
+//
+// Java's RecordQueryFlatMapPlan binds ONE correlation per quantifier — the outer
+// quantifier's alias over the incoming context, then the inner quantifier's alias
+// over a context CHAINED off that one
+// (RecordQueryFlatMapPlan.java:135-140, over the parent chain at
+// Bindings.java:116-134) — so every enclosing source stays resolvable BY ITS OWN
+// ALIAS at arbitrary depth, and QuantifiedObjectValue.eval is a plain map lookup
+// (QuantifiedObjectValue.java:84-85).
+//
+// THAT BINDING IS THE CHAINED outer→inner PAIR, NOT N SIBLINGS. Java never has a
+// merged row with sibling legs to serve: where its planner collapses several
+// sources into one quantifier it RE-ANCHORS every reference to a sibling by
+// ORDINAL against the new quantifier (PartitionSelectRule.java:296-303 —
+// `translationMapBuilder.when(lowerAlias).then(... FieldValue.ofOrdinalNumber(
+// QuantifiedObjectValue.of(newUpperQuantifier), index))`), so the sibling alias
+// stops existing rather than staying bound. Keeping the sibling leg aliases LIVE
+// at runtime is therefore a Go-only widening of the binding namespace, booked in
+// DIVERGENCES.md, and it is interim: it retires when the ordinal re-anchor covers
+// every shape that reaches this cursor.
+//
+// Go collapses a multi-source outer into ONE nested-loop join whose row is a
+// merged concat, so binding only the join's own alias drops the source aliases the
+// inner still references. That gap is what the qualified-NAME channel existed to
+// paper over: a leg-correlated read was rewritten into a read of the MERGED
+// correlation with the leg packed into the field name ("LEG.COL"), because the leg
+// alias itself was unbound.
+//
+// Binding each leg of the merged row under its own correlation removes the need
+// for that name. A leg-correlated read is then an ordinal read against its leg's
+// own window — the same shape it would have had against an unmerged source — and
+// no leg name is consulted anywhere on the path.
+//
+// The identity under which each leg binds is CARRIED from the row type's leg
+// table, never minted from its text. The join's own alias keeps its binding to the
+// WHOLE merged row (an unqualified read of the join's object is still the concat),
+// and a leg whose identity IS the join's alias is skipped rather than allowed to
+// narrow that binding to one window.
+//
+// FIRST CLAIM WINS among the legs, matching the leg table's own precedence.
+// concatLegPositionals emits the two TOP-LEVEL leg windows first and appends the
+// buried sub-windows after them, and every other reader of that table
+// (addBuriedLegLayouts, spansFromMergedLegs' consumers) resolves an alias to its
+// first entry. A buried leg sharing an alias with a top-level one must therefore
+// bind the WIDER top-level window here too: last-wins would hand this one reader a
+// narrower row than every other reader gives the same alias, and a read that
+// resolves to different slots depending on which reader answered is the silent
+// wrong-row failure per-leg binding exists to remove.
+//
+// A binding already present in the INCOMING context is not consulted: a leg
+// SHADOWS it for the duration of the inner, which is what Java's chained context
+// does (the child binding wins the lookup, Bindings.java:116-134). The enclosing
+// context object itself is never touched — WithBinding copies — so a sibling
+// evaluated against the caller's own context still sees the enclosing binding.
+func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.CorrelationIdentifier) *EvaluationContext {
+	row, isPos := binding.(*PositionalRow)
+	if !isPos || row == nil || row.Type == nil || len(row.Type.Legs) == 0 {
+		return ec
+	}
+	// This runs ONCE PER OUTER ROW, so it walks the leg table directly rather
+	// than materializing spansFromMergedLegs' []legSpan — which would allocate a
+	// span slice, plus a []values.Field copy and a *values.RecordType per leg, to
+	// serve a window that needs only an offset and a width. The per-leg
+	// *RecordType existed for legWindowRow.TypeNames, an ERROR-path diagnostic;
+	// the window now slices those names out of the merged type when an error
+	// actually renders (legWindowRow.parentType).
+	//
+	// The census records the SAME legs at the SAME point spansFromMergedLegs
+	// records them — every in-bounds leg, before any alias filtering — so this
+	// path's contribution to the identity census is unchanged by the rewrite.
+	nFields := len(row.Type.Fields)
+	// claimed is a linear scan, not a map: K is the number of legs in one merged
+	// row, which the corpus puts at 2 or 3, and a map costs an allocation and a
+	// hash per probe to beat a scan that never gets long enough to matter. It
+	// also lets the comparison go through values.SameLeg rather than through Go's
+	// map-key equality, which is the point of routing it: ONE authority answers
+	// "do these two identifiers name the same leg", and a map key is a second one
+	// that happens to agree today.
+	var claimedArr [8]values.CorrelationIdentifier
+	claimed := claimedArr[:0]
+	// bindings is built LAZILY: a merged row whose only leg is the join's own
+	// alias binds nothing, and that is the commonest case on the corpus. Cloning
+	// the context's bindings for it would be a whole map copy per outer row to
+	// produce a context identical to the one passed in.
+	var bindings map[values.CorrelationIdentifier]any
+	for _, leg := range row.Type.Legs {
+		end := leg.Start + leg.Width
+		if leg.Start < 0 || end > nFields {
+			continue
+		}
+		if values.LegIdentityCensusEnabled() {
+			// The re-mint's delta: what the leg's identity WAS at construction
+			// against what re-minting its text would have produced.
+			values.RecordLegIdentityLeg(leg)
+		}
+		// An UNSTATED identity names nothing and cannot be bound under; SameLeg
+		// declines it too, but the decline is stated here so the zero case reads
+		// as its own decision rather than as a side effect of the comparison.
+		if leg.Alias.IsZero() {
+			continue
+		}
+		// The join's own alias keeps its binding to the WHOLE merged row; a leg
+		// whose identity IS that alias must not narrow it to one window.
+		if values.SameLeg(leg.Alias, outerAlias) {
+			continue
+		}
+		// FIRST CLAIM WINS, matching the leg table's own precedence.
+		if legAliasClaimed(claimed, leg.Alias) {
+			continue
+		}
+		claimed = append(claimed, leg.Alias)
+		if bindings == nil {
+			bindings = ec.cloneBindings(len(row.Type.Legs))
+		}
+		w := &legWindowRow{
+			parent:           row,
+			parentType:       row.Type,
+			offset:           leg.Start,
+			width:            leg.Width,
+			fromMergedBinder: true,
+		}
+		if values.LegIdentityCensusEnabled() {
+			// Whether this window DISPLACES an existing binding is read from the
+			// INCOMING context, before the clone is written: it is the fact that the
+			// alias was already resolvable without the binder, which is what makes a
+			// read of this window redundant rather than load-bearing. The clone
+			// cannot answer it — first-claim-wins means the alias is written once,
+			// but the clone already carries the enclosing binding as its own entry.
+			if prev, existed := ec.bindings[leg.Alias]; existed {
+				w.shadowsExisting = true
+				w.shadowed = prev
+			}
+		}
+		bindings[leg.Alias] = w
+	}
+	if bindings == nil {
+		return ec
+	}
+	out := ec.withBindings(bindings)
+	if values.LegIdentityCensusEnabled() {
+		// Stamp the box-gather shape onto the windows themselves. It is a property
+		// of the ROW (how many legs this merged concat carries) and the reader only
+		// ever holds a WINDOW, so the producer is the only site that can state it.
+		if len(claimed) >= 2 {
+			for _, alias := range claimed {
+				if w, isWindow := bindings[alias].(*legWindowRow); isWindow && w != nil {
+					w.siblingLegs = true
+				}
+			}
+		}
+		// Recorded from the RETURNED context's own map, on the return path, and
+		// deliberately NOT from the loop's decisions. Those are two different
+		// claims: the loop says what the binder chose, the returned context says
+		// what a downstream lookup will actually find. Recording the choice let a
+		// mutation that dropped the result on the floor (`return ec` instead of
+		// the bound context) go unnoticed — the census still reported every
+		// window as bound while none of them reached anybody.
+		recordMergedLegBindings(out, outerAlias, claimed)
+	}
+	return out
+}
+
+// legAliasClaimed reports whether alias has already taken a binding in this
+// merged row, through the one leg-identity authority (values.SameLeg) rather
+// than through Go's map-key or == equality.
+//
+// SameLeg declines an UNSTATED identifier on either side, so a zero alias never
+// reports as claimed — callers filter it before reaching here, and the two
+// agreeing is the point: neither can quietly start treating "nothing" as a
+// name the other honours.
+func legAliasClaimed(claimed []values.CorrelationIdentifier, alias values.CorrelationIdentifier) bool {
+	for _, c := range claimed {
+		if values.SameLeg(c, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 // qualifyOuterPositional stamps the outer quantifier's leg window onto the

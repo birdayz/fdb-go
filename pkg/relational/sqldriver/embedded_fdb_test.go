@@ -21,6 +21,8 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -103,10 +105,271 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.SetLegIdentityCensusEnabled(false)
 
 	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
+	// The leg-local bakeability census rides the same gate: it measures whether
+	// the one surviving qualified-name mint is carrying anything a leg-local bake
+	// could not carry. Reported beside the identity census because the two answer
+	// halves of the same question about this channel.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatLegLocalBakeCensus())
+	// The merged-leg binder's cost/benefit, reported beside the two censuses
+	// because it answers the question they raise about the same channel: the
+	// binder is what a leg-correlated read resolves THROUGH at runtime, and its
+	// read count is how much of that channel is load-bearing.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatMergedLegBindingCensus())
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	// The bakeability census is ASSERTED, not merely printed. It was printed
+	// only, which made its numbers — including CQ-63's acceptance number — a
+	// report nothing checked: the partition could stop holding and the
+	// population could collapse to zero with the gate still green.
+	if failed := assertLegLocalBakeCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	// The merged-leg binding census is ASSERTED too, and for a sharper reason than
+	// its siblings: the number the whole "the binder has no reader" finding rests
+	// on is a count of ZERO, and a zero produced by a dead counter is
+	// indistinguishable in a printed report from a zero produced by an absent
+	// reader. Measured, not assumed — no-opping recordMergedLegRead left the entire
+	// suite green while the census went on reporting the exact "0 READ" the finding
+	// quotes.
+	if failed := assertMergedLegBindingCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	return code
+}
+
+// mergedLegReadFloor is the merged-leg binding census's whole-suite READ floor.
+//
+// It is the positive control for a census whose headline numbers include a zero.
+// The corpus does produce reads — three over a full run, all on the alias the
+// correlated-EXISTS inner-shadow shape correlates to — so a run that reports NONE
+// is reporting a broken read counter, not a quiet corpus, and every zero asserted
+// against that counter is vacuous.
+//
+// One, not three, for the reason the sibling floors state at length: what a floor
+// detects is the site going DARK, not drift. The reader population churns with
+// unrelated work.
+const mergedLegReadFloor = 1
+
+// assertMergedLegBindingCensus checks the merged-leg binding census: the read
+// floor, and the coupled criterion that decides whether a merged-shape read is
+// an alarm or CQ-53 phase 2 working.
+//
+// It runs HERE, beside the bakeability gate, because the criterion needs BOTH
+// censuses in view: the merged-leg reads (executor side) and the leg-local bake
+// count (planner side). Only after m.Run() is either population complete.
+func assertMergedLegBindingCensus(w io.Writer) bool {
+	_, reads := executor.MergedLegBindingCensus()
+	failed := false
+
+	var totalReads int
+	for _, n := range reads {
+		totalReads += n
+	}
+
+	// The floor describes the WHOLE suite, so it drops under a -test.run filter
+	// exactly as the bakeability floors do — a filter selecting tests that never
+	// unnest a leg reaches zero reads honestly.
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "merged-leg binding census: read floor NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floor describes the whole suite). "+
+			"Reads reached under this filter: %d. The activation criterion below still "+
+			"runs, over that population — and a filter that reaches zero reads makes "+
+			"it hold VACUOUSLY, as does one that drops the redundancy pin while "+
+			"keeping its reader.\n",
+			f.Value.String(), totalReads)
+	} else if totalReads < mergedLegReadFloor {
+		failed = true
+		fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d binder-produced windows were READ "+
+			"over the whole suite, want at least %d.\n"+
+			"  This is the census's positive control, and it is failing. The corpus\n"+
+			"  DOES read binder-produced windows — on the correlated-EXISTS\n"+
+			"  inner-shadow shape — so zero means the READ COUNTER is dead, not that\n"+
+			"  the corpus went quiet. A dead read counter reports \"0 READ\" beside a\n"+
+			"  full bind tally, which is exactly the shape of the claim DIVERGENCES.md\n"+
+			"  quotes; every zero asserted against this counter is vacuous until it is\n"+
+			"  fixed. Check GetCorrelationBinding still calls recordMergedLegRead, and\n"+
+			"  that the windows it sees still carry fromMergedBinder.\n  census: %s\n",
+			totalReads, mergedLegReadFloor, executor.FormatMergedLegBindingCensus())
+	}
+
+	// THE ACTIVATION CRITERION.
+	//
+	//   a read on a MULTI-LEG merged row, outside a reader shape PROVEN redundant
+	//   in this run, implies LegLocalBakeCensus.Baked > 0.
+	//
+	// A merged-row read is not by itself a defect: it is what CQ-53 phase 2
+	// produces once the leg-local bake returns with CQ-63 and starts emitting reads
+	// that keep their own leg alias. What is a defect is such a read with NO
+	// producer — the binder acquiring a load-bearing consumer while its shadowing
+	// and first-claim-wins semantics are still justified only by consistency with
+	// the leg table's other readers.
+	//
+	// "Merged row" means the row bound SIBLING legs, and it is stamped by the
+	// binder (executor.MergedRowLegReads), not reconstructed here from the bind
+	// tallies. Reconstruction was tried and is unsound: leg and outer ALIASES
+	// collide across queries — the corpus binds twenty unrelated legs under the
+	// outer name `X` — so an alias-keyed reconstruction attributes one query's
+	// merged shape to another query's read. Measured: it did.
+	//
+	// THE EXCLUSION IS A REGISTRATION, NOT A LIST. The corpus has one such reader
+	// today (the correlated-EXISTS inner-shadow shape), and it is excused only
+	// because TestFDB_MergedLegBinding_ReaderShapeIsRedundant ran the same query
+	// down BOTH resolution routes in this process and got the same rows. That test
+	// registers on its passing path only, so a divergence fails it, leaves the
+	// registry empty, and turns these same reads into a red gate. There is no
+	// wording here that can keep the exclusion once the proof stops holding.
+	mergedReads, mergedNames, excusedReads, excusedNames := partitionMergedRowReads(executor.MergedRowLegReads(), executor.RedundantMergedLegReaders())
+	if excusedReads > 0 {
+		fmt.Fprintf(w, "merged-leg binding census: %d merged-row read(s) excused as "+
+			"PROVEN REDUNDANT this run: %s\n",
+			excusedReads, strings.Join(excusedNames, ", "))
+	}
+	if mergedReads > 0 {
+		c, _ := cascades.LegLocalBakeCensus()
+		if c.Baked > 0 {
+			fmt.Fprintf(w, "merged-leg binding census: %d unexcused read(s) on merged rows "+
+				"(%s) with LegLocalBakeCensus.Baked=%d — a producer exists, so this is "+
+				"CQ-53 phase 2 working, not a change of finding.\n",
+				mergedReads, strings.Join(mergedNames, ", "), c.Baked)
+		} else {
+			failed = true
+			fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d read(s) resolved to a "+
+				"binder-produced window on a MULTI-LEG merged row (%s) while the "+
+				"leg-local bake produced NOTHING (Baked=0), and no proof in this run "+
+				"showed them redundant.\n\n"+
+				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's only\n"+
+				"  planner-side producer, the leg-local bake, is deleted on this branch\n"+
+				"  and returns with CQ-63, so a read appearing while Baked is still 0\n"+
+				"  means a consumer arrived by some OTHER route.\n\n"+
+				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
+				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
+				"      agree, the way TestFDB_MergedLegBinding_ReaderShapeIsRedundant\n"+
+				"      does for the shape already known. If they agree, extend that\n"+
+				"      proof to the new shape; if they do not, the binder has become\n"+
+				"      load-bearing — see below.\n"+
+				"    - an ALREADY-EXCUSED alias read out of a DIFFERENT merged row.\n"+
+				"      The listed shape will share its alias with an excused one and\n"+
+				"      differ in the layout. This is a new reader wearing a familiar\n"+
+				"      name; treat it as the first case. Do NOT widen the exclusion to\n"+
+				"      the bare alias — that is the unsound key this gate moved off.\n"+
+				"    - the KNOWN reader losing its proof, because that test failed or\n"+
+				"      stopped running. Fix the proof; do not re-add the exclusion here.\n\n"+
+				"  A LOAD-BEARING reader changes three things at once:\n"+
+				"    - the SHADOWING semantics in DIVERGENCES.md (a leg shadows an\n"+
+				"      enclosing binding for the duration of the inner) stop being\n"+
+				"      unobservable and need justifying against this actual consumer;\n"+
+				"    - the FIRST-CLAIM-WINS precedence likewise; and\n"+
+				"    - the binder's correctness becomes load-bearing, so the wrong-window\n"+
+				"      mutation that is green today must be made to fail.\n\n"+
+				"  census: %s\n",
+				mergedReads, strings.Join(mergedNames, ", "), executor.FormatMergedLegBindingCensus())
+		}
+	}
+	return failed
+}
+
+// partitionMergedRowReads splits the multi-leg read population into the reads a
+// proof in this run excused and the reads it did not, and renders each side for
+// the gate's report.
+//
+// It is a PURE function over the two populations, separate from the gate that
+// consults the process-global census, so the one thing that decides whether the
+// alarm fires can be tested against a synthetic population — including the
+// population no corpus produces on demand: a SECOND reader of an already-excused
+// alias, out of a merged row the proof never ran.
+//
+// The excusal is keyed on the read's full identity, alias AND merged-row shape.
+// Keying it on the alias alone was the original form and it is unsound in the
+// direction that matters: it hands one query's proof the power to excuse every
+// future read of a name as common as `ST`. That is the same alias-collision
+// argument this census already accepted for CLASSIFYING reads — the corpus binds
+// twenty unrelated legs under the outer name `X` — applied to excusing them.
+func partitionMergedRowReads(
+	reads map[executor.MergedRowRead]int,
+	redundant map[executor.MergedRowRead]string,
+) (unexcusedReads int, unexcusedNames []string, excusedReads int, excusedNames []string) {
+	for read, n := range reads {
+		if n <= 0 {
+			continue
+		}
+		if why, proven := redundant[read]; proven {
+			excusedReads += n
+			excusedNames = append(excusedNames,
+				fmt.Sprintf("%s x%d out of %s (proven by %s)", read.Alias, n, read.Shape, why))
+			continue
+		}
+		unexcusedReads += n
+		unexcusedNames = append(unexcusedNames,
+			fmt.Sprintf("%s x%d out of %s", read.Alias, n, read.Shape))
+	}
+	sort.Strings(unexcusedNames)
+	sort.Strings(excusedNames)
+	return unexcusedReads, unexcusedNames, excusedReads, excusedNames
+}
+
+// mergedLegReadIsAlarm is the per-shape form of the coupled criterion above, for
+// a test that knows its own leg aliases.
+//
+// A bare `reads == 0` assertion was the previous form, and it is wrong in one
+// direction that matters: the day the leg-local bake returns with CQ-63, reads on
+// these shapes become the EXPECTED result and a bare zero turns a working phase 2
+// into a red suite. The alarm is a read with no producer, so the producer is what
+// it is coupled to.
+func mergedLegReadIsAlarm(reads int) bool {
+	if reads == 0 {
+		return false
+	}
+	c, _ := cascades.LegLocalBakeCensus()
+	return c.Baked == 0
+}
+
+// legLocalBakeFloors is the bakeability census's whole-suite population floor.
+//
+// Set an order of magnitude below the measured populations for the reason the
+// leg-identity floors state at length: these are RULE FIRINGS, they vary run to
+// run with memo exploration order, and the corpus churns with unrelated work.
+// The floor detects a site going DARK, not drift.
+//
+// Both totals are floored because both are denominators. UnderivableLegs gates
+// CQ-63 and is a share of LegDerivations; the minted residue is a share of
+// Total. A floor on one and not the other leaves half the arithmetic able to go
+// vacuous.
+// Measured on this tree: Total 126 (minted 126 = untypedLeg 92 + columnAbsent 0
+// + layoutAvailable 34), LegDerivations 846 (flowed 656 + walkOnly 108 +
+// underivable 82 + disagreement 0).
+var legLocalBakeFloors = cascades.LegLocalBakeFloors{
+	Total:          12,
+	LegDerivations: 80,
+}
+
+// assertLegLocalBakeCensus checks the bakeability census, dropping the
+// population floors when -test.run narrows the corpus.
+//
+// The partition checks still RUN under a filter, but the honest statement is
+// that they are only as strong as the population reached: this census is driven
+// from inside a Cascades rule, and a filter selecting tests that never plan a
+// multi-leg join leaves every counter at zero, where all three partitions hold
+// as 0 == 0. That was measured, not assumed — filtering to the merged-leg
+// binding test alone reports `total 0 … legDerivations 0`.
+//
+// So a narrowed run announces the population it actually checked rather than
+// claiming the partitions "hold over any population". A gate that reports itself
+// green while describing an empty corpus is the exact vacuity this census and
+// its sibling were rebuilt to stop.
+func assertLegLocalBakeCensus(w io.Writer) bool {
+	floors := &legLocalBakeFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		c, _ := cascades.LegLocalBakeCensus()
+		fmt.Fprintf(w, "leg-local bake census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
+			"The three PARTITION checks still run, over the population this filter "+
+			"actually reached: total %d, legDerivations %d. At zero they hold "+
+			"VACUOUSLY — only the unfiltered suite makes them a proof.\n",
+			f.Value.String(), c.Total, c.LegDerivations)
+		floors = nil
+	}
+	return cascades.AssertLegLocalBakeCensus(w, floors)
 }
 
 // legIdentityFloors is the minimum population each site must report over the
