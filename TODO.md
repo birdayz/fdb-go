@@ -10506,8 +10506,19 @@ None is speculative: each was re-verified against the tree before booking.
   dispatch. The census machinery (ordering_comparison_census.go +
   explaindiff/ordering_census_test.go) is the acceptance instrument.
 
-- [ ] **CQ-61 (M/L, executor binding contract, gated) — RecordTypeLeg.Name
-  becomes a CorrelationIdentifier; leg identity stops being text.** The
+- [x] **CQ-61 (M/L, executor binding contract, gated) — RecordTypeLeg.Name
+  becomes a CorrelationIdentifier; leg identity stops being text.** DONE
+  (merged #535): typed leg identity threaded to all 13 construction sites
+  (`NewRecordTypeLeg`, docscheck-enforced), the leg-identity census with
+  per-site population floors in the sqldriver TestMain, the NLJ plan retyped
+  to carry `CorrelationIdentifier` leg identities, `GetFlowedObjectType` /
+  `GetFlowedObjectValueTyped` ported from `Quantifier.java:801-803`, and the
+  ordinal-join build's `Bare` arm. Two defects found and fixed while folding
+  (bugs 15/16: untyped positional-merge slots → zero rows; the non-RC join
+  result-value refusal). CQ-63/64 booked from the residue. The remaining text
+  channels — the dotted `LEG.COL` column channel and the seed-window map's
+  upper-folded text keys — are CQ-53's work, and `RecordTypeLeg.Name` retires
+  with them. The
   CQ-53 investigation refuted its plan's foundation: concatLegPositionals
   "stores leg windows" but every consumer SELECTS the window by name string
   (ordinal_join.go:1419 GetCorrelationBinding text-match;
