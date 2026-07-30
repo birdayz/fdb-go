@@ -68,7 +68,7 @@ func AssertLegIdentityCensus(w io.Writer, floors map[LegIdentitySite]int64) bool
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s recorded in BOTH namespaces.\n"+
 				"  Its counts then describe neither comparison. A site records the pair its\n"+
-				"  own comparison evaluates — recordLegIdentityPair for a values.SameLeg\n"+
+				"  own comparison evaluates — RecordLegIdentityConversion for a values.SameLeg\n"+
 				"  decision, RecordLegIdentityComparison for a genuine text decision — and\n"+
 				"  exactly one of them.\n", site)
 		}

@@ -219,7 +219,8 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 			// decides IDENTICALLY in both namespaces on all 1311 pairs, and the fixture's
 			// red came from the fixture, which hand-minted the box correlation as
 			// LOWERCASE "c" where production mints sourceAlias(box) = "C". The convention
-			// makes the two identifiers EQUAL; it does not make them different.
+			// makes the two identifiers EQUAL; it does not make them different — under
+			// producer 1. Producer 2's $BOX suffix makes them differ by design; see above.
 			//
 			// The map KEY stays text (leg.Name), and has to: downstream readers arrive
 			// holding an upper-folded string and look these windows up by it. So the two
