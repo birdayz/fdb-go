@@ -209,6 +209,30 @@ func (c *PrimaryScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	return c.primaryKeyValues
 }
 
+// orderingKeyLayout returns the ONE row layout this scan's ordering keys may be
+// domained in — the record row the scan flows — or nil when that is not a record
+// type. It is the primary-scan half of orderingKeyLayoutProvider, so an
+// intersection partition can domain its comparison keys against a leg that is a
+// primary scan exactly as it does against an index leg.
+func (c *PrimaryScanMatchCandidate) orderingKeyLayout() *values.RecordType {
+	rt, isRecord := c.baseType.(*values.RecordType)
+	if !isRecord {
+		return nil
+	}
+	return rt
+}
+
+// bakeOrderingColumn resolves a primary-key column name to a domained ordinal
+// in the record row layout this scan flows. Same authority and same
+// unique-match rule as the index candidate's — see bakeOrderingColumnIn.
+func (c *PrimaryScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
+	rt := c.orderingKeyLayout()
+	if rt == nil {
+		return values.NewFieldValue(nil, name, values.UnknownType)
+	}
+	return bakeOrderingColumnIn(rt, name)
+}
+
 // ComputeMatchedOrderingParts computes one ordering part per primary-key
 // column the sort requests, in key order, carrying whatever comparison range
 // the match bound for that column.
@@ -258,10 +282,13 @@ func (c *PrimaryScanMatchCandidate) ComputeMatchedOrderingParts(
 		if idx < 0 || idx >= len(c.primaryKeyColumns) {
 			break
 		}
-		// Childless FieldValue, matching the index candidate: the ordering
-		// axis is the column NAME, resolved against the query's sort key
-		// through the same bridge.
-		colValue := values.NewFieldValue(nil, c.primaryKeyColumns[idx], values.UnknownType)
+		// Childless FieldValue, matching the index candidate — resolved
+		// against the record row layout the scan flows, so the key states a
+		// column identity rather than a display name. A primary scan can be an
+		// intersection leg beside an index scan, and both legs' comparison keys
+		// meet in one merged ordering: they must be domained in the SAME record
+		// layout or the merge hands them different tokens and collapses.
+		colValue := c.bakeOrderingColumn(c.primaryKeyColumns[idx])
 		parts = append(parts, NewMatchedOrderingPart(
 			paramID, colValue, bindings[paramID], sortOrder))
 	}

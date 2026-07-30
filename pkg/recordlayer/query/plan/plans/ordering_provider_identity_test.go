@@ -214,3 +214,129 @@ func TestUnresolvableProviderKeyStaysLazyRatherThanGuessing(t *testing.T) {
 			values.ExplainValue(keys[0]), ident)
 	}
 }
+
+// TestAggregateProvidersStateTheirOutputLayout pins the two aggregate ordering
+// providers that had no domain at all.
+//
+// A provided ordering key that carries an ordinal without saying which layout
+// the ordinal indexes is a key no consumer may compare: OrderingIdentityOf
+// declines an unknown domain, because equal ordinals in different layouts is the
+// conflation the token exists to refuse. Both providers below advertise an
+// ordering over the row they EMIT, and both can name that row — so both must.
+//
+// Measured consequence of not stating it: the requested side (which does state
+// it) could only ever meet these keys through the ordinal-free NAME rendering.
+// That bridge carried 75 of the corpus's key resolutions and every one of them
+// was an aggregate group key reaching these two providers; it drops to zero when
+// they state their layout, with satisfaction unchanged. So this is a change of
+// REPRESENTATION, and the test asserts the representation, not a plan shape.
+func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aggregate index scan", func(t *testing.T) {
+		t.Parallel()
+
+		plan := NewRecordQueryAggregateIndexPlan(
+			NewRecordQueryIndexPlan("IDX_AGG", nil, []string{"ORDERS"}, values.UnknownType, false),
+			"ORDERS", values.UnknownType, "COUNT",
+		).WithGroupColumns([]string{"REGION", "STATUS"}, "")
+
+		ordering := plan.HintOrdering()
+		if !ordering.IsKnown || len(ordering.Keys) != 2 {
+			t.Fatalf("HintOrdering = %#v, want 2 known keys", ordering)
+		}
+
+		// The layout is the row the aggregate-index cursor writes:
+		// [groupCols..., FUNC(col)] — wider than the group-key prefix, which is
+		// the whole point. A domain derived from the group columns alone is a
+		// DIFFERENT token, and the requested side derives its own from the full
+		// output row.
+		wantDomain := values.OrdinalDomainOfColumnNames(plan.OutputColumnNames())
+		if !wantDomain.IsKnown() {
+			t.Fatal("test setup: the output row must be nameable")
+		}
+		if prefixOnly := values.OrdinalDomainOfColumnNames(
+			[]string{"REGION", "STATUS"}); prefixOnly == wantDomain {
+			t.Fatal("test setup: the group-key prefix and the full output row " +
+				"must yield DIFFERENT tokens, or the layout choice is untested")
+		}
+
+		for i, key := range ordering.Keys {
+			ident, ok := values.OrderingIdentityOf(key)
+			if !ok {
+				t.Fatalf("group key %d (%q) states no identity. An aggregate "+
+					"index's group column i IS slot i of the row it emits; a key "+
+					"that does not say so can only be matched by its spelling.",
+					i, values.ExplainValue(key))
+			}
+			if ident.Ordinal != i {
+				t.Fatalf("group key %d states ordinal %d", i, ident.Ordinal)
+			}
+			if ident.Domain != wantDomain {
+				t.Fatalf("group key %d states domain %v, want the OUTPUT row %v.\n\n"+
+					"The requested side of an ORDER BY over this aggregate is "+
+					"baked against the output row (GroupByOutputColumnNames is "+
+					"the single authority for it). A key domained in anything "+
+					"else — the group-key prefix, the underlying index's key "+
+					"layout — renders identically and compares unequal.",
+					i, ident.Domain, wantDomain)
+			}
+		}
+	})
+
+	t.Run("multi aggregate index intersection", func(t *testing.T) {
+		t.Parallel()
+
+		// The child rows are [REGION, SUM(V)] and [REGION, COUNT(*)]; the row
+		// the PLAN emits is [REGION, SUM(V), COUNT(*)]. The comparison key is
+		// child-relative by construction (the merge cursor evaluates it against
+		// each stream), and the ordering the plan ADVERTISES is over its own
+		// output — two different layouts that agree on the grouping ordinals.
+		comparisonKey := []values.Value{
+			values.NewFieldValueWithResolvedOrdinal("REGION", 0, values.UnknownType),
+		}
+		resultValue := values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "REGION", Value: comparisonKey[0]},
+			values.RecordConstructorField{
+				Name:  "SUM(V)",
+				Value: values.NewFieldValueWithResolvedOrdinal("SUM(V)", 1, values.UnknownType),
+			},
+			values.RecordConstructorField{
+				Name:  "COUNT(*)",
+				Value: values.NewFieldValueWithResolvedOrdinal("COUNT(*)", 3, values.UnknownType),
+			},
+		)
+		plan := NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+			nil, comparisonKey, resultValue)
+		if plan == nil {
+			t.Fatal("test setup: plan construction declined")
+		}
+
+		ordering := plan.HintOrdering()
+		if !ordering.IsKnown || len(ordering.Keys) != 1 {
+			t.Fatalf("HintOrdering = %#v, want 1 known key", ordering)
+		}
+		ident, ok := values.OrderingIdentityOf(ordering.Keys[0])
+		if !ok {
+			t.Fatalf("the advertised key (%q) states no identity; the raw "+
+				"comparison key carries an ordinal with no layout, and handing "+
+				"it out as the advertised ordering makes it unaddressable",
+				values.ExplainValue(ordering.Keys[0]))
+		}
+		wantDomain := values.OrdinalDomainOfColumnNames(
+			[]string{"REGION", "SUM(V)", "COUNT(*)"})
+		if ident.Domain != wantDomain {
+			t.Fatalf("advertised key states domain %v, want the plan's OUTPUT "+
+				"row %v.\n\n"+
+				"The comparison key is CHILD-row relative; the ordering this "+
+				"plan advertises describes the rows it EMITS, and only that row "+
+				"is the one a requested ORDER BY key is baked against.",
+				ident.Domain, wantDomain)
+		}
+		if ident.Ordinal != 0 {
+			t.Fatalf("advertised key states ordinal %d, want 0 — the grouping "+
+				"ordinals agree between the two layouts and the restatement must "+
+				"preserve them", ident.Ordinal)
+		}
+	})
+}

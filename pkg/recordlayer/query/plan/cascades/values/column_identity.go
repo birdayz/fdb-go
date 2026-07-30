@@ -195,6 +195,131 @@ func OrderingIdentityOf(v Value) (ColumnIdentity, bool) {
 	}, true
 }
 
+// SameOrderingColumn reports whether two ORDERING Values denote the same
+// column by identity: the same ordinal path in the same STATED layout, read off
+// a compatible root. Both sides must have stated an identity; a side that has
+// not declines, and nothing here consults a display name.
+//
+// It is the ordinal-domain counterpart of CanBridgeOrderingValueRoots' name
+// comparison, and it exists because the obvious alternative is unsound:
+// ValuesStructurallyEqual routes two baked FieldValues through
+// FieldPath.Equals, which is ordinal-only and DOMAIN-BLIND (Java's
+// ResolvedAccessor.equals, FieldValue.java:675-689 — sound there because a Java
+// FieldValue always has a non-null typed childValue, so the layout an ordinal
+// indexes is never in question). Go mints CHILDLESS bakes against several
+// different rows, so ordinal 0 of a record row and ordinal 0 of an aggregate's
+// output row compare EQUAL there. That conflation is measured, not
+// hypothetical, and it reads as authoritative — which is strictly worse than
+// the name comparison it would replace.
+//
+// The ROOT rule permits one asymmetry: a childless value against a
+// QOV-rooted one. A childless bake is Go's canonical source-relative root (see
+// RequestedOrdering.NormalizeRootsTo), and the match-candidate side is
+// childless by construction while a request scoped to its owning quantifier is
+// not. Two DIFFERENT named quantifiers are different columns and decline: that
+// is what keeps `o.a` and `i.a` apart in a self-join.
+// OrderingFieldPair reports whether both ordering values are plain FieldValue
+// column reads. It is the TYPE test that dispatches the two ordering
+// comparators: a pair inside this class is decided by SameOrderingColumn and by
+// nothing else, so the class is an equivalence relation (see
+// StatesOrderingColumn for the intransitivity that availability dispatch had).
+//
+// A CardinalityValue wrapping a field is deliberately OUTSIDE the class. It is
+// not a column of any row layout, so it has no column identity to state and is
+// matched as a whole Value instead.
+func OrderingFieldPair(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	return aIsField && bIsField && af != nil && bf != nil
+}
+
+func SameOrderingColumn(a, b Value) bool {
+	af, aIsField := a.(*FieldValue)
+	bf, bIsField := b.(*FieldValue)
+	if !aIsField || !bIsField || af == nil || bf == nil {
+		return false
+	}
+	aCorr, aRootOK := orderingRootCorrelation(af)
+	bCorr, bRootOK := orderingRootCorrelation(bf)
+	if !aRootOK || !bRootOK {
+		return false
+	}
+	if aCorr != bCorr && !aCorr.IsZero() && !bCorr.IsZero() {
+		return false
+	}
+	return SameColumnPath(af.Resolved, bf.Resolved)
+}
+
+// orderingRootCorrelation returns the quantifier a flat ordering reference
+// reads from — the zero identifier for a childless (source-relative) value.
+// A child that is neither absent nor a quantifier reads some other row and
+// declines.
+func orderingRootCorrelation(f *FieldValue) (CorrelationIdentifier, bool) {
+	switch child := f.Child.(type) {
+	case nil:
+		return CorrelationIdentifier{}, true
+	case *QuantifiedObjectValue:
+		if child == nil {
+			return CorrelationIdentifier{}, false
+		}
+		return child.Correlation, true
+	default:
+		return CorrelationIdentifier{}, false
+	}
+}
+
+// StatesOrderingColumn reports whether ONE ordering value has stated a column
+// identity SameOrderingColumn can read — a flat-or-nested resolved path in a
+// known layout, off a root that is absent or a quantifier.
+//
+// It is deliberately a ONE-VALUE predicate, and that shape is the whole point.
+// The pairwise form it replaced ("do BOTH sides state an identity?") was used to
+// DISPATCH: identity decided the pair when both stated one, and a pair where
+// either side did not fell through to the domain-blind structural comparison.
+// That dispatch is INTRANSITIVE inside the FieldValue class. Witness, all three
+// values baked at ordinal path [0]:
+//
+//	A = [0] in layout D1          states an identity
+//	B = [0] in layout D2          states an identity
+//	U = [0], layout UNKNOWN       states none
+//
+// Identity separates A from B (different layouts, EqualsWithoutChildren's
+// FieldValue arm never looks at the layout). Availability dispatch sends both
+// A~U and B~U to the structural arm, which compares ordinals only and says
+// EQUAL. So U≡A, U≡B, A≢B — and a comparator that is not an equivalence
+// relation makes every set it builds depend on INSERTION ORDER, which is a
+// nondeterministic plan.
+//
+// So dispatch is by TYPE — both operands *FieldValue means identity decides and
+// the decision is FINAL — and this predicate exists only to CLASSIFY the
+// population, never to choose an arm. A value that does not state an identity is
+// UNADDRESSABLE: the comparator declines it, and the fix belongs at the producer
+// that minted it without a layout.
+func StatesOrderingColumn(v Value) bool {
+	f, isField := v.(*FieldValue)
+	if !isField || f == nil {
+		return false
+	}
+	if _, ok := orderingRootCorrelation(f); !ok {
+		return false
+	}
+	return statesColumnPath(f.Resolved)
+}
+
+// statesColumnPath reports whether a resolved path is one SameColumnPath can
+// decide on: a known layout and a non-negative ordinal at every step.
+func statesColumnPath(p *FieldPath) bool {
+	if p == nil || len(p.Accessors) == 0 || !p.Domain.IsKnown() {
+		return false
+	}
+	for _, a := range p.Accessors {
+		if a.Ordinal < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // SameColumnPath reports whether two RESOLVED accessor paths denote the same
 // column. It is the ORDINAL-PATH element of the identity triple asked BETWEEN
 // two references, rather than resolved into a caller's stated layout the way

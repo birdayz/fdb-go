@@ -406,6 +406,20 @@ func isPrimaryKeyPartitionRedundant(
 	return false
 }
 
+// orderingContainsEqualityValues asks whether a SUBPARTITION's ordering fixes
+// every equality the FULL partition fixes — the redundancy proof that lets a
+// partition be dropped in favour of a smaller one.
+//
+// It compares through intersectionValuesEqual (via containsIntersectionValue),
+// which is the same comparator the `required` list was DEDUPED by when it was
+// built. That agreement is the point: a list built under one notion of "same
+// value" and probed under another can report a member missing that it holds, and
+// here the two notions differ exactly where it matters. A bare structural
+// comparison is domain-blind, so two legs whose row layouts collide on ordinals
+// have their DIFFERENT columns declared equal, the subpartition looks like it
+// fixes an equality it does not, and the partition is dropped — and at arity two
+// it is also entered in badPairs, killing every superset. A lost intersection
+// plan, from a proof that was never entitled to succeed.
 func orderingContainsEqualityValues(
 	ordering *properties.RichOrdering,
 	required []values.Value,
@@ -418,14 +432,7 @@ func orderingContainsEqualityValues(
 		provided = append(provided, value)
 	}
 	for _, requiredValue := range required {
-		found := false
-		for _, providedValue := range provided {
-			if values.ValuesStructurallyEqual(requiredValue, providedValue) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !containsIntersectionValue(provided, requiredValue) {
 			return false
 		}
 	}
@@ -862,7 +869,35 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 	return false
 }
 
+// intersectionValuesEqual is orderingValuesEqual's counterpart for the
+// primary-key intersection's own value lists (comparison keys, equality-bound
+// values, the implicit record-type discriminators). Same TYPE dispatch and the
+// same reason: a pair of plain FieldValues is decided by column identity alone,
+// because ValuesStructurallyEqual compares two baked ordinal paths without
+// comparing the layouts they index.
+//
+// Transitivity is load-bearing HERE in a way it is not anywhere else in the
+// intersector, because adjustedIntersectionOrdering builds its key list through
+// a `seen` dedup (containsIntersectionValue against the keys accepted so far).
+// An intransitive comparator makes membership in `seen` depend on the order the
+// keys were visited, so the same partition yields different comparison keys and
+// different bindings on different runs. That is not a lost merge, it is a
+// nondeterministic plan — which is why the FieldValue arm may not fall through
+// even when it declines.
+// The ordinal-free NAME bridge that used to sit under the structural arm is
+// GONE, and it is unreachable rather than merely unused:
+// CanBridgeOrderingFieldValues requires BOTH operands to be *FieldValue, and
+// every such pair now returns from the arm above. Keeping a call that cannot
+// fire would read as a live fallback for the very class the identity arm was
+// made final over.
 func intersectionValuesEqual(left, right values.Value) bool {
+	recordOrderingComparison(
+		OrderingSiteIntersectionKeys, left, right,
+		values.CanBridgeOrderingFieldValues,
+	)
+	if values.StatesOrderingColumn(left) && values.StatesOrderingColumn(right) {
+		return values.SameOrderingColumn(left, right)
+	}
 	if values.ValuesStructurallyEqual(left, right) {
 		return true
 	}
@@ -1023,9 +1058,104 @@ func commonPrimaryKeyValuesForPartition(
 		if missingStructural {
 			return nil
 		}
-		return common
+		return bakeIntersectionPrimaryKeyValues(accesses, common)
 	}
-	return commonPrimaryKeyValues(accesses, ctx)
+	return bakeIntersectionPrimaryKeyValues(accesses, commonPrimaryKeyValues(accesses, ctx))
+}
+
+// bakeIntersectionPrimaryKeyValues states the layout each primary-key
+// comparison key's ordinal indexes: the partition's ONE common record row.
+//
+// This is the domain rule for intersection keys, applied at the first place the
+// domain is knowable. Every producer upstream is deliberately layout-free: the
+// metadata translation (metadataIndexDef.IndexCommonPrimaryKeyValues, over
+// TranslatePrimaryKeyToValues) describes a record type's key structure and has
+// no row to resolve it against, and the PlanContext fallback below has only
+// column names. The row layout belongs to the CANDIDATES, so the partition is
+// where a name can become an ordinal — and it must happen here, because the
+// comparison keys are compared against the legs' matched ordering parts, which
+// ARE domained (bakeOrderingColumnIn), and a lazy key cannot meet a baked one
+// under type dispatch.
+//
+// The layout is the record row and never a per-index entry layout: the keys
+// exist for CROSS-LEG comparison, so per-index domains would hand two legs two
+// different tokens for the same primary-key column and the merged ordering would
+// come out empty. It also sits consistently beside the *RecordTypeValue
+// discriminators in the same key list, which are record-level too and are left
+// exactly as they are — a discriminator is not a column of any row and has no
+// ordinal to state.
+//
+// A key that cannot be resolved is left LAZY rather than guessed. That is the
+// fail-closed direction and it costs an intersection candidate, not a wrong
+// answer: the comparator declines the unaddressable key, the free-primary-key
+// proof fails, and the partition simply does not produce an intersection.
+func bakeIntersectionPrimaryKeyValues(
+	accesses []Vectored[*SingleMatchedAccess],
+	pk []values.Value,
+) []values.Value {
+	if len(pk) == 0 {
+		return pk
+	}
+	layout := intersectionKeyLayout(accesses)
+	if layout == nil {
+		return pk
+	}
+	out := make([]values.Value, len(pk))
+	for i, v := range pk {
+		out[i] = v
+		field, isField := v.(*values.FieldValue)
+		if !isField || field == nil || field.Resolved != nil || field.Child != nil {
+			continue
+		}
+		out[i] = bakeOrderingColumnIn(layout, field.Field)
+	}
+	return out
+}
+
+// intersectionKeyLayout returns the ONE record row layout every leg of the
+// partition agrees its ordering keys are domained in, or nil.
+//
+// Unanimity is required, not majority or first: a token from one leg's layout
+// stamped onto another leg's keys is precisely the ordinal-across-layouts
+// conflation the domain exists to refuse. Agreement is tested on the DOMAIN
+// TOKEN rather than on pointer identity of the RecordType, because the legs
+// reach their layout through different candidate kinds and build it separately.
+func intersectionKeyLayout(
+	accesses []Vectored[*SingleMatchedAccess],
+) *values.RecordType {
+	var layout *values.RecordType
+	var domain values.OrdinalDomain
+	for _, vectored := range accesses {
+		candidate := vectored.Value.GetPartialMatch().GetMatchCandidate()
+		provider, ok := candidate.(orderingKeyLayoutProvider)
+		if !ok {
+			return nil
+		}
+		rt := provider.orderingKeyLayout()
+		if rt == nil {
+			return nil
+		}
+		rtDomain := values.OrdinalDomainOfType(rt)
+		if !rtDomain.IsKnown() {
+			return nil
+		}
+		if layout == nil {
+			layout, domain = rt, rtDomain
+			continue
+		}
+		if rtDomain != domain {
+			return nil
+		}
+	}
+	return layout
+}
+
+// orderingKeyLayoutProvider is implemented by the match candidates that can name
+// the ONE record row layout their ordering keys are domained in. Both
+// implementations return nil rather than choosing when their index or scan
+// serves more than one row layout.
+type orderingKeyLayoutProvider interface {
+	orderingKeyLayout() *values.RecordType
 }
 
 func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanContext) []values.Value {

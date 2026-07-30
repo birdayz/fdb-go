@@ -4939,9 +4939,16 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
 		// definition — bake slot n-1 of the folded projection's output
 		// directly (see translateSort's twin; a resolved typed Value wins
-		// for the same reason as there).
+		// for the same reason as there), stating the layout it indexes.
+		//
+		// UNREACHABLE over the 2481-query corpus: upgradeSortKeyValues resolves
+		// a positional key into k.Value upstream, so k.Value is non-nil by the
+		// time a positional key arrives here. That resolution is what makes this
+		// arm dead; relaxing it re-arms the arm.
 		if k.Value == nil && k.Pos > 0 && k.Pos <= len(fields) {
-			v = values.NewFieldValueWithResolvedOrdinal(fields[k.Pos-1].Name, k.Pos-1, values.UnknownType)
+			v = values.NewFieldValueWithResolvedOrdinalInDomain(
+				fields[k.Pos-1].Name, k.Pos-1, values.UnknownType,
+				outputFieldDomain(fields))
 		}
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
@@ -5021,7 +5028,8 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 	if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil && fv.Resolved == nil {
 		for i, f := range fields {
 			if strings.EqualFold(f.Name, fv.Field) {
-				return values.NewFieldValueWithResolvedOrdinal(f.Name, i, fv.Typ)
+				return values.NewFieldValueWithResolvedOrdinalInDomain(
+					f.Name, i, fv.Typ, outputFieldDomain(fields))
 			}
 		}
 	}
@@ -5055,6 +5063,7 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 // is identical), but it would pull up to the wrong output column name. The two
 // passes keep the pulled-up name faithful to the named alias.
 func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField) (values.Value, bool) {
+	domain := outputFieldDomain(fields)
 	// Pass 1: exact pointer identity — the field whose Value the sort key IS.
 	// The pulled-up reference carries the OUTPUT ordinal, baked at plan time —
 	// the folded row is positional.
@@ -5062,17 +5071,35 @@ func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField)
 		if f.Value != nil && f.Value == v {
 			// The slot's type IS the projected value's type (Phase D:
 			// type at birth — the flowed type, never Unknown when known).
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
+			return values.NewFieldValueWithResolvedOrdinalInDomain(
+				f.Name, i, f.Value.Type(), domain), true
 		}
 	}
 	// Pass 2: structural semantic equality — for keys whose Value was rebuilt
 	// (not pointer-copied) but is structurally the projected expression.
 	for i, f := range fields {
 		if f.Value != nil && values.SemanticEqualsUnderAliasMap(v, f.Value, values.AliasMap{}) {
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
+			return values.NewFieldValueWithResolvedOrdinalInDomain(
+				f.Name, i, f.Value.Type(), domain), true
 		}
 	}
 	return nil, false
+}
+
+// outputFieldDomain names the layout every ordinal baked against a folded
+// projection's output fields indexes.
+//
+// Without it the pulled-up key carries an ordinal no consumer may compare: the
+// PROVIDED side of the ordering property states its ordinal AND its layout, and
+// equal ordinals in different layouts is exactly the conflation the domain
+// token exists to refuse — so an undomained requested key is unaddressable and
+// silently costs the sort elision it was rewritten to enable.
+func outputFieldDomain(fields []values.RecordConstructorField) values.OrdinalDomain {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.Name
+	}
+	return values.OrdinalDomainOfColumnNames(names)
 }
 
 // findExistsFilterUnderUnaryChain descends from a project's input through any
@@ -5966,8 +5993,13 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	sortGB := underlyingGroupBy(innerRef.Get())
 	var sortGBNames []string
 	var sortGBKeyOrds, sortGBAggOrds map[string]int
+	var sortGBDomain values.OrdinalDomain
 	if sortGB != nil {
 		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
+		// The aggregate output row is the layout every ordinal baked below
+		// indexes; stating it is what makes the pair comparable to the
+		// provided side, which states the same one.
+		sortGBDomain = values.OrdinalDomainOfColumnNames(sortGBNames)
 		sortGBKeyOrds, sortGBAggOrds = groupByOutputOrdinals(sortGB)
 	}
 	// A sort NEVER sits over the grouped select's reshaping projection: both
@@ -6006,8 +6038,8 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 					"ORDER BY aggregate output ordinal is outside the native aggregate row"))
 				return nil
 			}
-			v = values.NewFieldValueWithResolvedOrdinal(
-				sortGBNames[k.AggregateOutputOrdinal], k.AggregateOutputOrdinal, values.UnknownType)
+			v = values.NewFieldValueWithResolvedOrdinalInDomain(
+				sortGBNames[k.AggregateOutputOrdinal], k.AggregateOutputOrdinal, values.UnknownType, sortGBDomain)
 		} else if k.AggregateOutputValueExact {
 			if sortGB == nil {
 				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
@@ -6063,14 +6095,14 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				slot, hit = sortGBAggOrds[whole]
 			}
 			if hit && slot >= 0 && slot < len(sortGBNames) {
-				v = values.NewFieldValueWithResolvedOrdinal(sortGBNames[slot], slot, values.UnknownType)
+				v = values.NewFieldValueWithResolvedOrdinalInDomain(sortGBNames[slot], slot, values.UnknownType, sortGBDomain)
 			} else {
 				tmp := []values.Value{v}
 				bakeGroupByOutputRefs(tmp, sortGB)
 				if tmp[0] != v {
 					if fv, isFV := tmp[0].(*values.FieldValue); isFV && fv.Child == nil && fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
 						if o := fv.Resolved.Accessors[0].Ordinal; o >= 0 && o < len(sortGBNames) {
-							tmp[0] = values.NewFieldValueWithResolvedOrdinal(sortGBNames[o], o, fv.Typ)
+							tmp[0] = values.NewFieldValueWithResolvedOrdinalInDomain(sortGBNames[o], o, fv.Typ, sortGBDomain)
 						}
 					}
 					v = tmp[0]
@@ -6100,6 +6132,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 // agree with the PositionalRow model.
 func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (values.Value, bool) {
 	valid := true
+	domain := values.OrdinalDomainOfColumnNames(nativeNames)
 	result := values.Replace(v, func(node values.Value) values.Value {
 		fv, ok := node.(*values.FieldValue)
 		if !ok {
@@ -6120,7 +6153,8 @@ func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (val
 			valid = false
 			return node
 		}
-		return values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, fv.Typ)
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			nativeNames[ordinal], ordinal, fv.Typ, domain)
 	})
 	return result, valid
 }
@@ -8334,8 +8368,15 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 			// silently duplicating its values.
 			proj := logical.NewProject(body, origCols, c.ColumnAliases)
 			proj.ProjectedValues = make([]values.Value, len(origCols))
+			// The layout these ordinals index is the CTE BODY's output
+			// column order, which is exactly origCols. Stating it is what
+			// lets an ordering consumer compare the read to a provided key
+			// by ordinal instead of by spelling — and the spelling is the
+			// one thing the re-aliasing projection is about to change.
+			domain := values.OrdinalDomainOfColumnNames(origCols)
 			for i, col := range origCols {
-				proj.ProjectedValues[i] = values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(col), i, values.UnknownType)
+				proj.ProjectedValues[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+					strings.ToUpper(col), i, values.UnknownType, domain)
 			}
 			body = proj
 		case len(origCols) > 0 && cteBodyWidthIsExact(body):

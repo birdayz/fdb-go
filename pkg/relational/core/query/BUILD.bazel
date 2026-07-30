@@ -35,6 +35,7 @@ go_library(
 go_test(
     name = "query_test",
     srcs = [
+        "aggregate_ordering_identity_test.go",
         "bake_ordinal_domain_test.go",
         "box_conjunct_test.go",
         "cascades_translator_test.go",
@@ -71,6 +72,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/api",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/query/logical",

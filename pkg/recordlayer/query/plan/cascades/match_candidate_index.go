@@ -104,6 +104,88 @@ func (c *ValueIndexScanMatchCandidate) rowLayouts() []values.Type {
 	return []values.Type{c.flowedType}
 }
 
+// orderingKeyLayout returns the ONE row layout this candidate's ordering keys
+// may be domained in, or nil.
+//
+// The layout is the RECORD's row layout, never the per-index entry layout, and
+// that is what makes the intersection merge work: a primary-key intersection's
+// premise is exactly one common record type, and its comparison keys exist to
+// be compared ACROSS legs. Per-index domains would hand two legs two different
+// tokens for the same primary-key column, and the merged ordering would be
+// empty. It also sits consistently beside the *RecordTypeValue discriminators
+// that share the same comparison-key list — those are record-level too.
+//
+// Fails closed on more than one layout rather than picking one: a multi-record
+// -type index has no single row whose ordinals mean anything, and choosing
+// layouts[0] would stamp one record type's ordinals onto another's rows.
+func (c *ValueIndexScanMatchCandidate) orderingKeyLayout() *values.RecordType {
+	layouts := c.rowLayouts()
+	if len(layouts) != 1 {
+		return nil
+	}
+	rt, isRecord := layouts[0].(*values.RecordType)
+	if !isRecord {
+		return nil
+	}
+	return rt
+}
+
+// bakeOrderingColumn resolves a METADATA column name (an index key column, a
+// primary-key column) to a domained ordinal in the candidate's record row
+// layout, so the ordering key it mints carries an identity instead of a display
+// name. A name that does not resolve stays LAZY — an unaddressable ordering key
+// costs an elision, an ordinal against the wrong layout reads as authoritative
+// and addresses another row.
+//
+// Resolution is UNIQUE-match, matching the runtime authority this key is
+// verified against (bakedIntersectionKeys). It must not be first-match: the
+// candidate's column list drops nesting parents (metadataIndexDef
+// .IndexColumnNames), so the name reaching here is a bare leaf, and
+// first-matching a leaf against a duplicate-named layout would silently bake
+// some other column's slot. A nested leaf whose name collides with a top-level
+// field is a stronger version of the same hazard and is fenced one level up:
+// NewPlanContextFromIndexDefs refuses a root key expression containing a
+// non-fan-out nested leaf outright, so no such column ever reaches a candidate.
+func (c *ValueIndexScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
+	return bakeOrderingColumnIn(c.orderingKeyLayout(), name)
+}
+
+// bakeOrderingColumnIn is bakeOrderingColumn's body, shared with the
+// primary-scan candidate: both mint their matched ordering parts from a
+// metadata column-name list against the one record row layout the scan flows,
+// and both feed the same set-operation merge, so they must agree on the domain
+// token or the merge collapses.
+func bakeOrderingColumnIn(layout *values.RecordType, name string) values.Value {
+	lazy := values.NewFieldValue(nil, name, values.UnknownType)
+	if layout == nil {
+		return lazy
+	}
+	domain := values.OrdinalDomainOfType(layout)
+	if !domain.IsKnown() {
+		return lazy
+	}
+	ordinal, unique := uniqueUpperFieldIndex(layout, name)
+	if !unique {
+		return lazy
+	}
+	return values.NewFieldValueWithResolvedOrdinalInDomain(
+		name, ordinal, values.UnknownType, domain)
+}
+
+// orderingColumnValue is ColumnValue for the ordering-key mint: the same Value
+// shape, with the plain-field case carrying its resolved identity.
+//
+// A function-keyed column is deliberately left alone. CARDINALITY(x) is not a
+// column of the row layout, so it is matched as a whole Value rather than by
+// column identity, and baking the wrapped child would make an otherwise
+// structurally equal pair unequal.
+func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
+	if i < len(c.columnFunctions) && c.columnFunctions[i] != "" {
+		return c.ColumnValue(i, nil)
+	}
+	return c.bakeOrderingColumn(c.columnNames[i])
+}
+
 // coveredOrdinalSets resolves the covered-column names against every row
 // layout the index serves — see buildCoveredOrdinalSets.
 func (c *ValueIndexScanMatchCandidate) coveredOrdinalSets(coveredColumns map[string]struct{}) []coveredOrdinalSet {
@@ -405,10 +487,10 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 
 		// Use the candidate's column Value (FieldValue, or
 		// CardinalityValue(FieldValue) for a function-keyed column) so the
-		// ordering part carries the SAME Value the query's sort key does.
-		// Flat FieldValue (no child) keeps parity with the historical
-		// behaviour for plain columns.
-		colValue := c.ColumnValue(idx, nil)
+		// ordering part carries the SAME Value the query's sort key does —
+		// resolved against the record row layout it indexes, so the key states
+		// a column identity rather than a display name.
+		colValue := c.orderingColumnValue(idx)
 
 		sortOrder := MatchedSortOrderAscending
 		if isReverse {
@@ -444,7 +526,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// (Index.trimPrimaryKey), matching fullKey construction.
 	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) {
 		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
-			colValue := values.NewFieldValue(nil, col, values.UnknownType)
+			colValue := c.bakeOrderingColumn(col)
 			sortOrder := MatchedSortOrderAscending
 			if isReverse {
 				sortOrder = MatchedSortOrderDescending

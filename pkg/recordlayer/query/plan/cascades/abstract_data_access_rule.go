@@ -1005,13 +1005,44 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	return &resolved
 }
 
-// orderingValuesEqual bridges independently rebuilt ordering Values. SQL sort
-// requests are bound to positional row accessors (FIELD#ordinal), while match
-// candidates carry the same columns before row-layout baking. Structural
-// equality remains authoritative. The fallback is restricted to the safe flat
-// lazy-vs-baked (or case-only lazy) bridge; two baked values with different
-// ordinals are different reads and must never satisfy each other.
+// orderingValuesEqual decides whether a requested ordering key and a match
+// candidate's ordering key are the SAME COLUMN. The two are built by different
+// producers — an SQL sort request against a row layout, a candidate against its
+// index metadata — and never arrive as one node.
+//
+// DESTINATION (CQ-60, not yet landed): dispatch by VALUE TYPE — a pair of
+// plain FieldValues decided by column IDENTITY and nothing else,
+// identity-or-decline, no fallthrough. TODAY the code beneath dispatches on
+// whether both sides STATE an identity, and an UNKNOWN-domain FieldValue
+// pair still falls through to the structural arm — the availability form,
+// which is INTRANSITIVE: a baked path [0] whose layout is UNKNOWN compares
+// EQUAL to [0]-in-D1 and to [0]-in-D2 through the structural arm, while
+// identity keeps D1 and D2 apart
+// (TestOrderingComparatorsAreStillIntransitiveAcrossTheUnknownDomain pins
+// this as CURRENT behavior and converts to a transitivity assertion when
+// CQ-60 lands). A comparator that is not an equivalence relation makes
+// orderingValueListContains answer differently depending on the order the
+// list was built in — insertion-order-dependent ordering sets, a
+// nondeterministic plan.
+//
+// The flip is measured FREE in production (the decline residual is zero at
+// both comparator sites, kept honest by the corpus census in
+// ordering_comparison_census.go) and is blocked ONLY by test fixtures that
+// mint bare-name doubles — CQ-60 carries the fixture-redesign path. Until
+// it lands, this comment states the destination, not the code.
+//
+// The structural arm remains for values that are not column reads at all — the
+// *RecordTypeValue discriminators, arithmetic and function keys, the
+// CardinalityValue wrapper — followed by the quantifier-root bridge those
+// wrapped shapes still cross.
 func orderingValuesEqual(left, right values.Value) bool {
+	recordOrderingComparison(
+		OrderingSiteRequestedVsCandidate, left, right,
+		values.CanBridgeOrderingValueRoots,
+	)
+	if values.StatesOrderingColumn(left) && values.StatesOrderingColumn(right) {
+		return values.SameOrderingColumn(left, right)
+	}
 	if values.ValuesStructurallyEqual(left, right) {
 		return true
 	}

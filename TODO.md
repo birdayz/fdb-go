@@ -10424,3 +10424,84 @@ None is speculative: each was re-verified against the tree before booking.
   mechanical conversion would defeat (RankValue.WithChildren resets
   ArgumentValues by design), so each needs per-site semantic judgment like
   CQ-57, not a sweep. Enumerated during the field-literal class closure.
+
+- [ ] **CQ-55 AMENDMENT 2 (supersedes the entry above and the re-scope in the
+  C2 commit message) — THE ORDERING KEY IS A VALUE, NOT A COLUMN.** All
+  numbers measured over the 2481-query corpus (harness:
+  ordering_identity_decisions_test.go). Java's Ordering is
+  PartiallyOrderedSet<Value> keyed by Value.equals (Ordering.java:176-183,
+  :336) — a VALUE identity. The pure-ColumnIdentity-triple ruling
+  over-narrowed that key space to columns and cannot hold the domain: 126
+  corpus ordering keys are *RecordTypeValue discriminators (primary-key
+  intersection comparison keys, intersector_primary_key.go:615/:807) with
+  no ColumnIdentity by design, and 61 of 61 merge-path string decisions run
+  on identity-unavailable pairs, so fail-closed triple keying collapses
+  every set-operation merged ordering to empty. CORRECTED C1: the
+  ordering-set key is the VALUE, compared structurally — ColumnIdentity as
+  the FieldValue arm (answers 94.8% of provided keys), Value-structural
+  equality as the other arm (what RecordTypeValue needs; NOT a name
+  comparison). The name bridge still dies; truncation stays rejected (the
+  merge key never truncates). CORRECTED C5: the dominant unaddressable
+  producer is computeWrapperRichOrdering (plan_properties.go:367, 1218
+  keys) — the pull-up site itself; the translator-branch precondition
+  measured SQL-unreachable (0/2481; OrderingIdentityOf already answers
+  92.4% of exact-arm keys) and is dropped; the translation locus stays the
+  quantifier boundary on pull-up, never the comparator.
+  orderingValuesEqual (4189/4189 via the name bridge; candidate side
+  name-based by construction, accessor_name_path.go:30-33) converts at its
+  PRODUCER (match-candidate ordinalization), not in place. Merge-path
+  thirteenth-bug probe: identityDIFF=0 — ruled out, with the census
+  showing the string key is the only key space available there today.
+
+  AMENDMENT 2 CONDITIONS (review-ACKed, binding on implementation): dispatch
+  by VALUE TYPE, never by identity availability — availability dispatch is
+  intransitive inside the FieldValue class (witness: baked path [0] in
+  domain D1, in D2, and with UNKNOWN domain; identity separates the first
+  two, structural equates the third with both → insertion-order-dependent
+  ordering sets → nondeterministic plans, arriving as the
+  ordinal-across-layouts conflation column_identity.go:212-216 refuses).
+  The FieldValue arm returns identity-or-DECLINE and never falls through to
+  ValuesStructurallyEqual; pin the D1/D2/UNKNOWN triple as a transitivity
+  net. The lazy 36 are resolved at their producer (the same move as
+  orderingValuesEqual's), not compared structurally; decline is the
+  residual only and must MEASURE ZERO on the corpus before implementing —
+  if it does not, stop and come back. The 0/2481 SQL-unreachable negative
+  for the dropped translator precondition gets committed as a test naming
+  what re-arms it.
+
+  AMENDMENT 2, DECISION 3 (intersection-key domain): a primary-key
+  intersection's comparison-key ordinals are domained in the COMMON RECORD
+  TYPE's row layout, never the per-index layout. The intersection's premise
+  is exactly one common record type; the keys exist for cross-leg
+  comparison, so per-index domains hand the legs different tokens and
+  collapse the merge (the failure amendment 2 predicted for naive triple
+  keying); and record-level domaining sits consistently beside the
+  RecordTypeValue discriminators in the same key list, which are also
+  record-level. The machinery exists: the candidate's rowLayouts()
+  (RFC-197 item 1). The lazy mints at match_candidate_index.go:411/:447
+  bake against that layout. Clarification for the unreachability negative:
+  "the translator branch" is applySortOverRef's positional bake
+  (k.Value == nil && k.Pos > 0 arm), measured 0/2481 because
+  upgradeSortKeyValues resolves positional keys upstream — pin THAT.
+
+- [ ] **CQ-59 (M, gated) — GroupByExpression.GetResultValue returns the INPUT
+  row where Java constructs the grouping+aggregate output row**
+  (GroupByExpression.java:129,:756-759 vs Go's inner.GetFlowedObjectValue()).
+  Measured: PushDownThroughValue through the Go shape is the identity, so
+  Java's push-then-match model cannot be ported at the groupby rule until
+  this is fixed; a direct port of Java's result-value shape lost
+  Fetch(IndexScan(IDX_CUST_STATUS)) to InMemorySort on the golden sentinel
+  and was reverted -- the fix must come WITH the consumers that expect the
+  input-row shape converted in the same change. Blocks the groupby rule's
+  AccessorNamePathKey match becoming pushDown+Value.equals.
+
+- [ ] **CQ-60 (S/M) — the ordering-comparator type-dispatch flip is measured
+  FREE in production (decline residual 0 at both sites) but blocked by 24
+  fixture tests minting bare-name FieldValue doubles**
+  (abstract_data_access_rule_test.go:181,:195 pattern) that model the
+  pre-identity world. Redesign the fixtures so synthetic index columns are
+  fields of a shared record row (stating layouts), then land the flip:
+  both-*FieldValue -> identity-or-DECLINE, no fallthrough. The D1/D2/UNKNOWN
+  transitivity witness test already exists and reds under availability
+  dispatch. The census machinery (ordering_comparison_census.go +
+  explaindiff/ordering_census_test.go) is the acceptance instrument.

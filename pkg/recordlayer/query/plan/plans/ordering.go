@@ -628,7 +628,51 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 	if len(compKey) == 0 {
 		return properties.Ordering{}
 	}
-	return properties.Ordering{IsKnown: true, Keys: compKey}
+	// The comparison key is CHILD-row relative (the merge cursor evaluates it
+	// against each stream's [groupCols..., FUNC(col)] row); the ordering this
+	// plan ADVERTISES is over the row it EMITS. The two agree on the grouping
+	// ordinals — group column i is slot i of both — but they are different
+	// layouts, and only the output row is the one a requested ORDER BY key is
+	// baked against. So the advertised key restates the same ordinal in the
+	// OUTPUT row's domain instead of handing out the child-relative Value.
+	//
+	// No derivable output layout leaves the keys as they are: an
+	// unaddressable ordering key costs an elision, one domained in a layout
+	// nothing can name would be a claim rather than a proof.
+	names := p.outputColumnNames()
+	if len(names) == 0 {
+		return properties.Ordering{IsKnown: true, Keys: compKey}
+	}
+	domain := values.OrdinalDomainOfColumnNames(names)
+	keys := make([]values.Value, len(compKey))
+	for i, k := range compKey {
+		fv, isField := k.(*values.FieldValue)
+		if !isField || fv.Child != nil || fv.Resolved == nil ||
+			len(fv.Resolved.Accessors) != 1 ||
+			fv.Resolved.Accessors[0].Ordinal != i || i >= len(names) {
+			// Anything but "grouping column i, read at slot i" is not the
+			// shape this restatement is proven for.
+			return properties.Ordering{IsKnown: true, Keys: compKey}
+		}
+		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			fv.Field, i, fv.Typ, domain)
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys}
+}
+
+// outputColumnNames returns the column names of the row this plan emits, taken
+// from its result value's record-constructor fields, or nil when the result
+// value is not a record constructor (no nameable output layout).
+func (p *RecordQueryMultiIntersectionOnValuesPlan) outputColumnNames() []string {
+	rc, isRecord := p.GetResultValue().(*values.RecordConstructorValue)
+	if !isRecord {
+		return nil
+	}
+	names := make([]string, len(rc.Fields))
+	for i, f := range rc.Fields {
+		names[i] = f.Name
+	}
+	return names
 }
 
 // HintOrdering: the advertised ordering is over the aggregate's OUTPUT row —
@@ -645,10 +689,12 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 		return properties.Ordering{IsKnown: false}
 	}
 	groupKeys := p.GetGroupingKeys()
+	outputNames := p.OutputColumnNames()
+	domain := values.OrdinalDomainOfColumnNames(outputNames)
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {
-		keys[i] = values.NewFieldValueWithResolvedOrdinal(
-			expressions.AggregateKeyColumnName(k), i, values.UnknownType)
+		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			expressions.AggregateKeyColumnName(k), i, values.UnknownType, domain)
 	}
 	desc := make([]bool, len(keys))
 	if idx, ok := p.GetInner().(*RecordQueryIndexPlan); ok && idx.IsReverse() {
@@ -666,10 +712,19 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	if len(groupCols) == 0 {
 		return properties.Ordering{IsKnown: true}
 	}
+	// Grouping column i IS slot i of the row this plan flows
+	// ([groupCols..., FUNC(col)] — aggregateIndexCursor's layout, named by
+	// OutputColumnNames), so the ordering key states that ordinal and the
+	// layout it indexes. The streaming-aggregation provider states the same
+	// thing about its own output row; both must, because a requested ORDER BY
+	// key on an aggregate output is baked against that row and an ordinal with
+	// no domain is one no consumer may compare.
+	domain := values.OrdinalDomainOfColumnNames(p.OutputColumnNames())
 	keys := make([]values.Value, len(groupCols))
 	desc := make([]bool, len(groupCols))
 	for i, col := range groupCols {
-		keys[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			col, i, values.UnknownType, domain)
 		desc[i] = p.IsReverse()
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
