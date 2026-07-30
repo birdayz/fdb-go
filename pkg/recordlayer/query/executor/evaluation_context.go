@@ -145,6 +145,34 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 	return &cp
 }
 
+// cloneBindings copies this context's bindings into a fresh map sized for extra
+// additional entries, for a caller that is about to add SEVERAL bindings at once.
+//
+// WithBinding copies the whole map per call, so binding K correlations through
+// it copies every existing binding K times — a cost that scales with the
+// ENCLOSING context's size, not with what is being added. A caller that knows
+// its K up front clones once and inserts K times instead. The returned map is
+// the caller's alone until it is handed to withBindings; nothing else may hold a
+// reference to it, or the copy-on-write contract every other With* method relies
+// on is broken.
+func (ec *EvaluationContext) cloneBindings(extra int) map[values.CorrelationIdentifier]any {
+	out := make(map[values.CorrelationIdentifier]any, len(ec.bindings)+extra)
+	for k, v := range ec.bindings {
+		out[k] = v
+	}
+	return out
+}
+
+// withBindings returns a shallow copy carrying bindings, which MUST be a map the
+// caller built via cloneBindings on this same context and has not shared. It is
+// the multi-insert twin of WithBinding; the single-binding case keeps using
+// WithBinding, whose one-copy-one-insert is already minimal.
+func (ec *EvaluationContext) withBindings(bindings map[values.CorrelationIdentifier]any) *EvaluationContext {
+	cp := *ec
+	cp.bindings = bindings
+	return &cp
+}
+
 // GetBinding retrieves a correlation binding.
 func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, bool) {
 	v, ok := ec.bindings[id]

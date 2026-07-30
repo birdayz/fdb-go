@@ -523,8 +523,21 @@ func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
 type legWindowRow struct {
 	parent  values.OrdinalRow
 	legType *values.RecordType
-	offset  int
-	width   int
+	// parentType is the LAZY alternative to legType, for producers that already
+	// hold the MERGED row's type and would otherwise have to slice a fresh
+	// per-leg *RecordType out of it just to fill legType.
+	//
+	// legType is read by exactly one thing — TypeNames, which feeds the column
+	// names into an OrdinalResolutionError. That is an ERROR path. Building a
+	// []values.Field copy and a *RecordType per leg per OUTER ROW to service it
+	// is the whole cost of a diagnostic that almost never renders, so a producer
+	// may hand over the merged type and the window slices the names on demand
+	// instead. legType still wins when set: producers that genuinely have a
+	// per-leg type (the leg spans derived from an ordinal join RC) pass it, and
+	// its fields are the leg's own re-ordinalized ones.
+	parentType *values.RecordType
+	offset     int
+	width      int
 }
 
 // Get reads the leg-relative ordinal: merged slot offset+ord. Out-of-range leg
@@ -541,10 +554,24 @@ func (w *legWindowRow) Get(ord int) (any, bool) {
 // values.OrdinalResolutionError enrichment (values.ordinalRowNames) reads via
 // optional-interface assertion.
 func (w *legWindowRow) TypeNames() []string {
-	if w.legType == nil {
+	if w.legType != nil {
+		return typeFieldNames(w.legType)
+	}
+	// The lazy form: slice this window's names out of the MERGED type. Bounds
+	// are re-checked rather than assumed — this runs while building an error
+	// message, and a diagnostic that panics loses the error it was describing.
+	if w.parentType == nil {
 		return nil
 	}
-	return typeFieldNames(w.legType)
+	end := w.offset + w.width
+	if w.offset < 0 || w.width < 0 || end > len(w.parentType.Fields) {
+		return nil
+	}
+	out := make([]string, w.width)
+	for i := range out {
+		out[i] = w.parentType.Fields[w.offset+i].Name
+	}
+	return out
 }
 
 // legWindowBinder is the correlation binder for uppers over the ordinal join:

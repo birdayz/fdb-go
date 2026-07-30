@@ -121,6 +121,77 @@ func TestBindMergedOuterLegs_LegWindowIsBoundedByItsLeg(t *testing.T) {
 	if v, present := bound.(values.OrdinalRow).Get(-1); present {
 		t.Fatalf("leg B's window served ordinal -1 (=%v)", v)
 	}
+
+	// Leg A is the discriminating one for a WIDENED window, and leg B cannot be.
+	// B is the LAST leg, so a window widened past it runs out of merged row and
+	// the read misses for the wrong reason — the PARENT's bound covering for the
+	// leg's. Widening every window to the whole row's width leaves both B
+	// assertions above passing. A is two columns wide with leg B's data directly
+	// after it, so its ordinal 2 is the read that distinguishes "bounded by its
+	// leg" from "bounded by the row".
+	aBound, ok := ctx.GetCorrelationBinding(aAlias)
+	if !ok {
+		t.Fatal("leg A is not bound")
+	}
+	if v, present := aBound.(values.OrdinalRow).Get(2); present {
+		t.Fatalf("leg A's window served ordinal 2 (=%v) for a TWO-column leg — and "+
+			"slot 2 of the merged row is leg B's column. This is the failure the test "+
+			"is named for, stated on the only leg that can express it: a window "+
+			"bounded by the ROW rather than by its LEG answers a leg-local read with "+
+			"the NEXT source's data.", v)
+	}
+}
+
+// An UNSTATED leg identity (the zero-value CorrelationIdentifier) names nothing,
+// and binding under it would put a window in the namespace that no reference can
+// legitimately reach — while shadowing whatever a caller had at that key.
+//
+// Go's zero value has no Java analogue (Quantifier.getAlias() is @Nonnull), so
+// holding one here means a producer had no identifier to thread and left it
+// blank. values.SameLeg declines such a pair for exactly this reason; this pins
+// that the binder declines it too, rather than relying on the comparison to be
+// the only guard.
+func TestBindMergedOuterLegs_DeclinesAnUnstatedLegIdentity(t *testing.T) {
+	t.Parallel()
+
+	bAlias := values.NamedCorrelationIdentifier("B")
+	joinAlias := values.UniqueCorrelationIdentifier()
+
+	var unstated values.CorrelationIdentifier
+	row := &PositionalRow{
+		Type: &values.RecordType{
+			Fields: []values.Field{
+				{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "BK", FieldType: values.NotNullLong, Ordinal: 1},
+			},
+			Legs: []values.RecordTypeLeg{
+				values.NewRecordTypeLeg(unstated, "", 0, 1),
+				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 1, 1),
+			},
+		},
+		Slots: []any{int64(10), int64(22)},
+	}
+
+	sentinel := int64(999)
+	base := EmptyEvaluationContext().WithBinding(unstated, sentinel)
+	ctx := bindMergedOuterLegs(base, row, joinAlias)
+
+	bound, ok := ctx.GetCorrelationBinding(unstated)
+	if !ok {
+		t.Fatal("the enclosing binding at the unstated key vanished entirely")
+	}
+	if bound != any(sentinel) {
+		t.Fatalf("the unstated leg BOUND a window (%T), shadowing the enclosing "+
+			"binding at a key that names nothing. A leg with no identity is a "+
+			"producer that forgot to state one; serving its slots turns that omission "+
+			"into a live namespace entry.", bound)
+	}
+
+	// The stated leg beside it still binds — declining the unstated one is
+	// per-leg, not a reason to abandon the row.
+	if _, ok := ctx.GetCorrelationBinding(bAlias); !ok {
+		t.Fatal("leg B stopped binding because an unstated leg preceded it")
+	}
 }
 
 func TestBindMergedOuterLegs_JoinAliasKeepsTheWholeMergedRow(t *testing.T) {

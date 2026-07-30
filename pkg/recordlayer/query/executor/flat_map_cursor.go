@@ -490,24 +490,89 @@ func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.C
 	if !isPos || row == nil || row.Type == nil || len(row.Type.Legs) == 0 {
 		return ec
 	}
-	spans := spansFromMergedLegs(row)
-	claimed := make(map[values.CorrelationIdentifier]struct{}, len(spans))
-	for _, s := range spans {
-		if s.Alias.IsZero() || s.Alias == outerAlias {
+	// This runs ONCE PER OUTER ROW, so it walks the leg table directly rather
+	// than materializing spansFromMergedLegs' []legSpan — which would allocate a
+	// span slice, plus a []values.Field copy and a *values.RecordType per leg, to
+	// serve a window that needs only an offset and a width. The per-leg
+	// *RecordType existed for legWindowRow.TypeNames, an ERROR-path diagnostic;
+	// the window now slices those names out of the merged type when an error
+	// actually renders (legWindowRow.parentType).
+	//
+	// The census records the SAME legs at the SAME point spansFromMergedLegs
+	// records them — every in-bounds leg, before any alias filtering — so this
+	// path's contribution to the identity census is unchanged by the rewrite.
+	nFields := len(row.Type.Fields)
+	// claimed is a linear scan, not a map: K is the number of legs in one merged
+	// row, which the corpus puts at 2 or 3, and a map costs an allocation and a
+	// hash per probe to beat a scan that never gets long enough to matter. It
+	// also lets the comparison go through values.SameLeg rather than through Go's
+	// map-key equality, which is the point of routing it: ONE authority answers
+	// "do these two identifiers name the same leg", and a map key is a second one
+	// that happens to agree today.
+	var claimedArr [8]values.CorrelationIdentifier
+	claimed := claimedArr[:0]
+	// bindings is built LAZILY: a merged row whose only leg is the join's own
+	// alias binds nothing, and that is the commonest case on the corpus. Cloning
+	// the context's bindings for it would be a whole map copy per outer row to
+	// produce a context identical to the one passed in.
+	var bindings map[values.CorrelationIdentifier]any
+	for _, leg := range row.Type.Legs {
+		end := leg.Start + leg.Width
+		if leg.Start < 0 || end > nFields {
 			continue
 		}
-		if _, taken := claimed[s.Alias]; taken {
+		if values.LegIdentityCensusEnabled() {
+			// The re-mint's delta: what the leg's identity WAS at construction
+			// against what re-minting its text would have produced.
+			values.RecordLegIdentityLeg(leg)
+		}
+		// An UNSTATED identity names nothing and cannot be bound under; SameLeg
+		// declines it too, but the decline is stated here so the zero case reads
+		// as its own decision rather than as a side effect of the comparison.
+		if leg.Alias.IsZero() {
 			continue
 		}
-		claimed[s.Alias] = struct{}{}
-		ec = ec.WithBinding(s.Alias, &legWindowRow{
-			parent:  row,
-			legType: s.LegType,
-			offset:  s.Offset,
-			width:   s.Width,
-		})
+		// The join's own alias keeps its binding to the WHOLE merged row; a leg
+		// whose identity IS that alias must not narrow it to one window.
+		if values.SameLeg(leg.Alias, outerAlias) {
+			continue
+		}
+		// FIRST CLAIM WINS, matching the leg table's own precedence.
+		if legAliasClaimed(claimed, leg.Alias) {
+			continue
+		}
+		claimed = append(claimed, leg.Alias)
+		if bindings == nil {
+			bindings = ec.cloneBindings(len(row.Type.Legs))
+		}
+		bindings[leg.Alias] = &legWindowRow{
+			parent:     row,
+			parentType: row.Type,
+			offset:     leg.Start,
+			width:      leg.Width,
+		}
 	}
-	return ec
+	if bindings == nil {
+		return ec
+	}
+	return ec.withBindings(bindings)
+}
+
+// legAliasClaimed reports whether alias has already taken a binding in this
+// merged row, through the one leg-identity authority (values.SameLeg) rather
+// than through Go's map-key or == equality.
+//
+// SameLeg declines an UNSTATED identifier on either side, so a zero alias never
+// reports as claimed — callers filter it before reaching here, and the two
+// agreeing is the point: neither can quietly start treating "nothing" as a
+// name the other honours.
+func legAliasClaimed(claimed []values.CorrelationIdentifier, alias values.CorrelationIdentifier) bool {
+	for _, c := range claimed {
+		if values.SameLeg(c, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 // qualifyOuterPositional stamps the outer quantifier's leg window onto the
