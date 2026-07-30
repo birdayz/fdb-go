@@ -3,6 +3,8 @@ package cascades
 import (
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // The bakeability census is a GATE: the sqldriver suite runs it over the whole
@@ -156,5 +158,71 @@ func TestLegLocalBakeGateWithoutFloors(t *testing.T) {
 		t.Error("with floors dropped, a member-disagreement leg PASSED. The floors " +
 			"describe a whole-suite population; the zeros describe a defect, and dropping " +
 			"the first must not drop the second.")
+	}
+}
+
+// TestClassifyMergeSlotPartitionsTheFourOutcomes pins the merge-slot classifier's
+// arms, which the corpus cannot pin for itself.
+//
+// The gate above checks that the four counters ADD UP to MergeSlots. That is a
+// partition check, and a partition survives any permutation of its parts: swap
+// which arm increments Scalar and which increments Untyped and the sum is
+// unchanged, so the gate stays green while the census reports the opposite of
+// what happened. The corpus cannot separate them either — it drives Scalar at
+// zero, so an untyped slot misfiled as scalar shows up as the counter that was
+// already zero staying zero, and the residue the acceptance number reads quietly
+// loses the slot it exists to surface.
+//
+// Each case therefore names an input whose bucket differs from at least one
+// neighbour's, and the scavenged case carries a type that would otherwise be
+// Typed so that domination is asserted rather than assumed.
+func TestClassifyMergeSlotPartitionsTheFourOutcomes(t *testing.T) {
+	t.Parallel()
+
+	row := nljTestLayout("SLOT", "ID", "CATEGORY")
+
+	for _, tc := range []struct {
+		name      string
+		slotType  values.Type
+		scavenged bool
+		want      mergeSlotClass
+		because   string
+	}{
+		{
+			name: "record type", slotType: values.Type(row), want: mergeSlotClassTyped,
+			because: "a slot stating a ROW is the intended path for a leg — the whole " +
+				"point of the quantifier stating what it flows",
+		},
+		{
+			name: "stated non-record type", slotType: values.NotNullLong, want: mergeSlotClassScalar,
+			because: "a STATED non-row type is the mixed-seed case the gate deliberately " +
+				"admits, not a residue: something said what this slot holds and it is not " +
+				"a row. Filing it as Untyped inflates the residue with slots that are fine",
+		},
+		{
+			name: "unknown type", slotType: values.UnknownType, want: mergeSlotClassUntyped,
+			because: "nothing stated a type at all. This is the residue — either a leg " +
+				"whose row is lost or a struct-array whole-object element — and filing it " +
+				"as Scalar hides a lost leg row inside a bucket nobody reads",
+		},
+		{
+			name: "nil type", slotType: nil, want: mergeSlotClassUntyped,
+			because: "an absent type is the same finding as an unstated one, and it must " +
+				"not reach the default arm: a nil Type would panic on Code() if the untyped " +
+				"arm stopped guarding for it",
+		},
+		{
+			name: "scavenged, over a record type", slotType: values.Type(row), scavenged: true,
+			want: mergeSlotClassScavenged,
+			because: "scavenged DOMINATES. The slot holds a row, but the quantifier did " +
+				"not state it — a baked reference in the select did — and reporting it as " +
+				"Typed credits the quantifier with a row it never stated, which is exactly " +
+				"the drift the census exists to catch",
+		},
+	} {
+		if got := classifyMergeSlot(tc.slotType, tc.scavenged); got != tc.want {
+			t.Errorf("classifyMergeSlot(%v, scavenged=%v) = %v, want %v — %s",
+				tc.slotType, tc.scavenged, got, tc.want, tc.because)
+		}
 	}
 }

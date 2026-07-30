@@ -146,6 +146,14 @@ func TestDeleteResultValueStatesTheInnerRow(t *testing.T) {
 // The DerivedValue difference is real and separate — Java's value refers to every
 // child, Go's to child 0 — but it is a difference in what the value refers to, not
 // in the row it claims.
+//
+// "Child 0" is shorthand for what mergeValues actually picks: the first
+// NON-EXISTENTIAL child. Both children being ForEach is the only shape any
+// construction site builds today, and a pin over that shape alone cannot see the
+// filter at all — it passes identically with the filter and with an unconditional
+// index 0. The existential-first case below is what makes the assertion able to
+// fail, so it is asserted here rather than left to the shape the callers happen
+// to build.
 func TestSetOperationResultValueStatesChildZerosRow(t *testing.T) {
 	t.Parallel()
 
@@ -160,33 +168,70 @@ func TestSetOperationResultValueStatesChildZerosRow(t *testing.T) {
 			return NewLogicalIntersectionExpression(qs, nil)
 		}},
 	} {
-		first, firstRow := typedInnerQuantifier(t, "L")
-		second, _ := typedInnerQuantifier(t, "R")
+		for _, shape := range []struct {
+			name string
+			// children builds the operator's children and names which of them
+			// states the operator's row.
+			children func(t *testing.T) (qs []Quantifier, want Quantifier, wantRow *values.RecordType)
+			because  string
+		}{
+			{
+				name: "all children ForEach",
+				children: func(t *testing.T) ([]Quantifier, Quantifier, *values.RecordType) {
+					first, firstRow := typedInnerQuantifier(t, "L")
+					second, _ := typedInnerQuantifier(t, "R")
+					return []Quantifier{first, second}, first, firstRow
+				},
+				because: "with every child non-existential the first one is the first " +
+					"non-existential one",
+			},
+			{
+				name: "existential child at index 0",
+				children: func(t *testing.T) ([]Quantifier, Quantifier, *values.RecordType) {
+					// Same inner shape on both, so the assertion turns on the KIND
+					// and nothing else: an unconditional quantifiers[0] would state a
+					// well-formed two-column row here, just the wrong child's.
+					existentialRow := rowOfTypes("A", values.NotNullLong, "B", values.NotNullString)
+					existential := NamedExistentialQuantifier(
+						values.NamedCorrelationIdentifier("E"),
+						InitialOf(&typedStubExpr{name: "srcE", typ: existentialRow}))
+					forEach, forEachRow := typedInnerQuantifier(t, "R")
+					return []Quantifier{existential, forEach}, forEach, forEachRow
+				},
+				because: "an Existential quantifier flows no row — it is consulted for a " +
+					"boolean — so mergeValues filters it out before picking " +
+					"(RecordQuerySetPlan.java:252-261)",
+			},
+		} {
+			qs, want, wantRow := shape.children(t)
 
-		rv := tc.build([]Quantifier{first, second}).GetResultValue()
-		qov, isQOV := rv.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			t.Errorf("%s: result value is a %T, want a quantified object over child 0",
-				tc.name, rv)
-			continue
-		}
-		if qov.Correlation != first.GetAlias() {
-			t.Errorf("%s: result value is over %s, want child 0's alias %s",
-				tc.name, qov.Correlation.Name(), first.GetAlias().Name())
-		}
-		got, stated := qov.Typ.(*values.RecordType)
-		if !stated {
-			t.Errorf("%s: the result value states NO row type.\n"+
-				"  Java's mergeValues resolves the result type as the FIRST non-existential\n"+
-				"  quantifier's flowed object type (RecordQuerySetPlan.java:252-261), so child\n"+
-				"  0's row is the spec's answer here. This site is NOT one of the passthrough\n"+
-				"  exemptions — freezing it untyped would be a regression against Java, and\n"+
-				"  the mergeValues citation is what makes that look like the safe move.",
-				tc.name)
-			continue
-		}
-		if !got.Equals(firstRow) {
-			t.Errorf("%s: states %v, want child 0's row %v", tc.name, got, firstRow)
+			rv := tc.build(qs).GetResultValue()
+			qov, isQOV := rv.(*values.QuantifiedObjectValue)
+			if !isQOV {
+				t.Errorf("%s/%s: result value is a %T, want a quantified object over the "+
+					"first non-existential child", tc.name, shape.name, rv)
+				continue
+			}
+			if qov.Correlation != want.GetAlias() {
+				t.Errorf("%s/%s: result value is over %s, want %s — %s",
+					tc.name, shape.name, qov.Correlation.Name(), want.GetAlias().Name(),
+					shape.because)
+				continue
+			}
+			got, stated := qov.Typ.(*values.RecordType)
+			if !stated {
+				t.Errorf("%s/%s: the result value states NO row type.\n"+
+					"  Java's mergeValues resolves the result type as the FIRST non-existential\n"+
+					"  quantifier's flowed object type (RecordQuerySetPlan.java:252-261), so that\n"+
+					"  child's row is the spec's answer here. This site is NOT one of the\n"+
+					"  passthrough exemptions — freezing it untyped would be a regression against\n"+
+					"  Java, and the mergeValues citation is what makes that look like the safe\n"+
+					"  move.", tc.name, shape.name)
+				continue
+			}
+			if !got.Equals(wantRow) {
+				t.Errorf("%s/%s: states %v, want %v", tc.name, shape.name, got, wantRow)
+			}
 		}
 	}
 }

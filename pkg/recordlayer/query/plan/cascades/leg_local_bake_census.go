@@ -310,25 +310,79 @@ func recordUnderivableLegLayout(alias values.CorrelationIdentifier, shape string
 // see MergeSlotsScalar for why the gate cannot make this distinction and must not
 // be changed to try.
 func recordMergeSlotTyping(alias values.CorrelationIdentifier, slotType values.Type, scavenged bool) {
+	class := classifyMergeSlot(slotType, scavenged)
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
 	legLocalBakeCounts.MergeSlots++
-	switch {
-	case scavenged:
+	switch class {
+	case mergeSlotClassScavenged:
 		legLocalBakeCounts.MergeSlotsScavenged++
 		addLegLocalBakeWitness(fmt.Sprintf("SCAVENGED-MERGE-SLOT leg %s: the quantifier "+
 			"stated no row and a baked reference in the select supplied one", alias.Name()))
-	case isRecordSlotType(slotType):
+	case mergeSlotClassTyped:
 		legLocalBakeCounts.MergeSlotsTyped++
-	case slotType == nil || slotType.Code() == values.TypeCodeUnknown:
+	case mergeSlotClassUntyped:
 		legLocalBakeCounts.MergeSlotsUntyped++
 		addLegLocalBakeWitness(fmt.Sprintf("UNTYPED-MERGE-SLOT leg %s: neither the "+
 			"quantifier nor the select's own value surfaces state anything. Either a leg "+
 			"whose row is lost (the defect) or a whole-object element over an array of "+
 			"STRUCTS, whose element type Go does not infer (correct) — the two are not "+
 			"separable by type", alias.Name()))
-	default:
+	case mergeSlotClassScalar:
 		legLocalBakeCounts.MergeSlotsScalar++
+	}
+}
+
+// mergeSlotClass is one merge slot's bucket. The four partition MergeSlots.
+type mergeSlotClass int
+
+const (
+	mergeSlotClassScavenged mergeSlotClass = iota
+	mergeSlotClassTyped
+	mergeSlotClassUntyped
+	mergeSlotClassScalar
+)
+
+// String names the bucket. The classifier's failure mode is two arms swapping, so
+// a diagnostic that renders them as bare ordinals reports the mix-up in the one
+// notation that makes it hardest to read.
+func (c mergeSlotClass) String() string {
+	switch c {
+	case mergeSlotClassScavenged:
+		return "Scavenged"
+	case mergeSlotClassTyped:
+		return "Typed"
+	case mergeSlotClassUntyped:
+		return "Untyped"
+	case mergeSlotClassScalar:
+		return "Scalar"
+	default:
+		return fmt.Sprintf("mergeSlotClass(%d)", int(c))
+	}
+}
+
+// classifyMergeSlot is the merge-slot census's decision, split out from the
+// counter mutation so it can be exercised without touching process-global state.
+//
+// Two orderings are the content of this function. Scavenged DOMINATES: a slot the
+// select's own surfaces rescued is a scavenged slot whatever type it ended up
+// holding, and folding it into Typed would report the quantifier stating a row it
+// never stated. And UNTYPED is decided against Typed's complement, not against
+// Scalar's: an unstated type and a stated non-row type are different findings —
+// untyped is the residue that may be a lost leg row, scalar is a slot the mixed
+// gate deliberately admits — and collapsing them is how a lost leg row comes to be
+// counted as an ordinary scalar and disappears from the residue the acceptance
+// number reads.
+func classifyMergeSlot(slotType values.Type, scavenged bool) mergeSlotClass {
+	switch {
+	case scavenged:
+		return mergeSlotClassScavenged
+	case isRecordSlotType(slotType):
+		return mergeSlotClassTyped
+	case slotType == nil || slotType.Code() == values.TypeCodeUnknown:
+		return mergeSlotClassUntyped
+	default:
+		return mergeSlotClassScalar
 	}
 }
 

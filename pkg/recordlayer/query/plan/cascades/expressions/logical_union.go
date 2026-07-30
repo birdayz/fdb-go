@@ -16,7 +16,7 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalUnionExpression`.
 // Java's GetResultValue is `RecordQuerySetPlan.mergeValues(children)`, whose
 // result TYPE is the first non-existential child's flowed object type — not a
-// unified shape reduced across children, despite the name. Go returns the first
+// unified shape reduced across children, despite the name. Go returns that same
 // child's flowed object value, which states that same row; the divergence is in
 // the VALUE (Java's DerivedValue refers to every child) rather than in the row.
 // See GetResultValue.
@@ -33,9 +33,10 @@ func NewLogicalUnionExpression(quantifiers []Quantifier) *LogicalUnionExpression
 	return &LogicalUnionExpression{quantifiers: copied}
 }
 
-// GetResultValue returns the first child's flowed object value, and the TYPE it
-// states is Java's answer verbatim — which is worth stating because the citation
-// to `RecordQuerySetPlan.mergeValues` reads at first glance like it is not.
+// GetResultValue returns the first non-existential child's flowed object value,
+// and the TYPE it states is Java's answer verbatim — which is worth stating
+// because the citation to `RecordQuerySetPlan.mergeValues` reads at first glance
+// like it is not.
 //
 // Java's LogicalUnionExpression.java:50 is `mergeValues(quantifiers)`, and
 // mergeValues (RecordQuerySetPlan.java:252-261) resolves its result TYPE as the
@@ -53,10 +54,36 @@ func NewLogicalUnionExpression(quantifiers []Quantifier) *LogicalUnionExpression
 //
 // Pinned by TestSetOperationResultValueStatesChildZerosRow.
 func (e *LogicalUnionExpression) GetResultValue() values.Value {
-	if len(e.quantifiers) == 0 {
-		return values.NewNullValue(values.UnknownType)
+	return setOperationResultValue(e.quantifiers)
+}
+
+// setOperationResultValue is Java's `RecordQuerySetPlan.mergeValues` result-type
+// selection (RecordQuerySetPlan.java:252-261), shared by the two set operations
+// that call it: the FIRST NON-EXISTENTIAL quantifier's flowed object.
+//
+// The filter is what makes "child 0" correct rather than incidental. An
+// Existential quantifier flows no row — it is consulted for a boolean — so its
+// flowed object cannot be a set operation's output row, and Java skips it before
+// picking. Today no construction site puts one under a union or an intersection
+// (all children are ForEach, and the property is closed under the rewrites that
+// re-parent them), so this is a no-op; it is here because the alternative is a
+// site whose correctness rests on a whole-graph invariant nobody restates, and
+// which now STATES a row type where before it stated nothing — a wrong row that
+// is believed is worse than a wrong shape that is inert.
+//
+// Java throws `RecordCoreException("cannot resolve result type")` when no
+// non-existential quantifier exists. Go states an untyped NULL instead: this
+// accessor has no error return and library code must not panic, and an unstated
+// type is the honest answer for an operator with no child row to state. That is
+// the same answer already given for the empty-children case, which this subsumes.
+func setOperationResultValue(quantifiers []Quantifier) values.Value {
+	for _, q := range quantifiers {
+		if q.Kind() == QuantifierExistential {
+			continue
+		}
+		return q.GetFlowedObjectValue()
 	}
-	return e.quantifiers[0].GetFlowedObjectValue()
+	return values.NewNullValue(values.UnknownType)
 }
 
 // GetQuantifiers returns the children. Read-only.
