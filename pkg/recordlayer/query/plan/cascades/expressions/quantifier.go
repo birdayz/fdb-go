@@ -360,12 +360,24 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 // So an unstated field cannot contradict a stated one — the same rule this
 // function's member scan already applies to a member that states no row type at
 // all, one level further down. Everything else stays a real disagreement:
-// different field counts, names, ordinals, record names, nullability, or two
-// fields that both state a type and state different ones. Those are the memo
-// defects the verification exists to catch, and they still surface as errors.
+// different field counts, names, ordinals, nullability, or two fields that both
+// state a type and state different ones. Those are the memo defects the
+// verification exists to catch, and they still surface as errors.
+//
+// The RECORD NAME follows the unstated rule rather than the strict one, because
+// Go has an "unstated" spelling for it too and it is documented as such: the empty
+// string means ANONYMOUS (RecordType.RecordName's own doc), which is the ordinary
+// state of a projection result row that has not been bound to a named struct. Go's
+// own type merge already treats it that way — MaximumType takes the other side's
+// name when one is empty (values/type.go) — so treating "" as a conflict here
+// would make this function disagree with the type system it is reducing over, and
+// disagree in the direction that costs a plan: two members of one class, one of
+// them anonymous because inference had no name to give it, reported as flowing
+// different rows. Two members that both STATE a name and state different ones is a
+// genuine conflict and still errors.
 //
 // The result is the more RESOLVED row, so a later member cannot un-resolve what
-// an earlier one established.
+// an earlier one established — the record name included.
 //
 // The LEG TABLE (RecordType.Legs) is carried through, and it is checked BEFORE
 // the equality fast path rather than after. Both halves matter. Carrying it
@@ -397,7 +409,8 @@ func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
 	if a.Equals(b) {
 		return a, true
 	}
-	if a.RecordName != b.RecordName || a.Nullable != b.Nullable || len(a.Fields) != len(b.Fields) {
+	name, nameAgrees := refineRecordNames(a.RecordName, b.RecordName)
+	if !nameAgrees || a.Nullable != b.Nullable || len(a.Fields) != len(b.Fields) {
 		return nil, false
 	}
 	merged := make([]values.Field, len(a.Fields))
@@ -412,7 +425,20 @@ func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
 		}
 		merged[i] = values.Field{Name: af.Name, FieldType: ft, Ordinal: af.Ordinal}
 	}
-	return &values.RecordType{RecordName: a.RecordName, Nullable: a.Nullable, Fields: merged, Legs: a.Legs}, true
+	return &values.RecordType{RecordName: name, Nullable: a.Nullable, Fields: merged, Legs: a.Legs}, true
+}
+
+// refineRecordNames is the unstated/stated rule for the record NAME: "" is
+// anonymous — the absence of a name, not a name of its own — so it takes the
+// other side's, and two stated-and-different names are a conflict.
+func refineRecordNames(a, b string) (string, bool) {
+	switch {
+	case a == "":
+		return b, true
+	case b == "" || a == b:
+		return a, true
+	}
+	return "", false
 }
 
 // legTablesAgree reports whether two members state the SAME buried-leg boundary

@@ -144,6 +144,168 @@ func TestGetFlowedObjectType_StillCatchesRealDisagreements(t *testing.T) {
 	}
 }
 
+// rawTypedValue reports a Type VERBATIM. Every stock Value that carries a type
+// annotation normalises it — QuantifiedObjectValue.Type and NullValue.Type both
+// run it through WithNullability(_, true), and RecordConstructorValue.Type builds
+// a fresh nullable row — so a member built from any of them can never state a
+// NOT-NULL row, and the nullability axis of the refinement is unreachable through
+// them.
+//
+// That is a fact about the fixtures, not about production: a member's result value
+// is any Value, and the ones that report a row type verbatim are what reach the
+// guard. Stating the row exactly is the only way a test can vary the axis.
+type rawTypedValue struct{ typ values.Type }
+
+func (v *rawTypedValue) Children() []values.Value { return []values.Value{} }
+func (v *rawTypedValue) Type() values.Type        { return v.typ }
+func (*rawTypedValue) Name() string               { return "rawtyped" }
+func (*rawTypedValue) Evaluate(any) (any, error)  { return nil, nil }
+
+// rawTypedExpr is typedStubExpr whose result value states its row verbatim.
+type rawTypedExpr struct {
+	name string
+	typ  *values.RecordType
+}
+
+func (s *rawTypedExpr) GetResultValue() values.Value    { return &rawTypedValue{typ: s.typ} }
+func (s *rawTypedExpr) GetQuantifiers() []Quantifier    { return nil }
+func (s *rawTypedExpr) CanCorrelate() bool              { return false }
+func (s *rawTypedExpr) ChildrenAsSet() bool             { return false }
+func (s *rawTypedExpr) HashCodeWithoutChildren() uint64 { return 0 }
+func (s *rawTypedExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (s *rawTypedExpr) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+	o, ok := other.(*rawTypedExpr)
+	return ok && o.name == s.name
+}
+func (s *rawTypedExpr) WithQuantifiers(_ []Quantifier) RelationalExpression { return s }
+
+// TestGetFlowedObjectType_TheUntestedGuardsAreLoadBearing pins the guards
+// refineRowTypes carries that no fixture could reach, because rowOfTypes builds
+// every row the same way: Nullable true, RecordName empty, Ordinal equal to the
+// slice index. Three axes hardcoded means three guards that could be deleted with
+// the suite green.
+//
+// That is not a theoretical gap. Deleting the nullability guard and deleting the
+// ordinal guard each left every refinement test passing — the disagreement cases
+// were all reachable through the field-type and field-name arms, which are the
+// two axes the fixture DOES vary. A guard nothing can reach is a comment.
+func TestGetFlowedObjectType_TheUntestedGuardsAreLoadBearing(t *testing.T) {
+	t.Parallel()
+
+	// Same fields, opposite nullability. A row's nullability decides whether a
+	// LEFT-JOIN null-extended row is representable in it, so two members
+	// disagreeing about it are describing different rows.
+	notNullRow := rowOfTypes("A", values.NotNullLong)
+	notNullRow.Nullable = false
+	nullableRow := rowOfTypes("A", values.NotNullLong)
+
+	// Same names and types, DIFFERENT ordinals. The ordinal is the slot an
+	// ordinal-baked reference indexes; two members that put the same column at
+	// different slots agree on nothing that matters.
+	slot0 := &values.RecordType{Nullable: true, Fields: []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+	}}
+	slot7 := &values.RecordType{Nullable: true, Fields: []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 7},
+	}}
+
+	// Two members that both STATE a record name, and state different ones.
+	namedT := rowOfTypes("A", values.NotNullLong)
+	namedT.RecordName = "T"
+	namedU := rowOfTypes("A", values.NotNullLong)
+	namedU.RecordName = "U"
+
+	for _, tc := range []struct {
+		name string
+		why  string
+		a, b *values.RecordType
+	}{
+		{
+			"nullability mismatch", "a row that admits NULL and one that does not are " +
+				"different rows; the LEFT-JOIN null-supplying wrap is exactly where the flip " +
+				"happens",
+			notNullRow, nullableRow,
+		},
+		{
+			"ordinal mismatch", "the ordinal is the slot a baked reference indexes, so two " +
+				"members placing one column at different slots disagree about every read " +
+				"through it",
+			slot0, slot7,
+		},
+		{
+			"two STATED and different record names", "an empty name is anonymous and " +
+				"refines; two stated names that differ are a genuine conflict, and collapsing " +
+				"the two cases is how the unstated rule turns into no rule",
+			namedT, namedU,
+		},
+	} {
+		// The fixture must actually differ on its axis, or the case is vacuous for
+		// the same reason the guard was.
+		if tc.a.Equals(tc.b) {
+			t.Fatalf("fixture %s: the two rows are Equals, so nothing distinguishes them "+
+				"and this case cannot see the guard", tc.name)
+		}
+		got, err := flowedTypeOf(t,
+			&rawTypedExpr{name: "u1", typ: tc.a},
+			&rawTypedExpr{name: "u2", typ: tc.b})
+		var de *MemberResultTypeDisagreementError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: resolved to (%v, %v), want a disagreement — %s",
+				tc.name, got, err, tc.why)
+		}
+	}
+}
+
+// TestGetFlowedObjectType_AnAnonymousRecordNameRefines is the other side of the
+// record-name guard, and it is the one that was WRONG.
+//
+// An empty RecordName means ANONYMOUS — the absence of a name, documented as such
+// on the field itself, and the ordinary state of a projection result row that was
+// never bound to a named struct. Go's own type merge already treats it that way
+// (MaximumType takes the other side's name when one is empty). Comparing it
+// strictly here made this function disagree with the type system it reduces over,
+// and disagree in the direction that costs a plan: two members of one class, one
+// anonymous only because inference had no name to give it, reported as flowing
+// different rows — the same misreport the UnknownType arm exists to prevent, one
+// field up.
+func TestGetFlowedObjectType_AnAnonymousRecordNameRefines(t *testing.T) {
+	t.Parallel()
+
+	anonymous := rowOfTypes("A", values.NotNullLong, "X", values.UnknownType)
+	named := rowOfTypes("A", values.NotNullLong, "X", values.NotNullLong)
+	named.RecordName = "T"
+
+	// BOTH ORDERS, for the reason the unresolved-field test states: "the named row
+	// wins" must not decay into "the first row wins".
+	for _, tc := range []struct {
+		name string
+		a, b *values.RecordType
+	}{
+		{"anonymous first", anonymous, named},
+		{"named first", named, anonymous},
+	} {
+		got, err := flowedTypeOf(t,
+			&rawTypedExpr{name: "a1", typ: tc.a},
+			&rawTypedExpr{name: "a2", typ: tc.b})
+		if err != nil || got == nil {
+			t.Errorf("%s: an ANONYMOUS row and a NAMED one reported (%v, %v).\n"+
+				"  \"\" is the absence of a record name, not a name — the field's own doc says\n"+
+				"  so and MaximumType already refines it that way. Reporting it as a conflict\n"+
+				"  makes this reduction disagree with the type system it reduces over, and the\n"+
+				"  caller treats a disagreement as a STOP.", tc.name, got, err)
+			continue
+		}
+		if got.RecordName != "T" {
+			t.Errorf("%s: the merged row is named %q, want the STATED name \"T\" — a later "+
+				"member must not un-resolve the name an earlier one established",
+				tc.name, got.RecordName)
+		}
+	}
+}
+
 // withLegs returns rt carrying the given buried-leg boundary table.
 func withLegs(rt *values.RecordType, legs ...values.RecordTypeLeg) *values.RecordType {
 	out := *rt
