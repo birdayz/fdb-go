@@ -16,8 +16,10 @@ import (
 // The rebase arm in rule_implement_nested_loop_join.go mints a dotted
 // merged-row key (`QOV(merged)."LEG.COL"`) that the FlatMap inner's binder
 // resolves by string. That arm IS reached while planning the shapes below
-// (TestRebaseOuterLegValue_LazyMintIsLive pins the reachability at rule
-// level). What is pinned HERE is that its product never reaches a WINNING
+// (TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName pins the
+// reachability at rule level, on a shape whose leg layouts are DERIVABLE —
+// having a layout is not what decides the mint). What is pinned HERE is that
+// its product never reaches a WINNING
 // plan: on every one of these shapes the surviving physical plan addresses
 // each leg through the leg's OWN correlation, so no dotted key is looked up
 // at execution.

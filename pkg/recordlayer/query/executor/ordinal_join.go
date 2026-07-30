@@ -523,8 +523,58 @@ func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
 type legWindowRow struct {
 	parent  values.OrdinalRow
 	legType *values.RecordType
-	offset  int
-	width   int
+	// parentType is the LAZY alternative to legType, for producers that already
+	// hold the MERGED row's type and would otherwise have to slice a fresh
+	// per-leg *RecordType out of it just to fill legType.
+	//
+	// legType is read by exactly one thing — TypeNames, which feeds the column
+	// names into an OrdinalResolutionError. That is an ERROR path. Building a
+	// []values.Field copy and a *RecordType per leg per OUTER ROW to service it
+	// is the whole cost of a diagnostic that almost never renders, so a producer
+	// may hand over the merged type and the window slices the names on demand
+	// instead. legType still wins when set: producers that genuinely have a
+	// per-leg type (the leg spans derived from an ordinal join RC) pass it, and
+	// its fields are the leg's own re-ordinalized ones.
+	parentType *values.RecordType
+	offset     int
+	width      int
+	// fromMergedBinder marks a window produced by bindMergedOuterLegs, so the
+	// merged-leg binding census can count LOOKUPS that resolve to one. Windows
+	// built by legWindowBinder (which serves an already-established span table)
+	// are a different producer and are not counted here.
+	fromMergedBinder bool
+	// siblingLegs marks a window whose merged row bound TWO OR MORE legs — the
+	// box-gather shape, as opposed to a merged row carrying a single leg.
+	//
+	// Stamped by the producer, which is the only place the row's leg COUNT is in
+	// hand: a reader holds one window and cannot tell a lone leg from one of
+	// several, and the aliases it could ask about collide across queries. It is
+	// set only while the leg-identity census gate is on, because its sole consumer
+	// is that census's activation criterion.
+	siblingLegs bool
+	// shadowsExisting marks a window that DISPLACED a binding the incoming context
+	// already carried for the same alias, and shadowed holds what it displaced.
+	//
+	// This is the structural marker for "a second resolution route exists": when a
+	// window shadows, the alias was already resolvable WITHOUT the binder. The
+	// binder's shadowing semantics are documented in DIVERGENCES.md.
+	//
+	// It is recorded to be MEASURED, not to be reasoned from, because the reasoning
+	// it invites is wrong. The tempting inference — a window that shadows nothing is
+	// the binder's only binding, so a read of it is a genuine consumer — was the
+	// premise this marker was added under, and the census refuted it: over a full
+	// sqldriver run ZERO of the binder's reads shadow, all of them are unshadowed,
+	// and declining them entirely still changes no row
+	// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant). "The only binding" and
+	// "load-bearing" are therefore different properties: the corpus's reads are the
+	// first without being the second, because the value they resolve never reaches
+	// an answer. Load-bearing is settled per reader shape by running both routes,
+	// not by reading this flag.
+	//
+	// Recorded only while the leg-identity census gate is on; the map probe is not
+	// something the per-outer-row path should pay for in production.
+	shadowsExisting bool
+	shadowed        any
 }
 
 // Get reads the leg-relative ordinal: merged slot offset+ord. Out-of-range leg
@@ -541,10 +591,24 @@ func (w *legWindowRow) Get(ord int) (any, bool) {
 // values.OrdinalResolutionError enrichment (values.ordinalRowNames) reads via
 // optional-interface assertion.
 func (w *legWindowRow) TypeNames() []string {
-	if w.legType == nil {
+	if w.legType != nil {
+		return typeFieldNames(w.legType)
+	}
+	// The lazy form: slice this window's names out of the MERGED type. Bounds
+	// are re-checked rather than assumed — this runs while building an error
+	// message, and a diagnostic that panics loses the error it was describing.
+	if w.parentType == nil {
 		return nil
 	}
-	return typeFieldNames(w.legType)
+	end := w.offset + w.width
+	if w.offset < 0 || w.width < 0 || end > len(w.parentType.Fields) {
+		return nil
+	}
+	out := make([]string, w.width)
+	for i := range out {
+		out[i] = w.parentType.Fields[w.offset+i].Name
+	}
+	return out
 }
 
 // legWindowBinder is the correlation binder for uppers over the ordinal join:

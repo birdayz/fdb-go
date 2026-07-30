@@ -1228,10 +1228,10 @@ func TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName(t *testing.T) {
 	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier(leg), "ADDRESS", "ID")
 	mergedCorr := values.NamedCorrelationIdentifier("MERGED")
 
-	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil)
+	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil, nil)
 	gotFV, ok := got.(*values.FieldValue)
 	if !ok || gotFV != fused {
-		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID) = %#v, want the ORIGINAL unrewritten node — "+
+		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID, nil) = %#v, want the ORIGINAL unrewritten node — "+
 			"a nested reference must never be re-anchored onto a colliding leaf-name qualified key", got)
 	}
 }

@@ -31,7 +31,8 @@ import (
 // instead of an unexercised branch that looks safe to delete.
 //
 // Its counterpart in the cascades NLJ rule (rebaseOuterLegRefsToMerged) DOES
-// fire during planning — see TestRebaseOuterLegValue_LazyMintIsLive. The two
+// fire during planning — see
+// TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName. The two
 // producers are twins in shape and opposites in coverage; do not generalize
 // one's measurement to the other.
 func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {

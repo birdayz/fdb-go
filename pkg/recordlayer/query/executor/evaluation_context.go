@@ -15,6 +15,55 @@ type EvaluationContext struct {
 	bindings         map[values.CorrelationIdentifier]any
 	params           []any
 	scalarSubqueries map[values.CorrelationIdentifier]any
+	// mergedLegReadBypass names aliases whose binder-produced leg window
+	// GetCorrelationBinding must DECLINE to serve, so the same query can be driven
+	// down the alias's OTHER resolution route. See WithMergedLegReadBypass.
+	//
+	// It rides the CONTEXT rather than a package global on purpose: the suite is
+	// parallel and several tests use the same table names, so a process-wide switch
+	// would reach into a concurrently running test's execution. Every With* copy is
+	// a struct copy, so it propagates down the whole execution the way the other
+	// fields do — including through bindMergedOuterLegs' own derived context, which
+	// is what makes it reach the read it is aimed at.
+	mergedLegReadBypass map[string]bool
+	// mergedLegReadSink, when non-nil, receives THIS execution's binder-window
+	// reads alongside the process-global census. Rides the context for the same
+	// reason the bypass does, and for a sharper one: the census is process-global
+	// and the suite is parallel, so a before/after delta around one execution
+	// silently includes a concurrent test's reads. The pin that has to count its
+	// OWN reads cannot be built on that.
+	mergedLegReadSink *MergedLegReadSink
+}
+
+// WithMergedLegReadBypass returns a copy in which lookups of the named aliases
+// DECLINE any window bindMergedOuterLegs produced, falling back to whatever that
+// window displaced (nothing, for a window that displaced nothing).
+//
+// It exists for one caller: the redundancy pin, which has to run the SAME query
+// down BOTH resolution routes and compare. A build-tagged neuter cannot do that
+// job — it removes the binder from the whole binary, so the two routes never
+// coexist in one run, and their agreement is the entire content of the pin.
+//
+// Honoured only while the leg-identity census gate is on (the read site's gate),
+// so production never consults it.
+func (ec *EvaluationContext) WithMergedLegReadBypass(aliases ...string) *EvaluationContext {
+	cp := *ec
+	cp.mergedLegReadBypass = make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		cp.mergedLegReadBypass[a] = true
+	}
+	return &cp
+}
+
+// WithMergedLegReadSink returns a copy whose binder-window reads and declined
+// lookups are ALSO recorded into sink, scoped to this execution.
+//
+// Honoured only while the leg-identity census gate is on, like the rest of this
+// instrumentation.
+func (ec *EvaluationContext) WithMergedLegReadSink(sink *MergedLegReadSink) *EvaluationContext {
+	cp := *ec
+	cp.mergedLegReadSink = sink
+	return &cp
 }
 
 // EmptyEvaluationContext returns a context with no bindings.
@@ -145,6 +194,34 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 	return &cp
 }
 
+// cloneBindings copies this context's bindings into a fresh map sized for extra
+// additional entries, for a caller that is about to add SEVERAL bindings at once.
+//
+// WithBinding copies the whole map per call, so binding K correlations through
+// it copies every existing binding K times — a cost that scales with the
+// ENCLOSING context's size, not with what is being added. A caller that knows
+// its K up front clones once and inserts K times instead. The returned map is
+// the caller's alone until it is handed to withBindings; nothing else may hold a
+// reference to it, or the copy-on-write contract every other With* method relies
+// on is broken.
+func (ec *EvaluationContext) cloneBindings(extra int) map[values.CorrelationIdentifier]any {
+	out := make(map[values.CorrelationIdentifier]any, len(ec.bindings)+extra)
+	for k, v := range ec.bindings {
+		out[k] = v
+	}
+	return out
+}
+
+// withBindings returns a shallow copy carrying bindings, which MUST be a map the
+// caller built via cloneBindings on this same context and has not shared. It is
+// the multi-insert twin of WithBinding; the single-binding case keeps using
+// WithBinding, whose one-copy-one-insert is already minimal.
+func (ec *EvaluationContext) withBindings(bindings map[values.CorrelationIdentifier]any) *EvaluationContext {
+	cp := *ec
+	cp.bindings = bindings
+	return &cp
+}
+
 // GetBinding retrieves a correlation binding.
 func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, bool) {
 	v, ok := ec.bindings[id]
@@ -156,6 +233,38 @@ func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, b
 // comparison evaluation in the FlatMap execution path.
 func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	v, ok := ec.bindings[id]
+	if ok && values.LegIdentityCensusEnabled() {
+		// Count a lookup that resolved to a merged-leg window. This is the READ
+		// half of the merged-leg binding census: the binder's cost is per outer
+		// row, and whether that cost buys anything is decided HERE, at the only
+		// place a correlation binding is consulted. Gated because this is the
+		// per-reference-per-row path.
+		if w, isWindow := v.(*legWindowRow); isWindow && w != nil && w.fromMergedBinder {
+			// The redundancy pin's bypass: decline the binder's window and hand back
+			// what it shadowed, so the same query can be driven down the alias's
+			// OTHER resolution route in the same run. A bypassed lookup is not a
+			// read of a binder window, so it is not counted as one.
+			//
+			// On the corpus's reader shape there is nothing to hand back: every
+			// read there is of a window that shadowed NOTHING, so the bypass is a
+			// MISS — the alias resolves to no binding at all. That is the stronger
+			// of the two things this can do, and it is what the redundancy pin
+			// asserts it got, rather than assuming which one it took.
+			if ec.mergedLegReadBypass[id.Name()] {
+				ec.mergedLegReadSink.recordBypass(id.Name(), w.shadowsExisting, w.parentType)
+				return w.shadowed, w.shadowsExisting
+			}
+			// siblingLegs and shadowsExisting are stamped by the binder, which is
+			// the only site that holds the row's leg COUNT and the incoming
+			// context's prior binding; a reader has one window and cannot tell a
+			// lone leg from one of several, and the aliases it could ask about
+			// collide across queries. parentType is the merged row's type, which
+			// the window already carries — it is what the read gets keyed by, so
+			// one query's shape is not attributed to another query's alias.
+			recordMergedLegRead(id.Name(), w.siblingLegs, w.shadowsExisting, w.parentType)
+			ec.mergedLegReadSink.recordRead(id.Name(), w.siblingLegs, w.parentType)
+		}
+	}
 	return v, ok
 }
 

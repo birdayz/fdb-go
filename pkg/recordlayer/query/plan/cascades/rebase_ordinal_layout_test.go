@@ -146,7 +146,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 
 	// Layout answers → born baked at the global ordinal.
-	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3})
+	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil)
 	fv, isFV := baked.(*values.FieldValue)
 	if !isFV {
 		t.Fatalf("got %T", baked)
@@ -168,7 +168,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// different row type would let the domain do the refusing and the test would
 	// pass with the correlation dropped entirely.
 	otherLegID, _ := legSlotIdentity(legRead("B", aType, 0))
-	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3})
+	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3}, nil)
 	mfv := miss.(*values.FieldValue)
 	if mfv.Resolved != nil {
 		t.Fatalf("a SELF-JOIN twin leg's identical column answered the lookup: got resolved=%v — "+
@@ -185,19 +185,19 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), aType),
 		"A_ID", values.UnknownType,
 	)
-	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3})
+	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil)
 	if lazyOut.(*values.FieldValue).Resolved != nil {
 		t.Fatal("a lazy reference must not be baked by a layout it cannot key into")
 	}
 
 	// No layout → lazy qualified mint (pre-slice-4 behavior).
-	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil)
+	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil, nil)
 	if lazy2.(*values.FieldValue).Resolved != nil {
 		t.Fatal("nil layout must stay lazy")
 	}
 
 	// Non-matching leg → untouched.
-	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3})
+	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil)
 	if same != legRef {
 		t.Fatal("non-matching leg must return the value unchanged")
 	}
@@ -237,7 +237,7 @@ func TestMergedOuterLegAliasesCarriesBothNamespaces(t *testing.T) {
 		set := mergedOuterLegAliases("q$7", "D",
 			values.NamedCorrelationIdentifier("E"), values.NamedCorrelationIdentifier("D"))
 		ref := legRead("E", rt, 0)
-		out := rebaseOuterLegValue(ref, set, mergedCorr, nil)
+		out := rebaseOuterLegValue(ref, set, mergedCorr, nil, nil)
 		fv, isFV := out.(*values.FieldValue)
 		if !isFV {
 			t.Fatalf("rebase returned %T", out)
@@ -261,7 +261,7 @@ func TestMergedOuterLegAliasesCarriesBothNamespaces(t *testing.T) {
 		minted := values.NamedCorrelationIdentifier("q$9")
 		set := mergedOuterLegAliases("q$9", "D", minted, values.NamedCorrelationIdentifier("D"))
 		ref := legRead("q$9", rt, 0)
-		out := rebaseOuterLegValue(ref, set, mergedCorr, nil)
+		out := rebaseOuterLegValue(ref, set, mergedCorr, nil, nil)
 		fv := out.(*values.FieldValue)
 		if fv.Field != "q$9.K" {
 			t.Errorf("reference to minted leg q$9 was NOT rebased (field %q, want q$9.K).\n"+
