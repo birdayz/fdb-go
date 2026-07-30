@@ -25,14 +25,6 @@ func (o *txnOptions) SetReadYourWritesDisable() error {
 }
 func (o *txnOptions) SetWriteConflictsDisabled() { o.tx.writeConflictsDisabled = true }
 
-// SetBypassUnreadable is FDB_TR_OPTION_BYPASS_UNREADABLE: a read of a key carrying a pending
-// versionstamped op returns the operand's placeholder bytes AS WRITTEN instead of throwing
-// accessed_unreadable(1036) (client/ryw.go:55-60, applied per read at :515). It is the caller
-// asserting it knows the value it gets back is not the value that will be committed.
-func (o *txnOptions) SetBypassUnreadable() error {
-	return nil
-}
-
 // --- accepted-and-ignored options ---
 
 func (o *txnOptions) EnsureMutationCapacity(n int) {}
@@ -61,6 +53,7 @@ func (o *txnOptions) SetReportConflictingKeys() error                 { return n
 func (o *txnOptions) SetSpecialKeySpaceRelaxed() error                { return nil }
 func (o *txnOptions) SetSpecialKeySpaceEnableWrites() error           { return nil }
 func (o *txnOptions) SetRawAccess() error                             { return nil }
+func (o *txnOptions) SetBypassUnreadable() error                      { return nil }
 func (o *txnOptions) SetAutomaticIdempotency() error                  { return nil }
 func (o *txnOptions) SetDebugRetryLogging(string) error               { return nil }
 func (o *txnOptions) SetIncludePortInAddress() error                  { return nil }

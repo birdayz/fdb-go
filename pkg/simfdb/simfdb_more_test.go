@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
-	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
@@ -63,20 +62,11 @@ func TestSnapshotReadAddsNoConflict(t *testing.T) {
 	}
 }
 
-// TestTransactionTooOldWindow covers the OTHER way a transaction meets 1007: a read version
-// pinned by hand via SetReadVersion, below the window. The MVCC window is reached here by
-// advancing the simulated clock — versions are minted from it — rather than by assigning
-// db.lastVersion, so the setup is one a real caller could produce.
-//
-// The held-open-across-the-window shape, which is how long scans and indexers actually hit 1007,
-// is pinned separately by TestTooOldFromSimulatedClock.
 func TestTransactionTooOldWindow(t *testing.T) {
 	t.Parallel()
-	db, clk := simClockDB()
-	// Advance past the window so a read version of 0 is genuinely ancient. Nothing internal is
-	// written: the clock is the driver's, and the database's notion of "latest" follows it.
-	clk.Advance(6 * time.Second)
-
+	db := New(nil)
+	// Simulate a far-advanced database so an ancient read version falls outside the MVCC window.
+	db.lastVersion = mvccWindow + 100
 	tx := db.newTxn()
 	tx.SetReadVersion(0) // ancient
 	tx.Get(k("x")).MustGet()

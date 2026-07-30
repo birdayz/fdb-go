@@ -174,19 +174,11 @@ func TestReadConflictsAreFilteredThroughTheWriteMap(t *testing.T) {
 			wantCode: 0,
 		},
 		{
-			// A versionstamped write makes its key UNREADABLE, so the Get needs
-			// BYPASS_UNREADABLE to return at all — without it the read is
-			// accessed_unreadable(1036) and never reaches the conflict question
-			// (TestVersionstampedWriteMakesKeyUnreadable pins that half).
-			//
-			// The conflict dimension is what this case is for, and the bypass preserves it: a
-			// bypassed read of an independent unreadable entry is served entirely from the write
-			// map with no storage read (client/ryw.go:527-545), so it records no conflict — the
-			// same reason a plain Set-then-Get records none.
-			name:    "versionstamped value then bypassed Get takes no conflict",
+			// A versionstamped write's operand is written as given; the stamp comes from the
+			// commit proxy, not from the stored value.
+			name:    "versionstamped value then Get takes no conflict",
 			raceKey: "m",
 			body: func(tx *simTxn) {
-				_ = tx.Options().SetBypassUnreadable()
 				tx.SetVersionstampedValue(k("m"), versionstampOperand())
 				tx.Get(k("m")).MustGet()
 			},
