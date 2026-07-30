@@ -312,7 +312,6 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 		return nil, nil
 	}
 	var found *values.RecordType
-	var foundRaw values.Type
 	for _, member := range members {
 		if member == nil {
 			continue
@@ -329,13 +328,21 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 			continue
 		}
 		if found == nil {
-			found, foundRaw = rt, rv.Type()
+			found = rt
 			continue
 		}
 		refined, agree := refineRowTypes(found, rt)
 		if !agree {
+			// The ACCUMULATED row on the left, not the first typed member's. Those
+			// differ from the third member onwards, and the error used to report the
+			// first — a row that was not what the failing comparison saw. On the shape
+			// this reduction exists for (one member unresolved, a later one resolving
+			// it, a third conflicting) the reported left-hand row still carried the
+			// UNKNOWN the second member had already resolved, so the message described
+			// a conflict nobody had, and the real one was invisible. Both sides are the
+			// unwrapped ROW types, because those are what refineRowTypes compared.
 			return nil, &MemberResultTypeDisagreementError{
-				Alias: q.alias, Left: foundRaw, Right: rv.Type(),
+				Alias: q.alias, Left: found, Right: rt,
 			}
 		}
 		found = refined

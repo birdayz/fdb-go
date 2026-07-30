@@ -625,3 +625,59 @@ func TestGetFlowedObjectType_AnAnonymousEnumIsNotUnstated(t *testing.T) {
 			"  this test — do not delete it.", got, err)
 	}
 }
+
+// TestGetFlowedObjectType_DisagreementNamesTheAccumulatedRow pins that the
+// disagreement error reports the row the failing comparison ACTUALLY saw.
+//
+// The reduction accumulates: each member is refined against the running result,
+// so from the THIRD member onwards the left-hand side of a comparison is not any
+// single member's row. The error used to report the FIRST typed member's type
+// regardless, which is a row that was never compared — and on the shape this whole
+// reduction exists for (one member unresolved, a later one resolving it, a third
+// genuinely conflicting) the reported row still carried the UNKNOWN the second
+// member had already resolved. The message then described a conflict nobody had,
+// while the real one went unnamed.
+//
+// This is the only thing a MemberResultTypeDisagreementError does. Its caller
+// declines and its witness goes into a census; if the two rows it names are not
+// the two that disagreed, the census records a memo defect nobody can locate.
+func TestGetFlowedObjectType_DisagreementNamesTheAccumulatedRow(t *testing.T) {
+	t.Parallel()
+
+	// m1 leaves X unresolved, m2 resolves it to LONG, m3 conflicts with STRING.
+	// The failing comparison is (m1 refined by m2) vs m3, so its left side states
+	// X LONG — which is exactly the field m1 does NOT state.
+	unresolved := rowOfTypes("A", values.NotNullLong, "X", values.UnknownType)
+	resolved := rowOfTypes("A", values.NotNullLong, "X", values.NotNullLong)
+	conflicting := rowOfTypes("A", values.NotNullLong, "X", values.NotNullString)
+
+	_, err := flowedTypeOf(t,
+		&typedStubExpr{name: "w1", typ: unresolved},
+		&typedStubExpr{name: "w2", typ: resolved},
+		&typedStubExpr{name: "w3", typ: conflicting})
+	var de *MemberResultTypeDisagreementError
+	if !errors.As(err, &de) {
+		t.Fatalf("three members, the third conflicting, resolved without a disagreement: %v", err)
+	}
+
+	left := rowTypeOf(de.Left)
+	if left == nil {
+		t.Fatalf("the error's Left is %v, which is not a row type at all", de.Left)
+	}
+	if isUnstatedType(left.Fields[1].FieldType) {
+		t.Errorf("the disagreement reports Left = %v, whose X is UNSTATED.\n"+
+			"  That is the FIRST member's row. The comparison that failed was against the\n"+
+			"  ACCUMULATED row, in which X was already resolved to LONG by the second\n"+
+			"  member — so this message names a row nobody compared and describes a\n"+
+			"  conflict nobody had. The witness feeds a census whose whole job is making a\n"+
+			"  memo defect locatable.", de.Left)
+	}
+	if !left.Equals(resolved) {
+		t.Errorf("the disagreement reports Left = %v, want the accumulated row %v",
+			de.Left, resolved)
+	}
+	if right := rowTypeOf(de.Right); right == nil || !right.Equals(conflicting) {
+		t.Errorf("the disagreement reports Right = %v, want the conflicting member's row %v",
+			de.Right, conflicting)
+	}
+}
