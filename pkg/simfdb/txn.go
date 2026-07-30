@@ -54,6 +54,25 @@ type simTxn struct {
 	// SetWriteConflictsDisabled — when true, writes add no write conflict ranges at all.
 	writeConflictsDisabled bool
 
+	// unreadable is the set of keys carrying a pending versionstamped op. A read that REACHES
+	// one throws accessed_unreadable(1036): the stamp is assigned by the cluster at commit, so
+	// the value is not knowable client-side and there is nothing honest to return. SimFDB used
+	// to hand back the unstamped operand as though it were a real value — a phantom present key
+	// whose contents no real client could ever have observed, and which the same transaction
+	// would then find changed after commit.
+	//
+	// STICKY, mirroring C++ WriteMap.cpp:97 (`is_unreadable = it.is_unreadable() || op is a
+	// versionstamped op`, ported at client/ryw.go:483-488): a later plain Set on the key does NOT
+	// clear it (client/ryw.go:225-229 — the stack-replacing SetValue fast path is gated on
+	// !is_unreadable, so the Set is pushed and the flag survives). Only a clear removes it
+	// (client/ryw.go:243-244, 270-271) — a cleared key is readable because you know it is empty.
+	unreadable map[string]struct{}
+
+	// SetBypassUnreadable (FDB_TR_OPTION_BYPASS_UNREADABLE): reads of unreadable keys return the
+	// write-map value with the versionstamp placeholder bytes AS WRITTEN instead of throwing
+	// (client/ryw.go:55-60).
+	bypassUnreadable bool
+
 	committed        bool
 	committedVersion int64
 	cancelled        bool
@@ -72,14 +91,17 @@ func (db *SimDB) newTxn() *simTxn {
 	return tx
 }
 
-// ensureReadVersion lazily pins the read version at the highest committed version, the first
-// time the transaction reads or commits (matching a lazy GRV).
+// ensureReadVersion lazily pins the read version the first time the transaction reads or commits
+// (matching a lazy GRV). The version comes from db.latestVersion — the highest committed version
+// OR the simulated clock's, whichever is further along — because that is what a real GRV returns:
+// the cluster's version advances with time even while idle, so a transaction that starts after a
+// long quiet period does not read at the version of the last write.
 func (tx *simTxn) ensureReadVersion() {
 	if tx.rvSet {
 		return
 	}
 	tx.db.mu.Lock()
-	tx.readVersion = tx.db.currentReadVersion()
+	tx.readVersion = tx.db.latestVersion()
 	tx.db.mu.Unlock()
 	tx.rvSet = true
 }
@@ -92,6 +114,29 @@ func cloneVal(v []byte) []byte {
 	if v == nil {
 		return nil
 	}
+	c := make([]byte, len(v))
+	copy(c, v)
+	return c
+}
+
+// presentVal copies v as a PRESENT value: a nil operand becomes an empty, non-nil slice.
+//
+// nil is SimFDB's spelling of "absent" everywhere below this line — store.put(k, nil) writes a
+// tombstone, resolveKey returns nil for a cleared key, buildView drops nil-valued entries. A
+// Set operand must therefore never be allowed to carry that meaning: there is no such thing as
+// "Set to absent" in FDB. The C API takes a (pointer, length) pair, so a nil operand is
+// indistinguishable from a zero-length one and both store a PRESENT, zero-length value; the
+// pure-Go client makes that explicit — rywCache.set copies with `make([]byte, len(value))`
+// (client/ryw.go:223-224), which turns nil into non-nil empty, and rywEntry documents
+// `value==nil ("Set to empty bytes", a present key)` as distinct from its `absent` flag
+// (client/ryw.go:88-91).
+//
+// Without the normalization one Set(k, nil) produced three different answers: Get saw nil and
+// reported absent, GetRange's view map held the key with a nil value and reported it PRESENT,
+// and the commit wrote a tombstone so the key vanished from the store. Normalizing at the write
+// boundary — rather than teaching each of the three readers about a fourth state — is what makes
+// them agree, and it is what the client does.
+func presentVal(v []byte) []byte {
 	c := make([]byte, len(v))
 	copy(c, v)
 	return c
@@ -146,6 +191,74 @@ func (tx *simTxn) resolveKey(key []byte) []byte {
 	return cur
 }
 
+// ---- unreadable (pending versionstamp) tracking -----------------------------------------
+
+// markUnreadable records that a versionstamped op landed on key.
+func (tx *simTxn) markUnreadable(key []byte) {
+	if tx.unreadable == nil {
+		tx.unreadable = make(map[string]struct{})
+	}
+	tx.unreadable[string(key)] = struct{}{}
+}
+
+// clearUnreadable makes key readable again. Called only from the clear paths: a cleared key is
+// known to be empty, so there is nothing unknowable about it (client/ryw.go:243-244).
+func (tx *simTxn) clearUnreadable(key []byte) { delete(tx.unreadable, string(key)) }
+
+// clearUnreadableRange makes every unreadable key in [begin, end) readable — the ClearRange half
+// of the same rule (client/ryw.go:270-271, 280).
+func (tx *simTxn) clearUnreadableRange(begin, end []byte) {
+	for k := range tx.unreadable {
+		if bytes.Compare([]byte(k), begin) >= 0 && bytes.Compare([]byte(k), end) < 0 {
+			delete(tx.unreadable, k)
+		}
+	}
+}
+
+// isUnreadable reports whether a read of key must throw accessed_unreadable.
+func (tx *simTxn) isUnreadable(key []byte) bool {
+	if tx.bypassUnreadable || len(tx.unreadable) == 0 {
+		return false
+	}
+	_, ok := tx.unreadable[string(key)]
+	return ok
+}
+
+// unreadableScanCap returns the position at which a scan of [begin, end) must stop because of a
+// pending versionstamped op, or nil if there is none in the window. A port of the client's
+// unreadableScanCapLocked (client/ryw.go:1805-1839):
+//
+//   - forward: the SMALLEST unreadable key in the window becomes the scan's exclusive END, so
+//     the key itself is excluded.
+//   - reverse: the LARGEST one, and its cap is keyAfter(k) because that becomes the scan's
+//     INCLUSIVE begin — without the +\x00 the reverse scan would return the very key it must
+//     not read. Only the largest matters: a reverse scan walks down from end, so the highest
+//     unreadable key is the first one it can reach and everything below hides behind it.
+func (tx *simTxn) unreadableScanCap(begin, end []byte, reverse bool) []byte {
+	if tx.bypassUnreadable || len(tx.unreadable) == 0 {
+		return nil
+	}
+	var pos []byte
+	for k := range tx.unreadable {
+		kb := []byte(k)
+		if bytes.Compare(kb, begin) < 0 || bytes.Compare(kb, end) >= 0 {
+			continue
+		}
+		switch {
+		case pos == nil:
+			pos = kb
+		case reverse && bytes.Compare(kb, pos) > 0:
+			pos = kb
+		case !reverse && bytes.Compare(kb, pos) < 0:
+			pos = kb
+		}
+	}
+	if pos != nil && reverse {
+		return keyAfter(pos)
+	}
+	return pos
+}
+
 func (tx *simTxn) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
 	return tx.get(key, false)
 }
@@ -156,6 +269,12 @@ func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice
 	}
 	tx.ensureReadVersion()
 	k := []byte(key.FDBKey())
+	// The unreadable gate fires BEFORE any conflict range is recorded and before the value is
+	// resolved, exactly as the client's does (client/ryw.go:511-517 throws at the top of get,
+	// ahead of the server read). The read did not happen, so it takes no conflict.
+	if tx.isUnreadable(k) {
+		return newReadyByteSlice(nil, fdb.Error{Code: 1036}) // accessed_unreadable
+	}
 	if !snapshot {
 		tx.addFilteredReadConflictKey(k)
 	}
@@ -244,6 +363,30 @@ func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
 	tx.ensureReadVersion()
 	ks := sel.FDBKeySelector()
 	view := tx.buildView()
+	// A selector resolution is a READ of the keyspace it walks, so it is subject to the same
+	// unreadable gate — C++ RYWIterator's type()/kv() throw from the offset walk itself
+	// (RYWIterator.cpp:45-46/:75-76), which is what the client's getKeyRYW inherits. The span
+	// walked runs between the selector's anchor and the key it lands on, in whichever direction
+	// the offset points; if a pending versionstamped op sits anywhere in it, the walk cannot
+	// know how many slots it just crossed, because it does not know where the stamped key will
+	// land.
+	if idx := resolveSelector(view, ks); !tx.bypassUnreadable && len(tx.unreadable) > 0 {
+		anchor := []byte(ks.Key.FDBKey())
+		var lo, hi []byte
+		switch {
+		case idx < 0:
+			lo, hi = []byte{}, keyAfter(anchor)
+		case idx >= len(view):
+			lo, hi = anchor, append([]byte(nil), endKeyMarker...)
+		case bytes.Compare(view[idx].Key, anchor) < 0:
+			lo, hi = []byte(view[idx].Key), keyAfter(anchor)
+		default:
+			lo, hi = anchor, keyAfter([]byte(view[idx].Key))
+		}
+		if bytes.Compare(lo, hi) < 0 && tx.unreadableScanCap(lo, hi, false) != nil {
+			return newReadyKey(nil, fdb.Error{Code: 1036}) // accessed_unreadable
+		}
+	}
 	idx := resolveSelector(view, ks)
 	var result fdb.Key
 	switch {
@@ -311,11 +454,60 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 }
 
 func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
+	// transaction_cancelled(1025) before anything else, as on every other read entry point: the
+	// client reaches it through ensureReadVersion, whose FIRST act is checkCancelled
+	// (client/transaction.go:662-665), and getRangeDir calls ensureReadVersion before its own
+	// legal-range and limit validation (client/transaction.go:1252-1268). Get and GetKey already
+	// gate here; GetRange did not, so a cancelled transaction could still scan the keyspace.
+	if tx.cancelled {
+		return &readyRangeResult{err: fdb.Error{Code: 1025}}
+	}
+	// range_limits_invalid(2012). GetRangeLimits::isValid (FDBTypes.h:754) accepts a row limit of
+	// ROW_LIMIT_UNLIMITED(-1), 0, or any positive value, so anything below -1 is invalid, and C++
+	// RYW::getRange rejects it at the CALL (ReadYourWrites.actor.cpp:1749, ported at
+	// client/transaction.go:1266-1268) — not when the result is iterated.
+	//
+	// That placement is the whole point of putting it here rather than leaving it to the iterator:
+	// range_result.go's Iterator() already carries this check, but GetSliceWithError never reaches
+	// it, so a bad limit passed to the slice path was silently treated as unlimited and returned
+	// rows. Rejecting at GetRange() covers BOTH consumers from one site — and it is where the
+	// client rejects.
+	if options.Limit < -1 {
+		return &readyRangeResult{err: fdb.Error{Code: 2012}}
+	}
 	tx.ensureReadVersion()
 	beginSel, endSel := r.FDBRangeKeySelectors()
 	view := tx.buildView()
 	bi := clampIndex(resolveSelector(view, beginSel.FDBKeySelector()), len(view))
 	ei := clampIndex(resolveSelector(view, endSel.FDBKeySelector()), len(view))
+
+	// Unreadable reach cap (client/ryw.go:653-676): truncate the scan window at the first
+	// (forward) / last (reverse) key carrying a pending versionstamped op. The scan then either
+	// fills its row limit strictly inside the truncated window — in which case it never had to
+	// look at the unreadable position and the rows are returned normally, with more=true because
+	// there is provably more beyond — or it REACHES the cap, and the whole call throws
+	// accessed_unreadable. The client discards the partial rows on that branch too
+	// (client/ryw.go:686-688, `return nil, false, ErrAccessedUnreadable`).
+	unreadableCap := tx.unreadableScanCap(
+		resolveRangeBound(view, beginSel.FDBKeySelector()),
+		resolveRangeBound(view, endSel.FDBKeySelector()),
+		options.Reverse,
+	)
+	if unreadableCap != nil {
+		ci := clampIndex(sort.Search(len(view), func(i int) bool {
+			return bytes.Compare(view[i].Key, unreadableCap) >= 0
+		}), len(view))
+		if options.Reverse {
+			// The cap is keyAfter(the unreadable key), so it becomes the INCLUSIVE begin and the
+			// unreadable key itself falls below the window.
+			if ci > bi {
+				bi = ci
+			}
+		} else if ci < ei {
+			ei = ci
+		}
+	}
+
 	var kvs []fdb.KeyValue
 	if bi < ei {
 		kvs = append(kvs, view[bi:ei]...)
@@ -336,6 +528,16 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 		// and a cursor over SimFDB sees a different exhaustion signal than over real FDB.
 		more = true
 	}
+	// "reached" is the client's predicate (client/ryw.go:677-681): iteration of the capped window
+	// would continue INTO the unreadable position unless the limit was filled inside it. An
+	// unlimited scan always reaches.
+	if unreadableCap != nil {
+		if options.Limit <= 0 || len(kvs) < options.Limit {
+			return &readyRangeResult{err: fdb.Error{Code: 1036}} // accessed_unreadable
+		}
+		// The scan stopped early of its own accord, so there is provably more beyond it.
+		more = true
+	}
 	// The conflict extent is derived from the RESOLVED [begin,end), not the raw selector
 	// anchors: the real backend resolves a non-trivial selector to a key BEFORE issuing the
 	// read (fdb/range_result.go resolveRange). Taking the anchor instead under-conflicts on a
@@ -344,6 +546,18 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
 	reqBegin := resolveRangeBound(view, bks)
 	reqEnd := resolveRangeBound(view, eks)
+	// The conflict extent follows the CAPPED window, not the requested one: the truncated span is
+	// what the scan actually read, and the client caps begin/end before the read for exactly that
+	// reason (client/ryw.go:667-673).
+	if unreadableCap != nil {
+		if options.Reverse {
+			if bytes.Compare(unreadableCap, reqBegin) > 0 {
+				reqBegin = unreadableCap
+			}
+		} else if bytes.Compare(unreadableCap, reqEnd) < 0 {
+			reqEnd = unreadableCap
+		}
+	}
 
 	if !snapshot {
 		// Resolving a non-trivial bound is itself a READ, and it happens at GetRange() time —
@@ -452,6 +666,12 @@ func reverseKVs(kvs []fdb.KeyValue) {
 }
 
 func (tx *simTxn) GetReadVersion() fdb.FutureInt64 {
+	// The client's GetReadVersion is ensureReadVersion + a field read
+	// (client/transaction.go:2435-2447), and ensureReadVersion opens with checkCancelled
+	// (client/transaction.go:662-665).
+	if tx.cancelled {
+		return newReadyInt64(0, fdb.Error{Code: 1025})
+	}
 	tx.ensureReadVersion()
 	return newReadyInt64(tx.readVersion, nil)
 }
@@ -523,9 +743,20 @@ func (s simSnapshot) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (an
 }
 
 func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
-	tx.ensureReadVersion()
 	begin, end := r.FDBRangeKeys()
 	b, e := []byte(begin.FDBKey()), []byte(end.FDBKey())
+	// The client's precedence, verbatim (client/metrics.go:29-38): inverted_range(2005) FIRST —
+	// libfdb_c's KeyRangeRef constructor throws before the metric op runs — and only then
+	// transaction_cancelled(1025), which this path must gate EXPLICITLY because it never fetches a
+	// read version and so never passes through ensureReadVersion's checkCancelled. Adding the
+	// cancel gate without the 2005 above it would invert the order the client reports.
+	if bytes.Compare(b, e) > 0 {
+		return newReadyInt64(0, fdb.Error{Code: 2005}) // inverted_range
+	}
+	if tx.cancelled {
+		return newReadyInt64(0, fdb.Error{Code: 1025})
+	}
+	tx.ensureReadVersion()
 	tx.db.mu.Lock()
 	kvs := tx.db.store.rangeAt(b, e, tx.readVersion)
 	tx.db.mu.Unlock()
@@ -537,6 +768,16 @@ func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 }
 
 func (tx *simTxn) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.FutureKeyArray {
+	// Same entry-point precedence as its sibling GetEstimatedRangeSizeBytes
+	// (client/metrics.go:177-187): inverted_range(2005), then transaction_cancelled(1025),
+	// gated explicitly because this path fetches no read version.
+	begin, end := r.FDBRangeKeys()
+	if bytes.Compare([]byte(begin.FDBKey()), []byte(end.FDBKey())) > 0 {
+		return newReadyKeyArray(nil, fdb.Error{Code: 2005}) // inverted_range
+	}
+	if tx.cancelled {
+		return newReadyKeyArray(nil, fdb.Error{Code: 1025})
+	}
 	// Single logical shard: no interior split points (begin/end only, per FDB when the range
 	// is smaller than a shard). v1 returns the empty set of interior boundaries.
 	return newReadyKeyArray(nil, nil)
@@ -563,16 +804,23 @@ func (tx *simTxn) enqueue(m mutation) {
 }
 
 func (tx *simTxn) Set(key fdb.KeyConvertible, value []byte) {
-	tx.enqueue(mutation{kind: mutSet, key: []byte(key.FDBKey()), value: cloneVal(value)})
+	// presentVal, not cloneVal: Set(k, nil) writes a present empty value, never a tombstone.
+	tx.enqueue(mutation{kind: mutSet, key: []byte(key.FDBKey()), value: presentVal(value)})
 }
 
 func (tx *simTxn) Clear(key fdb.KeyConvertible) {
-	tx.enqueue(mutation{kind: mutClear, key: []byte(key.FDBKey())})
+	k := []byte(key.FDBKey())
+	// A clear is the ONE thing that makes a key readable again: the transaction knows it is
+	// empty, so there is no pending stamp to be ignorant of (client/ryw.go:243-244).
+	tx.clearUnreadable(k)
+	tx.enqueue(mutation{kind: mutClear, key: k})
 }
 
 func (tx *simTxn) ClearRange(er fdb.ExactRange) {
 	b, e := er.FDBRangeKeys()
-	tx.enqueue(mutation{kind: mutClearRange, key: []byte(b.FDBKey()), end: []byte(e.FDBKey())})
+	begin, end := []byte(b.FDBKey()), []byte(e.FDBKey())
+	tx.clearUnreadableRange(begin, end)
+	tx.enqueue(mutation{kind: mutClearRange, key: begin, end: end})
 }
 
 func (tx *simTxn) atomic(op atomicOp, key fdb.KeyConvertible, param []byte) {
@@ -597,12 +845,19 @@ func (tx *simTxn) CompareAndClear(key fdb.KeyConvertible, param []byte) {
 	tx.atomic(atomicCompareAndClear, key, param)
 }
 
+// SetVersionstampedKey / SetVersionstampedValue make their key UNREADABLE for the rest of the
+// transaction: the cluster fills the stamp at commit, so no client can know the resulting bytes
+// beforehand, and a read must say so rather than invent an answer (client/ryw.go:483-488).
 func (tx *simTxn) SetVersionstampedKey(key fdb.KeyConvertible, param []byte) {
-	tx.enqueue(mutation{kind: mutVersionstampedKey, key: []byte(key.FDBKey()), value: cloneVal(param)})
+	k := []byte(key.FDBKey())
+	tx.markUnreadable(k)
+	tx.enqueue(mutation{kind: mutVersionstampedKey, key: k, value: cloneVal(param)})
 }
 
 func (tx *simTxn) SetVersionstampedValue(key fdb.KeyConvertible, param []byte) {
-	tx.enqueue(mutation{kind: mutVersionstampedValue, key: []byte(key.FDBKey()), value: cloneVal(param)})
+	k := []byte(key.FDBKey())
+	tx.markUnreadable(k)
+	tx.enqueue(mutation{kind: mutVersionstampedValue, key: k, value: cloneVal(param)})
 }
 
 // []byte fast-path overloads: delegate to the KeyConvertible forms (fdb.Key is a KeyConvertible).
@@ -692,6 +947,7 @@ func (tx *simTxn) postCommitReset() {
 	tx.readVersion = 0
 	tx.rvSet = false
 	tx.buffer = nil
+	tx.unreadable = nil // the stamps are resolved; the keys are readable again
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
 }
@@ -704,6 +960,7 @@ func (tx *simTxn) Reset() {
 	tx.readVersion = 0
 	tx.rvSet = false
 	tx.buffer = nil
+	tx.unreadable = nil
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
 	tx.nextWriteNoConflict = false
@@ -785,6 +1042,11 @@ func (tx *simTxn) GetVersionstamp() fdb.FutureKey {
 type lazyVersionstamp struct{ tx *simTxn }
 
 func (f *lazyVersionstamp) Get() (fdb.Key, error) {
+	// transaction_cancelled(1025) out-ranks the not-yet-committed verdict, as in the client
+	// (client/transaction.go:2217-2219: checkCancelled precedes the hasCommitted check).
+	if f.tx.cancelled {
+		return nil, fdb.Error{Code: 1025}
+	}
 	if !f.tx.committed || f.tx.versionstamp == nil {
 		return nil, fdb.Error{Code: 2017}
 	}
@@ -803,12 +1065,26 @@ func (f *lazyVersionstamp) BlockUntilReady() {}
 func (f *lazyVersionstamp) IsReady() bool    { return f.tx.committed }
 func (f *lazyVersionstamp) Cancel()          {}
 
+// GetApproximateSize returns the transaction's size the way the client's RYW counter does
+// (client/transaction.go:2510-2543): the commit accounting — every mutation charged
+// sizeof(MutationRef), every read and write conflict range charged sizeof(KeyRangeRef) — with one
+// correction. C++ models a single-key clear as a write-map RANGE entry and charges its MUTATION
+// half sizeof(KeyRangeRef) rather than sizeof(MutationRef) (ReadYourWrites.actor.cpp:2431), so
+// each one is refunded the difference. The commit-time 2101 gate deliberately does NOT apply that
+// refund — in the native commit a single-key clear IS a ClearRange mutation charged the full 44 —
+// which is why the two callers share commitSize but not this line.
+//
+// Deliberately NOT gated on Cancel(): C++ gates getApproximateSize on the deferred error and
+// nothing else (ThreadSafeTransaction.cpp:715-721 — no resetPromise race), so a cancelled txn
+// still reports its size. See TestCancelledTransactionApproximateSizeStillAnswers.
 func (tx *simTxn) GetApproximateSize() fdb.FutureInt64 {
-	var size int64
+	var singleKeyClears int64
 	for _, m := range tx.buffer {
-		size += int64(len(m.key) + len(m.end) + len(m.value))
+		if m.kind == mutClear {
+			singleKeyClears++
+		}
 	}
-	return newReadyInt64(size, nil)
+	return newReadyInt64(commitSize(tx)-singleKeyClears*(sizeofMutationRef-sizeofKeyRangeRef), nil)
 }
 
 // A transaction is itself a Transactor (the interface embeds ReadTransactor via

@@ -3,7 +3,9 @@ package simfdb
 import (
 	"bytes"
 	"encoding/binary"
+	"time"
 
+	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
@@ -13,12 +15,63 @@ const (
 	valueSizeLimit = 100_000    // value_too_large (2103)
 	keySizeLimit   = 10_000     // key_too_large (2102) — the ~10KB key limit
 	txnSizeLimit   = 10_000_000 // transaction_too_large (2101)
+
+	// versionsPerSecond is FDB's SERVER_KNOBS->VERSIONS_PER_SECOND (1e6): the rate at which the
+	// master advances the commit version with the passage of TIME, independent of commit
+	// traffic. It is what makes the MVCC window a duration rather than a transaction count — one
+	// version per microsecond, so 5 seconds is 5,000,000 versions whether the cluster committed
+	// once in that span or a million times.
+	versionsPerSecond = 1_000_000
+
 	// mvccWindow = MAX_WRITE_TRANSACTION_LIFE_VERSIONS = 5 * VERSIONS_PER_SECOND. A read
-	// version older than (latestCommit - mvccWindow) yields transaction_too_old(1007). SimFDB
+	// version older than (latestVersion - mvccWindow) yields transaction_too_old(1007). SimFDB
 	// never actually GCs history (retaining it is strictly safer); the window is pure version
 	// arithmetic here.
-	mvccWindow = 5_000_000
+	mvccWindow = 5 * versionsPerSecond
 )
+
+// clockVersion is the version the FDB master would have minted at the simulated clock's current
+// reading: microseconds elapsed since dst.Epoch, which at VERSIONS_PER_SECOND = 1e6 is exactly
+// one version per microsecond. Epoch is the baseline because that is where NewSim pins a
+// SimClock, so a fresh simulated database starts at version 0 and every advance of d translates
+// to d.Microseconds() versions.
+//
+// This is what binds the MVCC window to TIME. Without it SimFDB's versions came only from the
+// commit counter, so the 5-second window was really "5,000,000 commits ago" and no amount of
+// elapsed simulated time could age a transaction out — transaction_too_old was reachable only by
+// a test writing db.lastVersion by hand, which certifies nothing about the modelled system. A
+// transaction held open across the window is one of the two ways real code meets 1007 (the other
+// being a hand-pinned read version), and it was unreachable.
+//
+// Returns 0 unless a Clock is actually installed, which keeps this ASYMMETRIC on purpose: a nil
+// Env is this repo's only spelling of production (see pkg/dst/env.go), and a production SimDB
+// must keep minting versions from the pure logical counter. Binding it to time.Now() there would
+// make version assignment — and therefore 1007 — depend on how long the host took to run the
+// test, which is precisely the nondeterminism SimFDB exists to remove.
+func (db *SimDB) clockVersion() int64 {
+	if db.env == nil || db.env.Clock == nil {
+		return 0
+	}
+	elapsed := db.env.Now().Sub(dst.Epoch)
+	if elapsed <= 0 {
+		return 0
+	}
+	return int64(elapsed / time.Microsecond)
+}
+
+// latestVersion is the version a GRV would return right now: the highest committed version, or
+// the clock's version if time has moved further than commits have. The commit counter alone is
+// not the cluster's notion of "latest" — a real cluster's version advances with time even while
+// idle — and both the read version a transaction pins and the too-old comparison it is later
+// judged against have to come from the same notion, or a transaction could be aged out relative
+// to a version no GRV would ever have handed it. Caller holds db.mu.
+func (db *SimDB) latestVersion() int64 {
+	v := db.currentReadVersion()
+	if c := db.clockVersion(); c > v {
+		return c
+	}
+	return v
+}
 
 // commit resolves tx under serializable snapshot isolation, applies its writes, and assigns a
 // commit version. Serialized by db.mu so exactly one transaction commits at a time — any serial
@@ -51,17 +104,34 @@ func (db *SimDB) commit(tx *simTxn) error {
 		return nil
 	}
 
+	// Size limits (terminal / non-retryable) come FIRST — before transaction_too_old, before
+	// conflict resolution. The two verdicts are produced in different places and the order is not
+	// a matter of taste:
+	//
+	//   - 2101/2102/2103 are decided ENTIRELY CLIENT-SIDE, inside Commit, before the commit
+	//     request is ever sent (client/transaction.go:1768-1808 — validateMutation then the
+	//     approximateCommitSize gate, both ahead of the RPC).
+	//   - 1007 is the RESOLVER's answer, and it only exists once the request has reached the
+	//     cluster (SkipList.cpp:837). A transaction rejected client-side never gets one.
+	//
+	// So a transaction that is BOTH too old and too large reports the size error. Reporting 1007
+	// instead is not a cosmetic mismatch: 1007 is retryable and the size codes are terminal, so a
+	// runner would reset and re-send a transaction that can never commit at any read version, and
+	// spin until it exhausts its retry limit. SimFDB checked too-old first and did exactly that.
+	if err := checkSizeLimits(tx); err != nil {
+		return err
+	}
+
 	// transaction_too_old(1007): a read version below the MVCC window. A distinct, earlier
 	// verdict than not_committed — and it never fires for a write-only transaction (one with no
 	// read conflict ranges), matching FDB (SkipList.cpp:837 gates on read_conflict_ranges.size()).
-	if len(tx.readConflicts) > 0 && tx.readVersion < db.lastVersion-mvccWindow {
+	//
+	// Measured against latestVersion, not the commit counter: the window is a DURATION, and a
+	// cluster's version advances with time whether or not anyone commits. Comparing against
+	// db.lastVersion made the window "5,000,000 commits wide", so a transaction could be held
+	// open for simulated hours and still commit.
+	if len(tx.readConflicts) > 0 && tx.readVersion < db.latestVersion()-mvccWindow {
 		return fdb.Error{Code: 1007}
-	}
-
-	// Size limits (terminal / non-retryable): checked before the conflict resolution, matching
-	// the client rejecting an over-limit mutation/transaction.
-	if err := checkSizeLimits(tx); err != nil {
-		return err
 	}
 
 	// SSI: a read conflict range read at readVersion conflicts iff some transaction that
@@ -140,7 +210,15 @@ func (db *SimDB) commit(tx *simTxn) error {
 		return fdb.Error{Code: 1021}
 	}
 
+	// The commit version is the later of "one past the last commit" and the clock's version, so
+	// versions track elapsed simulated time while staying STRICTLY increasing: when the clock has
+	// not moved (or there is none) successive commits still step by one, and when it has, the
+	// jump is exactly the elapsed microseconds. This is the master's rule — it advances the
+	// version with time and hands out the next one on demand.
 	cv := db.lastVersion + 1
+	if c := db.clockVersion(); c > cv {
+		cv = c
+	}
 	wcr := db.applyMutations(tx, cv)
 	db.recentWrites = append(db.recentWrites, committedWrites{version: cv, ranges: wcr})
 	db.lastVersion = cv
@@ -212,9 +290,78 @@ func (db *SimDB) applyMutations(tx *simTxn, cv int64) []keyRange {
 	return wcr
 }
 
-// checkSizeLimits enforces the terminal key/value/transaction size limits.
+// sizeofMutationRef / sizeofKeyRangeRef are the C++ struct sizes the transaction-size accounting
+// charges PER ENTRY, on top of the key and value bytes. They are not padding to be rounded away:
+// a transaction of many tiny mutations is dominated by them, so a sim that counts only raw bytes
+// certifies commits at a size the real client rejects — and, worse, the record layer's
+// "have I filled the transaction yet?" checks against GetApproximateSize come out systematically
+// low, so a batch sized against SimFDB overflows against FDB.
+//
+// The values are the client's, verified byte-exact against libfdb_c
+// (client/transaction.go:2492-2504 and its TestDifferential_ApproximateSize /
+// TestDifferential_TransactionSizeLimit): flow/Arena.h:370 wraps StringRef in
+// `#pragma pack(push, 4)`, so StringRef is 12 bytes, giving
+// sizeof(KeyRangeRef) = 2×StringRef = 24 and sizeof(MutationRef) = 44. The natural-alignment
+// guesses (32/48) over-count and reject slightly early.
+const (
+	sizeofMutationRef = 44
+	sizeofKeyRangeRef = 24
+)
+
+// mutationBytes is one buffered mutation's key+value contribution, expressed in the CLIENT'S
+// mutation representation rather than SimFDB's — the accounting has to size the request that
+// would go on the wire, not the shape this package happens to buffer:
+//
+//   - A single-key Clear is rewritten by the client into ClearRange(k, k+\x00), Key=k and
+//     Value=k+\x00 (client/transaction.go:1352-1360), so it costs len(k) TWICE plus the trailing
+//     zero byte. SimFDB stores it as key-only, which under-counts it by nearly half.
+//   - A ClearRange rides as Key=begin, Value=end (client/transaction.go:1393-1397).
+//   - Everything else is key + value.
+func mutationBytes(m mutation) int64 {
+	switch m.kind {
+	case mutClear:
+		return int64(2*len(m.key) + 1)
+	case mutClearRange:
+		return int64(len(m.key) + len(m.end))
+	default:
+		return int64(len(m.key) + len(m.value))
+	}
+}
+
+// conflictRangeBytes sizes a conflict-range list: its keys plus sizeof(KeyRangeRef) each. Both
+// the read and the write list are charged — the commit request carries both
+// (client/transaction.go:2565-2578).
+func conflictRangeBytes(rs []keyRange) int64 {
+	var n int64
+	for _, r := range rs {
+		n += int64(len(r.begin)+len(r.end)) + sizeofKeyRangeRef
+	}
+	return n
+}
+
+// commitSize is the size the transaction_too_large(2101) gate measures — the client's
+// approximateCommitSize (client/transaction.go:2555-2579): every mutation charged
+// sizeof(MutationRef), every read AND write conflict range charged sizeof(KeyRangeRef).
+//
+// One deliberate divergence, called out because it moves the threshold in the UNSAFE direction:
+// the client sizes the COALESCED write map it is about to ship (coalesceCommitVectors —
+// O(distinct keys)), while SimFDB's buffer is the raw op log, so a transaction that hammers one
+// key repeatedly is sized higher here and can trip 2101 where libfdb_c commits. That was already
+// true of the byte-only accounting this replaces; closing it means porting the write-map
+// coalescing, not adjusting a constant.
+func commitSize(tx *simTxn) int64 {
+	var n int64
+	for _, m := range tx.buffer {
+		n += mutationBytes(m) + sizeofMutationRef
+	}
+	return n + conflictRangeBytes(tx.readConflicts) + conflictRangeBytes(tx.writeConflicts)
+}
+
+// checkSizeLimits enforces the terminal key/value/transaction size limits, in the client's own
+// order: per-mutation key/value validation first, then the whole-transaction size
+// (client/transaction.go:1768-1808), so an oversized key or value that ALSO crosses 10 MB
+// reports 2102/2103 rather than 2101.
 func checkSizeLimits(tx *simTxn) error {
-	var total int64
 	for _, m := range tx.buffer {
 		if len(m.key) > keySizeLimit || len(m.end) > keySizeLimit {
 			return fdb.Error{Code: 2102} // key_too_large
@@ -222,9 +369,8 @@ func checkSizeLimits(tx *simTxn) error {
 		if len(m.value) > valueSizeLimit {
 			return fdb.Error{Code: 2103} // value_too_large
 		}
-		total += int64(len(m.key) + len(m.end) + len(m.value))
 	}
-	if total > txnSizeLimit {
+	if commitSize(tx) > txnSizeLimit {
 		return fdb.Error{Code: 2101} // transaction_too_large
 	}
 	return nil

@@ -76,8 +76,12 @@ func (s *mvccStore) rangeAt(begin, end []byte, readVersion int64) []fdb.KeyValue
 		}
 		if v := s.valueAtEntry(e, readVersion); v != nil {
 			out = append(out, fdb.KeyValue{
-				Key:   append(fdb.Key(nil), e.key...),
-				Value: append([]byte(nil), v...),
+				Key: append(fdb.Key(nil), e.key...),
+				// cloneVal, not append(nil, v...): appending nothing to a nil slice yields nil,
+				// which is this package's spelling of "absent" — so a present, zero-length value
+				// (what Set(k, nil) and Set(k, []byte{}) both write) would come back out of the
+				// store looking like a tombstone.
+				Value: cloneVal(v),
 			})
 		}
 	}
