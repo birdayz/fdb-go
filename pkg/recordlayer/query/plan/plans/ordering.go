@@ -645,10 +645,12 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 		return properties.Ordering{IsKnown: false}
 	}
 	groupKeys := p.GetGroupingKeys()
+	outputNames := p.OutputColumnNames()
+	domain := values.OrdinalDomainOfColumnNames(outputNames)
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {
-		keys[i] = values.NewFieldValueWithResolvedOrdinal(
-			expressions.AggregateKeyColumnName(k), i, values.UnknownType)
+		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
+			expressions.AggregateKeyColumnName(k), i, values.UnknownType, domain)
 	}
 	desc := make([]bool, len(keys))
 	if idx, ok := p.GetInner().(*RecordQueryIndexPlan); ok && idx.IsReverse() {

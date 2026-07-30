@@ -6100,6 +6100,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 // agree with the PositionalRow model.
 func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (values.Value, bool) {
 	valid := true
+	domain := values.OrdinalDomainOfColumnNames(nativeNames)
 	result := values.Replace(v, func(node values.Value) values.Value {
 		fv, ok := node.(*values.FieldValue)
 		if !ok {
@@ -6120,7 +6121,8 @@ func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (val
 			valid = false
 			return node
 		}
-		return values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, fv.Typ)
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			nativeNames[ordinal], ordinal, fv.Typ, domain)
 	})
 	return result, valid
 }
