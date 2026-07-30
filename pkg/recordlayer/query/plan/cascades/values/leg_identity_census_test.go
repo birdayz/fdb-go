@@ -220,7 +220,7 @@ func TestLegIdentityCensus_RetiredVerdictCountsBothFlipDirections(t *testing.T) 
 // A site's CHANNEL is observed, not declared, so an instrument that drifts away
 // from its comparison is reported instead of believed. That is the mechanism the
 // string-only census lacked: the sites were DOCUMENTED as comparing identities
-// while recording text, and nothing noticed for a whole review lap.
+// while recording text, and a comment is not a mechanism.
 //
 // Not parallel: package-scoped counters, absolute assertions.
 func TestLegIdentityCensus_MixedChannelIsDetected(t *testing.T) {
