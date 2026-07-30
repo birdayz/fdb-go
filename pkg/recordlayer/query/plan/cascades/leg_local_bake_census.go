@@ -414,6 +414,48 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 			got, c.LegDerivations)
 	}
 
+	// The two counters CQ-63 moved, asserted at the value it moved them TO.
+	//
+	// A census that only reports these lets them drift back silently, and drifting
+	// back is not exotic: both are "the quantifier could not state the row it
+	// flows", and every one of them was a site handing expression construction an
+	// untyped QuantifiedObjectValue where Java's is
+	// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`
+	// (Quantifier.java:801-803). One new untyped flowed value anywhere on this path
+	// puts them back.
+	//
+	// These are ZEROS, not floors, so they hold over any population — a narrowed run
+	// checks them exactly as the full suite does. At zero population they hold
+	// VACUOUSLY, which is what the population floors above exist to prevent; the two
+	// checks are only a proof together.
+	for _, z := range []struct {
+		name string
+		got  int
+		why  string
+	}{
+		{
+			"UnderivableLegs", c.UnderivableLegs,
+			"A leg whose row layout cannot be derived has no ordinal it can honestly\n" +
+				"  carry on its own alias, so every read through it falls through to the\n" +
+				"  qualified NAME — the channel RFC-197 exists to remove, kept alive by a\n" +
+				"  quantifier that will not say what it flows.",
+		},
+		{
+			"UntypedLeg", c.UntypedLeg,
+			"A minted read that declined because the LEG quantifier stated no type. Same\n" +
+				"  defect as the above seen from the mint side: the reason there is no\n" +
+				"  layout to bake against.",
+		},
+	} {
+		if z.got != 0 {
+			failed = true
+			fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: %s = %d, want 0.\n  %s\n"+
+				"  Look for a flowed object value built UNTYPED — Quantifier.GetFlowedObjectValue\n"+
+				"  where GetFlowedObjectValueTyped is what the site needs.\n",
+				z.name, z.got, z.why)
+		}
+	}
+
 	if floors != nil {
 		for _, f := range []struct {
 			name  string

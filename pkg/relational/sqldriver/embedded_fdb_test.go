@@ -331,13 +331,17 @@ func mergedLegReadIsAlarm(reads int) bool {
 // run with memo exploration order, and the corpus churns with unrelated work.
 // The floor detects a site going DARK, not drift.
 //
-// Both totals are floored because both are denominators. UnderivableLegs gates
-// CQ-63 and is a share of LegDerivations; the minted residue is a share of
-// Total. A floor on one and not the other leaves half the arithmetic able to go
-// vacuous.
-// Measured on this tree: Total 126 (minted 126 = untypedLeg 92 + columnAbsent 0
-// + layoutAvailable 34), LegDerivations 846 (flowed 656 + walkOnly 108 +
-// underivable 82 + disagreement 0).
+// Both totals are floored because both are denominators. UnderivableLegs and
+// UntypedLeg are now asserted at ZERO by the census itself, and a zero is only a
+// proof over a population — a floor on one denominator and not the other leaves
+// half the arithmetic able to go vacuous, which is the state in which both zeros
+// read as an achievement while measuring nothing.
+//
+// Measured on this tree: Total 126 (minted 126 = untypedLeg 0 + columnAbsent 0 +
+// layoutAvailable 126), LegDerivations 848 (flowed 740 + walkOnly 108 +
+// underivable 0 + disagreement 0). Before the flowed value carried its type the
+// same corpus measured untypedLeg 92 / layoutAvailable 34 and underivable 82 out
+// of 846 — the 92 reads that had no honest alternative to the qualified name.
 var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,

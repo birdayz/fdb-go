@@ -642,7 +642,28 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				lowerAlias = lowerAliasCorrelatedToByUpperAliases
 			}
 
-			flowedValue := aliasToQ[lowerAlias].GetFlowedObjectValue()
+			// Java's `Quantifier.getFlowedObjectValue()` is
+			// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`
+			// (Quantifier.java:801-803) — ALWAYS typed, so no Java site flows a row
+			// whose shape is unstated. This lower select flows one table's whole row,
+			// and the row it flows is that quantifier's, type included.
+			//
+			// The type is not decoration here. A downstream reader that has to bake an
+			// ordinal against this row has no domain to bake in without it, so every
+			// read through the leg falls through to the qualified NAME; and a
+			// reference left source-relative evaluates to NULL against the build-bound
+			// row, which is a join returning nothing with no error.
+			//
+			// A member DISAGREEMENT declines this bipartition rather than falling back
+			// to an untyped row. The fallback is the tempting move and it is the wrong
+			// one: it would flow a row shape chosen by memo insertion order, which is
+			// precisely what the agreement verification exists to refuse. Declining
+			// costs one bipartition; the others still yield, and the rules that do not
+			// partition are untouched.
+			flowedValue, flowedErr := aliasToQ[lowerAlias].GetFlowedObjectValueTyped()
+			if flowedErr != nil {
+				continue
+			}
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(flowedValue)
 
 			newLowerQ := expressions.NamedForEachQuantifier(
