@@ -290,3 +290,56 @@ func firstDiff(want, got string) string {
 	}
 	return b.String()
 }
+
+// TestCaptureRefusesToBakeAnErrorIntoABaseline pins that a scenario whose query does not run is
+// a capture FAILURE, not baseline content.
+//
+// Capture used to write "PLAN-ERR: ..." / "ROWS-ERR: ..." into the text and return it as a
+// successful capture. GOLDEN_UPDATE=1 then recorded the error message as the baseline, and the
+// entry passed forever by reproducing its own breakage — a characterization harness certifying
+// that a query still fails the same way, green on every CI summary.
+//
+// Both surfaces are checked separately: EXPLAIN can fail where the query itself would not (an
+// unplannable shape), and a query can fail after EXPLAIN succeeded (an executor error). A guard
+// on only one of them still lets the other bake in.
+func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		// A column that does not exist: both EXPLAIN and the query fail.
+		{"unknown column", "SELECT nosuchcolumn FROM t"},
+		// A table that does not exist.
+		{"unknown table", "SELECT * FROM nosuchtable"},
+		// Syntactically valid, semantically impossible cast — fails at execution.
+		{"bad literal", "SELECT id FROM t WHERE id = 'not-a-number'"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := Capture(Scenario{
+				Name:   "err-" + tc.name,
+				Seed:   99,
+				Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))"},
+				Data:   []string{"INSERT INTO t (id) VALUES (1)"},
+				// A good query first, so the failure is not the very first thing captured and
+				// the guard cannot pass by accident of ordering.
+				Queries: []string{"SELECT id FROM t ORDER BY id", tc.query},
+			})
+			if err == nil {
+				t.Fatalf("Capture returned no error for a failing query; a baseline recorded "+
+					"from this would pass forever by reproducing the breakage. Captured:\n%s", out)
+			}
+			if out != "" {
+				t.Fatalf("Capture returned text alongside its error; GOLDEN_UPDATE=1 must have "+
+					"nothing to write. Got:\n%s", out)
+			}
+			for _, marker := range []string{"PLAN-ERR", "ROWS-ERR"} {
+				if strings.Contains(err.Error(), marker) {
+					t.Fatalf("the error still carries the %s baseline marker: %v", marker, err)
+				}
+			}
+		})
+	}
+}

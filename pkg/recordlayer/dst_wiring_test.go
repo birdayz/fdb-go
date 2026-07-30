@@ -1,10 +1,17 @@
 package recordlayer
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/simfdb"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestStoreHeader_LastUpdateTimeSeamed proves the RFC-199 Tier-0 Clock seam on the
@@ -74,5 +81,103 @@ func TestContextEnv_NilSafeAndInherited(t *testing.T) {
 	}
 	if nilCtx.Env().Now().IsZero() {
 		t.Fatal("nil context Env().Now() returned zero (should be wall clock)")
+	}
+}
+
+// TestIndexBlockLeaseReadsTheEnvClock pins the lease-expiry seam on the indexing stamp's block,
+// end to end: BlockIndex mints the expiry off the env clock, and setIndexingTypeOrThrowForIndex
+// compares it against the env clock.
+//
+// Both halves have to be seamed or the branch a simulation exercises is the OPPOSITE of the one
+// it wrote. The sim clock starts at a fixed epoch in the past, so a wall-clock READ of an expiry
+// minted at sim time sees it as long expired; a wall-clock WRITE against a sim-time read sees
+// every lease as eternal. Either way the run reports having tested the blocked path while
+// testing the unblocked one.
+//
+// Nothing pinned this. The existing block tests all run under a nil env, where both spellings
+// read the same wall clock, so reverting either seam left the suite green.
+func TestIndexBlockLeaseReadsTheEnvClock(t *testing.T) {
+	t.Parallel()
+	const leaseTTL = time.Hour
+	for _, tc := range []struct {
+		name        string
+		advance     time.Duration
+		wantBlocked bool
+	}{
+		// The lease is live in SIM time. A wall-clock READ of the sim-minted expiry would see
+		// an instant in 2020 and call it expired.
+		{"lease live in sim time", 0, true},
+		// The sim clock is moved past the lease. A wall-clock WRITE would have stamped an
+		// expiry years ahead of the sim clock, so this would still read as blocked.
+		{"lease expired in sim time", 2 * leaseTTL, false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			clock := dst.NewSimClock(dst.Epoch)
+			env := &dst.Env{Clock: clock, Random: dst.NewSeededRandomness(5)}
+			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+			sub := subspace.FromBytes(tuple.Tuple{"leaseseam", tc.name}.Pack())
+
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			if err != nil {
+				t.Fatalf("build metadata: %v", err)
+			}
+
+			if _, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(sub).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					if _, err := store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)),
+					}); err != nil {
+						return nil, err
+					}
+				}
+				if _, err := store.ClearAndMarkIndexWriteOnly("Order$price"); err != nil {
+					return nil, err
+				}
+				// A BY_RECORDS stamp is what BlockIndex marks and what the build compares
+				// against; without it BlockIndex has nothing to block.
+				return nil, store.SaveIndexingTypeStamp(priceIndex, &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				})
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(db).SetMetaData(md).SetIndex(priceIndex).SetSubspace(sub).Build()
+			if err != nil {
+				t.Fatalf("build indexer: %v", err)
+			}
+			if err := indexer.BlockIndex(ctx, "maintenance", leaseTTL); err != nil {
+				t.Fatalf("BlockIndex: %v", err)
+			}
+			clock.Advance(tc.advance)
+
+			_, buildErr := indexer.BuildIndex(ctx)
+			var partly *PartlyBuiltError
+			gotBlocked := errors.As(buildErr, &partly)
+			if gotBlocked != tc.wantBlocked {
+				t.Fatalf("after BlockIndex(ttl=%v) and advancing the sim clock by %v, "+
+					"BuildIndex blocked=%v (err=%v), want blocked=%v — the lease expiry must be "+
+					"both MINTED and COMPARED against the env clock",
+					leaseTTL, tc.advance, gotBlocked, buildErr, tc.wantBlocked)
+			}
+			if !tc.wantBlocked && buildErr != nil {
+				t.Fatalf("BuildIndex after the lease expired: %v", buildErr)
+			}
+		})
 	}
 }

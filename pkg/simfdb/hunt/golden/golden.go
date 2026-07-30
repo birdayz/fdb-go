@@ -92,20 +92,30 @@ func Capture(s Scenario) (string, error) {
 		fmt.Fprintf(&b, "#   %s\n", tbl)
 	}
 	b.WriteString("\n")
+	// A failing query is a CAPTURE FAILURE, never baseline content.
+	//
+	// This used to write "PLAN-ERR: %v" / "ROWS-ERR: %v" into the text and return it as a
+	// successful capture. Under GOLDEN_UPDATE=1 that bakes the error message into testdata/,
+	// and from then on the corpus entry passes forever by reproducing its own breakage — the
+	// characterization harness certifying that a query still fails the same way. Worse, it is
+	// invisible on review: a baseline full of green -ERR lines looks exactly like a baseline
+	// full of green results in a CI summary.
+	//
+	// The corpus is curated, so every query in it is expected to run. If one stops running,
+	// that is the finding, and it has to surface as a red test rather than as a diff nobody
+	// reads.
 	for _, q := range s.Queries {
 		fmt.Fprintf(&b, "=== %s\n", q)
 		var plan string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-			fmt.Fprintf(&b, "PLAN-ERR: %v\n", err)
-		} else {
-			fmt.Fprintf(&b, "PLAN: %s\n", plan)
+			return "", fmt.Errorf("scenario %q: EXPLAIN %q: %w", s.Name, q, err)
 		}
+		fmt.Fprintf(&b, "PLAN: %s\n", plan)
 		rowsText, err := captureRows(ctx, db, q)
 		if err != nil {
-			fmt.Fprintf(&b, "ROWS-ERR: %v\n", err)
-		} else {
-			b.WriteString(rowsText)
+			return "", fmt.Errorf("scenario %q: query %q: %w", s.Name, q, err)
 		}
+		b.WriteString(rowsText)
 		b.WriteString("\n")
 	}
 	return b.String(), nil
