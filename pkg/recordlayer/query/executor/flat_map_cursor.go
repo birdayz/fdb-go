@@ -352,7 +352,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		default:
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 		}
-		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
+		correlatedCtx := bindMergedOuterLegs(
+			c.evalCtx.WithBinding(c.outerAlias, outerBinding), outerBinding, c.outerAlias)
 		// Java FlatMapPipelinedCursor (:210-220): the initial inner
 		// continuation stays ARMED across outer rows until the row whose
 		// check value matches (or either check value is absent) CONSUMES it
@@ -427,6 +428,53 @@ func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier)
 func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier) bool {
 	qov, ok := rv.(*values.QuantifiedObjectValue)
 	return ok && qov.Correlation == innerAlias
+}
+
+// bindMergedOuterLegs is Java's one-binding-per-quantifier namespace, restored
+// for Go's two-level NLJ→FlatMap lowering.
+//
+// Java's RecordQueryFlatMapPlan binds ONE correlation per quantifier — the outer
+// quantifier's alias over the incoming context, then the inner quantifier's alias
+// over a context CHAINED off that one
+// (RecordQueryFlatMapPlan.java:135-140, over the parent chain at
+// Bindings.java:116-134) — so every enclosing source stays resolvable BY ITS OWN
+// ALIAS at arbitrary depth, and QuantifiedObjectValue.eval is a plain map lookup
+// (QuantifiedObjectValue.java:84-85).
+//
+// Go collapses a multi-source outer into ONE nested-loop join whose row is a
+// merged concat, so binding only the join's own alias drops the source aliases the
+// inner still references. That gap is what the qualified-NAME channel existed to
+// paper over: a leg-correlated read was rewritten into a read of the MERGED
+// correlation with the leg packed into the field name ("LEG.COL"), because the leg
+// alias itself was unbound.
+//
+// Binding each leg of the merged row under its own correlation removes the need
+// for that name. A leg-correlated read is then an ordinal read against its leg's
+// own window — the same shape it would have had against an unmerged source — and
+// no leg name is consulted anywhere on the path.
+//
+// The identity under which each leg binds is CARRIED from the row type's leg
+// table, never minted from its text. The join's own alias keeps its binding to the
+// WHOLE merged row (an unqualified read of the join's object is still the concat),
+// and a leg whose identity IS the join's alias is skipped rather than allowed to
+// narrow that binding to one window.
+func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.CorrelationIdentifier) *EvaluationContext {
+	row, isPos := binding.(*PositionalRow)
+	if !isPos || row == nil || row.Type == nil || len(row.Type.Legs) == 0 {
+		return ec
+	}
+	for _, s := range spansFromMergedLegs(row) {
+		if s.Alias.IsZero() || s.Alias == outerAlias {
+			continue
+		}
+		ec = ec.WithBinding(s.Alias, &legWindowRow{
+			parent:  row,
+			legType: s.LegType,
+			offset:  s.Offset,
+			width:   s.Width,
+		})
+	}
+	return ec
 }
 
 // qualifyOuterPositional stamps the outer quantifier's leg window onto the

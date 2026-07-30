@@ -2446,6 +2446,13 @@ func rebaseOuterLegValue(
 						panic(fmt.Sprintf("rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — an ordinal join was routed into the lazy rebase machinery instead of the ordinal one (planner bug)",
 							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
 					}
+					if values.LegIdentityCensusEnabled() {
+						// Measured at the one arm that packs a leg into a column
+						// name: could this read have been baked LEG-LOCALLY over
+						// its own alias instead — Java's shape, where the leg
+						// stays bound and nothing is re-anchored?
+						recordLegLocalBakeability(qov.Correlation, qov.Typ, strings.ToUpper(fv.Field))
+					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 					// Structural first (WS-N slice 4): when the merged
 					// outer row's positional layout is derivable, the

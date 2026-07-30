@@ -21,6 +21,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -103,6 +104,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.SetLegIdentityCensusEnabled(false)
 
 	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
+	// The leg-local bakeability census rides the same gate: it measures whether
+	// the one surviving qualified-name mint is carrying anything a leg-local bake
+	// could not carry. Reported beside the identity census because the two answer
+	// halves of the same question about this channel.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatLegLocalBakeCensus())
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
