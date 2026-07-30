@@ -28,7 +28,7 @@ func TestClean(t *testing.T) {
 			// run can fail if no run reads anything — and a harness that quietly stopped
 			// producing pages is then indistinguishable from a clean run.
 			if pages == 0 {
-				t.Fatal("the sweep scanned zero pages: nothing was continuation-resumed, so a "+
+				t.Fatal("the sweep scanned zero pages: nothing was continuation-resumed, so a " +
 					"green result says nothing")
 			}
 		})
