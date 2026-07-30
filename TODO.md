@@ -10550,3 +10550,22 @@ None is speculative: each was re-verified against the tree before booking.
   Java's parent-chained bindings ON TOP OF CQ-61's typed leg identity.
   Dotted is 7 (two non-merged-row group-key readers: ct:993 AND cg:4141),
   and CQ-53 closes it to 2, not 1.
+
+  CQ-61/53 RULING (resolves the circularity the implementation found): the
+  seed-rebake — Java's translateCorrelations, baking the seed against the
+  chosen physical leg layout — is CQ-53's work, because it IS the mechanism
+  that makes parent-chained per-alias bindings possible (the adapter's own
+  comment has said so throughout); bundling it into CQ-61 would make CQ-61
+  into CQ-53 under another name. CQ-61 REDUCES to the Group-A retyping
+  (~5 readers whose counterparty is a correlation: ordinal_join.go:1419,
+  executor.go:2805, ordinal_join.go:601, left_outer_existential.go:86,
+  ordinal_seed_layout.go:143-170), landable independently, with the
+  case-folding→exact conversion measured per site (SameLeg is exact; the
+  leg name is documented UPPER — thread the typed alias to all ~13
+  construction sites first, then measure each folding comparison's
+  conversion). Group B's readers (ordinal_join.go:712,
+  cascades_translator.go:5875, :3707) retire WITH their producers in
+  CQ-53 — they serve live correlated-scalar and UNNEST/CTE channels
+  (7 real-FDB tests break on deletion, measured) whose qualifier is
+  embedded inside column-name strings; only the rebake removes the need.
+  Order: CQ-61-reduced → CQ-53 (rebake + bindings + producers + Group B).
