@@ -10225,27 +10225,56 @@ None is speculative: each was re-verified against the tree before booking.
   PARTIALLY IMPLEMENTED (branch `feat/cq53-flatmap-binder`), and the remainder
   is BLOCKED ON CQ-63 by measurement, not by judgement. What landed:
 
-  - **Java's per-quantifier binding namespace, restored.** Each leg of a merged
-    outer row now binds under its OWN correlation in the FlatMap inner's
-    context (`executor.bindMergedOuterLegs`, `flat_map_cursor.go`) — Java's
-    `RecordQueryFlatMapPlan.java:135-140` over the parent chain at
-    `Bindings.java:116-134`, where `QuantifiedObjectValue.eval` is a map lookup
-    (`QuantifiedObjectValue.java:84-85`). Binding only the join's own alias is
-    what made the qualified `LEG.COL` name necessary in the first place.
-  - **The leg-local bake**, where the leg's layout can be stated: the read keeps
-    its own alias and carries its own leg's ordinal, and no name is minted. The
-    layout is read off the leg's CHOSEN PHYSICAL PLAN (`physicalLegRowTypes`),
-    which is Java's `translateCorrelations` against
-    `Quantifier.getFlowedObjectType` (`Quantifier.java:801-803`).
+  - **A runtime binder that keeps every merged leg alias resolvable**
+    (`executor.bindMergedOuterLegs`, `flat_map_cursor.go`). LANDED AND
+    UNIT-PINNED, WITH NO NON-TEST CONSUMER: the planner arm whose product would
+    exercise it reaches no winning plan (`TestLazyLegMintReachesNoWinningPlan`
+    measures zero dotted merged-row keys in every winner), so e2e activation
+    arrives with CQ-63. The checkbox stays honest about that.
+
+    It is ALSO a divergence, not the port the earlier wording claimed. Java's
+    `RecordQueryFlatMapPlan.java:135-140` binds the chained outer→inner PAIR,
+    two correlations, never a set of siblings — and where Java's planner
+    collapses several sources into one quantifier it re-anchors sibling
+    references **by ordinal** (`PartitionSelectRule.java:296-303`:
+    `when(lowerAlias).then(FieldValue.ofOrdinalNumber(QOV(newUpper), index))`),
+    which DELETES the sibling alias rather than keeping it bound. Keeping N
+    sibling aliases live at runtime is a Go-only widening of the binding
+    namespace, booked in DIVERGENCES.md with its retirement condition (the
+    ordinal re-anchor covering every shape that reaches this cursor).
+    Precedence — first-claim wins among legs, a leg shadows an enclosing
+    binding without destroying it — is defined and pinned there too, because
+    the widening is what forces Go to have an answer Java never needs.
+  - **The leg-local bake is DELETED, not landed.** It minted the leg-local
+    ordinal by resolving the reference's DISPLAY NAME against the leg's row
+    type (`legType.FieldIndex(ToUpper(fv.Field))`) — a name deciding a column's
+    identity, RFC-197's forbidden move, in the `.Field` gate's own documented
+    blind spot (a type lookup by name is neither a comparison nor a map key).
+    Every leg-correlated read falls through to the qualified mint; the
+    identity-keyed `legSlotIdentity`→`legLayout` lookup is the only ordinal
+    authority in that function. The bake returns with CQ-63, keyed on identity.
+  - **The layout derivation is rerouted onto the FAITHFUL instrument** —
+    `expressions.Quantifier.GetFlowedObjectType` (Java's
+    `Quantifier.java:806-810`, what `translateCorrelations` rebases against),
+    with the bespoke physical-plan walk kept as a documented SUBORDINATE and
+    counted. `physicalLegRowTypes` is gone; `legRowTypesFromQuantifiers`
+    replaces it.
 
   THREE PREMISES OF THIS ENTRY ARE REFUTED, all by reading the two sides:
 
   1. "Both producers DELETE OUTRIGHT once the binder is parent-chained." They
-     cannot. Measured at the mint itself over the real-FDB corpus: **126
-     firings, 0 with a typed leg quantifier**. The reference carries an UNTYPED
-     QOV, so there is no layout to state a leg-local ordinal in and nothing to
-     delete the name in favour of. The bake had to acquire the layout from
-     somewhere else entirely.
+     cannot, and "parent-chained" mis-states what Java's binder is. Java's
+     FlatMap chains exactly the outer→inner PAIR
+     (`RecordQueryFlatMapPlan.java:135-140` over `Bindings.java:116-134`); a
+     SIBLING leg is not kept bound at all, it is re-anchored by ORDINAL against
+     the merged quantifier and its alias ceases to exist
+     (`PartitionSelectRule.java:296-303`'s `translateCorrelations` entries).
+     So there is no Java binder shape that, once ported, makes the name
+     deletable — the deletion Java gets comes from the ordinal rewrite, and
+     that rewrite needs a stated row type. Measured at the mint itself over the
+     real-FDB corpus: **126 firings, 0 with a typed leg quantifier**. The
+     reference carries an UNTYPED QOV, so there is no domain to state the
+     ordinal in.
   2. "Port PartitionSelectRule's REJECTION of conflicting lateral correlations."
      Already ported: `rule_partition_select.go:395` is Java's `:161-167`, and
      `:548-555` is Java's `:234-243`.
@@ -10255,15 +10284,39 @@ None is speculative: each was re-verified against the tree before booking.
      `PartitionSelectRule.java:283-315` 1:1 (`OrdinalFieldName(i)` for
      `Column::unnamedOf`, `.When(live_i).Then(ofOrdinalNumber(QOV(merge), i))`).
 
-  WHERE IT STOPS, MEASURED. After the leg-local bake, **34 of 126** reads
-  convert; the other 92 fall through. The cause is not the reads — it is **32
-  LEGS whose physical plan is a `RecordQueryFlatMapPlan` that states no row
-  layout at all** (`leg-local bakeability` census, `NO-LAYOUT` witnesses). A
-  FlatMap's row is its result value's to state, and these result values state
-  nothing because they flow an UNTYPED quantifier object. That is CQ-63
-  verbatim. Deriving the layout from a SEEDED result value was implemented and
-  measured: it declines on every one of the 32, so it was removed rather than
-  kept on speculation.
+  WHERE IT STOPS, MEASURED ON THE FAITHFUL INSTRUMENT. The whole census is
+  routed through `Quantifier.GetFlowedObjectType` now; the earlier numbers came
+  from the bespoke plan walk and one of them was simply wrong. Real-FDB corpus:
+
+  ```
+  total 126 (baked 0, minted 126)
+  minted residue: untypedLeg 92, columnAbsent 0, layoutAvailable 34
+  legs (846 derivations): flowed 656, walkOnly 108, underivable 82, memberDisagreement 0
+  ```
+
+  Read as FIRINGS vs DISTINCT WITNESSES, which are different facts: 126 read
+  firings over 19 distinct witnesses (14 `UNTYPED-LEG`, 5
+  `LAYOUT-AVAILABLE-BUT-MINTED`); 82 underivable-leg firings over just **3**
+  distinct witnesses, every one a `*plans.RecordQueryFlatMapPlan` whose result
+  value is a bare untyped `*values.QuantifiedObjectValue`. The residue is
+  narrow and it is CQ-63 verbatim.
+
+  **The 32 in the previous revision of this entry was wrong.** Re-measured at
+  branch HEAD on the unmodified instrument it is **122**, and on the faithful
+  instrument **82** — the quantifier's flowed type closes 40 of the walk's 122
+  declines. 82 is CQ-63's acceptance baseline.
+
+  Neither derivation subsumes the other, which is why the walk stays as a
+  documented subordinate: it answers for 108 legs the quantifier cannot, and
+  those are not exotic — plain `RecordQueryScanPlan` and
+  `RecordQueryPredicatesFilterPlan` legs whose LOGICAL reference members carry
+  an untyped result value while the physical scan is typed. That is CQ-63 seen
+  from the other side.
+
+  Deriving the layout from a SEEDED result value was implemented and removed.
+  Its decline is pinned
+  (`TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg`) — and the pin
+  records something sharper than a decline, see the hazard below.
 
   So the ORDER changes: **CQ-63 now gates the rest of CQ-53**, not the reverse.
   Until a FlatMap leg can state its row type, 92 of 126 leg-correlated reads
@@ -10812,16 +10865,45 @@ None is speculative: each was re-verified against the tree before booking.
   Not gated on CQ-53: it touches no leg identity and no dotted channel.
 
   ESCALATED — CQ-53 IS GATED ON THIS ITEM, and the gate is measured. The
-  qualified `LEG.COL` channel cannot retire while a leg's physical plan states
-  no row layout, because a leg-correlated read then has no ordinal it can
-  honestly carry on its own alias. Measured over the real-FDB corpus: 92 of 126
-  such reads fall through to the name, and all of them trace to 32 legs whose
-  plan is a `RecordQueryFlatMapPlan` flowing an untyped result value. This item
-  is therefore no longer a residual cleanup — it is the thing that unblocks the
-  largest remaining RFC-197 channel, and it should run BEFORE the rest of
-  CQ-53. The `leg-local bakeability` census (with its `NO-LAYOUT` witnesses) is
-  the acceptance instrument: when this item lands, `underivableLegs` should go
-  to 0 and `bakeable` should approach `total`.
+  qualified `LEG.COL` channel cannot retire while a leg's quantifier states no
+  row layout, because a leg-correlated read then has no ordinal it can honestly
+  carry on its own alias. Measured over the real-FDB corpus **on the faithful
+  instrument** (`Quantifier.GetFlowedObjectType`, Java's
+  `Quantifier.java:806-810`): 92 of 126 such reads fall through to the name, and
+  they trace to **82** underivable-leg derivations over 3 distinct witnesses,
+  every one a `RecordQueryFlatMapPlan` flowing a bare untyped quantifier object.
+
+  (An earlier revision of this line said 32. That number was wrong. On the
+  unmodified branch-HEAD instrument the same corpus measures 122; routing
+  through the quantifier's flowed type closes 40 of those. **82 is the
+  baseline.**)
+
+  This item is therefore no longer a residual cleanup — it is the thing that
+  unblocks the largest remaining RFC-197 channel, and it should run BEFORE the
+  rest of CQ-53. The `leg-local bakeability` census (with its `NO-LAYOUT`
+  witnesses) is the acceptance instrument: when this item lands,
+  `underivableLegs` should go to 0 and `layoutAvailable` should approach
+  `minted`. Note `layoutAvailable`, NOT `baked` — `baked` counts reads the arm
+  actually converted, and the leg-local bake arm is deleted (it minted an
+  ordinal from a display name). Restoring it, keyed on IDENTITY rather than
+  name, is part of this item's landing.
+
+  A HAZARD MEASURED WHILE ESTABLISHING THE BASELINE, and the reason the
+  seeded-result-value escape was removed. `values.isMixedSeedElement` admits any
+  bare `QuantifiedObjectValue` whose type is not a `RecordType` — the arm for
+  Java's `isPrimitive()` whole-object scalar element. An UNTYPED quantifier
+  object is not a `RecordType` either, so **an untyped leg is indistinguishable
+  from a genuinely scalar element**: a 2-slot record constructor of bare untyped
+  QOVs is ACCEPTED by `values.OrdinalSeedLegWindows` and yields two ONE-column
+  windows. A leg flowing a whole multi-column row would silently get a 1-column
+  layout. Not live today (the escape is not wired, and `legRowTypesFromQuantifiers`
+  never consults the seed authority), and measured/pinned by
+  `TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg`. Tightening
+  `isMixedSeedElement` is NOT free — it changes seed acceptance planner-wide and
+  the executor twin (`unnestMixedSeedSpans`/`ordinalJoinSpans`) has to move with
+  it or the cross-agreement invariant breaks — so it wants its own measurement
+  pass. It is listed here because it is the same defect as this item (an untyped
+  quantifier read as something it is not) and should be fixed with it.
 
 - [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
   name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
