@@ -68,6 +68,7 @@ go_test(
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
         "leg_identity_binding_test.go",
+        "leg_layout_cross_agreement_test.go",
         "limit_envelope_test.go",
         "limit_extension_test.go",
         "memory_budget_test.go",
@@ -186,6 +187,7 @@ go_test(
         "aggregate_output_slot_identity_test.go",
         "leg_identity_binding_test.go",
         "merged_outer_leg_binding_test.go",
+        "leg_layout_cross_agreement_test.go",
     ],
     deps = [
         "//gen",
@@ -193,6 +195,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",

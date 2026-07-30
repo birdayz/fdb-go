@@ -267,6 +267,7 @@ go_test(
         "join_same_leaf_ordering_identity_test.go",
         "lazy_leg_mint_liveness_test.go",
         "left_outer_existential_test.go",
+        "leg_layout_derivation_test.go",
         "leg_row_types_test.go",
         "limit_retained_over_multirow_filter_test.go",
         "main_test.go",
@@ -980,6 +981,7 @@ go_test(
         "lazy_leg_mint_liveness_test.go",
         "positional_merge_disagreement_test.go",
         "leg_local_bake_census.go",
+        "leg_layout_derivation_test.go",
     ],
     deps = [
         "//gen",

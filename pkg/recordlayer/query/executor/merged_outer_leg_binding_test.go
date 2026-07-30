@@ -154,6 +154,150 @@ func TestBindMergedOuterLegs_JoinAliasKeepsTheWholeMergedRow(t *testing.T) {
 	}
 }
 
+// TestBindMergedOuterLegs_FirstClaimWinsOnADuplicateAlias pins the precedence
+// among legs, which the single-alias fixtures above cannot reach.
+//
+// concatLegPositionals emits the two TOP-LEVEL leg windows first and appends every
+// buried sub-window after them, and a buried source can carry the SAME alias as a
+// top-level leg — a self-join whose right side is itself a join over the same
+// source, or a re-used correlation on a shape the planner did not rename. Every
+// other reader of that table resolves an alias to its FIRST entry
+// (addBuriedLegLayouts skips an already-claimed alias; the leg-window binders take
+// the first match), so this binder must too.
+//
+// Last-wins is not a cosmetic difference. The buried window is a SUBSET of the
+// top-level one, so the two readers would hand the same alias rows of different
+// widths at different offsets — the reference resolves to whichever slots the
+// reader that answered happened to hold, and that is the wrong-row failure the
+// whole per-leg binding exists to remove.
+func TestBindMergedOuterLegs_FirstClaimWinsOnADuplicateAlias(t *testing.T) {
+	t.Parallel()
+
+	aAlias := values.NamedCorrelationIdentifier("A")
+	bAlias := values.NamedCorrelationIdentifier("B")
+	joinAlias := values.UniqueCorrelationIdentifier()
+
+	// A is TOP-LEVEL over [0,3) — the wide window. It reappears as a BURIED
+	// sub-window over [2,1) — one column, a different offset — exactly the table
+	// concatLegPositionals produces when a leg that is itself a join re-uses an
+	// alias.
+	row := &PositionalRow{
+		Type: &values.RecordType{
+			Fields: []values.Field{
+				{Name: "A0", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "A1", FieldType: values.NotNullLong, Ordinal: 1},
+				{Name: "A2", FieldType: values.NotNullLong, Ordinal: 2},
+				{Name: "BK", FieldType: values.NotNullLong, Ordinal: 3},
+			},
+			Legs: []values.RecordTypeLeg{
+				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 0, 3),
+				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 3, 1),
+				// The buried re-use, appended after the top-level pair.
+				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 2, 1),
+			},
+		},
+		Slots: []any{int64(70), int64(71), int64(72), int64(83)},
+	}
+
+	ctx := bindMergedOuterLegs(EmptyEvaluationContext(), row, joinAlias)
+	bound, ok := ctx.GetCorrelationBinding(aAlias)
+	if !ok {
+		t.Fatal("alias A is not bound at all")
+	}
+	ordRow := bound.(values.OrdinalRow)
+
+	// Slot 0 of A must be the merged row's slot 0 (the WIDE window), not slot 2
+	// (the narrow buried one). Every slot value differs, so an offset error is a
+	// different answer rather than a coincidence.
+	got, present := ordRow.Get(0)
+	if !present || got != int64(70) {
+		t.Fatalf("A's slot 0 read %v (present=%v), want 70 — the merged row's slot 0. "+
+			"Reading 72 means the BURIED [2,1) window claimed the alias, so the binder "+
+			"is last-wins while addBuriedLegLayouts and every other leg-table reader "+
+			"are first-match. One alias resolving to two different windows depending "+
+			"on which reader answered is silent wrong rows.", got, present)
+	}
+	// And the window must be the wide one end to end: the narrow re-use is 1
+	// column, so serving slot 2 proves the top-level window survived whole.
+	if got, present := ordRow.Get(2); !present || got != int64(72) {
+		t.Fatalf("A's slot 2 read %v (present=%v), want 72. The top-level window is 3 "+
+			"columns wide; a 1-column answer is the buried window wearing A's alias.",
+			got, present)
+	}
+	if v, present := ordRow.Get(3); present {
+		t.Fatalf("A's window served ordinal 3 (=%v) — it must stop at its own 3 columns "+
+			"and not spill into B", v)
+	}
+	// The duplicate must not cost B its binding.
+	if _, ok := ctx.GetCorrelationBinding(bAlias); !ok {
+		t.Fatal("leg B lost its binding because A appeared twice — the duplicate is " +
+			"per-alias, not a reason to abandon the rest of the namespace")
+	}
+}
+
+// TestBindMergedOuterLegs_ShadowsWithoutDestroyingTheEnclosingBinding pins the
+// interaction with a binding that is ALREADY at a leg's alias in the incoming
+// context — an enclosing source whose alias a leg re-uses.
+//
+// Java settles this by construction. RecordQueryFlatMapPlan builds
+// `fromOuterContext = context.withBinding(...)` and then
+// `fromOuterContext.withBinding(...)` for the inner
+// (RecordQueryFlatMapPlan.java:135-140): each step yields a NEW context whose
+// lookup finds the nearest binding and walks to the parent only on a miss
+// (Bindings.java:116-134). So the inner binding SHADOWS the outer for everything
+// evaluated in the child context, and the parent context object is untouched —
+// anything still evaluating against it keeps seeing the enclosing binding.
+//
+// Both halves matter and they pull in opposite directions. Not shadowing means a
+// leg-correlated read below the FlatMap resolves against the ENCLOSING row, which
+// is a different source's data. Destroying the enclosing binding means a sibling
+// that legitimately reads it gets nothing.
+func TestBindMergedOuterLegs_ShadowsWithoutDestroyingTheEnclosingBinding(t *testing.T) {
+	t.Parallel()
+
+	aAlias := values.NamedCorrelationIdentifier("A")
+	bAlias := values.NamedCorrelationIdentifier("B")
+	joinAlias := values.UniqueCorrelationIdentifier()
+	row := mergedOuterRowFixture(aAlias, bAlias)
+
+	// An enclosing binding already sits at leg A's alias, carrying values nothing
+	// in the merged row uses, so a read that reaches it is unmistakable.
+	enclosing := &PositionalRow{
+		Type: &values.RecordType{
+			Fields: []values.Field{{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0}},
+		},
+		Slots: []any{int64(999)},
+	}
+	base := EmptyEvaluationContext().WithBinding(aAlias, enclosing)
+	ctx := bindMergedOuterLegs(base, row, joinAlias)
+
+	bound, ok := ctx.GetCorrelationBinding(aAlias)
+	if !ok {
+		t.Fatal("leg A is not bound in the child context")
+	}
+	got, present := bound.(values.OrdinalRow).Get(0)
+	if !present || got != int64(10) {
+		t.Fatalf("leg A's slot 0 read %v (present=%v), want 10 — the merged row's leg "+
+			"window. Reading 999 means the ENCLOSING binding survived in the child "+
+			"context and the leg did not shadow it, so a read correlated to A below "+
+			"the FlatMap answers with an outer source's row.", got, present)
+	}
+
+	// The enclosing context is a different object and still answers with the
+	// enclosing binding — Java's parent context is never mutated, and a sibling
+	// evaluated against it must keep seeing what it always saw.
+	outerBound, ok := base.GetCorrelationBinding(aAlias)
+	if !ok {
+		t.Fatal("the enclosing context lost its binding at A entirely")
+	}
+	if outerBound != any(enclosing) {
+		t.Fatalf("the enclosing context's binding at A changed to %T. Binding the legs "+
+			"must produce a CHILD context and leave the parent alone; a sibling still "+
+			"evaluating against the parent reads whatever was written over it.",
+			outerBound)
+	}
+}
+
 func TestBindMergedOuterLegs_DeclinesARowWithNoLegs(t *testing.T) {
 	t.Parallel()
 

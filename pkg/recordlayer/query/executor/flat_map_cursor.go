@@ -441,6 +441,17 @@ func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier)
 // ALIAS at arbitrary depth, and QuantifiedObjectValue.eval is a plain map lookup
 // (QuantifiedObjectValue.java:84-85).
 //
+// THAT BINDING IS THE CHAINED outer→inner PAIR, NOT N SIBLINGS. Java never has a
+// merged row with sibling legs to serve: where its planner collapses several
+// sources into one quantifier it RE-ANCHORS every reference to a sibling by
+// ORDINAL against the new quantifier (PartitionSelectRule.java:296-303 —
+// `translationMapBuilder.when(lowerAlias).then(... FieldValue.ofOrdinalNumber(
+// QuantifiedObjectValue.of(newUpperQuantifier), index))`), so the sibling alias
+// stops existing rather than staying bound. Keeping the sibling leg aliases LIVE
+// at runtime is therefore a Go-only widening of the binding namespace, booked in
+// DIVERGENCES.md, and it is interim: it retires when the ordinal re-anchor covers
+// every shape that reaches this cursor.
+//
 // Go collapses a multi-source outer into ONE nested-loop join whose row is a
 // merged concat, so binding only the join's own alias drops the source aliases the
 // inner still references. That gap is what the qualified-NAME channel existed to
@@ -458,15 +469,37 @@ func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier)
 // WHOLE merged row (an unqualified read of the join's object is still the concat),
 // and a leg whose identity IS the join's alias is skipped rather than allowed to
 // narrow that binding to one window.
+//
+// FIRST CLAIM WINS among the legs, matching the leg table's own precedence.
+// concatLegPositionals emits the two TOP-LEVEL leg windows first and appends the
+// buried sub-windows after them, and every other reader of that table
+// (addBuriedLegLayouts, spansFromMergedLegs' consumers) resolves an alias to its
+// first entry. A buried leg sharing an alias with a top-level one must therefore
+// bind the WIDER top-level window here too: last-wins would hand this one reader a
+// narrower row than every other reader gives the same alias, and a read that
+// resolves to different slots depending on which reader answered is the silent
+// wrong-row failure per-leg binding exists to remove.
+//
+// A binding already present in the INCOMING context is not consulted: a leg
+// SHADOWS it for the duration of the inner, which is what Java's chained context
+// does (the child binding wins the lookup, Bindings.java:116-134). The enclosing
+// context object itself is never touched — WithBinding copies — so a sibling
+// evaluated against the caller's own context still sees the enclosing binding.
 func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.CorrelationIdentifier) *EvaluationContext {
 	row, isPos := binding.(*PositionalRow)
 	if !isPos || row == nil || row.Type == nil || len(row.Type.Legs) == 0 {
 		return ec
 	}
-	for _, s := range spansFromMergedLegs(row) {
+	spans := spansFromMergedLegs(row)
+	claimed := make(map[values.CorrelationIdentifier]struct{}, len(spans))
+	for _, s := range spans {
 		if s.Alias.IsZero() || s.Alias == outerAlias {
 			continue
 		}
+		if _, taken := claimed[s.Alias]; taken {
+			continue
+		}
+		claimed[s.Alias] = struct{}{}
 		ec = ec.WithBinding(s.Alias, &legWindowRow{
 			parent:  row,
 			legType: s.LegType,

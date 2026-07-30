@@ -2323,56 +2323,109 @@ func legSlotIdentity(fv *values.FieldValue) (values.ColumnIdentity, bool) {
 	return fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Typ))
 }
 
-// physicalLegRowTypes derives each join leg's flowed ROW type from the PHYSICAL
-// plan chosen for it — the layout the leg's rows actually arrive in.
+// legRowTypeSource is one join leg as this derivation sees it: the QUANTIFIER
+// (the layout authority), plus the chosen physical plan the subordinate walk
+// falls back on, plus the correlation the layout is filed under.
+type legRowTypeSource struct {
+	Quantifier expressions.Quantifier
+	Plan       plans.RecordQueryPlan
+	Alias      values.CorrelationIdentifier
+}
+
+// legRowTypesFromQuantifiers states each join leg's flowed ROW type — the layout a leg-relative
+// ordinal indexes.
 //
-// This is the derivation Java's planner performs implicitly and Go had nowhere to
-// read: `translateCorrelations` rebinds every FieldValue ordinal against the
-// physical quantifier's own flowed type (Quantifier.java:801-803 —
-// `getFlowedObjectValue()` is `QuantifiedObjectValue.of(alias,
-// getFlowedObjectType())`, always typed), so a baked ordinal IS the physical slot.
-// Go's leg-correlated references arrive carrying an UNTYPED quantifier object, so
-// a leg-local ordinal had nothing to resolve against and the leg had to be packed
-// into a column NAME instead. Reading the type off the leg's chosen plan is what
-// gives the reference its layout back.
+// THE AUTHORITY IS THE QUANTIFIER, which is Java's. `translateCorrelations`
+// rebinds a correlated reference against the quantifier's own flowed object value
+// (Quantifier.java:801-803: `getFlowedObjectValue()` is
+// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`), and
+// `getFlowedObjectType()` (Quantifier.java:806-810) is the ranged-over Reference's
+// result type. Go's port of exactly that is
+// `expressions.Quantifier.GetFlowedObjectType`, which additionally VERIFIES that
+// every member of the reference agrees on the row type instead of taking members[0]
+// — Java gets the verification for free from Reference.java:504-513.
 //
-// It reuses `planBuriedLegConcat` — the same walk `reconstructFoldStep1Seed` uses
-// to build the ordinal seed — so a leg's row type here and the seed's leg type are
-// derived by ONE authority and cannot drift into two answers. A leg whose plan the
-// walk cannot reduce to a concat contributes nothing rather than a guess.
-func physicalLegRowTypes(legs ...struct {
-	Plan  plans.RecordQueryPlan
-	Alias values.CorrelationIdentifier
-},
-) map[values.CorrelationIdentifier]*values.RecordType {
+// The physical-plan walk (`planBuriedLegConcat`) is SUBORDINATE and it is a
+// DIVERGENCE: it reconstructs a concat from the chosen plan's scan leaves, which
+// is a different question from what the quantifier flows. It is consulted only
+// where the quantifier declines, because a leg whose reference members are all
+// untyped can still have a physical plan whose scan leaves are typed. Every such
+// leg is counted (WALK-ONLY) so the second authority's continued existence stays a
+// measurement rather than a habit; if that count reaches zero the walk goes.
+//
+// MEASURED over the real-FDB corpus, 846 leg derivations:
+//
+//	flowed 656, walkOnly 108, underivable 82, memberDisagreement 0
+//
+// So neither derivation subsumes the other. The quantifier answers 656 and closes
+// 40 of the 122 the walk alone could not state; the walk answers 108 the
+// quantifier cannot, and those are not exotic — the witnesses are plain
+// RecordQueryScanPlan and RecordQueryPredicatesFilterPlan legs whose LOGICAL
+// members carry an untyped result value while the physical scan is typed. That
+// gap is CQ-63 seen from the other side, and it is why the walk stays.
+//
+// A leg neither can state contributes nothing rather than a guess, and is counted:
+// those 82 are CQ-63's acceptance number, over 3 distinct witnesses, every one a
+// *plans.RecordQueryFlatMapPlan flowing a bare untyped quantifier object.
+func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.CorrelationIdentifier]*values.RecordType {
 	out := make(map[values.CorrelationIdentifier]*values.RecordType, len(legs))
 	for _, leg := range legs {
-		if leg.Plan == nil || leg.Alias.IsZero() {
+		if leg.Alias.IsZero() {
+			continue
+		}
+		flowed, err := leg.Quantifier.GetFlowedObjectType()
+		if err != nil {
+			// Two members of one equivalence class flowing different row shapes.
+			// Java Verify-fails; Go declines the leg, because picking either shape
+			// picks a row layout by memo insertion order.
+			if values.LegIdentityCensusEnabled() {
+				recordLegTypeDisagreement(leg.Alias, err)
+			}
+			continue
+		}
+		if flowed != nil && len(flowed.Fields) > 0 {
+			if values.LegIdentityCensusEnabled() {
+				recordFlowedLegLayout(leg.Alias, flowed)
+			}
+			out[leg.Alias] = flowed
+			// A flowed row type that carries its own leg table gives its buried
+			// sources their windows too; one that does not simply has none to give.
+			addBuriedLegLayouts(out, flowed.Fields, flowed.Legs)
+			continue
+		}
+		if leg.Plan == nil {
+			if values.LegIdentityCensusEnabled() {
+				recordUnderivableLegLayout(leg.Alias, leg.Quantifier, "no physical plan in hand")
+			}
 			continue
 		}
 		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.Plan, leg.Alias, 0)
 		if !ok || len(concatFields) == 0 {
 			// The scan-leaf walk reduces scans, filters and INNER nested-loop
 			// joins. It has no arm for a leg that is itself a FlatMap — the
-			// accumulated side of an N-way join — and that is the ENTIRE measured
-			// residue of this derivation (32 underivable legs over the real-FDB
-			// corpus, every one of them a *plans.RecordQueryFlatMapPlan).
-			//
-			// A FlatMap's row is whatever its result value computes, so there is
-			// nothing to walk to; the layout is the result value's to state. These
-			// legs' result values state nothing, because they flow an UNTYPED
-			// quantifier object — which is the defect booked as CQ-63, and the
-			// reason the qualified-name channel cannot close here. Reading the
-			// layout off a seeded result value was tried and declines on every one
-			// of them, so no arm is added on speculation.
+			// accumulated side of an N-way join. A FlatMap's row is whatever its
+			// result value computes, so there is nothing to walk to; the layout is
+			// the result value's to state, and these result values state nothing
+			// because they flow an UNTYPED quantifier object. That is the defect
+			// booked as CQ-63, and the reason the qualified-name channel cannot
+			// close here. Reading the layout off a SEEDED result value was tried
+			// and declined on every one of them (pinned by
+			// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg), so no arm is
+			// added on speculation.
 			if values.LegIdentityCensusEnabled() {
 				// The residue's CAUSE, recorded where it is decided. A leg whose
 				// layout cannot be stated is why a read correlated to it still has
-				// to be re-anchored, and knowing WHICH plan shape declines is the
-				// difference between an actionable gap and a mystery.
-				recordUnderivableLegLayout(leg.Alias, leg.Plan)
+				// to be re-anchored, and knowing WHICH shape declines is the
+				// difference between an actionable gap and a mystery. The witness
+				// carries the ESCAPE that was tried and removed — reading the
+				// layout off the leg's result value as an ordinal seed — so its
+				// decline stays a measured fact rather than a remembered one.
+				recordUnderivableLegLayout(leg.Alias, leg.Plan, describeSeedEscape(leg.Plan))
 			}
 			continue
+		}
+		if values.LegIdentityCensusEnabled() {
+			recordWalkOnlyLegLayout(leg.Alias, leg.Plan)
 		}
 		var nested []values.RecordTypeLeg
 		if len(buriedLegs) > 1 {
@@ -2385,6 +2438,52 @@ func physicalLegRowTypes(legs ...struct {
 		return nil
 	}
 	return out
+}
+
+// PlanLegConcatLayout is the PLANNER's answer to "what row does this leg's chosen
+// plan deliver" — the concat of its scan leaves plus each leaf's window.
+//
+// Exported for one reason: its RUNTIME twin is executor.concatLegPositionals, and
+// the two must agree or a planner-stated ordinal indexes a slot the cursor filled
+// with another leg's column. Nothing in the planner needs it exported; a
+// cross-package pin does, and an agreement invariant with no test is a hope. nil
+// where the walk cannot reduce the plan (see legRowTypesFromQuantifiers).
+func PlanLegConcatLayout(p plans.RecordQueryPlan, alias values.CorrelationIdentifier) *values.RecordType {
+	fields, legs, ok := planBuriedLegConcat(p, alias, 0)
+	if !ok || len(fields) == 0 {
+		return nil
+	}
+	return &values.RecordType{Fields: fields, Legs: legs}
+}
+
+// describeSeedEscape states, for one leg the layout derivation declined, what the
+// SEEDED-RESULT-VALUE escape would have made of it.
+//
+// That escape — read the leg's own result value as an ordinal seed
+// (values.OrdinalSeedLegWindows) and take the merged row type it emits — is the
+// obvious next arm to add, and it was implemented, measured and removed because it
+// declines on every leg in this residue. A removed arm leaves no trace, so the
+// measurement that justified removing it is recorded here instead of remembered:
+// the witness names the leg's result-value shape and the escape's verdict, and the
+// day a leg arrives whose seed IS acceptable, the witness says so.
+//
+// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg pins the same fact at unit
+// scale, on the shape this reports.
+func describeSeedEscape(plan plans.RecordQueryPlan) string {
+	fm, isFM := plan.(*plans.RecordQueryFlatMapPlan)
+	if !isFM {
+		return "seed escape N/A (not a FlatMap)"
+	}
+	rv := fm.GetResultValue()
+	rc, isRC := rv.(*values.RecordConstructorValue)
+	if !isRC {
+		return fmt.Sprintf("seed escape DECLINES: result value is %T, not a record constructor", rv)
+	}
+	windows, merged := values.OrdinalSeedLegWindows(rc)
+	if windows == nil || merged == nil {
+		return fmt.Sprintf("seed escape DECLINES: %d-field record constructor is not an ordinal seed", len(rc.Fields))
+	}
+	return fmt.Sprintf("seed escape ACCEPTS: %d windows, %d merged fields", len(windows), len(merged.Fields))
 }
 
 // addBuriedLegLayouts gives each BURIED source of a leg its own layout, sliced
@@ -2540,42 +2639,43 @@ func rebaseOuterLegValue(
 						panic(fmt.Sprintf("rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — an ordinal join was routed into the lazy rebase machinery instead of the ordinal one (planner bug)",
 							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
 					}
-					// LEG-LOCAL FIRST — Java's shape, where nothing is re-anchored.
+					// NO LEG-LOCAL BAKE HERE. There was one, and it minted the
+					// leg-local ordinal by resolving the reference's DISPLAY NAME
+					// against the leg's row type
+					// (`legType.FieldIndex(ToUpper(fv.Field))`). That is RFC-197's
+					// forbidden move verbatim — a name deciding a column's identity —
+					// and it was invisible to the `.Field` decision gate because a type
+					// lookup by name is neither a comparison nor a map key, which is the
+					// second blind spot `field_name_decision_test.go` documents about
+					// itself. Two columns sharing a leaf name are one column to it, and
+					// the leg it indexed was chosen by the same name that reached the
+					// mint below.
 					//
-					// Java's FlatMap binds one correlation per quantifier
-					// (RecordQueryFlatMapPlan.java:135-140), so a leg-correlated read
-					// stays on its own alias and resolves as an ordinal against that
-					// leg's own row (QuantifiedObjectValue.java:84-85 is a map lookup).
-					// Go's two-level lowering bound only the join's alias, so the leg
-					// had to be packed into a column NAME instead. With each leg of the
-					// merged row bound under its own correlation
-					// (executor.bindMergedOuterLegs), the read can keep its alias — all
-					// it needs is the LAYOUT to state an ordinal in, and the leg's
-					// chosen physical plan is where that layout lives.
+					// The layout the bake wanted is real and Java does use it — but Java
+					// keys the rebase by the quantifier's ORDINAL position, never by a
+					// name: PartitionSelectRule.java:296-303 builds
+					// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)` per lower alias,
+					// and translateCorrelations replays exactly that. The ordinal
+					// authority in this function is the IDENTITY-keyed lookup below
+					// (legSlotIdentity → legLayout), which derives the slot from the
+					// quantifier the value reads rather than from what the column is
+					// called. It stays the only one.
 					//
-					// The reference's own quantifier object cannot supply it: measured
-					// over the real-FDB corpus, every read reaching this arm carries an
-					// UNTYPED leg QOV (leg-local bakeability census: 56 of 56). So the
-					// type comes from the leg's plan, threaded in by the caller, and the
-					// bake re-states the reference over a TYPED leg quantifier.
+					// So every read falls through to the qualified mint until CQ-63
+					// supplies typed leg QOVs, at which point the reference itself can
+					// state an identity in its own leg's domain and the bake returns
+					// keyed on identity. legLocalTypes survives that deletion because the
+					// census still needs it: it is the LAYOUT half of the question, and
+					// measuring it is how CQ-63's acceptance number stays honest.
 					legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
-					if haveLegType && legTypeFor != nil {
-						if ord, found := legTypeFor.FieldIndex(strings.ToUpper(fv.Field)); found {
-							if values.LegIdentityCensusEnabled() {
-								recordLegLocalBakeability(qov.Correlation, legTypeFor, strings.ToUpper(fv.Field))
-							}
-							return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-								values.NewQuantifiedObjectValueOfType(qov.Correlation, legTypeFor),
-								fv.Field, ord, fv.Typ,
-								values.OrdinalDomainOfType(legTypeFor),
-							)
-						}
-					}
 					if values.LegIdentityCensusEnabled() {
-						// Fell through to the qualified-name mint: record WHY, against
-						// the layout the bake would have used, so the residue names the
-						// shapes that still need the name channel.
-						recordLegLocalBakeability(qov.Correlation, legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ), strings.ToUpper(fv.Field), legLocalTypeKeys(legLocalTypes)...)
+						// The mint is the outcome, stated rather than inferred. A census
+						// that re-derived "bakeable" from the type would report this arm
+						// deletable the moment CQ-63 types the legs, while the mint was
+						// still the only thing it emits.
+						recordLegLocalBakeability(legLocalBakeMinted, qov.Correlation,
+							legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
+							strings.ToUpper(fv.Field), legLocalTypeKeys(legLocalTypes)...)
 					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 					// Structural first (WS-N slice 4): when the merged
@@ -2590,7 +2690,10 @@ func rebaseOuterLegValue(
 					// (legSlotIdentity), so the two ends cannot key it
 					// differently, and a reference that cannot state
 					// an identity finds nothing rather than finding
-					// whatever its display name happens to spell.
+					// whatever its display name happens to spell. With the
+					// name-keyed leg-local bake deleted above, this is the
+					// ONLY place in this function that produces an ordinal,
+					// and it produces it from an identity.
 					// WHAT IS DEAD HERE IS THE BAKE, NOT THE ARM.
 					// This legLayout != nil lookup is dead-in-effect on
 					// every covered surface (yamsql, embedded, full FDB
@@ -2614,9 +2717,12 @@ func rebaseOuterLegValue(
 					// backwards for a while precisely because the second
 					// makes the first invisible:
 					//   - The arm is REACHED:
-					//     TestRebaseOuterLegValue_LazyMintIsLive fires this
-					//     rule on the shape OnMatch routes here and asserts
-					//     the lazy mint appears in a yielded plan.
+					//     TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName
+					//     fires this rule on the shape OnMatch routes here and
+					//     asserts the mint appears in a yielded plan EVEN
+					//     THOUGH both legs' layouts are derivable — the
+					//     layout is not what decides here, and pinning it on
+					//     a derivable shape is what keeps that true.
 					//   - Its product WINS NOTHING today:
 					//     TestLazyLegMintReachesNoWinningPlan measures zero
 					//     dotted merged-row keys in the winning plan for
@@ -3487,22 +3593,18 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	if ordinalWindows != nil {
 		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
 	}
-	// The leg-local layouts, read off the legs' CHOSEN PHYSICAL PLANS. They are
-	// what lets a leg-correlated read keep its own alias instead of being
-	// re-anchored onto the merged correlation with the leg packed into a column
-	// name — Java's model, where every quantifier stays bound and a reference is
-	// an alias plus an ordinal. Derivable here and only here: the rebase walk sees
-	// references carrying untyped quantifier objects, while this frame holds the
-	// plans the rows will actually arrive from.
-	existLegRowTypes := physicalLegRowTypes(
-		struct {
-			Plan  plans.RecordQueryPlan
-			Alias values.CorrelationIdentifier
-		}{leftPlan, leftCorr},
-		struct {
-			Plan  plans.RecordQueryPlan
-			Alias values.CorrelationIdentifier
-		}{rightPlan, rightCorr},
+	// The per-leg layouts, stated by the legs' own QUANTIFIERS (Java's
+	// Quantifier.getFlowedObjectType, the thing translateCorrelations rebases
+	// against). Nothing in the rebase below consumes them to build a plan: the
+	// leg-local bake that did was deleted for minting an ordinal out of a display
+	// name, and the ordinal authority is the identity-keyed layout lookup. They are
+	// derived here because this frame is where the answer exists, and they feed the
+	// census that measures how much of the qualified-name channel a leg-local
+	// ordinal could take over once CQ-63 types the leg quantifiers — the gate on
+	// that arm coming back.
+	existLegRowTypes := legRowTypesFromQuantifiers(
+		legRowTypeSource{q0, leftPlan, leftCorr},
+		legRowTypeSource{q1, rightPlan, rightCorr},
 	)
 	if len(existPreds) > 0 {
 		rebased := make([]predicates.QueryPredicate, len(existPreds))
