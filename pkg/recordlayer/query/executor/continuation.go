@@ -196,7 +196,12 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 // the store's metadata descriptors.
 func appendContProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
 	fullName := string(msg.ProtoReflect().Descriptor().FullName())
-	payload, err := proto.Marshal(msg)
+	// Deterministic marshal: the flag byte below exists precisely because msg can be a
+	// *dynamicpb.Message, and a dynamic message's default marshal iterates fields in Go map
+	// order — the same cursor position would then emit DIFFERENT continuation bytes on each
+	// call. A continuation token is wire-visible state that must be reproducible for a given
+	// position (and ascending-field-ordered, as Java writes it), so the encoding is pinned here.
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("continuation: cannot encode proto message value of type %q: %w", fullName, err)
 	}

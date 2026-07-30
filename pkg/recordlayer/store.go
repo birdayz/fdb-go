@@ -1870,7 +1870,13 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if vm, ok := record.(interface{ MarshalVT() ([]byte, error) }); ok {
 		innerBytes, err = vm.MarshalVT()
 	} else {
-		innerBytes, err = proto.Marshal(record)
+		// Deterministic marshal so the persisted record bytes are canonical. Generated protos
+		// take the VT paths above (already ascending-field-ordered); this reflection path is hit
+		// by dynamic messages (dynamicpb — SQL rows), whose default marshal iterates fields in Go
+		// map order and so serializes the same row to DIFFERENT bytes across writes. Java always
+		// writes fields in ascending number order, so Deterministic:true is what matches the wire
+		// and makes a given record's stored bytes reproducible.
+		innerBytes, err = proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	}
 	if err != nil {
 		return nil, err

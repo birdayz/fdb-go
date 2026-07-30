@@ -47,6 +47,7 @@ go_test(
         "charge_coverage_test.go",
         "comparator_differential_fuzz_test.go",
         "continuation_decode_test.go",
+        "continuation_determinism_test.go",
         "covering_logical_row_test.go",
         "dedup_key_lossless_test.go",
         "equijoin_columns_test.go",
@@ -184,6 +185,7 @@ go_test(
         "merge_sort_heap_pop_error_test.go",
         "aggregate_output_slot_identity_test.go",
         "leg_identity_binding_test.go",
+        "continuation_determinism_test.go",
     ],
     deps = [
         "//gen",
