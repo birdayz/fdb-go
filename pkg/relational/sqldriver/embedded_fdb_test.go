@@ -90,7 +90,7 @@ func TestMain(m *testing.M) {
 // env-gated because a proof nothing in CI runs is not a proof — the previous
 // env-gated form reported the real numbers only under a manual
 // LEG_IDENTITY_CENSUS=1 invocation, while the in-CI assertion it delegated to
-// saw five of six sites at zero.
+// saw six of the eight sites at zero.
 //
 // Enabling the counters always is affordable HERE and nowhere else: the gate
 // exists so production never pays an atomic in the per-row executor loop, and a

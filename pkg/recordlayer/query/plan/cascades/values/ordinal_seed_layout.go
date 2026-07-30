@@ -179,37 +179,37 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 				continue
 			}
 			if LegIdentityCensusEnabled() {
-				RecordLegIdentityComparison(LegSiteFinalizeSeedWindows, leg.Name, alias)
+				RecordLegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias, leg.Name == alias)
 				RecordLegIdentityLeg(leg)
 			}
-			// This comparison stays TEXT because it is NOT an identity question, and
-			// that is the whole reason — not a compromise about namespaces.
+			// "Is this buried leg the box run's RIGHTMOST LEAF?" — an IDENTITY question,
+			// answered by the one comparison every identity question routes through.
 			//
-			// It asks "is this buried leg the box run's RIGHTMOST LEAF?", and the way it
-			// knows is the sourceBinding convention: a box run's NAME is its rightmost
-			// leaf's name. So the name coincidence IS the predicate. The box run's
-			// IDENTITY is something else entirely — the box quantifier's own correlation
-			// — and the rightmost leaf's identity is the leaf's. Those two identifiers
-			// are legitimately DIFFERENT for the very leg this branch exists to serve.
+			// The predicate is the sourceBinding convention: a box run is named, and
+			// identified, by its rightmost leaf. Both sides of it are quantifier
+			// correlations — the box QOV's on one side (w.Alias, carried verbatim from
+			// the seed) and the buried leaf's on the other — and the convention is
+			// precisely that for the rightmost leaf those two are the SAME identifier.
+			// The box's correlation is minted as sourceAlias(box), sourceAlias of a join
+			// recurses to its right operand, and both spellings arrive upper-folded from
+			// that one chokepoint.
 			//
-			// Converting it to SameLeg(leg.Alias, w.Alias) therefore asks a different
-			// question and answers NO for the leaf that IS the box's, which sends it down
-			// the already-taken branch and drops the rightmost-leaf sub-window. Measured,
-			// not argued: that conversion fails TestThreeWayBoxCrossAgreement with
-			// "3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)",
-			// i.e. the planner's leg walk and this builder disagree on a box column's
-			// absolute slot, which is the wrong-rows failure leg windows exist to
-			// prevent.
+			// Three earlier justifications for keeping a TEXT comparison here are
+			// withdrawn, and the last of them was wrong in an instructive way. It claimed
+			// the two identifiers are "legitimately different — box quantifier vs leaf",
+			// and cited a red in the planner/seed cross-agreement fixture as proof the
+			// site could not convert. Measured: over the real-FDB corpus this comparison
+			// decides IDENTICALLY in both namespaces on all 1311 pairs, and the fixture's
+			// red came from the fixture, which hand-minted the box correlation as
+			// LOWERCASE "c" where production mints sourceAlias(box) = "C". The convention
+			// makes the two identifiers EQUAL; it does not make them different.
 			//
-			// Two earlier justifications for keeping the text form are withdrawn. It is
-			// not that the producers disagree on case — the census reports fold-only ZERO
-			// over 1263 comparisons here and Name == Alias.Name() on every leg this
-			// authority emits, so that hazard is unobservable. Nor is it merely that the
-			// map key discarded the identifier. It is that the identifiers on the two
-			// sides are supposed to differ, so an identity comparison is the wrong
-			// instrument no matter how clean the namespaces get. The seed rebake (CQ-53)
-			// is what replaces the convention itself.
-			if leg.Name != alias {
+			// The map KEY stays text (leg.Name), and has to: downstream readers arrive
+			// holding an upper-folded string and look these windows up by it. So the two
+			// namespaces are held apart here rather than conflated — an identity for the
+			// identity question, a fold for the key. The seed rebake (CQ-53) retires the
+			// key half.
+			if !SameLeg(leg.Alias, w.Alias) {
 				if _, taken := windows[leg.Name]; taken {
 					continue
 				}
@@ -226,8 +226,8 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 				f := w.Typ.Fields[leg.Start+k]
 				sub[k] = Field{Name: f.Name, FieldType: f.FieldType, Ordinal: k}
 			}
-			// leg.Name == alias REPLACES the box-run window with the rightmost
-			// LEAF's sub-window: the box's name MEANS its rightmost leaf
+			// The rightmost-leaf case (SameLeg above) REPLACES the box-run window with
+			// the LEAF's sub-window: the box IS its rightmost leaf
 			// (sourceBinding), so an alias-qualified read must window the leaf — the
 			// run-wide window would FieldIndex across the concat and first-match an
 			// earlier buried leg's duplicate name. Also what keeps the merged type's

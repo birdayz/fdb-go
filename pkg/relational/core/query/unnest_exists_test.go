@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -480,10 +481,23 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 		t.Fatalf("box ordinalLegType has no per-leg boundaries: %+v", boxType)
 	}
 	// The box mixed seed: the baked box concat over one box QOV + a bare-QOV element
-	// (o.TAGS AS X). The box QOV is keyed by its rightmost leaf (sourceBinding "c").
+	// (o.TAGS AS X).
+	//
+	// The box QOV's correlation is derived the way PRODUCTION derives it —
+	// NamedCorrelationIdentifier(sourceAlias(j.Left)), the one expression both
+	// translateUnnestJoin and the chained path use — rather than hand-spelled. It
+	// used to be hand-minted as lowercase "c", which sourceAlias cannot produce
+	// (it upper-folds at every arm), and the fixture's own comment claimed that was
+	// the sourceBinding while sourceBinding of this leaf is "C". That single
+	// invented spelling was cited as proof that this builder's rightmost-leaf test
+	// could not be an identity comparison: the box identity and the leaf identity
+	// looked like different things, when the sourceBinding convention is exactly
+	// that they are the same thing. Deriving it removes the invention and keeps the
+	// fixture honest as the producers change.
 	innerCorr := values.UniqueCorrelationIdentifier()
 	u := &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}
-	seedVal := tr.unnestOrdinalSeed(box, values.NamedCorrelationIdentifier("c"), innerCorr, u, values.NotNullString)
+	boxCorr := values.NamedCorrelationIdentifier(sourceAlias(box))
+	seedVal := tr.unnestOrdinalSeed(box, boxCorr, innerCorr, u, values.NotNullString)
 	seed, ok := seedVal.(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("box mixed seed = %T, want an RC (translateErr=%v)", seedVal, tr.translateErr)
@@ -650,4 +664,83 @@ func containsWitness(set []string, w string) bool {
 		}
 	}
 	return false
+}
+
+// TestBoxCorrelationIsItsRightmostLeafIdentity pins the PREMISE the seed-window
+// builder's rightmost-leaf test rests on: a clustered box leg's own correlation
+// and its rightmost buried leaf's leg identity are the SAME identifier.
+//
+// values.finalizeSeedWindows asks "is this buried leg the box run's rightmost
+// leaf?" and answers it with values.SameLeg on those two identifiers. That is
+// exact, so the answer is right only while the two producers agree — and the two
+// producers are independent: the box correlation is minted
+// NamedCorrelationIdentifier(sourceAlias(box)) at the unnest translation sites,
+// the leaf identity is minted from legBinding at buriedLegBounds. Nothing in
+// either function mentions the other.
+//
+// This is the test that would have prevented the wrong conclusion. The agreement
+// was doubted on the strength of a fixture that hand-spelled the box correlation
+// lowercase, and the resulting cross-agreement red was written up as proof that
+// the two identities are "legitimately different" and the comparison could
+// therefore never be an identity comparison. They are not different: sourceAlias
+// upper-folds at every arm and recurses to a join's RIGHT operand, so the box's
+// correlation is the rightmost leaf's alias, upper. Nothing pinned that, so
+// nothing contradicted the write-up.
+//
+// What re-arms if this reds: a producer minting a box correlation that is not its
+// rightmost leaf's identity turns finalizeSeedWindows' exact comparison into a
+// DECLINE for the leaf that IS the box's, which drops the rightmost-leaf
+// sub-window and resolves an alias-qualified box column against the whole concat
+// — a dup-named column then reads an earlier buried leg's slot.
+func TestBoxCorrelationIsItsRightmostLeafIdentity(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	// A two-leaf FULL box and a three-leaf nesting, so the RIGHTMOST-leaf rule is
+	// exercised rather than a one-leg coincidence.
+	for _, tc := range []struct {
+		name string
+		box  *logical.LogicalJoin
+	}{
+		{"two leaves", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
+		{"nested right", logical.NewJoin(
+			scan("Order", "o"),
+			logical.NewJoin(scan("Customer", "c"), scan("TypedRecord", "g"), logical.JoinFull, ""),
+			logical.JoinFull, "")},
+	} {
+		// The PRODUCTION derivation, verbatim from translateUnnestJoin and the
+		// chained path: both compute NamedCorrelationIdentifier(sourceAlias(j.Left)).
+		boxCorr := values.NamedCorrelationIdentifier(sourceAlias(tc.box))
+		boxType := tr.ordinalLegType(tc.box)
+		if boxType == nil || len(boxType.Legs) < 2 {
+			t.Fatalf("%s: box ordinalLegType has no per-leg boundaries: %+v", tc.name, boxType)
+		}
+		// The rightmost leaf is the LAST leg window, and it is the one whose identity
+		// must equal the box's.
+		rightmost := boxType.Legs[len(boxType.Legs)-1]
+		if !values.SameLeg(rightmost.Alias, boxCorr) {
+			t.Errorf("%s: rightmost leaf identity %q != box correlation %q.\n"+
+				"  finalizeSeedWindows decides the rightmost-leaf case with values.SameLeg on\n"+
+				"  exactly this pair, so a disagreement drops the leaf sub-window and an\n"+
+				"  alias-qualified box column resolves against the whole concat.",
+				tc.name, rightmost.Alias.Name(), boxCorr.Name())
+		}
+		// And the fold direction that made the invented lowercase spelling look
+		// plausible: sourceAlias is the single chokepoint, and it upper-folds. A
+		// producer that stopped folding here would make the box correlation and the
+		// leaf identity differ by CASE — the forgery shape, not a benign variant.
+		if got := sourceAlias(tc.box); got != strings.ToUpper(got) {
+			t.Errorf("%s: sourceAlias returned %q, which is not upper-folded — the box\n"+
+				"  correlation and the buried leaf identity are minted through separate\n"+
+				"  paths and agree only because this one chokepoint folds.", tc.name, got)
+		}
+		// Every OTHER leaf must NOT be the box: the comparison has to discriminate,
+		// or the rightmost-leaf branch would fire for all of them and each buried
+		// window would overwrite the box run's.
+		for _, leg := range boxType.Legs[:len(boxType.Legs)-1] {
+			if values.SameLeg(leg.Alias, boxCorr) {
+				t.Errorf("%s: non-rightmost leaf %q compares EQUAL to the box correlation %q "+
+					"— the rightmost-leaf test must discriminate", tc.name, leg.Alias.Name(), boxCorr.Name())
+			}
+		}
+	}
 }

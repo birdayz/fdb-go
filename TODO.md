@@ -10535,12 +10535,16 @@ None is speculative: each was re-verified against the tree before booking.
   implementation:
   - The census gate is real and IN CI: it moved to the sqldriver TestMain,
     unconditional, asserting per-site population FLOORS as well as the zeros.
-    The previous form reported Total 0 at five of six sites when run alone
-    (measured), so its zeros were vacuous. Whole-suite population, stable
-    across runs: rowLegsBinder 285, buriedLegWindow 567, text-vs-identity
-    3270, hoist 1026, finalizeSeedWindows 1287, expressionOutputLegs 3239,
-    NLJ plan alias 79960, ordinalSlotInLegWindow 105 — foldOnly 0 at every
-    site.
+    The previous form reported Total 0 at six of the eight sites when run
+    alone (measured; expressionOutputLegs reported 4 and NLJ plan alias 370),
+    so its zeros were vacuous. Whole-suite population — VARIES run to run,
+    since several sites sit inside Cascades rules and the memo may explore a
+    rule once or many times per query: rowLegsBinder 285 and buriedLegWindow
+    567 are the only two that repeat exactly; text-vs-identity has measured
+    3115 / 3270 / 3320, hoist ~1000-1052, finalizeSeedWindows ~1287-1311,
+    expressionOutputLegs ~3239-3263, NLJ plan alias ~80k,
+    ordinalSlotInLegWindow 105. The floors sit an order of magnitude below, so
+    they detect COLLAPSE rather than that variance.
   - values.NewRecordTypeLeg takes the identity as its first positional
     parameter (omitting it is now a compile error, not a zero-identity leg),
     all 13 production sites converted, and a docscheck AST scan forbids the
@@ -10554,23 +10558,47 @@ None is speculative: each was re-verified against the tree before booking.
     key takes the identifiers' raw Name(), plan_shape.golden is
     byte-identical. Deleting that path's ToUpper removed a forgery generator
     (ToUpper of a minted lowercase q$N is Q$N, the spelling SameLeg exists to
-    exclude) — the plan and its own seed disagreed by case on the 12 of 79960
-    firings where the source-alias slice carries a re-minted name.
-  - ordinalSlotInLegWindow converted (the last Group-A folding reader);
-    measured foldOnly 0 over 105 comparisons. Name's retirement condition is
-    now crisp: dotted-text consumers plus the seed-window map keys, nothing
-    else. finalizeSeedWindows stays TEXT because its comparison is NOT an
-    identity question: it asks "is this buried leg the box run's RIGHTMOST
-    LEAF?" and knows by the sourceBinding convention that a box run's NAME is
-    its rightmost leaf's name, while the two IDENTITIES (box quantifier vs
-    leaf) are legitimately different. Converting it to
-    SameLeg(leg.Alias, w.Alias) fails TestThreeWayBoxCrossAgreement with
-    "3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)" —
-    measured, so the earlier report of a red at this site was right and the
-    reproduction that found it green was the one that missed. Both previous
-    justifications are withdrawn: the census reports foldOnly 0 over 1263
-    comparisons there (so "the producers disagree on case" is unobservable),
-    and the reason is not merely that the map key discarded the identifier.
+    exclude) — the plan and its own seed disagreed by case on the 12 of ~80k
+    firings where the source-alias slice carries a re-minted name. (The 12 is
+    stable across runs; the denominator is not — 79040 / 79960 / 80856
+    measured.)
+  - ordinalSlotInLegWindow converted (the last Group-A folding reader), and
+    finalizeSeedWindows converted too. Name's retirement condition is now
+    crisp: dotted-text consumers plus the seed-window map keys, nothing else.
+  - THE ACCEPTANCE INSTRUMENT WAS MEASURING A DIFFERENT PROGRAM, and that is
+    what let finalizeSeedWindows be written up as unconvertible. The census
+    took two STRINGS, so the four readers that compare IDENTITIES all recorded
+    the leg's text against the counterparty's text — a pair that scores EXACT
+    where the shipped comparison DECLINES. Fixed: converted sites now record
+    the pair they evaluate AND the verdict of the predicate they replaced
+    (RecordLegIdentityConversion), because fold-only cannot see a
+    decline→match flip (it is byte-equal, so it lands in ExactEqual). A site's
+    census channel is OBSERVED, so an instrument that drifts from its
+    comparison is reported instead of believed. The translator package
+    (//pkg/relational/core/query) gained its own census harness; its corpus
+    drives the planning-time readers the SQL suite barely touches.
+  - MEASURED with the true pair, real-FDB corpus, all four converted sites:
+    retiredVerdictDivergent 0, foldOnly 0, unstated 0 — rowLegsBinder 285,
+    buriedLegWindow 567, hoist 1052, ordinalSlotInLegWindow 105, and
+    finalizeSeedWindows 1311. The conversion is representation-only on
+    production traffic, measured on the DECISION rather than inferred from
+    separate zeros.
+  - THE "finalizeSeedWindows CANNOT CONVERT" JUSTIFICATION IS WITHDRAWN, and
+    so is the claim that "the earlier reproduction that found it green was the
+    one that missed" — that claim was wrong. The cited red
+    ("3-way DRIFT: leaf C col ORDER_ID — leg-window walk slot 0 (ok=false)")
+    reproduces exactly, and its cause is the FIXTURE:
+    TestThreeWayBoxCrossAgreement hand-minted the box correlation as lowercase
+    "c" where production mints NamedCorrelationIdentifier(sourceAlias(box)) =
+    "C", and its own comment mis-stated that spelling as the sourceBinding.
+    The two identifiers finalizeSeedWindows compares are not "legitimately
+    different — box quantifier vs leaf"; the sourceBinding convention is
+    precisely that for the rightmost leaf they are the SAME identifier, both
+    upper-folded by the one sourceAlias chokepoint. The fixture now derives the
+    correlation the way production does, the site is converted, and the premise
+    has a deterministic pin of its own
+    (TestBoxCorrelationIsItsRightmostLeafIdentity, red in BOTH directions under
+    mutation: unfolding sourceAlias, and folding only the leaf producer).
 
   FOUND WHILE FOLDING, NOW FIXED. A 3-way comma join with a projected EXISTS
   whose legs are tied by equijoin predicates returned NO ROWS, and for TWO

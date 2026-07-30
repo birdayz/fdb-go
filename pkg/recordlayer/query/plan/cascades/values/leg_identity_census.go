@@ -24,13 +24,19 @@ import (
 // same thing everywhere — so a producer that starts storing them apart is loud
 // instead of silently rebinding rows.
 //
-// Converting a folding site to an exact one is a BEHAVIOR CHANGE for any pair
-// that folds equal but is not equal. Whether such a pair occurs in production
-// traffic is a measurement, not an argument, and this census is what makes it
-// one. The population it counts is FoldOnlyEqual: pairs where EqualFold says
-// "same leg" and exact says "different leg". Its zero is what makes the
-// conversion free; a nonzero value is a leg whose two spellings must be
-// reconciled at the PRODUCER before any site is converted.
+// Converting a site's comparison is a BEHAVIOR CHANGE for any pair the two
+// predicates decide differently. Whether such a pair occurs in production traffic
+// is a measurement, not an argument, and this census is what makes it one. The
+// population that settles it is RetiredVerdictDivergent — the pairs on which the
+// retired predicate and the shipped one disagree. Its zero is what makes a
+// conversion free; a nonzero value is either a producer to reconcile or a fix that
+// owes a test.
+//
+// FoldOnlyEqual remains as the diagnostic beneath it: a case-ONLY difference is
+// the forgery shape, since the machine namespace is lowercase and folding a minted
+// q$N yields the Q$N that SameLeg exists to keep out. But fold-only is NOT
+// sufficient on its own — see RetiredVerdictDivergent for the flip direction it
+// structurally cannot see.
 //
 // The counts live here, in values, because the consuming sites span three
 // packages (executor, cascades, values) and values is the one they all import.
@@ -41,22 +47,31 @@ import (
 // AN INSTRUMENT MUST RECORD THE PAIR ITS SITE ACTUALLY EVALUATES. The first form
 // of this census took two STRINGS, so a site that had been converted to compare
 // identities could only report its leg's TEXT against the counterparty's text —
-// and reported ExactEqual for a pair the shipped comparison DECLINED. That is not
-// a weak measurement, it is a measurement of a different program: one converted
-// reader's census said ("Q$5","Q$5") while its comparison evaluated
-// ("q$5","Q$5") and returned false, so a match had become a decline on live
-// traffic with the gate green. Hence two channels, and a structural guard that a
-// site uses exactly one:
+// and would score ExactEqual for a pair the shipped comparison DECLINES. A leg
+// whose Name is the UPPER fold of its own minted lowercase identity reads as
+// ("Q$5","Q$5") in the text channel while the comparison evaluates ("q$5","Q$5")
+// and returns false. That is not a weak measurement; it is a measurement of a
+// different program, and it is why one site's conversion could be argued about
+// from numbers that described neither side of it.
+//
+// (What the corrected instrument then found, stated because the correction is
+// worth less than the finding: on the real-FDB corpus NO converted site has such
+// a pair. The only ones anywhere are the deliberate forgeries in the translator
+// package's own fixtures, where the decline is the assertion.)
+//
+// Hence three channels, and a structural guard that a site uses exactly one
+// namespace:
 //
 //   - RecordLegIdentityPair takes two CorrelationIdentifiers and classifies them
-//     the way SameLeg decides — the channel for every reader that compares
-//     identities;
-//   - RecordLegIdentityComparison takes two strings — the channel for the sites
-//     whose comparison genuinely IS text (the seed-window map key) and for the
-//     divergence censuses that pair a leg's own two spellings.
+//     the way SameLeg decides;
+//   - RecordLegIdentityConversion adds the retired predicate's verdict — what a
+//     converted site must record, because the pair alone cannot show a flip;
+//   - RecordLegIdentityComparison takes two strings, for the divergence censuses
+//     that pair a leg's own two spellings and for any comparison that genuinely
+//     IS text.
 //
-// legCensusChannel records which one a site used and reports MIXED if a site ever
-// uses both, so the claim "this site's numbers describe its comparison" is
+// legCensusChannel records which namespace a site used and reports MIXED if a site
+// ever uses both, so the claim "this site's numbers describe its comparison" is
 // checked rather than asserted in a comment.
 
 // LegIdentitySite identifies one leg-identity comparison site.
@@ -93,10 +108,11 @@ const (
 
 	// LegSiteLeftOuterExistential is cascades.hoistLegRefsOntoMergedRow's drift
 	// check: a leg absent from the derived windows but present in the merged
-	// type's Legs is a LOUD failure. It compares through SameLeg (EXACT); the
-	// recorded pair is the leg's text against the reference correlation's own
-	// spelling, so the census still sees what a folding comparison would have
-	// decided differently.
+	// type's Legs is a LOUD failure. It compares through SameLeg (EXACT), and the
+	// recorded pair is that comparison's own: the leg's identity against the
+	// reference correlation's. Its retired predicate folded the reference before
+	// comparing it to the leg's text, which is why the verdict rather than the pair
+	// is what says whether the conversion moved this tripwire.
 	//
 	// Its absolute totals are a planning-time artifact, not a corpus fact: the
 	// hoist runs inside a Cascades rule, so the memo may fire it once or many
@@ -105,7 +121,21 @@ const (
 	LegSiteLeftOuterExistential
 
 	// LegSiteFinalizeSeedWindows is values.finalizeSeedWindows' buried-sub-window
-	// derivation, keyed by a map whose keys are upper-FOLDED aliases.
+	// derivation: "is this buried leg the box run's rightmost leaf?", decided
+	// through SameLeg on the leaf's identity against the box window's.
+	//
+	// It was the last site held back from the conversion, on a justification that
+	// was measured to be false: the two identifiers were said to be "legitimately
+	// different — box quantifier vs leaf", when the sourceBinding convention is
+	// exactly that for the rightmost leaf they are the SAME identifier. The red
+	// that was cited as proof came from a test fixture hand-minting the box
+	// correlation lowercase where production mints sourceAlias(box), upper.
+	// Measured over the real-FDB corpus, the identity and text comparisons decide
+	// identically on all 1311 pairs. The premise now has its own deterministic pin
+	// (TestBoxCorrelationIsItsRightmostLeafIdentity) rather than resting on a count.
+	//
+	// The map KEYS remain upper-FOLDED text — readers still arrive holding a string
+	// — so this one site holds both namespaces at once, deliberately.
 	LegSiteFinalizeSeedWindows
 
 	// LegSiteSelectOutputLegs is the translator's expressionOutputLegs, recorded at
@@ -129,7 +159,8 @@ const (
 	// carry against the quantifier identifier it carries instead.
 	//
 	// The substitution is NOT purely representational, and the measurement is why
-	// we know: over the FDB corpus the two disagree on 12 of 79040 firings, and the
+	// we know: over the FDB corpus the two disagree on 12 of ~80k firings (the 12 is
+	// stable across runs, the denominator is not -- 79040 / 79960 / 80856 measured), and the
 	// disagreement is total rather than a case variant — witnesses "q$N vs E". In
 	// those the select's source-alias slice carries a RE-MINTED identifier while its
 	// quantifier still carries the user alias, so the slice is the stale one and the
@@ -152,6 +183,14 @@ const (
 	// same-named slot. Its counterparty is a correlation, so it compares through
 	// SameLeg like every other Group-A reader; it used to compare the leg's text
 	// against the UPPER fold of that correlation.
+	//
+	// This is the site where the instrument's blindness had consequences. Its census
+	// recorded (leg text, correlation text) while its comparison evaluated the two
+	// identities, so a minted leg read by its own UPPER Name scored an exact MATCH
+	// in the census and a DECLINE in the code. Measured with the pair the comparison
+	// actually evaluates, the real-FDB corpus reports 0 divergences over 105
+	// comparisons; the only such pairs anywhere are the deliberate negative controls
+	// in the translator package's own fixture, where the decline is the assertion.
 	LegSiteOrdinalSlotInLegWindow
 
 	legIdentitySiteCount

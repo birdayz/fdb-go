@@ -20,8 +20,8 @@ package sqldriver_test
 // WHAT THIS TEST ADDS, and what it provably cannot: it drives the join /
 // buried-join / correlated-scalar / lateral-unnest shapes that the SQL DDL can
 // express, and asserts the invariants over whatever population exists when it
-// runs. Measured, running this test ALONE: five of the six sites report Total 0
-// and the sixth reports 4. That is not a fixable defect in the shapes below —
+// runs. Measured, running this test ALONE: six of the EIGHT sites report Total 0;
+// expressionOutputLegs reports 4 and the NLJ plan-alias site 370. That is not a fixable defect in the shapes below —
 // the per-row leg BINDERS only see rows whose type carries leg boundaries, and
 // those rows come from struct-array unnest chains that SQL DDL cannot build (see
 // the INSERT comment below: there is no array literal that type-checks against

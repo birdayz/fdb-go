@@ -390,16 +390,30 @@ type RecordTypeLeg struct {
 	// documented TEXT BOUNDARY, because at those points no identifier exists to
 	// thread:
 	//
-	//   - the logical layer's buried-leg bounds (query.ordinalLegBounds) records its
-	//     source's binding as a STRING and carries no quantifier;
+	//   - the logical layer's buried-leg bounds (query.buriedLegBounds) records its
+	//     source's binding as a STRING. There is no quantifier to thread and the
+	//     absence is STRUCTURAL, not an omission: a buried non-rightmost leaf of a
+	//     clustered box has no quantifier at all — the box carries ONE, named by its
+	//     rightmost leaf (the sourceBinding convention, stated at
+	//     query.bakeLegType.bakeCorr). Only the seed rebake (CQ-53) creates
+	//     per-leaf quantifiers, and that is what removes this mint;
 	//   - the translator's whole-row leg (wholeRowLegFor) is reached holding a
-	//     select-level layout KEY, also a string.
+	//     select-level layout KEY, also a string. Here a quantifier IS nearby, and
+	//     threading it would be WRONG: these legs are consumed only by the
+	//     DOTTED-text arm, whose counterparty is a qualifier parsed out of a column
+	//     name, so a threaded correlation would be an identity no reader compares —
+	//     and if that quantifier is a machine mint, it would make Name and Alias
+	//     disagree on a leg whose readers still work in text. It retires with the
+	//     dotted channel, not before it.
 	//
-	// Both mint from the only spelling that exists and set Name to that same
-	// string, so neither can make the two channels disagree — which is why the
-	// text-vs-identity census reports Name == Alias.Name() on every leg any reader
-	// walks. The seed rebake (CQ-53) is what gives those two layers a typed
-	// quantifier to carry, and it is what removes the last mints.
+	// Both mint from the only spelling that exists and set Name to that same string,
+	// so neither can make the two channels disagree. That is not merely local to
+	// each producer: both spellings come from sourceAlias/sourceBinding, which
+	// upper-fold at a single chokepoint, and the seed-window authority's own
+	// identities are correlations minted from that same fold. Measured, the
+	// text-vs-identity census reports Name == Alias.Name() on every one of the 3320
+	// legs any reader walks over the real-FDB corpus, and no converted comparison
+	// decides differently from the text comparison it replaced.
 	Alias CorrelationIdentifier
 
 	// Name is the leg's binding as TEXT, conventionally UPPER.
@@ -411,17 +425,19 @@ type RecordTypeLeg struct {
 	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
 	//     column-name string ("A.ID") and can therefore only be matched as a string
 	//     (executor.ordinal_join's dotted arm and the translator's multi-leg baker);
-	//   - the SEED-WINDOW map's keys, whose namespace is an upper fold of the
-	//     correlations. finalizeSeedWindows compares against a key, and the fold
-	//     discarded the identifier, so there is no typed counterparty to compare
-	//     against — see that function for why routing it through SameLeg anyway
-	//     would be a text comparison wearing the type.
+	//   - the SEED-WINDOW map's KEYS, whose namespace is an upper fold of the
+	//     correlations. finalizeSeedWindows FILES a sub-window under leg.Name
+	//     because its readers arrive holding that text — but it no longer DECIDES
+	//     by it: the rightmost-leaf question is an identity question and goes
+	//     through SameLeg like every other. Storing under a folded key and deciding
+	//     by identity is the honest split; conflating them was the last folding
+	//     comparison on this field.
 	//
-	// Every OTHER reader — every one whose counterparty is a correlation — goes
-	// through Alias. That is the retirement condition: when the seed rebake replaces
-	// the text-keyed window namespace and the dotted channel with parsed segments,
-	// both families go, and this field goes with them. Until then, a new comparison
-	// against Name is a regression unless it belongs to one of those two.
+	// Every reader whose counterparty is a correlation goes through Alias — there
+	// are no exceptions left. That is the retirement condition: when the seed rebake
+	// replaces the text-keyed window namespace and the dotted channel with parsed
+	// segments, both families go, and this field goes with them. Until then, a new
+	// comparison against Name is a regression, full stop.
 	//
 	// Consumers whose counterparty is a correlation must use Alias. A comparison
 	// against Name is a text match dressed as an identity check, and text
