@@ -84,8 +84,30 @@ type legLocalBakeCounters struct {
 	// name. Census-side name lookup (see the header): it separates a missing
 	// layout from a mismatched one, and decides nothing.
 	ColumnAbsent int
-	// LayoutAvailable: a layout exists and declares the read's name. A mint that a
-	// leg-local ordinal COULD have carried — the number CQ-63 has to move.
+	// LayoutAvailable: a layout exists and declares the read's name.
+	//
+	// WHAT IT MUST NEVER BE READ AS: the precondition for a leg-local bake. It
+	// is a PROXY for one, and the two came apart in the way that costs the most
+	// — silently, while the proxy read as success.
+	//
+	// The distinction: this counter answers "does the LEG have a layout". A bake
+	// needs "can the READ state an ordinal in that layout". The second is what
+	// IdentityInLegDomain below measures, and it is the real instrument.
+	// Measured: LayoutAvailable reached 126 of 126 and was read as the
+	// precondition being met, while IdentityInLegDomain was ZERO the whole time
+	// — every read declined, because the reference's own quantifier object was
+	// minted untyped and the frontier derived from it was unknown. A whole
+	// migration step was scheduled against the proxy.
+	//
+	// This is the PROXY-INSTRUMENT failure class, and it is worth naming because
+	// it is not any of the ones this file already defends against. Those are all
+	// counters that STOP measuring — a dead counter, a vacuous zero, a collapsed
+	// denominator — and the floors and partitions below exist to catch exactly
+	// that. This counter never stopped measuring. It was live, correctly
+	// partitioned, floored against collapse, and reported an honest number about
+	// a DIFFERENT QUESTION than the one being asked of it. No floor and no
+	// partition can detect that; only a second instrument measuring the actual
+	// precondition can, which is why one was added rather than this one retuned.
 	LayoutAvailable int
 	// UnderivableLegs counts LEGS (not reads) neither derivation could state, so
 	// every read correlated to them falls through.

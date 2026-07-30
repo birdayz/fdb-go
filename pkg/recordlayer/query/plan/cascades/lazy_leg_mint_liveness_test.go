@@ -457,10 +457,11 @@ func TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead(t *testing.T) 
 	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
 	legDomain := values.OrdinalDomainOfType(values.Type(aType))
 
-	// The production shape: baked against the LEG's own layout, hung off an
-	// UNTYPED quantifier object exactly as the resolver mints it.
+	// The production shape: baked against the LEG's own layout, hung off a
+	// quantifier object that STATES that same layout — which is what the
+	// resolver now mints (its correlated arm carries the source's declared row).
 	read := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(legA), "CATEGORY", 1, values.UnknownType, legDomain)
+		values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "CATEGORY", 1, values.UnknownType, legDomain)
 
 	// Premise 1: the read DOES state a correct leg-local identity — asked in the
 	// leg's real layout, which is what a bake would index.
@@ -472,15 +473,17 @@ func TestRebaseOuterLegValue_DegradesAnAlreadyCorrectLegLocalRead(t *testing.T) 
 			"carry one tests something else.", id, stated)
 	}
 
-	// Premise 2: legSlotIdentity — the arm's OWN identity derivation — declines it
-	// anyway, because it reads the frontier off the untyped child.
-	if _, ok := legSlotIdentity(read); ok {
-		t.Fatal("legSlotIdentity ANSWERED for a read whose quantifier object is " +
-			"untyped. The corpus measures the opposite on all 126 firings " +
-			"(qovTypeDomainKnown=false), and that decline is the entire reason the " +
-			"identity-keyed bake reports zero convertible reads while the layout census " +
-			"reports 126 available layouts. If this now answers, the QOV children got " +
-			"typed upstream — re-measure the census before concluding anything else.")
+	// Premise 2: legSlotIdentity — the arm's OWN identity derivation — ANSWERS.
+	// It reads its frontier off the child's stored type, so this is exactly what
+	// typing the resolver's mints bought: measured, the corpus moved from
+	// identityOtherDomain 126 / identityInLegDomain 0 to identityInLegDomain 126.
+	if _, ok := legSlotIdentity(read); !ok {
+		t.Fatal("legSlotIdentity DECLINED a read whose quantifier object states the " +
+			"leg's own row. That decline used to be universal — the resolver minted " +
+			"untyped children and all 126 corpus firings reported " +
+			"qovTypeDomainKnown=false — and typing those mints is what removed it. A " +
+			"decline here means the resolver stopped carrying the row, which puts the " +
+			"whole identity channel back on the qualified name.")
 	}
 
 	// The degradation itself: ordinal in, lazy dotted name out.
