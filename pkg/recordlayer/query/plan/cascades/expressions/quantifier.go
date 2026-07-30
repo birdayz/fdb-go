@@ -312,13 +312,90 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 			found, foundRaw = rt, rv.Type()
 			continue
 		}
-		if !found.Equals(rt) {
+		refined, agree := refineRowTypes(found, rt)
+		if !agree {
 			return nil, &MemberResultTypeDisagreementError{
 				Alias: q.alias, Left: foundRaw, Right: rv.Type(),
 			}
 		}
+		found = refined
 	}
 	return found, nil
+}
+
+// refineRowTypes reduces two members' row types to the single row the quantifier
+// flows — Java's `Verify.verify(left.equals(right))` reduction
+// (Reference.java:504-513), corrected for the one thing Go has that Java does
+// not: a type that means "not inferred yet".
+//
+// Java can use bare equality because every Java Value carries a resolved type, so
+// two members of one equivalence class either describe the same row or the memo
+// is broken. Go's UnknownType is neither — it is the ABSENCE of a stated type,
+// and the same row reached by two rules routinely arrives with different amounts
+// of it resolved (an unnest element inferred as INT down one path and left
+// UNKNOWN down the other). Comparing those with Equals reports a disagreement
+// between a row and ITSELF, and the caller then declines work it should have
+// done: a bipartition that yields nothing, a merge slot left untyped.
+//
+// So an unstated field cannot contradict a stated one — the same rule this
+// function's member scan already applies to a member that states no row type at
+// all, one level further down. Everything else stays a real disagreement:
+// different field counts, names, ordinals, record names, nullability, or two
+// fields that both state a type and state different ones. Those are the memo
+// defects the verification exists to catch, and they still surface as errors.
+//
+// The result is the more RESOLVED row, so a later member cannot un-resolve what
+// an earlier one established.
+func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
+	if a == nil || b == nil {
+		return nil, false
+	}
+	if a.Equals(b) {
+		return a, true
+	}
+	if a.RecordName != b.RecordName || a.Nullable != b.Nullable || len(a.Fields) != len(b.Fields) {
+		return nil, false
+	}
+	merged := make([]values.Field, len(a.Fields))
+	for i := range a.Fields {
+		af, bf := a.Fields[i], b.Fields[i]
+		if af.Name != bf.Name || af.Ordinal != bf.Ordinal {
+			return nil, false
+		}
+		ft, agree := refineFieldTypes(af.FieldType, bf.FieldType)
+		if !agree {
+			return nil, false
+		}
+		merged[i] = values.Field{Name: af.Name, FieldType: ft, Ordinal: af.Ordinal}
+	}
+	return &values.RecordType{RecordName: a.RecordName, Nullable: a.Nullable, Fields: merged}, true
+}
+
+// refineFieldTypes is refineRowTypes for one field: the more resolved of two
+// types, or (nil, false) when both are stated and they differ. Nested records
+// recurse, because a row whose only difference is an unresolved field two levels
+// down is the same row for exactly the same reason it is one level down.
+func refineFieldTypes(a, b values.Type) (values.Type, bool) {
+	switch {
+	case isUnstatedType(a):
+		return b, true
+	case isUnstatedType(b):
+		return a, true
+	case a.Equals(b):
+		return a, true
+	}
+	if ar, aok := a.(*values.RecordType); aok {
+		if br, bok := b.(*values.RecordType); bok {
+			return refineRowTypes(ar, br)
+		}
+	}
+	return nil, false
+}
+
+// isUnstatedType reports whether t carries no type information — Go's
+// "inference has not reached here", which Java has no counterpart for.
+func isUnstatedType(t values.Type) bool {
+	return t == nil || t.Code() == values.TypeCodeUnknown
 }
 
 // rowTypeOf unwraps a member's result type to its ROW type, through the RELATION

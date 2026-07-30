@@ -484,6 +484,7 @@ go_test(
         "select_subsumption_test.go",
         "select_subsumption_translation_test.go",
         "set_plan_helpers_test.go",
+        "simple_select_passthrough_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
         "temp_table_test.go",
@@ -986,6 +987,7 @@ go_test(
         "leg_layout_derivation_test.go",
         "underivable_leg_witness_test.go",
         "plan_leg_concat_layout_test.go",
+        "simple_select_passthrough_test.go",
     ],
     deps = [
         "//gen",
