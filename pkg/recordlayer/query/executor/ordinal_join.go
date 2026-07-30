@@ -122,7 +122,12 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 	for i := 0; i < n; i++ {
 		f := rc.Fields[i]
 		if elemQOV, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
-			if _, isRecord := elemQOV.Type().(*values.RecordType); !isRecord {
+			// The element test is values.IsMixedSeedElementType on BOTH sides, not a
+			// second copy of it here: this walk and the planner's must agree bit for
+			// bit about which field is the element, because disagreeing about that
+			// shifts the offset of every field after it. Two copies of a rule agree
+			// until one is edited.
+			if values.IsMixedSeedElementType(elemQOV.Type()) {
 				if !coverageOK() {
 					return nil, nil, false // an unfinished leg run before the element
 				}

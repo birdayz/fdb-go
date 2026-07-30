@@ -295,15 +295,49 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 }
 
 // isMixedSeedElement reports whether an RC field is the MIXED-seed scalar element
-// (at ANY position — the walk is element-anywhere): a bare QuantifiedObjectValue
-// over a NON-record type (the whole-object scalar element the seed cannot
-// ofOrdinal-bake). A bare QOV over a RECORD type (the positional-merge RC) is NOT
-// this — it declines. LOAD-BEARING guard.
+// (at ANY position — the walk is element-anywhere). LOAD-BEARING guard.
 func isMixedSeedElement(f RecordConstructorField) bool {
 	qov, isQOV := f.Value.(*QuantifiedObjectValue)
-	if !isQOV {
+	return isQOV && IsMixedSeedElementType(qov.Type())
+}
+
+// IsMixedSeedElementType decides whether a bare QuantifiedObjectValue carrying
+// this type is the MIXED seed's whole-object SCALAR element — Java's
+// `isPrimitive()` branch, the element the seed cannot ofOrdinal-bake and so gives
+// its own synthesized 1-field window.
+//
+// It is one predicate rather than two identical ones because the planner's window
+// derivation (OrdinalSeedLegWindows) and the executor's span derivation
+// (unnestMixedSeedSpans / ordinalJoinSpans) must agree on it BIT FOR BIT: they
+// walk independently, and a disagreement about which field is the element is a
+// wrong-offset read of every field after it. Two copies of a rule agree until one
+// of them is edited.
+//
+// The test is "not a RECORD", and it is a PROXY for the question actually being
+// asked — is this field one slot, or is it a leg occupying width-many? — so it is
+// worth being exact about why the proxy holds, because it did not always.
+//
+// It holds because a LEG's quantifier object now states its row. While the flowed
+// object value was minted untyped, an untyped leg was not a record either, so a
+// leg flowing a whole multi-column row was admitted as a one-column element and a
+// 2-slot record constructor of bare untyped quantifier objects was accepted
+// outright, at widths nobody had checked. Typing the flowed value closed that: a
+// leg reads as a RecordType and is rejected here, measured as flowed 848 of 848
+// leg derivations over the real-FDB corpus with walkOnly and underivable both at
+// zero. The bakeability census asserts those zeros, so the fact this proxy rests
+// on is enforced rather than assumed.
+//
+// What it does NOT do is demand a STATED type, and that is deliberate rather than
+// an oversight. An unnest element over an array of STRUCTS is a genuine
+// whole-object element — one slot, the whole struct, exactly the case this arm
+// exists for — and its type is UNKNOWN because Go does not infer array element
+// types that far. Requiring a stated type declines it and
+// `SELECT "X" FROM TS, TS."ITEMS" AS "X"` stops resolving. So an unstated type
+// stays admitted, and the leg side is what carries the discrimination.
+func IsMixedSeedElementType(t Type) bool {
+	if t == nil {
 		return false
 	}
-	_, isRecord := qov.Type().(*RecordType)
+	_, isRecord := t.(*RecordType)
 	return !isRecord
 }
