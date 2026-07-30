@@ -192,19 +192,23 @@ func TestCursorBatchSizesFollowTheStreamingMode(t *testing.T) {
 }
 
 // TestRangeOptionValidationPerSurface pins the range-option validation on BOTH consumption
-// paths, and pins that they are DIFFERENT — which is the part that is easy to get wrong in
-// either direction.
+// paths, and pins the PRECEDENCE between the two codes, which is the part that is easy to get
+// wrong in either direction.
 //
-//   - A row limit below ROW_LIMIT_UNLIMITED(-1) is range_limits_invalid(2012) on BOTH. Iterator
-//     checks it inline (fdb/range_result.go:122-125); GetSlice reaches it through getRangeDir
-//     (client/transaction.go:1265-1268), which every doRangeWithLimit call funnels through.
-//     GetSlice used to skip it here and silently returned every row for a Limit of -2.
-//   - EXACT without a row limit is exact_mode_without_limits(2210) on the ITERATOR ONLY.
-//     GetSlice ignores the streaming mode in both real backends — the pure-Go client's
-//     GetSliceWithError never passes Mode to getRangeDir, and Apple's binding OVERRIDES it
-//     before the C layer can validate — so raising 2210 from GetSlice would invent an error no
-//     real backend returns. TestDifferential_RangeOptionValidation measures both cells against
-//     a real cluster.
+//   - A row limit below ROW_LIMIT_UNLIMITED(-1) is range_limits_invalid(2012). GetSlice used to
+//     skip it and silently returned every row for a Limit of -2.
+//   - EXACT with no row budget is exact_mode_without_limits(2210), for both spellings of "no
+//     budget" (0 and -1 — libfdb_c maps a zero limit to ROW_LIMIT_UNLIMITED before the gate).
+//   - 2012 WINS over 2210: a limit below ROW_LIMIT_UNLIMITED is invalid rather than unlimited, so
+//     EXACT with -7 is 2012. A "Limit <= 0" test for the 2210 case gets this backwards on any
+//     surface that reaches 2012 later than it reaches the mode check.
+//
+// This was modelled as Iterator-only 2210 on the argument that GetSlice never forwards the
+// streaming mode in either real backend. That argument was from source and it was wrong: Apple's
+// binding issues the first batch's future eagerly with the caller's mode and rewrites the mode
+// only for later batches. TestDifferential_ExactModeWithoutLimits measures every cell below
+// against libfdb_c directly (TestDifferential_RangeOptionValidation only reaches the pure-Go
+// client, so it could not have caught a Go-vs-C divergence here).
 func TestRangeOptionValidationPerSurface(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
@@ -216,8 +220,8 @@ func TestRangeOptionValidationPerSurface(t *testing.T) {
 	}{
 		{"limit -2", fdb.RangeOptions{Limit: -2}, 2012, 2012},
 		{"limit -7 with exact", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -7}, 2012, 2012},
-		{"exact without limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210, 0},
-		{"exact with limit -1", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -1}, 2210, 0},
+		{"exact without limit", fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210, 2210},
+		{"exact with limit -1", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: -1}, 2210, 2210},
 		{"exact with limit is fine", fdb.RangeOptions{Mode: fdb.StreamingModeExact, Limit: 1}, 0, 0},
 		{"limit -1 is unlimited", fdb.RangeOptions{Limit: -1}, 0, 0},
 	} {

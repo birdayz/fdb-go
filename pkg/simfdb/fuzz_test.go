@@ -12,7 +12,7 @@ import (
 // small keyspace. A random op stream is applied to a transaction; after each op EVERY read
 // surface must agree with the model and with each other:
 //
-//   - the point read of each key (resolveKey walks the buffer directly);
+//   - the point read of each key (resolveKey walks the buffer over the stored row);
 //   - the same key read as a single-key RANGE (a windowed store scan merged with the buffer —
 //     a completely different code path, so point-vs-range disagreement is a defect either way);
 //   - the whole span through GetSlice (one fetch for the full budget) and through the Iterator
@@ -23,6 +23,10 @@ import (
 // point reads only and never called GetRange at all. It matters more now that a range read is
 // lazy — the iterator resolves each page against the buffer as it is at fetch time, so the
 // paged and single-fetch surfaces genuinely execute different merges over the same state.
+//
+// The "merged with the buffer" half was documented ahead of itself in the same way: the target
+// opened on an EMPTY store, so there was no stored side to merge and every read was buffer-or-
+// absent. Committed baseline rows (below) are what make the merge real.
 //
 // Together this exercises mutation ordering, clear-range coverage, and atomic accumulation of
 // the RYW path independently of the (separately-tested) applyAtomic byte semantics.
@@ -38,10 +42,31 @@ func FuzzSimFDB_RYW(f *testing.F) {
 	const nKeys = 6
 	key := func(b byte) []byte { return []byte{'k', b%nKeys + '0'} }
 
+	// COMMITTED baseline rows, laid down before the transaction opens. Every read below is
+	// therefore a genuine merge of a windowed store scan with the write buffer, which is what the
+	// target claims to exercise: with an empty store the "store side" is constant, every read
+	// resolves to buffer-or-absent, and the whole store/buffer axis is untested while looking
+	// covered. Only a SUBSET of the keyspace is seeded, so both directions stay reachable — a
+	// key the buffer shadows and a key only storage can answer.
+	//
+	// The values are two bytes wide while every value the op stream writes is one byte, so a
+	// merge that returns the wrong side is visible in the value itself rather than only in a
+	// presence check. It also puts AppendIfFits over a STORED value on the path (the model
+	// appends to the baseline), and Clear/ClearRange over one.
+	baseline := map[string][]byte{
+		"k0": []byte("S0"),
+		"k2": []byte("S2"),
+		"k4": []byte("S4"),
+	}
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		db := New(nil)
+		seed(db, "k0", "S0", "k2", "S2", "k4", "S4")
 		tx := db.newTxn()
 		model := make(map[string][]byte) // reference: key -> value (nil/absent = not present)
+		for k, v := range baseline {
+			model[k] = append([]byte(nil), v...)
+		}
 
 		// maxOps bounds the op stream so one input stays well inside the fuzzer's per-input
 		// budget. The oracle checks fifteen reads after EVERY op, and each read rebuilds the

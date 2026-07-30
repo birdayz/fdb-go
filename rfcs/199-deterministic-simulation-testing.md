@@ -31,6 +31,17 @@ asserting a desired end state, because RFC-198 is what decides the semantics.
   real-FDB/libfdb_c outcomes; and a **live differential** — 200 randomized conflict scenarios whose
   commit/abort outcome must equal the pure-Go client on a real FDB cluster (transitively libfdb_c, no
   cgo). Five real SimFDB bugs were found and fixed through these integrations.
+  **The "transitively libfdb_c" step is an inference, not a measurement**, and it is exactly as strong
+  as the pure-Go client's own C differential on the specific behaviour in question. Where that
+  differential has no arm, a SimFDB arm that matches the Go client proves only that the two agree.
+  This is not hypothetical: `exact_mode_without_limits(2210)` was modelled here as unreachable from
+  `GetSlice`, argued from Apple's binding source (it rewrites the streaming mode) rather than measured,
+  and the SimFDB arm was green because the pure-Go client had the same gap. A cgo probe
+  (`pkg/fdbgo/bench:TestDifferential_ExactModeWithoutLimits`) showed libfdb_c raises 2210 from
+  `GetSlice` for both spellings of "no budget" — Apple's binding issues the first batch's future with
+  the caller's mode before its own rewrite applies. The pure-Go client was fixed and SimFDB followed.
+  **Rule this establishes:** any behaviour a SimFDB arm asserts against the pure-Go oracle needs a cgo
+  arm on the SAME behaviour before it may be described as matching libfdb_c.
 - **Tier 2** ✅ — serial seed-reproducible record-layer workload driver + `Verify()` oracle;
   concurrent-open-transaction interleaving driver (fires real `1020` end-to-end through the record
   layer); byte-reproducibility **under injected faults**; SQL-over-SimFDB validation; a serial
@@ -38,8 +49,10 @@ asserting a desired end state, because RFC-198 is what decides the semantics.
   (a scan resumes from a continuation across a concurrent modification, no dup/loss).
 - **Documented follow-ups** (not core gaps): the SQL-level *plan-switch* continuation variant (a token
   minted against plan A resumed against plan B) needs a cross-request SQL continuation-resume hook the
-  engine does not yet expose; a *live* SimFDB-vs-libfdb_c fuzz (the parity + live-vs-pure-Go differential
-  already pin the semantics) would add the cgo bench harness as a third arm.
+  engine does not yet expose; a *live* SimFDB-vs-libfdb_c fuzz would add the cgo bench harness as a
+  third arm. That one is no longer a nice-to-have: the parity + live-vs-pure-Go differentials pin the
+  semantics only up to the pure-Go client's own fidelity, and the 2210 divergence above is a worked
+  example of both arms being green over a real Go-vs-C gap.
 **Review:** the RFC-design review ACK'd (Torvalds, FDB C++ client dev, Graefe advisory); their findings
 folded in (`SetVersionstampedKey` server-side WCR re-add, LRU-eviction continuation lever, versionstamp
 anatomy). The *implementation* review then caught — and drove fixes for — two real **under-conflict**
@@ -150,9 +163,16 @@ in the sense that closing the gap must not change any arm's verdict.
 
 - **Read-conflict range coalescing.** A real client merges overlapping/adjacent read-conflict
   ranges as it records them; SimFDB appends each one. The COVERAGE is identical, so no commit
-  verdict differs, and every conflict test in the package is now written against outcomes rather
-  than against the recorded list — the package was verified to stay green under a coalescing
-  implementation. What is not yet modelled is the transaction SIZE the ranges contribute, which is
+  verdict differs, and the package was verified to stay green under a coalescing implementation.
+  What carries that is NOT that every conflict test is written against outcomes — seven assertions
+  still read `tx.readConflicts` / `tx.writeConflicts` directly (`range_limit_conflict_test.go:46`
+  and `:149`, `range_batch_test.go:52`, `selector_conflict_test.go:325`, `commit_unknown_test.go:140`,
+  `conflict_range_internal_test.go:32` and `:42`). They survive because every one of them is a
+  shape coalescing cannot change: a single recorded range, an expected count of zero, or two
+  ranges that are neither overlapping nor adjacent. The multi-range shapes — where merging would
+  change the count — are the ones stated as commit outcomes. So the property to preserve when
+  closing this gap is narrower than "no test looks at the list": it is that no test looks at a list
+  a merge would rewrite. What is not yet modelled is the transaction SIZE the ranges contribute, which is
   what makes this worth closing: a scan that records one range per batch reports a larger
   transaction than the same scan on a real client, so `transaction_too_large` fires at a different
   point. Until then, size-limit behaviour on range-heavy transactions is approximate.

@@ -43,6 +43,44 @@ type Scenario struct {
 	Queries []string // SELECT targets; each is captured as its EXPLAIN plan + result rows
 }
 
+// CaptureSurface names which of a query's two captured surfaces failed.
+type CaptureSurface int
+
+const (
+	// SurfacePlan is the EXPLAIN. A query can fail here and run fine (an unplannable shape).
+	SurfacePlan CaptureSurface = iota
+	// SurfaceRows is executing the query. A query can fail here after EXPLAIN succeeded (any
+	// error raised while evaluating rows — division by zero, a failing cast).
+	SurfaceRows
+)
+
+func (s CaptureSurface) String() string {
+	if s == SurfacePlan {
+		return "EXPLAIN"
+	}
+	return "query"
+}
+
+// CaptureError reports a scenario query that did not run, and WHICH surface it failed on.
+//
+// The surface is a field rather than something to read out of the message because the two guards
+// that produce it are independently defeatable: a guard on only one surface still lets the other
+// bake its error into a baseline. A test asserting "this input exercises the rows guard" has to be
+// able to say so structurally, or it silently stops covering that guard the day the input starts
+// failing at plan time instead.
+type CaptureError struct {
+	Scenario string
+	Query    string
+	Surface  CaptureSurface
+	Err      error
+}
+
+func (e *CaptureError) Error() string {
+	return fmt.Sprintf("scenario %q: %s %q: %v", e.Scenario, e.Surface, e.Query, e.Err)
+}
+
+func (e *CaptureError) Unwrap() error { return e.Err }
+
 // Capture runs the scenario over a fresh SimFDB-backed SQL stack and returns the canonical text
 // baseline: for each query, its EXPLAIN plan and its result rows in returned order (so the golden
 // also locks row ordering — a plan change that reorders rows is a real, reviewable delta).
@@ -108,12 +146,12 @@ func Capture(s Scenario) (string, error) {
 		fmt.Fprintf(&b, "=== %s\n", q)
 		var plan string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-			return "", fmt.Errorf("scenario %q: EXPLAIN %q: %w", s.Name, q, err)
+			return "", &CaptureError{Scenario: s.Name, Query: q, Surface: SurfacePlan, Err: err}
 		}
 		fmt.Fprintf(&b, "PLAN: %s\n", plan)
 		rowsText, err := captureRows(ctx, db, q)
 		if err != nil {
-			return "", fmt.Errorf("scenario %q: query %q: %w", s.Name, q, err)
+			return "", &CaptureError{Scenario: s.Name, Query: q, Surface: SurfaceRows, Err: err}
 		}
 		b.WriteString(rowsText)
 		b.WriteString("\n")

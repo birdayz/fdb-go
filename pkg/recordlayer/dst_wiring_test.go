@@ -505,9 +505,9 @@ func TestScanLimiterStateElapsedIsAnchoredToItsOwnClock(t *testing.T) {
 		t.Fatalf("production anchor %v not within [%v,%v] — a nil env must be the wall clock",
 			prodState.StartTime(), before, after)
 	}
-	if prodState.Elapsed() < 0 {
-		t.Fatalf("production elapsed = %v, want non-negative", prodState.Elapsed())
-	}
+	// No Elapsed() >= 0 assert here: the anchor is a past instant on the same monotonic clock
+	// Elapsed() reads, so that comparison cannot fail whatever the seam does. The bracket above is
+	// the assertion that can.
 
 	// A nil state never trips a limit.
 	var nilState *ScanLimiterState

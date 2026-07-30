@@ -90,6 +90,19 @@ type ScanLimiterState struct {
 // (bypassing DefaultExecuteProperties, which always mints a ScanState) —
 // identical to the pre-fix per-cursor-local counters, so those call sites
 // are unaffected by this change.
+//
+// The fallback anchors on the WALL CLOCK (NewScanLimiterState passes a nil env), which is a hole
+// in the DST claim that a simulated run takes every clock read from the env: nothing in the type
+// system stops a raw-literal ExecuteProperties from reaching a leaf cursor inside a simulation.
+// Closing it structurally is not a small change and would not actually close it — a struct
+// literal always compiles with a nil pointer field, so "required" could only mean panicking in a
+// constructor that cannot return an error, and there are ~70 literal sites.
+//
+// What makes it harmless is a fact about call sites: the clock only DECIDES anything here through
+// the time budget (which is what ends a page and picks the continuation), and the one production
+// site that arms a time limit builds its properties with DefaultExecutePropertiesIn. That fact is
+// gated, not merely asserted — pkg/docscheck TestScanLimiterStateArmingIsSeamed fails the build
+// if any production function arms a time limit without the seamed constructor.
 func resolveScanLimiterState(props ExecuteProperties) *ScanLimiterState {
 	if props.ScanState != nil {
 		return props.ScanState

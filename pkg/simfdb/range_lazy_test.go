@@ -16,10 +16,22 @@ import (
 // returned rows (a real client's RYW shows it), AND its span was subtracted from the read
 // conflict as locally-satisfied — even though the row handed back had come from STORAGE. A
 // concurrent writer of that key therefore did not abort the reader, and SimFDB certified a lost
-// update. Both halves are asserted here, because a fix that repairs only the rows leaves the
-// conflict arithmetic resting on a claim that is no longer checked anywhere.
+// update.
 //
-// The rows are also pinned against a real cluster by TestDifferentialArm_ReadThenLocalWrite.
+// WHICH assertion catches the bug, measured by reverting the fix and running these: the ROWS
+// assertions in the ...IsVisible / ...IsVisibleInLaterBatches shapes go red; BOTH ...Coverage
+// tests stay green in every cell. That is not a gap in the Coverage tests, it is the structure of
+// the defect — the eager implementation subtracted e's span from the read conflict because e WAS
+// in the write buffer at consumption, which is the same subtraction the correct implementation
+// makes for the opposite (correct) reason. The conflict arithmetic is only wrong RELATIVE to
+// where the row came from, so no assertion about conflicts alone can see it.
+//
+// So the Coverage tests are not independent pins of the conflict half. They pin the coverage RULE
+// (a span is subtracted iff the buffer answered that span) in a form that survives read-conflict
+// coalescing, and they are load-bearing only together with the sibling row assertion above them:
+// rows-from-buffer AND span-subtracted is the pair that is checkable. The rows half is
+// additionally pinned against a real cluster by TestDifferentialArm_ReadThenLocalWrite, which is
+// what keeps the pair anchored to a real client rather than to SimFDB's own opinion.
 
 // seedLazy lays down the alphabet the shapes below scan.
 func seedLazy(db *SimDB) {
@@ -69,6 +81,11 @@ func TestWriteBetweenGetRangeAndGetSliceIsVisible(t *testing.T) {
 // same behaviour — only the coverage is observable — so asserting the list would pin a
 // representation and stand in the way of teaching SimFDB to coalesce read-conflict ranges the
 // way a real client does.
+//
+// This does NOT independently detect the eager-materialization bug: every cell here is green
+// against it (measured). The discriminating assertion is the row check in
+// TestWriteBetweenGetRangeAndGetSliceIsVisible above, backed by
+// TestDifferentialArm_ReadThenLocalWrite against a real cluster. See the file header.
 func TestWriteBetweenGetRangeAndGetSliceCoverage(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -142,6 +159,12 @@ func TestWriteMidIterationIsVisibleInLaterBatches(t *testing.T) {
 // TestWriteMidIterationCoverage is the conflict half of shape B: a span is subtracted from the
 // read conflict IFF the buffer answered the read that span covers. Stated as commit outcomes,
 // so it says nothing about how the ranges happen to be grouped.
+//
+// Like shape A's coverage test, every cell here is green against the eager implementation
+// (measured); the discriminating assertions are the row checks in
+// TestWriteMidIterationIsVisibleInLaterBatches and
+// TestWriteMidIterationShiftsWhichRowsALimitReturns. See the file header for why a
+// conflicts-only assertion cannot see this defect.
 func TestWriteMidIterationCoverage(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

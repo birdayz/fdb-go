@@ -72,6 +72,28 @@ func TestRangeIterator_RowLimitUnlimitedAndInvalid(t *testing.T) {
 		if !errors.As(e3, &fe3) || fe3.Code != 2210 {
 			t.Fatalf("Iterator(StreamingModeExact, no limit) must surface exact_mode_without_limits (2210), got %v", e3)
 		}
+		// The SAME input on the OTHER consumption surface. GetSlice was long believed unable to
+		// reach 2210 because it does not forward the streaming mode; libfdb_c raises it anyway
+		// (measured by bench:TestDifferential_ExactModeWithoutLimits — Apple's binding issues the
+		// first batch's future with the caller's mode before its own mode rewrite applies), and
+		// this client returned every row instead. Both spellings of "no budget" are checked: C
+		// maps limit 0 to ROW_LIMIT_UNLIMITED(-1) before the gate, so they are one case there and
+		// must not become two here.
+		for _, lim := range []int{0, -1} {
+			_, eS := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeExact, Limit: lim}).GetSliceWithError()
+			var feS gofdb.Error
+			if !errors.As(eS, &feS) || feS.Code != 2210 {
+				t.Fatalf("GetSlice(StreamingModeExact, Limit:%d) must surface exact_mode_without_limits (2210), got %v", lim, eS)
+			}
+		}
+		// 2012 still WINS over 2210 when both could apply: a limit below ROW_LIMIT_UNLIMITED is
+		// invalid, not unlimited. A "Limit <= 0" spelling of the check above would answer 2210.
+		_, eS7 := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeExact, Limit: -7}).GetSliceWithError()
+		var feS7 gofdb.Error
+		if !errors.As(eS7, &feS7) || feS7.Code != 2012 {
+			t.Fatalf("GetSlice(StreamingModeExact, Limit:-7) must surface range_limits_invalid (2012), got %v", eS7)
+		}
+
 		// EXACT *with* a limit is fine (positive control).
 		it4 := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeExact, Limit: n}).Iterator()
 		c4 := 0

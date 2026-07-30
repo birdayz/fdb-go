@@ -1,6 +1,7 @@
 package golden
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -302,18 +303,38 @@ func firstDiff(want, got string) string {
 // Both surfaces are checked separately: EXPLAIN can fail where the query itself would not (an
 // unplannable shape), and a query can fail after EXPLAIN succeeded (an executor error). A guard
 // on only one of them still lets the other bake in.
+//
+// So each case declares the surface it is supposed to exercise, and the test ASSERTS it. Without
+// that, "both surfaces are checked" is a claim about inputs nobody re-checks: this table once held
+// three cases described as covering both, and all three failed at EXPLAIN — 42703 (unknown
+// column), 42F01 (unknown table) and 42804 (incompatible comparison operands, which the planner
+// rejects rather than the executor). The rows guard had ZERO cases and deleting it would not have
+// turned anything red. The surface assertion is what makes a case silently migrating across the
+// boundary — a semantic check moving into the planner, say — show up as a red test instead of as
+// lost coverage.
 func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		query string
+		name    string
+		query   string
+		surface CaptureSurface
 	}{
-		// A column that does not exist: both EXPLAIN and the query fail.
-		{"unknown column", "SELECT nosuchcolumn FROM t"},
+		// ---- plan surface: rejected before anything executes.
+		// A column that does not exist.
+		{"unknown column", "SELECT nosuchcolumn FROM t", SurfacePlan},
 		// A table that does not exist.
-		{"unknown table", "SELECT * FROM nosuchtable"},
-		// Syntactically valid, semantically impossible cast — fails at execution.
-		{"bad literal", "SELECT id FROM t WHERE id = 'not-a-number'"},
+		{"unknown table", "SELECT * FROM nosuchtable", SurfacePlan},
+		// Comparing a BIGINT column against a string literal: the planner rejects the operand
+		// types, so this never reaches the executor.
+		{"bad literal", "SELECT id FROM t WHERE id = 'not-a-number'", SurfacePlan},
+
+		// ---- rows surface: plans fine, fails while producing rows.
+		// Division by zero on the first row. Written against a COLUMN (id - 1 with id = 1) rather
+		// than the constant `id / 0`, so constant folding cannot move the failure into the planner
+		// and quietly return this case to the plan surface.
+		{"divide by zero", "SELECT id / (id - 1) FROM t", SurfaceRows},
+		// A cast that is well-typed but fails on the actual data.
+		{"failing cast", "SELECT CAST(name AS BIGINT) FROM t", SurfaceRows},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -321,8 +342,8 @@ func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
 			out, err := Capture(Scenario{
 				Name:   "err-" + tc.name,
 				Seed:   99,
-				Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))"},
-				Data:   []string{"INSERT INTO t (id) VALUES (1)"},
+				Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))"},
+				Data:   []string{"INSERT INTO t (id, name) VALUES (1, 'x')"},
 				// A good query first, so the failure is not the very first thing captured and
 				// the guard cannot pass by accident of ordering.
 				Queries: []string{"SELECT id FROM t ORDER BY id", tc.query},
@@ -334,6 +355,16 @@ func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
 			if out != "" {
 				t.Fatalf("Capture returned text alongside its error; GOLDEN_UPDATE=1 must have "+
 					"nothing to write. Got:\n%s", out)
+			}
+			var ce *CaptureError
+			if !errors.As(err, &ce) {
+				t.Fatalf("Capture error is not a *CaptureError, so no test can tell which guard "+
+					"produced it: %v", err)
+			}
+			if ce.Surface != tc.surface {
+				t.Fatalf("failed on the %s surface, want %s. This case no longer exercises the "+
+					"guard it was added for; the %s guard may now have no case at all. Error: %v",
+					ce.Surface, tc.surface, tc.surface, err)
 			}
 			for _, marker := range []string{"PLAN-ERR", "ROWS-ERR"} {
 				if strings.Contains(err.Error(), marker) {

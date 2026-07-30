@@ -204,6 +204,117 @@ func TestDSTSeamGate(t *testing.T) {
 	}
 }
 
+// TestScanLimiterStateArmingIsSeamed pins the reachability fact that keeps
+// recordlayer.resolveScanLimiterState's fallback harmless.
+//
+// That fallback mints a fresh ScanLimiterState with NewScanLimiterState() — a WALL-CLOCK anchor —
+// whenever ExecuteProperties arrives without a ScanState (any value built as a raw struct literal
+// instead of through DefaultExecuteProperties). Nothing in the type system stops a leaf cursor
+// from getting one INSIDE a simulation, where every clock read is supposed to come from the env.
+// It is harmless today for one reason only: the time budget is what makes the clock consequential
+// — it decides where a page ends and therefore which continuation the caller gets back — and the
+// single production site that arms a time limit builds its properties through the SEAMED
+// constructor, so the ScanState it threads through is always env-anchored.
+//
+// That is a fact about call sites, not a property of the code, so it needs a gate rather than a
+// comment. The gate is deliberately function-scoped: it is not enough that the seamed constructor
+// appears somewhere in the file, because the value that reaches WithTimeLimit is the one built in
+// the SAME function.
+//
+// Scope note: only TimeLimit is gated. The scanned-records and scanned-bytes budgets go through
+// the same fallback, but they count, they do not read a clock — a private counter set is the
+// documented pre-sharing behaviour there, not a determinism hole.
+func TestScanLimiterStateArmingIsSeamed(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+	files := trackedGoFiles(t, root)
+
+	const (
+		armCall   = "WithTimeLimit"
+		seamedCtr = "DefaultExecutePropertiesIn"
+		rawCtr    = "DefaultExecuteProperties"
+	)
+
+	type armSite struct {
+		where  string
+		seamed bool
+	}
+	var sites []armSite
+	fset := token.NewFileSet()
+	for _, rel := range files {
+		if !inSeamTrees(rel) || strings.HasSuffix(rel, "_test.go") {
+			continue
+		}
+		abs := filepath.Join(root, rel)
+		src, readErr := os.ReadFile(abs)
+		if readErr != nil {
+			t.Errorf("read %s: %v — a file the gate cannot read is a file it cannot clear", rel, readErr)
+			continue
+		}
+		f, err := parser.ParseFile(fset, abs, src, 0)
+		if err != nil {
+			t.Errorf("parse %s: %v — an unparseable file is scanned for NOTHING", rel, err)
+			continue
+		}
+		if isGeneratedFile(src, f) {
+			continue
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				return true
+			}
+			var arms, seamed bool
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch sel.Sel.Name {
+				case armCall:
+					arms = true
+				case seamedCtr:
+					seamed = true
+				}
+				return true
+			})
+			if arms {
+				sites = append(sites, armSite{where: rel + ":" + fn.Name.Name, seamed: seamed})
+			}
+			return true
+		})
+	}
+
+	// Anti-vacuity floor. A gate that finds no arming site at all passes for the worst possible
+	// reason: it stopped seeing the source tree, or the SQL page loop moved somewhere this scan
+	// does not reach. Either way it is no longer defending anything.
+	if len(sites) == 0 {
+		t.Fatalf("found no production call to %s under %v. That is not a clean bill of health — "+
+			"either the scan lost the source tree (check sourceTreeRoot/runfiles staging) or the "+
+			"page-budget arming site moved. Until this finds it again, nothing is gating "+
+			"recordlayer.resolveScanLimiterState's wall-clock fallback out of simulated runs.",
+			armCall, seamScannedTrees)
+	}
+
+	sort.Slice(sites, func(i, j int) bool { return sites[i].where < sites[j].where })
+	for _, s := range sites {
+		if s.seamed {
+			continue
+		}
+		t.Errorf("%s arms a time limit but does not build its ExecuteProperties with %s.\n"+
+			"    A time limit decides WHERE A PAGE ENDS, so its anchor must come from the DST env "+
+			"clock or a simulated run pages differently depending on machine speed.\n"+
+			"    Build the value with recordlayer.%s(env) — %s() and raw ExecuteProperties "+
+			"literals both leave the properties without an env-anchored ScanState, and "+
+			"resolveScanLimiterState then hands the leaf cursors a WALL-CLOCK one.",
+			s.where, seamedCtr, seamedCtr, rawCtr)
+	}
+}
+
 func inSeamTrees(rel string) bool {
 	for _, tree := range seamScannedTrees {
 		if strings.HasPrefix(rel, tree) {

@@ -623,14 +623,18 @@ func dumpRange(t *testing.T, db fdb.BackendDatabase, prefix string) []string {
 // TestDifferential_RangeOptionValidation measures which range-option errors each consumption
 // surface raises, against a real cluster.
 //
-// It exists because the two surfaces genuinely disagree, and reasoning about it from the API
-// docs gets it backwards. A row limit below -1 is range_limits_invalid(2012) on BOTH — Iterator
-// checks it inline, GetSlice reaches the same check through getRangeDir. But EXACT-without-limit
-// is exact_mode_without_limits(2210) on the ITERATOR ONLY: GetSlice never passes the streaming
-// mode down (Apple's binding goes further and overwrites it), so no real backend can raise 2210
-// from it. Adding the check to SimFDB's GetSlice "for symmetry" would have invented an error,
-// which is the same class of defect as omitting the 2012 one — a sim answering differently from
-// every real client.
+// It exists because reasoning about it from the API docs gets it backwards. A row limit below -1
+// is range_limits_invalid(2012) on both surfaces; EXACT with no row budget is
+// exact_mode_without_limits(2210) on both; and 2012 WINS over 2210 when the two could both apply
+// (EXACT with -7), because the C gate compares the limit against ROW_LIMIT_UNLIMITED and a limit
+// below it is invalid rather than unlimited.
+//
+// SCOPE, and it is a real limit of this arm: the oracle here is the PURE-GO client, not libfdb_c.
+// It can only show that SimFDB matches the Go client — if the Go client itself diverges from C,
+// this arm stays green. It did exactly that: 2210-from-GetSlice was modelled as unreachable on
+// both, on a source argument about Apple's binding rewriting the streaming mode, and both were
+// wrong together. The cgo arm that settles it is
+// pkg/fdbgo/bench:TestDifferential_ExactModeWithoutLimits.
 func TestDifferential_RangeOptionValidation(t *testing.T) {
 	t.Parallel()
 	real := getRealDB(t)

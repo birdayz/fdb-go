@@ -52,14 +52,32 @@ type simRangeResult struct {
 // Limit of -2 silently returned every row — a wrong answer no real backend gives, on the path
 // most callers use.
 //
-// The Mode check (EXACT without a limit is exact_mode_without_limits, 2210) is deliberately NOT
-// here: it belongs to Iterator alone. GetSlice ignores the streaming mode in both real backends
-// — the pure-Go client's GetSliceWithError never passes Mode to getRangeDir, and Apple's binding
-// OVERRIDES it (Exact when a limit is set, WantAll otherwise) before the C layer can validate it
-// — so a sim that raised 2210 from GetSlice would be inventing an error neither backend returns.
+// EXACT without a row budget is exact_mode_without_limits(2210) on BOTH surfaces, and the two
+// codes are ordered: 2012 wins for a limit below ROW_LIMIT_UNLIMITED(-1), because libfdb_c's
+// EXACT gate compares the limit against ROW_LIMIT_UNLIMITED and -7 is neither unlimited nor valid.
+// The order is what enforces that here — 2012 is checked first, so by the time the EXACT test runs
+// the limit is already known to be >= -1.
+//
+// The EXACT test is therefore spelled "0 or -1" for READABILITY, not for behaviour: with the 2012
+// check above it, "<= 0" is equivalent, and mutating it to "<= 0" leaves this package green. That
+// is expected and not a coverage gap. The spelling IS load-bearing in the client's GetSlice, where
+// 2012 arrives later (from getRangeDir) and "<= 0" really would answer 2210 for -7; matching the
+// spelling here keeps the two readable side by side. The client-side direction is pinned by
+// fdb:TestRangeIterator_RowLimitUnlimitedAndInvalid and bench:TestDifferential_ExactModeWithoutLimits.
+//
+// This used to be modelled as Iterator-only, on the argument that GetSlice cannot reach the check
+// because neither real backend forwards the streaming mode down: the pure-Go client's
+// GetSliceWithError did not pass Mode at all, and Apple's binding rewrites it (Exact when a limit
+// is set, WantAll otherwise). The argument was from source, not measurement, and it was wrong —
+// Apple's binding issues the FIRST batch's future eagerly with the caller's mode and only rewrites
+// the batches it fetches itself. TestDifferential_ExactModeWithoutLimits measured libfdb_c raising
+// 2210 from GetSlice; the pure-Go client was fixed to match, and this follows it.
 func validateRangeLimit(options fdb.RangeOptions) error {
 	if options.Limit < -1 {
 		return fdb.Error{Code: 2012}
+	}
+	if options.Mode == fdb.StreamingModeExact && (options.Limit == 0 || options.Limit == -1) {
+		return fdb.Error{Code: 2210}
 	}
 	return nil
 }
@@ -98,14 +116,12 @@ func (r *simRangeResult) Iterator() fdb.RangeIterator {
 	if err != nil {
 		return &rangeIter{err: err, idx: -1}
 	}
+	// Both option errors come from validateRangeLimit, for both surfaces. The Iterator used to
+	// carry its own inline EXACT check here as well; once GetSlice started raising 2210 too, that
+	// line became unreachable and was removed rather than left standing as a second guard that
+	// looks independent and is not.
 	if err := validateRangeLimit(r.options); err != nil {
 		return &rangeIter{err: err, idx: -1}
-	}
-	// EXACT without a row limit is exact_mode_without_limits(2210) (libfdb_c
-	// validate_and_update_parameters); only the explicit-Exact Iterator path can reach it. See
-	// validateRangeLimit for why GetSlice does not.
-	if r.options.Mode == fdb.StreamingModeExact && r.options.Limit <= 0 {
-		return &rangeIter{err: fdb.Error{Code: 2210}, idx: -1}
 	}
 	return &rangeIter{
 		rr:        r,

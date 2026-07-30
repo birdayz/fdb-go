@@ -47,6 +47,127 @@ func TestDifferential_RangeLimitInvalid(t *testing.T) {
 	}
 }
 
+// TestDifferential_ExactModeWithoutLimits — the OTHER half of the range-option validation, per
+// CONSUMPTION SURFACE. StreamingModeExact with no row budget is exact_mode_without_limits (2210)
+// in libfdb_c (validate_and_update_parameters, bindings/c/fdb_c.cpp); the question this measures
+// is which spellings of "no budget" trigger it and which of GetSlice/Iterator can reach it at all.
+//
+// Two things made it worth measuring rather than reading off the source:
+//
+//   - Limit -1 vs 0. The C entry point maps a zero limit to ROW_LIMIT_UNLIMITED(-1) before the
+//     EXACT check, so 0 and -1 are the same value by the time the gate sees them — but that is a
+//     two-step argument over a mutating helper, and the pure-Go client rejects both by its own
+//     `Limit <= 0` spelling. Whether the two agree is a measurement.
+//   - Which surface. Apple's binding rewrites the streaming mode inside GetSliceWithError (Exact
+//     when a limit is set, WantAll otherwise) — but only for the batches it fetches ITSELF. The
+//     FIRST batch's future is issued eagerly by getRange with the CALLER's mode
+//     (transaction.go:296), so the rewrite cannot save a GetSlice whose first fetch already
+//     carried Exact. The pure-Go client's GetSliceWithError genuinely never passes the mode down.
+//     That is a real per-surface divergence candidate, not a symmetry to assume.
+//
+// SimFDB models this per surface (pkg/simfdb/range_result.go) and its differential arm
+// (TestDifferential_RangeOptionValidation) is measured against the PURE-GO client, so nothing
+// downstream of it can catch a Go-vs-C divergence here. This is the arm that can.
+func TestDifferential_ExactModeWithoutLimits(t *testing.T) {
+	t.Parallel()
+	const pfx = "diffexact_"
+	gr := gofdb.KeyRange{Begin: gofdb.Key(pfx + "a"), End: gofdb.Key(pfx + "z")}
+	cr := cgofdb.KeyRange{Begin: cgofdb.Key(pfx + "a"), End: cgofdb.Key(pfx + "z")}
+
+	// Seed three rows so the range is non-empty: an empty range can hide a per-batch difference
+	// by never fetching a second batch.
+	if c := goErrCode(func(tx gofdb.Transaction) error {
+		for _, s := range []string{"b", "c", "d"} {
+			tx.Set(gofdb.Key(pfx+s), []byte("v"))
+		}
+		return nil
+	}); c != 0 {
+		t.Fatalf("seed: %d", c)
+	}
+
+	// Every consumption surface of one option set, on one client. Codes only.
+	//
+	// The two drain loops are deliberately NOT the same shape, because the two iterators report a
+	// failure differently: Apple's Advance() returns TRUE on error so the following Get() can
+	// surface it (range.go:225), while the pure-Go Advance() returns FALSE (range_result.go:227)
+	// and the error is only reachable from Get() afterwards. Draining the pure-Go iterator with
+	// Apple's idiom reports zero rows and no error, which is how the first cut of this probe
+	// mismeasured go{iter} as 0.
+	goProbe := func(opts gofdb.RangeOptions) (slice, iter int) {
+		slice = goErrCode(func(tx gofdb.Transaction) error {
+			_, e := tx.GetRange(gr, opts).GetSliceWithError()
+			return e
+		})
+		iter = goErrCode(func(tx gofdb.Transaction) error {
+			it := tx.GetRange(gr, opts).Iterator()
+			for it.Advance() {
+				if _, e := it.Get(); e != nil {
+					return e
+				}
+			}
+			// Advance() went false: exhaustion or failure. Get() distinguishes them (it returns
+			// a zero KeyValue and no error past the end).
+			_, e := it.Get()
+			return e
+		})
+		return slice, iter
+	}
+	cgoProbe := func(opts cgofdb.RangeOptions) (slice, iter int) {
+		slice = cgoErrCode(func(tx cgofdb.Transaction) error {
+			_, e := tx.GetRange(cr, opts).GetSliceWithError()
+			return e
+		})
+		iter = cgoErrCode(func(tx cgofdb.Transaction) error {
+			it := tx.GetRange(cr, opts).Iterator()
+			for it.Advance() {
+				if _, e := it.Get(); e != nil {
+					return e
+				}
+			}
+			return nil
+		})
+		return slice, iter
+	}
+
+	for _, c := range []struct {
+		name             string
+		mode             int // shared numbering: WantAll -1, Iterator 0, Exact 1
+		limit            int
+		wantSlice, wantI int // libfdb_c's measured code per surface
+	}{
+		// Both spellings of "no budget" are the same value by the time C's gate sees them: the
+		// entry point maps a zero limit to ROW_LIMIT_UNLIMITED(-1) first.
+		{"exact, limit 0", 1, 0, 2210, 2210},
+		{"exact, limit -1", 1, -1, 2210, 2210},
+		// Below ROW_LIMIT_UNLIMITED the limit is invalid rather than unlimited, so 2012 wins over
+		// 2210 even though the mode is EXACT. This is the ordering a "Limit <= 0" test gets wrong.
+		{"exact, limit -2", 1, -2, 2012, 2012},
+		{"exact, limit -7", 1, -7, 2012, 2012},
+		// Positive controls: a budget makes EXACT legal, and no other mode is gated at all.
+		{"exact, limit 1", 1, 1, 0, 0},
+		{"iterator, limit 0", 0, 0, 0, 0},
+		{"iterator, limit -1", 0, -1, 0, 0},
+		{"wantall, limit 0", -1, 0, 0, 0},
+	} {
+		c := c
+		gs, gi := goProbe(gofdb.RangeOptions{Mode: gofdb.StreamingMode(c.mode), Limit: c.limit})
+		cs, ci := cgoProbe(cgofdb.RangeOptions{Mode: cgofdb.StreamingMode(c.mode), Limit: c.limit})
+		t.Logf("MEASURED %-16s go{slice:%d iter:%d} cgo{slice:%d iter:%d}", c.name, gs, gi, cs, ci)
+		if gs != cs {
+			t.Errorf("%s GetSlice: DIVERGENCE go=%d cgo=%d", c.name, gs, cs)
+		}
+		if gi != ci {
+			t.Errorf("%s Iterator: DIVERGENCE go=%d cgo=%d", c.name, gi, ci)
+		}
+		if gs != c.wantSlice {
+			t.Errorf("%s GetSlice: go code=%d, want %d (libfdb_c=%d)", c.name, gs, c.wantSlice, cs)
+		}
+		if gi != c.wantI {
+			t.Errorf("%s Iterator: go code=%d, want %d (libfdb_c=%d)", c.name, gi, c.wantI, ci)
+		}
+	}
+}
+
 // TestDifferential_ConflictRangeMaxKey — addReadConflictRange/addWriteConflictRange reject an endpoint
 // past getMaxReadKey/getMaxWriteKey with key_outside_legal_range (2004) (ReadYourWrites.actor.cpp:1954
 // read / :2466 write). Go used to check only inverted (begin>end). Crucially this exercises the
