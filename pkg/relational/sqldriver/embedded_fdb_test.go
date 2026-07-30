@@ -102,18 +102,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
 
-	fmt.Fprintln(os.Stderr, "=== LEG IDENTITY CENSUS ===")
-	for _, site := range values.LegIdentitySites() {
-		c := values.LegIdentityCensusOf(site)
-		fmt.Fprintf(os.Stderr, "%-52s total=%-8d exact=%-8d foldOnly=%-4d neither=%d\n",
-			site.String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
-		if len(c.FoldOnlySamples) > 0 {
-			fmt.Fprintf(os.Stderr, "    fold-only witnesses: %v\n", c.FoldOnlySamples)
-		}
-		if len(c.NeitherSamples) > 0 {
-			fmt.Fprintf(os.Stderr, "    neither witnesses: %v\n", c.NeitherSamples)
-		}
-	}
+	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -124,17 +113,23 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // whole suite. A site at ZERO makes every zero asserted about it vacuous, which
 // is precisely how the previous form of this gate passed while proving nothing.
 //
-// The floors are set an order of magnitude below the measured populations
-// (rowLegsBinder 285, buriedLegWindow 567, text-vs-identity 3115, hoist 1000,
-// finalizeSeedWindows 1263, expressionOutputLegs 3227 — identical across three
-// consecutive full-suite runs). That gap is deliberate: the corpus grows and
-// shrinks with unrelated work, and a floor set at the measured value would fail
-// on churn rather than on a site going dark. What the floor detects is COLLAPSE
-// — a producer stopping, a reader being routed around, a rule that no longer
-// fires — not drift.
+// The floors are set an order of magnitude below the measured populations, and
+// that gap is doing TWO jobs. The corpus grows and shrinks with unrelated work,
+// so a floor at the measured value would fail on churn rather than on a site
+// going dark — and the populations themselves are NOT stable run to run.
+// Successive full-suite measurements of the same tree gave text-vs-identity
+// 3115 / 3270 / 3320 and hoist ~1000-1030; only rowLegsBinder (285) and
+// buriedLegWindow (567) repeated exactly. The variance is planning-side: the
+// memo may explore a rule once or many times for one query depending on
+// exploration order, and several sites sit inside rules. What the floor detects
+// is COLLAPSE — a producer stopping, a reader being routed around, a rule that
+// no longer fires — not drift, and it is set loosely enough that the observed
+// variance cannot reach it.
 //
-// The hoist site's total counts Cascades rule FIRINGS, not queries, so it is the
-// most refire-sensitive of the six; its floor is the loosest for that reason.
+// The hoist site's total counts Cascades rule FIRINGS rather than queries, so it
+// is the most refire-sensitive of the eight; its floor is the loosest for that
+// reason. All eight sites are floored — a site left out of this map is a site
+// whose zeros are unprotected against going vacuous.
 var legIdentityFloors = map[values.LegIdentitySite]int64{
 	values.LegSiteRowLegsBinder:          32,
 	values.LegSiteBuriedLegWindow:        64,
@@ -147,51 +142,26 @@ var legIdentityFloors = map[values.LegIdentitySite]int64{
 }
 
 // assertLegIdentityCensus checks the whole-suite census and reports whether it
-// failed. It is skipped when the corpus was NARROWED by -test.run: the floors
-// describe the full suite, so a filtered invocation would fail them for a reason
-// that says nothing about the code. The skip is announced, so a filtered run is
-// never mistaken for a passing gate.
+// failed.
+//
+// Only the population FLOORS are corpus-shaped, so only they are dropped when
+// -test.run narrows the run: the fold-only, unstated, text-vs-identity-divergence
+// and mixed-instrument zeros hold over ANY population, one query or eighty
+// thousand firings, and a filtered invocation checks them exactly as the full
+// suite does. The earlier form returned before all of them and announced only
+// that the floors were unchecked, so a focused run reported a passing gate while
+// four assertions had silently not run.
 func assertLegIdentityCensus(w io.Writer) bool {
+	floors := legIdentityFloors
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus; the floors describe the whole suite)\n",
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
+			"The fold-only, unstated, text-vs-identity and instrument-channel zeros ARE "+
+			"checked — they hold over any population.\n",
 			f.Value.String())
-		return false
+		floors = nil
 	}
-	failed := false
-	for _, site := range values.LegIdentitySites() {
-		c := values.LegIdentityCensusOf(site)
-		if floor, ok := legIdentityFloors[site]; ok && c.Total < floor {
-			failed = true
-			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want >= %d.\n"+
-				"  A site the suite no longer reaches makes every zero asserted about it\n"+
-				"  VACUOUS. Either the shapes that drive it stopped being planned, or a\n"+
-				"  reader was routed around. Find out which before adjusting this floor.\n",
-				site, c.Total, floor)
-		}
-		if c.FoldOnlyEqual != 0 {
-			failed = true
-			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported FoldOnlyEqual = %d, want 0.\n"+
-				"  A leg is STORED under one spelling and LOOKED UP under another, so this\n"+
-				"  site being exact (values.SameLeg) binds a different row than folding would.\n"+
-				"  Witnesses: %v.\n"+
-				"  The fix belongs at the PRODUCER that normalizes one side, not in the\n"+
-				"  comparison: SameLeg is exact because the alias namespaces here are\n"+
-				"  case-DISJOINT (a quoted \"q$5\" must not forge a planner-minted q$5).\n",
-				site, c.FoldOnlyEqual, c.FoldOnlySamples)
-		}
-		if values.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
-			failed = true
-			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Neither = %d of Total = %d, want 0.\n"+
-				"  A leg's TEXT and its IDENTITY name different things. The readers compare\n"+
-				"  through the identity while the dotted channel still reads the text, so the\n"+
-				"  two channels have DIVERGED and Name can no longer be retired by asserting\n"+
-				"  they agree. Find the producer that sets one without the other — an empty\n"+
-				"  Alias against a stated Name lands here too. Witnesses: %v.\n",
-				site, c.Neither, c.Total, c.NeitherSamples)
-		}
-	}
-	return failed
+	return values.AssertLegIdentityCensus(w, floors)
 }
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose

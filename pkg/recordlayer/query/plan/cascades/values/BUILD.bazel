@@ -12,6 +12,7 @@ go_library(
         "functional_dependency.go",
         "leaf_value.go",
         "leg_identity_census.go",
+        "leg_identity_census_report.go",
         "like_match.go",
         "map_field_values.go",
         "ordinal_join_seed.go",

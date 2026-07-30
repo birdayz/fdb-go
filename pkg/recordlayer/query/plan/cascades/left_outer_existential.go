@@ -89,8 +89,13 @@ func rebaseOuterLegValueOrdinal(
 					// planning artifact; only its zero fold-only population is a fact
 					// about the corpus.
 					if values.LegIdentityCensusEnabled() {
-						values.RecordLegIdentityComparison(
-							values.LegSiteLeftOuterExistential, leg.Name, qov.Correlation.Name())
+						// RETIRED PREDICATE: `leg.Name == alias`, where alias is the UPPER
+						// fold of this correlation — one of the two sites that folded a side
+						// before comparing. A fold-only count cannot see what such a
+						// predicate did differently, so the census records the verdict.
+						values.RecordLegIdentityConversion(
+							values.LegSiteLeftOuterExistential, leg.Alias, qov.Correlation,
+							leg.Name == alias)
 						values.RecordLegIdentityLeg(leg)
 					}
 					// The drift check asks an IDENTITY question — "is this correlation a

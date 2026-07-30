@@ -37,6 +37,27 @@ import (
 // The corpus pass that reads them lives in the conformance harness, which can
 // import this package while a test in here could not import the harness back —
 // the same containment the ordering-comparison census settled on.
+//
+// AN INSTRUMENT MUST RECORD THE PAIR ITS SITE ACTUALLY EVALUATES. The first form
+// of this census took two STRINGS, so a site that had been converted to compare
+// identities could only report its leg's TEXT against the counterparty's text —
+// and reported ExactEqual for a pair the shipped comparison DECLINED. That is not
+// a weak measurement, it is a measurement of a different program: one converted
+// reader's census said ("Q$5","Q$5") while its comparison evaluated
+// ("q$5","Q$5") and returned false, so a match had become a decline on live
+// traffic with the gate green. Hence two channels, and a structural guard that a
+// site uses exactly one:
+//
+//   - RecordLegIdentityPair takes two CorrelationIdentifiers and classifies them
+//     the way SameLeg decides — the channel for every reader that compares
+//     identities;
+//   - RecordLegIdentityComparison takes two strings — the channel for the sites
+//     whose comparison genuinely IS text (the seed-window map key) and for the
+//     divergence censuses that pair a leg's own two spellings.
+//
+// legCensusChannel records which one a site used and reports MIXED if a site ever
+// uses both, so the claim "this site's numbers describe its comparison" is
+// checked rather than asserted in a comment.
 
 // LegIdentitySite identifies one leg-identity comparison site.
 type LegIdentitySite int
@@ -186,6 +207,23 @@ type LegIdentityCensus struct {
 	// names the offending pair instead of merely reporting a number.
 	FoldOnlySamples []string
 
+	// Unstated is the pairs where at least one side is the ZERO
+	// CorrelationIdentifier. It exists only on the identity channel: SameLeg
+	// declines an unstated identifier unconditionally (SameLeg(zero, zero) used to
+	// be true, and two omissions agreeing is how a leg bound the wrong row), so
+	// such a pair is neither a match nor an ordinary miss — it is a leg whose
+	// identity was never sourced. Counting it apart keeps ExactEqual/FoldOnlyEqual/
+	// Neither meaning what they say on the identity channel.
+	//
+	// The TEXT channel has no equivalent bucket: there, "" is just a string, and a
+	// leg with no text is skipped by its producers before the comparison.
+	Unstated int64
+
+	// UnstatedSamples names the offending sides, same service as the other two
+	// witness sets — an unstated identity is diagnosable only by which side is
+	// blank and what the other one was.
+	UnstatedSamples []string
+
 	// NeitherSamples is the same service for the Neither population, and it is
 	// collected ONLY at the sites where Neither is the asserted-zero
 	// (LegSiteNeitherMustBeZero). At a genuine COMPARISON site Neither is the
@@ -195,10 +233,78 @@ type LegIdentityCensus struct {
 	// a leg whose two spellings name different things.
 	//
 	// This exists because it was needed: retyping the nested-loop join plan's leg
-	// identities reported Neither = 12 over 79040, and a bare 12 cannot be
+	// identities reported Neither = 12 over ~80k firings, and a bare 12 cannot be
 	// diagnosed. The rule generalizes — whichever population a site's assertion
 	// requires to be zero is the population that must name its witnesses.
 	NeitherSamples []string
+
+	// RetiredVerdictDivergent is the pairs on which the predicate the site USED TO
+	// evaluate disagrees with the identity predicate it evaluates NOW. It is the
+	// conversion delta measured DIRECTLY, and it is the only population that
+	// answers the question the conversion actually raises.
+	//
+	// The three zeros above do not answer it, and reasoning from them is what let a
+	// converted reader be reported clean. FoldOnlyEqual catches a match that became
+	// a decline only when the retired predicate was exact-on-text; two of these
+	// sites upper-FOLDED one side, so their retired predicate could match a pair
+	// this one declines for a reason no fold-only count sees. And a DECLINE that
+	// became a MATCH is invisible to every one of them — a leg whose identity is a
+	// lowercase machine mint matches itself exactly while the retired
+	// upper-folding predicate rejected it, and that pair lands in ExactEqual,
+	// indistinguishable from a pair both predicates accepted.
+	//
+	// Zero here means the conversion is representation-only ON THIS CORPUS, which
+	// is the claim the migration makes. A nonzero value names a shape whose row
+	// binding changed and must be justified as a FIX with a test, not measured
+	// away.
+	RetiredVerdictDivergent int64
+
+	// RetiredVerdictSamples names the divergent pairs, in the form
+	// "leg vs corr (retired=match|decline)", so a nonzero count says which
+	// direction flipped as well as where.
+	RetiredVerdictSamples []string
+
+	// Channel is which namespace the site recorded in — see LegCensusChannel. It
+	// is observed, not declared, so a site whose instrument drifts away from its
+	// comparison is reported instead of believed.
+	Channel LegCensusChannel
+}
+
+// LegCensusChannel is the namespace a site's recorded pairs live in.
+//
+// It is set by whichever Record function the site calls and is never declared in
+// a table, because a table is exactly what went wrong: the sites were DOCUMENTED
+// as comparing identities while their instrument recorded text, and no mechanism
+// noticed. A site that records in both namespaces reports LegChannelMixed, which
+// the corpus gate treats as a failure — its numbers then describe neither
+// comparison.
+type LegCensusChannel int32
+
+const (
+	// LegChannelNone is a site nothing recorded at.
+	LegChannelNone LegCensusChannel = 0
+	// LegChannelText is a site whose pairs are two strings, compared as text.
+	LegChannelText LegCensusChannel = 1
+	// LegChannelIdentity is a site whose pairs are two CorrelationIdentifiers,
+	// classified the way SameLeg decides.
+	LegChannelIdentity LegCensusChannel = 2
+	// LegChannelMixed is a site that recorded in both — an instrument that cannot
+	// be read.
+	LegChannelMixed LegCensusChannel = 3
+)
+
+// String names the channel for report and failure text.
+func (c LegCensusChannel) String() string {
+	switch c {
+	case LegChannelText:
+		return "text"
+	case LegChannelIdentity:
+		return "identity"
+	case LegChannelMixed:
+		return "MIXED"
+	default:
+		return "unrecorded"
+	}
 }
 
 // LegSiteNeitherMustBeZero reports whether a site's Neither population is a
@@ -237,6 +343,11 @@ var (
 	legCensusEnabled atomic.Bool
 	legCensus        [legIdentitySiteCount]LegIdentityCensus
 
+	// legCensusChannel is the observed namespace per site, ORed from the channel
+	// each Record call belongs to: text|identity == LegChannelMixed, so a site that
+	// records both is detected without any site declaring anything.
+	legCensusChannel [legIdentitySiteCount]atomic.Int32
+
 	// legSampleMu guards the sample slices only. The counters are atomic and
 	// lock-free; sampling happens only on the FoldOnlyEqual path, which is the
 	// population whose zero is being proven, so the lock is uncontended whenever
@@ -274,6 +385,7 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 	if site < 0 || site >= legIdentitySiteCount {
 		return
 	}
+	legCensusChannel[site].Or(int32(LegChannelText))
 	c := &legCensus[site]
 	atomic.AddInt64(&c.Total, 1)
 	switch {
@@ -281,25 +393,115 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 		atomic.AddInt64(&c.ExactEqual, 1)
 	case strings.EqualFold(legName, corrName):
 		atomic.AddInt64(&c.FoldOnlyEqual, 1)
-		recordSample(site, legName, corrName, false)
+		recordSample(site, legName, corrName, sampleFoldOnly)
 	default:
 		atomic.AddInt64(&c.Neither, 1)
 		if LegSiteNeitherMustBeZero(site) {
-			recordSample(site, legName, corrName, true)
+			recordSample(site, legName, corrName, sampleNeither)
 		}
 	}
 }
 
-// recordSample retains a distinct witness for one of a site's two indictable
+// RecordLegIdentityConversion is RecordLegIdentityPair plus the acceptance test
+// the conversion needs: retiredVerdict is what the predicate this site USED TO
+// evaluate says about this same pair, and a disagreement with SameLeg is counted
+// and witnessed.
+//
+// Every converted site must use this rather than RecordLegIdentityPair while the
+// migration is open. Computing the retired predicate at the site costs a string
+// compare inside the census gate — production never evaluates it — and it is what
+// turns "the conversion is representation-only" from three inferences chained
+// across separate zero counts into one measurement of the decision itself. The
+// retired predicates are not uniform (two sites compared exact text, two
+// upper-folded one side), so no single central rule could stand in for them; each
+// site states its own, verbatim.
+//
+// Callers must guard on LegIdentityCensusEnabled().
+func RecordLegIdentityConversion(site LegIdentitySite, leg, corr CorrelationIdentifier, retiredVerdict bool) {
+	RecordLegIdentityPair(site, leg, corr)
+	if site < 0 || site >= legIdentitySiteCount {
+		return
+	}
+	if retiredVerdict == SameLeg(leg, corr) {
+		return
+	}
+	atomic.AddInt64(&legCensus[site].RetiredVerdictDivergent, 1)
+	verdict := "decline"
+	if retiredVerdict {
+		verdict = "match"
+	}
+	recordSample(site, leg.Name(), corr.Name()+" (retired="+verdict+")", sampleRetired)
+}
+
+// RecordLegIdentityPair records the pair a site's IDENTITY comparison actually
+// evaluates: the leg's own CorrelationIdentifier against the counterparty
+// correlation's. Every site that decides with values.SameLeg must use this and not
+// the string form — a site whose comparison is exact-on-identifiers and whose
+// census is exact-on-text can report a MATCH for a pair the comparison DECLINES,
+// which is how a converted reader was reported clean while its instrument
+// described a different program.
+//
+// Classification mirrors SameLeg exactly, so the census cannot disagree with the
+// decision it is measuring: an unstated side is Unstated (SameLeg declines it),
+// byte-equal is ExactEqual, case-equal is FoldOnlyEqual — the pairs a folding
+// comparison would have matched and this one does not — and anything else is
+// Neither.
+//
+// A converted site wants RecordLegIdentityConversion instead: this function's
+// populations describe the pair, not the change in verdict.
+//
+// Callers must guard on LegIdentityCensusEnabled().
+func RecordLegIdentityPair(site LegIdentitySite, leg, corr CorrelationIdentifier) {
+	if site < 0 || site >= legIdentitySiteCount {
+		return
+	}
+	legCensusChannel[site].Or(int32(LegChannelIdentity))
+	c := &legCensus[site]
+	atomic.AddInt64(&c.Total, 1)
+	switch {
+	case leg.IsZero() || corr.IsZero():
+		atomic.AddInt64(&c.Unstated, 1)
+		recordSample(site, leg.Name(), corr.Name(), sampleUnstated)
+	case leg.Name() == corr.Name():
+		atomic.AddInt64(&c.ExactEqual, 1)
+	case strings.EqualFold(leg.Name(), corr.Name()):
+		atomic.AddInt64(&c.FoldOnlyEqual, 1)
+		recordSample(site, leg.Name(), corr.Name(), sampleFoldOnly)
+	default:
+		atomic.AddInt64(&c.Neither, 1)
+		if LegSiteNeitherMustBeZero(site) {
+			recordSample(site, leg.Name(), corr.Name(), sampleNeither)
+		}
+	}
+}
+
+// legSampleKind selects which of a site's indictable populations a witness names.
+type legSampleKind int
+
+const (
+	sampleFoldOnly legSampleKind = iota
+	sampleNeither
+	sampleUnstated
+	sampleRetired
+)
+
+// recordSample retains a distinct witness for one of a site's indictable
 // populations.
-func recordSample(site LegIdentitySite, legName, corrName string, neither bool) {
+func recordSample(site LegIdentitySite, legName, corrName string, kind legSampleKind) {
 	w := legName + " vs " + corrName
 	legSampleMu.Lock()
 	defer legSampleMu.Unlock()
 	c := &legCensus[site]
-	dst := &c.FoldOnlySamples
-	if neither {
+	var dst *[]string
+	switch kind {
+	case sampleNeither:
 		dst = &c.NeitherSamples
+	case sampleUnstated:
+		dst = &c.UnstatedSamples
+	case sampleRetired:
+		dst = &c.RetiredVerdictSamples
+	default:
+		dst = &c.FoldOnlySamples
 	}
 	for _, s := range *dst {
 		if s == w {
@@ -328,14 +530,21 @@ func LegIdentityCensusOf(site LegIdentitySite) LegIdentityCensus {
 	legSampleMu.Lock()
 	samples := append([]string(nil), c.FoldOnlySamples...)
 	neitherSamples := append([]string(nil), c.NeitherSamples...)
+	unstatedSamples := append([]string(nil), c.UnstatedSamples...)
+	retiredSamples := append([]string(nil), c.RetiredVerdictSamples...)
 	legSampleMu.Unlock()
 	return LegIdentityCensus{
-		Total:           atomic.LoadInt64(&c.Total),
-		ExactEqual:      atomic.LoadInt64(&c.ExactEqual),
-		FoldOnlyEqual:   atomic.LoadInt64(&c.FoldOnlyEqual),
-		Neither:         atomic.LoadInt64(&c.Neither),
-		FoldOnlySamples: samples,
-		NeitherSamples:  neitherSamples,
+		Total:                   atomic.LoadInt64(&c.Total),
+		ExactEqual:              atomic.LoadInt64(&c.ExactEqual),
+		FoldOnlyEqual:           atomic.LoadInt64(&c.FoldOnlyEqual),
+		Neither:                 atomic.LoadInt64(&c.Neither),
+		Unstated:                atomic.LoadInt64(&c.Unstated),
+		RetiredVerdictDivergent: atomic.LoadInt64(&c.RetiredVerdictDivergent),
+		FoldOnlySamples:         samples,
+		NeitherSamples:          neitherSamples,
+		UnstatedSamples:         unstatedSamples,
+		RetiredVerdictSamples:   retiredSamples,
+		Channel:                 LegCensusChannel(legCensusChannel[site].Load()),
 	}
 }
 
@@ -359,7 +568,12 @@ func ResetLegIdentityCensus() {
 		atomic.StoreInt64(&c.ExactEqual, 0)
 		atomic.StoreInt64(&c.FoldOnlyEqual, 0)
 		atomic.StoreInt64(&c.Neither, 0)
+		atomic.StoreInt64(&c.Unstated, 0)
+		atomic.StoreInt64(&c.RetiredVerdictDivergent, 0)
 		c.FoldOnlySamples = nil
 		c.NeitherSamples = nil
+		c.UnstatedSamples = nil
+		c.RetiredVerdictSamples = nil
+		legCensusChannel[i].Store(int32(LegChannelNone))
 	}
 }

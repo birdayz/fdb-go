@@ -229,7 +229,7 @@ func f(names []string, fv *values.FieldValue) bool { return Contains(names, fv.F
 		{
 			// Slicing the flat "ALIAS.col" name to get the qualifier is the same
 			// blind spot through a SliceExpr —
-			// pkg/relational/core/query/cascades_translator.go:5722 and
+			// pkg/relational/core/query/cascades_translator.go:5730 and
 			// pkg/relational/core/query/exists_gathered_cluster_wrap.go:131.
 			name: "map key laundered through a slice of the name",
 			want: "map key",

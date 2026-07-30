@@ -624,7 +624,10 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationIdentifier) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
 		if values.LegIdentityCensusEnabled() {
-			values.RecordLegIdentityComparison(values.LegSiteBuriedLegWindow, bl.Name, alias.Name())
+			// RETIRED PREDICATE: `bl.Name == alias` — this function took the alias as a
+			// STRING and compared it exactly against the buried leg's text.
+			values.RecordLegIdentityConversion(values.LegSiteBuriedLegWindow,
+				bl.Alias, alias, bl.Name == alias.Name())
 			values.RecordLegIdentityLeg(bl)
 		}
 		if !values.SameLeg(bl.Alias, alias) {
@@ -1544,7 +1547,12 @@ func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (
 	if b.row != nil && b.row.Type != nil {
 		for _, leg := range b.row.Type.Legs {
 			if values.LegIdentityCensusEnabled() {
-				values.RecordLegIdentityComparison(values.LegSiteRowLegsBinder, leg.Name, id.Name())
+				// RETIRED PREDICATE: `leg.Name == id.Name()` — exact on the leg's text
+				// against the correlation's own spelling. Recording it lets the census
+				// measure whether the conversion changed this binder's ANSWER, rather
+				// than only whether the pair it now compares folds equal.
+				values.RecordLegIdentityConversion(values.LegSiteRowLegsBinder,
+					leg.Alias, id, leg.Name == id.Name())
 				values.RecordLegIdentityLeg(leg)
 			}
 			// The leg's IDENTITY decides, through the one comparison every identity

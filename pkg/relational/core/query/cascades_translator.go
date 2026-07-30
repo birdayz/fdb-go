@@ -3699,8 +3699,16 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
 			if values.LegIdentityCensusEnabled() {
-				values.RecordLegIdentityComparison(
-					values.LegSiteOrdinalSlotInLegWindow, lw.Name, leg.Name())
+				// RETIRED PREDICATE: `lw.Name == strings.ToUpper(leg.Name())` — this
+				// function took the qualifier as a string and every caller passed the
+				// UPPER fold of the correlation. Recording the verdict is what makes the
+				// conversion's claim checkable: a fold-only count over the identity pair
+				// sees a match that became a decline, but NOT a decline that became a
+				// match (a lowercase machine-minted leg matches itself exactly while the
+				// folding predicate rejected it, and that pair lands in ExactEqual).
+				values.RecordLegIdentityConversion(
+					values.LegSiteOrdinalSlotInLegWindow, lw.Alias, leg,
+					lw.Name == strings.ToUpper(leg.Name()))
 				values.RecordLegIdentityLeg(lw)
 			}
 			// "Does this correlation name that leg window?" — the same IDENTITY

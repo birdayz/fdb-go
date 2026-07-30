@@ -580,3 +580,74 @@ func TestOuterConjunctNarrowing(t *testing.T) {
 		}
 	}
 }
+
+// TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair pins that this site's
+// census instrument reports the pair its COMPARISON evaluates, not the leg's text
+// against the correlation's.
+//
+// This is the acceptance-instrument defect, pinned at the one site where it had
+// consequences. The comparison here is values.SameLeg(lw.Alias, leg) — exact on
+// identifiers. The instrument recorded (lw.Name, leg.Name()) — exact on text. For
+// a MINTED leg those two disagree: the identity is the lowercase "q$N" the
+// quantifier owns, the Name is the UPPER fold the text channel carries, and a read
+// qualified by the upper spelling therefore records an exact MATCH while the
+// comparison DECLINES. The census reported the site clean over the whole corpus
+// while describing a different program.
+//
+// The forged leg below uses a spelling no other test drives, so the assertion is
+// safe under t.Parallel: these counters are package-scoped and monotonic, so a
+// sibling can only ADD traffic, never remove this witness. Asserting on the
+// WITNESS rather than on a count is what makes that true.
+func TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair(t *testing.T) {
+	t.Parallel()
+	if !values.LegIdentityCensusEnabled() {
+		t.Fatal("this package's TestMain enables the leg-identity census for the whole " +
+			"corpus; without it this test measures nothing")
+	}
+	// A MINTED leg: identity "zz$9" (the machine namespace is lowercase), Name the
+	// UPPER fold the text channel stores. Exactly the shape finalizeSeedWindows
+	// emits, where Name comes from the upper-folded window map KEY and Alias from
+	// the window's own correlation.
+	rt := &values.RecordType{
+		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("zz$9"), "ZZ$9", 0, 1),
+		},
+	}
+	// The forgery read: qualified by the leg's NAME, which is not its identity.
+	if _, ok := ordinalSlotInLegWindow(rt, values.NamedCorrelationIdentifier("ZZ$9"), "ID", true); ok {
+		t.Error("a read qualified by a minted leg's upper-folded NAME must DECLINE — " +
+			"the identity is the lowercase mint, and matching Name is a text claim " +
+			"dressed as an identity check")
+	}
+	c := values.LegIdentityCensusOf(values.LegSiteOrdinalSlotInLegWindow)
+	if c.Channel != values.LegChannelIdentity {
+		t.Errorf("census channel = %v, want identity — this site decides with SameLeg, "+
+			"so its recorded pair must be the two identifiers", c.Channel)
+	}
+	if !containsWitness(c.FoldOnlySamples, "zz$9 vs ZZ$9") {
+		t.Errorf("fold-only witnesses = %v, want one naming \"zz$9 vs ZZ$9\".\n"+
+			"  The instrument is recording the leg's TEXT against the correlation, so it\n"+
+			"  scored this pair EXACT while the comparison declined it. A census that\n"+
+			"  cannot see the decision it measures cannot license the conversion.",
+			c.FoldOnlySamples)
+	}
+	// And the verdict channel must see it as a CHANGE: the retired predicate here
+	// was `lw.Name == strings.ToUpper(leg.Name())`, which matches this pair.
+	if !containsWitness(c.RetiredVerdictSamples, "zz$9 vs ZZ$9 (retired=match)") {
+		t.Errorf("retired-verdict witnesses = %v, want one naming "+
+			"\"zz$9 vs ZZ$9 (retired=match)\" — the retired text predicate MATCHED this "+
+			"pair, so the conversion changed this read's answer and the census must say so",
+			c.RetiredVerdictSamples)
+	}
+}
+
+// containsWitness reports whether a census witness set names w.
+func containsWitness(set []string, w string) bool {
+	for _, s := range set {
+		if s == w {
+			return true
+		}
+	}
+	return false
+}
