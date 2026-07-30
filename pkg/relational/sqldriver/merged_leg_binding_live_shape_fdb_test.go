@@ -266,10 +266,12 @@ func TestFDB_MergedLegBinding_LiveBoxGatherShape(t *testing.T) {
 		if n := reads[leg]; mergedLegReadIsAlarm(n) {
 			t.Fatalf("leg %s's binder-produced window was READ %d time(s).\n\n"+
 				"  This is a CHANGE OF FINDING, not necessarily a bug. The merged-leg\n"+
-				"  binder was measured to have NO reader on any box-gather shape: over a\n"+
-				"  full sqldriver run its bindings were looked up three times, all on a\n"+
-				"  two-leg FROM ST, OT merge and none here, and both neutering it and\n"+
-				"  pointing every window at the wrong slot left the whole suite green.\n\n"+
+				"  binder was measured to have NO reader on THIS box-gather shape: over a\n"+
+				"  full sqldriver run its bindings were looked up six times (three from\n"+
+				"  the corpus, three more from the redundancy pin's own active route),\n"+
+				"  every one on a two-leg FROM ST, OT merge and none here, and both\n"+
+				"  neutering it and pointing every window at the wrong slot left the\n"+
+				"  whole suite green.\n\n"+
 				"  A reader existing changes three things at once:\n"+
 				"    - the SHADOWING semantics in DIVERGENCES.md (a leg shadows an\n"+
 				"      enclosing binding for the duration of the inner) stop being\n"+

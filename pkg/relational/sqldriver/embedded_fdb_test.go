@@ -216,26 +216,10 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 	// today (the correlated-EXISTS inner-shadow shape), and it is excused only
 	// because TestFDB_MergedLegBinding_ReaderShapeIsRedundant ran the same query
 	// down BOTH resolution routes in this process and got the same rows. That test
-	// registers the alias on its passing path only, so a divergence fails it,
-	// leaves the registry empty, and turns these same reads into a red gate. There
-	// is no wording here that can keep the exclusion once the proof stops holding.
-	redundant := executor.RedundantMergedLegReaders()
-	var mergedReads, excusedReads int
-	var mergedNames, excusedNames []string
-	for alias, n := range executor.MergedRowLegReads() {
-		if n <= 0 {
-			continue
-		}
-		if why, proven := redundant[alias]; proven {
-			excusedReads += n
-			excusedNames = append(excusedNames, fmt.Sprintf("%s x%d (proven by %s)", alias, n, why))
-			continue
-		}
-		mergedReads += n
-		mergedNames = append(mergedNames, fmt.Sprintf("%s x%d", alias, n))
-	}
-	sort.Strings(mergedNames)
-	sort.Strings(excusedNames)
+	// registers on its passing path only, so a divergence fails it, leaves the
+	// registry empty, and turns these same reads into a red gate. There is no
+	// wording here that can keep the exclusion once the proof stops holding.
+	mergedReads, mergedNames, excusedReads, excusedNames := partitionMergedRowReads(executor.MergedRowLegReads(), executor.RedundantMergedLegReaders())
 	if excusedReads > 0 {
 		fmt.Fprintf(w, "merged-leg binding census: %d merged-row read(s) excused as "+
 			"PROVEN REDUNDANT this run: %s\n",
@@ -258,12 +242,17 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 				"  planner-side producer, the leg-local bake, is deleted on this branch\n"+
 				"  and returns with CQ-63, so a read appearing while Baked is still 0\n"+
 				"  means a consumer arrived by some OTHER route.\n\n"+
-				"  TWO WAYS TO GET HERE, and they need opposite responses:\n"+
+				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
 				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
 				"      agree, the way TestFDB_MergedLegBinding_ReaderShapeIsRedundant\n"+
 				"      does for the shape already known. If they agree, extend that\n"+
 				"      proof to the new shape; if they do not, the binder has become\n"+
 				"      load-bearing — see below.\n"+
+				"    - an ALREADY-EXCUSED alias read out of a DIFFERENT merged row.\n"+
+				"      The listed shape will share its alias with an excused one and\n"+
+				"      differ in the layout. This is a new reader wearing a familiar\n"+
+				"      name; treat it as the first case. Do NOT widen the exclusion to\n"+
+				"      the bare alias — that is the unsound key this gate moved off.\n"+
 				"    - the KNOWN reader losing its proof, because that test failed or\n"+
 				"      stopped running. Fix the proof; do not re-add the exclusion here.\n\n"+
 				"  A LOAD-BEARING reader changes three things at once:\n"+
@@ -278,6 +267,45 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 		}
 	}
 	return failed
+}
+
+// partitionMergedRowReads splits the multi-leg read population into the reads a
+// proof in this run excused and the reads it did not, and renders each side for
+// the gate's report.
+//
+// It is a PURE function over the two populations, separate from the gate that
+// consults the process-global census, so the one thing that decides whether the
+// alarm fires can be tested against a synthetic population — including the
+// population no corpus produces on demand: a SECOND reader of an already-excused
+// alias, out of a merged row the proof never ran.
+//
+// The excusal is keyed on the read's full identity, alias AND merged-row shape.
+// Keying it on the alias alone was the original form and it is unsound in the
+// direction that matters: it hands one query's proof the power to excuse every
+// future read of a name as common as `ST`. That is the same alias-collision
+// argument this census already accepted for CLASSIFYING reads — the corpus binds
+// twenty unrelated legs under the outer name `X` — applied to excusing them.
+func partitionMergedRowReads(
+	reads map[executor.MergedRowRead]int,
+	redundant map[executor.MergedRowRead]string,
+) (unexcusedReads int, unexcusedNames []string, excusedReads int, excusedNames []string) {
+	for read, n := range reads {
+		if n <= 0 {
+			continue
+		}
+		if why, proven := redundant[read]; proven {
+			excusedReads += n
+			excusedNames = append(excusedNames,
+				fmt.Sprintf("%s x%d out of %s (proven by %s)", read.Alias, n, read.Shape, why))
+			continue
+		}
+		unexcusedReads += n
+		unexcusedNames = append(unexcusedNames,
+			fmt.Sprintf("%s x%d out of %s", read.Alias, n, read.Shape))
+	}
+	sort.Strings(unexcusedNames)
+	sort.Strings(excusedNames)
+	return unexcusedReads, unexcusedNames, excusedReads, excusedNames
 }
 
 // mergedLegReadIsAlarm is the per-shape form of the coupled criterion above, for

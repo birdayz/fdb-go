@@ -26,6 +26,13 @@ type EvaluationContext struct {
 	// fields do — including through bindMergedOuterLegs' own derived context, which
 	// is what makes it reach the read it is aimed at.
 	mergedLegReadBypass map[string]bool
+	// mergedLegReadSink, when non-nil, receives THIS execution's binder-window
+	// reads alongside the process-global census. Rides the context for the same
+	// reason the bypass does, and for a sharper one: the census is process-global
+	// and the suite is parallel, so a before/after delta around one execution
+	// silently includes a concurrent test's reads. The pin that has to count its
+	// OWN reads cannot be built on that.
+	mergedLegReadSink *MergedLegReadSink
 }
 
 // WithMergedLegReadBypass returns a copy in which lookups of the named aliases
@@ -45,6 +52,17 @@ func (ec *EvaluationContext) WithMergedLegReadBypass(aliases ...string) *Evaluat
 	for _, a := range aliases {
 		cp.mergedLegReadBypass[a] = true
 	}
+	return &cp
+}
+
+// WithMergedLegReadSink returns a copy whose binder-window reads and declined
+// lookups are ALSO recorded into sink, scoped to this execution.
+//
+// Honoured only while the leg-identity census gate is on, like the rest of this
+// instrumentation.
+func (ec *EvaluationContext) WithMergedLegReadSink(sink *MergedLegReadSink) *EvaluationContext {
+	cp := *ec
+	cp.mergedLegReadSink = sink
 	return &cp
 }
 
@@ -226,15 +244,25 @@ func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifi
 			// what it shadowed, so the same query can be driven down the alias's
 			// OTHER resolution route in the same run. A bypassed lookup is not a
 			// read of a binder window, so it is not counted as one.
+			//
+			// On the corpus's reader shape there is nothing to hand back: every
+			// read there is of a window that shadowed NOTHING, so the bypass is a
+			// MISS — the alias resolves to no binding at all. That is the stronger
+			// of the two things this can do, and it is what the redundancy pin
+			// asserts it got, rather than assuming which one it took.
 			if ec.mergedLegReadBypass[id.Name()] {
+				ec.mergedLegReadSink.recordBypass(id.Name(), w.shadowsExisting, w.parentType)
 				return w.shadowed, w.shadowsExisting
 			}
 			// siblingLegs and shadowsExisting are stamped by the binder, which is
 			// the only site that holds the row's leg COUNT and the incoming
 			// context's prior binding; a reader has one window and cannot tell a
 			// lone leg from one of several, and the aliases it could ask about
-			// collide across queries.
-			recordMergedLegRead(id.Name(), w.siblingLegs, w.shadowsExisting)
+			// collide across queries. parentType is the merged row's type, which
+			// the window already carries — it is what the read gets keyed by, so
+			// one query's shape is not attributed to another query's alias.
+			recordMergedLegRead(id.Name(), w.siblingLegs, w.shadowsExisting, w.parentType)
+			ec.mergedLegReadSink.recordRead(id.Name(), w.siblingLegs, w.parentType)
 		}
 	}
 	return v, ok

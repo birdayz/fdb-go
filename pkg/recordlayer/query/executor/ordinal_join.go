@@ -555,13 +555,21 @@ type legWindowRow struct {
 	// shadowsExisting marks a window that DISPLACED a binding the incoming context
 	// already carried for the same alias, and shadowed holds what it displaced.
 	//
-	// This is the structural marker for "a second resolution route exists". The
-	// binder's shadowing semantics are documented in DIVERGENCES.md; what was never
-	// recorded is that when a window shadows, the alias was already resolvable
-	// WITHOUT the binder, so a read of that window is redundant rather than
-	// load-bearing — and the corpus's only reads are of exactly this kind. A window
-	// that shadows NOTHING is the opposite case: the binder is the alias's only
-	// binding, so a read of it is a genuine consumer.
+	// This is the structural marker for "a second resolution route exists": when a
+	// window shadows, the alias was already resolvable WITHOUT the binder. The
+	// binder's shadowing semantics are documented in DIVERGENCES.md.
+	//
+	// It is recorded to be MEASURED, not to be reasoned from, because the reasoning
+	// it invites is wrong. The tempting inference — a window that shadows nothing is
+	// the binder's only binding, so a read of it is a genuine consumer — was the
+	// premise this marker was added under, and the census refuted it: over a full
+	// sqldriver run ZERO of the binder's reads shadow, all of them are unshadowed,
+	// and declining them entirely still changes no row
+	// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant). "The only binding" and
+	// "load-bearing" are therefore different properties: the corpus's reads are the
+	// first without being the second, because the value they resolve never reaches
+	// an answer. Load-bearing is settled per reader shape by running both routes,
+	// not by reading this flag.
 	//
 	// Recorded only while the leg-identity census gate is on; the map probe is not
 	// something the per-outer-row path should pay for in production.
