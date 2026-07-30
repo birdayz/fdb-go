@@ -10468,3 +10468,18 @@ None is speculative: each was re-verified against the tree before booking.
   if it does not, stop and come back. The 0/2481 SQL-unreachable negative
   for the dropped translator precondition gets committed as a test naming
   what re-arms it.
+
+  AMENDMENT 2, DECISION 3 (intersection-key domain): a primary-key
+  intersection's comparison-key ordinals are domained in the COMMON RECORD
+  TYPE's row layout, never the per-index layout. The intersection's premise
+  is exactly one common record type; the keys exist for cross-leg
+  comparison, so per-index domains hand the legs different tokens and
+  collapse the merge (the failure amendment 2 predicted for naive triple
+  keying); and record-level domaining sits consistently beside the
+  RecordTypeValue discriminators in the same key list, which are also
+  record-level. The machinery exists: the candidate's rowLayouts()
+  (RFC-197 item 1). The lazy mints at match_candidate_index.go:411/:447
+  bake against that layout. Clarification for the unreachability negative:
+  "the translator branch" is applySortOverRef's positional bake
+  (k.Value == nil && k.Pos > 0 arm), measured 0/2481 because
+  upgradeSortKeyValues resolves positional keys upstream — pin THAT.
