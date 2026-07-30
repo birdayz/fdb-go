@@ -67,6 +67,11 @@ func TestLegIdentityCensus_ClassifiesExactFoldOnlyAndNeither(t *testing.T) {
 // The disabled census must record NOTHING. The gate is what keeps an atomic
 // increment out of the per-row executor path, so a leak here is both a
 // measurement bug and a hot-path regression.
+//
+// Like its sibling above, this test does NOT call t.Parallel(), and for a
+// sharper reason: it asserts the GATE's default state, which is a package-global
+// that the sibling test deliberately flips. Running the two concurrently would
+// make this one's first assertion a coin flip.
 func TestLegIdentityCensus_DisabledRecordsNothing(t *testing.T) {
 	ResetLegIdentityCensus()
 	t.Cleanup(ResetLegIdentityCensus)

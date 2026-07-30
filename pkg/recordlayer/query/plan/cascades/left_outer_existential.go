@@ -83,6 +83,11 @@ func rebaseOuterLegValueOrdinal(
 			// unreachable while windows and merged Legs stay in lockstep.
 			if rt, ok := mergedQOV.Type().(*values.RecordType); ok {
 				for _, leg := range rt.Legs {
+					// This hook sits inside a Cascades rule, so its TOTALS count rule
+					// firings, not queries: the memo may explore this hoist once or
+					// many times for one query. Read the site's absolute numbers as a
+					// planning artifact; only its zero fold-only population is a fact
+					// about the corpus.
 					if values.LegIdentityCensusEnabled() {
 						values.RecordLegIdentityComparison(
 							values.LegSiteLeftOuterExistential, leg.Name, qov.Correlation.Name())

@@ -88,10 +88,13 @@ func TestRowLegsBinder_UnstatedIdentityDoesNotBindByName(t *testing.T) {
 
 	if _, ok := b.GetCorrelationBinding(values.NamedCorrelationIdentifier("A")); ok {
 		t.Error(`a leg that STATES NO identity bound correlation A anyway — the binder ` +
-			`fell back to its Name. A producer that drops the typed alias must lose the ` +
-			`bind (a loud decline downstream), not silently keep working through text: ` +
-			`the text fallback is what lets an unstated identity go unnoticed until it ` +
-			`binds the wrong leg.`)
+			`fell back to its Name. A producer that drops the typed alias must LOSE the ` +
+			`bind, not silently keep working through text: the text fallback is what lets ` +
+			`an unstated identity go unnoticed until it binds the wrong leg. Losing the ` +
+			`bind is loud for an unpinned leg-relative baked ref and for a lazy ref ` +
+			`(UnboundEvalContextError), and a whole-row positional read for a ` +
+			`frontier-pinned one — see buriedLegWindow's comment for the per-kind ` +
+			`disposition. Text-binding an unstated leg hides all three.`)
 	}
 	// The leg that DID state its identity is unaffected — the decline is per-leg,
 	// not a whole-row failure.

@@ -11,13 +11,18 @@ import (
 // which row's slots a value reads. A wrong answer there is a wrong-rows plan, not
 // a lost optimization.
 //
-// RecordTypeLeg carries leg identity as TEXT (RecordTypeLeg.Name), and the sites
-// that consume it do NOT agree on how to compare it. Two compare exactly against
-// the counterparty correlation's own spelling; two upper-FOLD one side first.
-// Retyping the leg's identity to a CorrelationIdentifier routes every one of them
-// through values.SameLeg, which is EXACT (see its comment: alias namespaces here
-// are deliberately case-DISJOINT, so a fold lets a quoted user alias forge a
-// planner-minted q$N leg).
+// RecordTypeLeg used to carry leg identity as TEXT (RecordTypeLeg.Name) alone,
+// and the sites that consumed it did NOT agree on how to compare it: two compared
+// exactly against the counterparty correlation's own spelling, two upper-FOLDED
+// one side first. RecordTypeLeg now also carries Alias, and every reader whose
+// counterparty is a correlation goes through values.SameLeg, which is EXACT (see
+// its comment: alias namespaces here are deliberately case-DISJOINT, so a fold
+// lets a quoted user alias forge a planner-minted q$N leg).
+//
+// The census outlives that conversion. Its standing job is to keep proving the
+// premise the conversion rested on — that a leg's text and its identity name the
+// same thing everywhere — so a producer that starts storing them apart is loud
+// instead of silently rebinding rows.
 //
 // Converting a folding site to an exact one is a BEHAVIOR CHANGE for any pair
 // that folds equal but is not equal. Whether such a pair occurs in production
@@ -67,7 +72,15 @@ const (
 
 	// LegSiteLeftOuterExistential is cascades.hoistLegRefsOntoMergedRow's drift
 	// check: a leg absent from the derived windows but present in the merged
-	// type's Legs is a LOUD failure. Upper-FOLDS the correlation side today.
+	// type's Legs is a LOUD failure. It compares through SameLeg (EXACT); the
+	// recorded pair is the leg's text against the reference correlation's own
+	// spelling, so the census still sees what a folding comparison would have
+	// decided differently.
+	//
+	// Its absolute totals are a planning-time artifact, not a corpus fact: the
+	// hoist runs inside a Cascades rule, so the memo may fire it once or many
+	// times for the same query depending on exploration order. Only the RATIOS
+	// (foldOnly == 0) carry meaning across runs.
 	LegSiteLeftOuterExistential
 
 	// LegSiteFinalizeSeedWindows is values.finalizeSeedWindows' buried-sub-window

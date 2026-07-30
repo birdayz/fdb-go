@@ -220,6 +220,25 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 				"case-DISJOINT (a quoted \"q$5\" must not forge a planner-minted q$5).",
 				site, c.FoldOnlyEqual, c.FoldOnlySamples)
 		}
+		// The two IDENTITY-PAIR sites record something different from a comparison
+		// the code makes: their pair is (leg.Name, leg.Alias.Name()) for the SAME
+		// leg. There the load-bearing invariant is that a leg's two spellings AGREE
+		// — ExactEqual == Total, equivalently Neither == 0 — and FoldOnlyEqual == 0
+		// alone cannot see the failure that matters. A producer that stores Name "X"
+		// against Alias "Y" lands in Neither, leaving FoldOnlyEqual at zero while the
+		// text channel and the identity channel name different legs. That divergence
+		// is what retires Name; it must be loud, not logged.
+		switch site {
+		case values.LegSiteTextVsIdentity, values.LegSiteSelectOutputLegs:
+			if c.Neither != 0 {
+				t.Errorf("site %s: Neither = %d of Total = %d, want 0 — a leg's TEXT and "+
+					"its IDENTITY name different things. The readers now compare through "+
+					"the identity while the dotted channel still reads the text, so the "+
+					"two channels have diverged and Name can no longer be retired by "+
+					"asserting they agree. Find the producer that sets one without the "+
+					"other.", site, c.Neither, c.Total)
+			}
+		}
 	}
 	if wired == 0 {
 		t.Fatal("every leg-identity site reported ZERO comparisons — the census is not " +

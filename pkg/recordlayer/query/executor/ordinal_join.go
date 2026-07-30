@@ -596,9 +596,26 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 
 // buriedLegWindow serves the sub-window of the buried leg named `alias` within
 // a clustered box span's flat concat (RecordType.Legs bounds), or ok=false.
-// Malformed bounds are a MISS (never the run-wide window — a whole-concat read
-// would silently serve another leg's slots; the caller's miss disposition is
-// loud downstream).
+// Malformed bounds are a MISS, never the run-wide window: a whole-concat read
+// would silently serve another leg's slots.
+//
+// A miss is NOT uniformly loud downstream — the disposition depends on the
+// reference kind that failed to bind (values.FieldValue.evaluate, the
+// RowEvalContext arm):
+//   - an UNPINNED leg-relative baked root over a multi-leg row: loud
+//     (UnboundEvalContextError), because its ordinal addresses its source's own
+//     window and a whole-row read would be a wrong-slot answer;
+//   - a lazy (unbaked) reference with no positional row: loud, same error;
+//   - a FRONTIER-PINNED baked root: NOT loud. It falls through to a positional
+//     read against the whole merged row, which is correct precisely when the
+//     ordinal already indexes that row (the plan-time-baked box case) and wrong
+//     when it does not.
+//
+// So the miss path is correct-or-loud for everything except a frontier-pinned
+// ref, whose correctness rests on the baker having pinned it against the row it
+// is now read from. That is why the typed identity matters here: an unstated
+// leg alias turns a bind into a miss, and for the pinned kind the miss is
+// silent.
 func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationIdentifier) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
 		if values.LegIdentityCensusEnabled() {
