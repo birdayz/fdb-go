@@ -92,7 +92,7 @@ type Session struct {
 	// is used outside. Zero value means "no statement in flight".
 	StatementTime time.Time
 
-	// Clock is the RFC-179 Tier-0 time seam for the statement-start
+	// Clock is the RFC-199 Tier-0 time seam for the statement-start
 	// timestamp. Nil (the default) means the wall clock — production
 	// behavior is unchanged. A simulation installs a dst.SimClock so
 	// the CURRENT_TIMESTAMP-family value captured by BeginStatement is

@@ -556,7 +556,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 // sibling. This table asserts the pair's answers for EVERY logical operator
 // type; adding an operator type or an arm to one walk without updating the
 // table (and deliberately deciding the other walk's treatment) fails here
-// instead of waiting for the next reviewer.
+// instead of waiting for the next person to read it.
 //
 // The two walks legitimately DIVERGE on two classes (asserted as such):
 //   - joins: ineligible as LEGS categorically (nesting always gates fresh),

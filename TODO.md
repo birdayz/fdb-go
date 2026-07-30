@@ -34,6 +34,70 @@ work, reconstructed onto current master. Not merged: the review lap is the gate.
   had swept 400 scenarios across a range axis and a selector axis without ever
   crossing them.
 
+## DST findings
+
+The query-engine defects the RFC-199 Tier-2 hunts surfaced, and what closed each. This is
+the writeup `pkg/simfdb/hunt/metamorphic/testdata/findings/README.md`,
+`pkg/simfdb/hunt/metamorphic/corpus.go` and RFC-199 §7a cite. Every entry here is a real
+wrong-answer defect found by a SimFDB-backed oracle, not by a hand-written test — which is
+the point: none of them had an owner or a reproducer before the hunt ran.
+
+The oracles are two. The **SQL-pagination oracle** (`pkg/simfdb/hunt/sqlpage`) runs a query
+unpaged, then re-runs it at a scanned-rows limit of 1 so every row forces a continuation
+round-trip, and demands the two agree. The **metamorphic oracle**
+(`pkg/simfdb/hunt/metamorphic`) runs sets of queries that must be equivalent under SQL
+three-valued logic and demands they return the same relation; scenarios carry `ordered: true`
+when the equivalence is over an ordered sequence rather than a multiset.
+
+- [x] **Streaming DISTINCT dropped its dedup state across a resume.** The hash DISTINCT
+  operator kept its seen-set in memory per page, so a resume across a scanned-rows boundary
+  re-admitted values it had already emitted: `SELECT DISTINCT` returned duplicate rows when
+  paginated, even with `ORDER BY`. GROUP BY was unaffected (different dedup machinery), which
+  is why no existing test saw it. Fixed by carrying the seen-set through the continuation
+  (`executeHashDistinct` over `gen.DistinctHashContinuation`). Pinned by
+  `TestDistinctContinuationDedups` (`pkg/simfdb/hunt/sqlpage/distinct_continuation_test.go`),
+  which checks GROUP BY over the same data alongside it so a regression names which operator
+  broke; bare DISTINCT is back in the oracle's query sweep.
+
+- [x] **Multi-value `IN` and `UNION ALL` errored 54F01 instead of resuming.** A multi-value
+  `IN (a, b)` plans as an InJoin over a concat of per-value index scans, and `UNION ALL` plans
+  as a `RecordQueryUnionPlan` over that same concat combinator. The concat had no continuation
+  of its own, so a branch stopped mid-scan by the execution scanned-rows limit could not mint a
+  resumable token and the statement failed. Java's `InJoinCursor` resumes. Fixed by having the
+  concat serialize {active-branch index, that branch's child continuation}. Pinned as
+  correctness (paged result equals unpaged as a multiset) by `TestInJoinContinuation` and
+  `TestUnionAllContinuation`, plus `TestInJoinLimit` for the composition with `LIMIT` — a
+  per-branch limit would let each branch emit up to LIMIT rows, so the limit is cleared on each
+  inner branch and applied once at the concat, matching `executeInUnion` and Java's
+  `RecordQueryInJoinPlan`.
+
+- [x] **Aggregate-index MIN/MAX dropped an all-NULL group.** SQL `MIN`/`MAX` mapped to a
+  `MIN_EVER_LONG`/`MAX_EVER_LONG` index, which skips NULL values — so a group whose every row
+  has a NULL measure had no index entry at all and vanished from the result, while the
+  scan-backed plan for the identical query returned it with a NULL extremum. An index must not
+  change which groups exist. Fixed by mapping to `PERMUTED_MIN`/`PERMUTED_MAX`, matching Java's
+  `NumericAggregationValue.Min`/`.Max`. Pinned by
+  `pkg/simfdb/hunt/metamorphic/aggindex_sum_nullgroup_test.go` and the
+  `aggindex-minmax-allnull-group-dropped` scenario, whose two queries differ only by a no-op
+  `WHERE id IS NOT NULL` over a NOT NULL primary key — identical rows, so identical groups.
+
+- [x] **`GROUP BY … ORDER BY` placed NULLs last while `DISTINCT … ORDER BY` placed them
+  first.** The same relation under the same `ORDER BY a` came back in two different orders
+  depending on which operator produced the distinct values. NULL placement is a property of the
+  ORDER BY clause (ASC ⇒ NULLS FIRST, the Java default, and what FDB tuple encoding yields on
+  the plain-scan path), not of the chosen plan, so this was an internal inconsistency in the
+  GROUP BY aggregation+sort path. Fixed; the seed corpus now asserts the equivalence directly
+  in both directions (`groupby-orderby-null-first-matches-distinct`,
+  `groupby-orderby-desc-null-last-matches-distinct`, and the multi-key variant, all with
+  `Ordered: true` — a multiset comparison is structurally blind to this defect).
+
+**Status of the reproducer corpus (measured 2026-07-30):** all three scenarios under
+`pkg/simfdb/hunt/metamorphic/testdata/findings/` now judge clean — `3 scenarios, 10 groups |
+0 INEQUIVALENCE (real) | 0 errored | 0 setup-err` — and `go test
+./pkg/simfdb/hunt/metamorphic/... ./pkg/simfdb/hunt/sqlpage/...` passes. They are kept as
+durable reproducers rather than deleted: each one is the exact shape that broke, and the
+`ordered: true` flags are what make them able to express the defect at all.
+
 ## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
 
 Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at

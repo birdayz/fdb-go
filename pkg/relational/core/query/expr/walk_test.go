@@ -846,8 +846,8 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 	}
 }
 
-// NOT LIKE with ESCAPE — the round-6 reviewer noted this combo
-// wasn't pinned. The walker resolves the inner LIKE+ESCAPE then
+// NOT LIKE with ESCAPE — this combination wasn't previously pinned.
+// The walker resolves the inner LIKE+ESCAPE then
 // wraps in a NotPredicate, so Eval should be the negation of the
 // LIKE+ESCAPE truth table.
 func TestWalkPredicate_NotLikeEscape(t *testing.T) {

@@ -102,7 +102,7 @@ func TestFDB_GroupByInsertSelect_MultiAggregate(t *testing.T) {
 	}
 }
 
-// TestFDB_GroupByInsertSelect_Variants pins the reviewer-required axes:
+// TestFDB_GroupByInsertSelect_Variants pins the required axes:
 // lowercase arg, AS aliases, reordered SELECT, and the keys==0 HAVING shape.
 func TestFDB_GroupByInsertSelect_Variants(t *testing.T) {
 	t.Parallel()

@@ -7,7 +7,7 @@ import (
 )
 
 // TestBuildMatchMaxMatchMap_RebasesQueryValueToCandidateAlias pins the
-// load-bearing rebase in buildMatchMaxMatchMap (@claude RFC-076-step-1 finding 3):
+// load-bearing rebase in buildMatchMaxMatchMap (RFC-076-step-1):
 // the query result value must be translated from the query-side alias to the
 // candidate-side alias (via the bound alias map's source->target) BEFORE
 // MaxMatchMap.compute, and the ranged-over set must be the candidate-side

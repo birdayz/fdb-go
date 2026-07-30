@@ -11,8 +11,8 @@ import (
 // is never emitted, and "green" reads as "covered". That is how a signed-zero
 // GROUP BY defect went unfound here — the D/E columns seed -0.0, but grouping
 // keys were hard-restricted to BIGINT, so the harness was structurally
-// incapable of producing the query that would have exposed it. A reviewer had
-// to find by reading what the generator could not generate.
+// incapable of producing the query that would have exposed it. Only reading
+// what the generator could not generate surfaced the gap.
 //
 // This pins the coverage itself, so lifting the restriction cannot silently
 // regress. It is a property of the GENERATOR, not of the engine — no FDB, no

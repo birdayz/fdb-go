@@ -102,7 +102,7 @@ func TestDifferential_CancelLifecycle(t *testing.T) {
 			},
 		},
 		// Ops that BYPASS ensureReadVersion and so needed their own checkCancelled gate
-		// (FDB-C++ reviewer caught these — all silently diverged before: go=0/2015, cgo=1025).
+		// (validated against the C++ source (libfdb_c 7.3.77) — all silently diverged before: go=0/2015, cgo=1025).
 		{
 			name: "get_estimated_range_size", wantCode: 1025,
 			g: func(tr gofdb.Transaction) error {

@@ -160,7 +160,7 @@ func equalStringSlices(a, b []string) bool {
 }
 
 // TestFDB_RFC153_AggregateInnerNullExtension pins ROW correctness for the fail-closed
-// axis (the 3-reviewer NAK dimension): the null-supplying side is an AGGREGATE whose
+// axis (the unrewritten-aggregate-inner dimension): the null-supplying side is an AGGREGATE whose
 // grouping correlates to the buried preserved alias A. Its inner carries a StreamingAgg
 // node the buried-merge rebaser does not rewrite, so the verifier fail-CLOSES → the LEFT
 // OUTER declines the probe → materialized NLJ, which must null-extend correctly. A=3 has

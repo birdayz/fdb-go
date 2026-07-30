@@ -1062,7 +1062,7 @@ func (s *spfreshPKSampler) boundaries(shards int) []tuple.Tuple {
 	out := make([]tuple.Tuple, 0, shards-1)
 	for i := 1; i < shards; i++ {
 		// Copy, don't alias the sampler's internal buffer — the boundaries
-		// outlive the sampler and a future caller might mutate them (@claude).
+		// outlive the sampler and a future caller might mutate them.
 		out = append(out, append(tuple.Tuple(nil), s.pks[i*len(s.pks)/shards]...))
 	}
 	return out

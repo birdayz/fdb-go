@@ -50,7 +50,7 @@ func TestDifferential_SnapshotRYWReenable(t *testing.T) {
 		{"enable_enable_disable", []bool{true, true, false}}, // -2 then -1 → active → sees pending
 	}
 
-	// Exercise ALL FOUR snapshot read paths (@claude review): the counter fix touches
+	// Exercise ALL FOUR snapshot read paths: the counter fix touches
 	// Get/GetRange/GetRange-reverse/GetKey, so the differential must cover each, not just Get.
 	// Each op reduces to "did the snapshot read see the txn's own pending write?" → "pending"
 	// (RYW active) or "absent" (bypassed to storage, where the key was never committed).

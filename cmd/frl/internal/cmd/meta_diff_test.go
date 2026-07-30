@@ -344,7 +344,7 @@ func TestDiff_RecordTypePKChange(t *testing.T) {
 	if !strings.Contains(got, "RECORD TYPES:") {
 		t.Errorf("output missing RECORD TYPES section:\n%s", got)
 	}
-	// The change line must include the old and new PKs so reviewers
+	// The change line must include the old and new PKs so a reader
 	// can spot compatibility breaks at a glance.
 	if !strings.Contains(got, "~ Order") ||
 		!strings.Contains(got, "order_id") ||

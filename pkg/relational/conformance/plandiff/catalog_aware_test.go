@@ -180,9 +180,8 @@ func TestGoEngine_CatalogAware_DerivedTable_DeclinesComplex(t *testing.T) {
 // parse as a Root with no Statements child (whitespace-only,
 // semicolon-only, etc.); the Phase-3 first cut crashed with a
 // nil-pointer dereference on the error message because the branch
-// read len(stmts.AllStatement()) before nil-checking. Round-2 review
-// on PR #115. These cases must surface as a clean error, never
-// panic.
+// read len(stmts.AllStatement()) before nil-checking. These cases must
+// surface as a clean error, never panic.
 //
 // (Empty SchemaTemplate is a different code path: buildGoGenerator
 // short-circuits to the text-only constructor without calling

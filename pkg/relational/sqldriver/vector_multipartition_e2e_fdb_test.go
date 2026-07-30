@@ -253,7 +253,7 @@ func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 			// A page that delivered a row MUST carry a non-nil resume token until
 			// the stream truly ends — a nil continuation on a delivered row reads
 			// downstream as end-of-scan and would silently truncate the result.
-			// Pins wrapContinuation against the silent-nil failure (@claude F3).
+			// Pins wrapContinuation against the silent-nil failure.
 			if len(rows) > 0 && c == nil && len(paged) < len(unpaged) {
 				t.Fatalf("page %d delivered a row but returned a nil continuation with %d/%d rows seen (silent truncation)", page, len(paged), len(unpaged))
 			}

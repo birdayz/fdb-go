@@ -78,7 +78,7 @@ var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
 // func that unregisters the key.
 //
 // This is the seam for deterministic-simulation harnesses that back the SQL stack with SimFDB
-// (RFC-179 DST): register a SimFDB-backed FDBDatabase, open a `fdbsql` DSN against its key, and
+// (RFC-199 DST): register a SimFDB-backed FDBDatabase, open a `fdbsql` DSN against its key, and
 // the whole relational layer runs in-process with no Docker. It only exposes the cache
 // population that connect() already performs internally — production behavior is unchanged.
 func RegisterBackend(key string, db *recordlayer.FDBDatabase) (unregister func()) {

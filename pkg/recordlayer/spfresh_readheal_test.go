@@ -14,7 +14,7 @@ import (
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
-// Read-path envelope repair (spfresh-reviewer freeze re-review, P2): the
+// Read-path envelope repair (P2): the
 // query path's 4×Lmax+1 posting fetch cap equals the split-dispatch envelope,
 // so a capped read is PROOF a split trigger was lost — the posting's tail is
 // live-but-unfindable (the exact shape of the master churn flake). The search

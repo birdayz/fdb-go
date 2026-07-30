@@ -37,7 +37,7 @@ import (
 // outside the allowlist below.
 //
 // Adding an entry is deliberately annoying: it needs a one-line justification,
-// and the reviewer question is always "why can Resolved not answer this?"
+// and the standing question is always "why can Resolved not answer this?"
 //
 // The exemption is per SITE (file:line, with a count), never per file. A
 // whole-file exemption is not an allowlist, it is a hole with a comment on it:

@@ -172,9 +172,9 @@ func TestResolveTLSConfig(t *testing.T) {
 }
 
 // TestOpenTLSConfigPrecedence pins the WithTLSConfig > ":tls"/env > plaintext
-// precedence — in particular the explicit-wins invariant (@claude review): an
-// explicit config is returned unchanged (same pointer ⇒ env resolution is NOT
-// consulted), and it enables TLS even without a ":tls" cluster string.
+// precedence — in particular the explicit-wins invariant: an explicit config
+// is returned unchanged (same pointer ⇒ env resolution is NOT consulted), and
+// it enables TLS even without a ":tls" cluster string.
 func TestOpenTLSConfigPrecedence(t *testing.T) {
 	t.Parallel()
 	explicit := &tls.Config{ServerName: "explicit-marker"}

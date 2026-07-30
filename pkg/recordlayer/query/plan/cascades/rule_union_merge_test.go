@@ -98,7 +98,7 @@ func TestUnionMergeRule_PreservesOrderAcrossFlatten(t *testing.T) {
 // regression that the pre-fix length-only check missed: an inner
 // Union with EXACTLY ONE child preserves the outer slice length but
 // changes content. The sawNested-flag fix detects the structural
-// change directly. Surfaced by reviewer @claude on PR #124.
+// change directly.
 func TestUnionMergeRule_FlattensSingleChildInnerUnion(t *testing.T) {
 	t.Parallel()
 	// Outer = Union(Union(Scan(A)), Scan(B))

@@ -214,7 +214,7 @@ func TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix(t *testing.T) {
 }
 
 // TestVectorPlan_MetricMismatchDoesNotMatchVector pins the metric-match
-// invariant (@claude review): a QUALIFY ORDER BY cosine_distance(...) over an
+// invariant: a QUALIFY ORDER BY cosine_distance(...) over an
 // index declared EUCLIDEAN_METRIC must NOT plan to a vector scan. The query
 // builds a CosineDistanceRowNumberValue, the candidate's placeholder is the
 // metric-specific EuclideanDistanceRowNumberValue, so they don't match — the

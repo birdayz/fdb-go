@@ -180,7 +180,7 @@ func hasLeftOuterNLJ(plan plans.RecordQueryPlan) bool {
 }
 
 // TestRFC153_AggregateInner_DeclinesToMaterializedNLJ — the fail-closed axis (the
-// dimension the 3-reviewer NAK flagged). The null-supplying side is an AGGREGATE whose
+// dimension that was previously unpinned). The null-supplying side is an AGGREGATE whose
 // grouping correlates to the buried preserved alias A. Its inner carries a node
 // (StreamingAgg) the buried-merge rebaser does NOT rewrite, so the verifier fail-CLOSES
 // → the LEFT OUTER DECLINES the probe → materialized NestedLoopJoin (LEFT OUTER), NOT a

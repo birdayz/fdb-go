@@ -32,7 +32,7 @@ type IndexingHeartbeat struct {
 	leaseLengthMs int64  // heartbeat lease duration in ms
 	allowMutual   bool   // true for mutual/concurrent mode
 
-	// env is the RFC-179 Tier-0 environment (Clock + Randomness) inherited from the
+	// env is the RFC-199 Tier-0 environment (Clock + Randomness) inherited from the
 	// indexer's database. Nil means production; read it through the nil-safe *dst.Env
 	// accessors. The indexer UUID, the createTime, and every persisted per-heartbeat
 	// timestamp draw from here so a simulation run is byte-reproducible.

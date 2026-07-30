@@ -15,7 +15,7 @@ package plandiff
 //   - BothErrorMessagesDrift: both engines reject; only the message wording
 //     differs (pinned by a cause-specific substring).
 //
-// NOTE FOR REVIEWERS: the JavaErrorsGoCorrect set asserts Go is *correct*, not
+// NOTE: the JavaErrorsGoCorrect set asserts Go is *correct*, not
 // merely more permissive. Two generated candidates were withheld as suspected
 // Go-too-lenient bugs (boolean = int comparison, CAST LONG->BOOLEAN) and are
 // tracked in RFC-082 for a fix-or-accept decision rather than annotated here.

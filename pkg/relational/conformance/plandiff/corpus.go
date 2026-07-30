@@ -12756,8 +12756,8 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA2 UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT count(*) FROM c",
 		},
 		{
-			// REVERSE direction of the entry above (reviewer's required probe on
-			// PR #446): the recursive body references the seed's INNER alias
+			// REVERSE direction of the entry above (PR #446): the recursive
+			// body references the seed's INNER alias
 			// `x`, not the column-list name `v`. Confirmed empirically:
 			// Java's recursive-CTE inner type carries the SEED's output names
 			// (X), so Java resolves `x` and runs the recursion; Go's

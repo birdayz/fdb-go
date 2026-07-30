@@ -209,8 +209,8 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 
 // TestImplementFilterRule_FiresOverPhysicalUnion pins that
 // ImplementFilterRule fires when the inner Reference contains a bare
-// physical RecordQueryUnionPlan — closes the 7-wrapper symmetry gap caught
-// by the reviewer's late-shift batch review.
+// physical RecordQueryUnionPlan — closing the 7-wrapper symmetry gap left
+// by physical Union not yet being one of the covered wrapper shapes.
 //
 // Filter(Union(Scan, Scan)) should physically implement to
 // FilterPlan(UnionPlan(ScanPlan, ScanPlan)) once both scans + the

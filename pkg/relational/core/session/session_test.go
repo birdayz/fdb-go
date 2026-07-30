@@ -183,7 +183,7 @@ func TestNew_InitializesSchemaCache(t *testing.T) {
 	s.SchemaCache[SchemaCacheKey("/a", "b")] = nilSchema
 }
 
-// TestBeginStatement_ClockSeam proves the RFC-179 Tier-0 Clock seam on the
+// TestBeginStatement_ClockSeam proves the RFC-199 Tier-0 Clock seam on the
 // statement-start timestamp: a nil Clock (production) reads the wall clock,
 // byte-identical to the pre-seam time.Now().UTC(); a dst.SimClock pins the
 // captured StatementTime to a deterministic instant reproducible from the seed.

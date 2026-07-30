@@ -207,8 +207,8 @@ var _ = Describe("SPFresh ε-pruning", func() {
 })
 
 // RFC-156 Phase A: the one-shot search() is refactored into a resumable
-// frontier (searchInit + searchNext). These specs pin the spfresh-reviewer ACK
-// conditions: (1) ε-pruning starvation widening ≡ one-shot batch prune,
+// frontier (searchInit + searchNext). These specs pin the paper-conformance
+// requirements: (1) ε-pruning starvation widening ≡ one-shot batch prune,
 // (2) re-rank only finalized prefixes — emitted order is exact distance order,
 // never RaBitQ-estimate order, and (4) the wrapper is byte-for-byte the
 // pre-refactor result (proven against a brute-force golden across k).

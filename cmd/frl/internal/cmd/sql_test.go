@@ -52,7 +52,7 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			// Cluster file paths with spaces / special chars would corrupt
 			// the DSN under naive string concatenation. url.Values
 			// percent-encodes them so the driver's URL parser recovers
-			// the original value. Caught by reviewer round 7.
+			// the original value.
 			name:        "cluster file with space percent-encoded",
 			clusterFile: "/home/user/my project/fdb.cluster",
 			dbPath:      "/myapp",
@@ -102,7 +102,7 @@ func TestIsQuery(t *testing.T) {
 		"  SELECT * FROM foo",
 		// Multi-line — leading keyword followed by newline must still
 		// match. Earlier HasPrefix("SELECT ") version broke here and
-		// routed the statement to ExecContext (reported by reviewer).
+		// routed the statement to ExecContext.
 		"SELECT\n  *\nFROM orders",
 		"select\n  count(*)\nfrom orders",
 		"WITH cte AS (SELECT 1) SELECT * FROM cte",

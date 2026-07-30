@@ -119,8 +119,8 @@ func spfreshRefinePKInTx(tx fdb.WritableTransaction, s *spfreshStorage, config S
 	// leave the current copies in place — they keep the vector findable, and the
 	// rebalancer + a later refine pass recover it once the fines settle. Without
 	// this, the clear loop below would wipe `current` and orphan the vector
-	// (@claude review; NPA can't hit this — it filters non-ACTIVE out of the pool
-	// pre-closure, so an all-sealed neighborhood short-circuits on len(pool)==0).
+	// (NPA can't hit this — it filters non-ACTIVE out of the pool pre-closure,
+	// so an all-sealed neighborhood short-circuits on len(pool)==0).
 	if len(newSet) == 0 {
 		return false, nil
 	}
@@ -178,7 +178,7 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		var nextBegin fdb.Key
 		// Truncate back to the pre-batch length at the top of the closure: a
 		// snapshot-scan retry (e.g. past_version) must not append this batch's pks
-		// twice (the spfreshRefineRound pattern — @claude review).
+		// twice (the spfreshRefineRound pattern).
 		baseLen := len(pks)
 		if rerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 			nextBegin = nil

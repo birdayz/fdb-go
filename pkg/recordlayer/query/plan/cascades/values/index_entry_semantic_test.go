@@ -3,7 +3,7 @@ package values
 import "testing"
 
 // TestSemanticEquals_IndexEntryObject_OrdinalPath is the regression for the bug
-// @claude caught in PR #214: SemanticEqualsUnderAliasMap intercepted
+// where SemanticEqualsUnderAliasMap intercepted
 // IndexEntryObjectValue and compared ONLY the alias, dropping OrdinalPath — so
 // two index-entry values with the same alias but different OrdinalPath were
 // "equal" yet hashed differently (the hash folds OrdinalPath), violating

@@ -1729,7 +1729,7 @@ func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason rec
 // UUID leaves the value layer as a string — every internal path (filter
 // compare, index-scan-range pack, INL join key) keeps it as [16]byte so
 // equality/ordering stay wire-consistent with the tuple.UUID index encoding
-// (RFC-162, reviewer decision (b)). A fixed [16]byte / tuple.UUID at this boundary
+// (RFC-162, decision (b)). A fixed [16]byte / tuple.UUID at this boundary
 // is unambiguously a UUID: BYTES columns surface as a []byte slice, never a
 // 16-array, so the type switch never misfires.
 func materializeDriverValue(v any) any {

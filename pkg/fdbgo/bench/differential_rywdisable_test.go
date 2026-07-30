@@ -128,8 +128,8 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 			},
 		},
 		// Set → disable → SNAPSHOT GetKey (snapshot getKey goes through ensureReadVersion, so
-		// it poisons exactly like snapshot Get — pins the axis @claude flagged as structurally
-		// argued but un-probed).
+		// it poisons exactly like snapshot Get — pins the axis that is structurally argued
+		// but un-probed).
 		{
 			"set_disable_snapshot_getkey",
 			func(tx gofdb.Transaction) int {

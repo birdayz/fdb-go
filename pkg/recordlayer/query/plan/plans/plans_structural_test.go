@@ -1010,7 +1010,7 @@ func TestProjectionPlan_IsIdentityChecksSchemaAndInnerCorrelation(t *testing.T) 
 }
 
 // TestProjectionPlan_Identity_ResolvedOrdinal pins plan-level identity for
-// plan-time-resolved ordinal accessors (review round-2 on PR #446): two
+// plan-time-resolved ordinal accessors: two
 // projection plans whose reads differ ONLY by resolved ordinal (the
 // recursive-CTE duplicate-alias wrap — two slots both named X) must NOT be
 // memo-identical. Under the RFC-176 semantic identity the ordinal is a
@@ -1067,8 +1067,8 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 // Under the RFC-176 semantic model this holds structurally (FieldValue
 // equality compares field text + resolved-accessor presence + ordinal) and in the
 // hash (writeSemanticHash's FieldValue arm doubles raw '#', keeping its
-// discriminator injective over (field text, ordinal)). Historic origin
-// (review round-3 on PR #446): when identity was keyed on ExplainValue
+// discriminator injective over (field text, ordinal)). Historic origin:
+// when identity was keyed on ExplainValue
 // renderings, both rendered "X#0" pre-escape and the plans memo-unified —
 // the '#'-doubling ("X##0") now also serves as the explain-format
 // injectivity pin (see values.ExplainValue's FieldValue arm).

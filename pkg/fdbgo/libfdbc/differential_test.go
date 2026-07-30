@@ -146,9 +146,9 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 
 	// The record-store subtests above drive the WritableTransaction adapter through
 	// the record layer; these exercise the wire-critical primitives the record path
-	// may not hit, directly on the raw fdb.WritableTransaction (FDB C++ reviewer's
-	// requested follow-ups): atomic mutations, conflict ranges, versionstamps, and
-	// snapshot reads.
+	// may not hit, directly on the raw fdb.WritableTransaction, validated against the
+	// C++ source (libfdb_c 7.3.77): atomic mutations, conflict ranges, versionstamps,
+	// and snapshot reads.
 
 	t.Run("raw_atomic_and_conflict_range_wire_compat", func(t *testing.T) {
 		// Apply the same atomic-mutation + plain-set program through each backend's

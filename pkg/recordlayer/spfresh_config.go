@@ -281,8 +281,8 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 			// The DDL accepts it for USING SPFRESH (same metric grammar as
 			// HNSW), so the maintainer must honor it — a silent fall-through
 			// to Euclidean made the candidate advertise squared distances
-			// while re-rank returned true L2 (reviewer merge-HEAD F1). Same
-			// kNN ordering; only the reported distance differs.
+			// while re-rank returned true L2. Same kNN ordering; only the
+			// reported distance differs.
 			config.Metric = VectorMetricEuclideanSquare
 		}
 	}

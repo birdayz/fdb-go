@@ -68,7 +68,7 @@ type spfreshBuilder struct {
 
 func newSPFreshBuilder(db *FDBDatabase, storage *spfreshStorage, config SPFreshConfig, owner string) *spfreshBuilder {
 	// Uniqueness, not secrecy: the token only has to distinguish two builder
-	// instances racing the same index. Under a DST sim env (RFC-179 Tier 0) the 16
+	// instances racing the same index. Under a DST sim env (RFC-199 Tier 0) the 16
 	// bytes come from the seeded randomness seam so a run mints a reproducible token;
 	// production (no env installed) keeps the original math/rand path byte-for-byte —
 	// this site used math/rand, not crypto/rand, so it is diverted only when a sim env

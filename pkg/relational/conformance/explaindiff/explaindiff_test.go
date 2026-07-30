@@ -230,7 +230,7 @@ func TestShapeAccompaniesEverySuccessfulPlan(t *testing.T) {
 
 // TestDiffClassifies exercises every verdict Diff can reach, on synthetic
 // entries — the corpus cannot produce an ADDED/REMOVED/regressed pair on
-// demand, and these classifications are what a reviewer reads first.
+// demand, and these classifications are what a reader sees first.
 func TestDiffClassifies(t *testing.T) {
 	t.Parallel()
 
@@ -570,7 +570,7 @@ func TestValidateRejectsSelfDiff(t *testing.T) {
 // stanza mid-file renumbers everything after it, so pairing on file#index
 // alone compared query N against query N-1: the report printed one query's
 // SQL beside another query's plans and tagged the mismatch SHAPE — a phantom
-// planner regression that would send a reviewer chasing nothing.
+// planner regression that would send a reader chasing nothing.
 func TestDiffDetectsCorpusInsertion(t *testing.T) {
 	t.Parallel()
 

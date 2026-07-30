@@ -90,7 +90,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshCellMax] = cm
 	}
 	// SIFT_LMAX sweeps the posting-list cap (granularity): a smaller Lmax forms
-	// MORE, finer cells — the spfresh-reviewer's biggest recall lever at scale —
+	// MORE, finer cells — the SPFresh paper's biggest recall lever at scale —
 	// traded against the FDB reply budget (a query reads more, smaller lists).
 	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax

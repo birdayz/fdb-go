@@ -253,10 +253,10 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			healthy.MeanRecall, corrupted.MeanRecall)
 	})
 
-	// spfresh-reviewer (RFC-156) finding 1: SPANN §3.2.1 balanced-postings /
-	// LIRE split guarantee — no ACTIVE posting may exceed the 4xLmax hard
-	// envelope. SPFreshCheckIntegrity must catch an over-envelope posting (the
-	// precise failure LIRE's split exists to prevent: a split that never drained).
+	// SPANN §3.2.1 balanced-postings (RFC-156) / LIRE split guarantee — no
+	// ACTIVE posting may exceed the 4xLmax hard envelope. SPFreshCheckIntegrity
+	// must catch an over-envelope posting (the precise failure LIRE's split
+	// exists to prevent: a split that never drained).
 	It("flags a posting over the 4xLmax hard envelope", func() {
 		ks := specSubspace()
 		idx := recallIndex("spf_oversize") // Lmax=32 -> 4xLmax=128

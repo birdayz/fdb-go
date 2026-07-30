@@ -24,9 +24,9 @@ import (
 // by design — templates evolve through SQL DDL, never behind the
 // relational layer's back.
 //
-// Concurrency (reviewer impl-review + FDB C++ dev C5): the pre-confirm
-// pass below is only a PREVIEW. The authoritative load + version check +
-// evolution validation happen inside the save transaction —
+// Concurrency: the pre-confirm pass below is only a PREVIEW. The
+// authoritative load + version check + evolution validation happen
+// inside the save transaction —
 // SaveRecordMetaData carries Java's saveAndSetCurrent semantics — with a
 // guard that the store still holds exactly what the operator confirmed
 // against. The interactive prompt therefore cannot become a TOCTOU

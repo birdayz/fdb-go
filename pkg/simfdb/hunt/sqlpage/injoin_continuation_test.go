@@ -62,7 +62,7 @@ func TestInJoinContinuation(t *testing.T) {
 	}
 }
 
-// TestInJoinLimit pins the nit both reviewers flagged with the concat fix: a multi-value IN composed
+// TestInJoinLimit pins the composition the concat continuation fix had to get right: a multi-value IN
 // with LIMIT must not over-return. executeInJoin now clears skip+limit on each inner branch and applies
 // the limit once at the concat (matching executeInUnion and Java RecordQueryInJoinPlan). A per-branch
 // limit would let each branch emit up to LIMIT rows, so the total would exceed LIMIT.
