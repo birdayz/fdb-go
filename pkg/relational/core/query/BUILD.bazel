@@ -63,6 +63,7 @@ go_test(
         "unnest_alias_guard_test.go",
         "unnest_exists_test.go",
         "unnest_gather_test.go",
+        "unnest_leg_mint_disposition_test.go",
         "unnest_seed_test.go",
     ],
     embed = [":query"],
