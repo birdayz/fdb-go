@@ -10505,3 +10505,48 @@ None is speculative: each was re-verified against the tree before booking.
   transitivity witness test already exists and reds under availability
   dispatch. The census machinery (ordering_comparison_census.go +
   explaindiff/ordering_census_test.go) is the acceptance instrument.
+
+- [ ] **CQ-61 (M/L, executor binding contract, gated) — RecordTypeLeg.Name
+  becomes a CorrelationIdentifier; leg identity stops being text.** The
+  CQ-53 investigation refuted its plan's foundation: concatLegPositionals
+  "stores leg windows" but every consumer SELECTS the window by name string
+  (ordinal_join.go:1419 GetCorrelationBinding text-match;
+  executor.go:2805 re-minting identity via NamedCorrelationIdentifier;
+  values/type.go:372) — verbatim the shape CQ-53's own correction rejected
+  as hypothetical while it was the production binder. The retyping: leg
+  identity sourced from the plan's quantifier alias at construction, never
+  re-minted from text; ~13 construction sites, ~8 readers across 5
+  packages; DELETES (not retypes) the two readers that exist only to serve
+  the dotted channel (ordinal_join.go:722 rowSlotForLegColumn — gate-
+  invisible because its carrier is values.Field.Name, not FieldValue.Field;
+  cascades_translator.go:5901, listed under translator). Also touches
+  values/ordinal_seed_layout.go:143-170 (name-matched) and adaptLegPositional,
+  whose own comment concedes Java's end state (translateCorrelations
+  rebinds ordinals against the physical quantifier's flowed type). This is
+  step 0's pattern applied to leg identity: representation first, consumers
+  after. CQ-53 IS GATED ON THIS ITEM — its entry's premise
+  (concatLegPositionals-is-structural) is refuted and it must not be
+  implemented on the string-keyed binder under a green gate.
+
+- [ ] **CQ-62 (S, bug fourteen: false prose over a live channel) —
+  rule_implement_nested_loop_join.go:2380-2387 declares the leg-match arm
+  "dead-in-effect TODAY ... a panic is reached only by
+  TestRebaseOuterLegValue_OrdinalFirst". MEASURED FALSE: the lazy mint at
+  :2400 (the QOV(merged)."LEG.COL" channel) fires 6 times across 5 tests,
+  4 real-FDB (NWayCommaJoinProjectedExists, FourLegJoinDiscriminating,
+  BuriedInnerJoinProjectedExists ×2, NWayProjectedExists...), all via
+  implementJoinWithExistential:3247 with legLayout == nil. Only the BAKED
+  arm matches the comment. Fix the prose and pin the LIVENESS (a test
+  asserting the lazy arm is reached by one of those shapes, so it cannot
+  be re-declared dead); the channel itself retires with CQ-61/53.
+  Also: the other producer (cascades_translator.go:3579, RFC-142 mint)
+  measured ZERO hits on every covered surface — but do NOT convert it to
+  a loud decline: its own comment shows the mint is correct behavior for
+  shapes reaching it (E.ID -> NULL -> EXISTS drops rows), and zero on
+  covered surfaces is not unreachability. Pin what IS known.
+
+  CQ-53 ENTRY CORRECTION (second): the "structural form already exists at
+  concatLegPositionals" premise is REFUTED (see CQ-61). CQ-53 implements
+  Java's parent-chained bindings ON TOP OF CQ-61's typed leg identity.
+  Dotted is 7 (two non-merged-row group-key readers: ct:993 AND cg:4141),
+  and CQ-53 closes it to 2, not 1.
