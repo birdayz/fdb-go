@@ -155,6 +155,40 @@ type legLocalBakeCounters struct {
 	MergeSlotsUntyped int
 	// MergeSlots is the denominator the four above must partition.
 	MergeSlots int
+	// The MINTED reads classified a SECOND way, orthogonally to the three
+	// reasons above: by whether the read ITSELF states a column identity in its
+	// own leg's domain.
+	//
+	// The three reasons above ask about the LAYOUT — is there a row type for
+	// this leg, and does it declare a column of this name. That is the question
+	// CQ-63 was gated on, and it is now answered (layoutAvailable is the whole
+	// mint population). It is NOT the question a leg-local bake turns on.
+	//
+	// A bake needs an ORDINAL, and there are exactly two places one can come
+	// from: the read's own resolved path, or a fresh resolution of the read's
+	// DISPLAY NAME against the layout. The second is the move that was deleted
+	// from this arm — RFC-197's forbidden one, a name deciding a column's
+	// identity, and renaming the helper that performs it does not change what it
+	// does. So "the layout is available" does not imply "a bake is available":
+	// it implies it only for reads that already carry an identity, and these
+	// three counters are what separate those from the rest.
+	//
+	// IdentityInLegDomain: the read's own resolved path states a non-negative
+	// ordinal in a KNOWN domain that IS the leg's row layout (legSlotIdentity
+	// answers). These reads can bake with no name consulted anywhere.
+	IdentityInLegDomain int
+	// IdentityOtherDomain: the read carries a resolved path, but not one this
+	// leg's layout can read — a different domain, a fused multi-accessor path,
+	// or a name-only negative ordinal. Baking it against the leg's row would
+	// index a layout the ordinal does not address, which is the ordinal
+	// conflation the domain token exists to prevent.
+	IdentityOtherDomain int
+	// LazyNameOnly: the read carries NO resolved path at all. Its display name
+	// is the only thing it states, so the only bake available to it is the
+	// deleted one. A residue here is not a gap in this arm — it is a reference
+	// that reached the planner unresolved, and it closes at the producer that
+	// minted it, not here.
+	LazyNameOnly int
 	// LegDerivations counts every leg that ENTERED the layout derivation with a
 	// stated alias. It is the denominator the three per-leg outcomes above must
 	// sum to, and it exists so they can be asserted as a PARTITION rather than
@@ -207,6 +241,102 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 		legLocalBakeCounts.LayoutAvailable++
 		addLegLocalBakeWitness(fmt.Sprintf("LAYOUT-AVAILABLE-BUT-MINTED %s.%s (leg columns %v)", leg.Name(), column, recordTypeFieldNames(legTyp.(*values.RecordType))))
 	}
+}
+
+// mintedReadIdentity is what a MINTED read states about its OWN column
+// identity. See the three counters it feeds for why this is a different
+// question from the layout one beside it.
+type mintedReadIdentity int
+
+const (
+	// mintedReadIdentityInLegDomain: legSlotIdentity answered — a resolved,
+	// non-negative ordinal in a known domain that IS the leg's row layout.
+	mintedReadIdentityInLegDomain mintedReadIdentity = iota
+	// mintedReadIdentityOtherDomain: a resolved path this leg's layout cannot
+	// read.
+	mintedReadIdentityOtherDomain
+	// mintedReadLazyNameOnly: no resolved path; the display name is all there is.
+	mintedReadLazyNameOnly
+)
+
+// classifyMintedReadIdentity decides which of the three a minted read is, from
+// the two facts the arm has in hand: whether the read carries a resolved path
+// at all, and whether that path states an identity IN THE LEG'S OWN DOMAIN
+// (legSlotIdentity's answer, passed rather than re-derived so the census cannot
+// answer a different question than the bake would ask).
+//
+// The ordering matters and is the whole content: a read that states an identity
+// in the leg's domain is that, whatever else is true of it. Only then does the
+// absence of a resolved path separate the two residues, which have different
+// owners — an other-domain path is a reference baked against the wrong layout
+// (a producer stating a domain it did not resolve against), a lazy one is a
+// reference that was never resolved at all.
+func classifyMintedReadIdentity(hasResolved, identityInLegDomain bool) mintedReadIdentity {
+	if identityInLegDomain {
+		return mintedReadIdentityInLegDomain
+	}
+	if hasResolved {
+		return mintedReadIdentityOtherDomain
+	}
+	return mintedReadLazyNameOnly
+}
+
+// recordMintedReadIdentity classifies one MINTED read by what it states about
+// its own identity. Called from the same guard, and only for reads the arm
+// minted, so the three counters partition Minted exactly.
+func recordMintedReadIdentity(leg values.CorrelationIdentifier, column string, hasResolved, identityInLegDomain bool, why string) {
+	class := classifyMintedReadIdentity(hasResolved, identityInLegDomain)
+	legLocalBakeMu.Lock()
+	defer legLocalBakeMu.Unlock()
+	switch class {
+	case mintedReadIdentityInLegDomain:
+		legLocalBakeCounts.IdentityInLegDomain++
+	case mintedReadIdentityOtherDomain:
+		legLocalBakeCounts.IdentityOtherDomain++
+		addLegLocalBakeWitness(fmt.Sprintf("MINTED-OTHER-DOMAIN %s.%s (%s)", leg.Name(), column, why))
+	case mintedReadLazyNameOnly:
+		legLocalBakeCounts.LazyNameOnly++
+		addLegLocalBakeWitness(fmt.Sprintf("MINTED-LAZY %s.%s (no resolved path — the display name is the only identity it states)", leg.Name(), column))
+	}
+}
+
+// describeLegIdentityDecline says WHY legSlotIdentity refused a minted read, in
+// the terms OrdinalIn fails closed on, plus the one fact that decides whether
+// the refusal is fixable HERE or upstream: whether the leg's separately-derived
+// row layout (the quantifier's flowed type, which the layout census reports
+// available) would have accepted the read's ordinal.
+//
+// The distinction it exists to draw: a read whose ordinal addresses NO known
+// layout is a producer defect, and a read whose ordinal addresses the leg's
+// layout but whose own QOV cannot say so is a TYPE-PLUMBING gap — the reference
+// carries the right ordinal and the wrong domain token. Those have different
+// fixes and neither is "resolve the display name".
+func describeLegIdentityDecline(fv *values.FieldValue, qov *values.QuantifiedObjectValue, legType *values.RecordType, haveLegType bool) string {
+	var parts []string
+	if fv.Resolved == nil {
+		return "no resolved path"
+	}
+	parts = append(parts, fmt.Sprintf("accessors=%d", len(fv.Resolved.Accessors)))
+	if len(fv.Resolved.Accessors) > 0 {
+		parts = append(parts, fmt.Sprintf("rootOrdinal=%d", fv.Resolved.Root().Ordinal))
+	}
+	parts = append(parts, fmt.Sprintf("pathDomainKnown=%t", fv.Resolved.Domain.IsKnown()))
+	qovDomain := values.OrdinalDomainOfType(qov.Typ)
+	parts = append(parts, fmt.Sprintf("qovTypeDomainKnown=%t", qovDomain.IsKnown()))
+	if qovDomain.IsKnown() && fv.Resolved.Domain.IsKnown() {
+		parts = append(parts, fmt.Sprintf("qovDomainMatches=%t", qovDomain == fv.Resolved.Domain))
+	}
+	// The decisive one: the leg layout the census already reports AVAILABLE.
+	if haveLegType && legType != nil {
+		legDomain := values.OrdinalDomainOfType(legType)
+		parts = append(parts, fmt.Sprintf("legTypeDomainKnown=%t", legDomain.IsKnown()))
+		if legDomain.IsKnown() && fv.Resolved.Domain.IsKnown() {
+			parts = append(parts, fmt.Sprintf("legTypeDomainMatches=%t", legDomain == fv.Resolved.Domain))
+		}
+	} else {
+		parts = append(parts, "noLegType")
+	}
+	return strings.Join(parts, " ")
 }
 
 // legLocalBakeClass is one firing's bucket.
@@ -466,6 +596,9 @@ func FormatLegLocalBakeCensus() string {
 		c.Total, c.Baked, c.Minted,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
+	fmt.Fprintf(&b, "; minted reads by OWN identity: identityInLegDomain %d, "+
+		"identityOtherDomain %d, lazyNameOnly %d",
+		c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly)
 	fmt.Fprintf(&b, "; legDerivations %d", c.LegDerivations)
 	fmt.Fprintf(&b, "; mergeSlots %d (typed %d, scavenged %d, scalar %d, untyped %d)",
 		c.MergeSlots, c.MergeSlotsTyped, c.MergeSlotsScavenged, c.MergeSlotsScalar, c.MergeSlotsUntyped)
@@ -550,6 +683,19 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			"  partition Minted exactly. LayoutAvailable is the number CQ-63 has to\n"+
 			"  move; if the reasons do not sum, it is a share of an unknown whole.\n",
 			c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable, got, c.Minted)
+	}
+
+	if got := c.IdentityInLegDomain + c.IdentityOtherDomain + c.LazyNameOnly; got != c.Minted {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: IdentityInLegDomain(%d) + "+
+			"IdentityOtherDomain(%d) + LazyNameOnly(%d) = %d, but Minted = %d.\n"+
+			"  These three classify MINTED reads by what the read states about its OWN\n"+
+			"  identity, so they must partition Minted exactly — the same population the\n"+
+			"  three layout reasons partition, cut a second way. IdentityInLegDomain is\n"+
+			"  the number a leg-local bake can actually convert WITHOUT resolving a\n"+
+			"  display name; if the three do not sum, that number is a share of an\n"+
+			"  unknown whole and the bake's reach is unmeasured.\n",
+			c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly, got, c.Minted)
 	}
 
 	if got := c.FlowedLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {

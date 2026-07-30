@@ -2769,6 +2769,18 @@ func rebaseOuterLegValue(
 						recordLegLocalBakeability(legLocalBakeMinted, qov.Correlation,
 							legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
 							strings.ToUpper(fv.Field), legLocalTypeKeys(legLocalTypes)...)
+						// The SECOND cut of the same firing: what the read states
+						// about its own identity, which is what a bake would have to
+						// index. legSlotIdentity is asked here rather than
+						// re-derived in the census, so the witness and the bake ask
+						// one question.
+						_, identityInLegDomain := legSlotIdentity(fv)
+						why := ""
+						if !identityInLegDomain {
+							why = describeLegIdentityDecline(fv, qov, legTypeFor, haveLegType)
+						}
+						recordMintedReadIdentity(qov.Correlation, strings.ToUpper(fv.Field),
+							fv.Resolved != nil, identityInLegDomain, why)
 					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 					// Structural first (WS-N slice 4): when the merged

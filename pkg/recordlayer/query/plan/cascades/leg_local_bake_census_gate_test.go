@@ -31,6 +31,15 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 	healthy := legLocalBakeCounters{
 		Total: 126, Baked: 0, Minted: 126,
 		UntypedLeg: 0, ColumnAbsent: 0, LayoutAvailable: 126,
+		// The same 126 reads cut by what each states about its OWN identity.
+		// MEASURED on the real-FDB corpus, and the two cuts disagree in the way
+		// that matters: the layout is available for all 126, and not one of them
+		// states an identity legSlotIdentity can read, because the reference's own
+		// QuantifiedObjectValue child is UnknownType. Their ordinals DO index the
+		// leg's row layout — the reads arrive correctly baked and the arm degrades
+		// them — so this is a type-plumbing gap on the reference, not a missing
+		// bake.
+		IdentityInLegDomain: 0, IdentityOtherDomain: 126, LazyNameOnly: 0,
 		FlowedLegs: 848, DisagreeingLegs: 0, UnderivableLegs: 0,
 		LegDerivations:  848,
 		MergeSlots:      18246,
@@ -88,6 +97,15 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 			name:    "a minted read with no reason",
 			mutate:  func(c *legLocalBakeCounters) { c.Minted++; c.Baked-- },
 			wantMsg: "but Minted = 127",
+		},
+		{
+			// The SECOND cut of Minted must partition it too. IdentityInLegDomain
+			// is the number a leg-local bake could convert with no name consulted
+			// anywhere; if the three do not sum, that number is a share of an
+			// unknown whole and the bake's reach is unmeasured.
+			name:    "a minted read classified into no identity bucket",
+			mutate:  func(c *legLocalBakeCounters) { c.IdentityOtherDomain-- },
+			wantMsg: "but Minted = 126",
 		},
 		{
 			// The floors are what keep every zero above from holding vacuously.
@@ -223,6 +241,65 @@ func TestClassifyMergeSlotPartitionsTheFourOutcomes(t *testing.T) {
 		if got := classifyMergeSlot(tc.slotType, tc.scavenged); got != tc.want {
 			t.Errorf("classifyMergeSlot(%v, scavenged=%v) = %v, want %v — %s",
 				tc.slotType, tc.scavenged, got, tc.want, tc.because)
+		}
+	}
+}
+
+// classifyMintedReadIdentity's three arms, pinned separately from the counter
+// mutation for the reason its sibling above is: this classifier is what decides
+// whether a minted read COULD have baked without a name, and that is the fact
+// CQ-53 phase 2's whole disposition rests on. A classifier that collapsed two
+// arms would report the corpus convertible (or unconvertible) while measuring
+// something else, and nothing downstream would notice.
+func TestClassifyMintedReadIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name                string
+		hasResolved         bool
+		identityInLegDomain bool
+		want                mintedReadIdentity
+		because             string
+	}{
+		{
+			name:        "states an identity in the leg's own domain",
+			hasResolved: true, identityInLegDomain: true,
+			want: mintedReadIdentityInLegDomain,
+			because: "the read carries a non-negative ordinal in a known domain that IS " +
+				"the leg's row layout, so a leg-local bake needs nothing but to stop " +
+				"rewriting it — no name is consulted anywhere",
+		},
+		{
+			name:        "resolved, but not against the leg's layout",
+			hasResolved: true, identityInLegDomain: false,
+			want: mintedReadIdentityOtherDomain,
+			because: "a resolved path the leg's layout cannot read. This is the corpus's " +
+				"entire minted population (126 of 126), and the reason is that the " +
+				"reference's own QuantifiedObjectValue child is UnknownType — so the " +
+				"frontier legSlotIdentity derives from it is unknown and OrdinalIn fails " +
+				"closed, even though the ordinal indexes the leg's row correctly",
+		},
+		{
+			name:        "no resolved path at all",
+			hasResolved: false, identityInLegDomain: false,
+			want: mintedReadLazyNameOnly,
+			because: "a lazy carrier. Its display name is the only identity it states, so " +
+				"the ONLY bake available to it is the deleted name-keyed one; a residue " +
+				"here closes at the producer that minted it unresolved, never at this arm",
+		},
+		{
+			name:        "identity dominates a missing resolved flag",
+			hasResolved: false, identityInLegDomain: true,
+			want: mintedReadIdentityInLegDomain,
+			because: "the identity answer DOMINATES, and the ordering is the content of " +
+				"the classifier: a read that states an identity is that whatever else is " +
+				"true of it. Inverting this reports convertible reads as lazy ones and " +
+				"sends the fix to the wrong layer",
+		},
+	} {
+		if got := classifyMintedReadIdentity(tc.hasResolved, tc.identityInLegDomain); got != tc.want {
+			t.Errorf("classifyMintedReadIdentity(hasResolved=%v, identityInLegDomain=%v) = %v, want %v — %s",
+				tc.hasResolved, tc.identityInLegDomain, got, tc.want, tc.because)
 		}
 	}
 }
