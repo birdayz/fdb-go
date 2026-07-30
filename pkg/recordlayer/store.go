@@ -1876,13 +1876,23 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if vm, ok := record.(interface{ MarshalVT() ([]byte, error) }); ok {
 		innerBytes, err = vm.MarshalVT()
 	} else {
-		// Deterministic marshal so the persisted record bytes are canonical. Generated protos
-		// take the VT paths above (already ascending-field-ordered); this reflection path is hit
-		// by dynamic messages (dynamicpb — SQL rows), whose default marshal iterates fields in Go
-		// map order and so serializes the same row to DIFFERENT bytes across writes. Java always
-		// writes fields in ascending number order, so Deterministic:true is what matches the wire
-		// and makes a given record's stored bytes reproducible. Surfaced by the RFC-199 SQL
-		// workload's determinism oracle, which replays a seed and diffs the persisted bytes.
+		// Deterministic marshal so the persisted record bytes are BYTE-STABLE: the same record
+		// value marshals to the same bytes every time, so rewriting a row whose content did not
+		// change produces bytes that did not change. Generated protos take the VT paths above,
+		// which emit a fixed, code-generated field order; this reflection path is hit by dynamic
+		// messages (dynamicpb — SQL rows), whose default marshal iterates fields in Go map order
+		// and so serializes the same row to DIFFERENT bytes across writes.
+		//
+		// Stability is the whole of what Deterministic:true buys — NOT a canonical encoding. It
+		// selects order.LegacyFieldOrder (extensions first, then non-oneof fields before oneof
+		// fields, then by field number) and sorts map entries by key; upstream explicitly
+		// disclaims that this output is canonical across languages or stable across releases.
+		// So this is not a claim that the bytes match what Java emits for the same record. Wire
+		// compatibility does not need one: any permutation of top-level fields is a valid
+		// encoding of the same message, and decoders — Java's included — are order-agnostic.
+		//
+		// Surfaced by the RFC-199 SQL workload's determinism oracle, which replays a seed and
+		// diffs the persisted bytes.
 		innerBytes, err = proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	}
 	if err != nil {

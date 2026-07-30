@@ -5,8 +5,15 @@ package executor
 // asserted against in tests and goldens, and a deterministic-simulation replay
 // of an identical run must produce an identical token stream. A *dynamicpb.Message
 // STRUCT slot broke that — its default marshal iterates fields in Go map order —
-// so appendContProtoMessage pins the canonical (ascending-field-number, i.e.
-// Java's) encoding with proto.MarshalOptions{Deterministic: true}.
+// so appendContProtoMessage pins the encoding with
+// proto.MarshalOptions{Deterministic: true}.
+//
+// The property being pinned is byte-stability, not a canonical encoding.
+// Deterministic:true marshals in order.LegacyFieldOrder (extensions first, then
+// non-oneof fields before oneof fields, then by field number) and sorts map
+// entries by key; upstream disclaims that the result is canonical across
+// languages or stable across releases. These tests therefore assert that Go
+// re-emits its own bytes, never that those bytes are the ones Java would write.
 
 import (
 	"bytes"
@@ -73,9 +80,9 @@ func newMultiFieldDynamicMessage(md protoreflect.MessageDescriptor) *dynamicpb.M
 //
 // The loop is the detector, not padding: dynamicpb's field map is never grown or
 // deleted from, so ranging it returns a ROTATION of insertion order — one of five
-// here, chosen per range. A single comparison would agree with the canonical
-// encoding one time in five even with the fix reverted; looping makes a false
-// pass (1/5)^n.
+// here, chosen per range. A single comparison would agree with the
+// Deterministic:true encoding one time in five even with the fix reverted;
+// looping makes a false pass (1/5)^n.
 func TestAppendContValue_DynamicStructSlotDeterministic(t *testing.T) {
 	t.Parallel()
 	md := multiFieldDynamicMessageDesc(t)
@@ -107,13 +114,14 @@ func TestAppendContValue_DynamicStructSlotDeterministic(t *testing.T) {
 		}
 	}
 
-	// And the payload is the canonical ascending-field-number encoding Java writes,
-	// not merely a stable arbitrary one.
+	// And the payload is specifically the Deterministic:true encoding, not merely
+	// some arbitrary encoding that happened to repeat. (This says nothing about
+	// matching Java: it pins that the marshal option is actually in effect.)
 	want, err := proto.MarshalOptions{Deterministic: true}.Marshal(newMultiFieldDynamicMessage(md))
 	if err != nil {
 		t.Fatalf("deterministic marshal: %v", err)
 	}
 	if !bytes.Contains(first, want) {
-		t.Fatalf("continuation bytes do not carry the canonical deterministic payload:\n token=%x\n want payload=%x", first, want)
+		t.Fatalf("continuation bytes do not carry the Deterministic:true payload:\n token=%x\n want payload=%x", first, want)
 	}
 }

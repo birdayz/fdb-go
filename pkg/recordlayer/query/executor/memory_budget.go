@@ -12,10 +12,11 @@ import (
 // statement-scoped recordlayer.ExecuteState (mutable counter held by pointer
 // inside the value-struct ExecuteProperties, shared statement-wide), and is
 // charged at every cardinality-growing buffer through the accounted container
-// types below. Accounting is a property of the container type, not a
-// reviewer's vigilance: a buffer literally cannot be constructed without an
-// *ExecuteState, so a missed wiring is a compile/test failure, not a silent
-// nil-no-op (the state is always present — see recordlayer.NewExecuteState).
+// types below. Accounting is a property of the container type, not something
+// that depends on noticing a missed call site: a buffer literally cannot be
+// constructed without an *ExecuteState, so a missed wiring is a compile/test
+// failure, not a silent nil-no-op (the state is always present — see
+// recordlayer.NewExecuteState).
 
 // boundedBuffer is an accounted append-only slice. Append charges the byte
 // estimate of an item against the statement's ExecuteState BEFORE keeping it,

@@ -199,8 +199,17 @@ func appendContProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
 	// Deterministic marshal: the flag byte below exists precisely because msg can be a
 	// *dynamicpb.Message, and a dynamic message's default marshal iterates fields in Go map
 	// order — the same cursor position would then emit DIFFERENT continuation bytes on each
-	// call. A continuation token is wire-visible state that must be reproducible for a given
-	// position (and ascending-field-ordered, as Java writes it), so the encoding is pinned here.
+	// call. A continuation token is wire-visible state that must be BYTE-STABLE for a given
+	// position: tokens get compared for equality and asserted against in goldens, and a
+	// deterministic-simulation replay of an identical run must reproduce an identical token
+	// stream. So the encoding is pinned here.
+	//
+	// Deterministic:true delivers that stability and nothing more — it is not a canonical
+	// encoding. It marshals in order.LegacyFieldOrder (extensions first, then non-oneof fields
+	// before oneof fields, then by field number) and sorts map entries by key, and upstream
+	// disclaims cross-language and cross-release canonicality of the result. Nothing here
+	// depends on the bytes matching Java's; only on Go producing the same bytes for the same
+	// cursor position.
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("continuation: cannot encode proto message value of type %q: %w", fullName, err)
