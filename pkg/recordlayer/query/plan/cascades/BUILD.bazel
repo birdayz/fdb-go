@@ -341,6 +341,7 @@ go_test(
         "point_probe_identity_test.go",
         "point_probe_proof_agreement_test.go",
         "point_probe_ranking_test.go",
+        "positional_merge_disagreement_test.go",
         "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
@@ -976,6 +977,7 @@ go_test(
         "data_access_fixture_guard_test.go",
         "ordering_comparison_census_test.go",
         "lazy_leg_mint_liveness_test.go",
+        "positional_merge_disagreement_test.go",
     ],
     deps = [
         "//gen",

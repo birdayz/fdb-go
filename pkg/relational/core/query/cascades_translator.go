@@ -1878,7 +1878,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	if outerRef == nil {
 		return nil
 	}
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+	outerCorr := unnestOuterCorrelation(j.Left)
 
 	// The correlated array Value is ALWAYS the ordinal bake below
 	// (unnestBakedRootCollection). There is no name-keyed alternative: the

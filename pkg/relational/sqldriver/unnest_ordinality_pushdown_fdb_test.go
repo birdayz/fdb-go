@@ -17,7 +17,6 @@ package sqldriver_test
 import (
 	"context"
 	"sort"
-	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -116,17 +115,10 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := executor.RowValue(r).(map[string]any)
-				keys := make([]string, 0, len(m))
-				for k := range m {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-				parts := make([]string, 0, len(keys))
-				for _, k := range keys {
-					parts = append(parts, k+"="+unnestSprint(m[k]))
-				}
-				out = append(out, strings.Join(parts, "|"))
+				// SLOT order, not sorted map keys: the sorted form re-sorted a
+				// permuted row to the identical string and had already lost any
+				// duplicate output name last-wins.
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -149,7 +141,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	// Pushed WHERE on the AS element slot (`_0`).
 	t.Run("pushed_where_on_element_slot", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "V", "AT" FROM T, T."ARR" AS "V" AT "AT" WHERE "V" > 201`)
-		want := []string{"AT=2|ID=2|V=202", "AT=3|ID=2|V=203"}
+		want := []string{"ID=2|V=202|AT=2", "ID=2|V=203|AT=3"}
 		if !unnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
@@ -158,7 +150,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	// pushdown into the Explode filter, a general arithmetic predicate over the box.
 	t.Run("computed_where_on_ordinal_slot", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "AT" FROM T, T."ARR" AT "AT" WHERE "AT" + 1 = 3`)
-		want := []string{"AT=2|ID=2"}
+		want := []string{"ID=2|AT=2"}
 		if !unnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
@@ -167,7 +159,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	// with no element alias present.
 	t.Run("at_only_pushed_where_on_ordinal", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "AT" FROM T, T."ARR" AT "AT" WHERE "AT" = 1`)
-		want := []string{"AT=1|ID=1", "AT=1|ID=2"}
+		want := []string{"ID=1|AT=1", "ID=2|AT=1"}
 		if !unnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
@@ -177,7 +169,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	t.Run("projection_element_and_ordinal", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "V", "AT" FROM T, T."ARR" AS "V" AT "AT"`)
 		want := []string{
-			"AT=1|ID=1|V=101", "AT=1|ID=2|V=201", "AT=2|ID=2|V=202", "AT=3|ID=2|V=203",
+			"ID=1|V=101|AT=1", "ID=2|V=201|AT=1", "ID=2|V=202|AT=2", "ID=2|V=203|AT=3",
 		}
 		if !unnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)

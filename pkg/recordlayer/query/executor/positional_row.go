@@ -97,8 +97,20 @@ func RowValue(qr QueryResult) any {
 // boundaries that build a name-keyed artifact from a row (a proto record in the DML
 // insert/update path, keyed by column name). This is NOT runtime name resolution
 // — it is a one-shot projection at a boundary that is inherently name-keyed (a proto
-// message sets fields by name). Duplicate output names collapse last-wins (a proto
-// record cannot carry two same-named fields anyway).
+// message sets fields by name).
+//
+// IT IS LOSSY IN TWO WAYS, and a caller that is not itself name-keyed must not use
+// it. Slot ORDER is gone (a map has none), and duplicate output names collapse
+// LAST-WINS — a row of width n projects to fewer than n entries whenever two
+// output columns share a name, which is legal and routine on a merged/unnest row.
+// The order loss is the milder of the two: it makes a PERMUTATION of the row
+// invisible, so anything asserting on this projection cannot see a mis-bound leg
+// window. The last-wins loss is worse, because it discards a value outright rather
+// than reordering it.
+//
+// The DML boundary is safe on both counts by construction (a proto record has no
+// column order and cannot carry two same-named fields anyway). Any other consumer
+// should read the PositionalRow's Slots directly.
 func positionalToMap(pos *PositionalRow) map[string]any {
 	if pos == nil || pos.Type == nil {
 		return nil

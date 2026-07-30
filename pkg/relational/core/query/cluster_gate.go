@@ -674,7 +674,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		if disp != derivedUnnestArray {
 			return nil, false
 		}
-		outerCorr := values.NamedCorrelationIdentifier(sourceAlias(j.Left))
+		outerCorr := unnestOuterCorrelation(j.Left)
 		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), elementType); !ok {
 			return nil, false
 		}

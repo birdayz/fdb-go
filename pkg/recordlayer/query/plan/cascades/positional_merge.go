@@ -1,6 +1,9 @@
 package cascades
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -79,6 +82,16 @@ func (r *PartitionSelectRule) positionalMergeCase(
 			// so no member is authoritative and there is no honest merge slot type to
 			// pick. Decline the rule rather than choose by insertion order — Java
 			// Verify-fails at the same point (Reference.java:504-513).
+			//
+			// The decline alone would be SILENT, and the error's own doc says a
+			// disagreement is a memo defect that must surface: two members of one
+			// equivalence class flowing different rows is not a shape this arm declines
+			// to handle, it is the memo being wrong. Java crashes here; Go cannot,
+			// because the untyped-member reporting gap means the error is reachable
+			// without a real defect. So it is COUNTED and witnessed instead — the
+			// observation is what turns "this never happens" from an assumption into
+			// something a corpus run can read.
+			recordMergeSlotTypeDisagreement(err)
 			return nil
 		}
 		if _, typed := fov.Type().(*values.RecordType); !typed {
@@ -167,4 +180,63 @@ func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) ma
 		})
 	}
 	return types
+}
+
+// The positional merge's member-disagreement OBSERVATION.
+//
+// positionalMergeCase declines when a live leg's quantifier ranges over a
+// Reference whose members flow different row types
+// (expressions.MemberResultTypeDisagreementError). The decline is right — picking
+// a member would choose a row shape by memo insertion order — but a bare `return
+// nil` makes a memo defect indistinguishable from the ordinary "this arm does not
+// apply", and the error's own documentation says a disagreement must surface as
+// one.
+//
+// It is ALWAYS ON, unlike the gated censuses in this package. Those instrument
+// decisions the planner makes on every candidate, so an unconditional counter
+// would sit on a hot path; this one increments only where the memo is already
+// inconsistent, so a healthy run pays nothing and never touches the mutex.
+const mergeSlotTypeDisagreementSampleCap = 16
+
+var (
+	mergeSlotTypeDisagreementCount atomic.Int64
+
+	// mergeSlotTypeDisagreementMu guards the witness slice only.
+	mergeSlotTypeDisagreementMu        sync.Mutex
+	mergeSlotTypeDisagreementWitnesses []string
+)
+
+// recordMergeSlotTypeDisagreement counts one declined merge and retains the
+// error's own message as the witness — it names the quantifier and both row
+// types, which is what identifies the offending equivalence class.
+func recordMergeSlotTypeDisagreement(err error) {
+	mergeSlotTypeDisagreementCount.Add(1)
+	if err == nil {
+		return
+	}
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	if len(mergeSlotTypeDisagreementWitnesses) >= mergeSlotTypeDisagreementSampleCap {
+		return
+	}
+	w := err.Error()
+	for _, seen := range mergeSlotTypeDisagreementWitnesses {
+		if seen == w {
+			return
+		}
+	}
+	mergeSlotTypeDisagreementWitnesses = append(mergeSlotTypeDisagreementWitnesses, w)
+}
+
+// MergeSlotTypeDisagreements returns how many positional merges declined because
+// a leg quantifier's reference members disagreed on their row type, plus the
+// distinct witnesses retained (capped). A nonzero count over any corpus is a memo
+// defect: either a rule inserted an expression flowing a different row into an
+// existing equivalence class, or a leg's row type is being derived two ways.
+func MergeSlotTypeDisagreements() (int64, []string) {
+	mergeSlotTypeDisagreementMu.Lock()
+	defer mergeSlotTypeDisagreementMu.Unlock()
+	out := make([]string, len(mergeSlotTypeDisagreementWitnesses))
+	copy(out, mergeSlotTypeDisagreementWitnesses)
+	return mergeSlotTypeDisagreementCount.Load(), out
 }

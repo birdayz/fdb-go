@@ -1,6 +1,9 @@
 package values
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // The census is the instrument the leg-identity retyping rests on, so its own
 // arithmetic is pinned here. An instrument that miscounts the FoldOnlyEqual
@@ -111,18 +114,18 @@ func TestLegIdentityCensus_IdentityChannelClassifiesAsSameLegDecides(t *testing.
 	site := LegSiteOrdinalSlotInLegWindow
 	id := NamedCorrelationIdentifier
 	// Exact — SameLeg true.
-	RecordLegIdentityPair(site, id("A"), id("A"))
+	recordLegIdentityPair(site, id("A"), id("A"))
 	// Fold-only — SameLeg FALSE. This is the pair the text channel called exact:
 	// the leg's Name is "Q$5" while its identity is the minted "q$5".
-	RecordLegIdentityPair(site, id("q$5"), id("Q$5"))
+	recordLegIdentityPair(site, id("q$5"), id("Q$5"))
 	// Neither.
-	RecordLegIdentityPair(site, id("A"), id("B"))
+	recordLegIdentityPair(site, id("A"), id("B"))
 	// Unstated, both sides. SameLeg declines an unstated identifier
 	// unconditionally, so neither of these is a match and neither is an ordinary
 	// miss: an omitted identity is its own population.
-	RecordLegIdentityPair(site, CorrelationIdentifier{}, id("A"))
-	RecordLegIdentityPair(site, id("A"), CorrelationIdentifier{})
-	RecordLegIdentityPair(site, CorrelationIdentifier{}, CorrelationIdentifier{})
+	recordLegIdentityPair(site, CorrelationIdentifier{}, id("A"))
+	recordLegIdentityPair(site, id("A"), CorrelationIdentifier{})
+	recordLegIdentityPair(site, CorrelationIdentifier{}, CorrelationIdentifier{})
 
 	c := LegIdentityCensusOf(site)
 	if c.Channel != LegChannelIdentity {
@@ -238,16 +241,80 @@ func TestLegIdentityCensus_MixedChannelIsDetected(t *testing.T) {
 	if got := LegIdentityCensusOf(LegSiteRowLegsBinder).Channel; got != LegChannelText {
 		t.Fatalf("Channel after a text record = %v, want text", got)
 	}
-	RecordLegIdentityPair(LegSiteRowLegsBinder,
+	recordLegIdentityPair(LegSiteRowLegsBinder,
 		NamedCorrelationIdentifier("A"), NamedCorrelationIdentifier("A"))
 	if got := LegIdentityCensusOf(LegSiteRowLegsBinder).Channel; got != LegChannelMixed {
 		t.Fatalf("Channel after both = %v, want MIXED — a site recording in two "+
 			"namespaces has counts that describe neither comparison", got)
 	}
 	// A pure identity site stays pure: MIXED must mean both, not "identity seen".
-	RecordLegIdentityPair(LegSiteBuriedLegWindow,
+	recordLegIdentityPair(LegSiteBuriedLegWindow,
 		NamedCorrelationIdentifier("A"), NamedCorrelationIdentifier("A"))
 	if got := LegIdentityCensusOf(LegSiteBuriedLegWindow).Channel; got != LegChannelIdentity {
 		t.Errorf("identity-only site Channel = %v, want identity", got)
+	}
+}
+
+// TestLegIdentityWitnessSetSaturates pins the fact the harness gates' saturation
+// guard rests on: past legIdentitySampleCap the COUNT keeps rising while the
+// witness set stops growing.
+//
+// A gate that walks a site's witnesses and clears each one against an allowlist is
+// complete only while every anomaly is witnessed. Saturated, a further DISTINCT
+// anomaly increments its counter and retains nothing, so the walk clears every
+// witness it can see and passes with a real divergence counted. Nothing in the
+// counts reveals that — the allowlisted fixtures legitimately drive many pairs —
+// which is why the harnesses compare the witness LENGTH against
+// LegIdentitySampleCap() and fail on equality.
+//
+// This test is what makes that comparison meaningful: it pins that the exported
+// cap IS the cap the retention uses, and that retention genuinely stops there.
+// Without it the guard could be comparing against a number the sampler does not
+// honour, and would never fire.
+//
+// Not parallel, for the same reason as its siblings: package-scoped counters and
+// absolute assertions.
+func TestLegIdentityWitnessSetSaturates(t *testing.T) {
+	ResetLegIdentityCensus()
+	SetLegIdentityCensusEnabled(true)
+	t.Cleanup(func() {
+		SetLegIdentityCensusEnabled(false)
+		ResetLegIdentityCensus()
+	})
+
+	if LegIdentitySampleCap() != legIdentitySampleCap {
+		t.Fatalf("LegIdentitySampleCap() = %d but the sampler uses %d — the harness "+
+			"gates compare witness length against the EXPORTED value, so a drift here "+
+			"makes the saturation guard compare against a number nothing honours",
+			LegIdentitySampleCap(), legIdentitySampleCap)
+	}
+
+	site := LegSiteOrdinalSlotInLegWindow
+	sampleCap := LegIdentitySampleCap()
+	// cap+4 DISTINCT fold-only pairs — each one is the forgery shape (a lowercase
+	// minted leg read by its own upper spelling), and each is a different spelling
+	// so the retention's dedup cannot be what stops it.
+	const extra = 4
+	for i := 0; i < sampleCap+extra; i++ {
+		lower := NamedCorrelationIdentifier(fmt.Sprintf("sat$%d", i))
+		upper := NamedCorrelationIdentifier(fmt.Sprintf("SAT$%d", i))
+		recordLegIdentityPair(site, lower, upper)
+	}
+	c := LegIdentityCensusOf(site)
+	if c.FoldOnlyEqual != int64(sampleCap+extra) {
+		t.Fatalf("FoldOnlyEqual = %d, want %d — the COUNT must keep rising past the "+
+			"cap, or there is no gap between counted and witnessed for a gate to miss",
+			c.FoldOnlyEqual, sampleCap+extra)
+	}
+	if len(c.FoldOnlySamples) != sampleCap {
+		t.Fatalf("retained %d witnesses for %d distinct anomalies, want exactly %d "+
+			"(the cap) — the saturation guard's whole premise is that retention stops "+
+			"here while counting does not", len(c.FoldOnlySamples), sampleCap+extra, sampleCap)
+	}
+	// And the guard's own condition, stated as the harnesses state it: at this
+	// point len(witnesses) == cap, so a witness walk is no longer complete.
+	if len(c.FoldOnlySamples) < LegIdentitySampleCap() {
+		t.Errorf("the saturation condition len(witnesses) >= cap did not hold after "+
+			"%d distinct anomalies — the harness guard would never fire", sampleCap+extra)
 	}
 }

@@ -145,19 +145,26 @@ var legIdentityFloors = map[values.LegIdentitySite]int64{
 // failed.
 //
 // Only the population FLOORS are corpus-shaped, so only they are dropped when
-// -test.run narrows the run: the fold-only, unstated, text-vs-identity-divergence
-// and mixed-instrument zeros hold over ANY population, one query or eighty
-// thousand firings, and a filtered invocation checks them exactly as the full
-// suite does. The earlier form returned before all of them and announced only
-// that the floors were unchecked, so a focused run reported a passing gate while
-// four assertions had silently not run.
+// -test.run narrows the run: FIVE zeros hold over ANY population, one query or
+// eighty thousand firings — fold-only, unstated, retired-verdict divergence,
+// text-vs-identity divergence and mixed instrument — and a filtered invocation
+// checks them exactly as the full suite does. The earlier form returned before all
+// of them and announced only that the floors were unchecked, so a focused run
+// reported a passing gate while five assertions had silently not run.
+//
+// The enumeration is kept HONEST deliberately. It read "four" while
+// values.AssertLegIdentityCensus ran five, and the omitted one was the
+// retired-verdict zero — the assertion that compares this site's converted answer
+// against the text predicate it replaced, i.e. the only one that measures the
+// conversion rather than the representation. An enumeration that drops the
+// headline check reads as reassurance about the wrong thing.
 func assertLegIdentityCensus(w io.Writer) bool {
 	floors := legIdentityFloors
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
-			"The fold-only, unstated, text-vs-identity and instrument-channel zeros ARE "+
-			"checked — they hold over any population.\n",
+			"The fold-only, unstated, retired-verdict-divergence, text-vs-identity and "+
+			"instrument-channel zeros ARE checked — they hold over any population.\n",
 			f.Value.String())
 		floors = nil
 	}

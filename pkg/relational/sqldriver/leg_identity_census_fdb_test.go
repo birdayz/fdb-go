@@ -21,7 +21,8 @@ package sqldriver_test
 // buried-join / correlated-scalar / lateral-unnest shapes that the SQL DDL can
 // express, and asserts the invariants over whatever population exists when it
 // runs. Measured, running this test ALONE: six of the EIGHT sites report Total 0;
-// expressionOutputLegs reports 4 and the NLJ plan-alias site 370. That is not a fixable defect in the shapes below —
+// expressionOutputLegs reports 4 and the NLJ plan-alias site 370. That is not a
+// fixable defect in the shapes below —
 // the per-row leg BINDERS only see rows whose type carries leg boundaries, and
 // those rows come from struct-array unnest chains that SQL DDL cannot build (see
 // the INSERT comment below: there is no array literal that type-checks against
@@ -182,7 +183,18 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 		}
 	}
 
-	// Read these as LOWER BOUNDS in both directions: the counters are
+	// A SECOND, narrower look at the census — NOT the gate. TestMain's
+	// assertLegIdentityCensus is the gate: it runs last, so its population is
+	// complete, and it checks all five always-checkable zeros (fold-only, unstated,
+	// retired-verdict divergence, text-vs-identity divergence, mixed instrument)
+	// plus the per-site population floors. The loop below deliberately checks a
+	// SUBSET — FoldOnlyEqual at every site, and Neither at the two identity-pair
+	// sites — so its list must not be read as the invariant set; anything it omits
+	// is covered by TestMain, not unchecked. It exists because a failure attributed
+	// to THIS test's shapes is far easier to localize than the same failure
+	// attributed to the whole suite.
+	//
+	// Read the numbers as LOWER BOUNDS in both directions: the counters are
 	// package-scoped and this test is t.Parallel(), so siblings contribute, and the
 	// suite is not finished. The asymmetry is safe for the only thing asserted here
 	// — a zero over a sum of non-negative terms is exact however many extra passes

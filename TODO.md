@@ -10741,3 +10741,43 @@ None is speculative: each was re-verified against the tree before booking.
   per-line justification.
 
   Not gated on CQ-53: it touches no leg identity and no dotted channel.
+
+- [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
+  name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
+  row renderings to a positional renderer.** Not a product defect: the row VALUES
+  those files assert are correct. What is missing is that the assertions cannot see
+  the failure they exist to police.
+
+  `executor.RowValue` projects a PositionalRow through `positionalToMap` (see the
+  lossiness note at its definition), which loses slot ORDER and collapses duplicate
+  output names LAST-WINS. Rendering the resulting map with `%v` gives Go's own
+  alphabetical `map[A:1 B:2]` form, so PERMUTING (Fields, Slots) together — which is
+  exactly what a mis-bound leg window produces — reproduces a byte-identical string,
+  and a duplicate-named column drops a value outright.
+  `TestPositionalRenderersSeeAPermutation` in pkg/relational/sqldriver pins that
+  blindness as a measured fact.
+
+  Two rounds are already done and are the pattern to follow. The eight `map[...]`
+  sites converted to `positionalPipeSprint` (values in slot order); the six
+  sorted-map-key `k=v|k=v` loops converted to `positionalNamedPipeSprint` (names
+  kept, slot order). Prefer the NAMED renderer: keeping the names lets the
+  expectation rewrite be verified as a pure slot REORDERING (same multiset of
+  NAME=value pairs per row, same multiset of rows) instead of resting on a value
+  multiset plus a manual read of the SELECT list. Do the rewrite with that verifier
+  in the loop and refuse any diff it cannot prove is a reordering — a rewrite that
+  silently changes a value is precisely the failure the conversion is meant to
+  expose.
+
+  The files, with their multi-key `map[...]` expectation counts (measured):
+  star_body_cte_join_leg_fdb_test.go 128, chained_unnest_predicate_pushdown_fdb_test.go 82,
+  chained_unnest_3link_filtered_ordinal_fdb_test.go 62, nested_left_box_chained_unnest_fdb_test.go 52,
+  buried_chained_rotation_fdb_test.go 52, exists_scope_shadow_fdb_test.go 41,
+  fullbox_chained_spine_fdb_test.go 29, cross_leg_duplicate_column_box_unnest_fdb_test.go 27,
+  baretwin_gather_fdb_test.go 26, orderby_gather_fdb_test.go 20, withinbox_dup_fdb_test.go 19,
+  buried_element_predicate_fdb_test.go 10, nullsupply_barrier_fdb_test.go 9,
+  fork_colliding_subfield_fdb_test.go 6, projected_exists_enclosure_lift_fdb_test.go 1
+  (all under pkg/relational/sqldriver/). ~564 expectations.
+
+  DONE when `grep -rn "executor.RowValue(" pkg/relational/sqldriver/*_test.go`
+  returns only the renderer definitions themselves and sites whose rows are
+  single-slot (no order to assert).

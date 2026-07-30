@@ -266,6 +266,31 @@ func legBinding(op logical.LogicalOperator) string {
 	return sourceBinding(op)
 }
 
+// unnestOuterCorrelation is the ONLY way to mint the correlation of an unnest
+// seed's OUTER leg — the identifier the mixed/chained seed's outer QOV carries,
+// and the identifier the seed-window builder compares a buried leaf's identity
+// against. Same discipline as clusterLegOf: one derivation, so no site can
+// re-derive it differently and no fixture can hand-spell it.
+//
+// It is DELIBERATELY not legBinding. The two mints are the two producers of a box
+// leg's correlation and they disagree on purpose:
+//
+//   - HERE (the unnest/mixed and chained seeds): sourceAlias, which recurses to a
+//     join's RIGHT operand and upper-folds at every arm. A box's correlation is
+//     therefore its RIGHTMOST LEAF's alias, and values.finalizeSeedWindows'
+//     rightmost-leaf comparison MATCHES for that leaf.
+//   - legBinding (the pristine gated-join seed): sourceBinding + "$BOX" for a
+//     join leg, whose whole purpose is that the box level and the leaf level be
+//     DIFFERENT identifiers. There the same comparison DECLINES for every buried
+//     leaf, including the rightmost.
+//
+// Both dispositions are correct and both are load-bearing; see the predicate's own
+// comment in values.finalizeSeedWindows for what each one makes it do. A future
+// mint that folds the two together must reconcile that predicate first.
+func unnestOuterCorrelation(outer logical.LogicalOperator) values.CorrelationIdentifier {
+	return values.NamedCorrelationIdentifier(sourceAlias(outer))
+}
+
 // gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order
 // legs — Java flattens inner joins at translation (QueryVisitor.java:429-434
 // accumulates into a single flat SelectExpression); nested binaries are never

@@ -62,7 +62,7 @@ import (
 // Hence three channels, and a structural guard that a site uses exactly one
 // namespace:
 //
-//   - RecordLegIdentityPair takes two CorrelationIdentifiers and classifies them
+//   - recordLegIdentityPair takes two CorrelationIdentifiers and classifies them
 //     the way SameLeg decides;
 //   - RecordLegIdentityConversion adds the retired predicate's verdict — what a
 //     converted site must record, because the pair alone cannot show a flip;
@@ -129,10 +129,16 @@ const (
 	// different — box quantifier vs leaf", when the sourceBinding convention is
 	// exactly that for the rightmost leaf they are the SAME identifier. The red
 	// that was cited as proof came from a test fixture hand-minting the box
-	// correlation lowercase where production mints sourceAlias(box), upper.
+	// correlation lowercase where the unnest/mixed producer mints it upper-folded.
 	// Measured over the real-FDB corpus, the identity and text comparisons decide
-	// identically on all 1311 pairs. The premise now has its own deterministic pin
-	// (TestBoxCorrelationIsItsRightmostLeafIdentity) rather than resting on a count.
+	// identically on all 1311 pairs. The premise now has deterministic pins rather
+	// than resting on a count, ONE PER PRODUCER of a box correlation:
+	// TestBoxCorrelationIsItsRightmostLeafIdentity for the unnest/mixed mint (the
+	// two identifiers agree, so the comparison MATCHES the rightmost leaf) and
+	// TestBoxBoxBindingDeclinesAndStillFilesTheLeaf for the pristine gated-join
+	// mint (legBinding's "$BOX" suffix makes them differ by design, so BOTH the
+	// identity comparison and the retired text one decline, and the leaf
+	// sub-window is filed beside the box run rather than replacing it).
 	//
 	// The map KEYS remain upper-FOLDED text — readers still arrive holding a string
 	// — so this one site holds both namespaces at once, deliberately.
@@ -405,6 +411,17 @@ func LegSiteNeitherSampled(site LegIdentitySite) bool {
 // limit.
 const legIdentitySampleCap = 16
 
+// LegIdentitySampleCap exposes that bound to the harnesses that gate on the
+// witness sets.
+//
+// A gate that walks a site's witnesses and clears each one against an allowlist
+// is only as complete as the witness set: once the set is SATURATED, a further
+// DISTINCT anomaly still increments the count but retains no witness, so the walk
+// clears every witness it can see and the gate passes with a real divergence
+// counted. Nothing about the count reveals that — a harness must compare the
+// witness length against this cap and fail on saturation.
+func LegIdentitySampleCap() int { return legIdentitySampleCap }
+
 var (
 	legCensusEnabled atomic.Bool
 	legCensus        [legIdentitySiteCount]LegIdentityCensus
@@ -468,12 +485,12 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 	}
 }
 
-// RecordLegIdentityConversion is RecordLegIdentityPair plus the acceptance test
+// RecordLegIdentityConversion is recordLegIdentityPair plus the acceptance test
 // the conversion needs: retiredVerdict is what the predicate this site USED TO
 // evaluate says about this same pair, and a disagreement with SameLeg is counted
 // and witnessed.
 //
-// Every converted site must use this rather than RecordLegIdentityPair while the
+// Every converted site must use this rather than recordLegIdentityPair while the
 // migration is open. Computing the retired predicate at the site costs a string
 // compare inside the census gate — production never evaluates it — and it is what
 // turns "the conversion is representation-only" from three inferences chained
@@ -484,7 +501,7 @@ func RecordLegIdentityComparison(site LegIdentitySite, legName, corrName string)
 //
 // Callers must guard on LegIdentityCensusEnabled().
 func RecordLegIdentityConversion(site LegIdentitySite, leg, corr CorrelationIdentifier, retiredVerdict bool) {
-	RecordLegIdentityPair(site, leg, corr)
+	recordLegIdentityPair(site, leg, corr)
 	if site < 0 || site >= legIdentitySiteCount {
 		return
 	}
@@ -499,7 +516,7 @@ func RecordLegIdentityConversion(site LegIdentitySite, leg, corr CorrelationIden
 	recordSample(site, leg.Name(), corr.Name()+" (retired="+verdict+")", sampleRetired)
 }
 
-// RecordLegIdentityPair records the pair a site's IDENTITY comparison actually
+// recordLegIdentityPair records the pair a site's IDENTITY comparison actually
 // evaluates: the leg's own CorrelationIdentifier against the counterparty
 // correlation's. Every site that decides with values.SameLeg must use this and not
 // the string form — a site whose comparison is exact-on-identifiers and whose
@@ -517,7 +534,7 @@ func RecordLegIdentityConversion(site LegIdentitySite, leg, corr CorrelationIden
 // populations describe the pair, not the change in verdict.
 //
 // Callers must guard on LegIdentityCensusEnabled().
-func RecordLegIdentityPair(site LegIdentitySite, leg, corr CorrelationIdentifier) {
+func recordLegIdentityPair(site LegIdentitySite, leg, corr CorrelationIdentifier) {
 	if site < 0 || site >= legIdentitySiteCount {
 		return
 	}

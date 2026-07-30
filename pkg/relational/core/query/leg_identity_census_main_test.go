@@ -118,15 +118,28 @@ var negativeControlWitnesses = map[values.LegIdentitySite]map[string]struct{}{
 // assertTranslatorLegIdentityCensus checks this corpus's census.
 //
 // Same split as the sqldriver harness for the FLOORS — they describe the
-// unfiltered corpus and are dropped under -test.run. The anomaly check runs
-// always: a witness the fixtures do not account for is a defect over any
-// population.
+// unfiltered corpus and are dropped under -test.run. Everything else runs always:
+// a witness the fixtures do not account for is a defect over any population.
+//
+// Where this harness DIFFERS from values.AssertLegIdentityCensus, and it matters
+// for reading the announcement below: that gate asserts five ZEROS, while this one
+// cannot (its fixtures deliberately drive declines), so it converts four of them —
+// fold-only, unstated, retired-verdict divergence and text-vs-identity divergence
+// — into unaccounted-WITNESS checks against negativeControlWitnesses, keeps the
+// instrument-channel zero as a zero, and adds a witness-set SATURATION check
+// without which the witness walks are not complete. The announcement enumerates
+// all of those, because a message that says only "the witness checks ran" hides
+// which populations were actually cleared — the retired-verdict one especially,
+// since it is the population that measures the conversion rather than the
+// representation.
 func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 	floors := translatorLegIdentityFloors
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The unaccounted-witness and "+
-			"instrument-channel checks ARE run.\n", f.Value.String())
+			"(-test.run=%q narrowed the corpus). Still checked: the unaccounted-witness "+
+			"walks over fold-only, unstated, retired-verdict-divergence and "+
+			"text-vs-identity-divergence witnesses, the witness-set saturation guard, and "+
+			"the instrument-channel zero.\n", f.Value.String())
 		floors = nil
 	}
 	failed := false
@@ -166,6 +179,22 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 			if group.count == 0 {
 				continue
 			}
+			// The allowlist walk below can only clear witnesses it can SEE, and the
+			// witness set is capped. Saturated, a further DISTINCT anomaly increments
+			// the count and retains nothing, so every visible witness clears and the
+			// gate passes with a real divergence counted. The count alone cannot reveal
+			// that — the allowlisted fixtures legitimately drive many pairs — so the
+			// saturation itself is the failure.
+			if len(group.witness) >= values.LegIdentitySampleCap() {
+				failed = true
+				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s retained %d %s witnesses, "+
+					"SATURATING the cap of %d.\n"+
+					"  Beyond the cap an anomaly is counted but unwitnessed, so the\n"+
+					"  unaccounted-witness check below is no longer complete and this gate can\n"+
+					"  no longer clear this site. Narrow the corpus or raise the cap — do not\n"+
+					"  read the passing witness walk as a clean result.\n",
+					site, len(group.witness), group.what, values.LegIdentitySampleCap())
+			}
 			for _, wit := range group.witness {
 				// The retired-verdict witnesses carry a " (retired=...)" suffix naming
 				// the direction; the pair itself is what the allowlist declares.
@@ -185,6 +214,14 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 			}
 		}
 		if values.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
+			// Same saturation hazard as the grouped walk above.
+			if len(c.NeitherSamples) >= values.LegIdentitySampleCap() {
+				failed = true
+				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s retained %d Neither witnesses, "+
+					"SATURATING the cap of %d — beyond it an anomaly is counted but "+
+					"unwitnessed, so the walk below cannot clear this site.\n",
+					site, len(c.NeitherSamples), values.LegIdentitySampleCap())
+			}
 			for _, wit := range c.NeitherSamples {
 				if _, ok := allowed[wit]; ok {
 					continue

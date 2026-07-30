@@ -25,10 +25,13 @@ import (
 // order-sensitive expectations everywhere, not a second assertion bolted onto
 // one site.
 //
-// Both renderers fall back to the name-keyed form when a row carries NO
-// positional row. That fallback is not a compromise: a row with no positional
-// slots has no order to assert, and rendering it by name is the only thing
-// available. What matters is that a row WITH slots is never rendered by name.
+// Both renderers route a row that carries NO positional row through
+// unnestSprint(executor.RowValue(r)). Calling that a "name-keyed fallback" would
+// overstate it: executor.RowValue returns nil the moment Positional is nil, so
+// there is no name-keyed row on that branch and never can be — the branch renders
+// "<nil>". It is a guard against a nil dereference, not an alternative rendering,
+// and the test at the bottom of this file says so in those terms. What matters
+// either way is that a row WITH slots is never rendered by name.
 
 // positionalSprint renders a row as its whole slot list ("[a b c]"), so the
 // assertion pins slot ORDER as well as the values.
@@ -50,6 +53,36 @@ func positionalPipeSprint(r executor.QueryResult) string {
 	parts := make([]string, len(r.Positional.Slots))
 	for i, s := range r.Positional.Slots {
 		parts[i] = unnestSprint(s)
+	}
+	return strings.Join(parts, "|")
+}
+
+// positionalNamedPipeSprint renders a row as "NAME=value" pairs joined by "|", in
+// SLOT order.
+//
+// It is the order-sensitive replacement for the OTHER blind form in this suite:
+// the loop that collected a row map's keys, sorted them, and joined "k=v" pairs
+// alphabetically. That form is blind twice over — a permutation of (Fields, Slots)
+// re-sorts to the identical string, and positionalToMap has already collapsed any
+// duplicate output name LAST-WINS before the sort ever runs, so a value is missing
+// rather than merely misordered.
+//
+// Keeping the names (rather than converting those sites to positionalPipeSprint's
+// bare values) is deliberate: at those sites the name is what identifies which
+// output column a value belongs to, and dropping it would force every expectation
+// to be re-derived from the SELECT list instead of merely re-ordered. Slot order
+// plus the names is strictly more information than either renderer alone.
+func positionalNamedPipeSprint(r executor.QueryResult) string {
+	if r.Positional == nil || r.Positional.Type == nil {
+		return unnestSprint(executor.RowValue(r))
+	}
+	slots := r.Positional.Slots
+	parts := make([]string, 0, len(r.Positional.Type.Fields))
+	for i, f := range r.Positional.Type.Fields {
+		if i >= len(slots) {
+			break
+		}
+		parts = append(parts, f.Name+"="+unnestSprint(slots[i]))
 	}
 	return strings.Join(parts, "|")
 }
@@ -106,6 +139,11 @@ func TestPositionalRenderersSeeAPermutation(t *testing.T) {
 	if a, b := positionalSprint(straight), positionalSprint(permuted); a == b {
 		t.Errorf("positionalSprint rendered a permuted row identically (%q)", a)
 	}
+	if a, b := positionalNamedPipeSprint(straight), positionalNamedPipeSprint(permuted); a == b {
+		t.Errorf("positionalNamedPipeSprint rendered a permuted row identically (%q).\n"+
+			"  It replaces the SORTED-map-key \"k=v|k=v\" form, whose whole defect was that\n"+
+			"  re-sorting a permuted row reproduces the same string.", a)
+	}
 	// And the values themselves, in slot order, so a renderer that merely differs
 	// (by hashing, say) does not satisfy this test.
 	if got, want := positionalPipeSprint(straight), "1|2|3"; got != want {
@@ -114,10 +152,47 @@ func TestPositionalRenderersSeeAPermutation(t *testing.T) {
 	if got, want := positionalPipeSprint(permuted), "3|1|2"; got != want {
 		t.Errorf("permuted positionalPipeSprint = %q, want %q", got, want)
 	}
+	if got, want := positionalNamedPipeSprint(straight), "A=1|B=2|C=3"; got != want {
+		t.Errorf("positionalNamedPipeSprint = %q, want %q", got, want)
+	}
+	if got, want := positionalNamedPipeSprint(permuted), "C=3|A=1|B=2"; got != want {
+		t.Errorf("permuted positionalNamedPipeSprint = %q, want %q — slot order, and it is "+
+			"the ORDER that differs from the alphabetical rendering the sorted-map loop "+
+			"produced for both rows", got, want)
+	}
 
-	// The no-positional-row fallback stays name-keyed: a row with no slots has no
-	// order to assert, and the renderers must not panic on it.
-	if got := positionalPipeSprint(executor.QueryResult{}); got == "" {
-		t.Error("a row with no positional slots must still render (name-keyed fallback)")
+	// And the DUPLICATE-name loss the sorted-map form suffered on top of the order
+	// loss: two output columns legitimately share a name on a merged/unnest row, and
+	// positionalToMap collapses them last-wins BEFORE any sort. So the map form
+	// renders a row of width 3 as two entries and silently drops a value; the
+	// positional form renders all three.
+	dup := row(typ("V", "V", "W"), int64(1), int64(2), int64(3))
+	if got, want := positionalNamedPipeSprint(dup), "V=1|V=2|W=3"; got != want {
+		t.Errorf("positionalNamedPipeSprint on a duplicate-named row = %q, want %q — a "+
+			"renderer that collapses duplicates loses a value outright, which is worse "+
+			"than losing its order", got, want)
+	}
+	if m, ok := executor.RowValue(dup).(map[string]any); !ok || len(m) != 2 {
+		t.Errorf("the name-keyed projection of a 3-slot duplicate-named row gave %v — the "+
+			"last-wins collapse to 2 entries is the hazard the note on "+
+			"executor.positionalToMap records; if it stopped collapsing, that note and "+
+			"this rationale need re-checking", executor.RowValue(dup))
+	}
+
+	// A row with NO positional row must not panic either renderer. That is ALL this
+	// checks — a nil guard, not a name-keyed-rendering test, and it used to be
+	// labelled as the latter while asserting only `got != ""`. There is no
+	// name-keyed row to assert on here and there cannot be: executor.RowValue
+	// returns nil the moment Positional is nil, so this branch renders the nil
+	// sentinel and could not render a map even in principle. The exact expected
+	// string is asserted so the guard has teeth — `!= ""` passed for any output at
+	// all, including a panic-adjacent garbage rendering.
+	if got, want := positionalPipeSprint(executor.QueryResult{}), "<nil>"; got != want {
+		t.Errorf("positionalPipeSprint on an empty QueryResult = %q, want %q — the "+
+			"no-positional-row branch renders the nil sentinel, because RowValue yields "+
+			"nil there rather than a name-keyed row", got, want)
+	}
+	if got, want := positionalSprint(executor.QueryResult{}), "<nil>"; got != want {
+		t.Errorf("positionalSprint on an empty QueryResult = %q, want %q", got, want)
 	}
 }

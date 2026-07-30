@@ -1864,6 +1864,23 @@ func mergedOuterLegAliases(leftAlias, rightAlias string, legCorrs ...values.Corr
 	// The identity namespace: VERBATIM. Folding it here is what would let a
 	// quoted "q$5" and a minted q$5 be treated as one leg, and it is also what
 	// kept a minted leg from matching itself.
+	//
+	// Consequence worth stating: the lazy dotted arm in rebaseOuterLegValue matches
+	// a reference's correlation against these entries EXACTLY and then mints
+	// `corr + "." + upper(field)`, so a lowercase machine-minted leg now mints a
+	// LOWERCASE-qualified key ("c.COL") where the folded-only set produced "C.COL"
+	// or nothing. That is inert on three independent counts, none of which is a
+	// second namespace:
+	//   - no dotted merged-row key reaches a WINNING plan on any covered shape
+	//     (TestLazyLegMintReachesNoWinningPlan measures zero), so nothing executes
+	//     against a key minted here;
+	//   - the rebase is followed by a fail-closed verification — a reference that
+	//     still names a leg alias DECLINES the yield rather than shipping
+	//     (correct-or-loud), so a mis-keyed survivor costs a plan, never rows;
+	//   - the runtime dotted lookup folds BOTH sides (rowSlotForLegColumn's
+	//     EqualFold on qualifier and column), so a survivor that did reach execution
+	//     addresses the same slot either spelling.
+	// The arm retires with the dotted channel entirely (CQ-53's seed rebake).
 	for _, c := range legCorrs {
 		add(c.Name())
 	}

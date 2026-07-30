@@ -41,13 +41,17 @@ func ReportLegIdentityCensus(w io.Writer, label string) {
 // AssertLegIdentityCensus checks the census and reports whether it failed.
 //
 // The ZERO assertions hold over ANY population — a fold-only pair, a diverged
-// text/identity pair, an unstated identity, or a mixed instrument is a defect
-// whether the corpus was one query or the whole suite — so they run always. Only
-// the population FLOORS describe a particular corpus, and those are checked only
-// for the sites the caller supplies: pass nil to assert the zeros over a narrowed
-// run. Skipping the zeros along with the floors is how a filtered invocation used
-// to report "floors not checked" while quietly also not checking the four things
-// that are always checkable.
+// text/identity pair, an unstated identity, a RETIRED-VERDICT divergence, or a
+// mixed instrument is a defect whether the corpus was one query or the whole suite
+// — so they run always. That is FIVE, and callers must enumerate all five when
+// they announce what a narrowed run still checks: an enumeration that omits the
+// retired-verdict zero omits the one assertion that measures the conversion
+// itself, which is the reason this census exists. Only the population FLOORS
+// describe a particular corpus, and those are checked only for the sites the
+// caller supplies: pass nil to assert the zeros over a narrowed run. Skipping the
+// zeros along with the floors is how a filtered invocation used to report "floors
+// not checked" while quietly also not checking the five things that are always
+// checkable.
 func AssertLegIdentityCensus(w io.Writer, floors map[LegIdentitySite]int64) bool {
 	failed := false
 	for _, site := range LegIdentitySites() {
@@ -64,7 +68,7 @@ func AssertLegIdentityCensus(w io.Writer, floors map[LegIdentitySite]int64) bool
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s recorded in BOTH namespaces.\n"+
 				"  Its counts then describe neither comparison. A site records the pair its\n"+
-				"  own comparison evaluates — RecordLegIdentityPair for a values.SameLeg\n"+
+				"  own comparison evaluates — recordLegIdentityPair for a values.SameLeg\n"+
 				"  decision, RecordLegIdentityComparison for a genuine text decision — and\n"+
 				"  exactly one of them.\n", site)
 		}

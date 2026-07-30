@@ -185,14 +185,31 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 			// "Is this buried leg the box run's RIGHTMOST LEAF?" — an IDENTITY question,
 			// answered by the one comparison every identity question routes through.
 			//
-			// The predicate is the sourceBinding convention: a box run is named, and
-			// identified, by its rightmost leaf. Both sides of it are quantifier
-			// correlations — the box QOV's on one side (w.Alias, carried verbatim from
-			// the seed) and the buried leaf's on the other — and the convention is
-			// precisely that for the rightmost leaf those two are the SAME identifier.
-			// The box's correlation is minted as sourceAlias(box), sourceAlias of a join
-			// recurses to its right operand, and both spellings arrive upper-folded from
-			// that one chokepoint.
+			// TWO producers mint the box QOV's correlation this compares against, and
+			// they answer this predicate DIFFERENTLY. Both dispositions are intended:
+			//
+			//  1. The unnest/mixed and chained seeds mint it through the translator's
+			//     unnestOuterCorrelation — sourceAlias(box), which recurses to a join's
+			//     RIGHT operand and upper-folds at every arm. So the box's correlation IS
+			//     its rightmost leaf's, and this predicate MATCHES for that leaf: the
+			//     REPLACE branch below swaps the box run's window for the leaf's
+			//     sub-window, which is what keeps an alias-qualified read off the concat.
+			//     This is the sourceBinding convention — a box run is named, and
+			//     identified, by its rightmost leaf — and the two spellings agree only
+			//     because that one chokepoint folds.
+			//  2. The PRISTINE gated-join seed mints it through the translator's
+			//     legBinding — sourceBinding(box) + "$BOX" for a join leg — whose stated
+			//     purpose is that the box level and the leaf level be DIFFERENT
+			//     identifiers (one plan carries both, and a shared name collides in the
+			//     widen invariant). So this predicate DECLINES for every buried leaf of
+			//     such a box, rightmost included.
+			//
+			// The decline is not a dropped window. The map KEY is the buried leg's own
+			// Name ("C"), the box run's key is the minted binding ("C$BOX"), so the
+			// `taken` test below misses and the leaf sub-window is filed anyway — it is
+			// ADDED beside the box run rather than replacing it. The retired text
+			// predicate (`leg.Name == alias`) declined that pair too, so the conversion
+			// changed nothing for this producer; the premise test pins both arms.
 			//
 			// Three earlier justifications for keeping a TEXT comparison here are
 			// withdrawn, and the last of them was wrong in an instructive way. It claimed
