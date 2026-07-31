@@ -130,6 +130,7 @@ go_test(
         "sql_plan_fuzz_test.go",
         "system_rows_test.go",
         "tri_bool_test.go",
+        "unnest_element_later_from_item_test.go",
         "unnest_element_stays_untyped_test.go",
         "utilities_test.go",
         "value_compare_test.go",
@@ -230,6 +231,7 @@ go_test(
         "aggregate_output_slot_domain_test.go",
         "lazy_leg_mint_winner_test.go",
         "unnest_element_stays_untyped_test.go",
+        "unnest_element_later_from_item_test.go",
     ],
     deps = [
         "//gen",
