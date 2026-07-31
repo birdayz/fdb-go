@@ -23,6 +23,11 @@ changes:
 - **The 94 residue was investigated under a coordinator ruling and FENCED**, with
   the evidence recorded. Revision 1's "largest addressable block" claim was
   wrong: 94 > 60, and this closes the SECOND-largest block.
+- **The document mixed two heads and now states one.** Revision 1's §Residues
+  cited the same construct at two different commits in one sentence. Every
+  citation has since been swept against `4dccc50f0` construct-by-construct, and
+  the preamble records which files are head-sensitive so the next reader does not
+  have to re-derive it.
 
 Closes: the `legIsOrdinalSafe` half of CQ-53 phase 3; advances the
 `DIVERGENCES.md` retirement condition for the runtime binding-namespace widening
@@ -30,10 +35,26 @@ Closes: the `legIsOrdinalSafe` half of CQ-53 phase 3; advances the
 
 Corpus figures are one run of the whole real-FDB sqldriver corpus at
 `f50cee43e`, recorded in TODO.md's CQ-53 PHASE 3 block (measured on branch
-`feat/cq53-parent-chained-binder`, HEAD `4dccc50f0`). Line citations are verified
-at `4dccc50f0` for `rule_implement_nested_loop_join.go` (the one cited file that
-moved between the two) and at `f50cee43e` for everything else. Where a count here
-and a census disagree, the census is right and this file is stale.
+`feat/cq53-parent-chained-binder`, HEAD `4dccc50f0`).
+
+**Every line citation in this document is at `4dccc50f0`, with no exceptions.**
+Reviewers reading a later head should note that of the files cited here, only
+`rule_implement_nested_loop_join.go` is head-sensitive: it is byte-identical at
+`f50cee43e` and `bb133c330` to *neither* — it moved at both points. Every other
+cited file (`executor/ordinal_join.go`, `executor/flat_map_cursor.go`,
+`executor/executor.go`, `executor/merged_leg_binding_census.go`,
+`values/ordinal_seed_layout.go`, `values/type.go`, `values/values.go`,
+`rule_select_merge.go`, `left_outer_existential.go`, `cascades_translator.go`,
+`exists_gathered_cluster_wrap.go`, `unnest_gather.go`, `ordinal_seed.go`,
+`clustered_outer_scalar.go`, `positional_merge.go`) is **byte-identical at
+`f50cee43e`, `4dccc50f0` and `bb133c330`**, so its numbers are head-independent
+and a mismatch against them is a reading error rather than drift. For the one
+file that does move, the three-way mapping of its most-cited landmark is
+`flatMapResult` = `:3866` @ `f50cee43e`, `:3879` @ `4dccc50f0`, `:3901` @
+`bb133c330`.
+
+Where a count here and a census disagree, the census is right and this file is
+stale.
 
 ## The defect, measured — with each number's instrument named
 
@@ -454,8 +475,10 @@ a nested-carrying seed arriving there produces a declined plan, never a
 mis-bound one.
 
 No site needs the nested windows except the three. **If implementation finds one
-that does, that is a STOP, not a widening** — the entire proof above rests on the
-narrow entry's accept set being frozen.
+that does, that is a STOP, not a widening**: halt implementation and return to
+this RFC's reviewers with the site, because the entire proof above rests on the
+narrow entry's accept set being frozen, and widening it to accommodate a
+fourteenth caller silently re-opens every row of the table.
 
 ### 4. `legIsOrdinalSafe` and `planBuriedLegConcat` move in LOCKSTEP.
 
@@ -631,9 +654,18 @@ Revision 1 called `len(windows) != 2 → return true` (`:2187`) "the safe defaul
 false) here is always safe: the join-commutativity exploration ADDS an
 alternative candidate, it never removes the non-swapped one" (`:2175-2184`).
 Returning `true` is the PERMISSIVE answer. What it permits is the hazard
-documented at `:2141-2151`: a `WithSwappedQuantifiers` firing reuses the seed
-unchanged, so if the legs are swapped relative to the seed's baked layout, "every
-baked reference into it then reads the wrong slot".
+documented at `:2141-2151`, quoted in full because revision 1 quoted it
+selectively and stated a gate stronger than the mechanism supports: a
+`WithSwappedQuantifiers` firing reuses the seed unchanged, so if the legs are
+swapped relative to the seed's baked layout, "every baked reference into it then
+reads the wrong slot (or, when out of range or genuinely unbound downstream,
+fails loud with an unbound-correlation error) — **never a silent wrong VALUE
+reaching the user undetected, since the ordinal read is either right or loud**,
+but still a plan the query cannot execute."
+
+That clause is the difference between "this produces wrong rows" and "this
+produces a plan that cannot run". Both are defects worth gating; only the second
+is what the site claims. Gate (a) direction 3 is stated accordingly.
 
 **The fail-open is pre-existing, not introduced.** `finalizeSeedWindows` already
 ADDS a sub-window per buried leaf of a clustered box leg (`:311-315`), so a
@@ -757,7 +789,17 @@ SEPARATELY:
 1. nested window read as flat (`Offset + legOrdinal`) → red on rows;
 2. flat window read as nested → red on rows;
 3. **leg orientation** — the two legs swapped relative to the seed's baked
-   layout, which is the hazard §9's gate exists for → red on rows;
+   layout, which is the hazard §9's gate exists for → **RED, with the OBSERVED
+   failure mode recorded** (an error, a declined plan, or wrong rows). Not "red
+   on rows": `:2144-2151` states that an ordinal read against a swapped layout is
+   "either right or loud", so the expected observable is a loud
+   unbound-correlation error or an unexecutable plan, and demanding wrong rows
+   would be a gate stronger than the mechanism supports.
+   **If the mutation DOES produce silently wrong rows, `:2148-2150`'s "never a
+   silent wrong VALUE reaching the user undetected" is itself REFUTED** — that is
+   a finding in its own right, it invalidates a claim the surrounding machinery
+   rests on, and it gets its own line in this RFC plus a report before the gate
+   is called satisfied;
 4. **the census-invisible bare-column arm** (`unnest_gather.go:467-471`) — a
    nested window allowed to contribute a `hits++` → red on rows.
 
@@ -813,22 +855,23 @@ The retirement is NOT completed by this RFC and this RFC does not claim it is.
 ## Residues, measured and OUT OF SCOPE
 
 **The 94 bare-QOV legs — INVESTIGATED under ruling, and FENCED.** The question
-was whether typing the identity result value
-(`rule_implement_nested_loop_join.go:3879` at `4dccc50f0`, `:3866` at branch
-HEAD — `values.NewQuantifiedObjectValue(mergedOuterCorr)`, the untyped
-constructor at `values/values.go:4340`, where Java types unconditionally at
-`Quantifier.java:801-803`) could be absorbed here. Revision 1 implied that line
+was whether typing the identity result value —
+`rule_implement_nested_loop_join.go:3879`,
+`values.NewQuantifiedObjectValue(mergedOuterCorr)`, the untyped constructor at
+`values/values.go:4340`, where Java types unconditionally at
+`Quantifier.java:801-803` — could be absorbed here. Revision 1 implied that line
 was THE producer. **It is not, and three findings put it out of scope:**
 
 1. **It is one of four producers, and structurally not the main one.** All four
    non-test `RecordQueryFlatMapPlan` constructions can emit a bare QOV result
    value: `:1383` (`buildCorrelatedFlatMapPlan`, passing its `resultValue`
-   parameter through), `:1797` (`implementExistentialSelect`), `:3917` (this
-   line), `:4161` (`yieldExistsFlatMap`). Three flow `sel.GetResultValue()`
+   parameter through), `:1797` (`implementExistentialSelect`), `:3930` (the
+   construction fed by `:3879`), `:4174` (`yieldExistsFlatMap`). Three flow
+   `sel.GetResultValue()`
    essentially verbatim, and the SQL translator mints exactly a bare untyped QOV
    as a select result value at `cascades_translator.go:4097`. The 94 are LEGS of
    a 3-quantifier join+EXISTS — the accumulated side of an N-way join, which
-   `yieldGeneralFlatMap`/`buildCorrelatedFlatMapPlan` build, not `:3917`.
+   `yieldGeneralFlatMap`/`buildCorrelatedFlatMapPlan` build, not `:3930`.
    Attribution of the 94 to any one producer is **unmeasured**: the census
    witness (`describeSeedEscape`, `:2594-2609`) records the declined leg's
    result-value SHAPE, not its producer.
@@ -852,8 +895,8 @@ was THE producer. **It is not, and three findings put it out of scope:**
    the leg derivation (`:2457-2465`) — where `DisagreeingLegs` and
    `UnderivableLegs` are asserted as HARD ZEROS. A newly-typed member that
    disagrees with a sibling turns a currently-green census gate red. Separately,
-   `:3866` and the FlatMap construction at `:3917` execute on **both** the
-   correlated and materialized arms (the `correlatedStep1` block at `:3643-3699`
+   `:3879` and the FlatMap construction at `:3930` execute on **both** the
+   correlated and materialized arms (the `correlatedStep1` block at `:3656-3712`
    only selects `step1Expr`), so typing it touches the `correlatedStep1` wall;
    and whether `correlatedStep1 && ordinalWindows != nil` is reachable **could
    not be established by reading**. Typing also propagates into positional-merge
