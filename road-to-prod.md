@@ -165,14 +165,40 @@ divergence (deliberate, reviewed).
 
 ## Newly booked from the audit (were unbooked; now TODO items)
 
-- Two LIKE implementations that provably disagree (trailing escape), one live
-  on the `INFORMATION_SCHEMA` WHERE path — part of a shadow evaluator family
-  that violates "no parallel pipelines". S.
-- `API_PARITY.md` contradicts `options.go` on two options (doc says no-op,
-  code rejects) + a docscheck gate to keep the table honest. S.
-- `SetSpecialKeySpaceRelaxed`/`EnableWrites` still silent no-ops — record the
-  decision. S.
-- `pkg/fdbgo` README/doc.go missing the bounded-context requirement. S.
+- ~~Two LIKE implementations that provably disagree (trailing escape), one live
+  on the `INFORMATION_SCHEMA` WHERE path~~ **DONE, and the audit had the
+  DIRECTION BACKWARDS.** The shadow matcher was the Java-correct one; the
+  "canonical" `values.LikeMatch` was wrong, so the live wrong-rows defect was on
+  the ENGINE path, not the catalog path. Java's own corpus (`like.yamsql:92`)
+  settles it. Deleting the shadow and adopting the canonical matcher — the
+  booked plan — would have PROPAGATED the defect onto INFORMATION_SCHEMA.
+  Unified onto one matcher and corrected against Java instead; the fuzz oracle
+  that should have caught this had been written to restate the implementation.
+  Was S, actually M, and it is a query-engine change: **needs a Graefe ACK**. CQ-40.
+- ~~`API_PARITY.md` contradicts `options.go` on two options~~ **DONE.** Both
+  confirmed; the gate found three more (`SpanParent` misfiled; three options
+  listed nowhere because the page used `A`/`B` shorthand that named no method;
+  the DB-level rejects unnamed). CQ-41.
+- ~~`SetSpecialKeySpaceRelaxed`/`EnableWrites` silent no-ops~~ **DONE — decided
+  REJECT**, against the C++ source: `enable_writes` arms
+  `specialKeySpace->commit()`, so a silent nil reported an enabled configuration
+  change that never happens. CQ-42.
+- ~~`pkg/fdbgo` README/doc.go missing the bounded-context requirement~~ **DONE,
+  and this booking's PREMISE WAS FALSE.** libfdb_c has no internal timeout to
+  diverge from (`timeoutInSeconds=0.0`, `maxRetries=-1`); the unbounded default
+  is MATCHED, and Go is stricter at bootstrap. Two shipped godoc comments were
+  asserting the false "unlike libfdb_c" framing and are corrected; the RFC line
+  that contradicted its own text 50 lines earlier is marked closed-as-misframed.
+  CQ-43.
+- **NEW, found while running the suite: the cross-engine safety net misdiagnoses
+  host contention as a semantic regression.** A starved conformance server
+  raised `DeadlineExceededException` and the RFC-082 lock reported it as "Go's
+  behaviour no longer matches the pinned divergence" — pointing at the engine
+  when the cause was the host. The non-annotated path had an infra guard and a
+  comment saying exactly why; the ANNOTATED path had none. Fixed by a shared
+  classifier applied to both, keeping the run RED but labelling the cause. Also
+  measured: the full suite is not safe to run concurrently with another
+  Docker-spinning job (596s + phantom failure vs 312s green in isolation).
 - Two stated-unprobed differential axes (1021 idempotency — needs wire fault
   injection; cross-shard range-merge — needs multi-shard cluster). M.
 - The 07-17 stress failure + binding-stress 0/50, with run IDs. Under

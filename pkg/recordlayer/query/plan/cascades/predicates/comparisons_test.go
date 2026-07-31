@@ -1041,10 +1041,12 @@ func TestNewLiteralComparison(t *testing.T) {
 }
 
 // LIKE with ESCAPE — pin the matcher's escape-handling truth
-// table. escape == 0 disables (regression check: original
-// semantics preserved). Non-zero escape makes the next char
-// literal. Trailing escape rune (no following char) is treated
-// as no-match — required by SQL semantics.
+// table against Java. escape == 0 disables escape handling. A
+// non-zero escape opens an escape sequence ONLY before `_` or `%`
+// (Java's PatternForLikeValue installs exactly those two entries);
+// in every other position the escape rune falls through to the
+// ordinary per-character rules and is therefore an ordinary literal
+// — including when it dangles at the end of the pattern.
 func TestLikeMatch_Escape(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1067,23 +1069,32 @@ func TestLikeMatch_Escape(t *testing.T) {
 		// Mixed wildcard + escaped: `a\%%c` = literal a, literal %, then anything-c.
 		{"escaped + wildcard", `a\%%c`, "a%xyzc", '\\', true},
 		{"escaped + wildcard, no leading %", `a\%%c`, "axyzc", '\\', false},
-		// Trailing escape with nothing after — pattern can't match
-		// (the escape-of-EOF is a malformed pattern; our impl
-		// rejects it rather than silently treating escape as literal).
-		{"trailing escape, all input consumed", `a\`, "a", '\\', false},
-		// Lone trailing escape with input still to match — also
-		// rejected. Same malformed-pattern contract: an escape with
-		// no following char is never a valid match, regardless of
-		// whether input remains. (Fixed by the fuzz-found bug; this
-		// row pins the symmetric behavior.)
-		{"trailing escape, input still remaining", `a\`, `a\`, '\\', false},
-		// Escape preceding a non-meta character: implementation-
-		// defined per SQL standard. Our matcher consumes the escape
-		// and treats the next character as a literal regardless of
-		// meta-ness — so `a\b` matches `ab`, NOT `a\b`. Documents
-		// the chosen behavior.
-		{"escape over non-meta yields literal next char", `a\b`, "ab", '\\', true},
-		{"escape over non-meta does NOT match escape+next", `a\b`, `a\b`, '\\', false},
+		// DANGLING escape — no `_`/`%` follows, so no escape entry
+		// fires and the escape rune is an ordinary literal. It
+		// therefore needs a matching character in the input: `a\`
+		// does NOT match "a", and DOES match `a\`.
+		{"dangling escape needs the literal escape rune", `a\`, "a", '\\', false},
+		{"dangling escape matches the literal escape rune", `a\`, `a\`, '\\', true},
+		// The shape Java's own corpus records (like.yamsql:92):
+		// `'Z' LIKE 'Z' ESCAPE 'Z'` is TRUE.
+		{"escape rune equal to the whole pattern", "Z", "Z", 'Z', true},
+		{"escape rune equal to the whole pattern, no match", "Z", "Y", 'Z', false},
+		// Escape preceding an ORDINARY character escapes nothing:
+		// the escape rune is the literal and the next character is
+		// then read normally. `a\b` matches `a\b`, NOT `ab`.
+		{"escape over non-meta is itself the literal", `a\b`, `a\b`, '\\', true},
+		{"escape over non-meta does not swallow the next char", `a\b`, "ab", '\\', false},
+		// No escaped-escape: Java installs no `<esc><esc>` entry, so
+		// `a\\b` is TWO literal backslashes.
+		{"no escaped-escape: two runes stay two", `a\\b`, `a\\b`, '\\', true},
+		{"no escaped-escape: does not collapse to one", `a\\b`, `a\b`, '\\', false},
+		// The escape rune falls through to the ORDINARY rules, so an
+		// escape rune that is itself a wildcard still wildcards when
+		// it is not opening a sequence. escape='%': `%%` is an
+		// escaped literal `%`, while a dangling `%` is still `.*`.
+		{"wildcard escape rune: escaped pair is a literal", "%%", "%", '%', true},
+		{"wildcard escape rune: escaped pair rejects other input", "%%", "ab", '%', false},
+		{"wildcard escape rune: dangling stays a wildcard", "a%", "abc", '%', true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1274,22 +1285,43 @@ func likeMatchRegexOracle(pattern, s string) bool {
 	return likeMatchRegexOracleWithEscape(pattern, s, 0)
 }
 
-// likeMatchRegexOracleWithEscape is the escape-aware oracle. When
-// escape != 0, the rune in the pattern equal to escape consumes the
-// next character and emits it as a regex-quoted literal — exactly
-// the contract likeMatch documents. A trailing escape (no following
-// char) is malformed: the oracle returns false uniformly, mirroring
-// likeMatch's malformed-pattern handling.
+// likeMatchRegexOracleWithEscape is the escape-aware oracle, and it
+// is deliberately built the way JAVA builds it rather than the way
+// likeMatch scans: Java's `PatternForLikeValue.eval` rewrites the SQL
+// pattern into a regex which `LikeOperatorValue.likeOperation` then
+// compiles and matches. The oracle therefore mirrors Java's
+// replacement table, whose escape half is exactly two entries:
+//
+//	.put(escapeChar + "_", "_")
+//	.put(escapeChar + "%", "%")
+//	.putAll(REPLACE_MAP)
+//
+// An escape rune is consumed as an escape ONLY before `_` or `%`.
+// Anywhere else — before an ordinary character, before another
+// escape rune, or dangling at the end — no escape entry matches and
+// the rune is rewritten by the ordinary per-character rules, which
+// makes it a literal in general and a WILDCARD when the escape rune
+// is itself `%` or `_`. That fallthrough is the whole content of the
+// contract; an oracle that special-cased a dangling escape to `false`
+// would merely restate whatever the matcher does and could never
+// catch a divergence from Java.
+//
+// UNPROBED AXIS, deliberately: Java compiles without DOTALL, so its
+// `_` → `.` does not match a newline, and its unanchored-by-default
+// `$` matches before a final line terminator. This oracle uses
+// `(?s)`, so it agrees with likeMatch that `_` matches any rune
+// including `\n`. Settling that against Java needs a real Java
+// evaluation (its yamsql corpus contains no newline-bearing LIKE
+// case); until then neither this oracle nor likeMatch may be read as
+// evidence about newline handling.
 func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
 	runes := []rune(pattern)
 	var b strings.Builder
 	b.WriteString("(?s)^")
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
-		if escape != 0 && r == escape {
-			if i+1 >= len(runes) {
-				return false // trailing escape — malformed
-			}
+		if escape != 0 && r == escape && i+1 < len(runes) &&
+			(runes[i+1] == '_' || runes[i+1] == '%') {
 			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
 			i++
 			continue

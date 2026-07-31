@@ -58,6 +58,7 @@ go_test(
         "tenant_test.go",
         "testmain_test.go",
         "transact_ctx_fdb_test.go",
+        "unbounded_default_pin_test.go",
     ],
     embed = [":fdb"],
     embedsrcs = [
@@ -74,3 +75,10 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
     ],
 )
+
+# keep: staged into the pkg/docscheck API_PARITY honest-options gate, which
+# parses options.go and cross-checks its classification against API_PARITY.md.
+exports_files([
+    "options.go",
+    "API_PARITY.md",
+])

@@ -15,6 +15,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/session"
@@ -571,17 +572,23 @@ func TestLikeMatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := functions.LikeMatch(tc.pattern, tc.s, -1) // no escape
+			got := values.LikeMatch(tc.pattern, tc.s, 0) // 0 = no escape
 			if got != tc.want {
-				t.Errorf("functions.LikeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
+				t.Errorf("values.LikeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestLikeMatchWithEscape pins the ESCAPE clause behaviour.
-// Matches Java ExpressionVisitor.visitLikePredicate which
-// passes the escape char into the pattern-compile step so `\_` is literal.
+// TestLikeMatchWithEscape pins the ESCAPE truth table the map-path
+// WHERE evaluator inherits. It calls the matcher directly, so it can
+// only pin SEMANTICS — that the map path actually reaches this
+// matcher rather than a copy of it is pinned end-to-end by
+// TestFDB_LikeTrailingEscape_MapPath in pkg/relational/sqldriver.
+//
+// Java's PatternForLikeValue installs exactly two escape entries
+// (`<esc>_` and `<esc>%`), so an escape rune escapes nothing else —
+// see values/like_match.go for the full contract.
 func TestLikeMatchWithEscape(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -596,21 +603,25 @@ func TestLikeMatchWithEscape(t *testing.T) {
 		// Literal percent via escape.
 		{`a\%b`, "a%b", '\\', true},
 		{`a\%b`, "abb", '\\', false},
-		// Escape char itself can be escaped.
-		{`a\\b`, `a\b`, '\\', true},
+		// There is no escaped-escape: `\\` is two literal runes.
+		{`a\\b`, `a\\b`, '\\', true},
+		{`a\\b`, `a\b`, '\\', false},
+		// A dangling escape is an ordinary literal, not a no-match —
+		// Java's like.yamsql:92 answer.
+		{"Z", "Z", 'Z', true},
 		// Alt escape char.
 		{`a!_b`, "a_b", '!', true},
 		{`a!_b`, "axb", '!', false},
-		// Without escape the same char is literal (escape=-1).
-		{`a\_b`, "a_b", -1, false}, // `\` is literal, `_` still wildcard → "a\Xb"
-		{`a\_b`, `a\xb`, -1, true}, // matches `a\` + any char + `b`
+		// Without escape the same char is literal (escape=0).
+		{`a\_b`, "a_b", 0, false}, // `\` is literal, `_` still wildcard → "a\Xb"
+		{`a\_b`, `a\xb`, 0, true}, // matches `a\` + any char + `b`
 	}
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := functions.LikeMatch(tc.pattern, tc.s, tc.escape)
+			got := values.LikeMatch(tc.pattern, tc.s, tc.escape)
 			if got != tc.want {
-				t.Errorf("functions.LikeMatch(%q, %q, %q) = %v, want %v",
+				t.Errorf("values.LikeMatch(%q, %q, %q) = %v, want %v",
 					tc.pattern, tc.s, string(tc.escape), got, tc.want)
 			}
 		})

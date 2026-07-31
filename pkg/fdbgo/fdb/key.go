@@ -24,15 +24,19 @@
 //     like Get/GetRange do not accept a context parameter. Use SetTimeout for
 //     deadlines, or call Cancel() from another goroutine for cancellation.
 //     context.Background() is used internally for all operations.
-//   - No internal max-retry / connection timeout. Unlike libfdb_c (which bounds
-//     connection attempts with its own timeouts), this client retries cluster
-//     connection and transaction onError indefinitely until the caller's
-//     context.Context is cancelled. A bare Transact / OpenDatabase against a down
-//     or unreachable cluster therefore BLOCKS until ctx cancels — and the
-//     no-context Transact uses context.Background() (never cancels). Migrators
-//     MUST bound it: pass a deadline ctx to TransactCtx / OpenDatabaseFromConfig,
-//     and/or set a transaction SetTimeout. This is the single biggest behavioral
-//     difference for an operator (RFC-110/RFC-111 P1.5).
+//
+// Retries and timeouts are UNBOUNDED by default here — exactly as in libfdb_c,
+// whose per-transaction defaults are timeoutInSeconds=0.0 and maxRetries=-1
+// (ReadYourWrites.actor.cpp:2078-2082; fdb.options on the timeout option: "If set
+// to 0, will disable all timeouts"). A bare Transact against a down cluster
+// retries until the cluster returns, and the no-context Transact runs on
+// context.Background(), so nothing internal stops it. This is a matched default,
+// NOT a divergence — but it does mean every caller must choose a bound:
+// SetTimeout (the analog of C++ `timebomb`, and like it, it cancels in-flight RPC
+// waits — RFC-112), SetRetryLimit, or a deadline ctx via TransactCtx (Go's extra
+// bound, RFC-090). Bootstrap is the one place this client is STRICTER than
+// libfdb_c: OpenDatabase bounds the initial coordinator connection at 60s where
+// libfdb_c waits forever. See the package doc at fdb.dev/pkg/fdbgo.
 package fdb
 
 import (

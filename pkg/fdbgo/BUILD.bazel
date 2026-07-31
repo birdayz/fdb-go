@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fdbgo",
+    srcs = ["doc.go"],
+    importpath = "fdb.dev/pkg/fdbgo",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "fdbgo_test",
+    srcs = ["doc_claims_test.go"],
+    embed = [":fdbgo"],
+    embedsrcs = [
+        "README.md",
+        "doc.go",
+    ],
+)

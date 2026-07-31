@@ -248,6 +248,7 @@ go_test(
         "leftjoin_pk_ordinal_gap_fdb_test.go",
         "leftjoin_where_on_probe_test.go",
         "leg_identity_census_fdb_test.go",
+        "like_escape_parity_fdb_test.go",
         "like_escape_probe_test.go",
         "like_pattern_probe_test.go",
         "limit_offset_paging_probe_test.go",

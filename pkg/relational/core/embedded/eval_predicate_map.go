@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -75,7 +76,10 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				"LIKE requires a string expression, got %T", fieldVal)
 		}
 		patternLit := p.GetPattern().GetText()
-		var escape rune = -1
+		// Zero, not -1, is the "no escape" sentinel: values.LikeMatch
+		// is the single SQL LIKE matcher for every path in this
+		// codebase, and it disables escape handling on escape == 0.
+		var escape rune
 		if esc := p.GetEscape(); esc != nil {
 			escStr := functions.StripStringLiteralQuotes(esc.GetText())
 			runes := []rune(escStr)
@@ -85,7 +89,11 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			escape = runes[0]
 		}
-		matched := functions.LikeMatch(functions.StripStringLiteralQuotes(patternLit), s, escape)
+		// The engine matcher, not a map-path copy of it. A second
+		// implementation here is a parallel pipeline: the two drifted
+		// apart on `LIKE 'x' ESCAPE 'x'` and answered the same
+		// catalog query differently from the same query on a table.
+		matched := values.LikeMatch(functions.StripStringLiteralQuotes(patternLit), s, escape)
 		if p.NOT() != nil {
 			matched = !matched
 		}

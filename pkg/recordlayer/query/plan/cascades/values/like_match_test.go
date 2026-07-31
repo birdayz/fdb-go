@@ -47,8 +47,13 @@ func TestLikeMatch(t *testing.T) {
 		{"escape literal %", `a\%b`, "a%b", '\\', true},
 		{"escape literal _", `a\_b`, "a_b", '\\', true},
 		{"escape % no match on wildcard", `a\%b`, "aXb", '\\', false},
-		{"trailing escape malformed", `ab\`, "ab", '\\', false},
-		{"escaped escape char", `a\\b`, `a\b`, '\\', true},
+		// A dangling escape opens no escape sequence (Java installs
+		// only `<esc>_` and `<esc>%`), so it is an ordinary literal
+		// and still demands a character.
+		{"dangling escape needs the escape rune in the input", `ab\`, "ab", '\\', false},
+		{"dangling escape matches the escape rune", `ab\`, `ab\`, '\\', true},
+		// No escaped-escape entry exists, so `\\` is two literals.
+		{"no escaped-escape", `a\\b`, `a\\b`, '\\', true},
 		{"_ with escape=0", "a_c", "abc", 0, true},
 
 		// Unicode.

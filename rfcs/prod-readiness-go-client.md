@@ -207,9 +207,33 @@ codec fix + tenant/watch differentials). The remaining open baseline item touchi
    inert — silence is the trap.
 4. **Prune `TODO_client.md`** — it reads as a wall of open High-severity bugs but 13/16 are fixed and pinned; a
    future reader concludes the client is unsafe when it isn't.
-5. **Document the bounded-context requirement** in godoc/README: with no internal max-retry, a `Transact`/`Open`
+5. ~~**Document the bounded-context requirement** in godoc/README: with no internal max-retry, a `Transact`/`Open`
    against a down cluster blocks until the caller's `ctx` cancels — a real difference from `libfdb_c`'s internal
-   timeouts. Migrators MUST pass bounded contexts.
+   timeouts. Migrators MUST pass bounded contexts.~~ — **CLOSED AS MISFRAMED.** The documentation gap was real
+   and is now closed (`pkg/fdbgo/doc.go`, plus a README section), but this item's *premise* was wrong on two
+   counts, and it contradicted this RFC's own MINOR line above (which correctly says the unbounded default
+   "matches C++"):
+   - **`libfdb_c` has no internal timeouts to differ from.** Its per-transaction defaults are
+     `timeoutInSeconds = 0.0` and `maxRetries = -1` (`ReadYourWrites.actor.cpp:2078-2082`), and `resetTimeout()`
+     arms the `timebomb` actor only when the timeout is non-zero (`:1576-1578`). `fdb.options` on the timeout
+     option: *"If set to 0, will disable all timeouts."* A default-configured `libfdb_c` transaction hangs
+     against a dead cluster exactly as long as a Go one does. The unbounded default is a **matched** default,
+     not a divergence.
+   - **`Open` does not block until the caller's `ctx` cancels.** `fdb.OpenDatabase` /
+     `OpenDatabaseFromConfig` bound bootstrap at `defaultBootstrapTimeout` = 60s whenever the caller supplies
+     no deadline (`fdb/database.go:139-153`, pinned by `fdb/database_bootstrap_test.go`). Go is *stricter*
+     than `libfdb_c` here, which waits indefinitely for the initial coordinator connection.
+
+   A third supporting claim — P0.2's "only the caller's `ctx` reliably bounds a stuck read" — was already
+   **stale** when this item was written: RFC-112 threaded `SetTimeout` into every read/GRV/locality RPC wait
+   (`client/readpath.go:89-100`, `opContext`), the Go analog of C++ `timebomb`. `rfcs/113-client-prod-readiness-round2.md:56-58`
+   lists RFC-112 under "Already closed — do NOT re-file".
+
+   What shipped instead is the **true** statement: the default is unbounded **as in `libfdb_c`**; the caller
+   must pick one of `SetTimeout`, `SetRetryLimit`, or a deadline `ctx` via `TransactCtx` (Go's *extra* bound,
+   not a substitute for a missing `libfdb_c` mechanism). Two shipped godoc comments asserting the false
+   "unlike libfdb_c" framing (`fdb/key.go`, `fdb/database.go`) were corrected at the same time, and the
+   behaviour is pinned by `client/unbounded_default_pin_test.go` + `fdb/unbounded_default_pin_test.go`.
 6. **`LocalityGetBoundaryKeys` should honor its `readVersion`** (`fdb/database.go:446`): today it ignores the arg
    and returns current shard boundaries, a semantic divergence for MVCC-consistent boundary lookups — pin the
    locality read to the supplied version.
