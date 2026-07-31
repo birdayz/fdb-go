@@ -1,12 +1,19 @@
 package com.birdayz.conformance;
 
 import com.apple.foundationdb.FDBException;
+import com.apple.foundationdb.record.PlanHashable;
+import com.apple.foundationdb.record.PlanSerializationContext;
+import com.apple.foundationdb.record.planprotos.PQueryPlanConstraint;
 import com.apple.foundationdb.record.provider.foundationdb.APIVersion;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabaseFactory;
 import com.apple.foundationdb.record.provider.foundationdb.FDBExceptions;
 import com.apple.foundationdb.record.provider.foundationdb.FormatVersion;
 import com.apple.foundationdb.record.provider.foundationdb.keyspace.KeySpace;
+import com.apple.foundationdb.record.query.plan.QueryPlanConstraint;
+import com.apple.foundationdb.record.query.plan.cascades.predicates.ConstantPredicate;
+import com.apple.foundationdb.record.query.plan.serialization.DefaultPlanSerializationRegistry;
+import com.apple.foundationdb.relational.api.Continuation;
 import com.apple.foundationdb.relational.api.EmbeddedRelationalDriver;
 import com.apple.foundationdb.relational.api.EmbeddedRelationalEngine;
 import com.apple.foundationdb.relational.api.Options;
@@ -15,6 +22,9 @@ import com.apple.foundationdb.relational.api.RelationalPreparedStatement;
 import com.apple.foundationdb.relational.api.RelationalResultSet;
 import com.apple.foundationdb.relational.api.Transaction;
 import com.apple.foundationdb.relational.api.catalog.StoreCatalog;
+import com.apple.foundationdb.relational.continuation.CompiledStatement;
+import com.apple.foundationdb.relational.continuation.ContinuationProto;
+import com.apple.foundationdb.relational.recordlayer.ContinuationImpl;
 import com.apple.foundationdb.relational.recordlayer.DirectFdbConnection;
 import com.apple.foundationdb.relational.recordlayer.RecordLayerConfig;
 import com.apple.foundationdb.relational.recordlayer.RecordLayerEngine;
@@ -27,6 +37,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import com.google.protobuf.ByteString;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -314,6 +325,306 @@ class SqlPlanSteps {
                 }
             });
         });
+    }
+
+    /** Table the {@link #continuationProbe} probes read; four rows, all sharing
+     *  the same {@code B} value so the bytes-literal predicate is selective on
+     *  nothing and the first page always leaves a resumable continuation. */
+    private static final String CONTINUATION_PROBE_SCHEMA =
+            "CREATE TABLE T (ID BIGINT, B BYTES, N BIGINT, PRIMARY KEY (ID))";
+
+    private static final String CONTINUATION_PROBE_SEED =
+            "INSERT INTO T VALUES (1, x'0a0b', 1), (2, x'0a0b', 2), (3, x'0a0b', 3), (4, x'0a0b', 4)";
+
+    /**
+     * Measures three EXECUTE CONTINUATION behaviours of the live Java engine
+     * that a Go continuation envelope has to be designed against. Every probe
+     * is independently guarded, so one probe blowing up still yields the other
+     * two — the point is a measurement, not a pass/fail.
+     *
+     * <p>Probe A — an unknown {@code plan_serialization_mode}. Java resolves it
+     * with {@code PlanHashMode.valueOf(...)} inside
+     * {@code PlanValidator.validateSerializedPlanSerializationMode} BEFORE the
+     * {@code validPlanHashModes.contains} membership test, so the failure mode
+     * for a foreign mode string is whatever {@code Enum.valueOf} does, not the
+     * typed INVALID_CONTINUATION the membership test would raise. Reports the
+     * thrown class, message, SQLSTATE and full cause chain.
+     *
+     * <p>Probe B — the plan constraint on the EXECUTE CONTINUATION path.
+     * {@code ContinuedPhysicalQueryPlan#validatePlanAgainstEnvironment} calls
+     * {@code PlanValidator.validateContinuationConstraint} inside a try that
+     * catches {@code PlanValidationException}, counts CONTINUATION_REJECTED,
+     * and then falls through to CONTINUATION_ACCEPTED. The probe takes a real
+     * continuation, swaps ONLY its {@code plan_constraint} for a constant-false
+     * predicate, and reports whether the query still returns rows. Two control
+     * runs bracket it: the untouched continuation bytes (isolating the swap as
+     * the only variable) and the same doctored bytes with {@code plan_hash}
+     * additionally perturbed by one, which Java rejects unconditionally in
+     * {@code PlanGenerator#generatePhysicalPlanForCompiledStatementContinuation}.
+     * The second control is what makes the constraint result a measurement
+     * rather than a blind spot: the doctored bytes provably reach validation.
+     *
+     * <p>Probe C — binding-hash stability across two executions of the same
+     * query text. {@code AstNormalizer#processLiteral} folds each literal into
+     * the parameter hash with {@code Objects.hash(canonicalName, literal)};
+     * for a {@code x'..'} literal that literal is a {@code byte[]}, whose
+     * {@code hashCode()} is identity. An integer literal is the control.
+     *
+     * @param clusterFile cluster-file content (string, not path)
+     * @return a {@link JsonObject} with one group of fields per probe
+     */
+    @ConformanceStep("continuationProbe")
+    public JsonObject continuationProbe(String clusterFile) throws Exception {
+        return runWithEphemeralSchema(clusterFile, CONTINUATION_PROBE_SCHEMA, conn -> {
+            final JsonObject out = new JsonObject();
+            try (Statement st = conn.createStatement()) {
+                withFdbRetry(() -> st.executeUpdate(CONTINUATION_PROBE_SEED));
+                out.addProperty("seed_ok", true);
+            } catch (SQLException | RuntimeException e) {
+                recordThrowable(out, "seed", e);
+                out.addProperty("seed_ok", false);
+                return out;
+            }
+            final RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            probeGoV0Mode(rconn, out);
+            probeFalsePlanConstraint(rconn, out);
+            probeBindingHashStability(rconn, out);
+            return out;
+        });
+    }
+
+    /**
+     * Probe A: hand-build a continuation whose compiled statement claims a
+     * {@code plan_serialization_mode} the Java enum has never heard of, and
+     * carries no plan at all, then feed it to EXECUTE CONTINUATION.
+     */
+    private static void probeGoV0Mode(RelationalConnection rconn, JsonObject out) {
+        final byte[] bytes = ContinuationProto.newBuilder()
+                .setVersion(ContinuationImpl.CURRENT_VERSION)
+                .setExecutionState(ByteString.copyFrom(new byte[] {0x01, 0x02, 0x03, 0x04}))
+                .setBindingHash(1)
+                .setPlanHash(1)
+                .setCompiledStatement(CompiledStatement.newBuilder()
+                        .setPlanSerializationMode("GO_V0")
+                        .build())
+                .build()
+                .toByteArray();
+        out.addProperty("probeA_continuationBytesLen", bytes.length);
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXECUTE CONTINUATION ?continuation")) {
+            ps.setBytes("continuation", bytes);
+            ps.execute();
+            out.addProperty("probeA_threw", false);
+        } catch (Throwable t) {
+            recordThrowable(out, "probeA", t);
+        }
+    }
+
+    /**
+     * Probe B: take a genuine mid-stream continuation, replace ONLY its
+     * {@code plan_constraint} with {@code ConstantPredicate.FALSE}, and resume.
+     * Every other field — plan, plan hash, binding hash, execution state,
+     * literals — is byte-identical to the continuation Java itself emitted.
+     */
+    private static void probeFalsePlanConstraint(RelationalConnection rconn, JsonObject out) {
+        final byte[] realBytes;
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("SELECT * FROM T")) {
+            ps.setMaxRows(1);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                int n = 0;
+                while (rs.next()) {
+                    n++;
+                }
+                out.addProperty("probeB_firstPageRows", n);
+                realBytes = rs.getContinuation().serialize();
+            }
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB_setup", t);
+            return;
+        }
+
+        final byte[] doctoredBytes;
+        final byte[] hashPerturbedBytes;
+        try {
+            final ContinuationProto orig = ContinuationProto.parseFrom(realBytes);
+            out.addProperty("probeB_origHasCompiledStatement", orig.hasCompiledStatement());
+            final CompiledStatement origStmt = orig.getCompiledStatement();
+            final String mode = origStmt.getPlanSerializationMode();
+            out.addProperty("probeB_planSerializationMode", mode);
+            out.addProperty("probeB_origHasPlanConstraint", origStmt.hasPlanConstraint());
+            out.addProperty("probeB_origPlanConstraintProto",
+                    truncate(origStmt.getPlanConstraint().toString(), 400));
+
+            // The false constraint carries no type-dictionary references
+            // (ConstantPredicate serialises to a bare PAbstractQueryPredicate +
+            // a bool), so building it in a fresh serialization context cannot
+            // desynchronise the plan/arguments/constraints dictionary order the
+            // deserialiser relies on.
+            final PlanSerializationContext sctx = new PlanSerializationContext(
+                    DefaultPlanSerializationRegistry.INSTANCE, PlanHashable.PlanHashMode.valueOf(mode));
+            final PQueryPlanConstraint falseConstraint =
+                    QueryPlanConstraint.ofPredicate(ConstantPredicate.FALSE).toProto(sctx);
+            out.addProperty("probeB_falsePlanConstraintProto",
+                    truncate(falseConstraint.toString(), 400));
+
+            doctoredBytes = orig.toBuilder()
+                    .setCompiledStatement(origStmt.toBuilder().setPlanConstraint(falseConstraint).build())
+                    .build()
+                    .toByteArray();
+
+            // Same doctored bytes, plus a perturbed plan_hash. The ONLY delta
+            // from `doctoredBytes` is the int32 plan_hash field, so if this run
+            // is rejected and the other is not, the doctored continuation
+            // demonstrably reaches Java's validation chain — the constraint
+            // fail-open is a property of the constraint gate, not an artifact
+            // of the probe feeding Java bytes it silently ignores.
+            out.addProperty("probeB_origPlanHash", orig.getPlanHash());
+            out.addProperty("probeB_perturbedPlanHash", orig.getPlanHash() + 1);
+            hashPerturbedBytes = orig.toBuilder()
+                    .setCompiledStatement(origStmt.toBuilder().setPlanConstraint(falseConstraint).build())
+                    .setPlanHash(orig.getPlanHash() + 1)
+                    .build()
+                    .toByteArray();
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB_doctor", t);
+            return;
+        }
+
+        // Control: the untouched continuation, so the swap is the only variable.
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXECUTE CONTINUATION ?continuation")) {
+            ps.setBytes("continuation", realBytes);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                int rows = 0;
+                while (rs.next()) {
+                    rows++;
+                }
+                out.addProperty("probeB_control_threw", false);
+                out.addProperty("probeB_control_rowsReturned", rows);
+            }
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB_control", t);
+        }
+
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXECUTE CONTINUATION ?continuation")) {
+            ps.setBytes("continuation", doctoredBytes);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                int rows = 0;
+                while (rs.next()) {
+                    rows++;
+                }
+                out.addProperty("probeB_threw", false);
+                out.addProperty("probeB_rowsReturned", rows);
+            }
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB", t);
+        }
+
+        // Contrast arm: identical to the doctored run except for plan_hash.
+        // PlanGenerator#generatePhysicalPlanForCompiledStatementContinuation
+        // compares continuation.getPlanHash() against the DESERIALISED plan's
+        // planHash and raises PlanValidationException -> INVALID_CONTINUATION
+        // (24F00) on mismatch, unguarded by any catch. This arm therefore
+        // establishes that the probe can see Java refuse a doctored
+        // continuation at all, which is what makes the constraint arm's
+        // acceptance a measurement rather than a blind spot.
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXECUTE CONTINUATION ?continuation")) {
+            ps.setBytes("continuation", hashPerturbedBytes);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                int rows = 0;
+                while (rs.next()) {
+                    rows++;
+                }
+                out.addProperty("probeB_hashPerturbed_threw", false);
+                out.addProperty("probeB_hashPerturbed_rowsReturned", rows);
+            }
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB_hashPerturbed", t);
+        }
+    }
+
+    /**
+     * Probe C: two executions of the same query text, same connection, same
+     * JVM — do they agree on the binding hash Java stamps into the
+     * continuation? Bytes literal versus integer-literal control.
+     */
+    private static void probeBindingHashStability(RelationalConnection rconn, JsonObject out) {
+        final String bytesQuery = "SELECT * FROM T WHERE B = x'0a0b'";
+        final String intQuery = "SELECT * FROM T WHERE N = 3";
+        try {
+            final Integer b1 = bindingHashOf(rconn, bytesQuery);
+            final Integer b2 = bindingHashOf(rconn, bytesQuery);
+            addNullableInt(out, "probeC_bytes_hash1", b1);
+            addNullableInt(out, "probeC_bytes_hash2", b2);
+            out.addProperty("probeC_bytes_equal", java.util.Objects.equals(b1, b2));
+
+            final Integer i1 = bindingHashOf(rconn, intQuery);
+            final Integer i2 = bindingHashOf(rconn, intQuery);
+            addNullableInt(out, "probeC_int_hash1", i1);
+            addNullableInt(out, "probeC_int_hash2", i2);
+            out.addProperty("probeC_int_equal", java.util.Objects.equals(i1, i2));
+        } catch (Throwable t) {
+            recordThrowable(out, "probeC", t);
+        }
+    }
+
+    /**
+     * Run {@code sql} with a one-row page, drain it, and return the binding
+     * hash Java stamped into the resulting continuation. A fresh
+     * {@code prepareStatement} per call is deliberate: the whole question is
+     * whether two independent parses of identical text agree.
+     */
+    private static Integer bindingHashOf(RelationalConnection rconn, String sql) throws Exception {
+        try (RelationalPreparedStatement ps = rconn.prepareStatement(sql)) {
+            ps.setMaxRows(1);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    // drain: getContinuation() rejects a non-exhausted result set
+                }
+                final Continuation continuation = rs.getContinuation();
+                return ContinuationImpl.parseContinuation(continuation.serialize()).getBindingHash();
+            }
+        }
+    }
+
+    private static void addNullableInt(JsonObject out, String name, Integer value) {
+        if (value == null) {
+            out.add(name, JsonNull.INSTANCE);
+        } else {
+            out.addProperty(name, value);
+        }
+    }
+
+    private static String truncate(String s, int max) {
+        final String oneLine = s.replace('\n', ' ').trim();
+        return oneLine.length() <= max ? oneLine : oneLine.substring(0, max) + "...";
+    }
+
+    /**
+     * Record a probe outcome as {@code <prefix>_threw / _exceptionClass /
+     * _message / _sqlState / _causeChain}. The cause walk is bounded so a
+     * self-referential or cyclic chain cannot spin.
+     */
+    private static void recordThrowable(JsonObject out, String prefix, Throwable t) {
+        out.addProperty(prefix + "_threw", true);
+        out.addProperty(prefix + "_exceptionClass", t.getClass().getName());
+        out.addProperty(prefix + "_message", String.valueOf(t.getMessage()));
+        if (t instanceof SQLException) {
+            out.addProperty(prefix + "_sqlState", ((SQLException) t).getSQLState());
+        } else {
+            out.add(prefix + "_sqlState", JsonNull.INSTANCE);
+        }
+        final StringBuilder chain = new StringBuilder();
+        Throwable c = t;
+        for (int depth = 0; c != null && depth < 32; depth++) {
+            if (chain.length() > 0) {
+                chain.append(" <- ");
+            }
+            chain.append(c.getClass().getName());
+            if (c.getCause() == c) {
+                break;
+            }
+            c = c.getCause();
+        }
+        out.addProperty(prefix + "_causeChain", chain.toString());
     }
 
     /**

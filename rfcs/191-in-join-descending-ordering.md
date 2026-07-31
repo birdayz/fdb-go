@@ -771,14 +771,28 @@ The ruling is conditional, not unconditional. These gate implementation — they
   an explicit wire-compat statement — this is a read-path plan-choice divergence only. Continuation *content*
   differs between InJoin and InUnion plans, but a continuation is only ever decoded by the same plan-tree shape
   that produced it (`ExecutePlan`'s type-switch dispatch, `executor.go:88-120`, rejects a mismatched shape loudly
-  rather than mis-parsing it — `UnsupportedContinuationError`), and Go continuations are engine-private by
-  construction: a Java-minted token is rejected outright because "its envelope binds to Java's plan serialization
-  hashes" (`cascades_generator.go:1205-1216`, `TestOptContinuation_RejectsLoudly`), and there is no SQL resume
-  entry point across engines at all (`DIVERGENCES.md`'s existing RFC-181 C2 entry, "SQL statement continuations
-  are engine-private"). So a Go-vs-Java InJoin/InUnion plan-choice divergence is **not** a cross-engine wire
-  concern — verified against the actual continuation-dispatch and rejection code, not asserted from reasoning
-  alone, since "continuation" is exactly the kind of claim this codebase has gotten wrong from reasoning instead
-  of measurement before. State this verification explicitly in the entry, with these citations. Also include a reversal trigger: the one-line Java
+  rather than mis-parsing it — `UnsupportedContinuationError`).
+
+  **Re-derived by RFC-203 (§8.3). The argument has TWO INDEPENDENT LEGS and only the second one moves.**
+
+  *Leg 1 — shape-matched dispatch — SURVIVES RFC-203 UNTOUCHED.* The sentence immediately above
+  (`ExecutePlan`'s type-switch, `executor.go:88-120`, `UnsupportedContinuationError`) is unaffected by anything
+  RFC-203 changes, and it alone carries the "not a wire concern" conclusion. Nothing below weakens it.
+
+  *Leg 2 — engine-private tokens — RETIRES, and is REPLACED.* As first written this leg rested on "Go
+  continuations are engine-private by construction: a Java-minted token is rejected outright"
+  (`cascades_generator.go:1205-1216`, `TestOptContinuation_RejectsLoudly`) and on there being "no SQL resume
+  entry point across engines at all". RFC-203 ships that entry point and **parses** a Java-minted token instead
+  of refusing it outright, so that phrasing no longer holds. It is replaced by RFC-203 §3.2's **per-path
+  fence**: a Java token is refused before execution on both consumption paths — by `plan_serialization_mode` on
+  the `EXECUTE CONTINUATION` path and by mode-then-plan-hash on the `OptContinuation` path. Transport also
+  *strengthens* leg 1: because the envelope carries the physical plan alongside its own continuation, a
+  continuation is never decoded by a plan-tree shape other than the one that produced it *by construction*
+  rather than by luck, with the type-switch remaining as the loud backstop. So a Go-vs-Java
+  InJoin/InUnion plan-choice divergence is **not** a cross-engine wire concern — verified against the actual
+  continuation-dispatch and fence code, not asserted from reasoning alone, since "continuation" is exactly the
+  kind of claim this codebase has gotten wrong from reasoning instead of measurement before. State this
+  verification explicitly in the entry, with these citations. Also include a reversal trigger: the one-line Java
   diff (adding `RecordQueryInComparandJoinPlan` to the `PushInJoinThroughFetchRule` registration at
   `PlanningRuleSet.java:152-153`) that would close the entry by making Java match Go instead.
 - **E. Evidence required before the implementation review**:
