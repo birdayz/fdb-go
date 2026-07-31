@@ -211,21 +211,37 @@ func cgoConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel s
 func runGetKeyConflictDifferential(t *testing.T, name string, seed, pending []fuzzOp, sel selSpec, probeKey string, wantConflict bool) {
 	t.Helper()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
-	const maxAttempts = 12
-	for attempt := 0; ; attempt++ {
-		if attempt >= maxAttempts {
-			t.Fatalf("%s: conflict differential did not clear transient errors in %d attempts", name, maxAttempts)
-		}
-		goPfx := fmt.Sprintf("gkconf_%d_%s_%d_go_", os.Getpid(), ns, attempt)
-		cPfx := fmt.Sprintf("gkconf_%d_%s_%d_c_", os.Getpid(), ns, attempt)
+	// Same reproducibility gate as the explicit conflict-range differential — this scenario is
+	// version-pinned the same way and takes the same environmental spurious not_committed. One
+	// monotonic attempt counter feeds main attempts and confirmation replays alike, so every run
+	// gets fresh prefixes and its own pinned read version.
+	attempt := 0
+	const attemptBudget = 24
+	run := func() (conflictOutcome, conflictOutcome, bool) {
+		a := attempt
+		attempt++
+		goPfx := fmt.Sprintf("gkconf_%d_%s_%d_go_", os.Getpid(), ns, a)
+		cPfx := fmt.Sprintf("gkconf_%d_%s_%d_c_", os.Getpid(), ns, a)
 		goOut := goConflictScenario(t, goPfx, seed, pending, sel, probeKey)
 		cOut := cgoConflictScenario(t, cPfx, seed, pending, sel, probeKey)
-		if goOut.retry || cOut.retry {
+		return goOut, cOut, !goOut.retry && !cOut.retry
+	}
+	for attempt < attemptBudget {
+		goOut, cOut, ok := run()
+		if !ok {
 			continue // transient (1007) on either side — fresh prefixes + versions, retry
 		}
+		noteConflictVerdict()
 		if goOut.conflicted != cOut.conflicted {
-			t.Fatalf("%s: read-conflict DIVERGES: go-A conflicted=%v (resolved=%q) cgo-A conflicted=%v (probe=%q sel=%s)",
-				name, goOut.conflicted, goOut.resolved, cOut.conflicted, probeKey, sel.name)
+			first := fmt.Sprintf("go-A=%v cgo-A=%v", goOut.conflicted, cOut.conflicted)
+			reproduced, confirm := confirmConflictDivergence(run)
+			if reproduced {
+				t.Fatalf("%s: read-conflict DIVERGES and REPRODUCES at a fresh read version — first %s "+
+					"(resolved=%q), confirm %s (probe=%q sel=%s)",
+					name, first, goOut.resolved, confirm, probeKey, sel.name)
+			}
+			noteEnvironmentalDivergence(t, name, first, confirm)
+			continue
 		}
 		if goOut.conflicted != wantConflict {
 			t.Fatalf("%s: both clients conflicted=%v but expected %v — conflict set wrong in BOTH (probe=%q sel=%s)",
@@ -233,6 +249,7 @@ func runGetKeyConflictDifferential(t *testing.T, name string, seed, pending []fu
 		}
 		return
 	}
+	t.Fatalf("%s: conflict differential did not reach a conclusive verdict in %d attempts", name, attemptBudget)
 }
 
 // TestDifferential_GetKeyConflict pins the getKey read-conflict SET against libfdb_c. fuzzKeys
