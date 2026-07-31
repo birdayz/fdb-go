@@ -10949,11 +10949,43 @@ None is speculative: each was re-verified against the tree before booking.
     boxSurvivorQOV 184, boxSurvivorCorrelation 2, gatheredGroupSlot 160
   ```
 
-  No 1M stress comparison was run for this phase and none is indicated: nothing
-  on an executed path changed. The only production edit is ARM 1's display
-  NAME, on an arm measured to return zero times over the whole corpus, so no
-  plan and no row can move. Stated rather than assumed — if a future change
-  makes ARM 1 fire, that change owns the stress run.
+  **Stress 1M phase-3 before/after (`f50cee43e` base vs branch `4dccc50f0`),
+  2026-07-31.** 24/24 subtests PASS on both sides; every measured line identical
+  once timings are normalised (37 lines); row-count multiset identical
+  (`1`×9, `4`×3, `8`×3, `10`, `46`, `97`×2, `47271`, `100000`, `100017`,
+  `1000000`×4). Timings within run-to-run noise, all thresholds met:
+
+  | | base | branch |
+  |---|---|---|
+  | PK lookup id=0 / N-2 / N-1 | 5.13 / 5.09 / 4.86 ms | 4.86 / 4.87 / 4.84 ms |
+  | idx_customer eq | 5.66 ms | 5.71 ms |
+  | ORDER BY PK (full, 1M) | 3.33 s | 3.25 s |
+  | scan all rows wide (1M) | 3.38 s | 3.32 s |
+  | full scan sparse filter | 2.98 s | 2.91 s |
+
+  **METHODOLOGY BUG FOUND WHILE RUNNING IT, and it invalidates the workflow
+  CLAUDE.md documents.** The first comparison showed the branch 2.3x SLOWER on
+  every point lookup — PK lookups 11.5–17.4 ms against the base's 4.9–6.6 ms,
+  `idx_customer eq` 13.1 ms against 5.7 ms — reproduced on three consecutive
+  branch runs and therefore not noise. It was not the change either: the two
+  sides differed in CHECKOUT LOCATION, not only in commit. The base worktree sat
+  on the root disk and the branch tree in `/home`, which was **96–100% full**,
+  and ext4 point-lookup latency degrades sharply at that utilisation. Controlled
+  by checking the SAME branch HEAD out to a second worktree on the root disk
+  (source verified byte-identical): 4.86 / 4.87 / 4.84 ms — base parity. The
+  table above is that same-disk, same-load pair.
+
+  The documented recipe (`git worktree add /tmp/fdb-master master`, compare
+  against the branch in `~/projects/...`) puts the two sides on DIFFERENT
+  FILESYSTEMS by construction, so any run of it while either disk is near full
+  measures the disks and reports it as a planner regression. Both sides must be
+  on the same filesystem. Note also that `/tmp` here is a 32 G tmpfs, too small
+  for a worktree — use a root-disk path.
+
+  Nothing on an executed path changed, which is why parity was the expected
+  result: the only production edit is ARM 1's display NAME, on an arm measured
+  to return zero times over the whole corpus. If a future change makes ARM 1
+  fire, that change owns its own stress run.
 
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and
