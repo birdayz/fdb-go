@@ -1538,15 +1538,39 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+	cost, _ := concretePlanCostAndBounds(p, stats, ctx)
+	return cost
+}
+
+// concretePlanCostAndBounds rolls a plan's Cost and its PROVEN cardinality
+// interval up the SAME recursion, so every node's clamp is applied against the
+// bound derived from the identical concrete sub-tree its cost came from
+// (RFC-195).
+//
+// Deriving bounds in-walk — rather than reading Reference property maps — is
+// what makes the clamp effective here: at this walk the children are never
+// primed, so a primed-map read would return unknown and no-op away five of the
+// six estimates the clamp corrects. It also keeps this walk decoupled from
+// shared-group winners, exactly as its cost side already is.
+func concretePlanCostAndBounds(
+	p plans.RecordQueryPlan,
+	stats properties.StatisticsProvider,
+	ctx PlanContext,
+) (properties.Cost, properties.Cardinalities) {
 	if p == nil {
-		return properties.Cost{}
+		return properties.Cost{}, properties.UnknownCardinalities()
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
+	childBounds := make([]properties.Cardinalities, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCost(c, stats, ctx)
+		child[i], childBounds[i] = concretePlanCostAndBounds(c, stats, ctx)
 	}
-	return combineConcreteCost(p, child, stats, ctx)
+	bounds := properties.UnknownCardinalities()
+	if prover, ok := p.(properties.CardinalityProver); ok {
+		bounds = prover.ProvenCardinalities(childBounds)
+	}
+	return combineConcreteCost(p, child, bounds, stats, ctx), bounds
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1554,7 +1578,29 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+// The returned Cost's Cardinality is CLAMPED into the interval the plan proves
+// (RFC-195). Bounds derive from the CONCRETE children this walk already holds,
+// never from a Reference's property map — which preserves this walk's
+// deliberate decoupling from shared-group winners, so no group-weakened
+// interval enters the join-ordering comparison. It is also why the clamp works
+// here at all: at this walk children are never primed, so reading primed maps
+// would have been a no-op for five of the six shapes it corrects.
+func combineConcreteCost(
+	p plans.RecordQueryPlan,
+	child []properties.Cost,
+	bounds properties.Cardinalities,
+	stats properties.StatisticsProvider,
+	ctx PlanContext,
+) properties.Cost {
+	if bounded, ok := p.(properties.BoundedCostHinter); ok {
+		return properties.ClampCost(bounded.HintCostWithin(child, bounds, stats), bounds)
+	}
+	return properties.ClampCost(combineConcreteCostUnclamped(p, child, stats, ctx), bounds)
+}
+
+// combineConcreteCostUnclamped is the raw per-operator formula dispatch for the
+// concrete join-ordering walk. Callers want combineConcreteCost.
+func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]

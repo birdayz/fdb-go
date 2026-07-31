@@ -1,7 +1,15 @@
 # RFC-195 — The cost model must not contradict what the property layer proves
 
-Status: **proposed**, revision 3 — awaiting joint-review ACK before implementation.
+Status: **ACCEPTED**, revision 3 — joint review ACK'd; implemented.
 Closes: TODO CQ-29 (six violating estimates), CQ-30 (cost's private cardinality duplicate).
+
+Both delta reviews ACK'd revision 3, and their four conditions were folded into
+the text rather than left as review comments (the unconditional bounds-memo
+allocation, `AllMembers()` instead of an open-coded union, explicitly accepted
+growth-variance pinned on both faces, and self-cleaning parity/agreement
+tests). A post-ACK finding — clamping the cardinality after a formula ran
+leaves the rest of the `Cost` computed from the disproven number — landed as
+Decision §3 and verification item 8.
 Revisions 1 and 2 were each NAK'd twice. Rev 1 clamped two of the three cost
 walks and not the one winner selection and the invariant test actually
 measure — its own acceptance test refuted it. Rev 2 moved the proof to the

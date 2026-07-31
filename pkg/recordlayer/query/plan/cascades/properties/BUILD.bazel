@@ -4,6 +4,7 @@ go_library(
     name = "properties",
     srcs = [
         "cardinality.go",
+        "cardinality_bounds.go",
         "comparisons_property.go",
         "cost.go",
         "cost_formulas.go",

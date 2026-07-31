@@ -9839,7 +9839,17 @@ the drafts being lost. Do not reuse numbers 193/194 for unrelated documents: a
 stale reference that resolves to the WRONG doc is worse than one that resolves
 to nothing.)
 
-- [ ] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
+- [x] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
+  DONE via RFC-195. Six shapes in the end (the random-combo generator found a
+  sixth, `typeFilter` over an exactly-one child). All six now clamp to the
+  proven boundary: ungrouped aggregation 700000→1, recursive-level-union 0→1,
+  defaultOnEmpty 0→1, both distincts 0.7→1, typeFilter 0.5→1. The six
+  `addExcluded` registrations are deleted and so is the exclusion MECHANISM —
+  `cardinality_cost_bound_test.go` now holds the invariant over every shape with
+  ZERO exclusions and no way to add one. Measured reachable from real SQL
+  (`SELECT COUNT(*) FROM orders`: 700000→1) by
+  `pkg/relational/core/embedded/cardinality_clamp_reachable_test.go`; corpus
+  plan-diff over 2643 entries is CLEAN (costs move, plan CHOICES do not).
   Found by cross-checking the cost model against `CardinalitiesProperty` as an
   oracle; all five are pinned as self-cleaning exclusions in
   `pkg/recordlayer/query/plan/cascades/cardinality_cost_bound_test.go`, so fixing
@@ -9878,6 +9888,44 @@ to nothing.)
   `rfcs/195-cost-must-not-contradict-proof.md`, which covers this together with
   CQ-29 — they are the same defect (cardinality with two homes) seen from the
   two sides, and fixing one without the other leaves the disagreement intact.
+
+  **PARTIALLY DONE via RFC-195; the criterion-2 half is still open, and RFC-195
+  cannot close it as written.** What landed: the per-operator derivation moved
+  out of `cascades.computeCardinalities` into per-plan
+  `ProvenCardinalities` methods behind `properties.CardinalityProver`, so the
+  property map and all three COST walks (`localCost`, `combineConcreteCost`,
+  `partitionCost`) now consume ONE derivation; `computeCardinalities` is a thin
+  adapter that only resolves child edges, pinned by
+  `TestRFC195_AdapterDoesNotReForkTheDerivation`.
+
+  What remains: `planning_cost_model.go`'s criterion-2 walk still derives its
+  own data-access maxima via `scanProvableMaxCard` / `indexProvableMaxCard` /
+  `scanPlanProvableMaxCard` / `indexPlanProvableMaxCard`. Java is unambiguous
+  that this is a fork — `PlanningCostModel.java:336` maps every data access
+  through `cardinalities().evaluate(plan).getMaxCardinality()`, i.e. through
+  CardinalitiesProperty itself — so CQ-30's premise is CORRECT and this is a
+  real divergence.
+
+  It is NOT deferred out of convenience: RFC-195's own scope text rules it out
+  ("the clamp makes the rung internally consistent; **the tiers above it are
+  untouched**"), and its Decision section names exactly three cost walks, none
+  of which is criterion 2. Routing criterion 2 through the unified derivation is
+  a change to a Java-ported TIER, and it is not free: Go's variants take a
+  `PlanContext` and can prove a bound from METADATA when the plan carries no
+  stamped primary-key arity or index uniqueness, which the plan-local method
+  cannot. Collapsing them naively LOSES those proofs and makes criterion 2
+  abstain more often — a plan-movement change needing its own design ACK,
+  plan-diff and stress run. Needs a Graefe ruling on whether to (a) thread
+  metadata enrichment into the plan-side derivation or (b) accept the narrower
+  plan-local answer in criterion 2.
+
+  While relocating the derivation, one FALSE PROOF in this area was found and
+  fixed: `pkFullyEqualityBound`'s zero-float widening guard sat AFTER its
+  stamped-primary-key early return, so a scan with a stamped PK and a terminal
+  zero-valued FLOAT equality was proven at-most-one while the cost model
+  correctly declined to call it a point probe — the comment above the guard
+  claimed it covered both callers. Pinned by
+  `TestRFC195_StampedPKZeroFloatIsNotAtMostOne`.
 
 - [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
   Seven separate hand-rolled proofs of a semantic property by leaf-name
