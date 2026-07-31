@@ -144,6 +144,42 @@ func overlapping(ranges []versionRange) []versionRange {
 	return out
 }
 
+// SelectedAtCurrentVersion reports whether the half-open range [atLeast,
+// lessThan) contains the version under test, with a nil bound widening to
+// MIN / MAX exactly as SemanticVersionRanges.atLeast/lessThan do.
+//
+// "The version under test" is the `!current_version` singleton, because that is
+// what a single-version runner reports: EmbeddedYamlConnectionFactory's
+// getVersionsUnderTest is {SemanticVersion.current()}, and CURRENT sorts above
+// every literal version. Two consequences fall out of that ordering and are the
+// whole of how a Go run resolves the corpus's version machinery:
+// an `initialVersionAtLeast: <literal>` branch is always selected, and an
+// `initialVersionLessThan:` branch never is — which is the same thing as saying
+// a version-variant list collapses to its current-version branch.
+func SelectedAtCurrentVersion(atLeast, lessThan *Version) bool {
+	r := rangeFrom(atLeast, lessThan)
+	cur := versionKey{typ: typCurrent}
+	return cur.cmp(r.lo) >= 0 && cur.cmp(r.hi) < 0
+}
+
+// SupportedAtCurrentVersion reports whether a `supported_version` gate admits
+// the version under test, mirroring SupportedVersionCheck.parse: the gate
+// excludes the run when any version under test is strictly older than the
+// declared minimum.
+//
+// With a single version under test, and that version being the CURRENT
+// singleton which sorts above every literal, the gate ADMITS unconditionally.
+// The function exists to make that a stated, testable fact rather than an
+// omission — if the runner ever gains a second version under test, this is the
+// one place the answer stops being constant.
+func SupportedAtCurrentVersion(min *Version) bool {
+	if min == nil {
+		return true
+	}
+	cur := versionKey{typ: typCurrent}
+	return cur.cmp(keyOf(min)) >= 0
+}
+
 // validateVersionCoverage enforces QueryConfig.validateConfigs' requirement that
 // a query's initialVersion* configs partition every possible version.
 func validateVersionCoverage(configs []*Config) error {

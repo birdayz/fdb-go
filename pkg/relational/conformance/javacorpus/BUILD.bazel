@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "javacorpus",
+    srcs = [
+        "gaps.go",
+        "javarandom.go",
+        "ledger.go",
+        "match.go",
+        "runner.go",
+        "testblock.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/conformance/javacorpus",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/javayamsql",
+        "//pkg/relational/conformance/yamsql",
+    ],
+)
+
+go_test(
+    name = "javacorpus_test",
+    # timeout="long" => 900s. The target spins one FDB container and runs 238
+    # corpus files in parallel against it. Measured ~7s warm on a 24-thread box;
+    # the CI runner is memory-capped and runs 4 test actions at once, where the
+    # same contention factor the sqldriver and yamsql targets already document
+    # applies. Sized to the convention those carry rather than trimming files.
+    timeout = "long",
+    srcs = [
+        "corpus_run_test.go",
+        "javarandom_test.go",
+        "match_internal_test.go",
+        "pinned_ledger_test.go",
+    ],
+    # keep: the run walks the vendored .yamsql tree, so it must be in runfiles.
+    # Without this the ledger gate does not fail under `bazel test` — it cannot
+    # find the corpus at all, which is a far worse outcome than a drifted count.
+    data = ["//third_party/apple/fdb-record-layer:yamsql_corpus"],
+    embed = [":javacorpus"],
+    deps = [
+        "//pkg/relational/conformance/javayamsql",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

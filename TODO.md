@@ -10580,9 +10580,12 @@ None is speculative: each was re-verified against the tree before booking.
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
   the joined representation cannot tell apart.
 
-- [ ] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
+- [x] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
   FlatMap inner binder Java's parent-chained per-alias bindings, and the
-  merged-row `leg.col` string channel dies with its five readers.** The last
+  merged-row `leg.col` string channel dies with its five readers.**
+  **DONE — closed by CQ-67 (merged as #549), which this entry already named as
+  its entire remaining work ("the REMAINING WORK OF THIS ITEM IS NOW CQ-67 …
+  CQ-53 closes when CQ-67 closes; it carries no separate remainder").** The last
   genuinely-dotted debt sites are readers of ONE channel, and the channel is
   executor-side. (The title used to say "teach the FlatMap inner binder
   leg-local windows"; that plan is corrected below and the correction is the
@@ -12024,9 +12027,11 @@ None is speculative: each was re-verified against the tree before booking.
   baking and the executor -- a planner-wide change with a Graefe lap and a
   stress/golden comparison, not a rider on a typing sweep.
 
-- [ ] **CQ-67 (HIGH/L, L, executor-gated, query-engine review gate) — implement
+- [x] **CQ-67 (HIGH/L, L, executor-gated, query-engine review gate) — implement
   RFC-200: the layout authority learns the NESTED merged leg, and CQ-53's 60
   `reconstruct-nil / positional-merge` declines become ACCEPTs.** The design is
+  **DONE — merged as #549.** Closing this item also closed CQ-53, whose
+  remaining work this was. The design is
   `rfcs/200-positional-merge-leg-windows.md` (merged, #543) and it is ACK'd;
   nothing here re-decides it. **Closing this item CLOSES CQ-53** — that entry's
   "WHAT THE NEXT ATTEMPT IS" paragraph is this work verbatim, and CQ-53 carries
@@ -12448,11 +12453,8 @@ None is speculative: each was re-verified against the tree before booking.
   tests. The phases below are independently landable and are checked off
   individually.
 
-  - [~] **69.0 — Phase 0: vendor + parse.** No execution. **COMPLETE on branch
-    `feat/yamsql-corpus-phase0` (commits `f20c884a4` + `a076ba66c`); merge IN
-    FLIGHT** — `[~]` because the work is done but not on master; it flips to
-    `[x]` when the merge lands. Nothing in it is open work for another item to
-    pick up. What the branch carries, read off those two commits: 238 `.yamsql`
+  - [x] **69.0 — Phase 0: vendor + parse.** No execution. **MERGED.** What it
+    carries, read off commits `f20c884a4` + `a076ba66c`: 238 `.yamsql`
     files vendored byte-for-byte under `third_party/` mirroring the upstream
     path, `VERSION` pinned to 4.12.11.0, `.metrics.*` excluded (and with them
     `metrics-diff/` entirely); the `javayamsql` parser plus `TestCorpusParses`
@@ -12465,28 +12467,88 @@ None is speculative: each was re-verified against the tree before booking.
     reported at 8 directions; that count was NOT re-verified from the branch's
     commits here, so confirm it on merge.
 
-    **Discrepancy to reconcile at merge, flagged rather than smoothed over: the
-    branch's measured polarity does not match RFC-201 §3 ruling 3.** The RFC's
-    scoping study says "33 corpus files under `shouldFail/` trees" and "10 files
-    are include-only fragments"; `a076ba66c`'s own message says the manifest
-    carries **25 parse-level negatives, 35 execution-level ones, and 2
-    include-only fragments** — 60 negatives against 33, and 2 fragments against
-    10. The implementation re-measured and is the later number, so the likely
-    resolution is that the RFC's figures were a coarse pre-implementation count
-    (and that "negative" was split into two kinds only once the parser existed).
-    Do not assume that: check which is right and correct the loser, because §3's
-    numbers are what every later phase's file-count target is stated against.
-  - [ ] **69.1 — Phase 1: runner core, plan assertions suppressed.**
-    Multi-document blocks, the `schema_template` lifecycle (already structurally
-    identical to the Go harness's runner), the `connect:` URI registry,
-    `test_block` presets/modes/repetition/seed, `result`/`unorderedResult`/
-    `count`/`error`, all result-side tags, version gates collapsed to the single
-    Go version, `include:`. **Target ~95 files green**, and the skip ledger stays
-    LIVE — `explain:`/`explainContains:`/`planHash:` are COUNTED skips, never
-    silent ones (§8 governance; Java itself degrades those directives to no-ops
-    in multi-server mode because plan strings are not version-stable, and Go is
-    in effect another server version). Go-side plan-shape regression stays owned
-    by `explaindiff` and by `plan_contains` in Go-authored scenarios.
+    **Polarity discrepancy vs RFC-201 §3 ruling 3: RESOLVED, and the RFC was
+    the loser — but so was the branch's own commit message.** The RFC's scoping
+    study said "33 files under `shouldFail/`" and "10 include-only fragments";
+    `a076ba66c`'s message said "25 parse-level, 35 execution-level, 2
+    fragments". COUNTED off master, the manifest it shipped actually held **25
+    parse-level, 46 execution-level, 2 fragments** — so the "35" was a third
+    unverified figure, and this entry repeated it until the counts were pinned.
+    The implementation's METHOD is right (each file's polarity read off the
+    Java test class that asserts it, and "negative" only splits into
+    parse-level and execution-level once a parser exists to draw the line); it
+    was only the reported total that was wrong. `TestManifestComposition` now
+    pins the composition so no figure here has to be trusted again. §3 has been
+    corrected to the measured numbers.
+
+    **69.1 then re-measured the EXECUTION-level half by RUNNING it, and
+    reclassified 13 files.** Master's manifest carried 46 execution-level
+    entries; it now carries 42, and the manifest totals are pinned by
+    `TestManifestComposition` (84 entries: 25 parse / 42 execution / 9
+    fixed-version / 2 fragment / 6 explicit-positive) so no prose has to quote
+    them from memory. The 13 moves:
+
+    - **4 → Positive.** `initial-version/wrong-{result,count,unordered,error}-less-than`.
+      A Go run is a current-version run, and `InitialVersionTest` carries
+      separate `shouldPassOnCurrent` / `shouldFailOnCurrent` streams; all four
+      are in `shouldPassOnCurrent` (:164-167) because their less-than branch is
+      never selected, so the wrong expectation they carry is never checked.
+    - **9 → FixedVersionMeta** (a new polarity). 8 under `supported-version/`
+      plus `initial-version/less-than-version-tests`: no current-version stream
+      runs them at all, so a single-current-version runner cannot evaluate them
+      in either direction. They are still EXECUTED and asserted not to
+      quietly pass — Go can measure what Java has no stream for.
+
+    Of the 42 remaining execution-level entries the ledger books **20** as
+    `polarity:negative-execution` — they run and fail, as upstream requires.
+    The other 22 measured as 15 whose expected failure is unreachable because
+    the directive carrying it is itself a counted skip, plus 7 claimed first by
+    a DDL or engine gap. That 20/15/7 split is asserted by the corpus-run test,
+    not asserted here: a manifest ENTRY count and a ledger OUTCOME count are
+    different denominators and fusing them is how a corrected figure becomes a
+    wrong one.
+  - [x] **69.1 — Phase 1: runner core, plan assertions suppressed.** Built as
+    `pkg/relational/conformance/javacorpus`, executing all 238 vendored files
+    against real FDB. Multi-document blocks with `include:` splicing, the
+    five-statement `schema_template` lifecycle against the catalog connection,
+    the `connect:` registry (integer / `(global) n` / `0` = catalog / verbatim
+    `jdbc:embed:` URI), `test_block` preset+options layering with Java's real
+    defaults (repetition 5, `check_cache` on), a seeded Fisher–Yates shuffle over
+    java.util.Random for non-ordered modes, `connection_lifecycle`, and
+    `result` / `unorderedResult` / `count` / `error` checked through a port of
+    Java's `Matchers` (positional vs named cells, Integer→Long and Float→Double
+    promotion, `x'…'` / `xstartswith_N'…'` bytes, `!l !f !b !ignore !null
+    !not_null !sc !uuid !pos !randomStr`).
+
+    **MEASURED LEDGER (pinned; `pkg/relational/conformance/javacorpus/pinned_ledger_test.go`):
+    pass=32, fail=0, skip=206, 512 asserted queries.** Largest classes:
+    `unsupported-DDL:value-index-as-select` 42, `unsupported-DDL:struct` 39,
+    polarity/meta 56, `unsupported:temporary-function` 17, `plan-assertion` 7
+    files / 212 configs. `queries` excludes `noChecks` queries: they execute but
+    assert nothing, and counting them let a file whose ONLY query is
+    config-less (`scenario-tests.yamsql`, "# TODO: add data" upstream) report a
+    pass — the vacuous-pass guard was defeated by the very branch that books
+    the skip. A per-file `path status class` digest is pinned beside the counts,
+    because totals alone are blind to two files SWAPPING classes.
+
+    **§3's "~95 files green" target is SUPERSEDED by this measurement**, and the
+    reason is not that the runner fell short — the target was formed before
+    anyone had run the corpus. The real decomposition: **100 files are outside
+    Phase 1 by construction** (56 meta-tests, 7 plan-assertion-only, 35 needing
+    a later phase's capability, 2 asserting nothing), leaving **138 in scope —
+    32 passing and 106 blocked by an engine or DDL gap** (87 DDL: 42
+    value-index-as-select + 39 struct + 6 other; 19 engine divergences). So the
+    denominator is 138, and the gap to it is one DDL feature (CQ-71, bigger than
+    struct types and unmeasured before this run) plus struct types. §3 has been
+    corrected with the same arithmetic.
+
+    Skip policy is the product and it holds: every non-executed file, block,
+    query and config is counted with a reason class, `explain:` /
+    `explainContains:` / `planHash:` are counted skips per ruling 2, a positive
+    file that asserted nothing is booked `vacuous:all-assertions-skipped` rather
+    than reported as a pass, and the 21 engine divergences the run FOUND are
+    each pinned to their exact rejection (CQ-71/72/73) so a file that starts
+    passing, or starts failing differently, reds the run.
   - [ ] **69.2 — Phase 2: `resultMetadata:` (+35 files) and per-page
     continuations / `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no
     planner risk. The continuation half is also the PREREQUISITE for the
@@ -12617,3 +12679,104 @@ None is speculative: each was re-verified against the tree before booking.
   by a row assertion. NOT tied to CQ-67's gate (a), which is blocked on the
   latent reader arm and is unaffected by this item. Executor + NLJ rule, so:
   Graefe-gated.
+
+- [ ] **CQ-71 (HIGH/L, L, DDL + wire-compat, query-engine review gate) — the
+  VALUE index written in materialized-view syntax (`CREATE INDEX x AS SELECT
+  cols FROM t [ORDER BY cols]`) is unimplemented.** Measured by the RFC-201
+  Phase-1 corpus run (CQ-69.1): **42 of 238 vendored files — the single largest
+  blocker in the corpus, larger than struct types.** Go's
+  `parseIndexDefinition` routes every `IndexAsSelectDefinitionContext` to
+  `parseAggregateIndexDefinition` (`pkg/relational/core/embedded/ddl.go:236`),
+  which recognises only an aggregate select element and a `CARDINALITY(...)`
+  value index. A plain `select col from t order by col` therefore dies with
+  `42F59: select element must contain an aggregate function`, and the
+  multi-column form with `exactly one aggregate expression required in SELECT`.
+
+  Reproducers, all vendored and already counted as
+  `unsupported-DDL:value-index-as-select` in the Phase-1 ledger — the smallest
+  is `documentation-queries/in-operator-queries.yamsql` (`create index price_idx
+  as select price from products order by price`); `union.yamsql` and
+  `index-ddl-values-only.yamsql` carry the multi-column and multi-table shapes.
+
+  **NOT a small fix, and the reason is wire compat, not size.** The index this
+  DDL creates must have the same key expression Java's
+  `MaterializedViewIndexGenerator` emits, or Go and Java write DIFFERENT index
+  entries for the same declaration — a divergence on the hard line, in the one
+  direction that corrupts a shared cluster silently rather than loudly. So it
+  needs Java read first (which of SELECT order vs ORDER BY order fixes the key,
+  how ASC/DESC and expression elements are folded, what happens to columns that
+  appear in one and not the other), an RFC, and a Graefe ACK before
+  implementation. `Builder.AddIndex(table, name, cols, unique)` already exists,
+  so the *implementation* is likely modest; the specification is the work.
+
+  DONE = the 42 files move out of `unsupported-DDL:value-index-as-select` in the
+  CQ-69.1 ledger, the index key expression is asserted byte-identical to Java's
+  for each corpus shape, and the pinned ledger is updated in the same commit.
+
+- [ ] **CQ-72 (M/L per item, L in aggregate) — the measured Go-engine divergence
+  ledger from the RFC-201 Phase-1 corpus run.** Every entry below was found by
+  RUNNING a vendored file, not predicted; every one is pinned to its exact
+  rejection in `pkg/relational/conformance/javacorpus/gaps.go`, so the pin
+  breaks loudly the moment the engine's behaviour changes in either direction
+  (the file starting to pass fails the gap-reachability check; a DIFFERENT
+  failure at the same path stays a hard failure). Counts are file counts.
+
+  - **array literal in `INSERT … VALUES` (5 files).** Highest value and the
+    best-understood: `insert_cascades.go:161` hands the evaluated cell to
+    `functions.ConvertToProtoValue`, whose switch is over the column's proto
+    `Kind` with no repeated-field arm, so a Go slice falls through to the
+    verbatim 22000. Minimal reproducer is eight lines —
+    `check-result-metadata/shouldPass/array-column.yamsql`: `create table
+    t1(pk integer, x integer array, primary key(pk))` then `INSERT INTO t1
+    VALUES (1, [10, 20, 30])`. Note it reproduces for a `bigint array` column
+    too (`right-deep-plan-tests.yamsql`), so it is NOT element-width promotion —
+    the repeated arm is simply absent. The fix needs the executor's
+    `buildInsertRecord` to accept a converted list, so it is a plan+executor
+    change, not a converter one-liner.
+  - **catalog system tables (2)** — `select … from "TEMPLATES"` / `schemas`
+    from a user connection: `0AF00: no schema metadata available`.
+  - **width-suffixed integer literals `1I` / `2L` (1)** — the constant folder
+    passes the whole token to `strconv.ParseInt`.
+  - **`__ROW_VERSION` pseudo-column (1)** — not exposed to name resolution.
+  - **table-valued function in FROM (1)**, **`FROM VALUES (…)` (1)** —
+    `only plain table names are supported`.
+  - **correlated `EXISTS` over a set operation (1)**, **`WITH` nested inside a
+    recursive CTE body (1)**, **JOIN-bodied derived table whose ON clause the
+    FROM resolver cannot bind (1)**, **a query Cascades declines (1)**.
+  - **`CAST([1,2,3] AS STRING ARRAY)` returns NULL (1)**.
+  - **`UPDATE … RETURNING … OPTIONS(DRY RUN)` produces no result set (1)**.
+  - **an oversized record surfaces a raw executor error with no SQLSTATE (1)** —
+    the corpus's `error:` assertion has nothing to compare against. This one is
+    an error-mapping gap, not a feature gap, and is probably the cheapest.
+  - **`select * from ta limit 5` SUCCEEDS in Go where Java raises `0AF00` (1).**
+    The one entry that is not a Go deficiency. Booked anyway: the conformance
+    principle governs the shared surface in BOTH directions, and an unreviewed
+    widening is precisely the silent divergence the cross-engine harness exists
+    to find. Decide deliberately whether this is a sanctioned read-side
+    extension or a missing rejection — do not leave it undecided.
+
+  - **the enum matcher arm is not ported (0 files today, but unbooked until
+    now).** Java's `Matchers.matchField` has an arm comparing a String
+    expectation to a protobuf `EnumValueDescriptor` by NAME. Go omits it,
+    because whether it is needed depends on what the driver returns for an enum
+    column — if that is already the name as a string the existing String arm
+    covers it; if it is an ordinal or a typed value, the omission is a silent
+    mismatch. Unanswerable today: every corpus file with an enum column is
+    skipped before a row is compared. Answer it when `enum.yamsql` /
+    `insert-enum.yamsql` unblock, and delete the comment at the site or write
+    the arm. Stated rather than guessed — an untested arm written on a hunch is
+    worse than a named omission.
+
+  Order these by ledger count, not by list order: the array-literal five are
+  worth more than the nine singletons combined, and the error-class one is
+  cheap. Each fix removes its class from the CQ-69.1 pinned ledger and updates
+  it in the same commit.
+
+- [ ] **CQ-73 (L, gated behind RFC-201 Phase 3) — `create schema template` with
+  struct types, reached through a SETUP STEP rather than a `schema_template`
+  block.** Two files (`showcasing-tests.yamsql`,
+  `create-drop-create-template.yamsql`) issue the template DDL as a setup query,
+  so they hit the same Phase-3 struct gap by a different route and are classed
+  with it (`unsupported-DDL:struct`, 39 files total). No separate work: closing
+  CQ-69.6 closes these. Booked only so the two files are not mistaken for a
+  distinct gap when the struct count is re-measured.

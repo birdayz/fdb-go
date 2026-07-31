@@ -90,11 +90,33 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
    plan strings are not version-stable — Go is, in effect, another server
    version. Go-side plan-shape regression is owned by `explaindiff` (2,485
    queries baselined) and by `plan_contains` assertions in Go-authored scenarios.
-3. **The polarity manifest lives in the Go tree.** 33 corpus files under
-   `shouldFail/` trees are negative meta-tests whose pass/fail polarity is
-   encoded in Java *test classes*, not in the data; 10 files are include-only
-   fragments never run standalone. A Go-side manifest records polarity, fragment
-   status, and per-file skip reasons, so re-vendoring stays a clean copy.
+3. **The polarity manifest lives in the Go tree.** Corpus files whose pass/fail
+   polarity is encoded in Java *test classes* rather than in the data get a
+   Go-side manifest recording polarity, fragment status, and per-file skip
+   reasons, so re-vendoring stays a clean copy.
+
+   *Measured (Phase 0 parser, Phase 1 execution; supersedes this ruling's
+   original "33 negatives / 10 fragments", which was a coarse pre-implementation
+   count):* the manifest holds **84 entries — 25 parse-level negatives, 42
+   execution-level negatives, 9 fixed-version meta-tests, 2 include-only
+   fragments, and 6 files recorded Positive because the reason is worth
+   keeping.** Pinned by `TestManifestComposition`.
+
+   Do not confuse that with the runner's ledger, which books **20** files as
+   `polarity:negative-execution`: those are different denominators. The
+   manifest counts what upstream ASSERTS about a file; the ledger counts what
+   HAPPENED when it ran. The 42 split, measured, as 20 booked + 15 whose
+   expected failure could not be reached because the directive carrying it was
+   itself a counted skip + 7 claimed first by a DDL or engine gap.
+
+   The parse/execution split only became drawable once a parser existed. The 9 fixed-version
+   meta-tests are the subtler correction: their polarity is defined solely
+   against a version the Java test class pins (`SupportedVersionTest` and
+   `InitialVersionTest` both pin 3.0.18.0), and no current-version stream runs
+   them — so a single-current-version runner, which is what Go is, cannot
+   evaluate them in either direction. `InitialVersionTest`'s own
+   `shouldPassOnCurrent` / `shouldFailOnCurrent` streams are the authority for
+   which files flip.
 4. **Strict parsing.** Unknown block, directive, or tag is a parse error, and
    `TestCorpusParses` walks every vendored file asserting the full directive
    surface is understood, emitting a census (files, blocks, queries, configs,
@@ -109,9 +131,31 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
   the `schema_template` lifecycle (already structurally identical to the Go
   harness's runner), `connect:` URI registry, `test_block` presets/modes/
   repetition/seed, `result`/`unorderedResult`/`count`/`error`, all result-side
-  tags, version gates collapsed to the single Go version, `include:`. Target:
-  ~95 files green (the meta-test directories are self-validating — they test the
-  runner, not the engine — plus doc-queries and the plain root files).
+  tags, version gates collapsed to the single Go version, `include:`.
+
+  *This phase's original target of "~95 files green" is SUPERSEDED by
+  measurement: **32 pass, 0 fail, 206 counted skips, 512 asserted queries.***
+  The target was not missed so much as never grounded — it was formed before
+  anyone had executed the corpus.
+
+  The 238 files decompose, from the pinned ledger:
+
+  - **100 are outside Phase 1 by construction** — 56 meta-tests that measure the
+    runner rather than the engine (25 parse-negative, 20 execution-negative, 9
+    fixed-version, 2 fragment), 7 files whose only assertions are the plan
+    directives ruling 2 declines permanently, 35 needing a later phase's
+    capability (17 temporary function, 8 schema command, 7 resultMetadata, 2
+    multi-cluster, 1 continuation), and 2 that assert nothing at all.
+  - **138 are in scope**, and of those **32 pass** while **106 are blocked by an
+    engine or DDL gap**: 87 DDL (42 value-index-as-select, 39 struct, 6 other)
+    and 19 measured engine divergences.
+
+  So the in-scope denominator is 138, not 95, and the gap to it is one DDL
+  feature plus struct types. Closing the value-index gap alone puts up to 42
+  files in reach. The lesson generalises to the later phases' `+35` / `+16` /
+  `41` / `44` figures: those are file counts derived from directive census, not
+  from execution, and each should be re-stated as a measurement when its phase
+  lands.
 - **Phase 2 — `resultMetadata:` (+35 files) and per-page continuations /
   `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no planner risk. The
   continuation work is also the prerequisite for the ForceContinuations oracle
