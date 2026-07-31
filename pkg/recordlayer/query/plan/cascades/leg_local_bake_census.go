@@ -855,6 +855,51 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly, got, c.Total)
 	}
 
+	// THE TWO CUTS AGAINST EACH OTHER. Both partitions above are sums over the
+	// same denominator, and neither says anything about which firing landed in
+	// which bucket of the OTHER cut. So a census that files the identity class
+	// wholesale wrong — every firing recorded under one constant class — keeps
+	// both sums exact and the gate green, while the one number the qualified-name
+	// channel's retirement rests on reads its own opposite. That is not a
+	// hypothetical shape: filing a constant class at one arm's census call site
+	// inverts IdentityInLegDomain from the whole corpus to none of it, with no
+	// counter out of balance anywhere.
+	//
+	// What closes it is that the two cuts are not independent measurements. The
+	// arm dispatches on the identity CLASS: arms 1 and 2 are both guarded on
+	// legReadIdentityInLegDomain, and arm 3 is reached exactly when that guard
+	// fails. So the outcome and the identity are two readings of ONE decision, and
+	// these two checks state that fact — a firing's identity class is derivable
+	// from its outcome and vice versa, so a census where they disagree is
+	// measuring something other than the arm.
+	//
+	// They coincide whenever both partitions above hold, and diverge when one does
+	// not; both are stated so a report names which end drifted rather than leaving
+	// it to be inferred from four numbers.
+	if got := c.Baked + c.MergedReAnchor; got != c.IdentityInLegDomain {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + MergedReAnchor(%d) = %d, "+
+			"but IdentityInLegDomain = %d.\n"+
+			"  Arms 1 and 2 are BOTH guarded on the read stating an identity in its own\n"+
+			"  leg's domain, so every firing with either outcome states one and no other\n"+
+			"  firing does. A gap means the class the census FILED is not the class the\n"+
+			"  arm DISPATCHED on — the two partitions above stay exact under a wholesale\n"+
+			"  misfiling, and this is the check that does not.\n",
+			c.Baked, c.MergedReAnchor, got, c.IdentityInLegDomain)
+	}
+
+	if got := c.IdentityOtherDomain + c.LazyNameOnly; got != c.Declined {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: IdentityOtherDomain(%d) + "+
+			"LazyNameOnly(%d) = %d, but Declined = %d.\n"+
+			"  The same fact from the decline side: arm 3 is reached exactly when the\n"+
+			"  identity guard fails, so the two residue classes and the declined outcome\n"+
+			"  count the SAME firings. If Declined is 0 while a residue class is not, the\n"+
+			"  census is reporting reads the arm did not decline as reads it could not\n"+
+			"  bake — which is the retirement number reading its own opposite.\n",
+			c.IdentityOtherDomain, c.LazyNameOnly, got, c.Declined)
+	}
+
 	if got := c.FlowedLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {
 		failed = true
 		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Flowed(%d) + Underivable(%d) + "+

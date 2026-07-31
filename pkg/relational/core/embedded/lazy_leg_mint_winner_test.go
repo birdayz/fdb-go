@@ -136,7 +136,18 @@ CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 			// THE POSITIVE SENTINEL, walking the same winner. See
 			// legLocalReadsOf for why the dotted zero above no longer covers
 			// this arm.
-			for _, r := range legLocalReadsOf(plan) {
+			reads := legLocalReadsOf(plan)
+			// LOGGED, not asserted, and not written into prose. The per-shape
+			// population moves with any planner change that rewrites one of
+			// these winners, and a comment stating it was wrong within one
+			// change of being written. The run reports it; the assertion below
+			// is on the only property that has to hold — that it is not zero
+			// across all shapes.
+			t.Logf("leg-local identity sentinel: %d qualifying read(s) in the winner", len(reads))
+			for _, r := range reads {
+				t.Logf("  %s", r.describe())
+			}
+			for _, r := range reads {
 				if !r.identityOK {
 					t.Errorf("a leg-correlated read reached the WINNING plan without an "+
 						"identity in its OWN leg's domain: %s\n\n"+
@@ -158,15 +169,25 @@ CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 
 	// A zero-population sentinel is a green that says nothing, and this one is
 	// especially prone to it: the qualifying shape (single accessor, typed
-	// quantifier) is exactly the shape a planner change can rewrite away, and the
-	// self-join-twin shape ALREADY has none — its leg reads are re-anchored onto
-	// the merged correlation as two-accessor paths, which is a different and also
-	// correct form. So the assertion above holds vacuously for that shape today,
-	// and it would hold vacuously for all of them if the pass-through's product
-	// stopped surviving anywhere.
+	// quantifier) is exactly the shape a planner change can rewrite away. Every
+	// shape carries some today and none carries a fixed number — the per-shape
+	// counts are LOGGED by each subtest rather than stated here, because they move
+	// with any planner change that rewrites one of these winners and a stated
+	// count is wrong from the first such change onward. What the assertion needs
+	// is only that the population is not empty; that is what it checks.
 	//
-	// MEASURED: three of the four shapes carry exactly one qualifying read (P.V,
-	// ordinal 1 in P's own two-column domain).
+	// WHAT A GREEN HERE DOES NOT MEAN, and it is the sharper half. The qualifying
+	// reads reaching these winners did NOT come through the rebase arm's
+	// pass-through: renaming arm 2's output leaves every count and every assertion
+	// in this test unchanged, while making that arm panic proves it IS reached
+	// during planning — so its product is built and then loses, and what the
+	// sentinel is walking is reads that arrived at the winner by other routes. The
+	// sentinel keys on SHAPE, not on provenance, so an arm-2 read that ever DID
+	// win would be checked by it; but a green today is not evidence that arm 2's
+	// output is correct. That evidence is at rule level
+	// (TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead,
+	// TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead), and this is the
+	// standing watch for the day the candidate stops losing.
 	t.Cleanup(func() {
 		if n := sentinelPopulation.Load(); n == 0 {
 			t.Errorf("the leg-local identity sentinel found NO qualifying read in any " +

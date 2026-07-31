@@ -2756,9 +2756,12 @@ func rebaseOuterLegValue(
 					// `QuantifiedObjectValue.of(alias, flowedRow)` the way Java's
 					// Quantifier.java:801-803 always has, so a leg-correlated read is
 					// a single accessor at a non-negative ordinal in a domain that IS
-					// the leg's own row layout — measured, all 126 firings over the
-					// real-FDB corpus. The work at this site is therefore to STOP
-					// DESTROYING that ordinal, not to mint a new one.
+					// the leg's own row layout — measured over the real-FDB corpus,
+					// EVERY firing, with both residue classes at zero (the census
+					// gate asserts those zeros, and cross-checks the identity cut
+					// against the outcome cut so a wholesale misfiling cannot hold
+					// them). The work at this site is therefore to STOP DESTROYING
+					// that ordinal, not to mint a new one.
 					//
 					// THE THREE ARMS, in Java's own order.
 					//

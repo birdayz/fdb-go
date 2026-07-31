@@ -21,46 +21,52 @@ import (
 // the partition still adding up and the only visible effect being FlowedLegs
 // drifting down against a floor set an order of magnitude below it.
 //
-// Each case below violates exactly ONE invariant, so a dropped check is a red
-// here rather than a silence in the field.
+// Each case below names the MESSAGE it expects, not merely a failure. Several
+// of the checks overlap by construction — the identity partition is implied by
+// the two cross-cuts and the outcome partition — so a case can red more than one
+// check, and "the gate failed" alone would stop distinguishing a live assertion
+// from a dropped one the moment two checks covered the same input.
 func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 	t.Parallel()
 
-	// healthy is the corpus's measured shape: the state the gate must PASS, or
-	// every red below is red for the uninteresting reason.
+	// healthy is a SYNTHETIC gate input: the state the gate must PASS, or every
+	// red below is red for the uninteresting reason. It is shaped after a real
+	// corpus run so that the reds are reds on a realistic population, but the gate
+	// does not require it to EQUAL the corpus and this test does not check that it
+	// does — nothing here reads the live census.
 	//
-	// MEASURED at HEAD over the whole real-FDB sqldriver corpus:
+	// It deliberately no longer claims to be the corpus's measured shape. That
+	// claim was written three times and was stale within the same change each
+	// time: the corpus population moves whenever a query is added anywhere in the
+	// sqldriver suite, including by seeded controls added alongside this fixture.
+	// A number that drifts under unrelated work is a number a comment cannot
+	// carry. Whoever wants the live one runs:
 	//
-	//	total 162 (baked 162, mergedReAnchor 0, declined 0)
-	//	untypedLeg 0, columnAbsent 0, layoutAvailable 0
-	//	identityInLegDomain 162, identityOtherDomain 0, lazyNameOnly 0
-	//	flowed 936, underivable 0, memberDisagreement 0, legDerivations 936
-	//	mergeSlots 18342 (typed 17588, scavenged 4, scalar 0, untyped 750)
+	//	go test ./pkg/relational/sqldriver/ -count=1 -v | grep "leg-local bakeability"
 	//
-	// It is a DIFFERENT shape from the one this fixture used to carry (126 reads,
-	// all re-anchored, none stating an identity), and the difference is the whole
-	// of what phase 2 did: the reads now arrive carrying their ordinals, the arm
-	// stopped degrading them, and the re-anchor population went to zero. A fixture
-	// describing the pre-deletion corpus asserts that the gate passes a state the
-	// code can no longer produce — a green that says nothing about the gate, on
-	// top of documenting a corpus that is gone.
+	// What the shape has to keep is its STRUCTURE, and that is what the reds below
+	// exercise: every read baked, none re-anchored, none declined, every one
+	// stating an identity in its own leg's domain. That is a different structure
+	// from the one this fixture originally carried (all reads re-anchored, none
+	// stating an identity), and the difference is the whole of what phase 2 did.
 	healthy := legLocalBakeCounters{
-		Total: 162, Baked: 162, MergedReAnchor: 0, Declined: 0,
+		Total: 174, Baked: 174, MergedReAnchor: 0, Declined: 0,
 		// Vacuous at HEAD: these partition MergedReAnchor, which is 0. The gate
 		// says so out loud rather than reporting a green check over nobody — the
 		// VACUOUS direction below is what pins that.
 		UntypedLeg: 0, ColumnAbsent: 0, LayoutAvailable: 0,
-		// ALL 162 firings cut by what each read states about its OWN identity.
-		// This is the number the qualified-name channel's retirement rests on:
-		// every leg-correlated read reaching the arm states its own slot, with no
-		// name consulted anywhere. It partitions Total — which is FLOORED — so
-		// unlike the layout cut above it cannot go vacuous without the floor
-		// firing first.
-		IdentityInLegDomain: 162, IdentityOtherDomain: 0, LazyNameOnly: 0,
-		FlowedLegs: 936, DisagreeingLegs: 0, UnderivableLegs: 0,
-		LegDerivations:  936,
-		MergeSlots:      18342,
-		MergeSlotsTyped: 17588, MergeSlotsScavenged: 4, MergeSlotsScalar: 0,
+		// EVERY firing cut by what each read states about its OWN identity. This
+		// is the cut the qualified-name channel's retirement rests on: every
+		// leg-correlated read reaching the arm states its own slot, with no name
+		// consulted anywhere. It partitions Total — which is FLOORED — so unlike
+		// the layout cut above it cannot go vacuous without the floor firing
+		// first, and it is cross-checked against the OUTCOME cut so that filing it
+		// wholesale wrong is not a state both partitions accept.
+		IdentityInLegDomain: 174, IdentityOtherDomain: 0, LazyNameOnly: 0,
+		FlowedLegs: 960, DisagreeingLegs: 0, UnderivableLegs: 0,
+		LegDerivations:  960,
+		MergeSlots:      18358,
+		MergeSlotsTyped: 17604, MergeSlotsScavenged: 4, MergeSlotsScalar: 0,
 		MergeSlotsUntyped: 750,
 	}
 	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80, MergeSlots: 1800}
@@ -73,22 +79,26 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name    string
-		mutate  func(*legLocalBakeCounters)
-		wantMsg string
+		name   string
+		mutate func(*legLocalBakeCounters)
+		// wantMsgs is a LIST because the checks overlap: the cross-cuts below are
+		// two readings of one dispatch, so the input that violates one violates the
+		// other, and a case naming only one of them would go on passing after the
+		// other was dropped.
+		wantMsgs []string
 	}{
 		{
 			// A leg whose reference members flow different rows. Java Verify-fails;
 			// Go declines the leg and the read falls back to the qualified name, so
 			// the cost is an underivable leg's for a strictly worse reason.
-			name:    "a member-disagreement leg",
-			mutate:  func(c *legLocalBakeCounters) { c.FlowedLegs--; c.DisagreeingLegs++ },
-			wantMsg: "DisagreeingLegs = 1, want 0",
+			name:     "a member-disagreement leg",
+			mutate:   func(c *legLocalBakeCounters) { c.FlowedLegs--; c.DisagreeingLegs++ },
+			wantMsgs: []string{"DisagreeingLegs = 1, want 0"},
 		},
 		{
-			name:    "a leg whose layout cannot be derived",
-			mutate:  func(c *legLocalBakeCounters) { c.FlowedLegs--; c.UnderivableLegs++ },
-			wantMsg: "UnderivableLegs = 1, want 0",
+			name:     "a leg whose layout cannot be derived",
+			mutate:   func(c *legLocalBakeCounters) { c.FlowedLegs--; c.UnderivableLegs++ },
+			wantMsgs: []string{"UnderivableLegs = 1, want 0"},
 		},
 		{
 			// A read the arm re-anchored because its leg stated no type. The read
@@ -101,7 +111,7 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 				c.MergedReAnchor++
 				c.UntypedLeg++
 			},
-			wantMsg: "UntypedLeg = 1, want 0",
+			wantMsgs: []string{"UntypedLeg = 1, want 0"},
 		},
 		{
 			// A read that reached the arm stating NO identity at all. Asserted at
@@ -118,27 +128,32 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 				c.IdentityInLegDomain--
 				c.LazyNameOnly++
 			},
-			wantMsg: "Declined = 1, want 0",
+			wantMsgs: []string{"Declined = 1, want 0"},
 		},
 		{
 			// The three per-leg outcomes must partition LegDerivations, or
 			// UnderivableLegs counts the instrumented paths rather than the legs.
-			name:    "a leg that leaves the derivation by an uncounted path",
-			mutate:  func(c *legLocalBakeCounters) { c.LegDerivations++ },
-			wantMsg: "but LegDerivations = 937",
+			name:     "a leg that leaves the derivation by an uncounted path",
+			mutate:   func(c *legLocalBakeCounters) { c.LegDerivations++ },
+			wantMsgs: []string{"but LegDerivations = 961"},
 		},
 		{
-			// The identity cut is carried along so the OUTCOME partition is the
-			// only thing broken: the two now share Total as their denominator, so
-			// a bare Total++ reds both and the case stops naming which.
-			name:    "a firing counted into Total and classified into no outcome",
-			mutate:  func(c *legLocalBakeCounters) { c.Total++; c.IdentityInLegDomain++ },
-			wantMsg: "but Total = 163",
+			// The identity cut is carried along so the identity/Total partition
+			// stays exact and the OUTCOME one is what breaks. The cross-cut breaks
+			// with it and is named too: with the outcome partition broken the two
+			// cuts stop coinciding, which is exactly when both messages are worth
+			// having.
+			name:   "a firing counted into Total and classified into no outcome",
+			mutate: func(c *legLocalBakeCounters) { c.Total++; c.IdentityInLegDomain++ },
+			wantMsgs: []string{
+				"Declined(0) = 174, but Total = 175",
+				"Baked(174) + MergedReAnchor(0) = 174, but IdentityInLegDomain = 175",
+			},
 		},
 		{
-			name:    "a re-anchored read with no reason",
-			mutate:  func(c *legLocalBakeCounters) { c.MergedReAnchor++; c.Baked-- },
-			wantMsg: "but MergedReAnchor = 1",
+			name:     "a re-anchored read with no reason",
+			mutate:   func(c *legLocalBakeCounters) { c.MergedReAnchor++; c.Baked-- },
+			wantMsgs: []string{"but MergedReAnchor = 1"},
 		},
 		{
 			// The SECOND cut, over the SAME population the outcomes partition.
@@ -146,30 +161,57 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 			// slot with no name consulted anywhere; if the three do not sum, that
 			// number is a share of an unknown whole and the qualified-name
 			// channel's retirement rests on an unmeasured quantity.
-			name:    "a firing classified into no identity bucket",
-			mutate:  func(c *legLocalBakeCounters) { c.IdentityInLegDomain-- },
-			wantMsg: "but Total = 162",
+			name:   "a firing classified into no identity bucket",
+			mutate: func(c *legLocalBakeCounters) { c.IdentityInLegDomain-- },
+			wantMsgs: []string{
+				"LazyNameOnly(0) = 173, but Total = 174",
+				"Baked(174) + MergedReAnchor(0) = 174, but IdentityInLegDomain = 173",
+			},
+		},
+		{
+			// THE WHOLESALE MISFILING, in its smallest form: one firing whose
+			// identity class does not match the arm that produced it. NOTHING the
+			// two partitions check moves — Total is unchanged, every outcome
+			// counter is unchanged, and the three identity counters still sum to
+			// Total — so before the cross-cuts existed this state was green.
+			//
+			// It is the state that matters most, because at corpus scale it is what
+			// a constant class at a census call site produces: every firing filed
+			// under one class, IdentityInLegDomain inverted from the whole
+			// population to none of it, and not one counter out of balance. The
+			// number the qualified-name channel's retirement rests on would have
+			// read its own opposite with the gate green.
+			//
+			// Both cross-cut messages are required. They are two readings of one
+			// dispatch and this input reds both, so naming only one would leave the
+			// other droppable in silence.
+			name:   "a read filed under an identity its outcome contradicts",
+			mutate: func(c *legLocalBakeCounters) { c.IdentityInLegDomain--; c.LazyNameOnly++ },
+			wantMsgs: []string{
+				"Baked(174) + MergedReAnchor(0) = 174, but IdentityInLegDomain = 173",
+				"IdentityOtherDomain(0) + LazyNameOnly(1) = 1, but Declined = 0",
+			},
 		},
 		{
 			// The floors are what keep every zero above from holding vacuously.
-			name:    "the leg-derivation population collapses",
-			mutate:  func(c *legLocalBakeCounters) { *c = legLocalBakeCounters{} },
-			wantMsg: "LegDerivations = 0, want >= 80",
+			name:     "the leg-derivation population collapses",
+			mutate:   func(c *legLocalBakeCounters) { *c = legLocalBakeCounters{} },
+			wantMsgs: []string{"LegDerivations = 0, want >= 80"},
 		},
 		{
 			// The merge-slot partition. MergeSlotsUntyped is an upper bound on the
 			// one remaining path by which a leg's row is silently lost here, and a
 			// bound is only a bound while its siblings account for the rest.
-			name:    "a merge slot counted into no bucket",
-			mutate:  func(c *legLocalBakeCounters) { c.MergeSlots++ },
-			wantMsg: "but MergeSlots = 18343",
+			name:     "a merge slot counted into no bucket",
+			mutate:   func(c *legLocalBakeCounters) { c.MergeSlots++ },
+			wantMsgs: []string{"but MergeSlots = 18359"},
 		},
 		{
 			name: "the merge-slot population collapses",
 			mutate: func(c *legLocalBakeCounters) {
 				c.MergeSlots, c.MergeSlotsTyped, c.MergeSlotsScavenged, c.MergeSlotsUntyped = 0, 0, 0, 0
 			},
-			wantMsg: "MergeSlots = 0, want >= 1800",
+			wantMsgs: []string{"MergeSlots = 0, want >= 1800"},
 		},
 		{
 			name: "the read population collapses",
@@ -177,7 +219,7 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 				c.Total, c.Baked, c.MergedReAnchor, c.LayoutAvailable = 0, 0, 0, 0
 				c.IdentityInLegDomain = 0
 			},
-			wantMsg: "Total = 0, want >= 12",
+			wantMsgs: []string{"Total = 0, want >= 12"},
 		},
 	} {
 		got := healthy
@@ -190,11 +232,13 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 				"  dropped one.", tc.name, got)
 			continue
 		}
-		if !strings.Contains(out.String(), tc.wantMsg) {
-			t.Errorf("%s: the gate failed, but not for the stated reason — want a message "+
-				"containing %q, got:\n%s\n"+
-				"  A red for the wrong invariant is how a check stays green in the one "+
-				"direction it was written for.", tc.name, tc.wantMsg, out.String())
+		for _, want := range tc.wantMsgs {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("%s: the gate failed, but not for the stated reason — want a message "+
+					"containing %q, got:\n%s\n"+
+					"  A red for the wrong invariant is how a check stays green in the one "+
+					"direction it was written for.", tc.name, want, out.String())
+			}
 		}
 	}
 }
@@ -216,12 +260,15 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 func TestLegLocalBakeGateAnnouncesVacuousPartitions(t *testing.T) {
 	t.Parallel()
 
-	// The corpus's own present shape: a live read population, no re-anchors.
+	// The arm's present STRUCTURE: a live read population, no re-anchors. Shaped
+	// after a corpus run for realism, not asserted to equal one — see the fixture
+	// in TestLegLocalBakeGateFailsOnEachViolation for why a comment cannot carry
+	// the live number.
 	live := legLocalBakeCounters{
-		Total: 162, Baked: 162,
-		IdentityInLegDomain: 162,
-		FlowedLegs:          936, LegDerivations: 936,
-		MergeSlots: 18342, MergeSlotsTyped: 17588, MergeSlotsScavenged: 4,
+		Total: 174, Baked: 174,
+		IdentityInLegDomain: 174,
+		FlowedLegs:          960, LegDerivations: 960,
+		MergeSlots: 18358, MergeSlotsTyped: 17604, MergeSlotsScavenged: 4,
 		MergeSlotsUntyped: 750,
 	}
 	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80, MergeSlots: 1800}
@@ -374,8 +421,9 @@ func TestClassifyLegReadIdentity(t *testing.T) {
 			want: legReadIdentityInLegDomain,
 			because: "the read carries a non-negative ordinal in a known domain that IS " +
 				"the leg's row layout, so nothing has to be minted — no name is consulted " +
-				"anywhere. This is the corpus's ENTIRE population (162 of 162), and it is " +
-				"the measurement the qualified-name channel's retirement rests on",
+				"anywhere. This is the corpus's ENTIRE population — every firing, none in " +
+				"either residue — and it is the measurement the qualified-name channel's " +
+				"retirement rests on",
 		},
 		{
 			name:        "resolved, but not against the leg's layout",

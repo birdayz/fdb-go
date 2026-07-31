@@ -10623,13 +10623,25 @@ None is speculative: each was re-verified against the tree before booking.
 
   THE NUMBERS, and what changed about each:
 
-  - `underivableLegs` **0 of 936** (was 82 of 846). CQ-63's stated gate is
+  These are point measurements over the real-FDB sqldriver corpus, and the
+  corpus population moves whenever a query is added anywhere in that suite —
+  three successive writings of this block were stale within the same change.
+  Re-measure rather than trusting the digits:
+  `go test ./pkg/relational/sqldriver/ -count=1 -v | grep "leg-local bakeability"`.
+  What is durable is the SHAPE — every residue at zero — not the totals.
+
+  - `underivableLegs` **0 of 960** (was 82 of 846). CQ-63's stated gate is
     CLOSED — every leg states its row.
-  - leg-local bake census: **total 162, baked 162, mergedReAnchor 0, declined 0**;
-    ALL reads by own identity: **identityInLegDomain 162, otherDomain 0,
+  - leg-local bake census: **total 174, baked 174, mergedReAnchor 0, declined 0**;
+    ALL reads by own identity: **identityInLegDomain 174, otherDomain 0,
     lazyNameOnly 0** (was: 126 reads, all re-anchored, identityInLegDomain **0**).
     So "92 of 126 leg-correlated reads have no honest alternative to the
-    qualified name", above, is REFUTED: it is 0 of 162.
+    qualified name", above, is REFUTED: it is 0 of 174. The identity cut is now
+    CROSS-CHECKED against the outcome cut (`IdentityInLegDomain == Baked +
+    MergedReAnchor`, `IdentityOtherDomain + LazyNameOnly == Declined`), because
+    both cuts partition the same denominator and neither constrains the other:
+    filing a constant identity class at one census call site inverted this
+    number end to end with every partition still exact and no gate red.
   - leg-column provenance: **calls 52, dotted hits 4, all identity-available,
     0 unstated, 0 diverged.** The executor's last dotted reader answers four
     times in the whole corpus.
@@ -10640,7 +10652,7 @@ None is speculative: each was re-verified against the tree before booking.
     NLJ→FlatMap lowering reaches `rebaseOuterLegValue` **without a stated merged
     layout** on the EXISTS-over-join and RFC-153 buried-leg paths, so there is no
     merged ordinal to re-anchor to and the pass-through is the honest answer.
-    `mergedReAnchor 0 of 162` measures exactly that. Closing it means giving
+    `mergedReAnchor 0 of 174` measures exactly that. Closing it means giving
     those two paths a merged layout, which is the "parent-chained per-alias
     bindings" bullet above — still the right plan, now unblocked.
   - `RecordTypeLeg.Name` and the seed-window text keys are still live, and their
@@ -10649,10 +10661,15 @@ None is speculative: each was re-verified against the tree before booking.
     qualifier TEXT, so identity keying there needs an identifier minted from a
     name. Producer-first, as stated above.
   - `bindMergedOuterLegs` now HAS a live planner-side producer (the
-    pass-through, 162 of 162), so DIVERGENCES.md's "a channel whose only producer
+    pass-through, 174 of 174), so DIVERGENCES.md's "a channel whose only producer
     is absent" framing is retired there. The reader is still not load-bearing,
     but for a weaker reason than before: the candidate carrying it loses on every
-    covered shape, rather than there being nothing to carry.
+    covered shape, rather than there being nothing to carry. Measured directly at
+    the winner: making arm 2 panic proves it fires during planning of the
+    `TestLazyLegMintReachesNoWinningPlan` shapes, while RENAMING its output
+    leaves every qualifying read in every winning plan unchanged — so the arm's
+    product is built and then loses, and the positive sentinel there is watching
+    reads that reached the winner by other routes.
 
   Stress 1M phase-2 before/after (`457c18ba8` base vs branch): 23/23 subtests
   PASS on both sides, every row count identical (`1`, `8`, `100017`, `47271`,
