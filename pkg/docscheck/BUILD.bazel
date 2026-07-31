@@ -36,6 +36,10 @@ go_test(
         "//:RELEASE.md",
         "//:TODO.md",
         "//:go.mod",
+        # keep: the production-status authority and the redirect that points at it
+        # (B6, TestProductionStatusAuthority).
+        "//:road-to-prod.md",
+        "//rfcs:prod-readiness-go-client.md",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",
         # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles

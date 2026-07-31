@@ -58,11 +58,29 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # The permitted band, declared as two explicit hours so it is
+          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
+          # parses these and replays every allocation hour this net has been given.
+          # WINDOW_START > WINDOW_END means the band WRAPS midnight.
+          #
+          # This job landed with an inlined `-ge 0 -lt 10` bound, written before the
+          # wrapping band existed. That bound is the one measured to discard evening
+          # landings as "daytime" and to throw away a 10:22 allocation for being 22
+          # minutes late. It is the same defect on a brand-new net, which is how a
+          # freshly-built safety net inherits the fake-green shape the older ones
+          # were just cured of.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 window — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -133,11 +151,21 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Same wrapping band as the corpus job above and as every other
+          # hetzner-fdb net — the allocation hour is a property of the single
+          # shared runner queue, not of what the job does once it has it.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 window — skipping to protect daytime CI capacity. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping to protect the workday CI slot. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 

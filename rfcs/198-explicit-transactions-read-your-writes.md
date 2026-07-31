@@ -1,6 +1,9 @@
 # RFC-198: An explicit transaction's reads belong to that transaction
 
-Status: **proposed**, revision 2 — awaiting joint-review ACK before implementation.
+Status: **ACCEPTED**, revision 2 — dual joint-review ACK (merged as PR #557); implementation in progress.
+Revision 1 was dual-NAK'd; revision 2 folded both reviews plus the converged schema-cache
+condition. A status field that says a reviewed design is still awaiting review is the rot
+RFC-197's header calls out by name — this line carries its state at the head that wrote it.
 Closes: TODO "driver: NO read-your-writes inside an explicit transaction — SELECT
 auto-commits" (`TODO.md:6846`), the Tier-2 production gate B2.
 

@@ -1,10 +1,21 @@
 # RFC: Production-readiness assessment — pure-Go FoundationDB client (`pkg/fdbgo`)
 
+> **AUTHORITY: `road-to-prod.md`.** This is a POINT-IN-TIME AUDIT, not current status. Where it and
+> `road-to-prod.md` disagree, that page wins. Read this one for its *method* and its findings' shape;
+> do not cite its punch-list as open work. **Both of its P0 gaps are CLOSED in code** — cluster-file
+> re-watch (`pkg/fdbgo/client/database.go:614` re-reads the file when the coordinator set rotates)
+> and `SetTimeout` bounding an in-flight read (RFC-112 threaded the deadline into the RPC wait
+> contexts; `transaction.go:669,886,2253-2308` port C++'s `timebomb` races). The punch-list below
+> still lists both as open; that text is left standing as the record of the audit, and this header is
+> the correction.
+
 **Status:** Assessment (snapshot at HEAD after PR #299). Not a change proposal — a state-of-the-client
 audit with an actionable punch-list. Supersedes the client-specific portions of
 `docs/review_2026-06-07.md` (the 4.5/10 whole-project SaaS-control-plane review; 6.5/10 for the
 client) and the stale `TODO_client.md` (a 2026-06-01 source-audit, 13/16 items since fixed).
-**Spec:** FoundationDB C++ `libfdb_c` at tag **7.3.75** (the `foundationdb` pin in `MODULE.bazel`).
+**Spec:** FoundationDB C++ `libfdb_c` at tag **7.3.77** (the `foundationdb` pin in `MODULE.bazel`;
+the audit was written against 7.3.75 and the parenthetical went stale when the pin moved — the
+`MODULE.bazel` pin is the claim, so the number tracks it).
 C++ is the spec; the differential oracle is the Apple CGo binding over `libfdb_c`. Wire compatibility
 is the hard line — Go and C/Java apps share a cluster and read/write each other's data.
 

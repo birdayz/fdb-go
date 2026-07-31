@@ -6,12 +6,13 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
-## IN PROGRESS — RFC-199 deterministic simulation testing (DST) revival
+## DONE — RFC-199 deterministic simulation testing (DST) revival
 
-Branch **`feat/dst-revival`**, PR #462. Owner-directed revival of the dormant DST
-work, reconstructed onto current master. Not merged: the review lap is the gate.
+Branch **`feat/dst-revival`**, PR #462 — **MERGED as `8cc1f72ff`.** The header used to read
+"IN PROGRESS" and the body "Not merged: the review lap is the gate"; the review lap happened and
+the merge landed. `pkg/dst` and `pkg/simfdb` are in the tree.
 
-- [ ] **RFC-199 DST — Tier 0/1/2 landed on master's HEAD, awaiting review.** `pkg/dst`
+- [x] **RFC-199 DST — Tier 0/1/2 MERGED (`8cc1f72ff`, #462).** `pkg/dst`
   (seeded Clock/Randomness/Buggify behind a nil-means-production `Env` seam),
   `pkg/simfdb` (deterministic in-memory MVCC `fdb.BackendDatabase` with SSI, RYW, 12
   atomic ops, true rollback and seeded fault injection), and the Tier-2 hunt harnesses
@@ -2311,9 +2312,14 @@ closed rather than silently alter rows or output schema.
   IN-as-join unsound. Any future attempt must not route a zero equality through
   IN.
   **Pre-existing bug found while measuring, still OPEN and independent of
-
-
-  blocks CQ-28 and is user-visible on its own.** Over rows
+  CQ-28 — it blocks CQ-28 and is user-visible on its own.**
+  → **NOW BOOKED AS ITS OWN ITEM: CQ-75.** It was written into the prose of an
+  item that is marked `- [x]`, which makes it unreachable work under this file's
+  execution rule ("pick the lowest-numbered UNCHECKED item"). The text stays here
+  as the measurement record; CQ-75 is where it gets done. (The sentence above was
+  also physically corrupt — two blank lines had swallowed the words after
+  "independent of" — so the defect was hiding inside a broken sentence inside a
+  closed item.) Over rows
   `(-0.0,5) (5.0,5) (0.0,9)` with index `(v,w)`:
 
       v IN (-0.0, 0.0)  ->  [1]      plan IndexScan(T_VW,[=,*])   ONE probe
@@ -2328,7 +2334,9 @@ closed rather than silently alter rows or output schema.
   `v IN (5.0, 9.0)` alone plans as `InJoin(IndexScan(T_V))` and
   `v = 5.0 AND w = 5` as `IndexScan(T_VW,[=,=])`. Every `IN + trailing equality`
   query pays a full scan. Far more general than signed zero and worth its own
-  item.
+  item. → **NOW BOOKED AS ITS OWN ITEM: CQ-76.** This one literally asked for its
+  own item and never got one; "trailing equality" appeared nowhere else in this
+  file, so the request was invisible from the moment it was written.
   REPRODUCED and PINNED (not fixed) by
   `pkg/relational/sqldriver/negative_zero_composite_index_sarg_probe_test.go`
   (composite index `(v DOUBLE, w BIGINT)`, `WHERE v = 0 AND w = 5` misses a
@@ -3105,9 +3113,24 @@ so there is no ref child-selection left in the SARG walk.)
 
 ---
 
-# ⛔ ALL WORK FROZEN — sole priority is RFC-173 (ordinal/group column-resolution migration)
+# ✅ FREEZE LIFTED — RFC-173 landed. The banner below is HISTORY, not a directive.
 
-**Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up
+**The freeze is OVER and this heading is kept only as the record of it.** RFC-173's endgame is
+DONE (item 4 at the "Name-string/ordinal seam" entry above: the deletion pass is complete —
+`QueryResult.Datum`, the `AnchoredJoin` flag+producer, `NewAnchoredJoinRecord`,
+`buildUnnestResultValue` and the dual-window oracle machinery are all gone from the tree). The
+work that followed it — RFC-195, RFC-197, RFC-199 through RFC-203 — all merged with this banner
+still standing, which is the proof it stopped being true long before it was corrected.
+
+Why this mattered enough to fix rather than delete: measured when the banner was lifted,
+**83 of the 93 then-open items in this file sat BELOW this line** — under a directive that says
+"Do NOT pick up any item below", i.e. nearly the whole backlog. A stale freeze does
+not read as stale; it reads as an instruction, and the execution rule for this file is "pick the
+lowest-numbered unchecked item". Deleting it would erase the lesson, so it is lifted in place.
+
+---
+
+**Owner directive (2026-07-01), SUPERSEDED — pause ALL other project work until RFC-173 lands.** Do NOT pick up
 any item below, any handover follow-up, or any new hunt — RFC-173 (`rfcs/173-ordinal-column-resolution.md`)
 is the exclusive focus. It retires the name-based `AnchoredJoin` column model for Java's ordinal/group
 model (the RFC-164 WS-2 root fix): one RFC, **staged merged PRs** (precursors P1/P2/P3/Slice 1 each
@@ -5146,9 +5169,18 @@ piece if revived.
 > - **Binding Tester Stress** (07-14, 07-11, 07-08): `0/50 pass, 50 fail`, every seed exiting 1 in ~5s with
 >   FDB ALIVE. 50/50 identical fast failures ⇒ almost certainly a HARNESS/ENV/build problem on the runner,
 >   not 50 logic bugs. Needs its own look (run `just binding-stress` locally to confirm infra vs real).
+>   **→ DUPLICATE. This is the same failure as `CQ-47`, which is the live booking** (later run dates,
+>   07-24/07-25, same `0/50 pass, 50 fail`, same ~5.2s uniform timing, same FDB-ALIVE conclusion).
+>   Deduped 2026-08-01: triage it under CQ-47, not here. Kept as the earlier sighting — the 07-08
+>   date matters, because it means this predates the fake-green window bug rather than being caused
+>   by it.
 > - **Differential Serialization Fuzzer** (07-14, 07-11): `FAIL: FuzzGetValueReply` — a real Go-vs-C++ WIRE
 >   serialization divergence in `cmd/fdb-diff-oracle` (fdbgo GetValue reply). Its crash seed was not
 >   uploaded. Needs the C++ oracle to reproduce; own fdbgo cycle.
+>   **→ NOT BOOKED ANYWHERE ELSE.** Unlike the binding-stress line above, this one has no CQ item;
+>   it is a stated Go-vs-C++ *wire* divergence, which is the hard line. It is also on the
+>   `fuzz-diff` lane, which the nightly reconciler reports has NEVER recorded a genuine run — so
+>   nothing has re-tested it since. Book it when the lane is revived (see `road-to-prod.md`, B1).
 >
 > **ACTION: (1) merge the branch → clears the CLASS 1/2/3/4 + FuzzPipeline engine-fuzz reds; (2) then
 > triage binding-stress (likely infra) and the diff-oracle FuzzGetValueReply wire divergence separately.**
@@ -7480,7 +7512,12 @@ the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin
 commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
 SimTransport commit_unknown_result behavioral test.
 
-### [ ] fdbgo/client (#28, HIGH): commit ships the UNFOLDED mutation log; libfdb_c commits the COALESCED RYW write map → Go throws 2101 (`transaction_too_large`) on a transaction C++/Java commit fine — needs its own `fdb-client-engineer` RFC (commit-path materialization; verified vs cgo)
+### [x] fdbgo/client (#28, HIGH) — SHIPPED: commit ships the UNFOLDED mutation log; libfdb_c commits the COALESCED RYW write map → Go throws 2101 (`transaction_too_large`) on a transaction C++/Java commit fine — needs its own `fdb-client-engineer` RFC (commit-path materialization; verified vs cgo)
+
+**DONE.** The commit path materializes the coalesced write-conflict snapshot:
+`pkg/fdbgo/client/commitpath.go:343` — "`writeSnap` is the caller-supplied write-conflict snapshot —
+**coalesced for a RYW commit (#28)**, or the raw op-log ranges for a `rywDisabled` commit — so the
+shipped conflict set matches what Commit sized." The box stayed unchecked after the fix landed.
 
 **App-breaking behavioral divergence** (not a wire-bytes-of-stored-data issue — the final DB state is
 identical either way; the divergence is the committed mutation COUNT/SIZE, which trips Go's 2101 where
@@ -10366,7 +10403,7 @@ None is speculative: each was re-verified against the tree before booking.
   boundaries) with a differential range read that spans one. Sized M because it is
   two independent harness builds; split into two items if either grows.
 
-- [ ] **CQ-45 (HIGH, ROOT-CAUSED — pin landing separately) — the 07-17 stress
+- [x] **CQ-45 (HIGH, ROOT-CAUSED, PIN LANDED) — the 07-17 stress
   `exists_subquery` failure: an aggregate index was built into a record-fetching
   scan.** · S (pin only)
   **Nightly Stress 2026-07-17, run `29560169002`** —
@@ -10394,9 +10431,13 @@ None is speculative: each was re-verified against the tree before booking.
   `candidatePlainFieldColumnsForShortcut`, whose `*ValueIndexScanMatchCandidate`
   type assertion HAPPENS to exclude aggregates. That is luck, not design — see
   CQ-46, which is the real fix.
-  DONE = `aggregate_index_shortcut_gate_test.go` landed (written, currently
-  uncommitted in the main tree). This item is the pin, not the fix; the fix is
-  CQ-46. Note this was the LAST genuine stress run there has been — the 12 nights
+  DONE — `aggregate_index_shortcut_gate_test.go` LANDED, committed in `c2ad0f445`
+  (#524) at `pkg/recordlayer/query/plan/cascades/aggregate_index_shortcut_gate_test.go`
+  (`TestAggregateCandidateDeclinedByRawIndexShortcuts`,
+  `TestAggregateCandidateToScanPlanIsARawFetchingIndexPlan`). This line read
+  "written, currently uncommitted in the main tree" for the whole interval after
+  the file was committed — the stale half of a DONE condition nobody re-read.
+  This item is the pin, not the fix; **the fix is CQ-46, which stays open.** Note this was the LAST genuine stress run there has been — the 12 nights
   after it were fake-green window skips (fixed by
   `.github/workflows/nightly-reconcile.yml`), so a reproducible planner fault sat
   behind a wall of green check marks for twelve days.
@@ -10443,7 +10484,7 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = root-caused, fixed, pinned. Reproduce locally first:
   `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start 1`.
 
-- [ ] **CQ-48 (MED) — docs authority reconciliation: five living documents assert
+- [x] **CQ-48 (MED) — docs authority reconciliation: five living documents assert
   states the code has left behind.** · M
   Booked as ONE item because they share a single root cause — a document that
   claims authority ("scorecard", "verdict", "still genuinely OPEN") and is then
@@ -10460,11 +10501,13 @@ None is speculative: each was re-verified against the tree before booking.
     OPEN in TODO.md"*. At least three are closed: `wrapBareAggregateInsertSource`
     was DELETED by CQ-5 (so `:732-733` describes a function that no longer exists),
     and `:735`'s bare-`GROUP BY` `INSERT…SELECT` guard went with it.
-  - `TODO.md:7222` — the `#28` client item (`commit ships the UNFOLDED mutation log`)
+  - the `#28` client item (`commit ships the UNFOLDED mutation log`)
     is still `- [ ]`, but it shipped: `pkg/fdbgo/client/commitpath.go:343` reads
     *"coalesced for a RYW commit (#28)"* and `transaction.go:1778-1780` implements
-    the coalescing.
-  - `TODO.md:2903` — the freeze banner (*"⛔ ALL WORK FROZEN — sole priority is
+    the coalescing. (This bullet cited `TODO.md:7222`; the item was at `:7498`. A
+    line-number citation into a 13k-line file that nobody re-derives is itself the
+    staleness this item is about — CLOSED by checking the box.)
+  - the freeze banner (*"⛔ ALL WORK FROZEN — sole priority is
     RFC-173"*, owner directive dated 2026-07-01) is still the first thing a reader
     hits, while the tree is demonstrably running RFC-197 work. A stale freeze
     banner is the most expensive kind of staleness: it tells the next person not to
@@ -10476,6 +10519,22 @@ None is speculative: each was re-verified against the tree before booking.
   than a fresh hand-written claim — the existing `docs_consistency_test.go` is the
   precedent, and CQ-41's options gate is the same pattern. A doc corrected by hand
   is stale again in a month; a doc with a gate is not.
+
+  **DONE 2026-08-01.** `road-to-prod.md` is now the named authority and was rewritten
+  against the tree; `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`
+  carry redirect headers with their flatly-false claims corrected in place
+  (`FEATURE_MATRIX.md` is not deferred — it exists and is drift-guarded; the client
+  RFC's two P0s are closed in code; its `libfdb_c` pin was two patch versions stale);
+  `rfcs/198-…`'s status line said "awaiting joint-review ACK" after its review
+  completed. The `#28` box is closed, the freeze banner is lifted in place, and
+  `TestProductionStatusAuthority` (`pkg/docscheck/docs_consistency_test.go`) is the
+  gate this entry asked for: it pins the redirect headers, adds `road-to-prod.md` to
+  `livingDocs` so the version anchors cover it, and fails if a doc other than
+  `road-to-prod.md` claims to be the authoritative status page.
+  **Found while doing it, and booked rather than buried:** CQ-75 and CQ-76 (two live
+  measured defects written into checked-item prose), CQ-77 (`frl-pin-bump`, which the
+  audit listed as booked and was not booked anywhere) and CQ-78 (RFC-203's
+  implementation, commissioned by a merged RFC and owned by no item).
 
 - [ ] **CQ-49 (MED, plan improvement, measured) — `pullUpThroughRecordConstructor`
   always-bake removes a redundant InMemorySort.** Removing its bake gate
@@ -10540,7 +10599,19 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
   segments, joins them into one string, and the resolver splits them back
-  apart.** Three debt sites exist only to undo a join the layer above performed
+  apart.** · **PARTIALLY LANDED (#540, `f50cee43e`) — STAYS OPEN.**
+  **Status correction, 2026-08-01.** #540 landed the **PROJECTION channel only**:
+  `LogicalProject` now carries the segments through to the bakers, and the ratchet
+  learned to see through helpers. It did NOT close the item, and the commit did not
+  check this box. The live residual is named in the ratchet's own debt entries —
+  `cascades_translator.go:5742` and `:5744` retire "when the remaining
+  `LogicalProject` producers carry `ProjectionRefs`"; `:6070` and `:6102` retire
+  "when the last caller stops slicing a rendered name".
+  Also note the arithmetic in the sentence below is superseded: the call-boundary
+  taint added in #540/#544 changed which sites are visible, so the `translator`
+  bucket now stands at **15** (`pkg/docscheck/field_name_decision_test.go:462`),
+  and "CQ-52 retires four translator sites" no longer names the same four.
+  Three debt sites exist only to undo a join the layer above performed
   for no reason. It was four; the gathered-EXISTS wrap's dotted arm is DELETED
   (its window map is keyed by leg identity, so a qualifier sliced out of a
   column name had no key it could honestly use, and it was measured unreachable
@@ -11416,9 +11487,20 @@ None is speculative: each was re-verified against the tree before booking.
   WIDTH, not just the rows — rows are identical under the bug, which is how it
   shipped.
 
-- [ ] **CQ-55 (HIGH/L, L, query-engine review gate) — `properties.RichOrdering`
+- [~] **CQ-55 (HIGH/L, L, query-engine review gate) — `properties.RichOrdering`
   matches its ordering set by rendered string; make it match on column
-  identity.** This is the STOP that RFC-197 item 5 hit and could not pass, and
+  identity.** · **SUPERSEDED — DO NOT IMPLEMENT AS WRITTEN. Go to "CQ-55
+  AMENDMENT 2" below, which is the live spec.**
+  **Box deliberately `[~]`, not `[ ]`, as of 2026-08-01.** One CQ number carried
+  TWO unchecked boxes, and this — the earlier, REFUTED one — sorts first. The
+  execution rule is "pick the lowest-numbered unchecked item", so a worker
+  following the rule would build the design the amendment measured as wrong:
+  amendment 2 finds this entry's central ruling (pure `ColumnIdentity` keying)
+  "over-narrowed that key space to columns and cannot hold the domain", which
+  makes the bullet below about `PartitionedOrderedSet[string]` becoming
+  `PartiallyOrderedSet[ColumnIdentity]` a refuted instruction, not a plan.
+  Kept in place as the record of what was tried and why it failed.
+  This is the STOP that RFC-197 item 5 hit and could not pass, and
   it is the last name-keyed identity decision in the ordering property.
 
   `properties.RichOrdering` addresses its ordering set by `values.ExplainValue`
@@ -11891,9 +11973,18 @@ None is speculative: each was re-verified against the tree before booking.
   embedded inside column-name strings; only the rebake removes the need.
   Order: CQ-61-reduced → CQ-53 (rebake + bindings + producers + Group B).
 
-- [ ] **CQ-63 (S/M, bug fifteen: something downstream depends on the ABSENCE
+- [x] **CQ-63 (S/M, bug fifteen: something downstream depends on the ABSENCE
   of a type) — PartitionSelectRule's Case-2 lower select flows an UNTYPED
-  result value, and typing it regresses four suites.** Java's quantifier
+  result value, and typing it regresses four suites.** · **DONE, merged
+  `61847c503` (#537) — "the flowed value is typed, as Java's always is; bugs
+  seventeen and eighteen die".** The fix is in the tree:
+  `pkg/recordlayer/query/plan/cascades/rule_partition_select.go:663` now reads
+  `flowedValue, flowedErr := aliasToQ[lowerAlias].GetFlowedObjectValueTyped()`,
+  with the Java citation this entry demanded. This file already recorded the
+  item's own gate as met 950 lines earlier — "`underivableLegs` **0 of 960**
+  (was 82 of 846). CQ-63's stated gate is … CLOSED — every leg states its row" —
+  so TODO.md contradicted its own checkbox in two places at once.
+  Java's quantifier
   always carries its own row type
   (Quantifier.java:801-803 — `getFlowedObjectValue()` is
   `QuantifiedObjectValue.of(alias, getFlowedObjectType())`), so no Java site
@@ -12736,8 +12827,31 @@ None is speculative: each was re-verified against the tree before booking.
     enumerating the memo's plan set per corpus query, bounded per query, with the
     per-run plan-pair count REPORTED AND FLOORED — an oracle without a gated
     instrument is prose, not coverage.
-  - [ ] **69.5 — the factory pipeline (§5): generate → execute → bless-or-file →
-    dedup → commit.** Blessed tests are COMMITTED as permanent suite content, not
+  - [x] **69.5 — the factory pipeline (§5): generate → execute → bless-or-file →
+    dedup → commit.** · **DONE, merged `491e02a7c` (#555).** Every clause below is
+    satisfied and MEASURED: generation is grammar-driven, seeded and deterministic
+    with generator version + seed in every emitted header (generation never reads
+    the clock — the date is passed in — which is what lets a committed file be
+    regenerated byte-identically); dedup keys on the explaindiff plan shape PLUS
+    the spec feature vector; the dedup census is part of every run's output and is
+    frozen as `census_baseline.json` behind a componentwise ratchet (scenarios,
+    tests, per-feature-vector AND per-blessing); the per-run quota keeps batches
+    reviewable and the nightly lane opens a PR rather than pushing.
+    First batch, measured: 1200 seeds → 2268 candidates → **965 blessed → 900
+    committed** (894 distinct feature vectors); at HEAD the corpus stands at
+    **2000 scenarios / 8000 tests**, blessings 1785 `metamorphic` + 217
+    `metamorphic-tlp-only`. 1599 TLP partitions and 3226 second-plan pairs, ZERO
+    disagreements, every oracle mutation-proven armed.
+    **"Oracle disagreement is a bug, fix now" was honoured on the first sweep**:
+    64 of 413 `(p) IS NULL` renderings failed to plan, root-caused to
+    `walkRecordConstructor` discarding the operand position on every paren-unwrap,
+    fixed with a three-valued `walkPos` that closed six shapes at once, and pinned
+    — the item's own standard, met by the item's own first run.
+    **Standing caveat, not a gap in this checkbox:** blessing is metamorphic, so
+    the corpus proves self-consistency, not Java agreement; the Java leg is
+    environmentally unreachable here and every header is labeled so, promotable
+    without regeneration.
+    Blessed tests are COMMITTED as permanent suite content, not
     regenerated: a frozen expectation keeps testing the engine even if the
     generator, the oracle infra, or the Java server is broken or gone, and it
     converts oracle agreement (a moment-in-time fact) into a regression pin (a
@@ -13034,3 +13148,201 @@ None is speculative: each was re-verified against the tree before booking.
   caller-reachable surface; `unsupported:result-metadata-nested` stops being
   masked (or goes to zero); `TestFDB_ArrayColumnMetadataIsTruncated` is deleted
   together with the runner's declining branch.
+
+- [ ] **CQ-75 (HIGH, wrong rows, MEASURED) — `v IN (-0.0, 0.0)` silently loses a
+  row, and which row survives depends on element ORDER.** · S/M · query-engine
+  review gate
+  **Booked 2026-08-01 by the B6 docs-authority pass. This is not a new finding —
+  it was measured long ago and written into the PROSE of CQ-28, which is marked
+  `- [x]`.** Under this file's execution rule ("pick the lowest-numbered UNCHECKED
+  item") that made it permanently unreachable. It is exactly the "deferred
+  findings rot into invisibility" failure CLAUDE.md names, and it was found by
+  reading the file rather than by any test.
+  MEASURED, over rows `(-0.0,5) (5.0,5) (0.0,9)` with index `(v,w)`:
+
+      v IN (-0.0, 0.0)  ->  [1]      plan IndexScan(T_VW,[=,*])   ONE probe
+      v IN (0.0, -0.0)  ->  [3]      same plan, keeps whichever is FIRST
+      v IN (-0.0, 5.0)  ->  [1] [2]  plan InJoin(...)             correct
+
+  So the IN-list dedups `-0.0` against `0.0` under IEEE equality and collapses two
+  distinct index probes into one, while the stored entries are two distinct keys.
+  Independent of CQ-28, and user-visible without any of CQ-28's machinery.
+  Related pin that does NOT cover this shape:
+  `pkg/relational/sqldriver/negative_zero_composite_index_sarg_probe_test.go`
+  pins the `v = 0 AND w = 5` shape, not the IN-list one.
+  DONE = the IN-list's element dedup keys signed zero by the same bit-identity the
+  index entries use (Java's `-0.0`/`0.0` are two entries, and the wire is the hard
+  line), both element ORDERS return the same rows, and a regression pins the
+  ORDER-dependence specifically — a single-element or same-sign test cannot express
+  this defect.
+
+- [ ] **CQ-76 (MED, plan quality, MEASURED) — `IN` on a leading column plus a
+  trailing equality does not sarg at all; every such query pays a full scan.** ·
+  M · query-engine review gate
+  **Booked 2026-08-01 by the B6 docs-authority pass**, out of the same buried CQ-28
+  prose as CQ-75. This one explicitly asked for its own item ("Far more general
+  than signed zero and worth its own item") and never got one — the phrase
+  "trailing equality" appeared nowhere else in this file, so the request could not
+  be found by anyone looking for it.
+  MEASURED, index `(v, w)`:
+
+      v IN (5.0, 9.0) AND w = 5   ->  PredicatesFilter(Scan(T))     full scan
+      v IN (5.0, 9.0)             ->  InJoin(IndexScan(T_V))        sargs
+      v = 5.0 AND w = 5           ->  IndexScan(T_VW,[=,=])         sargs
+
+  So the IN alone sargs and the equality alone sargs, but their conjunction
+  degrades to a scan — the `InJoin` leg is not carrying the trailing equality into
+  the index probe's suffix. Read Java's data-access rules first
+  (`AbstractDataAccessRule` / the comparison-range construction) rather than
+  special-casing the shape.
+  DONE = `IN` + trailing equality builds a `[=,=]` probe per IN element, an EXPLAIN
+  assertion pins the plan shape (not just the rows — the rows are already correct
+  via the scan, which is why this was invisible to the suite), and the 1M stress
+  comparison is run before/after per the stress-comparison workflow.
+
+- [ ] **CQ-77 (OWNER ACTION, not code) — `frl-pin-bump` has failed 27/27 because
+  Actions cannot create PRs.** · XS
+  Flip **Settings → Actions → General → Workflow permissions → "Allow GitHub
+  Actions to create and approve pull requests"**. Until then the Java-pin bump
+  workflow cannot open its PR and every run fails.
+  **Booked 2026-08-01.** `road-to-prod.md`'s audit section listed this under
+  "Newly booked from the audit (were unbooked; now TODO items)" — for this bullet
+  that was false: it appeared in no TODO file at all. A status page asserting an
+  item is booked is how an item stays unbooked.
+  DONE = the setting is flipped and one `frl-pin-bump` run opens a PR.
+
+- [ ] **CQ-78 (MED/M, driver + executor) — RFC-203 is merged as a DESIGN; its
+  implementation is booked nowhere.** · M · query-engine review gate
+  `rfcs/203-sql-continuation-envelope.md` merged in `f5c2c7f0e` (#554) and was
+  commissioned explicitly for CQ-69.2's continuation half — but CQ-69.2 never
+  mentions RFC-203, and the implementation has no item. MEASURED at
+  `f5c2c7f0e`: no `GO_V0` anywhere in `pkg/`, and
+  `pkg/relational/core/embedded/cascades_generator.go:183` still rejects with
+  "only SHOW administration statements are supported", so `EXECUTE CONTINUATION`
+  is unreachable from SQL.
+  **Booked 2026-08-01** by the B6 pass, same failure mode as CQ-77: a merged RFC
+  reads as progress, and nothing pointed at the work it commissioned.
+  DONE = `EXECUTE CONTINUATION` plans and executes end-to-end, plan transport
+  under `GO_V0` round-trips, per-page `MAX_ROWS` is honoured, and a yamsql
+  scenario exercises it (per "NO FAKE CHECKBOXES": the RFC existing is not done).
+
+- [ ] **CQ-79 (MED, RFC-197) — CQ-53's surviving producer mint is owned by no
+  item.** · S/M · query-engine review gate
+  `pkg/docscheck/field_name_decision_test.go:447` pins
+  `cascades_translator.go:3598` as *"dotted: MINT. **CQ-53's surviving
+  producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap
+  inner's binder can resolve the merged row by that string … this one is on the
+  unnest-merge path and dies with the same work"*. Its NLJ twin was deleted (the
+  re-anchor now carries Java's null-named ordinal accessor,
+  `FieldValue.java:335-338`); this one was not.
+  **CQ-53 is marked `- [x]`** as subsumed by CQ-67 "carrying no separate
+  remainder", so the gate pins a live mint that no unchecked item claims.
+  **Checked and NOT owned by CQ-68**, which is a different axis: CQ-68 is about
+  94 FlatMap result values being a bare UNTYPED QOV, not about a display name
+  being manufactured into a row key. Booked separately rather than folded, so
+  neither item can close while the other's residue survives.
+  **Booked 2026-08-01** by the B6 docs-authority pass; re-verified at
+  `a1d281a63` — the pin still stands verbatim and the ratchet still totals 52.
+  DONE = the unnest-merge path re-anchors by ordinal as the NLJ path already
+  does, the `:3598` debt entry is DELETED (not moved), and the `dotted` bucket
+  header drops accordingly.
+
+- [ ] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
+  does not exist or cannot fail.** · S/M
+  `road-to-prod.md`'s watch-list states its own contract: *"Every entry is a
+  committed test asserting CURRENT behavior; red means fixed."* Verifying that
+  contract found four entries that break it. They are MARKED in the watch-list
+  rather than removed — an unpinned divergence is more dangerous than a pinned
+  one — and the code fixes are this item.
+  - **Entry 4, `CURRENT_TIMESTAMP` drifts across rows within one statement
+    (SELECT path) — NO TEST AT ALL. The worst of the four:** a wrong-data
+    divergence resting on prose. Booked open work already exists at the
+    "SELECT-path CURRENT_* statement-stability" section, whose closing line is
+    itself the instruction to pin it; the session-object half is done, the
+    SELECT path is not.
+  - **Entry 2, INSERT of NULL into a PRIMARY KEY column silently stores 0 — the
+    test cannot go red.** `sqldriver/embedded_fdb_errors_test.go` logs and
+    returns on both fix paths, disclaims asserting a row count in its own final
+    comment, and never checks the stored value is `0`. It passes whether or not
+    the divergence is fixed.
+  - **Entry 8, `UNION ALL` + trailing `ORDER BY` — half-pinned.** Go's side is
+    pinned (`yamsql/testdata/union_columns.yaml`); the Java side rests on a
+    prose record of a live probe in `DIVERGENCES.md`, not a committed
+    cross-engine pin.
+  - **Entry 12, quoted DDL column unreferenceable by name — no test, and partly
+    REFUTED.** `yamsql/testdata/quoted_identifier_pins.yaml` pins that a quoted
+    column DOES resolve in projection, predicate and ORDER BY. The surviving
+    residue is **mixed-case** quoted (`"KeepCase"`), unmeasured since
+    2026-06-28 and mentioned only in a comment saying it is "not exercised
+    here". The entry is narrowed to that residue.
+  **Booked 2026-08-01.** Deliberately not fixed in the pass that found them:
+  that pass was docs-only, and four test fixes across three packages are a code
+  lap with its own review. Recorded here in full so the next fixer does not have
+  to re-derive which four and why.
+  DONE = each of the four has a committed test that goes RED with the
+  divergence present, per "EVERY PROOF GETS COMMITTED AS A TEST"; entry 12's
+  mixed-case residue is MEASURED before it is pinned (it may be closed already);
+  and the watch-list's ⚠ markers are removed as each lands.
+
+- [x] **CQ-81 (HIGH, red master) — two green PRs made master red: #555's new
+  nightly workflow did not satisfy #556's new window gate.** · **FIXED in the B6
+  pass.**
+  `nightly-factory.yml` (added by #555) declared both of its window gates in the
+  OLD inlined `[ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]` form. #556 landed
+  `TestNightlyWindowAdmitsMeasuredLandings` and
+  `TestNightlyWindowGateShellMatchesDeclaredBand`, which require every band to be
+  declared as machine-readable `WINDOW_START`/`WINDOW_END`. Neither PR's CI ran
+  the other's files, so both were green and `a1d281a63` was RED.
+  **Not cosmetic.** The band those two gates carried is the exact one #556
+  measured as discarding evening landings as "daytime" and throwing away a 10:22
+  allocation for being 22 minutes late — so the newest safety net had been wired
+  with the fake-green shape that hid a reproducible planner fault for twelve
+  days. A brand-new net inheriting the defect the old nets were just cured of is
+  the most expensive kind of regression, because it looks like coverage.
+  FIX: both gates converted to the wrapping 18:00–12:00 band used by every other
+  `hetzner-fdb` job; `measuredLandings` entries added for
+  `nightly-factory.yml/corpus` and `/batch`, **pooled from the shared runner
+  queue and labeled as pooled** rather than passed off as these jobs' own history
+  (all eleven windowed jobs run on one self-hosted slot, so the allocation hour
+  is a property of the queue, not the job — and the oracles' distinct afternoon
+  hour is deliberately excluded); the two no-op guards tightened `9 → 11`, since
+  at 9 they would have tolerated silently losing the two new jobs.
+  Mutation-checked: reverting the workflow hunk alone turns both tests RED.
+  **Residual for whoever next touches these entries:** replace the pooled hours
+  with each job's OWN `started_at` hours once it has scheduled runs. The pooled
+  prior is honest but weaker than the rest of that map, and it says so in place.
+  **The generalizable finding, worth more than the fix:** the merge queue does
+  not run a gate one PR adds against the files a concurrent PR adds. Two green
+  PRs, one red master. Nothing in CI covers that axis today.
+
+- [ ] **CQ-82 (MED, flake, OBSERVED ONCE, NOT ROOT-CAUSED) —
+  `//conformance:conformance_test` failed once in a full-suite run and has not
+  reproduced.** · S to reproduce, unknown to fix
+  Recorded because "there are no unrelated flakes", and recorded HONESTLY:
+  this is an unexplained red, not a closed one.
+  **What is known.** In a full `just test` at `98d79a2ef` (all targets fresh),
+  the run reported `Executed 18 out of 73 tests: 69 tests pass, 2 fail locally,
+  and 2 were skipped`, with `//conformance:conformance_test FAILED in 524.1s`.
+  **What is NOT known, and why — my own error:** that run's output was piped
+  through `tail`, so the failure message and the IDENTITY OF THE SECOND FAILING
+  TARGET were both discarded and are unrecoverable. Never pipe a suite run
+  through `tail`; redirect the whole log.
+  **Reproduction attempts, both negative.** (1) `//conformance:conformance_test`
+  alone, fresh: PASSES in 196s. (2) The whole suite with
+  `--nocache_test_results`, every one of the 73 targets executed under the same
+  4-way `--local_test_jobs` concurrency: `Executed 73 out of 73 tests: 73 tests
+  pass`. So it did not reproduce under conditions matching the failure.
+  **Leading hypothesis, UNCONFIRMED — resource starvation, not a logic defect.**
+  The failing run took 524s against 196s isolated, ~2.7x. The conformance suite
+  runs a pool of 8 JVMs at ~250-400MB each (`defaultA3PoolSize`,
+  `conformance/java_invoker_test.go`) plus a fresh JVM per
+  `NewIsolatedJavaInvoker`, alongside 3 other container-heavy targets. That
+  file's own comment already documents the failure mode this would produce:
+  "state-leaks … compound into Java-side hangs at >30s per-request latency".
+  Host at the time: 62GB total, ~14GB available.
+  DONE = the failure reproduced with its message captured (try `--runs_per_test`
+  on the suite, or re-run the full suite fresh under memory pressure), THEN root-
+  caused. If it is starvation, the fix is a resource constraint on the target
+  (`exec_properties` / a lower `CONFORMANCE_A3_POOL_SIZE` under load), not a
+  retry. **Do not close this by observing another green run** — three greens are
+  already recorded above and they did not settle it.
