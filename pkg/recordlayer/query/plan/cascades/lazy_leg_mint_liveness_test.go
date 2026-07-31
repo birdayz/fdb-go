@@ -386,14 +386,14 @@ func TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity(t *testing.T) {
 	// is now the merged re-anchor (Java's PartitionSelectRule.java:296-303 move),
 	// dead-in-effect on the corpus but the one arm that still spells a leg into a
 	// column name — so its reasons stay measured.
-	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "ID"); got != legLocalBakeClassLayoutAvailable {
+	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.Type(aType), "ID"); got != legLocalBakeClassLayoutAvailable {
 		t.Fatalf("a MINTED read with a layout declaring its column classified as %v, "+
 			"want legLocalBakeClassLayoutAvailable", got)
 	}
-	if got := classifyLegLocalBake(legLocalBakeMinted, values.UnknownType, "ID"); got != legLocalBakeClassUntypedLeg {
+	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.UnknownType, "ID"); got != legLocalBakeClassUntypedLeg {
 		t.Fatalf("a MINTED read with no layout classified as %v, want untypedLeg", got)
 	}
-	if got := classifyLegLocalBake(legLocalBakeMinted, values.Type(aType), "NOSUCH"); got != legLocalBakeClassColumnAbsent {
+	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.Type(aType), "NOSUCH"); got != legLocalBakeClassColumnAbsent {
 		t.Fatalf("a MINTED read whose column the layout does not declare classified as "+
 			"%v, want columnAbsent", got)
 	}

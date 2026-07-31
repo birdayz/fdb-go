@@ -2787,7 +2787,13 @@ func rebaseOuterLegValue(
 					// row" — which is a different question from "can this read state
 					// an ordinal in it", and conflating the two is what scheduled a
 					// whole migration step against a proxy (see LayoutAvailable).
+					// ONE identity answer, computed once, used by BOTH the arm
+					// dispatch and the census. Two derivations of it — or, worse,
+					// a constant restating the branch the census call already sits
+					// in — is how the instrument came to partition a population
+					// the arm had emptied.
 					id, identityInLegDomain := legSlotIdentity(fv)
+					identity := classifyLegReadIdentity(fv.Resolved != nil, identityInLegDomain)
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 
 					// ARM 1 — the merged re-anchor. The slot is found by the
@@ -2804,10 +2810,10 @@ func rebaseOuterLegValue(
 					// those rebase through rebaseOuterLegRefsOrdinal instead. It stays
 					// as the fail-closed net for shapes that arrive layout-bearing,
 					// and it stays FIRST because that is the precedence Java states.
-					if legLayout != nil && identityInLegDomain {
+					if legLayout != nil && identity == legReadIdentityInLegDomain {
 						if ord, ok := legLayout[id]; ok {
-							recordRebaseOuterLegArm(legLocalBakeMinted, fv, qov,
-								legLocalTypes, true)
+							recordRebaseOuterLegArm(legLocalBakeMergedReAnchor, fv, qov,
+								legLocalTypes, identity)
 							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 								values.NewQuantifiedObjectValue(mergedCorr),
 								qualField, ord, fv.Typ,
@@ -2820,9 +2826,9 @@ func rebaseOuterLegValue(
 					// it onto the merge correlation would replace a stated identity
 					// with a name, which is a strict loss of information at a site
 					// whose entire purpose is to stop losing it.
-					if identityInLegDomain {
+					if identity == legReadIdentityInLegDomain {
 						recordRebaseOuterLegArm(legLocalBakeBaked, fv, qov,
-							legLocalTypes, false)
+							legLocalTypes, identity)
 						return v
 					}
 
@@ -2833,7 +2839,7 @@ func rebaseOuterLegValue(
 					// truthful outcome, and the one that leaves the defect visible
 					// at the producer instead of papered over with a string here.
 					recordRebaseOuterLegArm(legLocalBakeDeclined, fv, qov,
-						legLocalTypes, false)
+						legLocalTypes, identity)
 					return v
 				}
 			}

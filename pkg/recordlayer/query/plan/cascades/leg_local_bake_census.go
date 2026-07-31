@@ -56,9 +56,9 @@ const legLocalBakeWitnessCap = 256
 type legLocalBakeOutcome int
 
 const (
-	// legLocalBakeMinted: the read was re-anchored onto the merge correlation as
+	// legLocalBakeMergedReAnchor: the read was re-anchored onto the merge correlation as
 	// `QOV(merged)."LEG.COL"`. The only outcome this arm produces today.
-	legLocalBakeMinted legLocalBakeOutcome = iota
+	legLocalBakeMergedReAnchor legLocalBakeOutcome = iota
 	// legLocalBakeBaked: the read kept its own leg alias and carried a leg-local
 	// ordinal — the PASS-THROUGH, and the arm's whole live population now that
 	// every reference arrives carrying its ordinal.
@@ -83,21 +83,27 @@ type legLocalBakeCounters struct {
 	// Baked: reads that KEPT their own leg alias and their own leg-local ordinal
 	// — the pass-through. The arm's live population.
 	Baked int
-	// Minted: reads re-anchored onto the merge correlation at a MERGED ordinal,
-	// with the leg's qualified name riding along as a display string.
+	// MergedReAnchor: reads re-anchored onto the merge correlation at a MERGED
+	// ordinal, with the leg's qualified name riding along as a display string.
 	//
-	// This is Java's own move (PartitionSelectRule.java:296-303) and not a
-	// residue, so it is reported rather than asserted at zero — but it is the
-	// only thing left in this arm that spells a leg into a name, and the name it
-	// spells is load-bearing for nothing: TestLazyLegMintReachesNoWinningPlan
+	// It is NAMED for the re-anchor and not for a mint, because a mint is not
+	// what it counts. It was called Minted while the arm had a name-keyed mint
+	// in it; that mint is deleted, and a counter that kept the deleted thing's
+	// name would have read as "the RFC-197 channel is still firing" for a
+	// population that is Java's own move (PartitionSelectRule.java:296-303) and
+	// not a residue at all.
+	//
+	// Reported rather than asserted at zero: it is the legitimate arm. But it is
+	// the only thing left here that spells a leg into a name, and the name it
+	// spells is load-bearing for nothing — TestLazyLegMintReachesNoWinningPlan
 	// measures zero dotted merged-row keys in the WINNING plan for every shape
 	// that reaches here.
-	Minted int
+	MergedReAnchor int
 	// Declined: reads that stated no identity at all. Asserted ZERO — see
 	// legLocalBakeDeclined for why this is a producer's residue and not this
 	// arm's.
 	Declined int
-	// The rest classify MINTED reads only — why the mint was reached.
+	// The rest classify MERGED-RE-ANCHORED reads only — why that arm was reached.
 	//
 	// UntypedLeg: no layout for this leg at all, so no leg-local ordinal could
 	// exist. These are the reads that would have to DECLINE.
@@ -199,14 +205,22 @@ type legLocalBakeCounters struct {
 	MergeSlotsUntyped int
 	// MergeSlots is the denominator the four above must partition.
 	MergeSlots int
-	// The MINTED reads classified a SECOND way, orthogonally to the three
-	// reasons above: by whether the read ITSELF states a column identity in its
-	// own leg's domain.
+	// EVERY firing classified a SECOND way, orthogonally to the three reasons
+	// above: by whether the read ITSELF states a column identity in its own
+	// leg's domain.
+	//
+	// THESE PARTITION Total, NOT MergedReAnchor, and that is a correction rather
+	// than a widening. They partitioned MergedReAnchor when the merged re-anchor
+	// was the arm's whole population. It is now ZERO — every read reaching this
+	// site keeps its own leg alias and its own ordinal — so a cut of it is a cut
+	// of nothing, and the partition assertion over it was 0 == 0 while the
+	// instrument's whole purpose is to measure whether the live population can
+	// state its identity. An instrument aimed at the population that left is not
+	// an instrument.
 	//
 	// The three reasons above ask about the LAYOUT — is there a row type for
 	// this leg, and does it declare a column of this name. That is the question
-	// CQ-63 was gated on, and it is now answered (layoutAvailable is the whole
-	// mint population). It is NOT the question a leg-local bake turns on.
+	// CQ-63 was gated on. It is NOT the question a leg-local bake turns on.
 	//
 	// A bake needs an ORDINAL, and there are exactly two places one can come
 	// from: the read's own resolved path, or a fresh resolution of the read's
@@ -285,15 +299,15 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 			leg.Name(), column, legTyp))
 		return
 	case legLocalBakeClassUntypedLeg:
-		legLocalBakeCounts.Minted++
+		legLocalBakeCounts.MergedReAnchor++
 		legLocalBakeCounts.UntypedLeg++
 		addLegLocalBakeWitness(fmt.Sprintf("UNTYPED-LEG %s.%s (leg type %v; derivable leg layouts %v)", leg.Name(), column, legTyp, available))
 	case legLocalBakeClassColumnAbsent:
-		legLocalBakeCounts.Minted++
+		legLocalBakeCounts.MergedReAnchor++
 		legLocalBakeCounts.ColumnAbsent++
 		addLegLocalBakeWitness(fmt.Sprintf("COLUMN-ABSENT %s.%s (leg columns %v)", leg.Name(), column, recordTypeFieldNames(legTyp.(*values.RecordType))))
 	case legLocalBakeClassLayoutAvailable:
-		legLocalBakeCounts.Minted++
+		legLocalBakeCounts.MergedReAnchor++
 		legLocalBakeCounts.LayoutAvailable++
 		addLegLocalBakeWitness(fmt.Sprintf("LAYOUT-AVAILABLE-BUT-MINTED %s.%s (leg columns %v)", leg.Name(), column, recordTypeFieldNames(legTyp.(*values.RecordType))))
 	}
@@ -311,9 +325,18 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 // the arm handed back untouched, and the number the channel's retirement rests
 // on would be the number of FIRINGS rather than the number of MINTS.
 //
-// The outcome is STATED by the deciding arm and the identity cut is PASSED
+// The outcome is STATED by the deciding arm and the identity CLASS is PASSED
 // rather than recomputed, for one reason in both cases: a census that
 // re-derives its own subject answers a question the code did not ask.
+//
+// identity is the class the arm ALSO dispatched on — one value computed once at
+// the top of the arm and handed to whichever branch fires. It used to be a bool
+// each branch supplied for itself, and every branch's answer was fixed by the
+// guard it sat behind: the merged re-anchor passed a literal `true` from inside
+// `if identityInLegDomain`, so the counter it fed could only ever record one of
+// its three values and the other two were structurally unreachable. A parameter
+// whose value the call site cannot vary is not an input; it is the shape of the
+// call site restated, and a census built on one measures nothing.
 //
 // The census gate is checked here, before the legLocalTypes probe, because the
 // gate's stated contract is that a disabled census costs the planner nothing
@@ -323,7 +346,7 @@ func recordRebaseOuterLegArm(
 	fv *values.FieldValue,
 	qov *values.QuantifiedObjectValue,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
-	identityInLegDomain bool,
+	identity legReadIdentity,
 ) {
 	if !values.LegIdentityCensusEnabled() {
 		return
@@ -333,40 +356,60 @@ func recordRebaseOuterLegArm(
 	recordLegLocalBakeability(outcome, qov.Correlation,
 		legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
 		column, legLocalTypeKeys(legLocalTypes)...)
-	// The three identity counters partition MINTED reads and nothing else, so a
-	// baked read must not reach them — see the partition assertion that pins it.
-	if outcome != legLocalBakeMinted {
-		return
-	}
+	// EVERY firing is classified, so the three identity counters partition Total.
+	// They partitioned the merged re-anchor alone until that population went to
+	// zero, at which point the cut described nobody — while the reads it should
+	// have been describing (the pass-through, which is now the whole arm) went
+	// unmeasured on the one axis the retirement decision rests on.
 	why := ""
-	if !identityInLegDomain {
+	if identity != legReadIdentityInLegDomain {
 		why = describeLegIdentityDecline(fv, qov, legTypeFor, haveLegType)
 	}
-	recordMintedReadIdentity(qov.Correlation, column,
-		fv.Resolved != nil, identityInLegDomain, why)
+	recordLegReadIdentity(qov.Correlation, column, identity, why)
 }
 
-// mintedReadIdentity is what a MINTED read states about its OWN column
+// legReadIdentity is what a leg-correlated read states about its OWN column
 // identity. See the three counters it feeds for why this is a different
 // question from the layout one beside it.
-type mintedReadIdentity int
+//
+// It is a CLASS rather than a bool because it is what the rebase arm dispatches
+// on AND what the census records, and those two must be the same value. While
+// it was a bool the arm computed it, branched on it, and then handed each branch
+// a constant restating the branch it was already in — which is how the census
+// came to report a partition of a population it had itself made empty.
+type legReadIdentity int
 
 const (
-	// mintedReadIdentityInLegDomain: legSlotIdentity answered — a resolved,
+	// legReadIdentityInLegDomain: legSlotIdentity answered — a resolved,
 	// non-negative ordinal in a known domain that IS the leg's row layout.
-	mintedReadIdentityInLegDomain mintedReadIdentity = iota
-	// mintedReadIdentityOtherDomain: a resolved path this leg's layout cannot
+	legReadIdentityInLegDomain legReadIdentity = iota
+	// legReadIdentityOtherDomain: a resolved path this leg's layout cannot
 	// read.
-	mintedReadIdentityOtherDomain
-	// mintedReadLazyNameOnly: no resolved path; the display name is all there is.
-	mintedReadLazyNameOnly
+	legReadIdentityOtherDomain
+	// legReadIdentityLazyNameOnly: no resolved path; the display name is all there is.
+	legReadIdentityLazyNameOnly
 )
 
-// classifyMintedReadIdentity decides which of the three a minted read is, from
-// the two facts the arm has in hand: whether the read carries a resolved path
-// at all, and whether that path states an identity IN THE LEG'S OWN DOMAIN
-// (legSlotIdentity's answer, passed rather than re-derived so the census cannot
-// answer a different question than the bake would ask).
+// String names the class. The classifier's failure mode is two arms swapping,
+// and a diagnostic that renders them as bare ordinals reports the mix-up in the
+// one notation that makes it hardest to read.
+func (c legReadIdentity) String() string {
+	switch c {
+	case legReadIdentityInLegDomain:
+		return "InLegDomain"
+	case legReadIdentityOtherDomain:
+		return "OtherDomain"
+	case legReadIdentityLazyNameOnly:
+		return "LazyNameOnly"
+	default:
+		return fmt.Sprintf("legReadIdentity(%d)", int(c))
+	}
+}
+
+// classifyLegReadIdentity decides which of the three a leg-correlated read is,
+// from the two facts the arm has in hand: whether the read carries a resolved
+// path at all, and whether that path states an identity IN THE LEG'S OWN DOMAIN
+// (legSlotIdentity's answer).
 //
 // The ordering matters and is the whole content: a read that states an identity
 // in the leg's domain is that, whatever else is true of it. Only then does the
@@ -374,30 +417,29 @@ const (
 // owners — an other-domain path is a reference baked against the wrong layout
 // (a producer stating a domain it did not resolve against), a lazy one is a
 // reference that was never resolved at all.
-func classifyMintedReadIdentity(hasResolved, identityInLegDomain bool) mintedReadIdentity {
+func classifyLegReadIdentity(hasResolved, identityInLegDomain bool) legReadIdentity {
 	if identityInLegDomain {
-		return mintedReadIdentityInLegDomain
+		return legReadIdentityInLegDomain
 	}
 	if hasResolved {
-		return mintedReadIdentityOtherDomain
+		return legReadIdentityOtherDomain
 	}
-	return mintedReadLazyNameOnly
+	return legReadIdentityLazyNameOnly
 }
 
-// recordMintedReadIdentity classifies one MINTED read by what it states about
-// its own identity. Called from the same guard, and only for reads the arm
-// minted, so the three counters partition Minted exactly.
-func recordMintedReadIdentity(leg values.CorrelationIdentifier, column string, hasResolved, identityInLegDomain bool, why string) {
-	class := classifyMintedReadIdentity(hasResolved, identityInLegDomain)
+// recordLegReadIdentity files one leg-correlated read by what it states about
+// its own identity. Called for EVERY firing of the arm, so the three counters
+// partition Total exactly.
+func recordLegReadIdentity(leg values.CorrelationIdentifier, column string, class legReadIdentity, why string) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
 	switch class {
-	case mintedReadIdentityInLegDomain:
+	case legReadIdentityInLegDomain:
 		legLocalBakeCounts.IdentityInLegDomain++
-	case mintedReadIdentityOtherDomain:
+	case legReadIdentityOtherDomain:
 		legLocalBakeCounts.IdentityOtherDomain++
 		addLegLocalBakeWitness(fmt.Sprintf("MINTED-OTHER-DOMAIN %s.%s (%s)", leg.Name(), column, why))
-	case mintedReadLazyNameOnly:
+	case legReadIdentityLazyNameOnly:
 		legLocalBakeCounts.LazyNameOnly++
 		addLegLocalBakeWitness(fmt.Sprintf("MINTED-LAZY %s.%s (no resolved path — the display name is the only identity it states)", leg.Name(), column))
 	}
@@ -678,9 +720,13 @@ func recordTypeFieldNames(rt *values.RecordType) []string {
 // Baked precisely so a future typed-but-still-minting state reads as what it is.
 //
 // These counts are ASSERTED, not merely reported — see AssertLegLocalBakeCensus,
-// which the sqldriver TestMain runs over the whole corpus. Three partitions
-// (Total = Baked+Minted; Minted = the three mint reasons; LegDerivations = the
-// three per-leg outcomes) plus a population floor on both denominators. Before
+// which the sqldriver TestMain runs over the whole corpus. Five partitions
+// (Total = Baked+MergedReAnchor+Declined; MergedReAnchor = the three layout
+// reasons; Total = the three identity classes; LegDerivations = the three
+// per-leg outcomes; MergeSlots = the four slot typings), a population floor on
+// the denominators, and an explicit VACUOUS notice naming any partition whose
+// denominator reached zero — because a partition over an empty population holds
+// as 0 == 0 and reads exactly like a checked one. Before
 // that existed the census was printed and nothing checked it, so every number
 // above could drift or collapse to zero with the suite still green — and a
 // residue that reaches zero by its arm going UNREACHED is indistinguishable,
@@ -697,13 +743,13 @@ func LegLocalBakeCensus() (legLocalBakeCounters, []string) {
 func FormatLegLocalBakeCensus() string {
 	c, witnesses := LegLocalBakeCensus()
 	var b strings.Builder
-	fmt.Fprintf(&b, "leg-local bakeability: total %d (baked %d, minted %d, declined %d); "+
-		"minted residue: untypedLeg %d, columnAbsent %d, layoutAvailable %d; "+
+	fmt.Fprintf(&b, "leg-local bakeability: total %d (baked %d, mergedReAnchor %d, declined %d); "+
+		"mergedReAnchor residue: untypedLeg %d, columnAbsent %d, layoutAvailable %d; "+
 		"legs: flowed %d, underivable %d, memberDisagreement %d",
-		c.Total, c.Baked, c.Minted, c.Declined,
+		c.Total, c.Baked, c.MergedReAnchor, c.Declined,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
-	fmt.Fprintf(&b, "; minted reads by OWN identity: identityInLegDomain %d, "+
+	fmt.Fprintf(&b, "; ALL reads by OWN identity: identityInLegDomain %d, "+
 		"identityOtherDomain %d, lazyNameOnly %d",
 		c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly)
 	fmt.Fprintf(&b, "; legDerivations %d", c.LegDerivations)
@@ -748,7 +794,7 @@ type LegLocalBakeFloors struct {
 //
 // The three partition checks are the point. Every other number this census
 // prints is a SHARE of one of two totals, and a share is only meaningful if the
-// shares add up: if Minted and the three mint-reason counters drift apart, the
+// shares add up: if MergedReAnchor and the three layout-reason counters drift apart, the
 // residue can be read off the same report two ways and get two answers. That is
 // not a hypothetical failure mode for a census whose numbers are quoted into an
 // RFC as migration arithmetic — it is the ordinary consequence of adding a
@@ -772,38 +818,41 @@ func AssertLegLocalBakeCensus(w io.Writer, floors *LegLocalBakeFloors) bool {
 func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *LegLocalBakeFloors) bool {
 	failed := false
 
-	if got := c.Baked + c.Minted + c.Declined; got != c.Total {
+	if got := c.Baked + c.MergedReAnchor + c.Declined; got != c.Total {
 		failed = true
-		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + Minted(%d) + Declined(%d) = %d, "+
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: Baked(%d) + MergedReAnchor(%d) + Declined(%d) = %d, "+
 			"but Total = %d.\n"+
 			"  Every firing of the leg-match arm is exactly one of the three, so a gap\n"+
 			"  means a firing was counted into Total and classified into none — or a new\n"+
 			"  outcome was added without a counter. The residue percentages this census\n"+
 			"  feeds are computed against Total, so they are wrong by exactly the gap.\n",
-			c.Baked, c.Minted, c.Declined, got, c.Total)
+			c.Baked, c.MergedReAnchor, c.Declined, got, c.Total)
 	}
 
-	if got := c.UntypedLeg + c.ColumnAbsent + c.LayoutAvailable; got != c.Minted {
+	if got := c.UntypedLeg + c.ColumnAbsent + c.LayoutAvailable; got != c.MergedReAnchor {
 		failed = true
 		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: UntypedLeg(%d) + ColumnAbsent(%d) + "+
-			"LayoutAvailable(%d) = %d, but Minted = %d.\n"+
-			"  The three reasons classify MINTED reads and nothing else, so they must\n"+
-			"  partition Minted exactly. LayoutAvailable is the number CQ-63 has to\n"+
-			"  move; if the reasons do not sum, it is a share of an unknown whole.\n",
-			c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable, got, c.Minted)
+			"LayoutAvailable(%d) = %d, but MergedReAnchor = %d.\n"+
+			"  The three reasons classify MERGED-RE-ANCHORED reads and nothing else, so\n"+
+			"  they must partition MergedReAnchor exactly. LayoutAvailable is the number\n"+
+			"  CQ-63 has to move; if the reasons do not sum, it is a share of an unknown\n"+
+			"  whole.\n",
+			c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable, got, c.MergedReAnchor)
 	}
 
-	if got := c.IdentityInLegDomain + c.IdentityOtherDomain + c.LazyNameOnly; got != c.Minted {
+	if got := c.IdentityInLegDomain + c.IdentityOtherDomain + c.LazyNameOnly; got != c.Total {
 		failed = true
 		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: IdentityInLegDomain(%d) + "+
-			"IdentityOtherDomain(%d) + LazyNameOnly(%d) = %d, but Minted = %d.\n"+
-			"  These three classify MINTED reads by what the read states about its OWN\n"+
-			"  identity, so they must partition Minted exactly — the same population the\n"+
-			"  three layout reasons partition, cut a second way. IdentityInLegDomain is\n"+
-			"  the number a leg-local bake can actually convert WITHOUT resolving a\n"+
-			"  display name; if the three do not sum, that number is a share of an\n"+
-			"  unknown whole and the bake's reach is unmeasured.\n",
-			c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly, got, c.Minted)
+			"IdentityOtherDomain(%d) + LazyNameOnly(%d) = %d, but Total = %d.\n"+
+			"  These three classify EVERY firing by what the read states about its OWN\n"+
+			"  identity, so they must partition Total exactly. They partitioned the\n"+
+			"  merged re-anchor alone until that population reached zero, at which point\n"+
+			"  the check was 0 == 0 and the live population — the pass-through, which is\n"+
+			"  now the whole arm — went unmeasured on the one axis the qualified-name\n"+
+			"  channel's retirement rests on. IdentityInLegDomain is the number of reads\n"+
+			"  that can state their own slot with no name consulted anywhere; if the\n"+
+			"  three do not sum, that number is a share of an unknown whole.\n",
+			c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly, got, c.Total)
 	}
 
 	if got := c.FlowedLegs + c.UnderivableLegs + c.DisagreeingLegs; got != c.LegDerivations {
@@ -905,6 +954,42 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 				"  Look for a flowed object value built UNTYPED — Quantifier.GetFlowedObjectValue\n"+
 				"  where GetFlowedObjectValueTyped is what the site needs.\n",
 				z.name, z.got, z.why)
+		}
+	}
+
+	// A partition over an EMPTY denominator holds as 0 == 0. That is not a
+	// failure — a zero merged re-anchor is the arm's correct present state — but
+	// it means the check above it proved nothing, and a green line in a report is
+	// indistinguishable from a checked one unless it says so.
+	//
+	// This is the residual of the same defect the identity cut had: that cut was
+	// aimed at a population that had gone to zero, and nothing in the report said
+	// the assertion over it was vacuous, so it read as a live check for as long
+	// as anyone cared to read it. The cut is repointed at Total, which is
+	// FLOORED. The layout-reason cut cannot be repointed — the three reasons are
+	// genuinely about re-anchored reads — so it announces itself instead.
+	for _, v := range []struct {
+		partition   string
+		denominator string
+		got         int
+		what        string
+	}{
+		{
+			"UntypedLeg + ColumnAbsent + LayoutAvailable", "MergedReAnchor", c.MergedReAnchor,
+			"No read was re-anchored onto the merge correlation, so nothing was\n" +
+				"  classified by WHY. LayoutAvailable — CQ-63's convertibility number — is\n" +
+				"  zero because the population is zero, not because the layouts went away.",
+		},
+		{
+			"MergeSlotsTyped + Scavenged + Scalar + Untyped", "MergeSlots", c.MergeSlots,
+			"No positional merge built a slot, so MergeSlotsUntyped is not an upper\n" +
+				"  bound on anything.",
+		},
+	} {
+		if v.got == 0 {
+			fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS VACUOUS: %s partitions %s, which is 0 — "+
+				"the check held as 0 == 0 and proved nothing.\n  %s\n",
+				v.partition, v.denominator, v.what)
 		}
 	}
 
