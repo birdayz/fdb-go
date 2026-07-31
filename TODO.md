@@ -10291,8 +10291,13 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
   segments, joins them into one string, and the resolver splits them back
-  apart.** Four debt sites exist only to undo a join the layer above performed
-  for no reason.
+  apart.** Three debt sites exist only to undo a join the layer above performed
+  for no reason. It was four; the gathered-EXISTS wrap's dotted arm is DELETED
+  (its window map is keyed by leg identity, so a qualifier sliced out of a
+  column name had no key it could honestly use, and it was measured unreachable
+  before removal). The shape it handled now DECLINES to the name model, so
+  CQ-52 no longer has to retire that site — it has to give the resolver the
+  segments that would let it resolve again.
 
   `logical.SortKey` (`pkg/relational/core/query/logical/operators.go:298-303`)
   carries `Bare` / `Qualifier` / `Qualified`, documented as "parse-tree segments

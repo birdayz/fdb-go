@@ -1,7 +1,6 @@
 package docscheck
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +29,42 @@ var goosGoarchSuffixes = []string{
 	"wasm",
 }
 
+// platformConstrainingSuffix reports the implicit build constraint a Go file
+// name carries, or "" when the name is safe.
+//
+// It is a named function, not a loop inside the gate, and that is the whole
+// difference between a positive control that tests the gate and one that tests
+// a copy of it. The control below used to re-implement this scan over its own
+// temp directory: it proved the SUFFIX LIST still matched some strings, while
+// the gate could have stopped calling the list entirely and the control would
+// have gone on passing. One predicate, both callers.
+func platformConstrainingSuffix(name string) string {
+	if !strings.HasSuffix(name, ".go") {
+		return ""
+	}
+	base := strings.TrimSuffix(name, ".go")
+	base = strings.TrimSuffix(base, "_test")
+	for _, suffix := range goosGoarchSuffixes {
+		if strings.HasSuffix(base, "_"+suffix) {
+			return suffix
+		}
+	}
+	return ""
+}
+
+// platformConstraintScanSet is the set of repo-relative Go paths the gate
+// checks: the whole tracked tree, via the same `git ls-files` enumerator the
+// source-hygiene gate uses.
+//
+// Named, and shared with the scope test below, for the same reason the predicate
+// is: a scope test that calls the enumerator directly proves the ENUMERATOR
+// reaches outside pkg/, not that the GATE does. The gate could re-narrow to one
+// directory with such a test still green — which is the state this replaced.
+func platformConstraintScanSet(t *testing.T) []string {
+	t.Helper()
+	return trackedGoFiles(t, sourceTreeRoot(t))
+}
+
 // TestNoAccidentallyPlatformConstrainedFiles fails on a Go file whose NAME
 // silently constrains it to one platform.
 //
@@ -46,54 +81,57 @@ var goosGoarchSuffixes = []string{
 // production file dropped on Linux breaks the build immediately while a test
 // file dropped on Linux breaks nothing at all — it just stops being evidence.
 //
+// SCOPE IS THE WHOLE TRACKED TREE, via the same `git ls-files` enumerator the
+// source-hygiene gate uses. It walked only `pkg/` before, which is a scope no
+// argument justified: `cmd/`, `conformance/` and every other tracked Go
+// directory can lose a test file to a name exactly as easily, and the hole this
+// gate exists for would simply have been invisible one directory over. The tree
+// is repo-wide clean today, so widening costs nothing now and is the only moment
+// it ever will be free.
+//
+// Using the tracked set rather than a filesystem walk also disposes of the
+// exclusion problem instead of managing it: untracked scratch, vendored trees
+// and the per-agent worktrees under `.claude/worktrees/` are not tracked files
+// of this repo, so nothing needs to name them. (The previous walk's skip switch
+// claimed to exclude "per-agent worktrees" and did not — it listed `vendor`,
+// `testdata`, `.git` and `bazel-out`, none of which is a worktree path. It was
+// harmless only because the walk was confined to `pkg/`.)
+//
 // A file that GENUINELY targets one platform belongs on the allowlist below with
 // a reason, which is the same shape every other ratchet in this package uses. An
 // empty allowlist is the goal state and is where this one starts.
 func TestNoAccidentallyPlatformConstrainedFiles(t *testing.T) {
 	t.Parallel()
-	root := repoRoot(t)
 
 	// platformConstrainedAllowlist maps a repo-relative path to why its name's
 	// implicit constraint is intended.
 	platformConstrainedAllowlist := map[string]string{}
 
+	files := platformConstraintScanSet(t)
+	if len(files) == 0 {
+		t.Fatal("the tracked Go file set is EMPTY — this gate would pass over nothing. " +
+			"A silently-empty scan is the same vacuous green as the hole it guards.")
+	}
+	// The scan must be able to see this very file, or it resolved the wrong tree.
+	sawSelf := false
 	var offenders []string
-	walkErr := filepath.WalkDir(filepath.Join(root, "pkg"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, rel := range files {
+		rel = filepath.ToSlash(rel)
+		if rel == "pkg/docscheck/build_constrained_filename_test.go" {
+			sawSelf = true
 		}
-		if d.IsDir() {
-			// Vendored trees and per-agent worktrees are not this repo's source.
-			switch d.Name() {
-			case "vendor", "testdata", ".git", "bazel-out":
-				return filepath.SkipDir
-			}
-			return nil
+		suffix := platformConstrainingSuffix(filepath.Base(rel))
+		if suffix == "" {
+			continue
 		}
-		if !strings.HasSuffix(d.Name(), ".go") {
-			return nil
+		if _, allowed := platformConstrainedAllowlist[rel]; allowed {
+			continue
 		}
-		base := strings.TrimSuffix(d.Name(), ".go")
-		base = strings.TrimSuffix(base, "_test")
-		for _, suffix := range goosGoarchSuffixes {
-			if !strings.HasSuffix(base, "_"+suffix) {
-				continue
-			}
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				rel = path
-			}
-			rel = filepath.ToSlash(rel)
-			if _, allowed := platformConstrainedAllowlist[rel]; allowed {
-				break
-			}
-			offenders = append(offenders, rel+"  (implicitly constrained to "+suffix+")")
-			break
-		}
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("walking pkg/: %v", walkErr)
+		offenders = append(offenders, rel+"  (implicitly constrained to "+suffix+")")
+	}
+	if !sawSelf {
+		t.Fatal("the scan never saw this test file, so it is walking the wrong tree " +
+			"and every clean result it reports is meaningless")
 	}
 	if len(offenders) == 0 {
 		return
@@ -117,40 +155,94 @@ func TestNoAccidentallyPlatformConstrainedFiles(t *testing.T) {
 // control. The scan is a suffix match over a hand-written list, and a list that
 // silently stopped matching would leave the gate reporting a clean tree forever
 // — the same shape of vacuous pass the hole it guards had.
+//
+// It exercises platformConstrainingSuffix, the SAME predicate the gate calls.
+// It used to re-implement the scan over its own temp directory, which made it a
+// test of the suffix list rather than of the gate: the gate could have stopped
+// consulting the list and this would still have passed.
 func TestPlatformConstraintGateSeesAConstrainedName(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	for _, name := range []string{"a_windows_test.go", "b_linux.go", "c_arm64_test.go"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("package p\n"), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"a_windows_test.go", "windows"},
+		{"b_linux.go", "linux"},
+		{"c_arm64_test.go", "arm64"},
+		{"d_js.go", "js"},
+		// Safe: the platform word is not the LAST segment.
+		{"ok_seed_window_test.go", ""},
+		{"windows_seed_layout.go", ""},
+		// Safe: not a Go file at all. The gate is handed every tracked path
+		// now, not just the ones under pkg/, so this arm stopped being
+		// hypothetical when the scan widened.
+		{"a_windows_test.md", ""},
+		{"BUILD.bazel", ""},
+	} {
+		if got := platformConstrainingSuffix(tc.name); got != tc.want {
+			t.Errorf("platformConstrainingSuffix(%q) = %q, want %q — a name the real "+
+				"gate must catch is slipping through, or a safe name is being flagged",
+				tc.name, got, tc.want)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ok_seed_window_test.go"), []byte("package p\n"), 0o600); err != nil {
-		t.Fatalf("write control: %v", err)
-	}
-	var hits []string
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	for _, e := range entries {
-		base := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".go"), "_test")
-		for _, suffix := range goosGoarchSuffixes {
-			if strings.HasSuffix(base, "_"+suffix) {
-				hits = append(hits, e.Name())
-				break
-			}
+}
+
+// TestPlatformConstraintGateScansOutsidePkg pins the SCOPE, which is the part of
+// this gate a suffix test cannot reach.
+//
+// The gate walked only `pkg/` and reported a clean tree, which is exactly what
+// it would report if every offender lived in `cmd/`. Widening it is only
+// meaningful if something checks that the widening is still in place — otherwise
+// the scope can quietly narrow again and every result stays green.
+//
+// It asks platformConstraintScanSet, which is what the GATE calls, rather than
+// the enumerator underneath it. Asking the enumerator would prove only that
+// `git ls-files` still lists cmd/, which was never in doubt and which stays true
+// while the gate filters everything back out.
+func TestPlatformConstraintGateScansOutsidePkg(t *testing.T) {
+	t.Parallel()
+	files := platformConstraintScanSet(t)
+	outside := 0
+	for _, rel := range files {
+		if !strings.HasPrefix(filepath.ToSlash(rel), "pkg/") {
+			outside++
 		}
 	}
-	sort.Strings(hits)
-	want := []string{"a_windows_test.go", "b_linux.go", "c_arm64_test.go"}
-	if len(hits) != len(want) {
-		t.Fatalf("the suffix scan matched %v, want exactly %v — a name the real gate\n"+
-			"  must catch is slipping through, or the control file is being flagged", hits, want)
+	if outside == 0 {
+		t.Fatalf("the tracked Go set contains %d files and NONE outside pkg/. Either the "+
+			"enumerator narrowed or the repo changed shape; either way this gate is back "+
+			"to guarding one directory while reporting on the tree.", len(files))
 	}
-	for i := range want {
-		if hits[i] != want[i] {
-			t.Fatalf("the suffix scan matched %v, want %v", hits, want)
+	t.Logf("platform-constraint gate scope: %d tracked Go files, %d outside pkg/",
+		len(files), outside)
+}
+
+// TestPlatformConstraintGateSuffixListIsUsable guards the list itself against
+// the failure a suffix scan is most prone to: an entry that can never match
+// because it carries the separator the scan supplies, or an empty entry that
+// matches everything.
+func TestPlatformConstraintGateSuffixListIsUsable(t *testing.T) {
+	t.Parallel()
+	seen := map[string]bool{}
+	for _, s := range goosGoarchSuffixes {
+		if s == "" {
+			t.Fatal("an EMPTY suffix makes `_`-terminated every file's constraint")
 		}
+		if strings.ContainsAny(s, "_.") {
+			t.Fatalf("suffix %q carries a separator the scan supplies itself, so it can "+
+				"never match a real name", s)
+		}
+		if seen[s] {
+			t.Fatalf("suffix %q is listed twice", s)
+		}
+		seen[s] = true
+		// Every entry must actually be reachable through the real predicate.
+		if got := platformConstrainingSuffix("x_" + s + ".go"); got != s {
+			t.Fatalf("suffix %q is in the list but platformConstrainingSuffix(%q) = %q — "+
+				"the list and the gate have come apart", s, "x_"+s+".go", got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(sourceTreeRoot(t), "MODULE.bazel")); err != nil {
+		t.Fatalf("resolved source tree has no MODULE.bazel: %v", err)
 	}
 }

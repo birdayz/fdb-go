@@ -255,11 +255,20 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			//     such a box, rightmost included.
 			//
 			// The decline is not a dropped window. The map KEY is the buried leg's own
-			// Name ("C"), the box run's key is the minted binding ("C$BOX"), so the
-			// `taken` test below misses and the leaf sub-window is filed anyway — it is
-			// ADDED beside the box run rather than replacing it. The retired text
-			// predicate (`leg.Name == alias`) declined that pair too, so the conversion
-			// changed nothing for this producer; the premise test pins both arms.
+			// IDENTITY and the box run's key is the minted `C$BOX` binding's, so those
+			// are two different identifiers: the `taken` test below misses and the leaf
+			// sub-window is filed anyway — ADDED beside the box run rather than
+			// replacing it. The retired TEXT predicate (`leg.Name == alias`) declined
+			// that pair too, so the conversion changed nothing for this producer, and
+			// the premise test pins both arms.
+			//
+			// So the two producers' dispositions above survive the key change intact:
+			// producer 1 makes the box's correlation and its rightmost leaf's the SAME
+			// identifier (REPLACE), producer 2's $BOX suffix makes them different ones
+			// (ADD beside). What the key change removes is the case-folding that used
+			// to sit under both — a buried `c` and a box `C` collided as one text key
+			// while being two identities, which is the collision SameLeg exists to
+			// refuse.
 			//
 			// Three earlier justifications for keeping a TEXT comparison here are
 			// withdrawn, and the last of them was wrong in an instructive way. It claimed
@@ -271,14 +280,6 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// LOWERCASE "c" where production mints sourceAlias(box) = "C". The convention
 			// makes the two identifiers EQUAL; it does not make them different — under
 			// producer 1. Producer 2's $BOX suffix makes them differ by design; see above.
-			//
-			// The map KEY is now the buried leg's IDENTITY, and the two producers'
-			// dispositions above are unchanged by that: producer 1 makes the box's
-			// correlation and its rightmost leaf's the SAME identifier (REPLACE),
-			// producer 2's $BOX suffix makes them different ones (ADD beside). What the
-			// key change removes is the case-folding that used to sit under both — a
-			// buried `c` and a box `C` collided as one text key while being two
-			// identities, which is the collision SameLeg exists to refuse.
 			if !SameLeg(leg.Alias, w.Alias) {
 				if _, taken := windows[leg.Alias]; taken {
 					continue
@@ -330,12 +331,27 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			continue // box run: its subs are their own windows above
 		}
 		// The IDENTITY is the map key and the window's Alias — one fact, stated once.
-		// The NAME comes from the producer-local side table, which recorded each
-		// window's display binding where that binding existed: the upper fold of the
-		// correlation for a top-level leg (what the map key itself used to be), the
-		// buried leg's own stated Name for a sub-window. Neither is derived from the
-		// other at this point, so a producer that made them diverge is measured by the
-		// text-vs-identity census rather than laundered by this constructor.
+		// The NAME comes from the producer-local side table, and the two entries in
+		// that table have DIFFERENT provenance, which is worth stating precisely
+		// because an earlier version of this comment claimed they never derive from
+		// each other and that is false for one of them:
+		//
+		//   - a TOP-LEVEL leg's name IS derived from its identity —
+		//     `names[alias] = strings.ToUpper(alias.Name())`, right where the window
+		//     is filed. For this producer the text-vs-identity census can report
+		//     nothing but agreement, because agreement is what the assignment
+		//     constructs. Its slice of that census is VACUOUS and must not be read as
+		//     evidence;
+		//   - a BURIED leg's name is the leg's own stated Name, carried from a leg
+		//     table this function did not build. That one is an independent
+		//     spelling, and it is the only half the census can actually test.
+		//
+		// The reason for the asymmetry is the one type.go states at its own text
+		// boundary: the buried leg's counterparty is the text a producer wrote, so
+		// re-deriving it from the identity would quietly re-spell it, while a
+		// top-level leg has no such counterparty and the fold is the only name there
+		// is. Neither case launders anything — the derived one cannot diverge, and
+		// the carried one is measured.
 		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Alias, names[alias], w.Offset, len(w.Typ.Fields)))
 	}
 	sort.Slice(mergedLegs, func(i, j int) bool {
