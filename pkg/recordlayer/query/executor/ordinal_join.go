@@ -276,12 +276,16 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 				// A REBASE, not a re-mint: the sub-leg's identity is carried
 				// verbatim and only its offset moves.
 				mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
-					sub.Alias, sub.Name, s.Offset+sub.Start, sub.Width))
+					// A REBASE carries the KIND as it carries the Alias. A rebase that
+					// re-mints a kind is the same defect class as one that re-mints an
+					// identity: the sub-leg did not change shape, only offset.
+					sub.Kind, sub.Alias, sub.Name, s.Offset+sub.Start, sub.Width))
 			}
 			continue
 		}
 		mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
-			s.Alias, s.Alias.Name(), s.Offset, s.Width))
+			// A plain top-level RUN of the span's own columns.
+			values.LegKindFlatRun, s.Alias, s.Alias.Name(), s.Offset, s.Width))
 	}
 	return mergedLegs
 }
@@ -1039,11 +1043,15 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 				// read the null-supplying leg's slot). Subs only.
 				for _, sub := range rt.Legs {
 					legs = append(legs, values.NewRecordTypeLeg(
-						sub.Alias, sub.Name, i+sub.Start, sub.Width))
+						// A REBASE carries the KIND as it carries the Alias. A rebase that
+						// re-mints a kind is the same defect class as one that re-mints an
+						// identity: the sub-leg did not change shape, only offset.
+						sub.Kind, sub.Alias, sub.Name, i+sub.Start, sub.Width))
 				}
 			} else {
 				legs = append(legs, values.NewRecordTypeLeg(
-					qov.Correlation, corr, i, len(rt.Fields)))
+					// rcOutputType's top-level box RUN.
+					values.LegKindFlatRun, qov.Correlation, corr, i, len(rt.Fields)))
 			}
 		}
 	}

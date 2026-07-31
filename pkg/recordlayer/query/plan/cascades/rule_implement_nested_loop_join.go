@@ -2033,7 +2033,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			// identifier removes the question. Name is its own spelling, so the text
 			// channel's readers see what they always saw.
 			return rt.Fields, []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(alias, alias.Name(), base, len(rt.Fields)),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
 			}, true
 		case *plans.RecordQueryPredicatesFilterPlan:
 			inner = pl.GetInner()

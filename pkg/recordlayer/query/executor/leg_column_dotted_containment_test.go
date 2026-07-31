@@ -44,7 +44,7 @@ func TestRowSlotForLegColumn_FlatExactMatchWinsOverTheLegWindow(t *testing.T) {
 	rt := &values.RecordType{
 		Fields: []values.Field{{Name: "CV", Ordinal: 0}, {Name: "C.CV", Ordinal: 1}},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("C"), "C", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("C"), "C", 0, 1),
 		},
 	}
 
@@ -77,7 +77,7 @@ func TestRowSlotForLegColumn_AManufacturedQualifierDeclines(t *testing.T) {
 	rt := &values.RecordType{
 		Fields: []values.Field{{Name: "V", Ordinal: 0}, {Name: "V)", Ordinal: 1}},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("GA"), "GA", 0, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("GA"), "GA", 0, 2),
 		},
 	}
 
@@ -116,7 +116,7 @@ func TestRowSlotForLegColumn_ARenderedLabelPresentInTheRowStillWins(t *testing.T
 			{Name: "SUM(GA.V)", Ordinal: 1},
 		},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("GA"), "GA", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("GA"), "GA", 0, 1),
 		},
 	}
 	slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{})
@@ -158,8 +158,8 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 			{Name: "QTY", Ordinal: 4},
 		},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 2),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 2, 3),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("I"), "I", 2, 3),
 		},
 	}
 

@@ -161,6 +161,20 @@ func rebaseOuterLegValueOrdinal(
 			failed = true
 			return node
 		}
+		// DISPATCH ON THE KIND, never on the shape. `w.Offset + legOrdinal` is only
+		// an address under LegKindFlatRun, where Offset starts a run of the leg's
+		// own columns; under LegKindNested Offset names ONE slot holding the whole
+		// leg row, and the same arithmetic walks off into the next leg's slots
+		// while producing a perfectly valid merged ordinal — a silent wrong-column
+		// read that NewFieldValueOfOrdinal cannot catch.
+		//
+		// LegKindUnset falls here too and DECLINES rather than defaulting: a window
+		// that reached this rebase without a stated kind is a producer bug, and a
+		// declined optimization is recoverable while a wrong ordinal is not.
+		if w.Kind != values.LegKindFlatRun {
+			failed = true
+			return node
+		}
 		rebased, err := values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
 		if err != nil {
 			failed = true

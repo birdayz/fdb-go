@@ -66,8 +66,8 @@ func TestLegColumnOwner_MintedSeedOwnerNamesNoSourceLeg(t *testing.T) {
 			{Name: "QTY", Ordinal: 4},
 		},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 2),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 2, 3),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("I"), "I", 2, 3),
 		},
 	}
 	textChose := &merged.Legs[1] // what "I.QTY" resolves to today
@@ -109,8 +109,8 @@ func TestLegColumnOwner_ASourceLegOwnerWouldSelect(t *testing.T) {
 	merged := &values.RecordType{
 		Fields: []values.Field{{Name: "ID", Ordinal: 0}, {Name: "QTY", Ordinal: 1}},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 1),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 1, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("I"), "I", 1, 1),
 		},
 	}
 
@@ -164,7 +164,7 @@ func TestLegColumnOwner_TheDestinationLegTypeCarriesNoLegTable(t *testing.T) {
 	withLegs := &values.RecordType{
 		Fields: []values.Field{{Name: "O.ID", Ordinal: 0}},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 1),
 		},
 	}
 	if !seedLeg.Equals(withLegs) {
@@ -219,8 +219,8 @@ func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 	withLegs := &values.RecordType{
 		Fields: fields,
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 1),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 1, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("I"), "I", 1, 1),
 		},
 	}
 	corr := values.NamedCorrelationIdentifier("Q")

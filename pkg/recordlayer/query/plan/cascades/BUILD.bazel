@@ -270,6 +270,7 @@ go_test(
         "join_same_leaf_ordering_identity_test.go",
         "lazy_leg_mint_liveness_test.go",
         "left_outer_existential_test.go",
+        "leg_kind_discriminator_test.go",
         "leg_layout_derivation_test.go",
         "leg_local_bake_census_gate_test.go",
         "leg_row_types_test.go",
@@ -996,6 +997,7 @@ go_test(
         "decline_probe_identity_test.go",
         "fold_step1_seed_census.go",
         "fold_step1_seed_census_test.go",
+        "leg_kind_discriminator_test.go",
     ],
     deps = [
         "//gen",

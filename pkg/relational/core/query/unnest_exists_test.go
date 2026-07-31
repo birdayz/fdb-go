@@ -378,11 +378,11 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 		// a fixture that supplied only text would be testing a code path that no
 		// longer exists.
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("A"), "A", 0, 2),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("B"), "B", 2, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("A"), "A", 0, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 2, 2),
 			// A PLANNER-MINTED leg: lowercase identity, UPPER text. The two namespaces
 			// are disjoint by construction and this leg is where that matters.
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("q$5"), "Q$5", 4, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("q$5"), "Q$5", 4, 2),
 		},
 	}
 	cases := []struct {
@@ -626,7 +626,7 @@ func TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair(t *testing.T) {
 	rt := &values.RecordType{
 		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("zz$9"), "ZZ$9", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("zz$9"), "ZZ$9", 0, 1),
 		},
 	}
 	// The forgery read: qualified by the leg's NAME, which is not its identity.

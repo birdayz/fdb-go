@@ -444,7 +444,17 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 		if values.LegIdentityCensusEnabled() {
 			values.RecordSeedWindowLookup(values.SeedWindowSiteGatheredGroupSlot, isLeg)
 		}
-		if isLeg {
+		// This site's CONTRACT is a flat slot index into the gathered seed's row,
+		// and a NESTED leg has none: its column lives one level down, reachable
+		// only by descending. So it DECLINES — exactly as it already declines a
+		// qualified read with no correlation a few lines above, and for the same
+		// reason: an answer this site cannot express honestly must not be
+		// approximated.
+		//
+		// LegKindUnset declines here too. A window that reached a slot resolver
+		// without a stated kind is a producer bug, and the group-by key it would
+		// have resolved is better unresolved than resolved to a guess.
+		if isLeg && w.Kind == values.LegKindFlatRun {
 			if idx, found := w.Typ.FieldIndex(col); found {
 				return w.Offset + idx, true
 			}
@@ -465,6 +475,20 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	if !qualified {
 		slot, hits := 0, 0
 		for _, w := range windows {
+			// THE CENSUS CANNOT SEE THIS ARM. It is not a keyed read — it ranges
+			// every window instead of selecting one — so the seed-window reader
+			// census records nothing here, and this line is exactly as dangerous as
+			// the five keyed sites: it does offset arithmetic.
+			//
+			// A NESTED window must not contribute a hit, for the same reason the
+			// qualified arm above declines one: `w.Offset + idx` is not this leg's
+			// column, and worse, a nested contribution would ALSO move `hits` — so a
+			// column present in one flat leg and one nested leg would go from a
+			// unique resolution to an ambiguous decline, or a nested-only column
+			// would resolve to a slot in a neighbouring leg.
+			if w.Kind != values.LegKindFlatRun {
+				continue
+			}
 			if idx, found := w.Typ.FieldIndex(col); found {
 				slot, hits = w.Offset+idx, hits+1
 			}

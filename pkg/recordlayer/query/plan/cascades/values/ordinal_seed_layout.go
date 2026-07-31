@@ -13,8 +13,24 @@ import (
 // cross-agreement fixture; independent walks drift, and layout drift is
 // wrong-offset wrong-rows.
 type OrdinalSeedLegWindow struct {
+	// Kind says whether Offset starts a flat RUN of the leg's columns or names
+	// the SINGLE slot holding the leg's whole row. Its zero value is
+	// LegKindUnset, which is invalid: every reader below declines or fails loud
+	// on it rather than defaulting to flatRun, because defaulting is an inference
+	// about which column a read addresses and the language is not entitled to
+	// make it. See LegKind's own doc for why no structural inference works.
+	Kind LegKind
+
+	// Offset is the leg's first slot in the merged row for a flatRun window, and
+	// the leg's ONE slot for a nested one. Reading it without dispatching on Kind
+	// is the wrong-offset wrong-rows failure this authority exists to prevent.
 	Offset int
-	Typ    *RecordType
+	// Typ is the leg's own record type, under BOTH kinds — never a one-field
+	// wrapper describing the slot. Readers bound a leg-local ordinal against it
+	// before composing, so a wrapper would decline every leg-local ordinal >= 1
+	// and resolve ordinal 0 against the wrapper: a silent wrong-column read on
+	// exactly the shape the bound check exists to catch.
+	Typ *RecordType
 
 	// Alias is the window's leg IDENTITY: the correlation of the quantifier whose
 	// row occupies this window, carried VERBATIM from the seed's own
@@ -116,6 +132,11 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 			// Q$N, which is exactly the spelling SameLeg exists to keep out of the
 			// minted leg's window.
 			windows[elemQOV.Correlation] = OrdinalSeedLegWindow{
+				// The mixed seed's scalar element is a synthesized ONE-COLUMN flat
+				// run, numerically identical to what it has always been. Stamped
+				// rather than left to the zero value because a synthesized window is
+				// exactly the kind of producer that never decided.
+				Kind:   LegKindFlatRun,
 				Offset: i,
 				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}},
 				Alias:  elemQOV.Correlation,
@@ -156,7 +177,8 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 			// AND the key it is filed under. The run boundary is the same comparison —
 			// it used to compare the UPPER folds of two correlations, which merges a
 			// pair the machine namespace keeps deliberately apart.
-			windows[alias] = OrdinalSeedLegWindow{Offset: curStart, Typ: legType, Alias: alias}
+			// A baked leg RUN: consecutive slots, one per leg column.
+			windows[alias] = OrdinalSeedLegWindow{Kind: LegKindFlatRun, Offset: curStart, Typ: legType, Alias: alias}
 			names[alias] = strings.ToUpper(alias.Name())
 		} else if acc.Ordinal != i-curStart {
 			return nil, nil
@@ -309,6 +331,9 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// source, not the box run carrying it, and the readers now arrive holding
 			// that correlation.
 			windows[leg.Alias] = OrdinalSeedLegWindow{
+				// A buried sub-leg of a clustered BOX run is a flat SLICE of that
+				// run — the sub slice built just above IS its columns.
+				Kind:   LegKindFlatRun,
 				Offset: w.Offset + leg.Start,
 				Typ:    &RecordType{Nullable: w.Typ.Nullable, Fields: sub},
 				Alias:  leg.Alias,
@@ -352,7 +377,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 		// top-level leg has no such counterparty and the fold is the only name there
 		// is. Neither case launders anything — the derived one cannot diverge, and
 		// the carried one is measured.
-		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Alias, names[alias], w.Offset, len(w.Typ.Fields)))
+		mergedLegs = append(mergedLegs, NewRecordTypeLeg(w.Kind, w.Alias, names[alias], w.Offset, len(w.Typ.Fields)))
 	}
 	sort.Slice(mergedLegs, func(i, j int) bool {
 		if mergedLegs[i].Start != mergedLegs[j].Start {

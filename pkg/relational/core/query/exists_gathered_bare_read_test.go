@@ -33,6 +33,7 @@ func TestRebaseLegRefsToBox_BareReadIsNotBakedByName(t *testing.T) {
 	}}
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
 		values.NamedCorrelationIdentifier("L"): {
+			Kind:   values.LegKindFlatRun,
 			Offset: 0, Typ: legType, Alias: values.NamedCorrelationIdentifier("L"),
 		},
 	}
@@ -134,7 +135,7 @@ func TestRebaseLegRefsToBox_KeysByIdentityNotByFold(t *testing.T) {
 		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
 	}}
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
-		machine: {Offset: 0, Typ: legType, Alias: machine},
+		machine: {Kind: values.LegKindFlatRun, Offset: 0, Typ: legType, Alias: machine},
 	}
 	boxQOV := values.NewQuantifiedObjectValueOfType(
 		values.NamedCorrelationIdentifier("$box"), mergedType)
@@ -194,7 +195,7 @@ func TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines(t *testing.T) {
 	}}
 	legL := values.NamedCorrelationIdentifier("L")
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
-		legL: {Offset: 2, Typ: legType, Alias: legL},
+		legL: {Kind: values.LegKindFlatRun, Offset: 2, Typ: legType, Alias: legL},
 	}
 	boxQOV := values.NewQuantifiedObjectValueOfType(
 		values.NamedCorrelationIdentifier("$box"), mergedType)
@@ -282,7 +283,7 @@ func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
 		{Name: "K", FieldType: values.UnknownType, Ordinal: 2},
 	}}
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
-		boxLeg: {Offset: 1, Typ: boxRun, Alias: boxLeg},
+		boxLeg: {Kind: values.LegKindFlatRun, Offset: 1, Typ: boxRun, Alias: boxLeg},
 	}
 	boxQOV := values.NewQuantifiedObjectValueOfType(
 		values.NamedCorrelationIdentifier("$box"), mergedType)

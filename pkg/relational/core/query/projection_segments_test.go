@@ -101,8 +101,8 @@ func TestFlatColumnBake_QuotedWholeNameNeverReachesALegWindow(t *testing.T) {
 	t.Parallel()
 	cols := []string{"ID", "NAME", "OTHER"}
 	legs := []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("L"), "L", 0, 2),
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("R"), "R", 2, 1),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("L"), "L", 0, 2),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("R"), "R", 2, 1),
 	}
 
 	// Guard the fixture: the splitting path really does resolve this text.
@@ -177,8 +177,8 @@ func TestBakers_UncapturedRefKeepTheSplittingBehaviour(t *testing.T) {
 
 	cols := []string{"ID", "NAME", "OTHER"}
 	legs := []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("L"), "L", 0, 2),
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("R"), "R", 2, 1),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("L"), "L", 0, 2),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("R"), "R", 2, 1),
 	}
 	in := values.NewFlatFieldValue("L.NAME", values.UnknownType)
 	if out := bakeSegmentedColumnRef(in, uncaptured, cols, legs); out != values.Value(in) {

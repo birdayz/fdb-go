@@ -31,12 +31,12 @@ func TestFinalizeSeedWindows_BoxBuried(t *testing.T) {
 			{Name: "V", FieldType: NotNullLong, Ordinal: 3},
 		},
 		Legs: []RecordTypeLeg{
-			NewRecordTypeLeg(o, "O", 0, 2),
-			NewRecordTypeLeg(c, "C", 2, 2),
+			NewRecordTypeLeg(LegKindFlatRun, o, "O", 0, 2),
+			NewRecordTypeLeg(LegKindFlatRun, c, "C", 2, 2),
 		},
 	}
 	windows := map[CorrelationIdentifier]OrdinalSeedLegWindow{
-		c: {Offset: 0, Typ: boxType, Alias: c}, // the box run at prefix offset 0
+		c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c}, // the box run at prefix offset 0
 	}
 	names := map[CorrelationIdentifier]string{c: "C"}
 	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4))
@@ -186,7 +186,7 @@ func TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed(t *testing.T) {
 		},
 	}
 	windows := map[CorrelationIdentifier]OrdinalSeedLegWindow{
-		c: {Offset: 0, Typ: boxType, Alias: c},
+		c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c},
 	}
 	names := map[CorrelationIdentifier]string{c: "C"}
 	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4))
@@ -209,11 +209,11 @@ func TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed(t *testing.T) {
 	o := NamedCorrelationIdentifier("O")
 	c2 := NamedCorrelationIdentifier("C2")
 	boxType.Legs = []RecordTypeLeg{
-		NewRecordTypeLeg(o, "O", 0, 2),
-		NewRecordTypeLeg(c2, "C2", 2, 2),
+		NewRecordTypeLeg(LegKindFlatRun, o, "O", 0, 2),
+		NewRecordTypeLeg(LegKindFlatRun, c2, "C2", 2, 2),
 	}
 	okOut, okMerged := finalizeSeedWindows(
-		map[CorrelationIdentifier]OrdinalSeedLegWindow{c: {Offset: 0, Typ: boxType, Alias: c}},
+		map[CorrelationIdentifier]OrdinalSeedLegWindow{c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c}},
 		map[CorrelationIdentifier]string{c: "C"}, make([]Field, 4))
 	if okOut == nil || okMerged == nil {
 		t.Fatal("control: the same layout with identities stated must be ACCEPTED")

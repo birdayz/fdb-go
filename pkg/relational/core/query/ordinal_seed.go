@@ -73,6 +73,7 @@ func (t *cascadesTranslator) buriedLegBounds(j *logical.LogicalJoin, base int) [
 			// the two channels cannot diverge at this producer. The seed rebake
 			// (CQ-53) is what gives this layer a typed quantifier to carry instead.
 			out = append(out, values.NewRecordTypeLeg(
+				values.LegKindFlatRun,
 				values.NamedCorrelationIdentifier(sub.binding),
 				sub.binding, off, len(subTyp.Fields)))
 		}

@@ -5685,7 +5685,7 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 		// USE them: replacing the threaded identifier with a zero one left the site
 		// reporting a clean 3239/3239 while every leg it emitted carried no identity.
 		// A producer census has to observe the product.
-		leg := values.NewRecordTypeLeg(q.GetAlias(), aliases[i], off, len(legCols))
+		leg := values.NewRecordTypeLeg(values.LegKindFlatRun, q.GetAlias(), aliases[i], off, len(legCols))
 		if values.LegIdentityCensusEnabled() {
 			values.RecordLegIdentityComparison(
 				values.LegSiteSelectOutputLegs, leg.Name, leg.Alias.Name())
@@ -5993,7 +5993,7 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	// manufactured once from the only spelling that exists, and Name is that same
 	// string. Retires with the dotted channel.
 	return []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(alias), alias, 0, len(cols)),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier(alias), alias, 0, len(cols)),
 	}
 }
 

@@ -99,8 +99,8 @@ func TestMisaimMergedLegWindows_IdenticalSpansAreNotCountedAsMisaimed(t *testing
 				{Name: "K", FieldType: values.NotNullLong, Ordinal: 1},
 			},
 			Legs: []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 0, 2),
-				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 0, 2),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, aAlias, aAlias.Name(), 0, 2),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, bAlias, bAlias.Name(), 0, 2),
 			},
 		},
 		Slots: []any{int64(7), int64(8)},

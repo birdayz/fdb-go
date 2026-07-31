@@ -316,7 +316,7 @@ func withLegs(rt *values.RecordType, legs ...values.RecordTypeLeg) *values.Recor
 // legOf is a boundary entry whose four fields are all stated, so a fixture can
 // vary exactly one of them.
 func legOf(name string, start, width int) values.RecordTypeLeg {
-	return values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(name), name, start, width)
+	return values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier(name), name, start, width)
 }
 
 // TestGetFlowedObjectType_CarriesTheBuriedLegTable pins that the member
