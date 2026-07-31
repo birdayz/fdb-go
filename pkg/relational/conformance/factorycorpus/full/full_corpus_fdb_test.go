@@ -102,6 +102,16 @@ func TestFDB_FactoryCorpusFull(t *testing.T) {
 			if res.SetupError != nil || res.TestsFail > 0 {
 				t.Fatalf("committed expectation no longer holds:\n%s", factorycorpus.Describe(f, res))
 			}
+			// A scenario that ran NOTHING passes every assertion above, because
+			// zero failures out of zero tests is zero failures. The nightly
+			// would then report the whole corpus green while executing none of
+			// it — the loudest possible instrument failure wearing the quietest
+			// possible output. The per-PR sample tier already floors this; the
+			// full tier is the one that must not be able to go vacuous.
+			if res.TestsRun == 0 {
+				t.Fatalf("%s ran zero tests: a scenario with no executed test cannot fail, "+
+					"so this file has been reporting green without exercising the engine", f.Path)
+			}
 		})
 	}
 }

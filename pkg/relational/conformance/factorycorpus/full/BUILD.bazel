@@ -19,10 +19,14 @@ go_test(
     timeout = "eternal",  # keep: 3600s via .bazelrc's --test_timeout override
     srcs = ["full_corpus_fdb_test.go"],
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
-    # keep: the scenarios are independent, so sharding is pure parallelism —
-    # bounded by .bazelrc's --local_test_jobs=4, since every shard spins its own
-    # FDB container and they contend for one Docker socket.
-    shard_count = 4,
+    # keep at 1: Bazel shards by TOP-LEVEL TEST FUNCTION, and this package has
+    # exactly one (TestFDB_FactoryCorpusFull). The corpus's parallelism is
+    # inside it — a t.Parallel() subtest per scenario — which no shard split can
+    # reach. shard_count = 4 therefore bought nothing and cost three extra FDB
+    # containers, each of which starts, finds no test assigned to its shard, and
+    # exits. Raise this only if the package ever grows a second top-level Test
+    # function, and then only to the number of such functions.
+    shard_count = 1,
     tags = [
         "factorycorpus",
         "manual",

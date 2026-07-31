@@ -20,10 +20,13 @@
 //     file carries — generator version, seed, blessing oracle, feature vector,
 //     plan shape, date — parseable without executing anything;
 //   - the LOADER (load.go), which is deliberately its OWN loader over its OWN
-//     flat testdata/ directory. The four consumers of the hand-authored yamsql
-//     corpus (the runner, SQL_COVERAGE.md, FEATURE_MATRIX.md and the ANSI
-//     ledger) each glob one level of `pkg/relational/conformance/yamsql/
-//     testdata`, and a factory batch must not silently land in the documents
+//     flat testdata/ directory. Six places glob one level of
+//     `pkg/relational/conformance/yamsql/testdata` — the runner
+//     (yamsql/runner_test.go), SQL_COVERAGE.md (yamsql/coverage.go),
+//     FEATURE_MATRIX.md (yamsql/featurematrix.go), the ANSI ledger twice
+//     (yamsql/ansiledger.go: the evidence collector and the tagged-case
+//     lister) and the EXPLAIN baseline (explaindiff/explaindiff.go) — and a
+//     factory batch must not silently land in the documents
 //     those ledgers generate — machine volume would drown the hand-authored
 //     evidence they exist to report. Validation is NOT re-implemented: the
 //     loader delegates to yamsql.Load, inheriting its strict KnownFields

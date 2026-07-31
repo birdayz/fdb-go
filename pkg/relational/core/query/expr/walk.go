@@ -43,19 +43,56 @@ import (
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
 func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	return r.walkExpressionInner(ctx, false)
+	return r.walkExpressionInner(ctx, posPredicate)
 }
 
 // WalkExpressionForProjection is like WalkExpression but also handles
 // BinaryComparisonPredicate as ExpressionAtom — comparison expressions
 // like `a = b`, `x IS DISTINCT FROM NULL` that appear in SELECT lists.
-// Separated from WalkExpression so that CASE WHEN branches don't gain
-// comparison handling (Java rejects `WHERE CASE WHEN ... THEN a < b`).
 func (r *Resolver) WalkExpressionForProjection(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	return r.walkExpressionInner(ctx, true)
+	return r.walkExpressionInner(ctx, posProjection)
 }
 
-func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowComparisons bool) (values.Value, error) {
+// walkPos is the SYNTACTIC POSITION an expression is being resolved in.
+//
+// It exists because two independent questions used to ride on one boolean:
+// "may a comparison here fold to a value?" and "is this the projection
+// position whose EXISTS folding rules apply?". Those coincide for SELECT
+// items and come apart everywhere else — an operand of IS/IN/BETWEEN/`=`
+// wants the first and must not get the second, because the EXISTS rules are
+// about where the FlatMap evaluates the existential binding, which is a fact
+// about projection and not about operands.
+//
+// Threading the position (rather than re-deciding it at each unwrap) is what
+// makes the paren-unwrap transparent: `(x)` must resolve exactly as `x` does
+// in the same place, and the previous code discarded the caller's position on
+// every unwrap, which is why a parenthesised comparison was rejected in five
+// operand positions that accept it unparenthesised.
+type walkPos int
+
+const (
+	// posPredicate is a boolean context (WHERE, ON, a CASE condition, a CASE
+	// consequent). A comparison stays a QueryPredicate.
+	posPredicate walkPos = iota
+	// posProjection is a SELECT item. Comparisons fold to values, and the
+	// EXISTS folding rules apply.
+	posProjection
+	// posOperand is the operand of IS / IN / BETWEEN / a binary comparison —
+	// Java's single `visit(ctx.expressionAtom())` shared by all four arms.
+	// Comparisons fold to values; EXISTS is left on the predicate path exactly
+	// as it is for posPredicate, so this position changes nothing about EXISTS.
+	posOperand
+)
+
+// allowsComparisons reports whether a comparison may fold to a Value here.
+func (p walkPos) allowsComparisons() bool { return p != posPredicate }
+
+// isProjection reports whether the RFC-141 EXISTS folding rules apply. Only
+// the projection position places an ExistsValue where the FlatMap evaluates it
+// with the existential binding live.
+func (p walkPos) isProjection() bool { return p == posProjection }
+
+func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, pos walkPos) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
@@ -71,7 +108,7 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 	// EXISTS can be nested arbitrarily deep, so rather than point-handle each shape
 	// (which never converges), structurally DETECT any contained EXISTS that is not
 	// the directly-foldable top-level shape and reject the query cleanly.
-	if allowComparisons && ContainsExistsAtom(ctx) && !isDirectlyFoldableProjectedExists(ctx) {
+	if pos.isProjection() && ContainsExistsAtom(ctx) && !isDirectlyFoldableProjectedExists(ctx) {
 		return nil, &NestedExistsProjectionError{}
 	}
 	switch c := ctx.(type) {
@@ -83,26 +120,24 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 			}
 			return &predicateValue{pred: pred}, nil
 		}
-		if allowComparisons {
-			if bc, ok := c.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext); ok {
-				pred, err := r.walkBinaryComparison(bc)
-				if err != nil {
-					return nil, err
-				}
-				return &predicateValue{pred: pred}, nil
-			}
+		// A comparison atom is NOT special-cased here: walkAtomInner below
+		// resolves it in this same position. Two places deciding what an atom
+		// means is the shape of the defect this walk was unified to remove.
+		if pos.isProjection() {
 			// RFC-141: a parenthesized EXISTS in a projection — `SELECT (EXISTS(
 			// ...))` — surfaces here as a PredicatedExpression over a paren-wrap
-			// RecordConstructor. walkAtom's recursion would re-enter via
-			// WalkExpression (predicate context, allowComparisons=false) and lose
-			// the projection position, yielding a predicateValue → NULL column.
-			// Detect the wrapped EXISTS atom and fold it as a Value directly, the
-			// same as the bare `SELECT EXISTS(...)` case.
+			// RecordConstructor. Fold the wrapped EXISTS atom as a Value directly,
+			// the same as the bare `SELECT EXISTS(...)` case. Projection ONLY: in
+			// an operand position the ExistsValue would sit above the FlatMap with
+			// the binding dead, so EXISTS stays on the predicate path there.
 			if existsAtom := existsAtomInExpressionAtom(c.ExpressionAtom()); existsAtom != nil {
 				return r.walkExistsValue(existsAtom)
 			}
 		}
-		return r.walkAtom(c.ExpressionAtom())
+		// The caller's position is PROPAGATED, not reset. A paren-unwrap inside
+		// walkAtom re-enters this function, and resetting here is what made `(x)`
+		// resolve differently from `x`.
+		return r.walkAtomInner(c.ExpressionAtom(), pos)
 	case *antlrgen.LogicalExpressionContext:
 		pred, err := r.walkLogicalExpression(c)
 		if err != nil {
@@ -117,7 +152,7 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 		// other NOT operands stay on the predicate path (their per-row eval is
 		// the 3VL predicate, not a column value). Detect the EXISTS atom
 		// structurally (no double-walk of non-EXISTS operands).
-		if allowComparisons {
+		if pos.isProjection() {
 			if existsAtom := existsAtomOf(c.Expression()); existsAtom != nil {
 				childVal, err := r.walkExistsValue(existsAtom)
 				if err != nil {
@@ -134,12 +169,11 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 	case *antlrgen.ExistsExpressionAtomContext:
 		// RFC-141: the SAME ExistsValue is produced for EXISTS regardless of
 		// position; the consumer decides. A SELECT-element/projection position
-		// (WalkExpressionForProjection → allowComparisons) uses the ExistsValue
-		// directly as the column value; a predicate position wraps it via
-		// ExistsValueToQueryPredicate. The split is structural (which walk is
-		// invoked), not a flag on the value — mirroring Java's single-visitor /
-		// two-consumer design.
-		if allowComparisons {
+		// uses the ExistsValue directly as the column value; every other
+		// position wraps it via ExistsValueToQueryPredicate. The split is
+		// structural (which position is being resolved), not a flag on the
+		// value — mirroring Java's single-visitor / two-consumer design.
+		if pos.isProjection() {
 			return r.walkExistsValue(c)
 		}
 		pred, err := r.walkExistsPredicate(c)
@@ -151,15 +185,44 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
 
-// walkAtom dispatches concrete ExpressionAtom variants. Returns a
-// Value OR — for BinaryComparisonPredicate atoms — a
-// *predicates.ComparisonPredicate wrapped as a Value, since the
-// grammar treats binary comparisons as atoms but the analyzer
-// surfaces them as predicates. Callers should type-switch the
-// return to pick up both shapes.
+// walkAtom resolves an atom in a BOOLEAN context, where a comparison is a
+// predicate and not a value. Arithmetic, bitwise and LIKE operands use it:
+// `(a > 3) + 1` and `(a > 3) LIKE 'x'` are type errors, and they must stay
+// errors.
 func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
+	return r.walkAtomInner(atom, posPredicate)
+}
+
+// walkOperand is THE operand walk — the Go analogue of the single
+// `visit(ctx.expressionAtom())` Java shares across its IS, IN, BETWEEN and
+// binary-comparison arms. Every one of those positions accepts a comparison
+// as an operand, because a comparison is a boolean-typed expression there.
+//
+// There is deliberately ONE of these. Giving the IS operand its own walk left
+// the sibling positions rejecting `(a > 3)` while IS accepted it — the same
+// bug four more times, and the shape of the bug was that each position decided
+// for itself what its operand meant.
+func (r *Resolver) walkOperand(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
+	return r.walkAtomInner(atom, posOperand)
+}
+
+// walkAtomInner dispatches concrete ExpressionAtom variants in the caller's
+// position. Returns a Value OR — where the position allows a comparison — a
+// predicate wrapped as a Value, since the grammar treats binary comparisons as
+// atoms but the analyzer surfaces them as predicates.
+func (r *Resolver) walkAtomInner(atom antlrgen.IExpressionAtomContext, pos walkPos) (values.Value, error) {
 	if atom == nil {
 		return nil, fmt.Errorf("expr.walkAtom: nil atom")
+	}
+	if bc, ok := atom.(*antlrgen.BinaryComparisonPredicateContext); ok && pos.allowsComparisons() {
+		// The UNPARENTHESISED form, e.g. `a > 3 IS NULL`. The parenthesised one
+		// reaches the same place through walkRecordConstructorInner below,
+		// which is the point: `(x)` and `x` resolve identically.
+		pred, err := r.walkBinaryComparison(bc)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
 	}
 	switch a := atom.(type) {
 	case *antlrgen.FullColumnNameExpressionAtomContext:
@@ -169,10 +232,10 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 	case *antlrgen.RecordConstructorExpressionAtomContext:
 		// A parenthesised single expression `(x)` surfaces as a
 		// RecordConstructor with exactly one child. Unwrap and
-		// recurse. Multi-element or named-field record constructors
-		// need dedicated support (RecordConstructorValue in cascades)
-		// and aren't wired yet.
-		return r.walkRecordConstructor(a.RecordConstructor())
+		// recurse IN THE CALLER'S POSITION. Multi-element or named-field record
+		// constructors need dedicated support (RecordConstructorValue in
+		// cascades) and aren't wired yet.
+		return r.walkRecordConstructorInner(a.RecordConstructor(), pos)
 	case *antlrgen.MathExpressionAtomContext:
 		// `a + b`, `a * b`, etc. Recurse on both operands and
 		// resolve via ResolveArithmetic. MOD / DIV / MODULE +
@@ -408,6 +471,28 @@ func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContex
 	return values.NewScalarFunctionValue(name, typ), nil
 }
 
+// walkCaseConsequent resolves a CASE THEN/ELSE arm.
+//
+// A comparison is a LEGAL consequent: `CASE WHEN id = 1 THEN a > 3 ELSE FALSE
+// END` produces a boolean-valued column. Java's visitCaseFunctionCall asserts
+// BOOLEAN on the CONDITION only and passes the consequent through untyped, and
+// __pick_value / PickValue folds the alternatives with Type.maximumType, which
+// unifies BOOLEAN with BOOLEAN without complaint.
+//
+// This walk used to be the plain predicate-context one, justified by a claim
+// that Java rejects a comparison consequent. Measured against the live Java
+// conformance server, Java ACCEPTS it and Go rejected it with 0AF00 — the claim
+// was inverted, and it had hardened into an asserted parity invariant. The
+// measurement is committed as conformance's boolean-operand probe so the
+// behaviour is sourced rather than remembered.
+//
+// posOperand rather than posProjection: the consequent is a value position, but
+// it is not the SELECT item whose EXISTS folding rules depend on the FlatMap
+// binding, so EXISTS stays exactly where it was.
+func (r *Resolver) walkCaseConsequent(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	return r.walkExpressionInner(ctx, posOperand)
+}
+
 // walkCaseFunctionCall handles searched CASE expressions:
 //
 //	CASE WHEN cond1 THEN val1 WHEN cond2 THEN val2 ELSE def END
@@ -449,7 +534,7 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CASE consequent arg ctx %T", consArg)}
 		}
-		consVal, err := r.WalkExpression(consArgCtx.Expression())
+		consVal, err := r.walkCaseConsequent(consArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -466,7 +551,7 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CASE ELSE arg ctx %T", elseArg)}
 		}
-		elseVal, err := r.WalkExpression(elseArgCtx.Expression())
+		elseVal, err := r.walkCaseConsequent(elseArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -1288,7 +1373,7 @@ func numericConstantToFloat64(v values.Value) (float64, bool) {
 // parenthesised expressions `(expr)`. Multi-element or annotated
 // record constructors require dedicated values.RecordConstructorValue
 // support, not wired yet.
-func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) (values.Value, error) {
+func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorContext, pos walkPos) (values.Value, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("expr.walkRecordConstructor: nil")
 	}
@@ -1313,7 +1398,11 @@ func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) 
 	if rcc.OfTypeClause() != nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with OfType"}
 	}
-	return r.WalkExpression(ewon.Expression())
+	// The caller's position, NOT a fresh predicate context. Hardcoding
+	// WalkExpression here made every paren-unwrap discard where it was, so a
+	// parenthesised comparison was rejected in five operand positions that
+	// accept the same comparison unparenthesised.
+	return r.walkExpressionInner(ewon.Expression(), pos)
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades
@@ -1528,64 +1617,6 @@ func flattenOr(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
 	return out
 }
 
-// walkIsOperand resolves the left operand of `IS [NOT] NULL / TRUE / FALSE`.
-//
-// It differs from walkAtom in one respect: a COMPARISON is a legal operand
-// here. `(a > 3) IS NULL` asks whether the comparison evaluated to UNKNOWN,
-// which is a question about three-valued logic and the only way to ask it in
-// SQL — so it is the third branch of every ternary-logic partition.
-//
-// Java accepts it. Comparisons there are always Values (RelOpValue), the
-// one-field record flatten (SqlFunctionCatalog.flattenRecordWithOneField)
-// removes the parentheses, and IsNullFn declares its parameter as Type.Any, so
-// the operand reaches Comparisons.Type.IS_NULL as a boolean-typed Value
-// (RelOpValue.java: IS_NULL_BI). Go reaches the same predicate by a different
-// route — a comparison in a value position becomes a predicateValue, whose
-// Evaluate returns nil for UNKNOWN — and the AND/OR/NOT and nested-IS-NULL
-// operand shapes already travelled it. Only the BARE comparison did not,
-// because walkAtom resolves a paren-wrap through WalkExpression, which
-// suppresses comparisons.
-//
-// That suppression is deliberate and is NOT relaxed here: it exists so a CASE
-// WHEN ... THEN branch cannot take a comparison, matching Java's rejection of
-// `WHERE CASE WHEN ... THEN a < b`. The IS operand is a different position
-// with a different Java answer, so it gets its own resolver rather than a flag
-// on the shared one.
-func (r *Resolver) walkIsOperand(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
-	switch a := atom.(type) {
-	case *antlrgen.BinaryComparisonPredicateContext:
-		pred, err := r.walkBinaryComparison(a)
-		if err != nil {
-			return nil, err
-		}
-		return &predicateValue{pred: pred}, nil
-	case *antlrgen.RecordConstructorExpressionAtomContext:
-		if inner := parenWrappedExpression(a.RecordConstructor()); inner != nil {
-			return r.walkExpressionInner(inner, true)
-		}
-	}
-	return r.walkAtom(atom)
-}
-
-// parenWrappedExpression returns the single expression a `(x)` paren-wrap
-// carries, or nil when the record constructor is a real one (multi-element,
-// named field, or OF TYPE) rather than parentheses.
-func parenWrappedExpression(rc antlrgen.IRecordConstructorContext) antlrgen.IExpressionContext {
-	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
-	if !ok || rcc.OfTypeClause() != nil {
-		return nil
-	}
-	exprs := rcc.AllExpressionWithOptionalName()
-	if len(exprs) != 1 {
-		return nil
-	}
-	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
-	if !ok || ewon.Uid() != nil {
-		return nil
-	}
-	return ewon.Expression()
-}
-
 // walkGrammarPredicate handles PredicateContext shapes that modify
 // a preceding atom — IS [NOT] NULL today, BETWEEN / IN / LIKE in
 // follow-up commits.
@@ -1595,7 +1626,7 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 	}
 	switch p := pred.(type) {
 	case *antlrgen.IsExpressionContext:
-		lhs, err := r.walkIsOperand(atom)
+		lhs, err := r.walkOperand(atom)
 		if err != nil {
 			return nil, err
 		}
@@ -1633,7 +1664,7 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("Expressions ctx %T", exprs)}
 		}
-		lhsVal, err := r.walkAtom(atom)
+		lhsVal, err := r.walkOperand(atom)
 		if err != nil {
 			return nil, err
 		}
@@ -1703,15 +1734,15 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		// `x BETWEEN lo AND hi` → x >= lo AND x <= hi.
 		// `x NOT BETWEEN lo AND hi` → NOT (x >= lo AND x <= hi),
 		// which the NotComparisonRewrite rule will canonicalise.
-		lhsVal, err := r.walkAtom(atom)
+		lhsVal, err := r.walkOperand(atom)
 		if err != nil {
 			return nil, err
 		}
-		loVal, err := r.walkAtom(p.GetLeft())
+		loVal, err := r.walkOperand(p.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		hiVal, err := r.walkAtom(p.GetRight())
+		hiVal, err := r.walkOperand(p.GetRight())
 		if err != nil {
 			return nil, err
 		}
@@ -1770,11 +1801,11 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 	if err != nil {
 		return nil, err
 	}
-	left, err := r.walkAtom(bc.GetLeft())
+	left, err := r.walkOperand(bc.GetLeft())
 	if err != nil {
 		return nil, err
 	}
-	right, err := r.walkAtom(bc.GetRight())
+	right, err := r.walkOperand(bc.GetRight())
 	if err != nil {
 		return nil, err
 	}

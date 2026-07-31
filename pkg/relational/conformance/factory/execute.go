@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/relational/api"
@@ -52,6 +54,11 @@ type OracleStats struct {
 	// CrossEngineKept / CrossEngineViolations count the Java leg.
 	CrossEngineKept       int `json:"cross_engine_kept"`
 	CrossEngineViolations int `json:"cross_engine_violations"`
+	// TLPOnlyBlessed counts candidates blessed on TLP alone because the
+	// second-plan oracle was STRUCTURALLY inapplicable to their shape. It is
+	// reported so the size of the exemption is visible rather than inferred
+	// from the difference between two other counters.
+	TLPOnlyBlessed int `json:"tlp_only_blessed"`
 }
 
 // Add folds b into s.
@@ -63,6 +70,7 @@ func (s *OracleStats) Add(b OracleStats) {
 	s.SecondPlanViolations += b.SecondPlanViolations
 	s.CrossEngineKept += b.CrossEngineKept
 	s.CrossEngineViolations += b.CrossEngineViolations
+	s.TLPOnlyBlessed += b.TLPOnlyBlessed
 }
 
 // Finding is an oracle DISAGREEMENT: two things that must agree did not.
@@ -94,6 +102,9 @@ type Outcome struct {
 	Skip      string
 	Findings  []*Finding
 	Stats     OracleStats
+	// InapplicableFamily names the structural-inapplicability family that
+	// permitted a TLP-only blessing, or "" when every applicable oracle ran.
+	InapplicableFamily string
 }
 
 // CrossEngine is the Java leg. plandiff.SetupRunner satisfies it; the
@@ -186,9 +197,13 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 		return out
 	}
 
+	// One value, read once, feeding both the oracle below and the frozen
+	// expectation further down. See Candidate.Ordered for why it is a method.
+	ordered := cand.Ordered()
+
 	// --- Oracle 2: second-plan agreement -----------------------------------
 	for i, s := range sqls {
-		kept, detail, err := r.secondPlan(ctx, s, results[i])
+		kept, detail, err := r.secondPlan(ctx, s, results[i], ordered)
 		if err != nil {
 			out.Skip = fmt.Sprintf("second-plan infra on %s: %v", TLPLabels[i], err)
 			return out
@@ -242,16 +257,36 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 		oracles = append(oracles, "cross-engine")
 	}
 
-	// RFC-201 §5, ruling on what "blessed" means: cross-engine agreement, OR
-	// UNANIMOUS metamorphic oracles. TLP alone is not unanimity — it is one
-	// oracle, and it is blind to a planner that returns a consistent partition
-	// of the wrong rows. A candidate whose plans never reached an index gives
-	// the second-plan oracle nothing to perturb, so it is counted out rather
-	// than blessed on the weaker evidence.
+	// What "blessed" means: cross-engine agreement, OR every APPLICABLE
+	// metamorphic oracle agreed.
+	//
+	// "Applicable" is the load-bearing word, and it is decided STRUCTURALLY —
+	// by the shape, against a ledger of families whose inapplicability a
+	// committed pin establishes — never by the observation that this run
+	// happened to skip. The distinction is the difference between an exemption
+	// and an excuse: a per-case skip means the oracle did not apply here, which
+	// is usually a property of the data or the plan and says nothing about
+	// whether it COULD have; a structural claim means it can never apply to
+	// this shape, which is a fact somebody measured and which goes stale
+	// loudly when the structure changes.
+	//
+	// A candidate outside the ledger whose second plan never differed stays
+	// UNBLESSABLE. TLP alone is one oracle, and it is blind to a planner
+	// returning a consistent partition of the wrong rows.
 	if blessing == factorycorpus.BlessingMetamorphic && out.Stats.SecondPlanKept == 0 {
-		out.Skip = "metamorphic blessing needs BOTH oracles; disabling " + secondPlanDisabledRule +
-			" left the plan unchanged for all four renderings, so the second-plan oracle had nothing to compare"
-		return out
+		family := secondPlanInapplicableFor(cand)
+		if family == nil {
+			out.Skip = "metamorphic blessing needs every applicable oracle; disabling " + secondPlanDisabledRule +
+				" left the plan unchanged for all four renderings, and this shape is not a family whose " +
+				"second-plan inapplicability is structurally established"
+			return out
+		}
+		// TLP alone, under its OWN label. Never the plain metamorphic one:
+		// authority is a census dimension, and a weaker case absorbed into a
+		// stronger label makes the measurement lie.
+		blessing = factorycorpus.BlessingMetamorphicTLPOnly
+		out.Stats.TLPOnlyBlessed++
+		out.InapplicableFamily = family.Family
 	}
 
 	scenario := &yamsql.Scenario{
@@ -259,7 +294,6 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 		SchemaTemplate: ddl,
 		Setup:          []string{insert},
 	}
-	ordered := len(cand.Query.OrderBy) > 0
 	for i, s := range sqls {
 		scenario.Tests = append(scenario.Tests, yamsql.Test{
 			Query:     s,
@@ -298,16 +332,50 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 //
 // The precondition is plan INEQUALITY and nothing more. An earlier version
 // also demanded the second plan be index-free, on the theory that disabling
-// index matching must remove every index scan. That is a proxy, and the first
-// factory run refuted it: a correlated `NOT EXISTS` keeps `IndexScan(IDX_A,
-// [=])` in the FlatMap's inner leg with MatchLeafRule disabled, because the
-// correlated probe is not what that rule produces. The proxy would have
-// reported a correct engine as a broken option on every such query. What
-// actually guards against the option being accepted and ignored is the
-// RUN-LEVEL floor on SecondPlanKept — if the option never bites, every case
-// skips and the run says so — not a per-case guess about which plan shapes the
-// rule owns.
-func (r *Runner) secondPlan(ctx context.Context, sqlText string, baseRows [][]any) (kept bool, detail string, err error) {
+// index matching must remove every index scan. That is a proxy, and it is
+// refuted by the planner itself: MatchLeafRule is the sole seed of PartialMatch
+// objects (rule_match_leaf.go:76 is the only unconditional NewPartialMatch
+// call; MatchIntermediateRule and AdjustMatchRule both extend matches that
+// already exist), so disabling it does starve the whole match/data-access
+// pipeline — but the match pipeline is not the only thing that builds an index
+// scan. Four paths construct one WITHOUT ever touching a PartialMatch:
+// ImplementNestedLoopJoinRule.tryExistsFlatMap
+// (rule_implement_nested_loop_join.go:4330), AggregateDataAccessRule,
+// OrderedIndexScanRule and StreamingAggFromIndexRule — each reads
+// GetMatchCandidates() directly.
+//
+// The correlated-`NOT EXISTS` counterexample the first factory run hit is the
+// first of those: tryExistsFlatMap builds a `RecordQueryIndexPlan` from one
+// `ComparisonEquals` range, which renders as `IndexScan(IDX_A, [=])` in the
+// FlatMap's inner leg, and it survives MatchLeafRule being off because the
+// correlated probe is genuinely not what that rule produces. (The other three
+// pass an empty comparison prefix, so they emit only full-range scans and
+// cannot produce a `[=]` bound.) TestFDB_SecondPlanKeepsCorrelatedIndexProbe
+// pins that shape so the claim stays checkable.
+//
+// Measuring it turned up more than the counterexample: on a correlated-EXISTS
+// query the OUTER leg is a filtered full scan in the baseline too, even with
+// its filtered column indexed, so the two plans come out IDENTICAL and this
+// oracle skips every such candidate. Combined with the both-oracles blessing
+// rule below, that is why no committed scenario carries an `exists=` feature
+// vector. TestFDB_SecondPlanIsBlindToCorrelatedExists holds that measurement.
+//
+// The proxy would therefore have reported a correct engine as a broken option
+// on every such query. What actually guards against the option being accepted
+// and ignored is the RUN-LEVEL floor on SecondPlanKept — if the option never
+// bites, every case skips and the run says so — not a per-case guess about
+// which plan shapes the rule owns.
+//
+// ordered decides how the two plans' rows are compared, and it is the whole
+// point of running this oracle on a sorted query. Disabling index matching
+// removes the ORDERINGS an index provides, so the second plan reaches its rows
+// by a different route and must re-establish the sort; an ordering bug is
+// precisely what this perturbation is built to surface, and a multiset compare
+// is blind to it. It is safe to demand sequence equality because the generator
+// always suffixes ORDER BY with the primary key (rowdiff/gen.go:175-177), so
+// every generated sort is a TOTAL order and two correct plans cannot
+// legitimately disagree on tie placement.
+func (r *Runner) secondPlan(ctx context.Context, sqlText string, baseRows [][]any, ordered bool) (kept bool, detail string, err error) {
 	basePlan, err := explainOn(ctx, r.DefaultConn, sqlText)
 	if err != nil {
 		return false, "", fmt.Errorf("EXPLAIN baseline: %w", err)
@@ -323,11 +391,44 @@ func (r *Runner) secondPlan(ctx context.Context, sqlText string, baseRows [][]an
 	if err != nil {
 		return false, "", fmt.Errorf("second-plan execution: %w", err)
 	}
-	if d := multisetDiff(baseRows, altRows); d != "" {
-		return true, fmt.Sprintf("two plans for one query returned different rows: %s\n  baseline plan: %s\n  second plan:   %s\n  SQL: %s",
-			d, basePlan, altPlan, sqlText), nil
+	if d := rowsDiff(ordered, baseRows, altRows); d != "" {
+		how := "as multisets"
+		if ordered {
+			how = "as sequences (the query carries ORDER BY, and the committed expectation freezes that exact sequence)"
+		}
+		return true, fmt.Sprintf("two plans for one query returned different rows %s: %s\n  baseline plan: %s\n  second plan:   %s\n  SQL: %s",
+			how, d, basePlan, altPlan, sqlText), nil
 	}
 	return true, "", nil
+}
+
+// rowsDiff compares two row sets the way the CANDIDATE will be committed: as
+// sequences when its query is ordered, as multisets otherwise.
+//
+// Tying the comparison to how the scenario freezes its rows is what keeps the
+// oracle honest. A blessed ordered scenario asserts an exact row sequence
+// (yamsql.Test.Unordered is false), so an oracle that only ever checked the
+// multiset would freeze a sequence no oracle ever looked at.
+func rowsDiff(ordered bool, a, b [][]any) string {
+	if ordered {
+		return sequenceDiff(a, b)
+	}
+	return multisetDiff(a, b)
+}
+
+// sequenceDiff reports the first positional difference between two row
+// sequences, or "".
+func sequenceDiff(a, b [][]any) string {
+	ka, kb := rowKeysInOrder(a), rowKeysInOrder(b)
+	if len(ka) != len(kb) {
+		return fmt.Sprintf("row count %d vs %d", len(ka), len(kb))
+	}
+	for i := range ka {
+		if ka[i] != kb[i] {
+			return fmt.Sprintf("at position %d: %s vs %s", i, ka[i], kb[i])
+		}
+	}
+	return ""
 }
 
 // checkPartition is the TLP property: the rows of `p`, `NOT p` and `p IS NULL`
@@ -375,6 +476,16 @@ func multisetDiff(a, b [][]any) string {
 }
 
 func rowKeys(rows [][]any) []string {
+	out := rowKeysInOrder(rows)
+	sort.Strings(out)
+	return out
+}
+
+// rowKeysInOrder renders each row to a comparable key, PRESERVING the order the
+// engine returned them in. rowKeys is this plus a sort; the two must render a
+// row identically or an ordered and an unordered comparison of the same data
+// would disagree about what a row IS.
+func rowKeysInOrder(rows [][]any) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		parts := make([]string, len(r))
@@ -383,7 +494,6 @@ func rowKeys(rows [][]any) []string {
 		}
 		out = append(out, strings.Join(parts, "|"))
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -437,12 +547,44 @@ func crossScalar(v any) string {
 	case string:
 		return "s:" + x
 	case int64:
-		return fmt.Sprintf("n:%.9g", float64(x))
+		// EXACT, never through float64. An earlier version rendered every
+		// number with %.9g, which has nine significant digits and therefore
+		// cannot tell two large int64s apart: 2^62 and 2^62+1 — and 2^62 IS in
+		// the committed corpus, it is one of rowdiff's boundary values — both
+		// collapse to "4.61168602e+18". A differential oracle that reports two
+		// different values as equal is worse than no oracle: it passes.
+		return "n:" + strconv.FormatInt(x, 10)
 	case float64:
-		return fmt.Sprintf("n:%.9g", x)
+		return "n:" + crossFloat(x)
 	default:
 		return fmt.Sprintf("?:%v", x)
 	}
+}
+
+// crossFloat renders a float64 so that an INTEGRAL value compares equal to the
+// int64 that Go returned for the same column.
+//
+// That equality is the whole reason this is not just %v. Java's JSON transport
+// has one number type, so a BIGINT arrives here as a float64 while Go's driver
+// hands back an int64, and rendering the two differently would report the
+// TRANSPORT as an engine divergence on every integer column. Non-integral
+// values fall through to a round-trippable rendering ('g' with 17 significant
+// digits, enough to distinguish any two distinct float64s), and signed zero is
+// kept distinct because +0.0 and -0.0 are genuinely different values under the
+// FDB tuple ordering the sort keys use.
+func crossFloat(x float64) string {
+	if x == 0 {
+		if math.Signbit(x) {
+			return "-0"
+		}
+		return "0"
+	}
+	// The bounds are the exactly-representable float64 neighbours of the int64
+	// range; outside them the int64 conversion is undefined.
+	if !math.IsNaN(x) && x == math.Trunc(x) && x >= -9223372036854775808.0 && x < 9223372036854775808.0 {
+		return strconv.FormatInt(int64(x), 10)
+	}
+	return strconv.FormatFloat(x, 'g', 17, 64)
 }
 
 // queryRows executes and materializes rows in the yamsql expectation form:
@@ -479,12 +621,35 @@ func queryRows(ctx context.Context, conn *sql.Conn, sqlText string) ([][]any, er
 	return out, rows.Err()
 }
 
+// explainOn returns the query's plan text with generated correlation
+// identifiers renumbered per-plan.
+//
+// The normalization is load-bearing, not cosmetic, and the failure it prevents
+// is measured rather than argued. `q$6381` carries a PROCESS-GLOBAL counter, so
+// the same plan rendered on the baseline connection and on the second-plan
+// connection gets different numbers: `SELECT (SELECT MIN(b) FROM t) FROM t`
+// comes back as `Project([(SCALAR_SUBQUERY q$11)], Scan(T))` on one and
+// `...q$38...` on the other, for a query MatchLeafRule cannot touch at all.
+//
+// The oracle's entire precondition is the string comparison
+// `altPlan == basePlan`. Left raw, those two IDENTICAL plans compare unequal,
+// the case counts as SecondPlanKept, and a tautological "the engine agrees with
+// itself" comparison is banked as a real check. That also disarms the
+// run-level went-dark floor, which fires only when kept == 0 — so the harness
+// would report a well-exercised oracle built entirely out of counter drift.
+// A scalar subquery is drawn on roughly a fifth of the generator's plain
+// queries, so this is a routine shape, not a corner.
+//
+// It reuses explaindiff's normalizer rather than replicating it: that one is
+// already pinned as stable and injective by
+// TestNormalizeAliasesIsStableAndInjective, and two copies of an
+// erase-this-but-not-that rule drift.
 func explainOn(ctx context.Context, conn *sql.Conn, sqlText string) (string, error) {
 	var plan string
 	if err := conn.QueryRowContext(ctx, "EXPLAIN "+sqlText).Scan(&plan); err != nil {
 		return "", err
 	}
-	return plan, nil
+	return explaindiff.NormalizeAliases(plan), nil
 }
 
 // PinConn returns a pinned connection with the given planner options applied.

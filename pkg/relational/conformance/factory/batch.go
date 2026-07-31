@@ -37,6 +37,14 @@ type Manifest struct {
 	// DedupPoints is the number of distinct points the committed corpus covers
 	// after this batch.
 	DedupPoints int `json:"dedup_points"`
+	// NameCollisions counts blessed candidates whose file name was already
+	// taken on disk. It is called out as its own field rather than left in the
+	// skip ledger because it is the one skip class that means a committed
+	// scenario was nearly destroyed: the file name and the dedup key are
+	// independent, so a planner change moves the key (dedup misses) without
+	// moving the name (the write would clobber). A non-zero value is a
+	// statement about the ENGINE, not about the batch.
+	NameCollisions int `json:"name_collisions"`
 	// SkipsByReason is the counted-skip ledger. Every candidate that did not
 	// become a test appears here under a reason class; a run whose skips do
 	// not account for its candidates is a run with a silent drop in it.
@@ -45,11 +53,20 @@ type Manifest struct {
 	// a count and no example is a class nobody can triage: "second-plan infra
 	// 28" is indistinguishable between a transport hiccup and the disabled-rule
 	// option being accepted and ignored, and those are a shrug and an emergency.
-	SkipSamples map[string][]string  `json:"skip_samples"`
-	Oracles     OracleStats          `json:"oracles"`
-	Blessings   map[string]int       `json:"blessings"`
-	Findings    int                  `json:"findings"`
-	Census      factorycorpus.Census `json:"census_after"`
+	SkipSamples map[string][]string `json:"skip_samples"`
+	Oracles     OracleStats         `json:"oracles"`
+	Blessings   map[string]int      `json:"blessings"`
+	// Exemptions names the structural-inapplicability families available to
+	// this run, each with the pin establishing it and the oracle that would
+	// retire it. A batch that blessed anything on fewer oracles than the rest
+	// says so here, in the same document as the counts — an exemption a
+	// reader has to go find in the source is one they will not.
+	Exemptions []string `json:"exemptions"`
+	// BlessedByFamily counts TLP-only blessings per exemption family, so the
+	// SIZE of each weakening is visible next to its justification.
+	BlessedByFamily map[string]int       `json:"blessed_by_family"`
+	Findings        int                  `json:"findings"`
+	Census          factorycorpus.Census `json:"census_after"`
 }
 
 // Batch accumulates a run's committed output and enforces the dedup rule.
@@ -75,6 +92,8 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 	b.manifest.SkipsByReason = map[string]int{}
 	b.manifest.SkipSamples = map[string][]string{}
 	b.manifest.Blessings = map[string]int{}
+	b.manifest.BlessedByFamily = map[string]int{}
+	b.manifest.Exemptions = InapplicabilityLedger()
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, err
@@ -130,6 +149,37 @@ func (b *Batch) Offer(o Outcome) (string, error) {
 		return "", fmt.Errorf("marshal %s: %w", o.Header.Name, err)
 	}
 	path := filepath.Join(b.Dir, o.Header.Name+".yaml")
+
+	// A batch must never overwrite a committed scenario, and dedup is not what
+	// stops it: the two keys are INDEPENDENT. The file name comes from (seed,
+	// query index, projection); the dedup key comes from (feature vector, plan
+	// shape). Change the planner and a seed's plan shape moves, so the dedup key
+	// moves, so the dedup lookup MISSES — while the name is byte-identical to
+	// the file already on disk. The write would then silently replace a
+	// committed expectation with a freshly blessed one, the census would be
+	// recomputed from the overwritten directory, and the ratchet, which measures
+	// that same directory, would see nothing. Every instrument would agree that
+	// nothing happened.
+	//
+	// So the collision is refused and NAMED. There is no benign version of it to
+	// carve out: a re-run against an unchanged engine re-derives the same dedup
+	// key, and the dedup check above rejects it before the writer is reached.
+	// Getting here at all means the key moved while the name did not, and the
+	// only content that could be under this name is content this batch was
+	// about to replace.
+	if _, err := os.Lstat(path); err == nil {
+		b.manifest.NameCollisions++
+		b.manifest.SkipsByReason["name-collision"]++
+		if len(b.manifest.SkipSamples["name-collision"]) < maxSkipSamples {
+			b.manifest.SkipSamples["name-collision"] = append(b.manifest.SkipSamples["name-collision"],
+				fmt.Sprintf("%s already exists at a DIFFERENT dedup key (%s); refusing to overwrite a committed scenario",
+					path, o.Header.DedupKey))
+		}
+		return "", nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
@@ -143,6 +193,9 @@ func (b *Batch) Offer(o Outcome) (string, error) {
 	b.seen[o.Header.DedupKey] = path
 	b.manifest.Committed++
 	b.manifest.Blessings[string(o.Header.Blessing)]++
+	if o.InapplicableFamily != "" {
+		b.manifest.BlessedByFamily[o.InapplicableFamily]++
+	}
 	return path, nil
 }
 

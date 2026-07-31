@@ -47,7 +47,9 @@ go_test(
     name = "factorycorpus_test",
     timeout = "long",  # keep: spins an FDB container and runs ~100 scenarios
     srcs = [
+        "blessing_ratchet_test.go",
         "census_test.go",
+        "header_duplicate_test.go",
         "sample_fdb_test.go",
         "writer_test.go",
     ],

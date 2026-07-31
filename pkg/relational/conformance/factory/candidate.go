@@ -53,6 +53,21 @@ func (c Candidate) Name() string {
 	return fmt.Sprintf("fc_%010d_q%d_p%d", c.Seed, c.QueryIndex, c.ProjIndex)
 }
 
+// Ordered reports whether the candidate's query fixes a row order.
+//
+// It is a method rather than an expression written twice because TWO decisions
+// depend on it and they must never diverge: how the second-plan oracle compares
+// the two plans' rows, and how the committed scenario asserts them
+// (yamsql.Test.Unordered). Freezing an exact sequence that no oracle ever
+// checked as a sequence is a frozen expectation with nothing behind it, and
+// that is precisely what two independently written `len(q.OrderBy) > 0` checks
+// would eventually produce.
+//
+// It reads the candidate's ORIGINAL query, which is correct for all four TLP
+// renderings: the WHERE override replaces only the predicate conjunct and never
+// touches ORDER BY.
+func (c Candidate) Ordered() bool { return len(c.Query.OrderBy) > 0 }
+
 // TLPQueries returns the four renderings of the ternary-logic partition, in
 // the order (base, p, NOT p, p IS NULL).
 //
@@ -99,8 +114,14 @@ var TLPLabels = []string{"unfiltered", "p", "not-p", "p-is-null"}
 //     would produce four identical queries and a partition that "holds"
 //     trivially — a tautological oracle, the exact instrument failure class
 //     RFC-201 §8.5 gates against.
-//   - LIMIT: the partition is over the FULL result; truncating each branch
-//     independently does not reassemble.
+//   - LIMIT or OFFSET: the partition is over the FULL result; truncating or
+//     skipping a prefix of each branch independently does not reassemble.
+//     OFFSET is guarded on its own and not left to ride on LIMIT. Today the
+//     generator only ever draws an offset alongside a limit, and the renderer
+//     only emits OFFSET inside a LIMIT clause, so an offset-only query is
+//     currently unreachable — but eligibility is a claim about whether the
+//     PARTITION PROPERTY HOLDS for a query spec, and it must not be true only
+//     because of what a renderer two files away happens to drop on the floor.
 //   - DISTINCT: dedup does not distribute over a partition. A value appearing
 //     in both the p and the NOT-p branch survives once in each branch and once
 //     in the union — three rows on the left, one on the right.
@@ -136,6 +157,7 @@ func tlpEligible(q rowdiff.Query) bool {
 		q.Union != nil,
 		q.Derived != nil,
 		q.Limit > 0,
+		q.Offset > 0,
 		q.Distinct:
 		return false
 	}

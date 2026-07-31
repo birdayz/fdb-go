@@ -21,10 +21,22 @@ type Census struct {
 	// audit: a shrink here names exactly which query shape stopped being
 	// covered, which a total count cannot.
 	ByFeature map[string]int `json:"by_feature"`
-	// ByBlessing counts scenarios per blessing authority. It is reported so a
-	// batch cannot quietly downgrade: a corpus drifting from cross-engine to
-	// metamorphic is losing oracle strength while its totals still rise.
+	// ByBlessing counts scenarios per blessing authority. It is REPORTED, so a
+	// batch's authority mix is visible at a glance, but it is deliberately NOT
+	// ratcheted: see ByKeyBlessing.
 	ByBlessing map[string]int `json:"by_blessing"`
+	// ByKeyBlessing maps each scenario's dedup key to its blessing, and it is
+	// what the authority ratchet actually gates on.
+	//
+	// A count floor per label points the WRONG WAY. Promoting a file from
+	// metamorphic to cross-engine — the exact improvement the corpus wants, and
+	// the one the metamorphic label's own doc promises — decrements
+	// `metamorphic`, so a floor on that count fires on the improvement while
+	// staying silent on the downgrade that replaces a cross-engine file with a
+	// brand-new metamorphic one at a different key. Keying by dedup key
+	// compares a scenario against ITSELF across batches, which is the only
+	// comparison that can tell promotion from regression.
+	ByKeyBlessing map[string]string `json:"by_key_blessing"`
 }
 
 // ComputeCensus measures the corpus from the FILES, never from a manifest the
@@ -33,14 +45,16 @@ type Census struct {
 // batch that wrote nothing to disk.
 func ComputeCensus(files []*File) Census {
 	c := Census{
-		ByFeature:  map[string]int{},
-		ByBlessing: map[string]int{},
+		ByFeature:     map[string]int{},
+		ByBlessing:    map[string]int{},
+		ByKeyBlessing: map[string]string{},
 	}
 	for _, f := range files {
 		c.Scenarios++
 		c.Tests += len(f.Scenario.Tests)
 		c.ByFeature[f.Header.FeatureVector]++
 		c.ByBlessing[string(f.Header.Blessing)]++
+		c.ByKeyBlessing[f.Header.DedupKey] = string(f.Header.Blessing)
 	}
 	return c
 }
@@ -93,8 +107,39 @@ func CheckRatchet(baseline, current Census) []string {
 			current.Tests, baseline.Tests, baseline.Tests-current.Tests))
 	}
 	shrinks = append(shrinks, dimensionShrinks("feature-vector", baseline.ByFeature, current.ByFeature)...)
-	shrinks = append(shrinks, dimensionShrinks("blessing", baseline.ByBlessing, current.ByBlessing)...)
+	shrinks = append(shrinks, blessingDowngrades(baseline.ByKeyBlessing, current.ByKeyBlessing)...)
 	return shrinks
+}
+
+// blessingDowngrades compares each scenario's authority against ITS OWN
+// previous authority, and reports only the ones that got weaker.
+//
+// Promotion is silent by design: metamorphic-tlp-only → metamorphic →
+// cross-engine is the whole point of recording authority per file, and a gate
+// that fired on it would make the corpus's own upgrade path a build failure.
+// A key that has disappeared is NOT reported here — deletion is volume, and
+// the scenario and test floors above already own it. Mixing the two would
+// report one removal twice under two names.
+func blessingDowngrades(baseline, current map[string]string) []string {
+	keys := make([]string, 0, len(baseline))
+	for k := range baseline {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, k := range keys {
+		now, ok := current[k]
+		if !ok {
+			continue
+		}
+		was := baseline[k]
+		if BlessingRank(Blessing(now)) < BlessingRank(Blessing(was)) {
+			out = append(out, fmt.Sprintf(
+				"scenario %s was blessed %q and is now %q — a committed expectation may gain authority, never lose it",
+				k, was, now))
+		}
+	}
+	return out
 }
 
 func dimensionShrinks(dim string, baseline, current map[string]int) []string {

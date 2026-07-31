@@ -61,7 +61,9 @@ func main() {
 	flag.StringVar(&cfg.manifest, "manifest", "factory-manifest.json", "path for the run's batch manifest")
 	flag.StringVar(&cfg.date, "date", "", "batch date YYYY-MM-DD, stamped into every header (required: generation must never read the clock)")
 	flag.StringVar(&cfg.javaURL, "java-url", "", "base URL of a running Java conformance server; empty = metamorphic blessing only")
-	flag.BoolVar(&cfg.updateCensus, "update-census", true, "rewrite the corpus census baseline after the batch")
+	flag.BoolVar(&cfg.updateCensus, "update-census", false,
+		"raise the committed census baseline to this batch. OFF by default: the baseline is otherwise VERIFIED, "+
+			"and a producer that rewrites its own standard every run has a ratchet that cannot fire")
 	flag.Parse()
 	os.Exit(run(cfg))
 }
@@ -171,75 +173,161 @@ func run(cfg config) int {
 		Java:        java,
 		Date:        cfg.date,
 	}
+	// A sweep failure is carried out of the loop rather than returned from
+	// inside it, so that every path with findings in hand leaves through the
+	// one place that persists them. A seed that fails on seed 300 has 299
+	// seeds' worth of disagreements in memory and they are no less
+	// irreplaceable than the ones a completed sweep produces.
+	var sweepErr error
 	for seed := cfg.seedStart; seed < cfg.seedStart+cfg.seeds; seed++ {
 		if batch.Full() {
 			break
 		}
 		outcomes, err := sweep.RunSeed(ctx, seed, batch)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "INFRA: seed %d: %v\n", seed, err)
-			return exitInfra
-		}
 		for _, o := range outcomes {
 			findings = append(findings, o.Findings...)
+		}
+		if err != nil {
+			sweepErr = fmt.Errorf("seed %d: %w", seed, err)
+			break
 		}
 		if (seed-cfg.seedStart+1)%25 == 0 {
 			fmt.Printf("  seed %d: committed %d\n", seed, batch.Committed())
 		}
 	}
 
+	manifest, code := persist(cfg, batch, findings, blessingMode, sweepErr)
+	if code != exitOK {
+		return code
+	}
+
+	report(manifest)
+
+	code, why := batchExit(manifest, findings, cfg.findings)
+	if why != "" {
+		fmt.Fprintln(os.Stderr, "\n"+why)
+	}
+	return code
+}
+
+// batchExit is the run's whole decision procedure: given what the batch
+// measured and what it found, which exit code does the run carry, and why.
+//
+// It is a pure function over the manifest and the findings because that is the
+// only way it can be tested. Buried inside run() it was reachable only through
+// a real FDB container and a real sweep, so the four exit codes and the
+// went-dark floor — the entire contract the nightly's automation reads — had
+// no coverage at all. A floor nobody tests is a floor that silently stops
+// firing, which is the same failure class it exists to catch.
+//
+// findingsDir appears only in the message; the decision does not depend on it.
+func batchExit(m factory.Manifest, findings []*factory.Finding, findingsDir string) (int, string) {
+	// The second-plan oracle's run-level floor (RFC-201 §8.5) comes FIRST, and
+	// deliberately outranks the findings. Its per-case precondition is plan
+	// inequality, which degrades silently: if DISABLED_PLANNER_RULES stopped
+	// being honoured, every case would find the two plans identical, every case
+	// would skip, and the run would report a clean green with the oracle
+	// switched off. A run that executed second plans and kept NONE of them is
+	// that state — and a run in that state cannot be trusted to have classified
+	// its findings correctly either, so "the instrument is broken" is the
+	// louder answer than "here are its readings".
+	if o := m.Oracles; o.SecondPlanSkipped > 0 && o.SecondPlanKept == 0 {
+		return exitInfra, fmt.Sprintf("INFRA: the second-plan oracle never saw two different plans in %d executions. "+
+			"DISABLED_PLANNER_RULES=[MatchLeafRule] is being accepted and ignored, or no generated query "+
+			"reaches an index — either way the oracle is dark and nothing it blessed is worth its label.",
+			o.SecondPlanSkipped)
+	}
+	switch {
+	case len(findings) > 0:
+		return exitFindings, fmt.Sprintf("%d ORACLE DISAGREEMENTS persisted under %s — each is a potential engine bug",
+			len(findings), findingsDir)
+	case m.Committed == 0:
+		return exitEmpty, "batch committed nothing: a factory run that writes no test is a broken pipeline, not a quiet success"
+	}
+	return exitOK, ""
+}
+
+// persist writes the run's outputs, FINDINGS FIRST, and returns the manifest
+// plus exitOK or the infra exit code. sweepErr is the failure that ended the
+// sweep early, or nil.
+//
+// The order is the whole point of the function. An oracle disagreement is the
+// loudest signal this system produces — a candidate where two independent
+// authorities disagreed about the rows, i.e. a probable engine bug — and it
+// exists only in memory until it is written. Everything else here can fail:
+// Finish re-reads the corpus directory through the loader, which treats an
+// empty directory as an error (a gate over an empty corpus passes vacuously),
+// so the very first bootstrap run into a fresh directory takes the infra exit
+// path. Writing the manifest can fail on a bad path or a full disk. And the
+// sweep itself can die mid-run with hundreds of seeds' findings already in
+// hand. If any of that is handled before the findings are on disk, a run that
+// found a real bug reports the failure and DESTROYS the evidence, and the bug
+// is only rediscovered if some future run happens to draw the same seed.
+//
+// This is therefore the single exit for every path that has findings in hand,
+// which is why the sweep's error arrives as an argument rather than as an
+// early return at the call site. Nothing downstream needs the findings
+// unwritten, so there is no cost to paying for durability first.
+func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, blessingMode string, sweepErr error) (factory.Manifest, int) {
+	if err := factory.WriteFindings(cfg.findings, findings); err != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: write findings: %v\n", err)
+		return factory.Manifest{}, exitInfra
+	}
+	if sweepErr != nil {
+		fmt.Fprintf(os.Stderr, "INFRA: %v\n", sweepErr)
+		return factory.Manifest{}, exitInfra
+	}
 	manifest, err := batch.Finish(cfg.seedStart, cfg.seeds, cfg.date, blessingMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: finish batch: %v\n", err)
-		return exitInfra
+		return manifest, exitInfra
 	}
 	if err := factory.WriteManifest(cfg.manifest, manifest); err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: write manifest: %v\n", err)
-		return exitInfra
+		return manifest, exitInfra
 	}
-	if err := factory.WriteFindings(cfg.findings, findings); err != nil {
-		fmt.Fprintf(os.Stderr, "INFRA: write findings: %v\n", err)
-		return exitInfra
+	// THE RATCHET IS VERIFIED BY DEFAULT AND REWRITTEN ONLY ON REQUEST.
+	//
+	// A producer that rewrites its own baseline every run makes the ratchet
+	// green by construction: whatever the batch produced becomes the standard
+	// the batch is measured against, so no run can ever fail it, and the
+	// automated lane — which commits the result — never sees a shrink. That is
+	// a gate that cannot fire, which is worse than no gate, because the census
+	// line in the PR still reads like evidence.
+	//
+	// So the default path CHECKS the corpus against the committed baseline and
+	// fails on a downgrade. Raising the baseline is a deliberate act with a
+	// flag, and its diff is then visible in the batch PR as the ratchet delta
+	// — which is the only place authority movement is visible at all.
+	committed, err := factorycorpus.LoadCensus(censusPath(cfg.out))
+	switch {
+	case err != nil && !cfg.updateCensus:
+		fmt.Fprintf(os.Stderr, "INFRA: read committed census baseline: %v\n"+
+			"(bootstrapping a new corpus? re-run with -update-census to write the first baseline)\n", err)
+		return manifest, exitInfra
+	case err == nil:
+		if shrinks := factorycorpus.CheckRatchet(committed, manifest.Census); len(shrinks) > 0 {
+			fmt.Fprintln(os.Stderr, "\nINFRA: this batch SHRANK the committed corpus:")
+			for _, s := range shrinks {
+				fmt.Fprintf(os.Stderr, "  %s\n", s)
+			}
+			return manifest, exitInfra
+		}
 	}
 	if cfg.updateCensus {
-		// The baseline is rewritten from the FILES the batch left on disk, via
-		// the same loader CI uses — never from the batch's own bookkeeping,
-		// which would agree with itself even if nothing had been written.
+		// Rendered from the FILES the batch left on disk, via the same loader
+		// CI uses — never from the batch's own bookkeeping, which would agree
+		// with itself even if nothing had been written.
 		data, err := factorycorpus.RenderCensus(manifest.Census)
 		if err == nil {
 			err = os.WriteFile(censusPath(cfg.out), data, 0o644)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "INFRA: write census baseline: %v\n", err)
-			return exitInfra
+			return manifest, exitInfra
 		}
 	}
-
-	report(manifest)
-
-	// The second-plan oracle's run-level floor (RFC-201 §8.5). Its per-case
-	// precondition is plan inequality, which degrades silently: if
-	// DISABLED_PLANNER_RULES stopped being honoured, every case would find the
-	// two plans identical, every case would skip, and the run would report a
-	// clean green with the oracle switched off. A run that executed second
-	// plans and kept NONE of them is that state.
-	if o := manifest.Oracles; o.SecondPlanSkipped > 0 && o.SecondPlanKept == 0 {
-		fmt.Fprintf(os.Stderr, "\nINFRA: the second-plan oracle never saw two different plans in %d executions. "+
-			"DISABLED_PLANNER_RULES=[MatchLeafRule] is being accepted and ignored, or no generated query "+
-			"reaches an index — either way the oracle is dark and nothing it blessed is worth its label.\n",
-			o.SecondPlanSkipped)
-		return exitInfra
-	}
-
-	switch {
-	case len(findings) > 0:
-		fmt.Fprintf(os.Stderr, "\n%d ORACLE DISAGREEMENTS persisted under %s — each is a potential engine bug\n", len(findings), cfg.findings)
-		return exitFindings
-	case manifest.Committed == 0:
-		fmt.Fprintln(os.Stderr, "\nbatch committed nothing: a factory run that writes no test is a broken pipeline, not a quiet success")
-		return exitEmpty
-	}
-	return exitOK
+	return manifest, exitOK
 }
 
 func censusPath(corpusDir string) string {
@@ -253,7 +341,23 @@ func report(m factory.Manifest) {
 	fmt.Printf("  candidates generated %d, executed %d\n", m.CandidatesGen, m.CandidatesRun)
 	fmt.Printf("  blessed %d, committed %d, dedup-rejected %d, points covered %d\n",
 		m.Blessed, m.Committed, m.DedupRejected, m.DedupPoints)
+	if m.NameCollisions > 0 {
+		fmt.Printf("  NAME COLLISIONS %d: that many blessed candidates would have OVERWRITTEN a committed\n"+
+			"    scenario with different content. The write was refused. The dedup key moved and the file\n"+
+			"    name did not, which is what a planner change looks like from here.\n", m.NameCollisions)
+	}
 	fmt.Printf("  blessing mode: %s %v\n", m.BlessingMode, m.Blessings)
+	if len(m.Exemptions) > 0 {
+		// Printed unconditionally when the ledger is non-empty, not only when
+		// something used it: the set of available exemptions is what a reader
+		// needs to judge the authority mix above, and a weakening that only
+		// shows up when it fires is one nobody audits until it already has.
+		fmt.Println("  structural exemptions (TLP-only blessing permitted):")
+		for _, e := range m.Exemptions {
+			fmt.Printf("    %s\n", e)
+		}
+		fmt.Printf("    blessed under them: %d %v\n", m.Oracles.TLPOnlyBlessed, m.BlessedByFamily)
+	}
 	fmt.Printf("  oracles: tlp checked=%d violations=%d | second-plan kept=%d skipped=%d violations=%d | cross-engine kept=%d violations=%d\n",
 		m.Oracles.TLPChecked, m.Oracles.TLPViolations,
 		m.Oracles.SecondPlanKept, m.Oracles.SecondPlanSkipped, m.Oracles.SecondPlanViolations,

@@ -7,6 +7,7 @@ go_library(
         "candidate.go",
         "execute.go",
         "featurevector.go",
+        "inapplicable.go",
         "sweep.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/factory",
@@ -26,9 +27,14 @@ go_test(
     name = "factory_test",
     timeout = "long",  # keep: re-plans every committed scenario's four renderings
     srcs = [
+        "collision_test.go",
         "determinism_test.go",
+        "explain_alias_fdb_test.go",
         "export_test.go",
+        "inapplicable_test.go",
+        "oracle_detectors_test.go",
         "pipeline_test.go",
+        "second_plan_fdb_test.go",
         "tlp_render_test.go",
     ],
     # keep: the determinism gate regenerates every COMMITTED file from its seed,
@@ -38,7 +44,10 @@ go_test(
     deps = [
         "//pkg/relational/conformance/explaindiff",
         "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/conformance/rowdiff",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
     ],
 )

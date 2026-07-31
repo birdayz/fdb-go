@@ -182,8 +182,21 @@ func writeBoolTag(b *strings.Builder, n *rowdiff.BoolNode) {
 }
 
 // leafTag names a comparison leaf by its KIND and operator — what the leaf
-// exercises in the planner — plus whether its column is indexed, which decides
-// whether the leaf can be sargable at all.
+// exercises in the planner. It does NOT record whether the leaf's column is
+// indexed, and that is the right split rather than an omission.
+//
+// Sargability is the axis such a tag would be reaching for, and it is already
+// carried by the OTHER half of the dedup key: PlanShape is a digest of the
+// plan the planner actually produced, so an indexed leaf and an unindexed one
+// land at different points because one plans to an index scan and the other to
+// a full scan. That is a MEASUREMENT of sargability. A per-leaf "this column
+// appears in some index" flag is a GUESS at it — it would be wrong for every
+// leaf the planner declines to push (a function or a cast over an indexed
+// column, a non-leading column of a composite index), and it would be wrong in
+// the direction that reads as coverage the corpus does not have.
+//
+// The available-index axis, separately, is already a top-level component:
+// indexTag records which columns are indexed for the whole case.
 func leafTag(p *rowdiff.Pred) string {
 	var kind string
 	switch {

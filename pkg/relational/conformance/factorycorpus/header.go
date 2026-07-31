@@ -30,7 +30,44 @@ const (
 	// re-running the batch against a reachable Java server promotes the file
 	// without regenerating it.
 	BlessingMetamorphic Blessing = "metamorphic"
+	// BlessingMetamorphicTLPOnly means the TLP partition agreed and the
+	// second-plan oracle was STRUCTURALLY INAPPLICABLE to the shape — not
+	// skipped by accident, but unable to apply for a reason a committed pin
+	// establishes.
+	//
+	// It exists so that "every applicable oracle agreed" can be said honestly
+	// without saying "both oracles agreed". Correlated EXISTS is the first
+	// instance: the perturbed plan comes out byte-identical because the outer
+	// leg is a filtered scan either way, so there is no second plan to compare
+	// and never will be under that perturbation. Blessing such a file plain
+	// `metamorphic` would claim evidence that does not exist; refusing to bless
+	// it at all cost the corpus an entire query family (zero of the first 900
+	// scenarios carried an EXISTS, while the generator emits them at ~1/4).
+	//
+	// It is DELIBERATELY a distinct census dimension. Authority is measured, and
+	// a label that quietly absorbed a weaker case would make the measurement lie.
+	BlessingMetamorphicTLPOnly Blessing = "metamorphic-tlp-only"
 )
+
+// BlessingRank orders authorities from weakest to strongest, and is what makes
+// "promotion" a decidable question rather than a matter of opinion.
+//
+// The per-file ratchet compares a file against ITSELF across batches on this
+// scale: rising is promotion and silent, falling is a downgrade and red. An
+// aggregate COUNT per label cannot express that — promoting a file decrements
+// the count of the label it left, so a count floor on `metamorphic` fires on
+// exactly the improvement it should welcome.
+func BlessingRank(b Blessing) int {
+	switch b {
+	case BlessingMetamorphicTLPOnly:
+		return 1
+	case BlessingMetamorphic:
+		return 2
+	case BlessingCrossEngine:
+		return 3
+	}
+	return 0
+}
 
 // Header is the RFC-201 §5.1 provenance block: the leading `#` comment lines
 // of every generated file. It is deliberately a flat key/value comment block
@@ -160,6 +197,16 @@ func ParseHeader(data []byte) (Header, error) {
 		if m == nil {
 			continue
 		}
+		// A repeated key is REJECTED, not last-wins. Last-wins makes the header
+		// depend on line order for a block that is otherwise a set, and it
+		// hides the two ways a duplicate actually arises: a hand-edit that
+		// appended a corrected line instead of replacing one, and a writer
+		// change that emitted a key twice. Both produce a file whose header
+		// says one thing to a reader and another to the census.
+		if prev, dup := seen[m[1]]; dup {
+			return h, fmt.Errorf("header key %q appears twice (%q then %q); a duplicate key would silently "+
+				"resolve to whichever line came last", m[1], prev, strings.TrimSpace(m[2]))
+		}
 		seen[m[1]] = strings.TrimSpace(m[2])
 	}
 	if err := sc.Err(); err != nil {
@@ -203,9 +250,10 @@ func ParseHeader(data []byte) (Header, error) {
 	h.Date = seen["date"]
 	h.Blessing = Blessing(seen["blessing"])
 	switch h.Blessing {
-	case BlessingCrossEngine, BlessingMetamorphic:
+	case BlessingCrossEngine, BlessingMetamorphic, BlessingMetamorphicTLPOnly:
 	default:
-		return h, fmt.Errorf("blessing %q is not one of %q/%q", h.Blessing, BlessingCrossEngine, BlessingMetamorphic)
+		return h, fmt.Errorf("blessing %q is not one of %q/%q/%q", h.Blessing,
+			BlessingCrossEngine, BlessingMetamorphic, BlessingMetamorphicTLPOnly)
 	}
 	if seen["oracles"] == "" {
 		return h, fmt.Errorf("oracles is empty: a blessed file must name at least one oracle that ran")

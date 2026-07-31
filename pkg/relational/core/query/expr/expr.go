@@ -587,6 +587,18 @@ func (r *Resolver) ResolveArithmetic(op values.ArithmeticOp, left, right values.
 // folds it to TRUE via ComparisonConstantSimplifyRule. Eager
 // folding here would hide foldable shapes from rule matchers that
 // expect to see them.
+// isOrderingComparison reports whether op needs its operands to be ORDERED, as
+// opposed to merely comparable for equality. The distinction is what separates
+// the operators BOOLEAN supports from the ones it does not.
+func isOrderingComparison(op predicates.ComparisonType) bool {
+	switch op {
+	case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+		return true
+	}
+	return false
+}
+
 func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right values.Value) (predicates.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
@@ -607,6 +619,23 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
 		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
 		if values.MaximumType(lt, rt) == nil {
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
+		// BOOLEAN HAS NO ORDER. Java's RelOpValue declares typed binaries per
+		// operator, and there is no LT/LTE/GT/GTE binary for BOOLEAN — only
+		// equality, inequality and the null-safe forms — so `f > FALSE`
+		// rejects there. Go's comparison evaluation happens to order false
+		// before true, which made the shape silently succeed and return rows
+		// no Java client would ever see.
+		//
+		// Measured, both engines, in conformance's boolean-operand probe:
+		// `f = TRUE` accepted by both; `f > FALSE`, `f >= FALSE` and
+		// `f BETWEEN FALSE AND TRUE` accepted by Go and rejected by Java. The
+		// BETWEEN form is the same defect wearing a desugaring — it lowers to
+		// `>= lo AND <= hi` — which is why it is caught here rather than at
+		// each surface spelling.
+		if isOrderingComparison(op) && (lt.Code() == values.TypeCodeBoolean || rt.Code() == values.TypeCodeBoolean) {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 				"The operands of a comparison operator are not compatible.")
 		}
