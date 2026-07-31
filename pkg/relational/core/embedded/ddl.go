@@ -262,7 +262,11 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 //
 // A column with NO order clause is genuinely ascending in both engines (Java
 // maps ASCENDING to a null ordering function and emits the bare field), so
-// only an explicit clause is refused.
+// only an explicit clause is refused. Explicit ASC / ASC NULLS FIRST are
+// wire-identical to no clause in Java and are knowingly swept into the
+// rejection anyway: narrowing the guard would duplicate Java's
+// default-resolution logic inside throwaway code, and refusing work is safe
+// where doing it wrong is not.
 //
 // Fail closed until the ordered-index generator lands (RFC-202), at which
 // point this rejection is deleted rather than relaxed.
