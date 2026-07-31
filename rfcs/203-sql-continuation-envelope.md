@@ -15,6 +15,12 @@ rollover**, surface the token through a connection-scoped driver seam, and
 target same-engine resume — declining cross-engine plan resume on measured
 grounds with a **per-path** fence.
 
+**Amendment (RFC-198).** §4.2's rollover preservation and G12 were written
+unscoped and, read literally, contradict RFC-198. They are **auto-commit's**;
+§4.2.1 scopes them and §4.2.2 adds the transaction-bound-token fence. RFC-198
+states the same boundary from the transaction side. Neither document may be read
+alone on in-transaction pagination.
+
 ### What changed from revision 1
 
 1. **The mechanism is PLAN TRANSPORT, not re-planning.** Revision 1 rejected
@@ -1021,6 +1027,114 @@ Turning rollover into a user-visible stop would break every long scan on the
 test is: *did the caller ask for a page boundary?* Only then does one appear.
 Gated by G12.
 
+#### 4.2.1 Rollover preservation is scoped to AUTO-COMMIT (amendment, RFC-198)
+
+The paragraph above and G12 were written unscoped, and read literally they say
+something this RFC cannot deliver: that rollover is preserved for *every*
+statement. It cannot be, and the reason is not a limitation — it is arithmetic.
+Rollover means "end this page, open a **fresh** transaction, keep scanning."
+Inside an explicit `BEGIN`, there is no fresh transaction to open: the rows
+belong to the user's transaction, and re-opening one would put the tail of the
+result set outside the transaction that was supposed to contain it — the exact
+defect RFC-198 exists to remove. **Rollover and an explicit transaction are
+mutually exclusive by construction.**
+
+So the scope is stated rather than implied:
+
+- **Auto-commit (no explicit transaction open): rollover PRESERVED, unchanged**,
+  exactly as §4.2 describes. This is the case G12 was written for and the case
+  that carries the "break every long scan" risk, because an auto-commit scan is
+  the only one that *can* silently span transactions.
+- **Inside an explicit transaction: rollover does not exist.** A page that ends
+  on an out-of-band budget is a real boundary, and the caller is told. It stops
+  **cleanly**, which is Java's shape, in three verified parts:
+  `RecordLayerIterator.fetchNextResult` (`:84-97`) turns any `NoNextReason`
+  other than `SOURCE_EXHAUSTED` into
+  `ContinuationImpl.fromUnderlyingBytes(...)` rather than an exception;
+  `RecordLayerResultSet.advanceRow` (`:77-87`) guards every `next()` with
+  `currentCursor.hasNext()`, so `ResultSet.next()` returns **false**; and
+  `RecordLayerResultSet.close` (`:95-97`) commits only
+  `if (connection.canCommit() && connection.inActiveTransaction())` — and
+  `canCommit()` is false whenever `autoCommit` is off
+  (`EmbeddedRelationalConnection.java:179-182`), so **the transaction stays
+  open** across the boundary. The reason code is `TRANSACTION_LIMIT_REACHED`
+  (`RecordLayerResultSet.continuationReason()`, `:121-135`, specifically
+  `:128-129`).
+
+  One precision, because the obvious phrasing is wrong and would mislead an
+  implementer: it is **`hasNext()`/`ResultSet.next()`** that reports false, not
+  `RecordLayerIterator.next()`. That method *throws*
+  `ErrorCode.EXECUTION_LIMIT_REACHED` when `terminatedEarly()` (`:115-116`,
+  `:123-128` — true for the TIME/BYTE/SCAN limits, false for
+  `RETURN_LIMIT_REACHED` and `SOURCE_EXHAUSTED`). The clean stop is a property
+  of the `hasNext`-guarded caller, not of the iterator; a Go port that drives
+  the cursor without that guard inherits the throw, not the clean stop.
+
+**This also corrects §4.5 arm 2's reachability claim in one direction.** §4.5
+derives arm 2 (`TRANSACTION_LIMIT_REACHED`) as reachable "exclusively in
+combination with `MAX_ROWS`", because under rollover an out-of-band stop is
+absorbed by the next page. That derivation is sound **for auto-commit**. Inside
+an explicit transaction there is no absorbing next page, so arm 2 is reachable
+with **no `MAX_ROWS` at all**. G13's arm-2 case keeps its auto-commit
+configuration and gains an in-transaction one; neither subsumes the other.
+
+**G12's no-token-no-error gate is likewise auto-commit's.** Read unscoped it
+forbids precisely the surface RFC-198 needs, which is how two merged documents
+came to contradict each other with neither citing the other. It is scoped below.
+
+#### 4.2.2 A token minted inside an explicit transaction is TRANSACTION-BOUND
+
+The fence §3.2 states per path is about *which engine* may redeem a token. An
+in-transaction token needs a second, orthogonal fence about *which transaction*
+may redeem it, and without it the envelope reopens the very hazard §3 declined
+through a different door:
+
+```sql
+BEGIN;
+SELECT ... /* MAX_ROWS 10 */;   -- token minted at this transaction's read version
+COMMIT;
+EXECUTE CONTINUATION ?;          -- resumes at a DIFFERENT read version
+```
+
+That sequence would splice one logical result set across two read versions and
+hand the caller a set that never existed at any instant — non-repeatable against
+itself, with no error anywhere. It is the rejected alternative "let pages ≥ 2
+open their own transactions" reached by a route the per-path fence does not
+cover, because both halves are the same engine.
+
+**The rule: a continuation minted while an explicit transaction was open is
+redeemable only inside that same transaction. Redemption anywhere else REFUSES,
+loudly — never silently resumes.**
+
+Two layers carry it, and neither adds a proto field (§3.2's
+scope-by-VALUE-never-by-SCHEMA constraint holds, and §5.3's rejection of a
+Go-only field stands):
+
+1. **On the wire, by value.** Such a token carries
+   `plan_serialization_mode = "GO_V0_TX"` instead of `"GO_V0"`. Java's
+   `PlanHashMode.valueOf` rejects it by name for the same reason it rejects
+   `"GO_V0"` (`PlanValidator.java:54-56`), and **Go's own mode fence rejects it
+   on every entry point that is not the minting transaction** — so the bytes
+   escaping the process is not a hazard, it is an inert value no entry point
+   accepts. A `"GO_V0"` token can never have come from inside a transaction, and
+   a `"GO_V0_TX"` token can never be redeemed by the auto-commit path: the two
+   populations are disjoint by name, not by convention.
+2. **In process, by identity.** The connection-scoped seam (§4.4) already holds
+   the token next to the connection that produced it; it additionally remembers
+   the `*embeddedTx` it was minted on. Redemption compares that pointer against
+   the connection's current `activeTx`. A transaction pointer never leaves the
+   process, so this check cannot be forged, only failed.
+
+The refusal is `24F00 INVALID_CONTINUATION` — Class 24, Invalid Cursor State
+(§4.8) — which is the accurate class: the cursor state is invalid because the
+transaction that gave it meaning is gone. It is **not** `25F01`; 25F01 says
+"this transaction is inactive", whereas the failing case includes a perfectly
+active *different* transaction.
+
+RFC-198 §"Pagination inside an explicit transaction" states the same rule from
+the transaction side and cites this section; this section cites it back. Neither
+document may be read alone on this point.
+
 **The statement-wide total is deleted, not renamed.** There is no Java option to
 map it to (§0.3), and a second row-limit knob has no reference definition for its
 interaction with the page size. `TestFDB_RFC106a_MaxRowsStatementWide` is
@@ -1698,16 +1812,44 @@ one, and G14 is what turns "larger than one" into an exact, maintained figure.
 *Mutation:* remove one arm from the encoder → the census count moves and the
 digest reds.
 
-**G12 — transaction rollover stays transparent.** A scan long enough to exceed
-the 5-second transaction limit, with **no** `MAX_ROWS`, returns the complete row
-set with no user-visible token and no error. *Mutation:* make the rollover
-boundary yield a token → the completeness assertion reds.
+**G12 — transaction rollover stays transparent IN AUTO-COMMIT.** With **no
+explicit transaction open**, a scan long enough to exceed the 5-second
+transaction limit, with **no** `MAX_ROWS`, returns the complete row set with no
+user-visible token and no error. *Mutation:* make the rollover boundary yield a
+token → the completeness assertion reds.
+
+The auto-commit precondition is not decoration, and it is not a narrowing of the
+gate's strength — it is what stops G12 from asserting something false. Inside an
+explicit transaction there is no fresh transaction to roll over into (§4.2.1), so
+an unscoped G12 would demand a behaviour the engine cannot have and would forbid
+the clean stop RFC-198 requires. **G12a** is the in-transaction half: the same
+oversized scan inside `BEGIN` stops cleanly with a token whose reason is
+`TRANSACTION_LIMIT_REACHED`, the transaction stays open, and redeeming that token
+in the same transaction returns the remaining rows with no gap and no duplicate.
+*Mutation:* make the in-tx boundary roll a fresh transaction → the token
+disappears and the read version moves, which the read-version assertion reds.
+
+**G12b — a transaction-bound token is refused outside its transaction (§4.2.2).**
+Mint a token inside `BEGIN`, `COMMIT`, then redeem it: `24F00`, never rows. Three
+mutation directions, because the fence can be wrong in three independent ways and
+a fix satisfying only one is how this hazard survives: (a) drop the
+`"GO_V0_TX"` mode value → the token becomes indistinguishable from an
+auto-commit token and the auto-commit path resumes it, so assert on the *mode
+string written*, not only on the refusal; (b) drop the `*embeddedTx` identity
+check while keeping the mode string → redemption inside a **different, still
+open** explicit transaction on the same connection succeeds, so the test needs a
+`BEGIN`/mint/`COMMIT`/`BEGIN`/redeem case, which a commit-then-redeem case cannot
+express; (c) return `25F01` instead of `24F00` → the class assertion reds.
 
 **G13 — reason codes, in the only configurations that reach them.**
 `CURSOR_AFTER_LAST` on exhaustion; `QUERY_EXECUTION_LIMIT_REACHED` at a
-`MAX_ROWS` boundary; `TRANSACTION_LIMIT_REACHED` **only** with `MAX_ROWS` set
-plus a scan limit that fires first (§4.5); `USER_REQUESTED_CONTINUATION` when
-rows remain. *Mutation:* swap arms 2 and 3 → the combined-limit case reds.
+`MAX_ROWS` boundary; `TRANSACTION_LIMIT_REACHED` in the two configurations that
+reach it — **in auto-commit**, only with `MAX_ROWS` set plus a scan limit that
+fires first (§4.5); **inside an explicit transaction**, with no `MAX_ROWS` at
+all, because there is no absorbing next page (§4.2.1) — and
+`USER_REQUESTED_CONTINUATION` when rows remain. *Mutation:* swap arms 2 and 3 →
+the combined-limit case reds. The two arm-2 configurations are separate cases:
+either alone leaves the other's derivation untested.
 
 ---
 
