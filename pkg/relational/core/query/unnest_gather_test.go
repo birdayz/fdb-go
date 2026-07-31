@@ -7,6 +7,7 @@ package query
 // fail-open decline boundary directly.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -830,5 +831,134 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 	if _, ok := got.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok {
 		t.Fatalf("INNER cluster, UNBAKEABLE: gathered seed must be the ordinal RC, got %T",
 			got.(*expressions.SelectExpression).GetResultValue())
+	}
+}
+
+// gatheredSeedProbeWindows builds the name-COLLISION probe layout directly: leg
+// `A` occupies slots [0,4) and carries a column `K` at slot 0, and the seed's
+// ELEMENT — a separate field, also spelled `K` — sits at slot 7.
+//
+// The shape is the whole point of the probe. `A.K` and the element name collide,
+// so the two resolution routes a qualified reference can take answer with
+// DIFFERENT slots, and a resolver that silently takes the wrong one is
+// indistinguishable from a correct one on any layout where the names are
+// disjoint. That is why the pin cannot use a simpler cousin: with distinct names
+// the element fallback misses and the bug passes.
+func gatheredSeedProbeWindows() (map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, map[string]int) {
+	legA := values.NamedCorrelationIdentifier("A")
+	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
+		legA: {
+			Offset: 0,
+			Alias:  legA,
+			Typ: &values.RecordType{Fields: []values.Field{
+				{Name: "K", FieldType: values.UnknownType, Ordinal: 0},
+				{Name: "P", FieldType: values.UnknownType, Ordinal: 1},
+				{Name: "Q", FieldType: values.UnknownType, Ordinal: 2},
+				{Name: "R", FieldType: values.UnknownType, Ordinal: 3},
+			}},
+		},
+	}
+	// The ELEMENT shares the leaf name with leg A's column and lives far from it.
+	elementSlots := map[string]int{"K": 7}
+	return windows, elementSlots
+}
+
+// TestSlotInGatheredSeed_DottedQualifierNeverReadsTheElement pins the resolver's decline: a QUALIFIED
+// reference whose qualifier was sliced out of the NAME has no correlation to
+// select a leg window with, and must DECLINE rather than fall through to the
+// element-first bare namespace.
+//
+// Before the fix the flat-dotted arm set `qualified = true` with a ZERO
+// correlation, so the leg lookup was skipped (it is guarded on
+// `!corr.IsZero()`) and the very next arm answered from `elementSlots` — the
+// element's slot 7 for a reference that names leg A's column at slot 0. The
+// QOV-qualified spelling of the SAME reference answered 0. One column, two
+// answers, decided by which spelling the producer happened to emit.
+//
+// The decline is deliberate and is NOT to be replaced by re-keying the sliced
+// qualifier: minting a CorrelationIdentifier out of a column name is the forgery
+// RFC-197 removes, and CQ-52 inherits the hole if a text route is reintroduced
+// here.
+func TestSlotInGatheredSeed_DottedQualifierNeverReadsTheElement(t *testing.T) {
+	t.Parallel()
+	windows, elementSlots := gatheredSeedProbeWindows()
+	legA := values.NamedCorrelationIdentifier("A")
+
+	// The QOV-qualified route: the correlation selects leg A's window, and `K`
+	// resolves WITHIN it — slot 0. This is the answer `A.K` means.
+	qovSlot, qovOK := slotInGatheredSeed(windows, elementSlots, legA, "K", true)
+	if !qovOK || qovSlot != 0 {
+		t.Fatalf("QOV-qualified A.K resolved to (%d, %v), want (0, true) — the probe's "+
+			"control arm is broken, so its comparison arm proves nothing", qovSlot, qovOK)
+	}
+
+	// The flat-dotted route: same reference, no identifier. It must DECLINE.
+	dotSlot, dotOK := slotInGatheredSeed(windows, elementSlots, values.CorrelationIdentifier{}, "K", true)
+	if dotOK {
+		t.Fatalf("flat-dotted A.K resolved to slot %d; it must DECLINE.\n"+
+			"  A qualified reference with no correlation cannot select a leg window, and\n"+
+			"  falling through hands it to the ELEMENT-first bare namespace: this layout\n"+
+			"  answers %d (the element) for a reference naming leg A's column at %d.\n"+
+			"  Fix the resolver, NOT this test — and do not fix it by re-keying the\n"+
+			"  sliced qualifier: that mints an identifier out of a column name.",
+			dotSlot, elementSlots["K"], qovSlot)
+	}
+
+	// The BARE route is unchanged and still element-first: this is what the
+	// decline must not become.
+	bareSlot, bareOK := slotInGatheredSeed(windows, elementSlots, values.CorrelationIdentifier{}, "K", false)
+	if !bareOK || bareSlot != 7 {
+		t.Fatalf("bare K resolved to (%d, %v), want (7, true) — the decline above must "+
+			"fire on the QUALIFIER, not on the absence of a correlation, or it has "+
+			"turned off element-first resolution as well", bareSlot, bareOK)
+	}
+}
+
+// TestBakeGatheredGroupValue_DottedLeafDoesNotBakeToTheElement is the same
+// defect seen through the walk that produces it, rather than through the
+// resolver it calls.
+//
+// bakeGatheredGroupValue is where the two spellings are minted: a
+// QuantifiedObjectValue child yields the correlation, and a dotted display name
+// yields only text. This asserts the two spellings of one column never disagree
+// — the QOV form bakes to leg A's slot, and the dotted form is left LAZY for the
+// name model rather than baked to the element's.
+func TestBakeGatheredGroupValue_DottedLeafDoesNotBakeToTheElement(t *testing.T) {
+	t.Parallel()
+	windows, elementSlots := gatheredSeedProbeWindows()
+	// The seed's merged row: 8 slots, so both candidate answers (leg A's K at 0
+	// and the element K at 7) are in range and a bake to EITHER succeeds. An
+	// out-of-range seed would make the wrong answer fail for the wrong reason.
+	mergedFields := make([]values.Field, 8)
+	for i := range mergedFields {
+		mergedFields[i] = values.Field{Name: fmt.Sprintf("F%d", i), FieldType: values.UnknownType, Ordinal: i}
+	}
+	seedQOV := values.NewQuantifiedObjectValueOfType(
+		values.NamedCorrelationIdentifier("SEED"), &values.RecordType{Fields: mergedFields})
+
+	qovRef := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "K", values.UnknownType)
+	bakedQOV, isFV := bakeGatheredGroupValue(qovRef, windows, elementSlots, seedQOV).(*values.FieldValue)
+	if !isFV || bakedQOV.Resolved == nil {
+		t.Fatalf("the QOV-qualified reference must bake, got %v — the control arm is broken", bakedQOV)
+	}
+	acc, single := bakedQOV.Resolved.Single()
+	if !single || acc.Ordinal != 0 {
+		t.Fatalf("QOV-qualified A.K baked to ordinal %v (single=%v), want 0", acc, single)
+	}
+
+	dottedRef := values.NewFieldValue(nil, "A.K", values.UnknownType)
+	out := bakeGatheredGroupValue(dottedRef, windows, elementSlots, seedQOV)
+	baked, isFV := out.(*values.FieldValue)
+	if !isFV {
+		t.Fatalf("the dotted reference came back as %T, want an unchanged *FieldValue", out)
+	}
+	if baked.Resolved != nil {
+		got, _ := baked.Resolved.Single()
+		t.Fatalf("the dotted reference `A.K` BAKED to ordinal %d.\n"+
+			"  It carries no correlation, so no leg window can be selected for it; the\n"+
+			"  only slot it can reach is the element's (%d) — a different column from\n"+
+			"  the one it names (%d). It must stay lazy and go to the name model.",
+			got.Ordinal, elementSlots["K"], 0)
 	}
 }
