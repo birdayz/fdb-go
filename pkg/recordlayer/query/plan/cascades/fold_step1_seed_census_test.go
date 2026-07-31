@@ -171,3 +171,146 @@ func TestFoldStep1Census_AssertionArmsGoRed(t *testing.T) {
 		t.Fatalf("the equality failure must quote both numbers, got %q", sb.String())
 	}
 }
+
+// The ORIENTATION GATE census's assertion arms, driven from counter states.
+//
+// Its sibling assertFoldStep1SeedCounters has had this treatment since it was
+// written; this census — the newest on the path, and the one carrying RFC-200
+// step 3d”s live/latent discriminator — had NONE. That asymmetry is the whole
+// reason this exists: a gate is a claim about which counter states FAIL, and a
+// claim reachable only by driving the planner into a defective state is a claim
+// nothing pins. Every arm below can now be shown red on the state that violates
+// it.
+func TestOrientationGateCensus_AssertionArmsGoRed(t *testing.T) {
+	t.Parallel()
+
+	// The corpus's MEASURED state: calls 438 (not-a-seed 96, tiled-by-2 342,
+	// tiled-by-other 0); of the tiled-by-2, unverifiable 84, matched 197,
+	// declined 61; 72 firings where the MAP count differs from the TILE count, of
+	// which 0 declined.
+	base := func() orientationGateCounters {
+		return orientationGateCounters{
+			Calls: 438, NotASeed: 96, TiledByTwo: 342, TiledByOther: 0,
+			Unverifiable: 84, Matched: 197, Declined: 61,
+			MapCountDiffers: 72, DeclinedNewlyChecked: 0,
+		}
+	}
+	floors := &OrientationGateFloors{Calls: 40, MapCountDiffers: 7, UnverifiableCeiling: 200}
+
+	var clean strings.Builder
+	if assertOrientationGateCounters(&clean, base(), floors) {
+		t.Fatalf("the gate FAILS the corpus's own measured state:\n%s\n"+
+			"  Every case below expects a red, so a baseline that is already red proves "+
+			"nothing about any of them.", clean.String())
+	}
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*orientationGateCounters)
+		wantMsg string
+	}{
+		{
+			// A firing counted into Calls and into no shape bucket — a shape arm
+			// that returns before recording.
+			name:    "a firing counted into no tile-count bucket",
+			mutate:  func(c *orientationGateCounters) { c.NotASeed-- },
+			wantMsg: "tiledByOther(0) = 437, but calls = 438",
+		},
+		{
+			// A two-tile firing that reached the comparison and took none of the
+			// three dispositions.
+			name:    "a checkable firing with no disposition",
+			mutate:  func(c *orientationGateCounters) { c.Matched-- },
+			wantMsg: "declined(61) = 341, but tiledByTwo = 342",
+		},
+		{
+			// The CROSS cannot exceed either of the two cuts it crosses.
+			name:    "declinedNewlyChecked exceeds declined",
+			mutate:  func(c *orientationGateCounters) { c.DeclinedNewlyChecked = 62 },
+			wantMsg: "exceeds declined(61)",
+		},
+		{
+			name:    "declinedNewlyChecked exceeds mapCountDiffers",
+			mutate:  func(c *orientationGateCounters) { c.Declined = 80; c.Matched = 178; c.DeclinedNewlyChecked = 73 },
+			wantMsg: "mapCountDiffers(72)",
+		},
+		{
+			// The gate going dark entirely.
+			name:    "the gate is not reached at all",
+			mutate:  func(c *orientationGateCounters) { *c = orientationGateCounters{} },
+			wantMsg: "0 calls, want >= 40",
+		},
+		{
+			// THE LIVE/LATENT DISCRIMINATOR. This is the one number that separates
+			// "3d' is live and every newly-checked firing agrees" from "3d' is
+			// latent"; a zero here makes the fail-open's closure an untested claim
+			// that prints exactly the same clean result as today.
+			name: "the population 3d' moves reaches zero",
+			mutate: func(c *orientationGateCounters) {
+				c.MapCountDiffers = 0
+				c.DeclinedNewlyChecked = 0
+			},
+			wantMsg: "only 0 firing(s) have a MAP count",
+		},
+		{
+			// THE CEILING, whose dangerous direction is GROWTH. 84 measured, 200
+			// allowed; 250 is the second fail-open absorbing the checkable
+			// population.
+			name: "the unverifiable fail-open grows past its ceiling",
+			mutate: func(c *orientationGateCounters) {
+				c.Unverifiable = 250
+				c.Matched = 31 // keep the disposition partition exact
+			},
+			wantMsg: "250 UNVERIFIABLE firing(s), want <= 200",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := base()
+			tc.mutate(&c)
+			var out strings.Builder
+			if !assertOrientationGateCounters(&out, c, floors) {
+				t.Fatalf("the gate stayed GREEN on %q — this arm asserts nothing", tc.name)
+			}
+			if !strings.Contains(out.String(), tc.wantMsg) {
+				t.Errorf("the failure for %q does not name what it detected (want %q):\n%s",
+					tc.name, tc.wantMsg, out.String())
+			}
+		})
+	}
+
+	// THE CEILING'S BOUNDARY IS <=, not <. Exactly at the ceiling passes; one
+	// over fails. An off-by-one here either reds the measured corpus the day it
+	// reaches the bound or lets the fail-open through by one, and neither is
+	// visible without pinning both sides of the edge.
+	at := base()
+	at.Unverifiable = 200
+	at.Matched = 81 // keep tiledByTwo exact: 200 + 81 + 61 = 342
+	var atOut strings.Builder
+	if assertOrientationGateCounters(&atOut, at, floors) {
+		t.Fatalf("unverifiable EXACTLY at the ceiling (200) reds:\n%s", atOut.String())
+	}
+	over := at
+	over.Unverifiable = 201
+	over.Matched = 80
+	var overOut strings.Builder
+	if !assertOrientationGateCounters(&overOut, over, floors) {
+		t.Fatal("unverifiable ONE OVER the ceiling (201) stays green — the boundary is " +
+			"< where it must be <=, so the ceiling admits one more than it states")
+	}
+
+	// And with no floors (a NARROWED run) the partitions still hold, because they
+	// are true over any population — the same split every census on this path
+	// makes.
+	var narrowed strings.Builder
+	if assertOrientationGateCounters(&narrowed, base(), nil) {
+		t.Fatalf("the measured state reds with floors dropped:\n%s", narrowed.String())
+	}
+	broken := base()
+	broken.NotASeed--
+	var brokenNarrow strings.Builder
+	if !assertOrientationGateCounters(&brokenNarrow, broken, nil) {
+		t.Fatal("a broken partition passed with floors dropped — the partitions must " +
+			"hold over ANY population, including a -test.run-narrowed one")
+	}
+}

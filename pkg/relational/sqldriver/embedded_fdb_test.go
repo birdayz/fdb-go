@@ -621,6 +621,15 @@ var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
 	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
 	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
 	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 16     // measured 160
+	// RFC-200's ACTIVATION TRIPWIRE. Measured NESTED-HIT 0 at every site: the
+	// nested reader arm is correct and unreached, so gate (a)'s four mutation
+	// directions are not writable and the branch merged with that stated.
+	//
+	// A non-zero is GOOD NEWS that requires ACTION, and it is asserted rather
+	// than printed so that activation day is a red test with a hand-over in its
+	// message instead of a number nobody diffs. See the failure text and
+	// CQ-67's reopen trigger.
+	f.NestedHitMustBeZero = true
 	return f
 }()
 

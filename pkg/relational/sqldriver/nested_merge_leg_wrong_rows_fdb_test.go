@@ -42,7 +42,7 @@ package sqldriver_test
 // THE FIXTURE'S THREE DELIBERATE PROPERTIES, each defeating a way a probe could
 // pass while broken:
 //
-//  1. DISTINCT LEG WIDTHS (TA 3 columns, TB 1, TC 2). Under a flat reading the
+//  1. DISTINCT LEG WIDTHS (TA 3 columns, TB 2, TC 4). Under a flat reading the
 //     address is `Offset + legOrdinal`; under the nested one it is "slot Offset,
 //     then descend legOrdinal". With equal widths those coincide; with these
 //     they land on different columns.
@@ -53,10 +53,19 @@ package sqldriver_test
 //     (`TC.K`). At leg 0 / ordinal 0 every addressing scheme agrees and the
 //     probe would pass with the defect fully present.
 //
-// The value ranges are disjoint where it counts (TA.K 101-102, TA.AV 201-202,
-// TC.K 901-902) so any wrong column read shows as a wrong VALUE, never as a
-// coincidentally equal one. The join keys (TA.AID, TB.BID, TC.CID) share the
-// range 1-2 because the equijoin requires it.
+// EVERY ASSERTED ADDRESS IS A NON-KEY COLUMN WITH A DISJOINT VALUE RANGE — TA.K
+// 101-102, TA.AV 201-202, TB.BV 301-302, TC.K 901-902 — so any wrong column read
+// shows as a wrong VALUE and never as a coincidentally equal one.
+//
+// THE JOIN KEYS ARE DELIBERATELY NOT ADDRESSED. TA.AID, TB.BID and TC.CID must
+// all share the range 1-2 for the equijoin to match anything, so an assertion on
+// one of them is pinned BY NAME and not by value: a window misreading TB.BID as
+// TA.AID or TC.CID returns byte-identical rows and the probe passes with the
+// defect present. An earlier version of this fixture addressed the middle leg
+// through TB.BID for exactly that reason — TB had no other column — which is why
+// TB now carries BV. This is the same trap as property 3 one level over: an
+// address whose wrong answers are indistinguishable from its right ones is not
+// an address the probe can use.
 
 import (
 	"context"
@@ -99,13 +108,20 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	ctx := context.Background()
 	setup := openTestDB(t, "/testdb_nested_merge_leg")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nested_merge_leg")
-	// Widths 3 / 1 / 2, and K declared in BOTH ta and tc — see the header for
-	// why each of those is load-bearing.
+	// Widths 3 / 2 / 4 — all DISTINCT — and K declared in BOTH ta and tc. See the
+	// header for why each is load-bearing.
+	//
+	// EVERY LEG CARRIES A NON-KEY COLUMN WITH ITS OWN DISJOINT VALUE RANGE, and
+	// that is the correction the equijoin re-point forced. The join keys AID/BID/
+	// CID must share the range 1-2 for the equijoin to match anything, so an
+	// address pinned on a JOIN KEY is pinned by name and not by value: a window
+	// misreading TB.BID as TA.AID or TC.CID returns identical rows. Giving TB a
+	// BV column (301-302) means all four asserted addresses discriminate.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_leg "+
 			"CREATE TABLE ta (aid BIGINT NOT NULL, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
-			"CREATE TABLE tb (bid BIGINT NOT NULL, PRIMARY KEY (bid)) "+
-			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, PRIMARY KEY (cid)) "+
+			"CREATE TABLE tb (bid BIGINT NOT NULL, bv BIGINT, PRIMARY KEY (bid)) "+
+			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT NOT NULL, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_leg?cluster_file=%s&schema=s", clusterFilePath)
@@ -116,8 +132,8 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201), (2, 102, 202)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k) VALUES (1, 901), (2, 902)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301), (2, 302)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971), (2, 902, 952, 972)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
 	// scanPairs reads (value, flag) rows as "value|flag", so a wrong COLUMN and a
@@ -215,10 +231,14 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 			want: []string{"201|true", "202|false"},
 		},
 		{
-			name: "the single-column MIDDLE leg",
-			q: `SELECT tb.bid, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) ` +
+			// The MIDDLE leg, addressed through its NON-KEY column. TB.BID would
+			// have been the obvious choice and is useless here: it shares the range
+			// 1-2 with TA.AID and TC.CID by equijoin necessity, so a window
+			// misreading it returns identical rows. BV (301-302) discriminates.
+			name: "the MIDDLE leg's non-key column",
+			q: `SELECT tb.bv, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) ` +
 				`FROM ta, tb, tc WHERE ta.aid = tb.bid AND tb.bid = tc.cid`,
-			want: []string{"1|true", "2|false"},
+			want: []string{"301|true", "302|false"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,11 +272,13 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 	ctx := context.Background()
 	setup := openTestDB(t, "/testdb_nested_merge_nopred")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nested_merge_nopred")
+	// The SAME shape as the probe above, so the only difference between the two
+	// tests is the presence of the join predicates.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_nopred "+
 			"CREATE TABLE ta (aid BIGINT NOT NULL, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
-			"CREATE TABLE tb (bid BIGINT NOT NULL, PRIMARY KEY (bid)) "+
-			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, PRIMARY KEY (cid)) "+
+			"CREATE TABLE tb (bid BIGINT NOT NULL, bv BIGINT, PRIMARY KEY (bid)) "+
+			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT NOT NULL, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_nopred?cluster_file=%s&schema=s", clusterFilePath)
@@ -266,8 +288,8 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid) VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k) VALUES (1, 901)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
 	rows, qErr := db.QueryContext(ctx,

@@ -12294,10 +12294,35 @@ None is speculative: each was re-verified against the tree before booking.
   in `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the
   predicate-free failure is pinned separately there as CQ-70's reproducer.
 
-  **Open question for the review lap: does a latent reader arm block THIS
-  merge?** The layout half is measured live and exact; the reader half is
-  correct, cross-agreement-pinned on both entries, unit-pinned on both arms, and
-  unreached by any corpus query.
+  **RULED: the latent reader arm MERGES.** It clears a strictly higher bar than
+  3d′ set — correct, cross-agreement-pinned on both entries, unit-pinned on both
+  arms, and instrumented — and holding correct instrumented code hostage to
+  CQ-68/CQ-70 is the deferral pattern this project forbids.
+
+  **REOPEN TRIGGER — THIS ITEM IS NOT FINISHED, IT IS PARKED ON A TRIPWIRE.**
+
+  > **When the seed-window reader census reports a non-zero `NESTED-HIT` at any
+  > site, CQ-67 REOPENS and gate (a) becomes the work.**
+
+  Whoever lands **CQ-68** is the most likely person to trip it: typing the 94
+  bare-QOV result values is precisely what could produce a reference reaching a
+  leg buried INSIDE the merge, which is the only thing that selects a nested
+  sub-window. **Read this before starting CQ-68** — it is here, and not only in a
+  test file, so it cannot be missed by someone who never opens the census.
+
+  The trigger is ASSERTED, not printed: `SeedWindowReaderFloors.NestedHitMustBeZero`
+  is armed in the sqldriver corpus harness, so activation day is a RED test whose
+  failure message carries the whole hand-over (the fixture, the four mutation
+  directions, the "either right or loud" refutation clause, and how to clear the
+  flag). Without it, activation would change nothing visible and gate (a) would
+  stay unwritten BY DEFAULT rather than by decision.
+
+  On trip: write gate (a)'s four directions against
+  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go` (already
+  built, already carrying distinct leg widths, a cross-leg duplicate column name
+  and a non-first-leg non-zero-ordinal projection), record the outcomes in that
+  fixture's own doc comment, clear `NestedHitMustBeZero`, floor `NESTED-HIT`
+  instead, and mark gate (a) satisfied.
 
   **VERIFICATION ARTIFACT — the branch's own merge gate, recorded rather than
   asserted.** The merge commit `2d0c73ff2` used `--no-verify` on the ground that
@@ -12336,6 +12361,17 @@ None is speculative: each was re-verified against the tree before booking.
   is a partition assertion in the bakeability census, and
   `Step1ReconstructNilMustBeZero` is wired ON — so when this item moves the 94,
   the reads it removes are counted at the site rather than argued.
+
+  **BEFORE STARTING: THIS ITEM CAN REOPEN CQ-67.** Typing the 94 result values is
+  the most likely way to produce a reference that reaches a leg buried INSIDE the
+  merge — which is the only thing that selects a NESTED sub-window, and therefore
+  the trigger that makes RFC-200's gate (a) writable. CQ-67 merged with its
+  nested reader arm correct and UNREACHED (`NESTED-HIT 0` corpus-wide), parked on
+  an armed tripwire: `SeedWindowReaderFloors.NestedHitMustBeZero`. If this item
+  trips it the suite goes RED with the full hand-over in the failure message, and
+  **gate (a) becomes part of this item's work** rather than a surprise. Read
+  CQ-67's REOPEN TRIGGER paragraph first; it names the fixture and the four
+  mutation directions.
 
   Java types the flowed object value unconditionally
   (`Quantifier.java:801-803`). FOUR non-test `RecordQueryFlatMapPlan`
