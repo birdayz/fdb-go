@@ -148,3 +148,77 @@ func TestOrdinalSeedLegWindows_CaseDisjointLegsAreTwoWindows(t *testing.T) {
 			mw.Alias.Name(), qw.Alias.Name())
 	}
 }
+
+// TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed pins the zero-identity
+// guard.
+//
+// The window map is keyed by identity, so a buried leg that states a NAME but no
+// ALIAS files under the ZERO CorrelationIdentifier. ONE such leg is merely
+// unaddressable. TWO collide: the second overwrites the first, the merged leg
+// table reports one entry where the box has two, and every read qualified by the
+// dropped leaf resolves into its sibling's slots. Nothing downstream can notice
+// — a window filed under the zero key looks exactly like a window nobody filed.
+//
+// The guard's answer is to DECLINE the whole seed, which sends the shape to the
+// name model rather than shipping an ordinal layout that is short a window.
+//
+// The fixture is deliberately TWO Alias-less legs rather than one, because that
+// is the shape that loses data: the one-leg case is caught by the same guard,
+// but a test built on it cannot distinguish "declines an unaddressable leg" from
+// "declines a colliding pair". The collision is what the guard is for, so the
+// collision is what is pinned, and the count assertion below states what a
+// missing guard produces (one merged leg where the box has two).
+func TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed(t *testing.T) {
+	t.Parallel()
+	c := NamedCorrelationIdentifier("C")
+	// A box concat of two buried leaves, NEITHER stating an identity — the shape
+	// a producer builds when it knows the binding text and not the quantifier.
+	boxType := &RecordType{
+		Fields: []Field{
+			{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+			{Name: "V", FieldType: NotNullLong, Ordinal: 1},
+			{Name: "ID", FieldType: NotNullLong, Ordinal: 2},
+			{Name: "V", FieldType: NotNullLong, Ordinal: 3},
+		},
+		Legs: []RecordTypeLeg{
+			{Name: "O", Start: 0, Width: 2}, // no Alias
+			{Name: "C2", Start: 2, Width: 2},
+		},
+	}
+	windows := map[CorrelationIdentifier]OrdinalSeedLegWindow{
+		c: {Offset: 0, Typ: boxType, Alias: c},
+	}
+	names := map[CorrelationIdentifier]string{c: "C"}
+	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4))
+	if out != nil || mergedType != nil {
+		legs := 0
+		if mergedType != nil {
+			legs = len(mergedType.Legs)
+		}
+		t.Fatalf("a seed carrying Alias-less buried legs was ACCEPTED: %d windows, "+
+			"%d merged legs (the box states 2).\n"+
+			"  Both legs file under the ZERO identity, so the second silently displaces\n"+
+			"  the first and a read qualified by the dropped leaf lands in its sibling's\n"+
+			"  slots. The seed must DECLINE — no ordinal layout is the honest answer, and\n"+
+			"  the name model handles the shape.", len(out), legs)
+	}
+
+	// CONTROL: the SAME layout with identities stated is accepted and yields two
+	// sub-windows. Without this the assertion above would pass against a
+	// finalizeSeedWindows that declines everything.
+	o := NamedCorrelationIdentifier("O")
+	c2 := NamedCorrelationIdentifier("C2")
+	boxType.Legs = []RecordTypeLeg{
+		NewRecordTypeLeg(o, "O", 0, 2),
+		NewRecordTypeLeg(c2, "C2", 2, 2),
+	}
+	okOut, okMerged := finalizeSeedWindows(
+		map[CorrelationIdentifier]OrdinalSeedLegWindow{c: {Offset: 0, Typ: boxType, Alias: c}},
+		map[CorrelationIdentifier]string{c: "C"}, make([]Field, 4))
+	if okOut == nil || okMerged == nil {
+		t.Fatal("control: the same layout with identities stated must be ACCEPTED")
+	}
+	if len(okMerged.Legs) != 2 {
+		t.Fatalf("control: merged leg table has %d entries, want 2", len(okMerged.Legs))
+	}
+}

@@ -190,6 +190,29 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			if leg.Name == "" {
 				continue
 			}
+			// A leg that states a NAME but no IDENTITY declines the whole seed.
+			//
+			// The map below is keyed by identity, so an Alias-less leg files under
+			// the ZERO key — and a second one OVERWRITES it. Two buried leaves then
+			// share one window: the first is silently dropped, the merged leg table
+			// reports one entry where the box has two, and every read qualified by
+			// the dropped leaf resolves into its sibling's slots. Nothing downstream
+			// can notice, because a window filed under the zero key is
+			// indistinguishable from a window nobody filed.
+			//
+			// NewRecordTypeLeg's doc states this hazard about its own construction
+			// ("a leg whose identity is the zero CorrelationIdentifier — which every
+			// reader then fails to bind, silently ... deleting `Alias:` from two
+			// producers left the whole suite green"). The compile-time half of that
+			// defence is the positional constructor; this is the runtime half, at the
+			// one place where two such legs become one.
+			//
+			// LOUD, not skip-this-leg: a seed missing a sub-window is a seed whose
+			// qualified reads resolve to the wrong slots, so the honest answer is no
+			// ordinal layout at all and the name model instead.
+			if leg.Alias.IsZero() {
+				return nil, nil
+			}
 			if LegIdentityCensusEnabled() {
 				// The RETIRED predicate is reproduced from the identity so the census
 				// keeps measuring what it always measured. The old `alias` was the map
