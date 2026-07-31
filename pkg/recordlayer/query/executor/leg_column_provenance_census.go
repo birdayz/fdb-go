@@ -59,6 +59,74 @@ import (
 // does, producer-first — the four hits above are what a re-keyed reader would
 // have to keep answering, and the zeros are what says nothing else is in the way.
 //
+// THE OBVIOUS ESCAPE WAS TRIED AND MEASURED SHUT. The proposal: hand the reader
+// the IDENTITY of the leg it is adapting a row FOR — every call site holds one —
+// and select the source window by `Alias == identity` instead of by the
+// qualifier. That would take the name out of SELECTION without touching a
+// producer, so no label could move. The owner sub-partition below is what it
+// measured, over the same corpus:
+//
+//	dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0,
+//	                                ownerNamesNoLeg 4, ownerSelectsOtherLeg 0
+//
+// Four of four MISS. The identity a call site holds is the DESTINATION leg's own
+// correlation — the correlated-scalar seed's machine-minted `q$NNN` — while the
+// qualifier names a leg of the SOURCE merged row, which is a user alias. Those
+// namespaces are deliberately case-DISJOINT (values.SameLeg says why), so nothing
+// bridges them. Selecting by owner resolves no window, the gather matches zero
+// columns, and adaptLegPositional's merge-shaped zero-match tripwire fires.
+//
+// And no third channel is available: the destination leg types that drive this
+// arm are single-column and carry NO leg table of their own, so the qualifier
+// inside the column name is the only thing here that names the source leg. The
+// carrier an identity-keyed selection needs has to be PUT there by the producer —
+// which is the producer-first conclusion above, arrived at a second way.
+// leg_column_owner_selection_test.go pins both halves.
+//
+// CORRECTION, MEASURED: the paragraph below names the wrong channel, and it is
+// kept because the wrong answer is the one everybody reaches first.
+// `ordinalJoinBuild.legType` consults `b.Spans` FIRST whenever WindowsOK, and a
+// span's leg type comes from `resolveSpanLeaf`, which reads the baked reference's
+// `qov.Type()` — the quantifier's OWN flowed type, never the RC field label. So
+// RecordConstructorValue.Type() is NOT on this reader's path and a leg table
+// attached there would not be read. Pinned in leg_type_channel_test.go.
+//
+// The dotted names arrive as `qov.Type()` COLUMN NAMES, which means a producer
+// named a quantifier's flowed column with a label: the correlated-scalar seed
+// builds its inner leg as RECORD<csq.ScalarCol>, the subquery's OUTPUT TITLE.
+// Measured span tables from TestFDB_CorrelatedScalarJoinInner:
+//
+//	spans=["C"@0+2:[ID NAME]  "q$204"@2+1:[I.QTY]]
+//	spans=["C"@0+2:[ID NAME]  "q$223"@2+1:[SUM(QTY)]]
+//	spans=["C"@0+2:[ID NAME]  "q$80"@2+1:[COUNT(*)]]
+//	spans=["C"@0+2:[ID NAME]  "q$726"@2+1:[NAME]]
+//
+// One channel, four titles. `SUM(QTY)` and `COUNT(*)` are plainly titles;
+// `I.QTY` is a title that happens to contain a dot, and it is the only one the
+// dotted arm answers. So the four dotted hits are NOT leg-qualified references
+// with an identity waiting to be keyed on — there is no leg being referenced, so
+// there is no identity to name, and the retirement is a producer that must stop
+// naming a TYPE by a LABEL.
+//
+// WHERE THE ANSWER IS DROPPED, precisely, because it is not missing upstream —
+// only here. The seed builds each leg column as
+// `RecordConstructorField{Name: leg.binding+"."+COL, Value: FieldValueOfOrdinal(
+// outerQOV, leg.start+i)}` (clustered_outer_scalar.go). The VALUE already states
+// the source correlation and the ABSOLUTE slot — `leg.start+i` is the very
+// arithmetic this reader re-derives from the label. It is
+// RecordConstructorValue.Type() that throws it away: it synthesises
+// `&RecordType{Nullable: true, Fields: fields}` carrying Name/FieldType/Ordinal
+// and no leg table, and that stripped type is what widenLegTypesFromPlan stores
+// and adaptLegPositional adapts against.
+//
+// So the reader is recomputing by text something the producer had as an ordinal
+// two hops earlier. Restoring it is additive — RecordType.Legs is layout metadata
+// that Equals and Hash IGNORE, so populating it moves no name, no label and no
+// type identity (pinned in leg_column_owner_selection_test.go). That is the
+// DERIVED-TYPE arm of the RecordConstructorField.Name triple, and it is separable
+// from the row-key and result-label arms: this reader needs only the derived type
+// to carry what the Value already knows.
+//
 // GATED by values.LegIdentityCensusEnabled, like every other census on this
 // path: a disabled census costs the reader one predicate. The counts are per
 // CALL, and the caller (adaptLegPositional) calls once per leg-type column per
@@ -95,6 +163,39 @@ type legColumnProvenanceCounters struct {
 	DottedHitIdentityDiverged int
 	// DottedMiss: dotted, legs present, and no leg window declared the column.
 	DottedMiss int
+
+	// The OWNER sub-partition, over dotted HITS only. The counters above ask
+	// whether the leg the TEXT chose also states an identity; these ask the
+	// question the conversion actually turns on, which is a different one:
+	// would selecting the source window by the identity the READER already
+	// holds have chosen that same leg?
+	//
+	// The two come apart because the identity in hand at the reader is the
+	// OWNER — the correlation adaptLegPositional is adapting a row FOR — while
+	// the qualifier names whatever leg the producer wrote into the column text.
+	// Nothing structurally forces those to be the same leg, and if they are not,
+	// an identity-keyed selection resolves a different window and the conversion
+	// is a behaviour change rather than a refactor. Measured, not assumed.
+	//
+	// They sum to the three dotted-hit counters above; the assertion checks it.
+
+	// DottedHitOwnerSelectsSameLeg: the owner identity names a leg of this row
+	// and it is the leg the text chose. The population whose conversion is a
+	// refactor.
+	DottedHitOwnerSelectsSameLeg int
+	// DottedHitOwnerUnstated: the reader was handed no identity at all (the zero
+	// CorrelationIdentifier), so there is nothing to select by and the site
+	// cannot convert until its caller states one.
+	DottedHitOwnerUnstated int
+	// DottedHitOwnerNamesNoLeg: the owner is stated but names no leg of this
+	// row. An identity-keyed selection would find no window and MISS where the
+	// text hits.
+	DottedHitOwnerNamesNoLeg int
+	// DottedHitOwnerSelectsOtherLeg: the owner names a leg of this row and it is
+	// a DIFFERENT leg than the text chose. The loudest outcome — the two keys
+	// disagree about which window the column lives in, so exactly one of them is
+	// reading the right row.
+	DottedHitOwnerSelectsOtherLeg int
 }
 
 var (
@@ -148,13 +249,69 @@ func classifyLegColumnProvenance(rt *values.RecordType, name string, flatHit boo
 	return legColumnProvenanceIdentityAvailable
 }
 
+// legColumnOwnerClass is one dotted HIT's owner-selection bucket: what a reader
+// that picked the source window by the identity it already holds would have done.
+type legColumnOwnerClass int
+
+const (
+	legColumnOwnerSameLeg legColumnOwnerClass = iota
+	legColumnOwnerUnstated
+	legColumnOwnerNamesNoLeg
+	legColumnOwnerOtherLeg
+)
+
+// classifyLegColumnOwner decides what an IDENTITY-keyed selection would have
+// resolved to, against what the text-keyed one did.
+//
+// Selection goes through values.SameLeg, the one leg-identity authority, rather
+// than through a name comparison on Alias.Name() — comparing the alias's text
+// would be the same text lookup wearing a different field, which is the move
+// this conversion exists to remove.
+func classifyLegColumnOwner(rt *values.RecordType, matched *values.RecordTypeLeg, owner values.CorrelationIdentifier) legColumnOwnerClass {
+	if owner.IsZero() {
+		return legColumnOwnerUnstated
+	}
+	for i := range rt.Legs {
+		if !values.SameLeg(rt.Legs[i].Alias, owner) {
+			continue
+		}
+		if rt.Legs[i].Start == matched.Start && rt.Legs[i].Width == matched.Width {
+			return legColumnOwnerSameLeg
+		}
+		return legColumnOwnerOtherLeg
+	}
+	return legColumnOwnerNamesNoLeg
+}
+
 // recordLegColumnProvenance counts one rowSlotForLegColumn call. matched is the
-// leg the dotted arm resolved the qualifier to, or nil.
-func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit bool, matched *values.RecordTypeLeg, qualifier string) {
+// leg the dotted arm resolved the qualifier to, or nil. owner is the identity the
+// reader was handed, recorded so the conversion's precondition is measured rather
+// than asserted.
+func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit bool, matched *values.RecordTypeLeg, qualifier string, owner values.CorrelationIdentifier) {
 	class := classifyLegColumnProvenance(rt, name, flatHit, matched, qualifier)
 	legColumnProvenanceMu.Lock()
 	defer legColumnProvenanceMu.Unlock()
 	legColumnProvenanceCounts.Calls++
+	switch class {
+	case legColumnProvenanceIdentityAvailable, legColumnProvenanceIdentityUnstated, legColumnProvenanceIdentityDiverged:
+		switch classifyLegColumnOwner(rt, matched, owner) {
+		case legColumnOwnerSameLeg:
+			legColumnProvenanceCounts.DottedHitOwnerSelectsSameLeg++
+			addLegColumnProvenanceWitness(fmt.Sprintf("OWNER-SAME %q: owner %q selects the leg the text chose (%q)",
+				name, owner.Name(), matched.Name))
+		case legColumnOwnerUnstated:
+			legColumnProvenanceCounts.DottedHitOwnerUnstated++
+			addLegColumnProvenanceWitness(fmt.Sprintf("OWNER-UNSTATED %q: the reader holds no identity", name))
+		case legColumnOwnerNamesNoLeg:
+			legColumnProvenanceCounts.DottedHitOwnerNamesNoLeg++
+			addLegColumnProvenanceWitness(fmt.Sprintf("OWNER-NO-LEG %q: owner %q names no leg of %v",
+				name, owner.Name(), legNamesOf(rt)))
+		case legColumnOwnerOtherLeg:
+			legColumnProvenanceCounts.DottedHitOwnerSelectsOtherLeg++
+			addLegColumnProvenanceWitness(fmt.Sprintf("OWNER-OTHER %q: owner %q selects a DIFFERENT leg than the text's %q",
+				name, owner.Name(), matched.Name))
+		}
+	}
 	switch class {
 	case legColumnProvenanceFlatHit:
 		legColumnProvenanceCounts.FlatHit++
@@ -220,6 +377,10 @@ func FormatLegColumnProvenanceCensus() string {
 		"dottedMiss %d); dotted HITS by identity availability: available %d, unstated %d, diverged %d",
 		c.Calls, c.FlatHit, c.NotDotted, c.NoLegs, c.DottedMiss,
 		c.DottedHitIdentityAvailable, c.DottedHitIdentityUnstated, c.DottedHitIdentityDiverged)
+	fmt.Fprintf(&b, "\n  dotted HITS by OWNER selection: sameLeg %d, ownerUnstated %d, "+
+		"ownerNamesNoLeg %d, ownerSelectsOtherLeg %d",
+		c.DottedHitOwnerSelectsSameLeg, c.DottedHitOwnerUnstated,
+		c.DottedHitOwnerNamesNoLeg, c.DottedHitOwnerSelectsOtherLeg)
 	if len(witnesses) > 0 {
 		sorted := append([]string{}, witnesses...)
 		sort.Strings(sorted)
@@ -292,6 +453,18 @@ func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounter
 			"  gap means a call left the reader by a path with no counter on it, and every\n"+
 			"  share below — including the one that decides whether this reader can be\n"+
 			"  re-keyed by identity — is then a share of an unknown whole.\n", got, c.Calls)
+	}
+	dottedHits := c.DottedHitIdentityAvailable + c.DottedHitIdentityUnstated + c.DottedHitIdentityDiverged
+	owners := c.DottedHitOwnerSelectsSameLeg + c.DottedHitOwnerUnstated +
+		c.DottedHitOwnerNamesNoLeg + c.DottedHitOwnerSelectsOtherLeg
+	if owners != dottedHits {
+		failed = true
+		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: the owner sub-partition sums to %d, "+
+			"but there were %d dotted hits.\n"+
+			"  Every dotted hit is classified by what an IDENTITY-keyed selection would\n"+
+			"  have done, so the two must agree. A gap means hits are reaching the reader\n"+
+			"  down a path that records no owner verdict, and the conversion's\n"+
+			"  precondition is then a share of an unknown whole.\n", owners, dottedHits)
 	}
 	if c.DottedHitIdentityDiverged != 0 {
 		failed = true

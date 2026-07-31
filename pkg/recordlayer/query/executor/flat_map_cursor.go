@@ -338,13 +338,13 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		var outerBinding any
 		switch {
 		case c.build.enabled():
-			row, aerr := adaptLegPositional(outerRow, c.build.legType(c.outerAlias))
+			row, aerr := adaptLegPositional(outerRow, c.build.legType(c.outerAlias), c.outerAlias)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
 			outerBinding = row
 		case c.outerBakedType != nil:
-			row, aerr := adaptLegPositional(outerRow, c.outerBakedType)
+			row, aerr := adaptLegPositional(outerRow, c.outerBakedType, c.outerAlias)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
@@ -581,6 +581,14 @@ func bindMergedOuterLegs(ec *EvaluationContext, binding any, outerAlias values.C
 				}
 			}
 		}
+		// The wrong-window instrument's perturbation, applied BEFORE the bindings are
+		// recorded: the census's contract is that it reports what a downstream lookup
+		// will actually find, and under this hook what it will find is the misaimed
+		// span. Recording the intended span here and serving the misaimed one would
+		// make the census lie in exactly the direction it exists to catch.
+		if ec.mergedLegWrongWindows {
+			misaimMergedLegWindows(bindings, claimed)
+		}
 		// Recorded from the RETURNED context's own map, on the return path, and
 		// deliberately NOT from the loop's decisions. Those are two different
 		// claims: the loop says what the binder chose, the returned context says
@@ -762,7 +770,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			adaptType = c.outerMergedType
 		}
 		if adaptType != nil && outerRow.Positional != nil {
-			adapted, aerr := adaptLegPositional(outerRow, adaptType)
+			adapted, aerr := adaptLegPositional(outerRow, adaptType, c.outerAlias)
 			if aerr != nil {
 				return QueryResult{}, aerr
 			}

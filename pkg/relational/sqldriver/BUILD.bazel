@@ -260,6 +260,8 @@ go_test(
         "merged_leg_binding_live_shape_fdb_test.go",
         "merged_leg_exclusion_scope_test.go",
         "merged_leg_read_redundancy_fdb_test.go",
+        "merged_leg_reader_shape_fixture_test.go",
+        "merged_leg_wrong_window_fdb_test.go",
         "mergesort_heap_bench_test.go",
         "modulo_division_probe_test.go",
         "multi_cte_probe_test.go",

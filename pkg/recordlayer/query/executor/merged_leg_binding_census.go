@@ -17,9 +17,11 @@ import (
 // dormant. It is not dormant — it executes on the real-FDB corpus on every
 // clustered-box gather, over ten thousand times in one sqldriver run. It also has
 // a READER, on a multi-leg merged row: over that same run its bindings are looked
-// up six times, every one of them on a merged row carrying SIBLING legs. What
+// up twelve times, every one of them on a merged row carrying SIBLING legs. What
 // those reads are not is LOAD-BEARING — neither removing the bindings entirely
-// nor pointing every window at the wrong slot changes a single assertion.
+// nor aiming every window at a sibling leg's slots changes a single assertion,
+// and both of those perturbations are performed by a standing test on every run
+// rather than by hand.
 //
 // A claim like that decays the moment someone adds a load-bearing consumer, and
 // it decays SILENTLY — the binder keeps working, so nothing goes red, and the
@@ -85,7 +87,7 @@ var (
 	// built expecting the corpus's reads to be SHADOWING reads — an alias already
 	// resolvable without the binder — so that "shadowed nothing" could stand in
 	// for "the binder is the only route, therefore load-bearing". Measured over a
-	// full sqldriver run: ZERO of the reads shadow, all six are UNSHADOWED. Wiring
+	// full sqldriver run: ZERO of the reads shadow, all twelve are UNSHADOWED. Wiring
 	// this tally into the gate would therefore fire on every run while Baked=0 and
 	// say nothing about consumer arrival.
 	//
@@ -98,21 +100,34 @@ var (
 	mergedLegUnshadowedMergedRowReads = map[MergedRowRead]int{}
 	// mergedLegRedundantReaders names the (alias, merged-row shape) reads a live
 	// test has DEMONSTRATED, in this run, to leave the rows unchanged when the
-	// binder's window is declined — the reads that are therefore not evidence of a
-	// load-bearing consumer.
+	// binder's window is PERTURBED — declined outright, or aimed at a sibling leg —
+	// and which are therefore not evidence of a load-bearing consumer.
 	//
 	// It is populated by proof, not by declaration. The activation criterion
 	// excludes exactly this set, so the exclusion's license is the pin that filled
 	// it: if the pin's proof fails it does not register, the set is empty, and the
 	// same reads it used to excuse turn the gate red. There is no way to keep the
 	// exclusion while losing the proof.
-	mergedLegRedundantReaders = map[MergedRowRead]string{}
+	//
+	// It holds a SET of proof names per shape, not one name, because one shape can
+	// have more than one live proof and they perturb it differently: the redundancy
+	// pin DECLINES the window, the wrong-window instrument MISAIMS it. Last-wins on
+	// a single name would drop one of them from the gate's report, and which one it
+	// dropped would depend on the order two parallel tests happened to finish in.
+	mergedLegRedundantReaders = map[MergedRowRead]map[string]bool{}
 )
 
 // RegisterRedundantMergedLegReader records that reads of ONE (alias, merged-row
-// shape) were proven redundant — the same rows with the binder's window serving
-// the read and with it declined — by the named proof. Call it ONLY from the
+// shape) were proven not load-bearing in this run — the same rows under a
+// perturbation of the binder's window — by the named proof. Call it ONLY from the
 // passing path of that proof.
+//
+// The perturbation is the proof's own choice and the two live ones differ:
+// declining the window entirely so the alias resolves to nothing
+// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant), and aiming every window at a
+// sibling leg's span (TestFDB_MergedLegBinding_WrongWindowsAreUnobservable). Both
+// establish the same thing about the same reads — the value behind the binding
+// does not reach an answer — so both excuse them, and both are named.
 //
 // It takes the read's full identity, not its alias, so the excusal covers exactly
 // the shape the proof ran. A proof of `ST` out of an `ST[0,3)|OT[3,5)` merged row
@@ -124,16 +139,26 @@ var (
 func RegisterRedundantMergedLegReader(read MergedRowRead, why string) {
 	mergedLegMu.Lock()
 	defer mergedLegMu.Unlock()
-	mergedLegRedundantReaders[read] = why
+	if mergedLegRedundantReaders[read] == nil {
+		mergedLegRedundantReaders[read] = map[string]bool{}
+	}
+	mergedLegRedundantReaders[read][why] = true
 }
 
-// RedundantMergedLegReaders returns a copy of the proven-redundant registry.
+// RedundantMergedLegReaders returns a copy of the proven-redundant registry, each
+// shape rendered as its proofs' names in sorted order (the suite is parallel, so
+// registration order is not a stable thing to report).
 func RedundantMergedLegReaders() map[MergedRowRead]string {
 	mergedLegMu.Lock()
 	defer mergedLegMu.Unlock()
 	out := make(map[MergedRowRead]string, len(mergedLegRedundantReaders))
-	for k, v := range mergedLegRedundantReaders {
-		out[k] = v
+	for k, whys := range mergedLegRedundantReaders {
+		names := make([]string, 0, len(whys))
+		for why := range whys {
+			names = append(names, why)
+		}
+		sort.Strings(names)
+		out[k] = strings.Join(names, " + ")
 	}
 	return out
 }
@@ -164,6 +189,60 @@ func recordMergedLegBindings(ec *EvaluationContext, outerAlias values.Correlatio
 			Offset:     w.offset,
 			Width:      w.width,
 		}]++
+	}
+}
+
+// misaimMergedLegWindows aims each of a just-bound merged row's leg windows at
+// the NEXT claimed leg's span, cyclically, and marks the ones that actually
+// moved. It is the standing form of the by-hand "bind every leg WRONG" mutation
+// (EvaluationContext.WithMergedLegWrongWindows).
+//
+// Rotation onto the SIBLING, rather than a constant offset, for two reasons. It
+// is reliably wrong: leg 0 of a merged row already starts at slot 0, so "point
+// everything at slot 0" leaves the first leg — the one the corpus's reader reads
+// — aimed correctly, and a mutation that leaves the read untouched proves
+// nothing. And it is the perturbation a wrong binding would REALISTICALLY be:
+// a leg resolving to its sibling's columns is the silent wrong-row failure the
+// per-leg namespace exists to prevent, not an out-of-range window that would fail
+// loudly on the first read.
+//
+// A rotated window may be NARROWER than the leg it replaced, so a read of a high
+// ordinal can fall out of range and raise a loud OrdinalResolutionError instead of
+// returning a wrong value. That is a legitimate outcome for the instrument to
+// observe — a read that can go out of range is a read that depends on the
+// window — and its caller treats an error the same way it treats a changed row.
+//
+// The mutation is applied to the map the returned context carries, so the census
+// records the misaimed spans, which is what a lookup will find. Single-leg rows
+// are left alone: there is no sibling to rotate onto, and a rotation that lands a
+// window back on its own span is not a mutation and is not counted as one.
+func misaimMergedLegWindows(bindings map[values.CorrelationIdentifier]any, claimed []values.CorrelationIdentifier) {
+	windows := make([]*legWindowRow, 0, len(claimed))
+	for _, alias := range claimed {
+		if w, isWindow := bindings[alias].(*legWindowRow); isWindow && w != nil {
+			windows = append(windows, w)
+		}
+	}
+	if len(windows) < 2 {
+		return
+	}
+	// Spans are snapshotted before anything is written: rotating in place would
+	// feed each window the span its predecessor was just given.
+	type span struct{ offset, width int }
+	spans := make([]span, len(windows))
+	for i, w := range windows {
+		spans[i] = span{offset: w.offset, width: w.width}
+	}
+	for i, w := range windows {
+		s := spans[(i+1)%len(spans)]
+		if s.offset == w.offset && s.width == w.width {
+			// Two legs of identical shape: the rotation is a no-op on this window and
+			// claiming it as a misaim would let the instrument's engagement floor pass
+			// on a perturbation that never happened.
+			continue
+		}
+		w.offset, w.width = s.offset, s.width
+		w.misaimed = true
 	}
 }
 
@@ -209,6 +288,7 @@ func recordMergedLegRead(alias string, siblingLegs, shadowsExisting bool, merged
 type MergedLegReadSink struct {
 	mu       sync.Mutex
 	reads    map[MergedRowRead]int
+	misaimed map[MergedRowRead]int
 	misses   map[MergedRowRead]int
 	handoffs map[MergedRowRead]int
 }
@@ -217,6 +297,7 @@ type MergedLegReadSink struct {
 func NewMergedLegReadSink() *MergedLegReadSink {
 	return &MergedLegReadSink{
 		reads:    map[MergedRowRead]int{},
+		misaimed: map[MergedRowRead]int{},
 		misses:   map[MergedRowRead]int{},
 		handoffs: map[MergedRowRead]int{},
 	}
@@ -224,13 +305,23 @@ func NewMergedLegReadSink() *MergedLegReadSink {
 
 // recordRead mirrors recordMergedLegRead's MULTI-LEG population, which is the one
 // the activation gate consults and therefore the one a proof has to speak about.
-func (s *MergedLegReadSink) recordRead(alias string, siblingLegs bool, mergedType *values.RecordType) {
+//
+// A misaimed read is counted in BOTH tallies, and the pair is what makes the
+// wrong-window instrument non-vacuous: reads says the shape still reaches the
+// binder at all, misaimed says the perturbation reached the read. Folding them
+// into one number would let a hook that quietly stopped misaiming look identical
+// to one that worked.
+func (s *MergedLegReadSink) recordRead(alias string, siblingLegs, misaimed bool, mergedType *values.RecordType) {
 	if s == nil || !siblingLegs {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.reads[MergedRowRead{Alias: alias, Shape: mergedRowShape(mergedType)}]++
+	read := MergedRowRead{Alias: alias, Shape: mergedRowShape(mergedType)}
+	s.reads[read]++
+	if misaimed {
+		s.misaimed[read]++
+	}
 }
 
 // recordBypass mirrors recordMergedLegBypass.
@@ -253,6 +344,14 @@ func (s *MergedLegReadSink) Reads() map[MergedRowRead]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return copyReadTally(s.reads)
+}
+
+// MisaimedReads returns a copy of the subset of this execution's reads that
+// resolved to a window misaimMergedLegWindows had moved off its own leg.
+func (s *MergedLegReadSink) MisaimedReads() map[MergedRowRead]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return copyReadTally(s.misaimed)
 }
 
 // BypassOutcomes returns copies of this execution's declined lookups: those that
@@ -371,7 +470,7 @@ func ResetMergedLegBindingCensus() {
 	mergedLegReads = map[string]int{}
 	mergedLegMergedRowReads = map[MergedRowRead]int{}
 	mergedLegUnshadowedMergedRowReads = map[MergedRowRead]int{}
-	mergedLegRedundantReaders = map[MergedRowRead]string{}
+	mergedLegRedundantReaders = map[MergedRowRead]map[string]bool{}
 }
 
 // FormatMergedLegBindingCensus renders the census for a harness to log.

@@ -77,9 +77,59 @@ const (
 	legLocalBakeDeclined
 )
 
+// legRebaseSite is WHICH lowering reached the leg-match arm. Threaded from the
+// two entry points rather than reconstructed, because reconstructing it means
+// asking the arm which of its callers it has — and it has no way to know.
+//
+// It exists because the SPLIT is a live claim. Phase 3 redirected on it: the
+// booking said the arm was reached "without a stated merged layout on the
+// EXISTS-over-join and RFC-153 buried-leg paths", and the measurement said all
+// of the firings are the EXISTS site and NONE are the buried site — which also
+// states a layout on 314 of 362 firings. DIVERGENCES.md and TODO.md now assert
+// that split in prose. A number asserted in prose and checked by nothing is the
+// failure mode this whole census family exists to prevent: change the lowering
+// so a buried leg reaches this arm, and both documents go on asserting a zero
+// that stopped being true, with every gate green.
+type legRebaseSite int
+
+const (
+	// legRebaseSiteUnknown is deliberately the ZERO value and is counted into
+	// NEITHER site. A third entry point that threads a forgotten zero-valued
+	// site then increments Total without either site counter, and the partition
+	// assertion (SiteExists + SiteBuried == Total) goes red — instead of the
+	// newcomer being silently counted as EXISTS, which is what a zero-valued
+	// legRebaseSiteExists would have done.
+	legRebaseSiteUnknown legRebaseSite = iota
+	// legRebaseSiteExists: implementJoinWithExistential's two-level NLJ→FlatMap
+	// lowering, where the merged layout is ordinalSeedLegWindowsOf(step1RV) and
+	// is nil exactly when foldStep1Seed declined.
+	legRebaseSiteExists
+	// legRebaseSiteBuried: buildCorrelatedFlatMapPlan's RFC-153 buried-preserved
+	// leg rebase, which computes a layout with buriedLegOrdinalLayout.
+	legRebaseSiteBuried
+)
+
+func (s legRebaseSite) String() string {
+	switch s {
+	case legRebaseSiteBuried:
+		return "BURIED(buildCorrelatedFlatMapPlan)"
+	case legRebaseSiteExists:
+		return "EXISTS(implementJoinWithExistential)"
+	}
+	return "UNKNOWN-SITE"
+}
+
 type legLocalBakeCounters struct {
 	// Total is every firing of the leg-match arm.
 	Total int
+	// SiteExists / SiteBuried partition Total by WHICH lowering reached the arm.
+	//
+	// Measured 174 / 0. The zero is the load-bearing half and it is the half a
+	// census cannot prove on its own — an unreached site and a site measured
+	// empty print identically — so SiteExists is FLOORED and SiteBuried is
+	// asserted zero with its re-arm condition named at the assertion.
+	SiteExists int
+	SiteBuried int
 	// Baked: reads that KEPT their own leg alias and their own leg-local ordinal
 	// — the pass-through. The arm's live population.
 	Baked int
@@ -277,6 +327,25 @@ var (
 // interesting case is not "no layouts existed" but "layouts existed and this leg
 // was not among them" — a reference correlated to an alias no chosen leg carries,
 // which is a different defect from a leg whose quantifier yields no row type.
+// recordLegRebaseSite counts one firing against the lowering that reached the
+// arm. Separate from recordLegLocalBakeability so the site dimension is recorded
+// once per FIRING at the one place that has the site in hand — the arm recorder
+// — rather than being inferred from anything the classification already did.
+// The two cuts partition the same denominator and neither constrains the other,
+// which is the property the partition assertion checks.
+func recordLegRebaseSite(site legRebaseSite) {
+	legLocalBakeMu.Lock()
+	defer legLocalBakeMu.Unlock()
+	switch site {
+	case legRebaseSiteExists:
+		legLocalBakeCounts.SiteExists++
+	case legRebaseSiteBuried:
+		legLocalBakeCounts.SiteBuried++
+	}
+	// legRebaseSiteUnknown (the zero value) is deliberately counted into
+	// neither: the partition assertion turns it red rather than misfiling it.
+}
+
 func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.CorrelationIdentifier, legTyp values.Type, column string, available ...string) {
 	class := classifyLegLocalBake(outcome, legTyp, column)
 	legLocalBakeMu.Lock()
@@ -348,10 +417,12 @@ func recordRebaseOuterLegArm(
 	qov *values.QuantifiedObjectValue,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
 	identity legReadIdentity,
+	site legRebaseSite,
 ) {
 	if !values.LegIdentityCensusEnabled() {
 		return
 	}
+	recordLegRebaseSite(site)
 	legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
 	column := strings.ToUpper(fv.Field)
 	recordLegLocalBakeability(outcome, qov.Correlation,
@@ -750,6 +821,7 @@ func FormatLegLocalBakeCensus() string {
 		c.Total, c.Baked, c.MergedReAnchor, c.Declined,
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
+	fmt.Fprintf(&b, "; by CALL SITE: exists %d, buried %d", c.SiteExists, c.SiteBuried)
 	fmt.Fprintf(&b, "; ALL reads by OWN identity: identityInLegDomain %d, "+
 		"identityOtherDomain %d, lazyNameOnly %d",
 		c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly)
@@ -782,7 +854,13 @@ func FormatLegLocalBakeCensus() string {
 // exploration order, and the corpus grows and shrinks with unrelated work. What
 // a floor detects is COLLAPSE, not drift.
 type LegLocalBakeFloors struct {
-	Total          int
+	Total int
+	// SiteExists floors the ONE call site that is supposed to be live. Total
+	// alone does not cover it: if the EXISTS lowering stopped reaching the arm
+	// and something else started, Total could hold while the population this
+	// census describes changed identity entirely — and the SiteBuried zero above
+	// would still pass, vacuously.
+	SiteExists     int
 	LegDerivations int
 	// MergeSlots is floored for the same reason the other two are:
 	// MergeSlotsUntyped is a SHARE of it, and a share of a collapsed denominator
@@ -854,6 +932,39 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			"  that can state their own slot with no name consulted anywhere; if the\n"+
 			"  three do not sum, that number is a share of an unknown whole.\n",
 			c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly, got, c.Total)
+	}
+
+	// THE CALL-SITE CUT. A third partition of Total, and the one that turns a
+	// prose claim into a checked one.
+	if got := c.SiteExists + c.SiteBuried; got != c.Total {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: SiteExists(%d) + SiteBuried(%d) = %d, "+
+			"but Total = %d.\n"+
+			"  Every firing enters the arm from exactly one lowering, so these must\n"+
+			"  partition Total. A gap means a THIRD entry point now reaches\n"+
+			"  rebaseOuterLegValue and is threading a site value that names neither —\n"+
+			"  which is worth finding, because the split below is asserted as a fact in\n"+
+			"  DIVERGENCES.md and in TODO.md's CQ-53 phase-3 block.\n",
+			c.SiteExists, c.SiteBuried, got, c.Total)
+	}
+	if c.SiteBuried != 0 {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: SiteBuried = %d, want 0.\n"+
+			"  A leg-correlated read reached the leg-match arm from the RFC-153\n"+
+			"  BURIED-leg lowering (buildCorrelatedFlatMapPlan). Measured over the whole\n"+
+			"  real-FDB corpus that population is ZERO: all 174 firings are the EXISTS\n"+
+			"  site, and the buried site reaches no matching leaf at all even though it\n"+
+			"  DOES compute a layout (buriedLegOrdinalLayout answers on 314 of 362\n"+
+			"  firings).\n"+
+			"  THIS IS NOT NECESSARILY A BUG — it is a REFUTED PREMISE RE-ARMING. Two\n"+
+			"  documents now assert this zero in prose: DIVERGENCES.md's sibling-alias\n"+
+			"  entry (\"there is no buried-leg work in this retirement\") and TODO.md's\n"+
+			"  CQ-53 phase-3 refutation 2. Both were written FROM this measurement. If\n"+
+			"  the lowering changed so a buried leg now reaches here, those documents are\n"+
+			"  stale and the buried path is back in scope: re-measure the split, fix the\n"+
+			"  prose in both places, and only then decide whether the new firings are\n"+
+			"  correct. Do not simply raise this bound — the bound IS the claim.\n",
+			c.SiteBuried)
 	}
 
 	// THE TWO CUTS AGAINST EACH OTHER. Both partitions above are sums over the
@@ -1046,6 +1157,7 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			floor int
 		}{
 			{"Total", c.Total, floors.Total},
+			{"SiteExists", c.SiteExists, floors.SiteExists},
 			{"LegDerivations", c.LegDerivations, floors.LegDerivations},
 			{"MergeSlots", c.MergeSlots, floors.MergeSlots},
 		} {

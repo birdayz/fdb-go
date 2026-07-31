@@ -3520,7 +3520,7 @@ suites are the correctness authority (the §5 dual-window is already retired —
     (EXISTS→3rd-leg → [2], →4th-leg 4-way → [3], distinct from 1st-leg [1] — the per-alias legTypes bake maps to
     the correct window regardless of leg count, confirming Java's alias-keyed semantics) + mixed conjunct + NOT
     EXISTS. BUT it broke TWO existing tests, so it was reverted (uncommitted): (1)
-    **TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
+    **TestFDB_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
     EXISTS(...)` LOST its SARG'd index scan and collapsed to a full A×B×C cross product. (2)
     **TestFDB_RFC173Item1_KeyBindingAndBuriedExists/P4b_arity3_dup_exists** — a duplicate FROM alias must LOUDLY
     decline; B1 bypassed the minted-binding decline.
@@ -6230,9 +6230,11 @@ and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-
 UN-BOOKED. The "ordinal-fold-over-index-matched-box" enhancement is **NOT ACHIEVABLE and NOT NEEDED**
 (Graefe feasibility ruling, confirmed at 4 code sites). A WHERE-EXISTS correlating into a leg BURIED in an
 inner join is the canonical semijoin; its good plan is a CORRELATED INDEX SCAN (`Scan(A,[=b.aid])` SARG'd
-under the FlatMap) which REQUIRES NAME BINDING to flow the sibling comparand into A's index. `correlatedStep1`
-(rule_implement_nested_loop_join.go:1973) IS the index-SARG signal; `buildCorrelatedFlatMapPlan` (:449)
-passes the name-model RC straight through with NAMED correlations; `foldStep1Seed` (:1244) returns
+under the FlatMap) which REQUIRES NAME BINDING to flow the sibling comparand into A's index. All three sites
+below are in `rule_implement_nested_loop_join.go`, named by SYMBOL rather than by line because the line
+numbers this ruling first carried (`:1973`, `:449`, `:1244`) had all rotted by the time anyone re-read it:
+the `correlatedStep1` predicate IS the index-SARG signal; `buildCorrelatedFlatMapPlan`
+passes the name-model RC straight through with NAMED correlations; `foldStep1Seed` returns
 gated=false the instant correlatedStep1 is set — no ordinal seed is ever born, deliberately. Baked
 positional `ofOrdinal` refs cannot resolve against the box's name-keyed runtime row; re-birthing the box
 ordinal BREAKS the SARG (BakedNameContextError). **The "ordinal twin of name resolution over an index-matched
@@ -6244,7 +6246,7 @@ cross-product (throws away the index where it matters MOST — a regression, not
 ATOMIC CAP (task #16): it CANNOT delete NewAnchoredJoinRecord entirely — the correlated-index existential
 shape KEEPS it, correctly (Java-aligned). The cap's premise "delete the name model in ONE commit" is
 re-scoped: the correlatedStep1 name path survives; the cap deletes the name model only for the shapes that
-do NOT need name binding (independent-legs materialized joins).** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed
+do NOT need name binding (independent-legs materialized joins).** Pinned: TestFDB_CorrelatedIndexExistsStaysIndexed
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
@@ -10496,13 +10498,35 @@ None is speculative: each was re-verified against the tree before booking.
     two routes fails the pin, empties the registry, and turns those same reads
     into a red gate in the same run.
 
-    **Criterion amended on post-ACK evidence; re-confirmation pending.** The
-    double-ACK'd form was a bare *merged-shape read ⇒ Baked > 0*, resting on
-    the "3 single-leg-unnest reads" claim above. That claim is refuted, and the
-    bare form is unsatisfiable on this tree (3 multi-leg reads with Baked = 0
-    by construction). The amendment — the proven-redundant exclusion and its
-    pin — has NOT been through the architecture reviewer; it goes as a single
-    question.
+    **Criterion amended on post-ACK evidence. RULED SOUND, AND INERT — the
+    standing question is CLOSED and its premise was stale.** The double-ACK'd
+    form was a bare *merged-shape read ⇒ Baked > 0*, resting on the "3
+    single-leg-unnest reads" claim above. That claim is refuted. What this entry
+    then said — that the bare form is "unsatisfiable on this tree (3 multi-leg
+    reads with Baked = 0 by construction)" — is ALSO wrong, and in the opposite
+    direction: `Baked` counts the PASS-THROUGH, which is 174 of 174, so the bare
+    implication is not unsatisfiable but TRIVIALLY SATISFIED. Its antecedent
+    holds and its consequent holds, always, for reasons that have nothing to do
+    with each other.
+
+    The amended form (proven-redundant exclusion) was reviewed and is sound as
+    machinery: the exclusion is keyed on full read identity, the registration
+    happens only on the pin's passing path so a divergence empties the registry,
+    and `partitionMergedRowReads` is pure. But sound is not the same as useful.
+    The criterion can only fire if the PASS-THROUGH goes silent while merged-row
+    reads persist, which is a state no current shape produces. It is a gate
+    guarding a door nobody walks through.
+
+    **The gap that matters is elsewhere, and it has no instrument at all.** The
+    load-bearing claim on this path is "the bindings are not load-bearing" — and
+    what supports it is a HAND-RUN mutation: bind every leg to the wrong window,
+    observe the suite stays green. Nothing in CI does that. The redundancy pin
+    (`TestFDB_MergedLegBinding_ReaderShapeIsRedundant`) runs the reader shape
+    down both routes via `EvaluationContext.WithMergedLegReadBypass` and compares
+    rows, which proves the two ROUTES agree; it does not bind a wrong window, so
+    it cannot notice the day a binding starts to matter. Until a wrong-window arm
+    is standing, "not load-bearing" is a claim whose evidence expired the moment
+    it was measured. NOT BUILT HERE — see the phase-3 status list.
 
     Consequence for CQ-53's remainder: the shadowing and first-claim-wins
     semantics are, on the shapes that run, UNOBSERVABLE — and the
@@ -10793,6 +10817,281 @@ None is speculative: each was re-verified against the tree before booking.
   PASS on both sides, every row count identical (`1`, `8`, `100017`, `47271`,
   `10`, `1000000`, `46`, `97`, …); timings within run-to-run noise on a shared
   machine (full scan 3.51s vs 3.38s, sparse filter 2.92s vs 2.97s).
+
+  ---
+
+  **PHASE 3 (2026-07-31, branch `feat/cq53-parent-chained-binder`, base
+  `f50cee43e`). The NLJ mint is DELETED. The parent-chained binder work is NOT
+  done, and THREE MORE PREMISES OF THIS ENTRY ARE REFUTED BY MEASUREMENT** —
+  including the two the phase-3 plan was built on. Read the refutations before
+  planning the next attempt; the plan above targets the wrong sites.
+
+  Every number below is one run of the whole real-FDB sqldriver corpus at base
+  `f50cee43e` (`go test ./pkg/relational/sqldriver/ -count=1 -v`), the standing
+  censuses plus a call-site probe added for this question and removed after.
+
+  WHAT LANDED:
+
+  - **`rule_implement_nested_loop_join.go:2854`'s dotted mint is GONE.**
+    `qualField := corr + "." + strings.ToUpper(fv.Field)` is deleted; the merged
+    re-anchor (ARM 1) now names its node `values.OrdinalFieldName(ord)`. That is
+    Java, precisely: `PartitionSelectRule.java:296-303` re-anchors a collapsed
+    alias through `FieldValue.ofOrdinalNumber`, and `FieldValue.java:335-338`
+    builds it from `new Accessor(null, ordinalNumber)` — the accessor's name is
+    NULL, because the sibling alias has ceased to exist and there is nothing
+    left to spell. Pinned by `TestRebaseOuterLegValue_OrdinalFirst`, which now
+    asserts EQUALITY against the ordinal rendering (mutation-checked: restoring
+    the mint reds it with `got "A.A_ID", want "_3"`).
+  - **The RFC-197 ratchet gained a PRODUCER arm, and it was blind to producers
+    entirely.** Measured, not inferred: with the mint above restored verbatim,
+    `pkg/docscheck` stayed GREEN. `corr + "." + fv.Field` is a `+` BinaryExpr,
+    and every arm of `scanFieldDecisions` watched a name being READ —
+    comparisons, switch tags, map keys, composite-literal keys, escapes. RFC-197
+    orders this migration PRODUCER-FIRST and nothing was counting producers.
+    The new arm flattens the `+` chain (left-nesting hides the separator from an
+    in-place operand test — the first version of the arm reported nothing on the
+    whole tree and read as clean) and reports one site per line.
+
+  THE RATCHET COUNTS WENT **UP**, and that is the honest result. `dotted` 9 → 14,
+  `contract` 15 → 16, total 46 → 52. One mint died and five became countable:
+
+  | site | what it mints |
+  |---|---|
+  | `cascades_translator.go:3598` | CQ-53's SURVIVING producer — `QOV(leg).COL` → `QOV(merged)."LEG.COL"` on the unnest-merge path |
+  | `cascades_translator.go:886` | registers the QUALIFIED spelling of a group key as an alias of its output ordinal |
+  | `cascades_translator.go:978` | the READ side of that same alias table |
+  | `cascades_generator.go:3073` | `CORR.FIELD` as the key into the null-supplying-window metadata map |
+  | `logical_predicate.go:9340` | the correlated-scalar column key, qualified or bare depending on a scoping test made elsewhere |
+  | `values.go:1720` (`contract`) | `FieldPath.toString` rendering — debt through `ColumnNameValue`, not through `ExplainValue` beside it |
+
+  **WHAT THE MINT ARM COUNTS, AND WHAT IT CANNOT — read the six above with this
+  bound or the tally lies.** The arm inherits the whole gate's scope: it fires on
+  a `.` joined to `FieldValue.Field` or to an identifier tainted from it. Three
+  consequences, and the first is the one that matters:
+
+  - **The two producers this phase MEASURED as the live executor-side channel are
+    OUTSIDE the count.** `scalar_subquery_seed.go:83` joins a plain `scalarCol`
+    string parameter; `clustered_outer_scalar.go:493` joins
+    `leg.typ.Fields[i].Name`, a `.Name` selector off a schema field. Neither
+    operand is a `FieldValue`, so neither is a decision the gate can see. The
+    same holds for their siblings at `clustered_outer_scalar.go:510`, `:774` and
+    `cascades_translator.go:7036`. `dotted (14)` therefore means "fourteen
+    `.Field`-scoped dotted sites", NOT "every dotted producer in the tree".
+  - **One shape is structurally undetectable rather than merely out of scope.**
+    `values.go:1713` accumulates path steps into a SLICE (`steps[i] = …`) and
+    joins them with `strings.Join`, so there is no `+ "." +` node to match and
+    the taint tracker cannot follow it either — `taint()` requires an
+    `*ast.Ident` on the left of an assignment and `steps[i]` is an `IndexExpr`.
+    Its sibling at `:1720` IS counted, because that one concatenates. A
+    heuristic keyed on `strings.Join`'s separator argument would fire on every
+    path-joining helper in the tree; the bound is stated instead of guessed at.
+  - Widening to `.Name` selectors is the obvious next step and it is NOT free:
+    `.Name` is among the most common field spellings in the tree (schema fields,
+    protobuf descriptors, quantifier bindings), so the arm would need the type
+    discriminator the gate deliberately does not use on its shallow tier. That
+    trade is documented at `scanFieldDecisions`' `decides` closure and is a
+    change to the gate's precision policy, not an extension of this arm.
+
+  THE REFUTATIONS. Each quotes the premise it kills:
+
+  1. **"The `:2854` producer deleted ⇒ leg-column provenance 4 dotted hits → 0."**
+     A NON-SEQUITUR: the two are different channels. `:2854`'s only consumer is
+     ARM 1, and ARM 1 returned ZERO times over the corpus (`mergedReAnchor 0 of
+     174`), so the mint produced NOTHING that reached the executor. The
+     executor's four dotted hits come from the CORRELATED-SCALAR ORDINAL SEED
+     builders, which name their RC fields `LEG.COL` literally:
+     `scalar_subquery_seed.go:83` and `clustered_outer_scalar.go:493`. Measured
+     by instrumenting both producers and matching their output against the
+     census witnesses — `C.CV` and `O.ID` are minted VERBATIM by
+     `scalarSubqueryOrdinalSeed`; `I.QTY` arrives as the `scalarCol` half of its
+     `O.I.QTY`. Those leg-type names are what `adaptLegPositional` feeds to
+     `rowSlotForLegColumn`. The executor's dotted arm therefore retires with the
+     SCALAR-SEED representation, producer-first, and not with any NLJ work.
+     Deleting `:2854` moved the provenance census by zero, as it had to.
+  2. **"Go reaches `rebaseOuterLegValue` without a stated merged layout on the
+     EXISTS-over-join AND RFC-153 buried-leg paths."** Half wrong, and the
+     wrong half is the one the plan named first. Split by call site:
+
+     ```
+     EXISTS(implementJoinWithExistential)  174   <- ALL of the 174
+     BURIED (buildCorrelatedFlatMapPlan)     0
+     ```
+
+     The RFC-153 buried path DOES state a layout — `buriedLegOrdinalLayout`
+     answered on 314 of 362 firings (the 48 declines are a NLJ/Projection/Union
+     outer, not a FlatMap) — and it contributes NOTHING to the 174 because no
+     leg-correlated leaf reaches the match arm there at all. There is no buried
+     -leg work in this item.
+  3. **"Closing it means giving those two paths a merged layout, which is the
+     parent-chained per-alias bindings bullet — still the right plan, now
+     unblocked."** It is NOT unblocked, and the blocker is not the one booked.
+     On the EXISTS path the merged layout IS `ordinalSeedLegWindowsOf(step1RV)`;
+     it is nil exactly when `foldStep1Seed` declined. Decline census, per firing:
+
+     ```
+     DECLINE correlatedStep1                                    108
+     DECLINE reconstruct nil (left=FlatMap right=Scan)           77
+     DECLINE reconstruct nil (left=Scan  right=FlatMap)          77
+     DECLINE rv does not reference exist alias                  200
+     ACCEPT                                                      78
+     ```
+
+     and the step-1 result values that reach the pass-through are:
+
+     ```
+     RC(1) [ExistsValue:1]                     x26
+     RC(2) [ExistsValue:1 FV-multi:1]          x48
+     RC(2) [ExistsValue:1 FV-unpinned:1]       x80
+     ```
+
+     So the residue is a FOLDED PROJECTION CARRYING AN ExistsValue, not a leg
+     concat — there is nothing for `OrdinalSeedLegWindows` to read because the
+     value is not a merged row at all. The 154 `reconstruct nil` firings are
+     `legIsOrdinalSafe` declining a **FlatMap leg**, and what those FlatMap legs
+     flow is the sharp finding:
+
+     ```
+     rv=*values.QuantifiedObjectValue        x94   (identity pass-through)
+     rv=RC(2) [QOV-record:2]                 x60   (a nested UNNAMED merge)
+     ```
+
+     **The 60 are Java's own merged row.** `RC(_i: QOV(leg_i))` is
+     `PartitionSelectRule.java:283-291`'s
+     `RecordConstructorValue.ofColumns(... Column::unnamedOf)` verbatim — Go
+     builds it in `positional_merge.go`'s `positionalMergeCase`. The layout
+     authority cannot read it: `OrdinalSeedLegWindows` accepts only the FLAT
+     concat seed (every field a frontier-pinned single-accessor `FieldValue`
+     over a leg QOV), and a bare whole-leg QOV field is rejected unless it is a
+     non-record mixed-seed element. So Go already PRODUCES Java's merge shape on
+     this path and its own layout authority declines it.
+
+  WHAT THE NEXT ATTEMPT IS, stated so it is not re-derived: teach the layout
+  authority to read the NESTED UNNAMED merge row (`RC(_i: QOV(leg_i))`) as a leg
+  layout, then let `legIsOrdinalSafe`/`planBuriedLegConcat` admit such a leg so
+  `reconstructFoldStep1Seed` can build the step-1 seed and the ordinal rebase
+  (`rebaseOuterLegRefsOrdinal`) takes over from the pass-through. That is a
+  change to the PHYSICAL ROW LAYOUT CONTRACT between planner and executor
+  (nested-per-leg vs flat concat), so the executor's span twin has to agree
+  bit-for-bit and the cross-agreement fixture is the gate. It is NOT started
+  here: it needs the Graefe-ACK'd RFC that comes BEFORE implementation, and the
+  `correlatedStep1` arm above it carries a documented history of two reverts
+  (a correlated FlatMap binds legs by NAME; a baked seed there hits the loud
+  `BakedNameContextError`).
+
+  NOT DONE, and each is a consequence of the refutations rather than a choice:
+  the executor's `rowSlotForLegColumn` dotted arm SURVIVES (its producer is the
+  scalar seed, not the NLJ mint); `bakeDottedRefsToLegQOV`'s family survives
+  (re-measured this run: `flatColumnBake` 102 attempts / 98 matches,
+  `legQOVBake` 4 / 3 + 1 via table name — CQ-52 is still its successor step);
+  `mergedReAnchor` is still 0 of 174, so the redundancy exclusion is still
+  vacuous and the wrong-window mutation is still GREEN — that mutation is no
+  longer somebody's by-hand edit, it STANDS as
+  `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable`; and `RecordTypeLeg.Name`
+  does NOT retire — its contract at `values/type.go:372` is unchanged, because
+  the reader the phase-3 plan expected to kill was never fed by the mint it
+  deleted.
+
+  Baseline censuses at `f50cee43e`, for the next attempt to diff against:
+
+  ```
+  leg-local bakeability: total 174 (baked 174, mergedReAnchor 0, declined 0);
+    legs: flowed 960, underivable 0; identityInLegDomain 174, otherDomain 0, lazyNameOnly 0
+  merged-leg binding: 15677 windows bound over 299 shapes; 6 READ (all excused as proven-redundant)
+    [now 15689 / 303 / 12 — the wrong-window instrument runs the reader shape
+     twice more and binds one execution's windows rotated, so +6 reads and
+     +4 bind shapes are ITS doing, not a corpus change]
+  leg-column provenance: calls 52 (flatHit 40, notDotted 8); dotted HITS available 4, unstated 0, diverged 0
+  translator dotted leg qualifier: flatColumnBake 102 (98 match), legQOVBake 4 (3 match, 1 via table name)
+  seed-window readers: existentialRebase 962 (461/501), boxLegRef 92 (62/30),
+    boxSurvivorQOV 184, boxSurvivorCorrelation 2, gatheredGroupSlot 160
+  ```
+
+  **Stress 1M phase-3 before/after (`f50cee43e` base vs branch `4dccc50f0`),
+  2026-07-31.** 24/24 subtests PASS on both sides; every measured line identical
+  once timings are normalised (37 lines); row-count multiset identical
+  (`1`×9, `4`×3, `8`×3, `10`, `46`, `97`×2, `47271`, `100000`, `100017`,
+  `1000000`×4). Timings within run-to-run noise, all thresholds met:
+
+  | | base | branch |
+  |---|---|---|
+  | PK lookup id=0 / N-2 / N-1 | 5.13 / 5.09 / 4.86 ms | 4.86 / 4.87 / 4.84 ms |
+  | idx_customer eq | 5.66 ms | 5.71 ms |
+  | ORDER BY PK (full, 1M) | 3.33 s | 3.25 s |
+  | scan all rows wide (1M) | 3.38 s | 3.32 s |
+  | full scan sparse filter | 2.98 s | 2.91 s |
+
+  **METHODOLOGY BUG FOUND WHILE RUNNING IT, and it invalidates the workflow
+  CLAUDE.md documents.** The first comparison showed the branch 2.3x SLOWER on
+  every point lookup — PK lookups 11.5–17.4 ms against the base's 4.9–6.6 ms,
+  `idx_customer eq` 13.1 ms against 5.7 ms — reproduced on three consecutive
+  branch runs and therefore not noise. It was not the change either: the two
+  sides differed in CHECKOUT LOCATION, not only in commit. The base worktree sat
+  on the root disk and the branch tree in `/home`, which was **96–100% full**,
+  and ext4 point-lookup latency degrades sharply at that utilisation. Controlled
+  by checking the SAME branch HEAD out to a second worktree on the root disk
+  (source verified byte-identical): 4.86 / 4.87 / 4.84 ms — base parity. The
+  table above is that same-disk, same-load pair.
+
+  The documented recipe (`git worktree add /tmp/fdb-master master`, compare
+  against the branch in `~/projects/...`) puts the two sides on DIFFERENT
+  FILESYSTEMS by construction, so any run of it while either disk is near full
+  measures the disks and reports it as a planner regression. Both sides must be
+  on the same filesystem. Note also that `/tmp` here is a 32 G tmpfs, too small
+  for a worktree — use a root-disk path.
+
+  Nothing on an executed path changed, which is why parity was the expected
+  result: the only production edit is ARM 1's display NAME, on an arm measured
+  to return zero times over the whole corpus. If a future change makes ARM 1
+  fire, that change owns its own stress run.
+
+  **Left open by phase 3. The first is now CLOSED and its entry is kept as the
+  record of what was built; the second is still open and is stated so it is not
+  mistaken for done:**
+
+  1. **CLOSED — the standing WRONG-WINDOW instrument is
+     `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable`**
+     (`pkg/relational/sqldriver/merged_leg_wrong_window_fdb_test.go`). What it
+     gates: the claim "the merged-leg bindings are not load-bearing on any
+     covered shape", which until now rested half on a mutation somebody ran by
+     hand and nothing in CI performed. It runs the corpus's one merged-row reader
+     shape twice in one process — correct windows, then every window rotated onto
+     a SIBLING leg's span via `EvaluationContext.WithMergedLegWrongWindows` — and
+     asserts the rows agree and are Java's. It reds the day a read starts
+     depending on which slots its window covers, and its message names the
+     procedure (exclusion out of the census criterion, binder correctness becomes
+     a real invariant, DIVERGENCES.md's shadowing/first-claim-wins semantics need
+     re-justifying).
+
+     Rotation, not the by-hand "every window at offset 0": leg 0 already starts at
+     0, so the constant left `ST` — the leg the corpus's reader actually reads —
+     aimed CORRECTLY. The by-hand mutation was weaker than its own description.
+
+     Two floors stop it passing vacuously — the shape still reads a binder window
+     (one shape, >0 reads), and the read RESOLVED THROUGH a misaimed window (>0
+     under the hook, exactly 0 without it). Windows-bound-wrong was rejected as
+     the floor: a merged row nothing looks up can be misaimed all day.
+
+     Mutation-checked in three directions, each red on its own: hook neutered →
+     `THE WRONG-WINDOW ARM NEVER ENGAGED … reads through a MISAIMED window: map[]`
+     with the reads floor still satisfied at 3 (this is the discrimination
+     check — the reads are not a side effect of the hook); the misaimed FLAG set
+     without moving the span → the executor-side pin
+     `TestMisaimMergedLegWindows_ServesTheSiblingsSlots` reds with
+     `leg A ordinal 0 read 10, want 22`; the binder binding nothing → floor 1 reds
+     with `reads this execution made: map[]`.
+
+     `RegisterRedundantMergedLegReader` now holds a SET of proof names per shape,
+     because this shape has two live proofs perturbing it differently (decline vs
+     misaim) and last-wins would have dropped whichever finished second.
+  2. **The MINT arm was NOT widened to `.Name` selectors** (resolution (b), not
+     (a)). The bound is stated at the arm and in the table above instead. The
+     reason is a real cost, not a shrug: `.Name` is one of the most common field
+     spellings in the tree, so catching `leg.typ.Fields[i].Name` without drowning
+     the bucket needs the TYPE DISCRIMINATOR the gate's shallow tier
+     deliberately does without — and that tier's precision trade is itself pinned
+     by two fixtures, so changing it is a policy change with its own mutation
+     matrix. Widening on spelling alone was not attempted because the measurement
+     that would license it does not exist yet.
 
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and

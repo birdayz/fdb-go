@@ -6,34 +6,10 @@ import (
 	"sort"
 	"testing"
 
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
-	"google.golang.org/protobuf/types/dynamicpb"
-
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// redundantReaderAlias is the leg alias whose binder-produced reads this test
-// proves redundant.
-//
-// It is the corpus's ONLY reader: over a full sqldriver run, every lookup that
-// resolves to a bindMergedOuterLegs window is a read of this alias, on the
-// correlated-EXISTS inner-shadow shape reproduced below.
-//
-// The alias alone is NOT what the gate excludes. The exclusion is registered
-// under the full read identity — this alias plus the merged row's leg layout,
-// measured here rather than spelled out — because `ST` is a plain table name and
-// an exclusion keyed on it would excuse any future multi-leg read of anything so
-// named, load-bearing or not.
-const redundantReaderAlias = "ST"
 
 // TestFDB_MergedLegBinding_ReaderShapeIsRedundant is the LICENSE for the
 // activation criterion's one exclusion, and it is a license rather than a note
@@ -44,10 +20,12 @@ const redundantReaderAlias = "ST"
 // The merged-leg binding census alarms when a read resolves to a
 // bindMergedOuterLegs window on a MULTI-LEG merged row while no leg-local bake
 // produced anything (assertMergedLegBindingCensus). The corpus contains such
-// reads today — three over a full run, all on the alias above, from the shape
-// below; this test's own active route adds three more of the same shape, so a
-// full run reports six. Without an exclusion the gate is permanently red and says
-// nothing; with an exclusion resting on prose it is an assertion nobody checks.
+// reads today — three over a full run, all on redundantReaderAlias, out of the
+// shape newMergedLegReaderShape builds. This test's own active route adds three
+// more, and the wrong-window instrument runs the same shape twice again, so a full
+// run reports twelve; only the three are the corpus's. Without an exclusion the
+// gate is permanently red and says nothing; with an exclusion resting on prose it
+// is an assertion nobody checks.
 //
 // So the exclusion is granted HERE, by measurement, and it is registered under the
 // read's FULL identity — alias plus the merged row's leg layout — so it excuses
@@ -79,11 +57,12 @@ const redundantReaderAlias = "ST"
 // VACUOUS here and saying otherwise would be the failure this file exists to
 // prevent. `COALESCE(1, ST."C")` folds to a constant at plan time, so the value
 // behind the alias never reaches an answer: no perturbation of the binding — a
-// miss, the wrong window, every window at offset 0 — can move a row. Both of the
-// mutations this invites were run and both leave the test GREEN: binding every
-// window at offset 0, and rotating each leg's alias onto its SIBLING's window.
-// That is the expected outcome of a folded shape, not a hole to be plugged by
-// tightening the comparison. The comparison is kept because it is what
+// miss, the wrong window, every window at offset 0 — can move a row. The
+// wrong-window perturbation is not left as prose about a mutation somebody ran:
+// TestFDB_MergedLegBinding_WrongWindowsAreUnobservable is its standing form, over
+// this same shape, and it goes red exactly when this vacuity ends. That a folded
+// shape survives every such perturbation is the expected outcome, not a hole to be
+// plugged by tightening the comparison. The comparison is kept because it is what
 // GENERALISES: on any future shape where the value survives the fold, a binding
 // that resolves to nothing and changes rows fails here first, and the guard costs
 // nothing.
@@ -108,23 +87,14 @@ const redundantReaderAlias = "ST"
 //
 // # The shape, which had to be MEASURED rather than guessed
 //
-// A faithful reproduction of `foldable_colliding_answers` in
-// TestFDB_ExistsInnerShadow — same descriptors, same rows, same query, same
-// planning entry point. That is the shape the corpus's reads come from, and it is
-// not the one this test was first written against: the obvious cousin
-// (`colliding_plain`, the same `FROM ST, OT` outer with a genuinely-read
-// correlated predicate) binds the identical windows and reads NONE of them. The
-// difference is the FOLD — `COALESCE(1, ST."C")` folds constant, so the colliding
-// reference never survives into the join predicate and the inner is planned as
-// its own two-source merge, which is the arrangement that ends up consulting the
-// outer leg's binding.
+// newMergedLegReaderShape builds it — a faithful reproduction of
+// `foldable_colliding_answers` in TestFDB_ExistsInnerShadow, shared with the
+// wrong-window instrument so the two proofs cannot drift onto different merged
+// layouts while both stay green. Its doc records why this exact query and not the
+// plausible cousin that binds the same windows and reads none of them.
 //
-// The activeReads guard below exists because of that: a pin on a plausible cousin
-// would have passed, licensed the exclusion, and tested nothing.
-//
-// `FROM ST, OT` is the two-leg merged outer row (ST's three columns at [0,3),
-// OT's two at [3,5)). The EXISTS is constant-true, so all three ST×OT pairs
-// survive and the answer is K=50 three times.
+// The activeReads guard below exists because of that: a pin on that cousin would
+// have passed, licensed the exclusion, and tested nothing.
 func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -138,92 +108,8 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := recordlayer.NewFDBDatabase(rawDB)
-	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-
-	rep := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
-	optl := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
-	i64 := descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()
-	msg := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
-	pkg := "fdb.test.mlbredundancy"
-	tn := func(n string) *string { return proto.String("." + pkg + "." + n) }
-	fdp := &descriptorpb.FileDescriptorProto{
-		Name: proto.String("mlbredundancy_test.proto"), Package: proto.String(pkg), Syntax: proto.String("proto2"),
-		MessageType: []*descriptorpb.DescriptorProto{
-			{Name: proto.String("ST"), Field: []*descriptorpb.FieldDescriptorProto{
-				{Name: proto.String("ID"), Number: proto.Int32(1), Label: optl, Type: i64},
-				{Name: proto.String("C"), Number: proto.Int32(2), Label: optl, Type: i64},
-				{Name: proto.String("ARR"), Number: proto.Int32(3), Label: rep, Type: i64},
-			}},
-			{Name: proto.String("OT"), Field: []*descriptorpb.FieldDescriptorProto{
-				{Name: proto.String("ID"), Number: proto.Int32(1), Label: optl, Type: i64},
-				{Name: proto.String("K"), Number: proto.Int32(2), Label: optl, Type: i64},
-			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
-				{Name: proto.String("_ST"), Number: proto.Int32(1), Label: optl, Type: msg, TypeName: tn("ST")},
-				{Name: proto.String("_OT"), Number: proto.Int32(2), Label: optl, Type: msg, TypeName: tn("OT")},
-			}},
-		},
-	}
-	fd, fErr := protodesc.NewFile(fdp, nil)
-	if fErr != nil {
-		t.Fatal(fErr)
-	}
-	mb := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
-	mb.GetRecordType("ST").SetPrimaryKey(recordlayer.Field("ID"))
-	mb.GetRecordType("OT").SetPrimaryKey(recordlayer.Field("ID"))
-	md, mErr := mb.Build()
-	if mErr != nil {
-		t.Fatal(mErr)
-	}
-
-	stDesc := md.GetRecordType("ST").Descriptor
-	otDesc := md.GetRecordType("OT").Descriptor
-	stRow := func(id, c int64, arr ...int64) *dynamicpb.Message {
-		m := dynamicpb.NewMessage(stDesc)
-		m.Set(stDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		m.Set(stDesc.Fields().ByName("C"), protoreflect.ValueOfInt64(c))
-		l := m.NewField(stDesc.Fields().ByName("ARR")).List()
-		for _, v := range arr {
-			l.Append(protoreflect.ValueOfInt64(v))
-		}
-		m.Set(stDesc.Fields().ByName("ARR"), protoreflect.ValueOfList(l))
-		return m
-	}
-	otRow := dynamicpb.NewMessage(otDesc)
-	otRow.Set(otDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(1000))
-	otRow.Set(otDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(50))
-
-	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		store, sErr := recordlayer.NewStoreBuilder().SetContext(rtx).
-			SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-		if sErr != nil {
-			return nil, sErr
-		}
-		for _, m := range []*dynamicpb.Message{
-			stRow(1, 100, 10, 200), stRow(2, 5, 20, 300), stRow(3, 1000, 4), otRow,
-		} {
-			if _, e := store.SaveRecord(m); e != nil {
-				return nil, e
-			}
-		}
-		return nil, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	const q = `SELECT OT."K" FROM ST, OT WHERE EXISTS ` +
-		`(SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`
-
-	plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-	if perr != nil {
-		t.Fatalf("plan %q: %v", q, perr)
-	}
+	shape := newMergedLegReaderShape(ctx, t)
+	db, md, ks, plan, q := shape.db, shape.md, shape.ks, shape.plan, shape.sql
 
 	// run executes the plan, optionally bypassing the binder's window for the
 	// alias under test, and reports the rows plus a sink holding what THIS
@@ -330,7 +216,7 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 	// The correct answer, stated independently of either route: the EXISTS folds
 	// constant-true, so every ST×OT pair survives. These are the rows
 	// TestFDB_ExistsInnerShadow pins as the live Java 4.12.11.0 answer.
-	want := []string{"map[K:50]", "map[K:50]", "map[K:50]"}
+	want := mergedLegReaderShapeWant
 	if fmt.Sprint(active) != fmt.Sprint(want) {
 		t.Fatalf("with the binder ACTIVE the rows are wrong: %v, want %v\n  sql: %s\n  plan: %s",
 			active, want, q, plan.Explain())
@@ -341,9 +227,10 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 	// On THIS shape that is guaranteed by the fold and the comparison cannot fail:
 	// `COALESCE(1, ST."C")` is constant before execution, so no state of the
 	// binding — right window, wrong window, or no binding at all — is reachable
-	// from a row. Both mutations this invites (every window at offset 0; each leg's
-	// alias rotated onto its sibling's window) were run and leave this GREEN, which
-	// is the expected outcome of a folded shape rather than a gap.
+	// from a row. The wrong-window half of that statement is no longer a claim about
+	// mutations somebody ran: TestFDB_MergedLegBinding_WrongWindowsAreUnobservable
+	// runs this same shape with every window aimed at a sibling leg, on every run,
+	// and reds the moment a read starts depending on which slots it covers.
 	//
 	// It stays because it is the assertion that GENERALISES. Guards 1-3 establish
 	// that the read happens and that route B removed the binding entirely; this one
@@ -360,8 +247,9 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 			"  A difference means the value behind the binding now reaches an answer, "+
 			"so the binder is LOAD-BEARING. Do not relax this assertion. The exclusion "+
 			"must come out of the gate, the binder's correctness becomes a real "+
-			"invariant (the wrong-window mutation that is green today must be made to "+
-			"fail), and the shadowing and first-claim-wins semantics in DIVERGENCES.md "+
+			"invariant (TestFDB_MergedLegBinding_WrongWindowsAreUnobservable is the "+
+			"standing wrong-window mutation and it will have failed beside this one), "+
+			"and the shadowing and first-claim-wins semantics in DIVERGENCES.md "+
 			"stop being unobservable and need justifying against this consumer.\n"+
 			"  sql: %s\n  plan: %s",
 			redundantReaderAlias, active, bypassed, redundantReaderAlias, q, plan.Explain())
@@ -372,16 +260,4 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 	// the same run, and a read of this alias out of any other merged row is not
 	// covered by it.
 	executor.RegisterRedundantMergedLegReader(proven, t.Name())
-}
-
-// soleRead returns the single entry of a one-entry tally, or the zero value when
-// the tally does not have exactly one.
-func soleRead(tally map[executor.MergedRowRead]int) (executor.MergedRowRead, int) {
-	if len(tally) != 1 {
-		return executor.MergedRowRead{}, 0
-	}
-	for k, n := range tally {
-		return k, n
-	}
-	return executor.MergedRowRead{}, 0
 }
