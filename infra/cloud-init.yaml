@@ -143,11 +143,21 @@ write_files:
             age=$(( now - $(date -u -d "$started" +%s 2>/dev/null || echo "$now") ))
             if [ "$age" -gt 1800 ]; then
               echo "killing orphan FDB container $id ($image, running $${age}s)"
-              docker rm -f "$id" 2>/dev/null || true
+              # -v: remove the container's anonymous volumes too. Without it every
+              # orphan kill strands its volume — testcontainers' Ryuk only reaps
+              # volumes for containers it removes itself, so force-removed orphans
+              # leaked ~1 GB/day until the root disk filled (observed: 289 dangling
+              # volumes / 29.7 GB).
+              docker rm -fv "$id" 2>/dev/null || true
             fi
             ;;
         esac
       done
+
+      # Belt-and-braces for volumes stranded by any other path (OOM-killed Ryuk,
+      # jobs killed mid-run): prune unreferenced volumes. Anonymous volumes are
+      # referenced from container creation onward, so in-use ones are never touched.
+      docker volume prune -f >/dev/null 2>&1 || true
 
   - path: /etc/systemd/system/orphan-fdb-sweep.service
     content: |
