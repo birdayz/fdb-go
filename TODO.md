@@ -12549,11 +12549,168 @@ None is speculative: each was re-verified against the tree before booking.
     than reported as a pass, and the 21 engine divergences the run FOUND are
     each pinned to their exact rejection (CQ-71/72/73) so a file that starts
     passing, or starts failing differently, reds the run.
-  - [ ] **69.2 — Phase 2: `resultMetadata:` (+35 files) and per-page
-    continuations / `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no
-    planner risk. The continuation half is also the PREREQUISITE for the
-    ForceContinuations oracle, and it is under the hard wire-compat line, so it
-    is not a runner convenience.
+  - [ ] **69.2 — Phase 2: `resultMetadata:` and per-page continuations /
+    `EXECUTE CONTINUATION`. HALF LANDED; the continuation half is a STOP for
+    the RFC + Graefe gate.**
+
+    **§3's framing of this phase — "Runner- and driver-side; no planner risk" —
+    is REFUTED for the continuation half, and by measurement rather than
+    argument.** It was written before anyone probed the engine. The `+35` and
+    `+16` file estimates were also counted off `grep`, not off a run.
+
+    **CENSUS, DERIVED — join each directive's file list against the ledger's
+    per-file class assignment; it re-runs verbatim.** An earlier draft of this
+    entry said "26 claimed by DDL", which is wrong under every reading; the
+    derivation is stated so the figures can be checked rather than trusted.
+
+    `resultMetadata:` — 35 files: **20 claimed by a DDL class** (17
+    `unsupported-DDL:struct` + 3 `unsupported-DDL:value-index-as-select`); 5
+    `polarity:negative-execution` (the scalar `shouldFail` files, which now
+    genuinely execute and fail); **4 not skipped at all** — they pass, and now
+    assert the directive; 2 `unsupported:continuation`; 2
+    `engine-gap:array-literal-values`; 1 `engine-gap:planner-declines`; 1
+    `polarity:negative-parse`. So 31 of 35 are booked under some skip class and
+    4 pass; the DDL-claimed subset is 20.
+
+    `maxRows:` — 16 files: **9 claimed by a DDL class** (4 struct + 4
+    value-index + 1 other); 2 `polarity:negative-parse`; 1
+    `engine-gap:array-literal-values`; 1
+    `conformance:go-accepts-what-java-rejects`; and **only 3 genuinely blocked
+    on pagination** (`unsupported:continuation`). 13 of the 16 are held by
+    something other than the continuation surface.
+
+    **resultMetadata: DONE.** A 1:1 port of `CheckResultMetadataConfig` lives in
+    `pkg/relational/conformance/javacorpus/resultmetadata.go` — the recursive
+    expected-side syntax whole (`[{ID: BIGINT}]`, `{PT: [{X: BIGINT}]}`,
+    `{PTS: {array: [...]}}`, `{X: {array: {array: INTEGER}}}`, the optional
+    leading struct-type-name, the case-insensitive `array` key, the
+    `isArray` flag that keeps a plain field list from matching an
+    array-of-struct column), plus Java's sticky-metadata semantics in
+    `testblock.go` (`QueryCommand.executeInternal` never executes the directive
+    on its own — it arms an inline check the next result-consuming config
+    performs before drawing rows).
+
+    **MEASURED LEDGER, before → after** (`pinned_ledger_test.go`; `fail=0`
+    throughout, `pass=32` unchanged):
+
+    - `unsupported:result-metadata` **7 file / 65 config → the class is
+      DELETED.** Not zeroed and kept: every reachable directive is now either
+      asserted or booked under the narrower successor.
+    - `polarity:negative-execution` **20 → 24**, accounting **20/15/7 →
+      24/10/8**. Four of the five scalar
+      `check-result-metadata/shouldFail/{extra-column, missing-column,
+      wrong-column-name, wrong-column-order}.yamsql` moved from
+      "assertion-suppressed" to "booked" — their only failing assertion IS the
+      metadata one, so while the directive was a counted skip they ran clean.
+      `wrong-column-type.yamsql` did too. THAT split, not the class counts, is
+      the measurement showing the directive is really checked.
+    - `engine-gap:array-literal-values` **5 → 6**, and the reason is a REAL
+      DEFECT this branch found in the polarity accounting itself. The arm
+      credited a negative for ANY error, so
+      `check-result-metadata/shouldFail/wrong-array-element-type.yamsql` was
+      booked as a passing negative while dying on the array-literal INSERT in
+      its `setup:` block — the same gap its `shouldPass` sibling books — having
+      never reached the descriptor mismatch upstream is testing. Setup failures
+      now carry a `setupError` type and disqualify the credit, and the file is
+      booked in `gaps.go` where it belongs.
+    - **A second mis-credit surfaced and was REFUTED as a defect.**
+      `include-block/shouldFail/verify-all-includes-execute.yamsql` also dies in
+      setup — but for that file the setup step IS the assertion (it includes a
+      fragment twice so the second pass re-inserts an existing primary key, and
+      the 23505 is the point). The gate was too coarse; `SetupNegatives` in
+      `gaps.go` declares the exception with its reason, and the corpus test
+      asserts the entry is still true, so it cannot rot into a blanket
+      exemption. **All 24 booked negatives were then audited** against their
+      manifest reasons using the newly recorded failure text — the six
+      `include-block/includes/*` credits match "standalone: no database
+      available" exactly, the `supported-version/*` ones match "the broken query
+      runs", and no further mis-credit exists.
+    - `unsupported:continuation` **1 → 3 files**.
+      `check-result-metadata/should{Pass,Fail}/*-metadata-on-continuation-page.yamsql`
+      were booked against the metadata skip; with the directive implemented
+      their real blocker is visible, and it is pagination.
+    - `queries` **512 → 487**. The five negatives now stop at their first
+      repetition instead of asserting rows five times each. Fewer asserted
+      queries is the CORRECT direction here: those 25 were never proving
+      anything about the engine.
+    - `unsupported:result-metadata-nested` (new) is **MASKED at 0** — the **14**
+      files whose expectation descends (12 of them behind struct DDL, measured
+      by `TestDescendingMetadataCorpusCost`) are all claimed earlier. Recorded
+      in `maskedClasses` with the masking classes named, per the standing rule
+      that a class nothing emits is worse than no label.
+
+    Mutation-checked in seven independent directions, each RED alone: matcher
+    always-matches (5 files run clean → negatives that wrongly passed); type
+    names unchecked (only `wrong-column-type` reds); the descend gate disabled;
+    the `isArray` distinction removed; the struct-type-name check removed; the
+    live array sentinel's type-name arm; its scan-type arm.
+
+    **The four stricter-than-Java hard errors are gone.** A first draft rejected
+    a `resultMetadata:` armed for `error:` / `count:` / a non-row-returning
+    statement, or left with no consumer. All four are LEGAL corpus input —
+    `QueryConfig.validateConfigs` admits `error:` and `count:` as the required
+    consumer — and Java no-ops on each via
+    `checkInlineMetadataIfPresent`'s `instanceof RelationalResultSet` guard, so
+    the runner would have rejected files Java accepts. That guard is now ported
+    as `metadataIsRead` and table-tested, and the positional walk it depends on
+    is extracted as `classifyConfigs` and table-tested too — which is the only
+    way the ORDER-dependent decisions (which consumer a directive attaches to,
+    what an `initialVersion` marker removes) can be asserted at all, since none
+    of them is visible in the rows.
+
+    **Divergence found and BOOKED as CQ-74:** the result-metadata pipeline
+    truncates a column's type to one flat string at `executor.ColumnDef`, so an
+    array column is spelled by its ELEMENT type where Java says `ARRAY(elem)`,
+    and a struct column carries no fields and no declared type name. Costs 0
+    corpus files today, 8 the day Phase 3 lands.
+
+    **Continuations: STOP, not deferral.** The runner-side walk is ~40 lines and
+    is not the work; the engine has no surface for it to drive, and building one
+    reverses a recorded RFC decision. RFC-181 WS-C C2 posed exactly this choice
+    — "adopt ContinuationProto + hashes, or declare Go SQL tokens
+    engine-private" — and the implementation took engine-private, pinned by
+    `TestOptContinuation_RejectsLoudly`
+    (`pkg/relational/core/embedded/continuation_option_test.go:18`) against the
+    0A000 at `cascades_generator.go:1215-1218`. Four pieces are absent, measured
+    against Java 4.12.11.0:
+
+    - **(A) a page terminated by a caller-chosen row count that MINTS a token.**
+      Java sets MAX_ROWS as `ExecuteProperties.setReturnedRowLimit` per
+      execution (`QueryPlan.java:434`) — it is a PAGE SIZE. Go's `OptMaxRows` is
+      a statement-wide TOTAL cap that ends in a silent `io.EOF`
+      (`cascades_generator.go:1470`), pinned as such by
+      `TestFDB_RFC106a_MaxRowsStatementWide`. Pages currently end on a scan/time
+      budget the caller never chose.
+    - **(B) a caller-visible way to read the token.** `api.ResultSet.Continuation()`
+      exists (`api/resultset.go:44`) with ZERO production callers; the SQL path
+      keeps the bytes in `paginatingRows.continuation`, an unexported field of
+      an unexported type behind `driver.Rows`.
+    - **(C) a self-describing token envelope — WIRE FORMAT, the hard line.**
+      Java's `ContinuationImpl` wraps a `ContinuationProto` carrying version,
+      execution_state, reason, binding_hash, plan_hash and a serialized
+      `CompiledStatement` (`QueryPlan.enrichContinuation:452`). Go has no such
+      proto; its tokens are raw operator-private bytes.
+    - **(D) a resume entry point.** The grammar already parses
+      `executeContinuationStatement`
+      (`pkg/relational/core/parser/grammar/RelationalParser.g4:683`) — vendored
+      from Java's — and NOTHING implements it: the admin dispatch rejects it
+      with "only SHOW administration statements are supported"
+      (`cascades_generator.go:182`). Java's handler is
+      `PlanGenerator.generatePhysicalPlanForCompiledStatementContinuation`
+      (`PlanGenerator.java:313`), which reconstructs the plan from the token and
+      REJECTS on a plan-hash mismatch via `PlanValidator`.
+
+      C alone is a new wire-format proto plus a plan-hash validation gate; D is
+      a new statement kind in the planner. That is an RFC with a Graefe ACK
+      before implementation, not a runner phase — and it is the correct next
+      unit of work, since it is also the prerequisite for 69.4's
+      ForceContinuations oracle.
+
+    DONE (remaining) = the RFC for C+D lands with its ACKs, the engine gets the
+    envelope + resume entry point + per-execution page size, and the runner's
+    multi-page walk (sticky metadata re-checked per page, Java's
+    `exhausted`/`atBeginning` assertions) moves the 3 continuation files and the
+    16 inner skips.
   - [ ] **69.3 — cross-engine differential wiring (§4.1). Any time after 69.1;
     do it early.** Every query on both engines — Go in-process, Java via the
     conformance server (`plandiff.SetupRunner.RunWithSetup` is the existing entry
@@ -12780,3 +12937,93 @@ None is speculative: each was re-verified against the tree before booking.
   with it (`unsupported-DDL:struct`, 39 files total). No separate work: closing
   CQ-69.6 closes these. Booked only so the two files are not mistaken for a
   distinct gap when the struct count is re-measured.
+
+- [ ] **CQ-74 (MED/M, M, driver + executor result metadata) — the result-set
+  metadata pipeline TRUNCATES a column's type to one flat string, so an array
+  column is reported by its ELEMENT type and a struct column carries no fields
+  and no declared type name.** Found by RFC-201 Phase 2 (CQ-69.2) while
+  implementing the `resultMetadata:` assertion, and MEASURED against the Java
+  source rather than inferred.
+
+  **The single point of loss is `executor.ColumnDef`**
+  (`pkg/recordlayer/query/executor/resultset.go:60-65`): `Name`, `Label`,
+  `TypeName string`, `Nullable int`. `deriveColumnsFromPlan`
+  (`pkg/relational/core/embedded/cascades_generator.go:2599`) collapses the
+  planned `values.RecordType` / `values.ArrayType` into it, and everything
+  downstream — `paginatingRows.ColumnTypeDatabaseTypeName` (`:1399`),
+  `resultSetMetaData.ColumnDataType`
+  (`pkg/recordlayer/query/executor/resultset.go:559`, which RECONSTRUCTS a
+  DataType from the name string and degrades STRUCT/ARRAY to StringType) — sees
+  only that string.
+
+  Three measured consequences:
+
+  - **An ARRAY column advertises a SCALAR scan type.** `ColumnTypeScanType`
+    (`cascades_generator.go:1406`) switches on the truncated name, so `x integer
+    array` reports `int32` — a caller following it allocates a scalar for a
+    list. Same root cause, separate observable, measured live.
+  - **An ARRAY column is spelled as its element.** `valueTypeName` has no
+    `TypeCodeArray` arm (`cascades_generator.go:4297-4328` falls through to
+    `""`) and `protoKindToTypeName` (`:4432`) switches on `Kind()` alone,
+    ignoring `IsList()` — so `x integer array` reports `INTEGER`. Java reports
+    `ARRAY(INTEGER)`, built by
+    `CheckResultMetadataConfig.buildArrayTypeName` off
+    `ArrayMetaData.getElementTypeName`. Pinned as a live divergence by
+    `TestArrayTypeNameIsNotSurfacedByTheDriver`.
+  - **A STRUCT column carries no fields and no declared type name.** Java walks
+    `StructMetaData.getStructMetaData(i)` recursively and reads
+    `getTypeName()`; Go has neither. A directly-selected message field is worse
+    still — it reports `UNKNOWN`, since `protoKindToTypeName`'s `MessageKind`
+    hits the default arm.
+  - **`staticRows.colTypes` is never populated** (`system_rows.go:32`; every
+    construction site sets only `cols`/`rows` — `:207`, `system_tables.go:162,
+    223,302,380,417,447`, `cascades_generator.go:529`), so EXPLAIN, SHOW and
+    `INFORMATION_SCHEMA` queries report `DatabaseTypeName() == ""` and
+    `ScanType() == any`. That one is small and separable from the other two.
+
+  **The Java machinery Go is missing already has a declared Go home.**
+  `api.ResultSetMetaData.ColumnDataType`, `api.StructMetaData` and
+  `api.ArrayMetaData` (`pkg/relational/api/resultset.go:78`, `api/struct.go:30`,
+  `api/array.go:34`) are faithful ports of Java's interfaces and have ZERO
+  implementations that carry real nesting — so this is not "Go lacks the
+  capability", it is "the interface exists and nothing fills it". The fix is
+  `executor.ColumnDef` carrying an `api.DataType` alongside the name, populated
+  from the plan's result type in `deriveColumnsFromPlan` and its seven
+  per-plan-shape derivations, plus the driver-side accessor a caller can reach
+  (`sql.Conn.Raw` to `*embedded.EmbeddedConnection` is the established seam —
+  `pkg/relational/conformance/rowdiff/run.go:142-149`).
+
+  **Why booked rather than fixed inline:** it changes what
+  `ColumnTypeDatabaseTypeName` returns for array columns, which feeds
+  `ColumnTypeScanType`, the yamsql matcher's Integer/Long promotion
+  (`javacorpus/match.go` `typeAt`) and `plandiff/go_runner.go`. That is an
+  executor/driver surface change with cross-package blast radius, so it takes
+  the query-engine review gate. It is ALSO not provable end-to-end for the
+  struct half until RFC-201 Phase 3 lands struct DDL — the array half is
+  provable today and should not wait for it.
+
+  Cost, MEASURED by `TestDescendingMetadataCorpusCost` rather than estimated:
+  **0 corpus files today, 14 the day Phase 3 lands, 12 of them held by struct
+  DDL alone.** Every vendored file whose `resultMetadata:` descends is claimed
+  first by `unsupported-DDL:struct` or `engine-gap:array-literal-values`, which
+  is why `unsupported:result-metadata-nested` is a MASKED class in the CQ-69.1
+  ledger. An earlier draft of this line said 8; that figure came from grepping
+  for the directive instead of inspecting its SHAPE — most files carrying
+  `resultMetadata:` carry only scalar expectations, which are asserted today.
+  The count is now a test, so it cannot be quoted wrong again.
+
+  **The live sentinel is `TestFDB_ArrayColumnMetadataIsTruncated`**
+  (`pkg/relational/conformance/javacorpus/arraymetadata_fdb_test.go`), which
+  runs `SELECT pk, x FROM t1` over an EMPTY table with `x integer array` and
+  reads `database/sql`'s answer directly — no INSERT, because column metadata
+  comes from the plan and inserting an array literal fails on CQ-72. It fails
+  the moment the driver starts spelling the type Java's way, and its failure
+  message is the hand-over instruction. It replaced a first attempt that
+  compared two compile-time constants and could never have fired, which would
+  have made the runner's decline permanent by accident.
+
+  DONE = an array column reports `ARRAY(elem)` with a non-scalar scan type and
+  a struct column reports its field list and declared type name through a
+  caller-reachable surface; `unsupported:result-metadata-nested` stops being
+  masked (or goes to zero); `TestFDB_ArrayColumnMetadataIsTruncated` is deleted
+  together with the runner's declining branch.

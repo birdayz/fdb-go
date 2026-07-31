@@ -147,9 +147,37 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 	// asserts they FAIL. Their pin is therefore inverted — a clean run is the
 	// bug, not the success.
 	if javayamsql.PolarityOf(path) == javayamsql.NegativeExecution {
+		// …but ANY error is not the error. A negative that dies in its `setup:`
+		// block never reached the directive upstream expects to trip, so
+		// crediting it would book an engine gap as a corpus result — the same
+		// mistake in the opposite direction from crediting a suppressed
+		// assertion. The failure has to come from the test block for the
+		// inverted pin to mean anything.
+		_, expectedInSetup := SetupNegatives[path]
+		var setupErr *setupError
+		if errors.As(runErr, &setupErr) && !expectedInSetup {
+			runErr = fmt.Errorf("file is classified negative(execution) — upstream asserts its TEST BLOCK "+
+				"fails (%s) — but it died in setup before any assertion ran, so the expected failure was "+
+				"never reached: %w", javayamsql.Manifest[path].Reason, runErr)
+			if gap, ok := gapFor(path, runErr); ok {
+				res.Status = StatusSkip
+				res.SkipClass = gap.Class
+				res.Skips = append(res.Skips, Skip{Class: gap.Class, Where: path, Detail: gap.Booking + ": " + runErr.Error()})
+				return res
+			}
+			res.Status = StatusFail
+			res.Err = runErr
+			return res
+		}
 		if runErr != nil {
 			res.Status = StatusSkip
 			res.SkipClass = SkipPolarityNegativeExecution
+			// The failure is recorded, not just the class: a negative credited
+			// for failing the WRONG way still reads as green in the census, and
+			// this line is where that is visible.
+			res.Skips = append(res.Skips, Skip{
+				Class: SkipPolarityNegativeExecution, Where: path, Detail: runErr.Error(),
+			})
 			return res
 		}
 		// A negative that ran clean is only a finding if the assertion
@@ -198,7 +226,12 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 // rather than restated in prose.
 func (c SkipClass) SuppressesAssertion() bool {
 	switch c {
-	case SkipPlanAssertion, SkipResultMetadata, SkipContinuation,
+	// SkipResultMetadataNested belongs here even though the row assertion
+	// survives it: the `check-result-metadata/shouldFail/wrong-nested-*` files
+	// are negatives whose ONLY failing assertion IS the metadata one, so
+	// declining it would let them run clean and be reported as negatives that
+	// wrongly passed — crediting a driver gap as a finding.
+	case SkipPlanAssertion, SkipResultMetadataNested, SkipContinuation,
 		SkipTemporaryFunction, SkipRandomInjection, SkipVersionGate,
 		SkipSchemaCommand, SkipNoChecks:
 		return true
@@ -350,6 +383,24 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 	r.connsByResource[resource] = append(r.connsByResource[resource], connTarget{Path: dbPath, Schema: schema})
 	return nil
 }
+
+// setupError marks a failure in a `setup:` block's steps — data loading, not
+// assertion.
+//
+// It is a distinct type because the polarity accounting needs to tell "the file
+// failed" from "the file failed for the reason upstream is testing". Every
+// assertion in the corpus lives in a test block; a setup step that dies takes
+// the file down before any of them run.
+type setupError struct {
+	line  int
+	query string
+	err   error
+}
+
+func (e *setupError) Error() string {
+	return fmt.Sprintf("setup step at line %d %q: %v", e.line, e.query, e.err)
+}
+func (e *setupError) Unwrap() error { return e.err }
 
 // ddlError marks a schema_template failure so the ledger can classify the gap
 // rather than reporting it as an undifferentiated red file.
@@ -557,7 +608,7 @@ func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayam
 			return fmt.Errorf("setup step at line %d carries a parameter injection", step.Line)
 		}
 		if _, err := execAny(ctx, db, step.Query); err != nil {
-			return fmt.Errorf("setup step at line %d %q: %w", step.Line, truncate(step.Query), err)
+			return &setupError{line: step.Line, query: truncate(step.Query), err: err}
 		}
 	}
 	return nil

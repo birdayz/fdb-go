@@ -118,6 +118,32 @@ func TestJavaCorpusRuns(t *testing.T) {
 		}
 	}
 
+	// A SetupNegatives entry exempts its file from the "a negative that died in
+	// setup never reached its assertion" rule, so an entry that stops being
+	// true silently re-opens the hole that rule closes. Assert each one is
+	// still a negative whose failure really is in setup.
+	for path, why := range javacorpus.SetupNegatives {
+		var found *javacorpus.FileResult
+		for i, f := range ledger.Files() {
+			if f.Path == path {
+				found = &ledger.Files()[i]
+			}
+		}
+		switch {
+		case found == nil:
+			t.Errorf("SetupNegatives names %s, which the run does not contain", path)
+		case javayamsql.PolarityOf(path) != javayamsql.NegativeExecution:
+			t.Errorf("SetupNegatives names %s, which is not an execution-level negative", path)
+		case found.SkipClass != javacorpus.SkipPolarityNegativeExecution:
+			t.Errorf("SetupNegatives names %s (%s), but it is booked %s — if it no longer fails "+
+				"in setup the entry is stale and must be deleted, which re-arms the setup-death check",
+				path, why, found.SkipClass)
+		case !strings.Contains(fileSkipDetail(*found), "setup step at line"):
+			t.Errorf("SetupNegatives names %s, but its failure is no longer a setup step: %s",
+				path, fileSkipDetail(*found))
+		}
+	}
+
 	// A gap entry whose file stopped failing is a CLOSED gap nobody deleted,
 	// and it would keep a working file booked as broken. Assert each entry
 	// still matched something.
@@ -208,9 +234,25 @@ func TestJavaCorpusRuns(t *testing.T) {
 	}
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
-	if booked != 20 || suppressed != 15 || claimedEarlier != 7 {
+	// 24 / 10 / 8, from 20 / 15 / 7 — a net of +5 booked and -1. ALL FIVE
+	// scalar `check-result-metadata/shouldFail/*` files moved from suppressed
+	// to booked (suppressed 15→10 is exactly those five leaving): their only
+	// failing assertion IS the metadata one, so while the directive was a
+	// counted skip they ran clean and had to be booked against the skip that
+	// removed it. That split, not the class counts, is the measurement showing
+	// the directive is really checked.
+	//
+	// The -1 moved booked→claimed-earlier, and finding out WHY is what this
+	// split is for. `wrong-array-element-type.yamsql` (non-scalar — its
+	// expectation descends — and already booked in the parent) was being
+	// credited as a passing negative while dying on its setup INSERT — the
+	// same array-literal gap its shouldPass sibling books — so the credit was
+	// for a failure upstream never asked for. Booked in gaps.go now, which is
+	// why `engine-gap:array-literal-values` is 6 rather than 5, and
+	// claimed-earlier 7→8 is exactly that one file arriving.
+	if booked != 24 || suppressed != 10 || claimedEarlier != 8 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
-			"pinned baseline is 20 / 15 / 7 (42 manifest entries)", booked, suppressed, claimedEarlier)
+			"pinned baseline is 24 / 10 / 8 (42 manifest entries)", booked, suppressed, claimedEarlier)
 	}
 
 	if got := census.Line(); got != pinnedLedger {
@@ -250,6 +292,11 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipRandomInjection: "the !r / !a segments live in prepared.yamsql and showcasing-tests.yamsql, " +
 		"claimed first by engine-gap:array-literal-values and unsupported-DDL:struct",
+	javacorpus.SkipResultMetadataNested: "every vendored file whose resultMetadata descends into a column " +
+		"declares a struct type or inserts an array literal, so unsupported-DDL:struct and " +
+		"engine-gap:array-literal-values claim the file before a query runs. It becomes reachable the " +
+		"day RFC-201 Phase 3 lands struct DDL, and that is when the driver's flat ColumnDef truncation " +
+		"starts costing files rather than merely existing",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +
 		"CURRENT singleton, which sorts above every literal, so SupportedAtCurrentVersion is constantly true. " +
 		"It becomes reachable the day a second version is under test",

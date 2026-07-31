@@ -78,8 +78,21 @@ const (
 	// Phase 2, and under the hard wire-compat line.
 	SkipContinuation SkipClass = "unsupported:continuation"
 
-	// SkipResultMetadata is the `resultMetadata:` config. RFC-201 Phase 2.
-	SkipResultMetadata SkipClass = "unsupported:result-metadata"
+	// SkipResultMetadataNested is a `resultMetadata:` config whose expectation
+	// descends into a column — a struct field list, an `{array: …}` map, or a
+	// declared struct type name.
+	//
+	// Java reads these off RelationalResultSetMetaData, which exposes
+	// getStructMetaData / getArrayMetaData / getTypeName recursively
+	// (CheckResultMetadataConfig.extractDescriptors). Go's driver cannot: the
+	// planned result type is flattened into `executor.ColumnDef`, whose
+	// `TypeName` is ONE string, so a struct column arrives as "STRUCT" with no
+	// fields, an array column arrives as its ELEMENT's type name rather than
+	// Java's "ARRAY(elem)", and a declared struct type name is not carried at
+	// all. The flat, scalar half of the directive IS asserted; only the
+	// descending half is declined, and it is declined with a name so the driver
+	// gap is sized rather than hidden inside a passing file.
+	SkipResultMetadataNested SkipClass = "unsupported:result-metadata-nested"
 
 	// SkipTemporaryFunction is a `setup:` / `setupReference:` query config,
 	// which Java restricts to CREATE TEMPORARY FUNCTION. RFC-201 Phase 4.
@@ -185,7 +198,7 @@ func AllSkipClasses() []SkipClass {
 		SkipMultiCluster,
 		SkipPrepared,
 		SkipContinuation,
-		SkipResultMetadata,
+		SkipResultMetadataNested,
 		SkipTemporaryFunction,
 		SkipCopyBlock,
 		SkipSchemaCommand,
