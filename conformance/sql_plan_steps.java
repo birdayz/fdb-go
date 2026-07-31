@@ -356,9 +356,13 @@ class SqlPlanSteps {
      * catches {@code PlanValidationException}, counts CONTINUATION_REJECTED,
      * and then falls through to CONTINUATION_ACCEPTED. The probe takes a real
      * continuation, swaps ONLY its {@code plan_constraint} for a constant-false
-     * predicate, and reports whether the query still returns rows. A control
-     * run of the untouched continuation bytes isolates the swap as the only
-     * variable.
+     * predicate, and reports whether the query still returns rows. Two control
+     * runs bracket it: the untouched continuation bytes (isolating the swap as
+     * the only variable) and the same doctored bytes with {@code plan_hash}
+     * additionally perturbed by one, which Java rejects unconditionally in
+     * {@code PlanGenerator#generatePhysicalPlanForCompiledStatementContinuation}.
+     * The second control is what makes the constraint result a measurement
+     * rather than a blind spot: the doctored bytes provably reach validation.
      *
      * <p>Probe C — binding-hash stability across two executions of the same
      * query text. {@code AstNormalizer#processLiteral} folds each literal into
@@ -439,6 +443,7 @@ class SqlPlanSteps {
         }
 
         final byte[] doctoredBytes;
+        final byte[] hashPerturbedBytes;
         try {
             final ContinuationProto orig = ContinuationProto.parseFrom(realBytes);
             out.addProperty("probeB_origHasCompiledStatement", orig.hasCompiledStatement());
@@ -463,6 +468,20 @@ class SqlPlanSteps {
 
             doctoredBytes = orig.toBuilder()
                     .setCompiledStatement(origStmt.toBuilder().setPlanConstraint(falseConstraint).build())
+                    .build()
+                    .toByteArray();
+
+            // Same doctored bytes, plus a perturbed plan_hash. The ONLY delta
+            // from `doctoredBytes` is the int32 plan_hash field, so if this run
+            // is rejected and the other is not, the doctored continuation
+            // demonstrably reaches Java's validation chain — the constraint
+            // fail-open is a property of the constraint gate, not an artifact
+            // of the probe feeding Java bytes it silently ignores.
+            out.addProperty("probeB_origPlanHash", orig.getPlanHash());
+            out.addProperty("probeB_perturbedPlanHash", orig.getPlanHash() + 1);
+            hashPerturbedBytes = orig.toBuilder()
+                    .setCompiledStatement(origStmt.toBuilder().setPlanConstraint(falseConstraint).build())
+                    .setPlanHash(orig.getPlanHash() + 1)
                     .build()
                     .toByteArray();
         } catch (Throwable t) {
@@ -497,6 +516,28 @@ class SqlPlanSteps {
             }
         } catch (Throwable t) {
             recordThrowable(out, "probeB", t);
+        }
+
+        // Contrast arm: identical to the doctored run except for plan_hash.
+        // PlanGenerator#generatePhysicalPlanForCompiledStatementContinuation
+        // compares continuation.getPlanHash() against the DESERIALISED plan's
+        // planHash and raises PlanValidationException -> INVALID_CONTINUATION
+        // (24F00) on mismatch, unguarded by any catch. This arm therefore
+        // establishes that the probe can see Java refuse a doctored
+        // continuation at all, which is what makes the constraint arm's
+        // acceptance a measurement rather than a blind spot.
+        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXECUTE CONTINUATION ?continuation")) {
+            ps.setBytes("continuation", hashPerturbedBytes);
+            try (RelationalResultSet rs = ps.executeQuery()) {
+                int rows = 0;
+                while (rs.next()) {
+                    rows++;
+                }
+                out.addProperty("probeB_hashPerturbed_threw", false);
+                out.addProperty("probeB_hashPerturbed_rowsReturned", rows);
+            }
+        } catch (Throwable t) {
+            recordThrowable(out, "probeB_hashPerturbed", t);
         }
     }
 

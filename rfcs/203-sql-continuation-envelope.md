@@ -58,6 +58,39 @@ grounds with a **per-path** fence.
    - Java's Path-1 fence is **loud but not well-formed**: SQLSTATE `XXXXX`,
      not `24F00` (§9.1). An earlier phrasing of §3.2 credited Java's "own
      existing gate"; the token in fact dies before that gate.
+10. **A third correction, found in review: two gates demanded opposite outcomes
+    for the same query.** G3 required page-by-page equality at `MAX_ROWS=1` for
+    memory sort and distinct, while §4.1/G11 require minting a token for those
+    plans to fail loudly. G3's shape list was **residue of the re-plan
+    mechanism** — under re-planning every plan was resumable because none was
+    transported, and the transport ruling invalidated the list without anyone
+    revisiting it. G3 is now scoped to resumable plans, **G3b** is new and covers
+    the three Go-private shapes at the rollover boundary that still pages them,
+    and **G11 gains a part (b)** for the clean page-boundary error plus the
+    plain statement that this RFC introduces a deliberate user-visible
+    regression. This is the failure mode CLAUDE.md warns about — a stale claim
+    surviving a mechanism change because nothing forced it to be re-derived.
+11. **A fourth correction: the unrepresentable census was framed as a Go
+    deficiency, and five of its eight members are Java's own.** `Comparator`,
+    `Selector`, `TextIndex`, `LoadByKeys` and `Filter` each override
+    `toRecordQueryPlanProto` to throw `RecordCoreException("serialization of
+    this plan is not supported")` in Java too, so Java's `EXECUTE CONTINUATION`
+    cannot transport them either — **Go is at parity, not deficient**. Only
+    `Limit`, `VectorIndex` and `Distinct` are Go-only holes (plus
+    `InMemorySort`'s lossy key, a separate category), and only those are R1's to
+    close. §3.3 is decomposed by cause, G14 now reports **two** numbers, and
+    §4.1's rejection is modelled on Java's exact exception message per the
+    conformance principle rather than invented. An earlier draft's "must not be
+    soft-pedalled" applied to all of them; it applies to four.
+12. **A third axis, found while checking the second: four of the eight
+    unrepresentable nodes are not SQL-reachable in Go at all.** No Cascades rule
+    constructs `Comparator`, `Selector`, `TextIndex` or `LoadByKeys`, so they
+    cost nothing; `Filter` *is* reachable and is a shared limitation. The real
+    surface is **four reachable nodes** — `Distinct`, `Limit`, `VectorIndex`,
+    `InMemorySort` — plus `Filter`. G11(b)'s regression is five shapes, not
+    eight, and G14 carries reachability as a tracked field so a rule that later
+    starts constructing an inert node converts it into a live regression
+    loudly.
 
 **Closes:** CQ-69.2's continuation half (`TODO.md:12558-12562`); unblocks CQ-69.4
 (`TODO.md:12570-12580`).
@@ -265,7 +298,9 @@ The nearest construct disclaims the role (`executor/executor.go:1606-1612`):
 `DIVERGENCES.md:1173-1189` enumerates **two** Go-private `execution_state`
 shapes. There are **three** — §9.4 adds `DistinctHashContinuation` and corrects
 the memory-sort entry, which is false as written. All three are conditions of R3
-(§3.4) and all three appear in G3's shape list (§7).
+(§3.4). Two of the three — memory sort and distinct — are also **unrepresentable
+plan nodes** (§3.3), so they cannot be exercised through a minted token at all;
+their coverage is **G3b**, the rollover-boundary equality gate, not G3 (§7).
 
 The absence is a *recorded decision* (`DIVERGENCES.md:1161` ff., §3.1), enforced
 at `cascades_generator.go:1215-1218`, pinned by `TestOptContinuation_RejectsLoudly`
@@ -613,22 +648,90 @@ encoding, and R1 names the permanent fix.
 only unrepresentable node, and an earlier draft of this section said it was.**
 A name-level survey of Go's 41 `RecordQuery*Plan` types
 (`grep '^type RecordQuery.*Plan struct' pkg/recordlayer/query/plan/plans/`)
-against the 38 oneof arms of `PRecordQueryPlan`
-(`proto/apple/record_query_plan.proto:1699-1741`) finds **seven Go plan types
+against the **40** oneof arms of `PRecordQueryPlan`
+(`proto/apple/record_query_plan.proto:1699-1745`) finds **seven Go plan types
 with no message in the shared proto at all** — not merely no oneof arm:
 
 ```
 $ grep -n "^message PRecordQueryComparatorPlan\|^message PRecordQuerySelectorPlan\
 \|^message PRecordQueryTextIndexPlan\|^message PRecordQueryLoadByKeysPlan\
-\|^message PRecordQueryFilterPlan\|^message PRecordQueryVectorIndexPlan\
+\|^message PRecordQueryDistinctPlan\|^message PRecordQueryVectorIndexPlan\
 \|^message PRecordQueryLimitPlan" proto/apple/record_query_plan.proto
-1876:message PRecordQueryFilterPlanBase
+(no output)
 ```
 
 `Comparator`, `Selector`, `TextIndex`, `LoadByKeys`, `VectorIndex`, `Limit` and
-`Distinct` have nothing; `FilterPlanBase` exists but is not a oneof arm. Of
-these, `Limit` (RFC-128), `VectorIndex` (RFC-045/094) and `Distinct` (§9.4) are
-Go-only extensions with no Java operator to encode into.
+`Distinct` have nothing. (`Filter` is an eighth, in the same class: a
+`PRecordQueryFilterPlanBase` message exists at `:1876` but is not a oneof arm, so
+a filter plan cannot be a `PRecordQueryPlan` either.)
+
+**DECOMPOSED BY CAUSE — and this is the correction that matters, because an
+earlier draft framed all seven as a Go deficiency that "must not be
+soft-pedalled".** Five of them are not Go's gap at all. `Comparator`, `Selector`,
+`TextIndex`, `LoadByKeys` and `Filter` are **Java's own unserializable plans**:
+each Java class overrides `toRecordQueryPlanProto` to throw —
+
+```java
+    @Override
+    public PRecordQueryPlan toRecordQueryPlanProto(@Nonnull final PlanSerializationContext serializationContext) {
+        throw new RecordCoreException("serialization of this plan is not supported");
+    }
+```
+
+— at `RecordQueryComparatorPlan.java:274-275`, `RecordQuerySelectorPlan.java:233-234`,
+`RecordQueryTextIndexPlan.java:305-306`, `RecordQueryLoadByKeysPlan.java:252-253`
+and `RecordQueryFilterPlan.java:220-221`. **Java's own `EXECUTE CONTINUATION`
+cannot transport these plans either.** On those five Go is at **parity**, not
+deficient, and a query using them is non-resumable on both engines. Framing them
+as a Go shortfall would have overstated the gap by five of eight and pointed R1
+at work that has no upstream to close it.
+
+The genuinely **Go-only** holes are three: `Limit` (RFC-128), `VectorIndex`
+(RFC-045/094) and `Distinct` (§9.4) — Go planner nodes with no Java operator to
+encode into. **Only these three are R1's to close**, plus `InMemorySort`, which
+is a fourth and distinct category: representable but only *lossily* (§ above), so
+its fix is a proto-level key representation rather than a missing operator.
+
+**A third axis, measured while checking the second: four of the five
+Java-parity nodes are not SQL-reachable in Go at all.** `grep -rln
+"NewRecordQuery<T>Plan" pkg/recordlayer/query/plan/cascades pkg/relational`
+(excluding tests) returns **nothing** for `Comparator`, `Selector`, `TextIndex`
+and `LoadByKeys` — no Cascades rule constructs them, so they cannot appear in a
+planned SQL query and contribute zero to both the resumable surface and the
+regression. `Filter` is the exception and is reachable, from
+`left_outer_existential.go` and `rule_implement_nested_loop_join.go`. The
+Go-only three plus `InMemorySort` are all reachable
+(`rule_implement_distinct_final.go`, `rule_implement_limit.go`,
+`vector_index_match_candidate.go`, `rule_implement_in_memory_sort.go`).
+
+So the honest breakdown — the **eight** nodes with no oneof arm, plus
+`InMemorySort`'s lossy case, **nine in all** — is:
+
+| Node(s) | Cause | SQL-reachable in Go? | Whose gap |
+|---|---|---|---|
+| `Comparator`, `Selector`, `TextIndex`, `LoadByKeys` | Java also refuses | **No** — no Cascades constructor | Nobody's; inert |
+| `Filter` | Java also refuses | **Yes** (NLJ, left-outer-existential) | Parity — shared limitation |
+| `Limit`, `VectorIndex`, `Distinct` | Go-only operator | **Yes** | **R1's** |
+| `InMemorySort` | lossy key representation | **Yes** | **R1's**, different fix |
+
+**Four of the nine are inert** (unreachable), **five are the real surface** — one
+of which (`Filter`) is a limitation Java shares, so **four are R1's**. Those are
+the numbers G11(b)'s regression and R1's scope should be read against: five
+affected shapes, four actionable nodes. Not "eight unrepresentable", which counts
+four nodes no SQL query can reach.
+
+**A sanctioned extension point exists, and R1 should evaluate it before assuming
+a schema fork is required.** Arm 1 of the oneof is
+`google.protobuf.Any additional_plans = 1`, and the message carries
+`extensions 5000 to max` (`:1700-1702`). That is Java's own escape hatch for
+plans outside the closed set, so a Go-only node could in principle be transported
+inside an `Any` **without forking the schema** — Java would fail to decode the
+`Any`'s type URL, which is the fence behaving correctly rather than a divergence.
+This is recorded, not decided: it would materially shrink G11(b)'s regression,
+but it is a mechanism question and the mechanism is under review. **Reviewers
+should rule on it explicitly**; if the answer is yes, it becomes R1's closure
+path for the three Go-only holes and §4.1's rejection narrows to `InMemorySort`
+plus the five Java-parity nodes.
 
 A further group — `InJoin`, `Intersection`, `Union`, `MergeSortUnion`,
 `Projection`, `NestedLoopJoin`, `Filter` — has no *same-named* arm but plausibly
@@ -638,15 +741,19 @@ maps onto a differently-named Java arm (Go's `InJoinPlan` onto Java's three
 name-level survey is evidence that the set is larger than one, not evidence of
 its exact size.
 
-**What this does and does not change.** It *strengthens* the cross-engine
-decline: the vocabulary gap is wider than revision 1 or this section's first
-draft claimed. It *narrows* the `GO_V0` resumable surface: a query whose plan
-contains any unrepresentable node is not resumable, and that is a materially
-bigger surface than "everything except `ORDER BY`". It does **not** overturn the
-mechanism ruling — `PRecordQueryPlan` still covers the scan / index / filter /
-join / union shapes that dominate paged queries, and no alternative container
-covers more — but the RFC must not sell transport as near-total coverage when it
-has not been measured. G14 measures it before step 4 depends on it.
+**What this does and does not change.** It *narrows* the `GO_V0` resumable
+surface: a query whose plan contains any unrepresentable node is not resumable,
+and that is a bigger surface than "everything except `ORDER BY`". It does **not**
+overturn the mechanism ruling — `PRecordQueryPlan` still covers the scan / index
+/ predicates-filter / join / union shapes that dominate paged queries, and no
+alternative container covers more. And once decomposed it does **not**
+meaningfully strengthen the cross-engine decline either, which an earlier draft
+claimed it did: five of the eight holes are shared with Java, so they say nothing
+about Go-vs-Java capability. The decline still rests on §3.3's legs 1 and 3 plus
+`InMemorySort`'s lossy key, which is where it always rested. The RFC must not
+sell transport as near-total coverage, and equally must not inflate a
+parity-shared limitation into a Go deficiency. G14 measures both before step 4
+depends on either.
 
 *(Note, corrected from revision 1: Java's `RecordQuerySortPlan` is not merely a
 legacy artifact — it has a real deserializer at
@@ -738,21 +845,51 @@ Java itself cannot produce twice.** G7 asserts agreement only over the literal
 types where Java is self-consistent and asserts the bytes divergence explicitly,
 so the deliberate difference is pinned rather than latent.
 
-**Unrepresentable plan nodes fail loudly at mint time.** Serializing a plan
-containing `RecordQueryInMemorySortPlan` — or any of the seven Go plan types with
-no message in the shared proto (§3.3) — fails with an error naming the node and
-citing R1, never a lossy encoding. For the sort specifically, a lossy
-`PRecordQuerySortPlan` would drop `NullsFirst` and resume in a different order
-than the page it continues, which is a wrong-rows bug wearing a compatibility
-costume.
+**Unrepresentable plan nodes fail loudly at mint time, with Java's own message.**
+Serializing a plan containing `RecordQueryInMemorySortPlan` — or any of the Go
+plan types with no message in the shared proto (§3.3) — fails rather than
+encoding lossily. For the sort specifically, a lossy `PRecordQuerySortPlan` would
+drop `NullsFirst` and resume in a different order than the page it continues: a
+wrong-rows bug wearing a compatibility costume.
 
-Consequence, stated at full width rather than minimised: `ORDER BY` without a
-satisfying access path, `LIMIT`/`OFFSET`, vector search, text index,
-`SELECT DISTINCT`, and the comparator/selector/load-by-keys shapes are **not
-resumable under `GO_V0`**. That is a large, stated, tested limitation (G11 for
-the loudness, G14 for the exact set), not a silent gap — and it is the honest
-price of transporting through a proto that was written for a different plan
-vocabulary.
+**The error is MODELLED ON JAVA'S, not invented.** For the five nodes where Java
+also refuses (§3.3), Java's own `toRecordQueryPlanProto` throws
+`RecordCoreException("serialization of this plan is not supported")`
+(`RecordQueryComparatorPlan.java:274-275` and four siblings). The conformance
+principle applies directly — this is the shared surface, both engines decline the
+same input — so Go raises a `SerializationNotSupportedError` carrying that exact
+message text, adding the node name and the R1 reference as structured context
+rather than rewriting the message. For the Go-only nodes the same error type and
+wording are used, because a caller cannot act differently on the two cases and a
+second vocabulary would only imply a distinction that does not exist at the call
+site. The *census* keeps the two apart (G14), which is where the distinction is
+actionable.
+
+Consequence, stated at its measured width rather than either minimised or
+inflated: `ORDER BY` without a satisfying access path, `LIMIT`/`OFFSET`, vector
+search, `SELECT DISTINCT`, and the `RecordQueryFilterPlan` shapes (nested-loop
+join, left-outer-existential) are **not resumable under `GO_V0`**. Five shapes,
+of which one (`Filter`) is a limitation Java shares. `Comparator`, `Selector`,
+`TextIndex` and `LoadByKeys` are unrepresentable too but no Cascades rule
+constructs them, so they cost nothing (§3.3). That is a real, stated, tested
+limitation (G11(a) for the loudness, G14 for the exact set), not a silent gap —
+and the honest price of transporting through a proto written for a different
+plan vocabulary.
+
+**And it is a user-visible regression, not merely a missing feature.** Setting
+`MAX_ROWS` on such a query returns rows today and **errors** after steps 4+5,
+because a page boundary now has to mint a token that cannot be minted. G11(b)
+requires that failure to be a clean SQL error raised through
+`paginatingRows.Next` — never a panic escaping mid-drain, never a partial result
+set, and never a silent `io.EOF`, which would be §1.1's own defect reappearing
+one layer up. The regression is chosen deliberately: the alternatives are a token
+that cannot be redeemed, or a lossily-encoded plan that resumes in a different
+order than the page it continues. Its retirement condition is the R1 family
+(§3.4), tracked by G14.
+
+These plans do keep paging by transparent transaction rollover (§4.2), which is
+why **G3b** exercises their `execution_state` round-trip on that path rather than
+leaving the three Go-private shapes uncovered.
 
 ### 4.2 `MAX_ROWS` becomes a page size — while transaction rollover is PRESERVED
 
@@ -1112,19 +1249,47 @@ G6.
 
 **Step 4 — `MAX_ROWS` page semantics.** Retire the statement-wide total; delete
 `TestFDB_RFC106a_MaxRowsStatementWide`; repoint `pageRowBudget`; range-check;
-**preserve rollover**; wire reason codes. Deliverables: G1, G12, G13. At the end
+**preserve rollover**; wire reason codes. Deliverables: G1, G12, **G3b** (the
+rollover-boundary equality gate — it needs only the rollover path, not the
+resume surface, so it lands here and guards the three Go-private inner shapes
+from the moment page semantics change), G13. At the end
 of this step `maxRows.yamsql` still cannot pass — pages exist but no caller sees
 them, and §9.5's `LIMIT` blocker is still open.
 
 **Step 5 — surfacing.** `ContinuationConn` + `LastContinuation`; the
 `api.ResultSet.Continuation()` production caller; the exhausted-only
 precondition; delete the `OptContinuation` guard and flip its error codes (§4.8).
-Deliverables: G2, G5.
+Deliverables: G2, G5, **G11(b)** — the clean page-boundary error for an
+unrepresentable node. G11(b) cannot land before this step because the boundary
+only becomes user-visible here, and it must not land after it: step 5 is the
+commit that creates the exposure, so it is the commit that must contain the
+clean failure.
 
 **Step 6 — `EXECUTE CONTINUATION`.** The statement kind through `planOne`;
 literals reconstruction; the three gates; the `QueryPlanConstraint` plumbing
 (§4.3); `EXPLAIN EXECUTE CONTINUATION`; the RFC-191 and `DIVERGENCES.md` edits
 (§8.3, §8.4). Deliverables: G3, G4, G8. **Graefe implementation lap here.**
+
+**Implementer warning — the trap in step 6's binding-hash gate.** Java folds the
+`EXECUTE CONTINUATION` statement's **own continuation-atom bytes** into the
+parameter hash while deliberately keeping them *out* of the literals table:
+`visitContinuationAtom` sets `allowLiteralAddition = false` but leaves
+`allowTokenAddition` at `true` (`AstNormalizer.java:329-337`), so
+`processScalarLiteral` reaches `processLiteral`'s
+`if (allowTokenAddition) { parameterHash.putInt(Objects.hash(canonicalName, literal)); }`
+(`:552-555`) with the token itself as the literal. A Go implementation that ports
+`AstNormalizer` faithfully and then recomputes the hash **by re-walking the
+`EXECUTE CONTINUATION` statement** will therefore fold in the very bytes it is
+validating, and will never match. §4.3 step 6 says "recomputed from the
+reconstructed literals table" for this reason: the expected value comes from the
+reconstructed table **alone**, never from re-walking the statement.
+
+Two notes that make this worse and are worth carrying to the call site. First,
+the folded value is a `byte[]`, so it also hits §9.3's identity-hash
+instability — Java's `EXECUTE CONTINUATION` parameter hash is not reproducible
+even by Java. Second, this never bites Java only because Java does not compare it
+at all: it seeds the context from the token's own hash (§2.4). Go compares, so Go
+has to get this right where Java did not have to.
 
 **Step 7 — runner wiring.** The corpus runner consumes `maxRows:` and multi-page
 `result:` sequences; ledger + assignment digest move in the same commit.
@@ -1169,12 +1334,44 @@ token re-parses to an equal envelope; and an **unpinned** connection does not
 silently return another statement's token. *Mutations:* leave the field
 unexported → compile failure; drop the precondition → the error assertion fails.
 
-**G3 — page-by-page equals one-shot, with a page-count floor.** Concatenated
-pages at `MAX_ROWS=1` equal the unpaged result, row for row and order for order,
-**and the observed page count is asserted `>= 2`** — without the floor a
-regression returning everything in one page passes trivially. Must include one
-query per Go-private inner shape: aggregate, memory sort, **and distinct** (§9.4).
+**G3 — page-by-page equals one-shot, with a page-count floor, over RESUMABLE
+plans only.** Concatenated pages at `MAX_ROWS=1` equal the unpaged result, row
+for row and order for order, **and the observed page count is asserted `>= 2`** —
+without the floor a regression returning everything in one page passes
+trivially. The query set is drawn from **G14's census of representable plans**,
+and the gate asserts that membership rather than assuming it, so a plan type
+losing its encoding removes queries from G3 loudly instead of silently.
 *Mutations:* drop a boundary row; duplicate a boundary row; collapse to one page.
+
+*Revision-2 correction — this gate contradicted G11 as first drafted.* G3
+originally required page-by-page equality "per Go-private inner shape:
+aggregate, memory sort, **and distinct**", which at `MAX_ROWS=1` means minting a
+token — while §4.1 and G11 require minting a token for a plan containing memory
+sort or distinct to **fail loudly**. The two gates demanded opposite outcomes for
+the same query. The shape list was **residue of the re-plan mechanism**, under
+which every plan was resumable because none was transported; the transport ruling
+invalidated it and the list was not revisited. Aggregate is unaffected —
+`PRecordQueryStreamingAggregationPlan` has an arm — so it stays in G3. Memory
+sort and distinct move to G3b, which reaches them on the path that still pages
+them.
+
+**G3b — page-by-page equals one-shot across a transparent ROLLOVER boundary, for
+the Go-private inner shapes.** Aggregate, memory sort **and** distinct (§9.4),
+driven with **no `MAX_ROWS`** and a scan/byte limit small enough to force
+multiple `fetchPage` transactions: the rows returned equal the unpaged result,
+row for row and order for order, and the observed transaction count is asserted
+`>= 2`.
+
+This is G12's layer, not G3's. The rollover path pages these plans today, keeps
+paging them after this RFC (§4.2 preserves it), and round-trips their Go-private
+`execution_state` framing through `pageContinuationState` on every boundary —
+which is precisely the coverage the three shapes need and the one place a
+transport-fenced plan can still be exercised end to end. Losing it because the
+shapes became unmintable would have been a coverage regression hidden inside a
+correctness fix. *Mutations:* drop a row at a rollover boundary; duplicate one;
+raise the scan limit so only one transaction runs (the `>= 2` floor reds);
+corrupt the memory-sort `SortedRecord.message` payload or the distinct
+`seenKeys` list.
 
 **G4 — rejection, three independent directions, each mutated separately.**
  (a) **binding hash** (`24F00`) — resume with a doctored literals table →
@@ -1214,6 +1411,16 @@ Path 1 by mode and on Path 2 by mode. *Mutations:* renumber a field; convert the
 fence to a schema divergence; drop the Go-side Path-2 mode check so the Java
 token falls through to a generic hash mismatch.
 
+**G6 also asserts the `execution_state` passthrough BYTE-FOR-BYTE.** §4.6's claim
+that the SQL envelope stores the record-layer continuation "unmodified" is the
+one load-bearing statement in this RFC with no gate behind it, and it is exactly
+the kind of claim that rots silently: a well-meaning re-frame, a length prefix, a
+version byte, and the record-layer continuation stops being what Java's
+`executePlan` expects while every SQL-level test stays green. The gate asserts
+`envelope.execution_state == cursorContinuation.ToBytes()` as a byte comparison,
+in both the mint and the parse direction. *Mutations:* wrap the bytes in any
+framing; base64 them; drop a trailing zero byte — each reds.
+
 **G7 — `binding_hash` agrees with Java where Java is self-consistent, and
 diverges where it is not.** Cross-checked goldens through the conformance server
 for integer / string / float / boolean / null literals; **plus an explicit
@@ -1241,18 +1448,88 @@ non-passing until §9.5's `LIMIT` blocker is closed, and its file class stays
 mode with the per-run count of queries actually multiplied REPORTED and FLOORED.
 *Mutation:* make the eligibility predicate return false → the floor reds.
 
-**G11 — the in-memory-sort rejection is loud and specific.** Minting a token for
-a plan containing `RecordQueryInMemorySortPlan` fails with an error naming the
-node and citing R1. *Mutations:* encode it lossily as `PRecordQuerySortPlan` →
-the error assertion reds, **and** a companion test showing a `NULLS FIRST` sort
-resuming in the wrong order under that lossy encoding reds too — the second
-mutation is what proves the rejection is protecting correctness and not taste.
+**G11 — the unrepresentable-node rejection is loud, specific, and CLEAN AT THE
+PAGE BOUNDARY.** Two parts:
 
-**G14 — the unrepresentable set is MEASURED before anything depends on it.** An
-enumeration test walks every plan the corpus produces and reports, per Go plan
-type, whether it has a `PRecordQueryPlan` encoding: representable, representable
-only via a differently-named Java arm (with the mapping named), or
-unrepresentable. The census is **pinned as a number and a per-type assignment**,
+*(a) Mint-time.* Minting a token for a plan containing
+`RecordQueryInMemorySortPlan` — or any member of the unrepresentable set (§3.3,
+both the five Java-parity nodes and the three Go-only ones) — fails with Java's
+`"serialization of this plan is not supported"` message, the node name, and the
+R1 reference as structured context. *Mutations:*
+encode the sort lossily as `PRecordQuerySortPlan` → the error assertion reds,
+**and** a companion test showing a `NULLS FIRST` sort resuming in the wrong order
+under that lossy encoding reds too — the second mutation is what proves the
+rejection protects correctness and not taste.
+
+*(b) The user-facing path, which (a) alone does not cover.* Setting `MAX_ROWS` on
+a query whose plan contains an unrepresentable node must surface a **clean SQL
+error at the page boundary** — a typed `api` error with a SQLSTATE, raised
+through `paginatingRows.Next` — **not a panic mid-drain, not a partial result
+set, and not a silent truncation.** The failure happens deep inside the page
+drain, after rows have already been handed to the caller, which is exactly the
+shape that produces a panic escaping through `database/sql` if the error path is
+an afterthought. *Mutations:* make the mint failure a `panic` → the clean-error
+assertion reds; swallow it and return `io.EOF` → the partial-result assertion
+reds (this is the §1.1 silent-truncation defect reappearing one layer up, and it
+must not).
+
+**This gate pins a deliberate, user-visible REGRESSION, and the RFC states it
+plainly rather than burying it.** Today `MAX_ROWS` on such a query returns rows —
+the statement-wide cap truncates and no token is ever minted, so nothing can
+fail. **After steps 4+5 the same query errors.** That is a real capability loss,
+chosen because the alternative is minting a token that cannot be redeemed or,
+worse, one redeemed against a lossily-encoded plan that resumes in a different
+order.
+
+**The affected surface is five shapes, not eight** (§3.3's reachability axis):
+`SELECT DISTINCT`, `LIMIT`/`OFFSET`, vector search, `ORDER BY` with no satisfying
+access path, and the `RecordQueryFilterPlan` shapes (nested-loop join,
+left-outer-existential). `Comparator`, `Selector`, `TextIndex` and `LoadByKeys`
+are **not** in the regression: no Cascades rule constructs them, so no SQL query
+can reach them. Listing them would have inflated the stated blast radius by four
+— and an overstated regression is as much a documentation defect as an
+understated one, because it invites the wrong mitigation.
+
+Two honest qualifications on its blast radius, neither of which excuses it:
+`OptMaxRows` has no production setter today (§1.1), so the regression is
+currently reachable only through `conn.Raw` — and it becomes broadly reachable at
+exactly the moment step 5 ships the surface, so the mitigation window is the same
+commit that creates the exposure.
+
+**Retirement condition, named so this is a fence and not a permanent loss:** each
+node leaves the set on the R1-family terms of §3.4 — an upstream proto arm
+(`RecordQueryInMemorySortPlan` needs a Value-keyed sort message; `Distinct`,
+`Limit` and `VectorIndex` need Java operators that do not exist), or Go ceasing
+to plan that node for the shape in question. G14's census is the instrument that
+reports progress, and every node it moves out of the unrepresentable set moves a
+query from G11(b) into G3.
+
+**G14 — the unrepresentable set is MEASURED before anything depends on it, and
+reported as TWO numbers.** An enumeration test walks every plan the corpus
+produces and reports, per Go plan type, whether it has a `PRecordQueryPlan`
+encoding: representable, representable only via a differently-named Java arm
+(with the mapping named), or unrepresentable.
+
+**Unrepresentable splits by cause, and the split is the point** (§3.3):
+
+- **shared-with-Java holes** — nodes whose Java counterpart also refuses
+  serialization (`Comparator`, `Selector`, `TextIndex`, `LoadByKeys`, `Filter`).
+  Go is at parity; this number falling is not a Go goal and it can only move if
+  upstream changes.
+- **Go-only holes** — `Limit`, `VectorIndex`, `Distinct`, plus `InMemorySort` as
+  a lossy-encoding case. **This is the number R1 is accountable for**, and the
+  only one whose non-zero value is a Go shortfall.
+
+Each entry also carries **SQL-reachability** (§3.3's third axis), because an
+unrepresentable node no Cascades rule constructs costs nothing and must not be
+counted as if it did — four of the eight are in that state today, and a rule that
+later starts constructing one silently converts an inert entry into a live
+regression. That transition is precisely what the census exists to catch.
+
+Reporting one merged figure would let parity-shared and unreachable limitations
+inflate the apparent Go gap — the exact error an earlier draft of §3.3 made. The
+census is **pinned as both numbers, the reachability flag, and a per-type
+assignment**,
 in the `pinned_ledger_test.go` style, so a plan type silently gaining or losing
 an encoding fails loudly. This is the gate that keeps §3.3's corrected claim
 honest: the name-level survey there shows the unrepresentable set is larger than
@@ -1317,8 +1594,11 @@ issue, with its URL recorded at the `DIVERGENCES.md` divergence entry, covering:
 
 1. **The plan-constraint fail-open** (`QueryPlan.java:561-565`) — measured inert
    in §9.2, with the reproducer; strengthened by G8's wrong-rows outcome before
-   filing. Also note the metric defect: the same continuation increments both
-   `CONTINUATION_REJECTED` and `CONTINUATION_ACCEPTED`.
+   filing. A companion metric defect (the same continuation appearing to
+   increment both `CONTINUATION_REJECTED` and `CONTINUATION_ACCEPTED`) is
+   **READ, not measured** — §9.2 — and goes in the report flagged as such, or is
+   measured first. Filing a source reading as an observation is how a report
+   loses its credibility on the findings that *were* measured.
 2. **`Enum.valueOf` on a caller-supplied mode string** (`PlanValidator.java:55`)
    — measured in §9.1 to turn a continuation-validation failure into SQLSTATE
    `XXXXX`. Moving the membership test before the `valueOf` would yield the
@@ -1328,8 +1608,11 @@ issue, with its URL recorded at the `DIVERGENCES.md` divergence entry, covering:
    measured in §9.3. This breaks Java's *own* Path-2 resume for such queries, so
    it is not merely a Go-interop concern.
 
-All three were found by instrumenting Java rather than by reading it, which is
-why they are worth filing rather than absorbing.
+Findings 1-3 were found by **instrumenting** Java rather than by reading it,
+which is why they are worth filing rather than absorbing. The metric defect
+noted under 1 is the exception and is marked read-only above; the report must
+keep that line, because a filed issue that blends measured and inferred claims
+invites the whole thing to be dismissed on its weakest item.
 
 **8.6 — `TypedQueryArgument` scope handling for prepared parameters** follows
 `deserializeArgumentsForParameters` (`PlanGenerator.java:367-368`).
@@ -1362,11 +1645,23 @@ Ran 1 of 1362 Specs in 6.877 seconds
 SUCCESS! -- 1 Passed | 0 Failed | 0 Pending | 1361 Skipped
 ```
 
-Five mutation directions, each RED separately: revert the step (`No conformance
-step found with name: continuationProbe`); `GO_V0`→`VC0`; false constraint→true;
-false constraint + perturbed `plan_hash`; bytes literal→int literal. The last two
-matter most — they pin that the probe *can* observe Java rejecting, so §9.2's
-non-rejection is not a blind spot.
+Mutation directions, each RED separately and each measured: revert the step
+(`No conformance step found with name: continuationProbe`); `GO_V0`→`VC0`; false
+constraint→true; **make the `plan_hash` perturbation a no-op** (reds with "Java
+ACCEPTED a continuation whose plan_hash does not match the serialized plan");
+**reject via bogus mode instead of hash** (reds on the SQLSTATE arm alone,
+`XXXXX` vs `24F00`, while the threw-arm stays green); wrap probe A's throwable so
+it carries no SQLSTATE; force `probeB_origHasPlanConstraint` false; truncate the
+constraint text; zero both integer control hashes (reds on non-zero while
+`probeC_int_equal` stays **true** — the exact blind spot); and salt the binding
+hash with the JVM pid (caught **only** by the cross-JVM arm).
+
+Two of those deserve naming. The old probe-A assertion was written
+`NotTo(Equal("24F00"))`, which is green on an absent or null key — restoring it
+under a broken Java state passes, so it was **vacuous**; it is now
+`HaveKeyWithValue`. And the integer-control equality was green at `0 == 0`, an
+agreement that measures nothing. Both were found by mutating assertions that
+looked correct.
 
 ### 9.1 Java's Path-1 rejection of a `GO_V0` token — CONFIRMED, and the fence is NOT a clean rejection
 
@@ -1418,21 +1713,46 @@ probeB_falsePlanConstraintProto: predicate { constant_predicate { ... value: fal
 
 **A continuation whose plan constraint evaluates FALSE executes and returns
 every remaining row.** The gate is inert, not merely lenient. The source is as
-read (`QueryPlan.java:561-565`), and the caught `pVE` is bound and never used;
-note also that the same continuation increments **both** `CONTINUATION_REJECTED`
-and `CONTINUATION_ACCEPTED`, so the metric pair cannot be read as a rejection
-count either.
+read (`QueryPlan.java:561-565`), and the caught `pVE` is bound and never used.
 
-The contrast is established in the same instrument: with the plan hash also
-perturbed, Java **does** reject —
+*Separately, and READ rather than MEASURED:* the same continuation appears to
+increment **both** `CONTINUATION_REJECTED` (`:564`) and `CONTINUATION_ACCEPTED`
+(`:572`), since the catch block falls through, which would mean the metric pair
+cannot be read as a rejection count. **The probe does not observe the metric
+collector**, so this is a source reading with the same status as any other
+comment or code-path claim in this document — not a measurement, and not to be
+cited as one. Confirming it needs either a metrics-reading probe arm or an
+upstream reproducer; it is listed in §8.5 as read-only for exactly that reason.
+
+The contrast is established by a **permanent third arm of the same instrument**,
+not by a transient local edit: the identical doctored bytes plus a perturbed
+`plan_hash` (`orig.getPlanHash() + 1`, the only delta) —
 
 ```
-probeB_threw: true, probeB_sqlState: "24F00",
-probeB_message: "cannot continue query due to mismatch between serialized and actual plan hash"
+probeB_origPlanHash:                -891553986
+probeB_perturbedPlanHash:           -891553985
+probeB_hashPerturbed_threw:         true
+probeB_hashPerturbed_sqlState:      "24F00"
+probeB_hashPerturbed_message:       "cannot continue query due to mismatch between serialized and actual plan hash"
+probeB_hashPerturbed_causeChain:    ContextualSQLException <- PlanValidator$PlanValidationException
 ```
 
-so the constraint path is the odd one out, not general leniency, and the probe
-demonstrably *can* see Java refuse.
+So the doctored continuation demonstrably **reaches** Java's validation chain,
+`PlanGenerator.java:340-341` fires on the named-parameter form under mode `VC0`
+on the compiled-statement path, and the constraint gate is the odd one out rather
+than the probe feeding Java bytes it ignores. The arm runs on every invocation,
+behind no flag, and its own mutation check (make the perturbation a no-op) reds
+with *"Java ACCEPTED a continuation whose plan_hash does not match the serialized
+plan — the probe can no longer demonstrate that doctored bytes reach
+validation"*.
+
+This arm exists because an earlier revision asserted the same conclusion from a
+**transient** local mutation that was then deleted. CLAUDE.md's rule that every
+proof gets committed is what forced it into the instrument — and the value of
+doing so is not hypothetical: while it was being added, a concurrent run of this
+suite sampled the half-applied mutation and read the opposite result. A fact that
+lives only in a deleted edit cannot be re-checked, and cannot be distinguished
+from a fact read off a broken tree.
 
 **What this does NOT yet show, stated so G8 is not mistaken for satisfied:** a
 constant-FALSE constraint proves the gate is inert; it does not exhibit the
@@ -1454,9 +1774,29 @@ probeC_int_equal:   true
 
 Two executions of the identical query text `SELECT * FROM T WHERE B = x'0a0b'`,
 **same connection, same JVM**, produce different binding hashes. The integer
-control `WHERE N = 3` agrees, and agreed at `677421547` across four separate JVM
-launches — so the integer hash is stable even across processes while the bytes
-hash is not stable within one. `AstNormalizer.java:145` routes
+control `WHERE N = 3` agrees, and agreed at `677421547` across **two separate JVM
+launches** — so the integer hash is stable even across processes while the bytes
+hash is not stable within one.
+
+*The cross-process half needs its own instrument, and now has one.* A single-JVM
+run cannot distinguish "deterministic function of the query text" from "stable
+reference for this heap's lifetime" — an identity hash is also stable within its
+own JVM. The probe therefore spawns a second, isolated conformance server
+(`NewIsolatedJavaInvoker`, `conformance/java_invoker_test.go:129`) and compares.
+Its mutation check is the one that proves the arm is load-bearing: salting the
+binding hash with `ProcessHandle.current().pid()` passes **every** single-JVM
+assertion — within-JVM equality and non-zero both stay green — and is caught only
+by the cross-JVM comparison.
+
+**The exact constant `677421547` is measured and printed but deliberately NOT
+asserted.** What §9.3 pins is agreement, non-zero, and cross-process stability;
+the exact value belongs to **G7**, which owns cross-checked per-literal-type
+goldens when step 2 lands. Splitting it this way keeps §9.3 a *stability* probe
+that survives any Java-side hash-seed change, and confines version-coupled
+constants to the one gate whose job is agreement. Recorded so it is not
+re-litigated as an oversight.
+
+`AstNormalizer.java:145` routes
 `BytesConstantContext` through `ParseHelpers.parseBytes`, which returns a
 `byte[]` (`ParseHelpers.java:147`); `Objects.hash` → `Arrays.hashCode(Object[])`
 → `byte[].hashCode()` → identity.
@@ -1555,7 +1895,10 @@ are a real, unmeasured tail. The file's booked class is
 ```
 
 **The direction is the opposite of what a reader might assume, and of what
-revision 1 implied.** Go is the *permissive* side: `LIMIT`/`OFFSET` is a Go-only
+revision 1 implied — but it is exactly what the review finding said**, and this
+section agrees with it rather than correcting it: Java rejects `LIMIT`, Go
+accepts. What ran backwards was revision 1's *guidance*, not the finding. Go is
+the *permissive* side: `LIMIT`/`OFFSET` is a Go-only
 read-side extension (RFC-082; `DIVERGENCES.md:696`;
 `plan_visitor.go:1832 parseLimitClause`) that Java rejects. This is the corpus's
 **single** `conformance:go-accepts-what-java-rejects` entry. Revision 1's §4.2
