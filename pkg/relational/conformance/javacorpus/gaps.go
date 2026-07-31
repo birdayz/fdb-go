@@ -36,6 +36,11 @@ var engineGaps = []EngineGap{
 	// so a bare match would let an unrelated conversion bug in one of these
 	// five files be absorbed as "the known array gap".
 	{"check-result-metadata/shouldPass/array-column.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, [10, 20, 30])", "CQ-72"},
+	// The shouldFail sibling of the line above, with the SAME setup insert. It
+	// was credited as a passing negative until the polarity accounting started
+	// asking WHERE the failure happened: upstream asserts a descriptor
+	// mismatch in its test block, and the file never got there.
+	{"check-result-metadata/shouldFail/wrong-array-element-type.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, [10, 20, 30])", "CQ-72"},
 	{"cast-tests.yamsql", SkipGapArrayValues, "insert into test_cast_arrays values(1, [1, 2, 3])", "CQ-72"},
 	{"arrays-operators.yamsql", SkipGapArrayValues, `INSERT INTO T1 (\"pk\", \"arr\", \"arr_nn\")`, "CQ-72"},
 	{"right-deep-plan-tests.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, 'A1', [1000, 2000])", "CQ-72"},
@@ -95,6 +100,23 @@ var engineGaps = []EngineGap{
 	// block form, reached by a different route, so it is classed with it.
 	{"showcasing-tests.yamsql", SkipDDLStruct, "only primitive column types are supported", "CQ-73"},
 	{"create-drop-create-template.yamsql", SkipDDLStruct, "only primitive column types are supported", "CQ-73"},
+}
+
+// SetupNegatives are the execution-level negatives whose upstream-asserted
+// failure happens in a `setup:` block rather than in a test block.
+//
+// The polarity accounting otherwise treats a setup death as proof the file
+// never reached its assertion — which is right for every other negative and
+// caught a real mis-credit — but it is wrong here, because for these files the
+// setup step IS the assertion. That cannot be derived: only the manifest knows
+// where upstream expects the failure, and its reason is prose. So it is
+// declared, one line per file, and asserted reachable: an entry whose file
+// stops failing in setup fails the run rather than sitting here unread.
+var SetupNegatives = map[string]string{
+	"include-block/shouldFail/verify-all-includes-execute.yamsql": "the file exists to prove every " +
+		"include EXECUTES, and it proves it by including a fragment twice — the second pass " +
+		"re-inserts an existing primary key from the fragment's own setup block, so the 23505 " +
+		"raised there is the assertion, not an accident on the way to one",
 }
 
 // gapFor returns the gap entry covering a failure, if the failure is the one

@@ -70,38 +70,3 @@ func TestResultMetadataTypeNameVocabulary(t *testing.T) {
 		}
 	}
 }
-
-// TestArrayTypeNameIsNotSurfacedByTheDriver pins the measured shape of the
-// driver gap SkipResultMetadataNested exists for, from the matcher's side.
-//
-// Java names an array column "ARRAY(elem)"
-// (CheckResultMetadataConfig.buildArrayTypeName). Go's driver reports the
-// column's ELEMENT type name instead — `valueTypeName` has no TypeCodeArray arm
-// and `protoKindToTypeName` ignores field cardinality — so the two disagree on
-// every array column. This test states the consequence in the matcher's own
-// terms: the Java spelling and the Go spelling do not match each other, which
-// is why an array expectation is declined by name rather than compared.
-//
-// When the driver starts carrying the array type, this test is the one that
-// must be deleted, and deleting it is the signal to stop declining.
-func TestArrayTypeNameIsNotSurfacedByTheDriver(t *testing.T) {
-	t.Parallel()
-
-	// What Java would report for `x integer array`, and what Go's driver
-	// actually reports for the same column.
-	const javaName = "ARRAY(INTEGER)"
-	goName := string(api.SQLTypeNameFromJDBC(api.JDBCType(api.CodeInteger)))
-
-	if javaName == goName {
-		t.Fatal("Go now spells an array column the way Java does; the array half of " +
-			"SkipResultMetadataNested is closed and the runner should compare instead of declining")
-	}
-
-	// And the matcher agrees: an `{array: INTEGER}` expectation does not match
-	// a descriptor carrying the bare element name.
-	cfg := metadataConfigFrom(t, "resultMetadata: [{X: {array: INTEGER}}]")
-	if err := matchMetadata(cfg.Raw, []columnDescriptor{{Name: "X", TypeName: goName}}); err == nil {
-		t.Fatal("an array expectation matched a bare element type name — the descriptor " +
-			"gap would then be invisible instead of counted")
-	}
-}

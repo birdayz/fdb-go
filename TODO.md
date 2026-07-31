@@ -12556,11 +12556,28 @@ None is speculative: each was re-verified against the tree before booking.
     **§3's framing of this phase — "Runner- and driver-side; no planner risk" —
     is REFUTED for the continuation half, and by measurement rather than
     argument.** It was written before anyone probed the engine. The `+35` and
-    `+16` file estimates were also counted off `grep`, not off a run: of the 35
-    files carrying `resultMetadata:`, **26 are claimed at file level by
-    `unsupported-DDL:struct` or `unsupported-DDL:value-index-as-select` before a
-    query executes**, so the directive was never the binding constraint on them.
-    The same applies to `maxRows:`: 12 of its 16 files are claimed earlier.
+    `+16` file estimates were also counted off `grep`, not off a run.
+
+    **CENSUS, DERIVED — join each directive's file list against the ledger's
+    per-file class assignment; it re-runs verbatim.** An earlier draft of this
+    entry said "26 claimed by DDL", which is wrong under every reading; the
+    derivation is stated so the figures can be checked rather than trusted.
+
+    `resultMetadata:` — 35 files: **20 claimed by a DDL class** (17
+    `unsupported-DDL:struct` + 3 `unsupported-DDL:value-index-as-select`); 5
+    `polarity:negative-execution` (the scalar `shouldFail` files, which now
+    genuinely execute and fail); **4 not skipped at all** — they pass, and now
+    assert the directive; 2 `unsupported:continuation`; 2
+    `engine-gap:array-literal-values`; 1 `engine-gap:planner-declines`; 1
+    `polarity:negative-parse`. So 31 of 35 are booked under some skip class and
+    4 pass; the DDL-claimed subset is 20.
+
+    `maxRows:` — 16 files: **9 claimed by a DDL class** (4 struct + 4
+    value-index + 1 other); 2 `polarity:negative-parse`; 1
+    `engine-gap:array-literal-values`; 1
+    `conformance:go-accepts-what-java-rejects`; and **only 3 genuinely blocked
+    on pagination** (`unsupported:continuation`). 13 of the 16 are held by
+    something other than the continuation surface.
 
     **resultMetadata: DONE.** A 1:1 port of `CheckResultMetadataConfig` lives in
     `pkg/relational/conformance/javacorpus/resultmetadata.go` — the recursive
@@ -12579,13 +12596,35 @@ None is speculative: each was re-verified against the tree before booking.
     - `unsupported:result-metadata` **7 file / 65 config → the class is
       DELETED.** Not zeroed and kept: every reachable directive is now either
       asserted or booked under the narrower successor.
-    - `polarity:negative-execution` **20 → 25**. The five scalar
+    - `polarity:negative-execution` **20 → 24**, accounting **20/15/7 →
+      24/10/8**. Four of the five scalar
       `check-result-metadata/shouldFail/{extra-column, missing-column,
-      wrong-column-name, wrong-column-order, wrong-column-type}.yamsql` now fail
-      as upstream requires. The negative-execution accounting moved **20/15/7 →
-      25/10/7** — those five moved from "assertion-suppressed" to "booked", and
-      THAT split, not the class counts, is the measurement showing the directive
-      is really being checked.
+      wrong-column-name, wrong-column-order}.yamsql` moved from
+      "assertion-suppressed" to "booked" — their only failing assertion IS the
+      metadata one, so while the directive was a counted skip they ran clean.
+      `wrong-column-type.yamsql` did too. THAT split, not the class counts, is
+      the measurement showing the directive is really checked.
+    - `engine-gap:array-literal-values` **5 → 6**, and the reason is a REAL
+      DEFECT this branch found in the polarity accounting itself. The arm
+      credited a negative for ANY error, so
+      `check-result-metadata/shouldFail/wrong-array-element-type.yamsql` was
+      booked as a passing negative while dying on the array-literal INSERT in
+      its `setup:` block — the same gap its `shouldPass` sibling books — having
+      never reached the descriptor mismatch upstream is testing. Setup failures
+      now carry a `setupError` type and disqualify the credit, and the file is
+      booked in `gaps.go` where it belongs.
+    - **A second mis-credit surfaced and was REFUTED as a defect.**
+      `include-block/shouldFail/verify-all-includes-execute.yamsql` also dies in
+      setup — but for that file the setup step IS the assertion (it includes a
+      fragment twice so the second pass re-inserts an existing primary key, and
+      the 23505 is the point). The gate was too coarse; `SetupNegatives` in
+      `gaps.go` declares the exception with its reason, and the corpus test
+      asserts the entry is still true, so it cannot rot into a blanket
+      exemption. **All 24 booked negatives were then audited** against their
+      manifest reasons using the newly recorded failure text — the six
+      `include-block/includes/*` credits match "standalone: no database
+      available" exactly, the `supported-version/*` ones match "the broken query
+      runs", and no further mis-credit exists.
     - `unsupported:continuation` **1 → 3 files**.
       `check-result-metadata/should{Pass,Fail}/*-metadata-on-continuation-page.yamsql`
       were booked against the metadata skip; with the directive implemented
@@ -12594,15 +12633,30 @@ None is speculative: each was re-verified against the tree before booking.
       repetition instead of asserting rows five times each. Fewer asserted
       queries is the CORRECT direction here: those 25 were never proving
       anything about the engine.
-    - `unsupported:result-metadata-nested` (new) is **MASKED at 0** — the 8
-      files whose expectation descends are all claimed earlier. Recorded in
-      `maskedClasses` with the masking classes named, per the standing rule that
-      a class nothing emits is worse than no label.
+    - `unsupported:result-metadata-nested` (new) is **MASKED at 0** — the **14**
+      files whose expectation descends (12 of them behind struct DDL, measured
+      by `TestDescendingMetadataCorpusCost`) are all claimed earlier. Recorded
+      in `maskedClasses` with the masking classes named, per the standing rule
+      that a class nothing emits is worse than no label.
 
-    Mutation-checked in five independent directions, each RED alone: matcher
-    always-matches (5 files run clean → negatives that wrongly passed); type
+    Mutation-checked in seven independent directions, each RED alone: matcher
+    always-matches (4 files run clean → negatives that wrongly passed); type
     names unchecked (only `wrong-column-type` reds); the descend gate disabled;
-    the `isArray` distinction removed; the struct-type-name check removed.
+    the `isArray` distinction removed; the struct-type-name check removed; the
+    live array sentinel's type-name arm; its scan-type arm.
+
+    **The four stricter-than-Java hard errors are gone.** A first draft rejected
+    a `resultMetadata:` armed for `error:` / `count:` / a non-row-returning
+    statement, or left with no consumer. All four are LEGAL corpus input —
+    `QueryConfig.validateConfigs` admits `error:` and `count:` as the required
+    consumer — and Java no-ops on each via
+    `checkInlineMetadataIfPresent`'s `instanceof RelationalResultSet` guard, so
+    the runner would have rejected files Java accepts. That guard is now ported
+    as `metadataIsRead` and table-tested, and the positional walk it depends on
+    is extracted as `classifyConfigs` and table-tested too — which is the only
+    way the ORDER-dependent decisions (which consumer a directive attaches to,
+    what an `initialVersion` marker removes) can be asserted at all, since none
+    of them is visible in the rows.
 
     **Divergence found and BOOKED as CQ-74:** the result-metadata pipeline
     truncates a column's type to one flat string at `executor.ColumnDef`, so an
@@ -12904,6 +12958,10 @@ None is speculative: each was re-verified against the tree before booking.
 
   Three measured consequences:
 
+  - **An ARRAY column advertises a SCALAR scan type.** `ColumnTypeScanType`
+    (`cascades_generator.go:1406`) switches on the truncated name, so `x integer
+    array` reports `int32` — a caller following it allocates a scalar for a
+    list. Same root cause, separate observable, measured live.
   - **An ARRAY column is spelled as its element.** `valueTypeName` has no
     `TypeCodeArray` arm (`cascades_generator.go:4297-4328` falls through to
     `""`) and `protoKindToTypeName` (`:4432`) switches on `Kind()` alone,
@@ -12944,15 +13002,28 @@ None is speculative: each was re-verified against the tree before booking.
   struct half until RFC-201 Phase 3 lands struct DDL — the array half is
   provable today and should not wait for it.
 
-  Cost, measured, not estimated: **0 corpus files today.** Every vendored file
-  whose `resultMetadata:` descends is claimed first by
-  `unsupported-DDL:struct` or `engine-gap:array-literal-values`, which is why
-  `unsupported:result-metadata-nested` is a MASKED class in the CQ-69.1 ledger.
-  The cost becomes 8 files the day Phase 3 lands, and the masking entry in
-  `corpus_run_test.go`'s `maskedClasses` is where that shows up.
+  Cost, MEASURED by `TestDescendingMetadataCorpusCost` rather than estimated:
+  **0 corpus files today, 14 the day Phase 3 lands, 12 of them held by struct
+  DDL alone.** Every vendored file whose `resultMetadata:` descends is claimed
+  first by `unsupported-DDL:struct` or `engine-gap:array-literal-values`, which
+  is why `unsupported:result-metadata-nested` is a MASKED class in the CQ-69.1
+  ledger. An earlier draft of this line said 8; that figure came from grepping
+  for the directive instead of inspecting its SHAPE — most files carrying
+  `resultMetadata:` carry only scalar expectations, which are asserted today.
+  The count is now a test, so it cannot be quoted wrong again.
 
-  DONE = an array column reports `ARRAY(elem)` and a struct column reports its
-  field list and declared type name through a caller-reachable surface;
-  `unsupported:result-metadata-nested` stops being masked (or goes to zero);
-  `TestArrayTypeNameIsNotSurfacedByTheDriver` is deleted with the runner's
-  declining branch.
+  **The live sentinel is `TestFDB_ArrayColumnMetadataIsTruncated`**
+  (`pkg/relational/conformance/javacorpus/arraymetadata_fdb_test.go`), which
+  runs `SELECT pk, x FROM t1` over an EMPTY table with `x integer array` and
+  reads `database/sql`'s answer directly — no INSERT, because column metadata
+  comes from the plan and inserting an array literal fails on CQ-72. It fails
+  the moment the driver starts spelling the type Java's way, and its failure
+  message is the hand-over instruction. It replaced a first attempt that
+  compared two compile-time constants and could never have fired, which would
+  have made the runner's decline permanent by accident.
+
+  DONE = an array column reports `ARRAY(elem)` with a non-scalar scan type and
+  a struct column reports its field list and declared type name through a
+  caller-reachable surface; `unsupported:result-metadata-nested` stops being
+  masked (or goes to zero); `TestFDB_ArrayColumnMetadataIsTruncated` is deleted
+  together with the runner's declining branch.

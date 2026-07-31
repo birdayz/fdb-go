@@ -29,7 +29,10 @@ go_test(
     # applies. Sized to the convention those carry rather than trimming files.
     timeout = "long",
     srcs = [
+        "arraymetadata_fdb_test.go",
+        "configplan_internal_test.go",
         "corpus_run_test.go",
+        "descending_census_internal_test.go",
         "javarandom_test.go",
         "match_internal_test.go",
         "pinned_ledger_test.go",

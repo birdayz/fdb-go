@@ -360,6 +360,13 @@ func TestMetadataDescends(t *testing.T) {
 		{"resultMetadata: [{X: {array: [{A: BIGINT}]}}]", true},
 		// Mixed: one scalar column does not make the directive assertable.
 		{"resultMetadata: [{ID: BIGINT}, {X: {array: INTEGER}}]", true},
+		// A malformed expectation is NOT a driver gap. Java rejects a
+		// non-String scalar as a plain mismatch, so declining it here would
+		// book a broken corpus line as a capability Go lacks — and would hide
+		// the very mismatch the file is supposed to surface.
+		{"resultMetadata: [{ID: 5}]", false},
+		{"resultMetadata: [{ID: true}]", false},
+		{"resultMetadata: [{ID: null}]", false},
 	}
 
 	for _, tc := range cases {

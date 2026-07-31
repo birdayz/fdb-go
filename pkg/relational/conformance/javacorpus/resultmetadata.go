@@ -68,14 +68,29 @@ func extractDescriptors(rs *resultSet) []columnDescriptor {
 	return out
 }
 
-// metadataDescends reports whether an expected `resultMetadata:` value asks a
-// question about a column's INTERIOR — a struct field list, an `{array: …}`
-// map, or a struct type name.
+// metadataDescends reports whether an expected `resultMetadata:` value is one
+// the Go driver cannot answer, and names the first column that makes it so.
 //
-// It is a property of the EXPECTATION, deliberately: the actual descriptor
-// cannot answer, so the decision has to be made before any comparison. The
-// second return names the first column that descends, so the ledger detail
-// says which one rather than only that one existed.
+// TWO different reasons live under one gate, and the class name
+// (`unsupported:result-metadata-nested`) is precise for only the first:
+//
+//   - A COMPOSITE list (`[{X: BIGINT}]`, optionally led by a struct type name)
+//     compares against `ColumnDescriptor.fields` / `structTypeName`, which the
+//     driver leaves empty. Genuinely nested.
+//   - An `{array: …}` map over a SCALAR element compares against a flat
+//     `typeName` — Java's own descriptor for that case has `fields == null`,
+//     so nothing descends. It is declined because Go and Java SPELL the type
+//     differently: Java says `ARRAY(INTEGER)`, Go's driver reports the bare
+//     element name `INTEGER`. That is CQ-74's array half, not a nesting gap.
+//
+// They share a gate because they share a cause — `executor.ColumnDef` carrying
+// one flat string — and splitting the class would imply two independent fixes
+// where there is one. The imprecision is recorded rather than papered over.
+//
+// A non-composite, non-map value (a bare integer, say) is NOT declined: Java
+// treats `{ID: 5}` as a plain mismatch (`entry.getValue() instanceof String`
+// fails), and so must Go, or a malformed expectation would book as a driver
+// gap and read as a capability Go lacks.
 func metadataDescends(raw *javayamsql.Value) (bool, string) {
 	cols, err := expectedColumns(raw)
 	if err != nil {
@@ -84,22 +99,16 @@ func metadataDescends(raw *javayamsql.Value) (bool, string) {
 		return false, ""
 	}
 	for _, c := range cols {
-		if c.Val.Untag().Kind != javayamsql.KindString {
-			return true, fmt.Sprintf("column %s expects %s metadata", c.Name, describeExpected(c.Val))
+		switch c.Val.Untag().Kind {
+		case javayamsql.KindSeq:
+			return true, fmt.Sprintf("column %s expects a nested struct-field list, "+
+				"which the driver reports no fields for", c.Name)
+		case javayamsql.KindMap:
+			return true, fmt.Sprintf("column %s expects an array type, "+
+				"which the driver spells as the bare element type", c.Name)
 		}
 	}
 	return false, ""
-}
-
-func describeExpected(v *javayamsql.Value) string {
-	switch v.Untag().Kind {
-	case javayamsql.KindSeq:
-		return "nested struct-field"
-	case javayamsql.KindMap:
-		return "array-element"
-	default:
-		return "non-scalar"
-	}
 }
 
 // expectedColumn is one entry of the expected column list: the declared column
@@ -285,9 +294,15 @@ func buildExpectedArrayTypeName(m *javayamsql.Value) string {
 	}
 }
 
-// reportMetadataMismatch renders Java's two-column report. The wording is
-// shared with Java deliberately: a corpus failure should be diagnosable against
-// the Java run that blessed the expectation.
+// reportMetadataMismatch renders the expected/actual column lists.
+//
+// What is shared with Java is the PER-COLUMN LINE FORMAT —
+// `name: typeName[(structTypeName)]`, indented four spaces per nesting level,
+// from `appendDescriptorToMessage` — so a Go descriptor dump can be diffed
+// against the Java run that blessed the expectation. The surrounding frame is
+// not shared: Java's emoji rules and `‼️`/`↪`/`↩` markers carry no information
+// a Go reader needs, and its report is raised through Assertions.fail rather
+// than returned.
 func reportMetadataMismatch(expected []expectedColumn, actual []columnDescriptor) error {
 	var b strings.Builder
 	b.WriteString("result metadata mismatch:\n")
