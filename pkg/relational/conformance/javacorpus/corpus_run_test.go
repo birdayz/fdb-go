@@ -64,6 +64,7 @@ func TestMain(m *testing.M) {
 // breakdown are all asserted: a file that stops running, a skip class that
 // grows, and a gap that quietly changes shape each fail with the delta named.
 func TestJavaCorpusRuns(t *testing.T) {
+	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
