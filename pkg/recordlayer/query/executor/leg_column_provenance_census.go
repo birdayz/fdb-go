@@ -83,6 +83,31 @@ import (
 // which is the producer-first conclusion above, arrived at a second way.
 // leg_column_owner_selection_test.go pins both halves.
 //
+// CORRECTION, MEASURED: the paragraph below names the wrong channel, and it is
+// kept because the wrong answer is the one everybody reaches first.
+// `ordinalJoinBuild.legType` consults `b.Spans` FIRST whenever WindowsOK, and a
+// span's leg type comes from `resolveSpanLeaf`, which reads the baked reference's
+// `qov.Type()` — the quantifier's OWN flowed type, never the RC field label. So
+// RecordConstructorValue.Type() is NOT on this reader's path and a leg table
+// attached there would not be read. Pinned in leg_type_channel_test.go.
+//
+// The dotted names arrive as `qov.Type()` COLUMN NAMES, which means a producer
+// named a quantifier's flowed column with a label: the correlated-scalar seed
+// builds its inner leg as RECORD<csq.ScalarCol>, the subquery's OUTPUT TITLE.
+// Measured span tables from TestFDB_CorrelatedScalarJoinInner:
+//
+//	spans=["C"@0+2:[ID NAME]  "q$204"@2+1:[I.QTY]]
+//	spans=["C"@0+2:[ID NAME]  "q$223"@2+1:[SUM(QTY)]]
+//	spans=["C"@0+2:[ID NAME]  "q$80"@2+1:[COUNT(*)]]
+//	spans=["C"@0+2:[ID NAME]  "q$726"@2+1:[NAME]]
+//
+// One channel, four titles. `SUM(QTY)` and `COUNT(*)` are plainly titles;
+// `I.QTY` is a title that happens to contain a dot, and it is the only one the
+// dotted arm answers. So the four dotted hits are NOT leg-qualified references
+// with an identity waiting to be keyed on — there is no leg being referenced, so
+// there is no identity to name, and the retirement is a producer that must stop
+// naming a TYPE by a LABEL.
+//
 // WHERE THE ANSWER IS DROPPED, precisely, because it is not missing upstream —
 // only here. The seed builds each leg column as
 // `RecordConstructorField{Name: leg.binding+"."+COL, Value: FieldValueOfOrdinal(
