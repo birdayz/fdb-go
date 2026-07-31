@@ -59,8 +59,8 @@ grounds with a **per-path** fence.
      not `24F00` (§9.1). An earlier phrasing of §3.2 credited Java's "own
      existing gate"; the token in fact dies before that gate.
 
-**Closes:** CQ-69.2's continuation half (`TODO.md:12552-12556`); unblocks CQ-69.4
-(`TODO.md:12564-12575`).
+**Closes:** CQ-69.2's continuation half (`TODO.md:12558-12562`); unblocks CQ-69.4
+(`TODO.md:12570-12580`).
 **Supersedes:** `OptMaxRows` semantics from RFC-106a §3 (`rfcs/106:47-50`).
 **Amends, in this RFC's own commits:** `DIVERGENCES.md:1161-1206` and `:1187-1189`;
 RFC-191 condition (D) at `rfcs/191:774-779` + `TODO.md:905-910` (§8.3).
@@ -68,6 +68,25 @@ RFC-191 condition (D) at `rfcs/191:774-779` + `TODO.md:905-910` (§8.3).
 Go citations are at `ef2b5911a`. Java citations are at tag **4.12.11.0** under
 `fdb-record-layer/` (present in the shared checkout, gitignored, not in this
 worktree).
+
+**Every citation in revision 1 was re-swept against source for revision 2, and
+eleven were wrong.** They are corrected in place, and the two whose *evidence*
+(not just line number) had to change are called out where they sit rather than
+silently patched — the `PRecordQueryPlan` grep (§3.3, revision 1 sourced a fact
+to a file containing zero occurrences of the symbol) and the `SetOptions` caller
+count (§1.1, "three callers" counted the definition and missed that only two are
+production). The rest were line drift: `paginatingRows`' continuation field
+(`:1361`, not the struct declaration at `:1317`) and its write (`:1848`), the
+`plan_hash.go` doc comment (`:9-18`, outside the function body cited), Java's
+`PLAN_CONTINUATION` struct (`QueryPlan.java:321-328`), the yaml oracle's
+beginning-continuation assertion (`:368`) and its literal
+(`"EXECUTE CONTINUATION ?;"`, with the semicolon), the plan-hash mismatch throw
+(`PlanGenerator.java:341`, with a twin at `:308`), `ContinuationReason` (`:25`),
+`administrationStatement` (`:74`), the engine-private assertion (`:33-35`), and
+both `TODO.md` CQ-69 ranges (69.2 at `:12558-12562`, 69.4 at `:12570-12580` —
+note these differ from the ranges relayed to me, and the values here are the ones
+I measured). A count of eleven bad citations in a document whose whole claim is
+"measured, not reasoned" is itself worth recording.
 
 ---
 
@@ -105,7 +124,7 @@ contain `maxRows`, 14 mention "continuation", intersection 9. The ledger books
 Revision 1 attributed the 15-file gap to "higher-priority classes". The
 correction, measured (`javacorpus/runner.go`, `testblock.go`):
 
-1. **A six-arm file-level priority ladder runs first** and does rank:
+1. **A seven-arm file-level priority ladder runs first** and does rank:
    negative-parse (`runner.go:71`) → fragment (`:75`) → aborting `skipFileError`
    (`:102`) → DDL gap (`:112`) → the `engineGaps` table (`:120`) →
    fixed-version-meta (`:135`) → negative-execution (`:152`).
@@ -122,11 +141,16 @@ first suppressing skip in `res.Skips` insertion order, and only after seven
 higher-priority arms have declined; `maxRows`' skip is appended last-in-query,
 so any eagerly-recorded suppressing skip in the same query beats it.*
 
-The file-level carrier is **`initial-version/mid-query.yamsql`** — its only query
-is `select * from t1;` + `maxRows: 1`, so `SkipContinuation` is its sole
-suppressing skip. Its manifest reason is itself the proof
+The file-level carrier is **`initial-version/mid-query.yamsql`**, derivable
+entirely from committed data without a run: its only query is `select * from t1;`
+carrying `maxRows: 1`, which `testblock.go:257-261` turns into
+`skipQuery = SkipContinuation`; that is the query's sole suppressing skip, so
+the file contributes `QueriesRun 0` and `suppressedBy` has exactly one candidate.
+Its manifest entry is the corroborating statement of the same mechanism
 (`javayamsql/manifest.go:374-375`): *"maxRows leaves a continuation open, so a
-version check is reached mid-query"*.
+version check is reached mid-query; the config list itself is well-formed and
+covers all versions"*. G9 re-states it as a measurement when step 7 lands, rather
+than leaving this derivation as the authority.
 
 And RFC-201's own `+16` is a **directive census** number which RFC-201 explicitly
 disclaims at `rfcs/201:155-158`: *"those are file counts derived from directive
@@ -151,7 +175,7 @@ its phase lands."* This RFC does that: gate G9 reports, and does not predict.
 ```
 
 Silent: a bare `io.EOF` is `Rows.Next() == false` with `Rows.Err() == nil`,
-indistinguishable from natural exhaustion, while `r.continuation` (`:1317`) may
+indistinguishable from natural exhaustion, while `r.continuation` (`:1361`) may
 hold a live position. The sibling byte cap twenty lines down *does* signal
 (`ErrCodeExecutionLimitReached`, `:1487-1489`). Field comment `:1333-1337`; sole
 read `:1252`; option `api/options.go:42`, default `:175`; pinned by
@@ -186,9 +210,19 @@ because Go cannot hand a page boundary to a caller. With no observable page, a
 page size was unobservable, so the option was re-pointed at the only observable
 quantity.
 
-**Unreachable today:** `OptMaxRows` has no production setter. `SetOptions`'
-non-definition callers (`rowdiff/run.go:147`, `simfdb/hunt/sqlpage`) set only
-scan limits; DSN options are never mapped into `api.Options`
+**Unreachable today:** `OptMaxRows` has no production setter. Revision 1 said
+`SetOptions` "has three callers"; measured, `grep -rn "SetOptions(" --include="*.go"`
+returns **54 sites**, of which exactly three are outside `_test.go` — and one of
+those is the definition itself:
+
+```
+pkg/relational/conformance/rowdiff/run.go:147   ec.SetOptions(... OptExecutionScannedRowsLimit ...)
+pkg/relational/core/embedded/connection.go:122  func (c *EmbeddedConnection) SetOptions(o *api.Options)
+pkg/simfdb/hunt/sqlpage/sqlpage.go:156          ec.SetOptions(... OptExecutionScannedRowsLimit ...)
+```
+
+So **two production callers**, both setting only a scan limit, and 51 test
+sites. DSN options are never mapped into `api.Options`
 (`sqldriver/dsn.go:48-49`); there is no `SET MAX_ROWS`. Only `conn.Raw` reaches
 it. That is why the wrong semantics survived green.
 
@@ -197,7 +231,7 @@ it. That is why the wrong semantics survived green.
 Declared at `api/resultset.go:42-44`; `api.Continuation`
 (`api/continuation.go:8-21`) already mirrors Java — `Serialize()`,
 `ExecutionState()`, `Reason()`, with `ContinuationReason`'s iota order matching
-Java's enum ordinals and `String()` returning Java's names (`:26-56`). The shape
+Java's enum ordinals and `String()` returning Java's names (`:25-56`). The shape
 is not the problem.
 
 `grep -rn "\.Continuation()"` returns one hit, in a test
@@ -205,8 +239,8 @@ is not the problem.
 production (`cascades_generator.go:1813`) but the drain bypasses the api
 accessor (`:1831`), so `liveContinuation` (`executor/resultset.go:423`) and
 `exhaustedContinuation` (`:619`) are constructed by nothing live. The bytes are
-an unexported field on the unexported `paginatingRows` (`:1317`, written `:1845`,
-read `:1808`).
+an unexported field on the unexported `paginatingRows` (struct declared `:1317`,
+the `continuation []byte` field itself `:1361`, written `:1848`, read `:1808`).
 
 **No plumbing either.** `paginatingRows` implements `driver.Rows` plus
 `RowsColumnType*` (`:1374-1450`); `sqldriver` declares no custom interface;
@@ -250,7 +284,7 @@ executeContinuationStatement
 
 with `continuationAtom : bytesLiteral | preparedStatementParameter` (`:389-392`),
 `bytesLiteral : HEXADECIMAL_LITERAL | BASE64_LITERAL` (`:814-815`), reachable
-from `administrationStatement` (`:73-81`) and `describeObjectClause` (`:735`).
+from `administrationStatement` (`:74-81`) and `describeObjectClause` (`:735`).
 Lexer tokens at `RelationalLexer.g4:234`, `:782`.
 
 Every `VisitExecuteContinuationStatement` is generated code — zero overrides.
@@ -262,7 +296,13 @@ through to `:182-183`:
 			"only SHOW administration statements are supported")
 ```
 
-`packageBytes` is discarded unread. Zero tests contain "EXECUTE CONTINUATION".
+`packageBytes` is discarded unread. **No `*_test.go` on master contains "EXECUTE
+CONTINUATION"** — the behaviour is unpinned in either direction. (Two
+occurrences do exist and neither is an assertion: a comment in
+`pkg/relational/conformance/yamsql/testdata/join_pagination.yaml:4`, which
+*simulates* the pattern rather than executing it, and — on this branch only —
+§9's `conformance/continuation_probe_conformance_test.go`, which exercises
+**Java's** implementation, not Go's.)
 
 ### 1.5 The link: (A) is a symptom of (B)+(D)
 
@@ -348,7 +388,8 @@ breath (`:465-472`); `PlanGenerator` branches (`:228-234`); the payload is
 mandatory (`:272-294`). **There is no re-plan-from-SQL-text path, because there
 is no SQL text.** `generatePhysicalPlanForCompiledStatementContinuation`
 (`:313-408`) deserializes (`:334-335`) and checks the blob against itself
-(`:340-342`).
+(`:340-341`; the identical message and exception also guard the `COPY` arm at
+`:307-308`).
 
 **Path 2 — a continuation on a normally-planned statement.**
 `PhysicalQueryPlan.validatePlanAgainstEnvironment` (`:279-293`) →
@@ -402,7 +443,8 @@ hash is not reproducible for bytes-literal queries. Measured §9.3; decided §4.
 **`plan_hash` is not portable.** `PlanHashable.objectPlanHash` (`:242-269`)
 bottoms out at `return obj.hashCode();`, folding `31 * result + …` (`:282-288`)
 into a Java `int`. Go's is FNV-64a over `HashCodeWithoutChildren()`
-(`plans/plan_hash.go:19-40`), whose comment says its value "may change across
+(function body `plans/plan_hash.go:19-40`), whose **doc comment at `:9-18`** says
+its value "may change across
 releases (RFC-176 P2 did) without compatibility impact" *because* nothing
 wire-facing embeds it. That stops being true here — §6 step 1.
 
@@ -457,11 +499,12 @@ The decision is **conditional**; this RFC discharges its condition.
 | "Adopting the ContinuationProto envelope + PlanValidator hashes is the follow-up arc" | **This is that arc.** |
 | "hash values would deliberately differ per engine" — **`plan_hash`** | **UPHELD**, and on Path 2 the plan-hash divergence **IS** the fence (§3.2). |
 | "hash values would deliberately differ per engine" — **`binding_hash`** | **REVERSED.** `binding_hash` is a port of Java's algorithm and is *intended to agree* (§4.1, G7). It is never a fence — relying on it as one would break the moment the port succeeded. |
+| `DIVERGENCES.md:1191` — "**Both** are SAFE because they never cross an engine boundary" | **REVERSED, and this is the clause with the most safety weight in the table.** §4.6 concedes that `execution_state` now genuinely leaves the process, so the sentence is false on its premise; §9.4 shows it is also false on its count ("Both" — there are three). Everything the old entry rested on for safety now rests on the per-path fence instead, which is why G6 is a gate and not a nicety. |
 | RFC-181 non-goal "Wire-format changes (none required)" (`rfcs/181:343-344`) | **REVERSED.** |
 
 **The ground that shifted:** the corpus arrived with two consumers that did not
-exist when C2 was decided — sixteen `maxRows` files (`TODO.md:12552-12556`) and
-the `ForceContinuations` oracle (`rfcs/201:192-199`, `TODO.md:12564-12575`).
+exist when C2 was decided — sixteen `maxRows` files (`TODO.md:12558-12562`) and
+the `ForceContinuations` oracle (`rfcs/201:192-199`, `TODO.md:12570-12580`).
 "Tokens never cross the API boundary" was true of a system with no consumers.
 
 ### 3.2 The decision, and the fence PER PATH
@@ -512,10 +555,28 @@ therefore "each engine executes the other's physical plan", not "make the hashes
 agree".
 
 **Leg 2 — Go's plan vocabulary is not losslessly representable in the shared
-proto.** Go writes no `PRecordQueryPlan` today — asserted by
-`pkg/docscheck/plan_proto_schema_test.go:17-18` ("Go marshals no plan through
-these protos — see RFC-135 §3"), corroborated at `rfcs/135:77-79`. That half is a
-missing *serializer*, and this RFC builds it (§4.1).
+proto.** Go writes no `PRecordQueryPlan` today. **Revision 1 sourced this to
+`pkg/docscheck/plan_proto_schema_test.go`, which is wrong**: that file contains
+**zero** occurrences of `PRecordQueryPlan` — it reflects `PValue`,
+`PQueryPredicate`, `PExistsValue` and `PRecordQueryExplodePlan`. Its doc comment
+at `:17-18` *asserts* the fact ("Go marshals no plan through these protos — see
+RFC-135 §3") but is prose, not evidence, and this repo treats a comment as an
+unverified claim.
+
+The evidence is the repo-wide grep, which is what actually establishes it:
+
+```
+$ grep -rn "PRecordQueryPlan" --include="*.go" --include="*.proto" --include="*.md" .
+    302 gen/record_query_plan.pb.go
+    255 gen/record_query_plan_vtproto.pb.go
+      3 proto/apple/record_query_plan.proto
+      1 rfcs/135-upgrade-java-4.12.11.0.md
+```
+
+Generated code, the schema itself, and one RFC — **zero hand-written Go
+references**. Corroborated at `rfcs/135:78`. So the conclusion survives intact on
+better evidence: this half is a missing *serializer*, and this RFC builds it
+(§4.1).
 
 The structural half remains. `RecordQueryInMemorySortPlan` is a sanctioned
 read-side plan (CLAUDE.md) firing for any `ORDER BY` no access path satisfies.
@@ -797,7 +858,8 @@ the same visitor that flags it (`AstNormalizer.java:467-468`).
 
 **`EXPLAIN EXECUTE CONTINUATION` is in scope** — the grammar reaches it (`:735`)
 and Java emits a `PLAN_CONTINUATION` struct of `(execution_state, version,
-plan_serialization_mode, plan_hash, complexity)` (`QueryPlan.java:346-363`). Go
+plan_serialization_mode, plan_hash, complexity)` — struct definition
+`QueryPlan.java:321-328`, populated `:356-363`. Go
 emits the same struct; `complexity` is now populatable because a plan *is*
 deserialized.
 
@@ -858,7 +920,7 @@ caller at the same time: `cascades_generator.go:1831` stops reaching past it to
 
 ### 4.5 Reason codes — with the dead arm re-derived
 
-Go's `ContinuationReason` (`api/continuation.go:26-56`) already matches Java's
+Go's `ContinuationReason` (`api/continuation.go:25-56`) already matches Java's
 enum by ordinal and `String()`. What is missing is the assignment, ported from
 `RecordLayerResultSet.continuationReason()` (`:121-135`) including its order:
 
@@ -1071,8 +1133,22 @@ Deliverable: G9.
 **Step 8 — the oracle (CQ-69.4).** `ForceContinuations` as a Go mode: every
 eligible SELECT re-executed at `maxRows=1`, pages reassembled, compared to the
 one-shot result, with Java's two loop invariants ported — "Received continuation
-shouldn't be at beginning" (`QueryExecutor.java:367`) and
+shouldn't be at beginning" (`QueryExecutor.java:368`) and
 `MAX_CONTINUATIONS_ALLOWED = 100` (`:59-60`, `:352-354`). Deliverable: G10.
+
+**Both of Java's invariants are VERSION-GATED, and the port must not be
+unconditional.** Each sits behind
+`STRICT_ASSERTIONS_CUTOFF.lesserVersions(connection.getVersions()).isEmpty()`
+(`:346` and `:367`), where `STRICT_ASSERTIONS_CUTOFF = SemanticVersion.parse("4.1.9.0")`
+(`:62`) — Java relaxes them when any connection in a mixed-version run predates
+4.1.9.0, and logs the relaxation rather than failing. Go is a **single-current-version
+runner** (RFC-201 ruling 3), so the gate always evaluates to "assert strictly",
+and Go therefore ports the assertions **unconditionally by derivation, not by
+omission** — the same reasoning RFC-201 applied to the nine fixed-version
+meta-tests. That derivation is recorded here so a future multi-version Go runner
+knows the gate exists and must be reinstated rather than rediscovered. The same
+applies to the third gated assertion, "End result should not have any associated
+value when maxRows is 1" (`:346-348`), which G1 relies on.
 
 ---
 
@@ -1124,7 +1200,7 @@ was open then and is closed now.)
 **G5 — the reversal is pinned, not merely deleted.**
 `TestOptContinuation_RejectsLoudly` today asserts an error, code
 `ErrCodeUnsupportedOperation` (`0A000`), and the substring `"engine-private"`
-(`continuation_option_test.go:29-35`). Replaced by: a valid `OptContinuation`
+(`continuation_option_test.go:33-35`). Replaced by: a valid `OptContinuation`
 *resumes*; a foreign-mode one is rejected with `ErrCodeInvalidContinuation`
 (`24F00`) by the Go-side Path-2 mode fence; a structurally malformed one with
 `XX000` (§4.8). *Mutation:* restore the guard → the resume assertion reds; leave
