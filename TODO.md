@@ -905,10 +905,16 @@ closed rather than silently alter rows or output schema.
   diverges), with an explicit wire-compat statement — verified, not
   reasoned: continuations are decoded only by the same plan-tree shape
   that produced them (`ExecutePlan`'s type-switch, `executor.go:88-120`,
-  rejects a mismatched shape loudly) and Go continuations are engine-private
-  by construction (a Java-minted token is rejected outright,
-  `cascades_generator.go:1205-1216`), so this plan-choice divergence is not
-  a cross-engine wire concern; (E) a real-FDB benchmark at N ∈ {3,10,100}
+  rejects a mismatched shape loudly). RE-DERIVED by RFC-203 §8.3: the
+  original "Go continuations are engine-private by construction (a
+  Java-minted token is rejected outright, `cascades_generator.go:1205-1216`)"
+  premise is retired — RFC-203 ships a resume entry point that PARSES a
+  Java-minted token. The conclusion survives on RFC-203 §3.2's per-path
+  fence (mode string on `EXECUTE CONTINUATION`, mode-then-plan-hash on
+  `OptContinuation`), and transport strengthens it: the plan travels with
+  its own continuation, so a shape mismatch is impossible by construction
+  rather than by luck. This plan-choice divergence is still not a
+  cross-engine wire concern; (E) a real-FDB benchmark at N ∈ {3,10,100}
   that can FLIP the ruling if InUnion measurably wins at any N, a permanent
   EXPLAIN test at fetch-depth 0 both directions plus a non-monotonic
   IN-list (`IN (30,10,20)`) FDB row-order test, a proof that leg

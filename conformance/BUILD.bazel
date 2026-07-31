@@ -70,6 +70,7 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "continuation_conformance_test.go",
+        "continuation_probe_conformance_test.go",
         "count_conformance_test.go",
         "count_index_conformance_test.go",
         "count_not_null_index_conformance_test.go",
