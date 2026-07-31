@@ -70,12 +70,23 @@ import (
 // are not, and cannot be made so from this side — they hold no
 // CorrelationIdentifier to key with, whatever the qualifier's provenance.
 //
-// The counterparty conversion has HAPPENED for the projection channel: the
+// The counterparty conversion has HAPPENED for all four parsed channels: the
 // qualifier arrives segmented, so the two spellings no longer have to survive a
 // join and a re-split to reach each other. The measured effect is on the SPLIT
 // population, not on these totals — over the sqldriver corpus the dotted
-// re-split fell from 110 calls to 3, all three in the sort-key and
-// aggregate-operand channels, which still carry their carrier as text.
+// re-split fell from 110 calls to ZERO. It fell to 3 when the projection channel
+// converted, and the three survivors were the sort-key and aggregate-operand
+// channels; the commit that converted those took the remainder. A comment still
+// naming them as survivors describes a tree two commits old, and it is the shape
+// of claim this file exists to keep honest.
+//
+// The re-split arms survive that zero, and not as leftovers: they serve the
+// carrier that states NO segments, which the segment triple's own contract
+// requires be read as "unknown" rather than "unqualified". One class of such
+// carrier can never state them — a projection MACHINERY mints, whose names are
+// body output columns with no parse tree behind them. What to do about that
+// class is a BEHAVIOUR question, stated and consciously left open at
+// query.bakeFlatRefsAgainstColumns' arm, not an un-migrated producer.
 //
 // THE THIRD SITE IS GONE, and its zero is why. singleForEachBake measured the
 // single-ForEach arm's qualifier comparison, and that arm reported 0 over this

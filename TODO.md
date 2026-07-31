@@ -10348,8 +10348,8 @@ None is speculative: each was re-verified against the tree before booking.
 
   The producers rewrite a leg-correlated read into a merged-correlated read with
   the leg packed into the NAME:
-  `rule_implement_nested_loop_join.go:2366` (`qualField := corr + "." +
-  strings.ToUpper(fv.Field)`) and `cascades_translator.go:3560`
+  `rule_implement_nested_loop_join.go:2854` (`qualField := corr + "." +
+  strings.ToUpper(fv.Field)`) and `cascades_translator.go:3579`
   (`values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)`)
   both turn `QOV(leg).COL` into `QOV(merged)."LEG.COL"`, because the FlatMap
   inner's binder resolves the merged row by that key.
@@ -10402,8 +10402,8 @@ None is speculative: each was re-verified against the tree before booking.
   - **Parent-chained per-alias bindings first.** Teach the FlatMap inner binder
     Java's chained `EvaluationContext`: one binding per quantifier alias, inner
     chained off outer. A `QOV(leg).COL` read then resolves without any rewrite,
-    and both producers (`rule_implement_nested_loop_join.go:2366`,
-    `cascades_translator.go:3560`) delete outright rather than being re-keyed.
+    and both producers (`rule_implement_nested_loop_join.go:2854`,
+    `cascades_translator.go:3579`) delete outright rather than being re-keyed.
     This is the bulk of the work and it removes the channel rather than
     relocating it.
   - **Nested UNNAMED ordinal record + eager translation ONLY where merging is

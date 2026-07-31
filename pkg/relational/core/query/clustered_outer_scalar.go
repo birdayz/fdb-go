@@ -546,8 +546,13 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 					// A QUANTIFIER-ADDRESSED leg read (the resolver's SourceRelativeBaked
 					// emission for a qualified projection over a join,
 					// FieldValue{Child: QOV(leg), COL}) resolves when the leg
-					// span carries the column — flattenClusterLegRefs rewrites
-					// it onto the level-2 output before the flat bake.
+					// span carries the column — bakeClusterLegRefs BINDS it to
+					// that leg's seed slot from the CorrelationIdentifier it
+					// already carries. It does not render the identifier and the
+					// column back into `LEG.COL` for a later matcher to take
+					// apart, which is what the predecessor did and what made leg
+					// `A` holding column `B.C` indistinguishable from leg `A.B`
+					// holding column `C`.
 					if n.Child != nil {
 						qov, isQOV := n.Child.(*values.QuantifiedObjectValue)
 						if !isQOV {

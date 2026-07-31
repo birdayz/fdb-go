@@ -2445,6 +2445,25 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 				for i, c := range starCols {
 					names[i] = c.Name
 				}
+				// NO ProjectionRefs, and that is STRUCTURAL rather than an
+				// un-migrated producer. Every PARSED projection channel carries
+				// the parse-tree segment triple now (CQ-52), so nothing
+				// downstream has to recover a qualifier by slicing a rendered
+				// name. These labels have no parse tree behind them at all —
+				// they are the body's OUTPUT COLUMNS, minted here — so there is
+				// no segment count to capture, and capturing one would mean
+				// inventing it. An invented triple is trusted exactly like a
+				// real one, which is why the honest value is the zero one.
+				//
+				// The labels are BARE by construction (the outer scan's columns,
+				// then the link's AS/AT aliases), so nothing downstream splits
+				// them today. A quoted identifier carrying a dot is legal SQL,
+				// and for that case the question — should a star-projected body
+				// column be leg-addressable at all? — is a BEHAVIOUR decision
+				// about this normalization's output contract. It is stated, and
+				// consciously left open, at the leg-window re-split arm in
+				// bakeFlatRefsAgainstColumns, which is what would answer it by
+				// accident if it were converted without the decision.
 				proj := logical.NewProject(body, names, nil)
 				// A label bound by a link's AS/AT alias projects the QUALIFIED
 				// read the SQL resolver itself emits for that binding
@@ -6119,6 +6138,46 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 		// therefore cannot tell a qualified `A.B` from a quoted `"A.B"`. It
 		// serves the callers whose carrier still arrives as text; the callers
 		// that hold the parser's segments go through bakeSegmentedColumnRef.
+		//
+		// EVERY PARSED CHANNEL IS CONVERTED AND THIS ARM STILL STANDS —
+		// deliberately, and the reason is worth stating because "unconverted
+		// leftover" is the wrong reading. Projections, ORDER BY keys, GROUP BY
+		// keys and aggregate operands all carry the parser's segment triple now
+		// (CQ-52), and the dotted re-split over the real-FDB sqldriver corpus
+		// went from 110 calls to zero with them.
+		//
+		// What the arm serves is the UNCAPTURED carrier — ColumnRef.Present
+		// false — which ProjectionRefs' own contract requires be read as
+		// "unknown", never as "unqualified", and therefore be given exactly the
+		// behaviour it had. Some of those producers are un-migrated and will
+		// carry a triple one day. One class never will: a projection MACHINERY
+		// mints, whose names are BODY OUTPUT COLUMNS with no FullId anywhere
+		// behind them (the star-body normalization in translateScan). There is
+		// no segment count to capture there, so an absent triple is STRUCTURAL,
+		// and capturing one would mean inventing it.
+		//
+		// Those labels are BARE by construction today (the outer scan's own
+		// columns, then the link's AS/AT aliases), so the class is not currently
+		// firing here — but a quoted identifier carrying a dot is legal SQL, and
+		// what happens then is a BEHAVIOUR decision nobody has made: should a
+		// star-projected body column be leg-addressable at all? If not, this arm
+		// must not answer for such a label. If so, the addressing belongs to the
+		// boundary schema's leg identities — which that normalization has in
+		// hand — and not to a dot in a label it constructed. The arm is left
+		// standing and the question stated, rather than converted by guesswork,
+		// which would settle it silently.
+		//
+		// NOTHING STANDS GUARD OVER THE SPLIT POPULATION, and that is the part
+		// to distrust: the census beside these bakers counts qualifier MATCHES,
+		// never splits, so a regrown splitter raises no counter anywhere. The
+		// 110-to-zero figures are scratch measurements, not instrument readings.
+		// A DATED POINT MEASUREMENT of what the unit corpus reaches:
+		// `go test -count=1 -v ./pkg/relational/core/...` hits the two re-split
+		// arms (this one and bakeDottedRefsToLegQOVWithRef's segmentsOf
+		// fallback) 13 times, every one a HAND-BUILT fixture — eight are the
+		// probes that pin the splitting behaviour itself, the rest construct a
+		// LogicalProject directly and so carry no triple where the SQL builder
+		// would. That number measures fixtures, not production traffic.
 		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
 			if k, found := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs,
 				values.DottedLegSiteFlatColumnBake); found {
