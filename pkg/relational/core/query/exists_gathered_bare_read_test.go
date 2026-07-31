@@ -150,3 +150,92 @@ func TestRebaseLegRefsToBox_KeysByIdentityNotByFold(t *testing.T) {
 		t.Fatalf("rebased to merged slot %d, want 0", got)
 	}
 }
+
+// TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines pins the OTHER
+// childless flavor: a SOURCE-RELATIVE BAKED read with no child.
+//
+// The walk's entry guard admits such a node deliberately — `fv.Resolved != nil
+// && !fv.SourceRelativeBaked()` is what returns early, so a source-relative bake
+// falls THROUGH to be rebased, exactly like its lazy twin. But rebasing needs a
+// correlation to select a window with, and a CHILDLESS node has none: the
+// QOV-shaped arm never sees it and it reaches the childless tail untouched.
+//
+// The decline predicate there used to be `fv.Resolved == nil`, which is true for
+// the lazy flavor and FALSE for this one. So this node passed through with its
+// ordinal intact and ok=true — and that ordinal is LEG-RELATIVE. Against the box
+// row it addresses whatever column happens to sit at that slot of the merged
+// concat: not a fail-open to the name model, but a silently different column.
+//
+// The layout below makes the two readings DISTINGUISHABLE, which is the whole
+// requirement on the fixture: leg L starts at merged offset 2, so a leg-relative
+// ordinal 0 and the merged ordinal it should mean (2) are different numbers. A
+// leg at offset 0 would make the bug invisible — the wrong answer and the right
+// one would coincide.
+//
+// The sibling check three functions down (wrapRVFullyBaked) has always used the
+// correct predicate for this same question. The asymmetry was the defect.
+func TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines(t *testing.T) {
+	t.Parallel()
+
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "V", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "W", FieldType: values.UnknownType, Ordinal: 1},
+	}}
+	// L occupies merged slots [2,4) — NOT [0,2) — so leg-relative 0 and merged 2
+	// are distinguishable.
+	mergedType := &values.RecordType{Fields: []values.Field{
+		{Name: "A0", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "A1", FieldType: values.UnknownType, Ordinal: 1},
+		{Name: "V", FieldType: values.UnknownType, Ordinal: 2},
+		{Name: "W", FieldType: values.UnknownType, Ordinal: 3},
+	}}
+	legL := values.NamedCorrelationIdentifier("L")
+	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
+		legL: {Offset: 2, Typ: legType, Alias: legL},
+	}
+	boxQOV := values.NewQuantifiedObjectValueOfType(
+		values.NamedCorrelationIdentifier("$box"), mergedType)
+
+	// CONTROL: the QOV-shaped spelling of this very reference rebases to merged
+	// slot 2 and does NOT decline. Without this arm the assertion below would
+	// pass just as well against a wrap that declines everything.
+	qovRef := values.NewFieldValue(values.NewQuantifiedObjectValue(legL), "V", values.UnknownType)
+	qovOut, qovOK := rebaseLegRefsToBox(qovRef, windows, mergedType, boxQOV)
+	qovFV, isFV := qovOut.(*values.FieldValue)
+	if !isFV || qovFV.Resolved == nil {
+		t.Fatalf("control: the QOV-shaped leg reference must rebase, got %v", qovOut)
+	}
+	if got := qovFV.Resolved.Root().Ordinal; got != 2 {
+		t.Fatalf("control: QOV-shaped L.V rebased to merged slot %d, want 2", got)
+	}
+	if !qovOK {
+		t.Fatal("control: a fully-rebased leg reference must not decline")
+	}
+
+	// The probe: the SAME column, spelled as a childless source-relative bake at
+	// its LEG-relative ordinal 0.
+	childlessBaked := values.NewFieldValueWithResolvedOrdinal("V", 0, values.UnknownType)
+	if !childlessBaked.SourceRelativeBaked() {
+		t.Fatal("fixture: the probe node must be SourceRelativeBaked, or it never enters " +
+			"the walk and this test proves nothing")
+	}
+	if childlessBaked.Child != nil {
+		t.Fatal("fixture: the probe node must be CHILDLESS, or it takes the QOV arm")
+	}
+	out, ok := rebaseLegRefsToBox(childlessBaked, windows, mergedType, boxQOV)
+	if ok {
+		got := -1
+		if fv, isFV := out.(*values.FieldValue); isFV && fv.Resolved != nil {
+			got = fv.Resolved.Root().Ordinal
+		}
+		t.Fatalf("a CHILDLESS source-relative baked read returned ok=true with ordinal %d; "+
+			"want a DECLINE (or a rebase to 2).\n"+
+			"  The walk admits this node so it can be REBASED, but it carries no correlation,\n"+
+			"  so no window can be selected for it and the QOV arm never sees it. Passing it\n"+
+			"  through ships a LEG-RELATIVE ordinal against the BOX row: slot %d of the merged\n"+
+			"  concat is %q, while the reference names leg L's %q at merged slot 2.\n"+
+			"  Gate the decline on CHILDLESS-NESS, not on `Resolved == nil` — that predicate\n"+
+			"  is true only for the lazy flavor, and wrapRVFullyBaked already gets it right.",
+			got, got, mergedType.Fields[0].Name, "V")
+	}
+}

@@ -77,23 +77,39 @@ func (t *cascadesTranslator) existsFoldableGatheredCluster(f *logical.LogicalFil
 	return t.gatesAsFreshCluster(j)
 }
 
-// rebaseLegRefsToBox rewrites every lazy leg reference to the positional read
-// ofOrdinal(QOV(box), slot). THREE reference shapes are rewritten (the TOTAL
-// rebase — a QOV-only rewrite leaves dotted/bare frontier reads lazy, and a
-// MIXED result value then silently NULLs them: the baked fields flip the wrap
-// cursor to build-ordinal evaluation, whose context has no name channel for
-// the lazy remainder):
-//   - QOV-shaped: FieldValue{COL, Child: QOV(leg)} → the leg window + COL index
-//   - DOTTED frontier: FieldValue{"LEG.COL", no Child} → split at the first dot
-//   - BARE frontier: FieldValue{"COL", no Child} → a UNIQUE match across the
-//     merged concat's field names (ambiguous/absent stays lazy for the caller's
-//     verification to decline)
+// rebaseLegRefsToBox rewrites every leg reference to the positional read
+// ofOrdinal(QOV(box), slot). ONE reference shape is rewritten, and every other
+// childless shape DECLINES the whole wrap:
+//
+//   - QOV-shaped: FieldValue{COL, Child: QOV(leg)} → the leg window selected by
+//     the reference's OWN correlation, plus COL's index within it. This is the
+//     only shape that CAN be rewritten, because it is the only one carrying an
+//     identity, and the window map is keyed by identity.
+//   - CHILDLESS (DOTTED "LEG.COL" or BARE "COL", lazy or source-relative baked):
+//     no correlation, so no window — the walk sets childlessRead and the caller
+//     declines to the name model.
+//
+// The rebase must stay TOTAL over what it accepts: a partial rewrite leaves
+// frontier reads unrebased, and a MIXED result value then silently NULLs them
+// (the baked fields flip the wrap cursor to build-ordinal evaluation, whose
+// context has no name channel for the remainder). That is why the childless
+// shapes decline the wrap outright rather than passing through.
+//
+// Two arms once baked the childless shapes by TEXT — the bare one by matching
+// the display name across the merged concat, the dotted one by slicing a
+// qualifier out at the first dot and keying the window namespace with it. Both
+// are gone with the text key: re-keying the dotted one means minting a
+// CorrelationIdentifier out of a column name, which is the forgery this
+// conversion exists to remove, and both were measured unreachable before removal
+// (a panic wired into each is hit by nothing across ./pkg/relational/... or
+// ./pkg/recordlayer/query/...).
 //
 // Returns ok=false when any leg-correlated QOV survives the rewrite (whole-row
-// reads, unresolvable columns) — the caller declines to the name model rather
-// than ship an unbound reference (silent NULL). Result-value callers must apply
-// the STRICTER wrapRVFullyBaked check on top (no lazy read of ANY shape may
-// survive in the RV; predicates legitimately keep existential-QOV refs).
+// reads, unresolvable columns) or any childless read was seen — the caller
+// declines to the name model rather than ship an unbound reference (silent NULL)
+// or a leg-relative ordinal (silent wrong column). Result-value callers must
+// apply the STRICTER wrapRVFullyBaked check on top (no lazy read of ANY shape
+// may survive in the RV; predicates legitimately keep existential-QOV refs).
 func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (values.Value, bool) {
 	if v == nil {
 		return nil, true
@@ -159,9 +175,27 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 		// was standing between a childless dotted read and a context with no name
 		// channel. Declining sends the whole wrap back to the name model — the path
 		// this shape took before the wrap existed — instead.
-		if fv.Resolved == nil {
-			childlessRead = true
-		}
+		//
+		// The decline gates on CHILDLESS-NESS, which is the property this arm is
+		// reached by, and NOT on `Resolved == nil`. Two flavors arrive here and the
+		// narrower predicate caught only one:
+		//
+		//   - the LAZY childless read (Resolved == nil) — a name with nothing to
+		//     resolve it against;
+		//   - the SOURCE-RELATIVE BAKED childless read (Resolved != nil,
+		//     SourceRelativeBaked). The guard at the top of this walk admits those
+		//     DELIBERATELY, so they can be rebased — but a childless one has no
+		//     correlation to select a window with, so the QOV arm never sees it and
+		//     it falls through here with its ordinal untouched. That ordinal is
+		//     LEG-RELATIVE. Shipped against the box row it reads whatever column sits
+		//     at the leg's slot N of the merged concat: a deleted rebase AND a missed
+		//     decline, which is silent wrong columns rather than a fail-open.
+		//
+		// wrapRVFullyBaked, three functions down, has always used the correct
+		// predicate for the same question (`nv.Resolved == nil ||
+		// nv.SourceRelativeBaked()`). The asymmetry between the two was the bug; they
+		// now answer alike.
+		childlessRead = true
 		return n
 	})
 	// Post-walk: no leg-correlated QOV may survive, and no childless lazy read may

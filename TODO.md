@@ -10704,7 +10704,18 @@ None is speculative: each was re-verified against the tree before booking.
     the name model, which is stricter than the pass-through it replaces: the
     predicate path had nothing downstream looking for a surviving lazy read),
     and the decline probe's `NamedCorrelationIdentifier(key)` mint died with the
-    key. What the conversion buys beyond tidiness is measured by
+    key. **That "stricter" claim was FALSE for one sub-case when first written
+    and is now true.** The decline was gated on `Resolved == nil`, which holds
+    for a LAZY childless read and not for a SOURCE-RELATIVE BAKED one — and the
+    walk admits the latter deliberately, so it can be rebased. A childless
+    source-relative bake therefore got neither: no rebase (no correlation to
+    select a window with) and no decline, so a LEG-relative ordinal shipped
+    against the BOX row — a different column, not a fall-back. The gate is now on
+    childless-ness, matching `wrapRVFullyBaked`, which had the right predicate
+    all along; the asymmetry between the two was the defect. Pinned by
+    `TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines`, whose fixture
+    puts the leg at merged offset 2 so the leg-relative and merged answers are
+    different numbers. What the conversion buys beyond tidiness is measured by
     `TestOrdinalSeedLegWindows_CaseDisjointLegsAreTwoWindows`: an upper-folded
     key namespace collapses a machine-minted `q$5` and a quoted `Q$5` into one
     key, and the seed then DECLINES entirely — a two-leg join losing its ordinal
