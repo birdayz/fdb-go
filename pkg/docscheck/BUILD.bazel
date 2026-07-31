@@ -20,6 +20,7 @@ go_test(
         "leg_identity_construction_test.go",
         "mixed_seed_element_authority_test.go",
         "nightly_window_gate_test.go",
+        "nightly_window_landing_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",
         "source_hygiene_test.go",

@@ -36,19 +36,32 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # The permitted band, declared as two explicit hours so it is
+          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
+          # parses these and replays against them every job-allocation hour this net
+          # has ever actually been given. WINDOW_START > WINDOW_END means the band
+          # WRAPS midnight.
+          #
+          # Sized from measured allocation, not from the cron hour, which predicts
+          # nothing: GitHub's own scheduled-trigger dispatch on this repo is late by
+          # ~2-3.5h before the self-hosted queue is even consulted. This job has been
+          # the healthiest of the nets, but the skid it was one bad night away from
+          # has since happened — the observed allocation hours are 04,05,06,07,08 and
+          # 22, and the superseded 00:00-10:00 bound discarded that 22:00 landing for
+          # being "daytime". An evening is not a workday, and a non-wrapping band
+          # cannot say so.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          # 00:00-10:00 UTC. Sized from MEASURED dispatch, not from the cron hour:
-          # across 07-20..07-29 this job's runner was allocated at 05:17..05:52 UTC
-          # for an 02:00 cron, because GitHub's own scheduled-trigger dispatch on
-          # this repo is late by ~2-3.5h before the self-hosted queue is even
-          # consulted. This job is the one that has been LANDING inside its window —
-          # but only by ~1h of margin, so the same silent skid that took stress
-          # (12 green nights, zero runs) and rowdiff (10) was one bad night away.
-          # The heartbeat below makes such a skid loud instead of invisible.
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 

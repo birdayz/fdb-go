@@ -45,22 +45,40 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          HOUR=$(date -u +%-H)
-          # 00:00-10:00 UTC, and this bound governs ALL FIVE jobs below. Sized from
-          # MEASURED dispatch, not from the cron hour: across 07-20..07-29 the first
-          # job's runner was allocated at 06:39..07:51 UTC for an 04:17 cron, because
-          # GitHub's own scheduled-trigger dispatch on this repo is late by ~2-3.5h
-          # before the self-hosted queue is even consulted. The old 00:00-07:00 bound
-          # sat inside that landing spread and skipped 4 of 10 nights green.
+          # The permitted band, governing ALL FIVE jobs below, declared as two
+          # explicit hours so it is machine-readable: pkg/docscheck's
+          # TestNightlyWindowAdmitsMeasuredLandings parses these and replays against
+          # them every job-allocation hour this net has ever actually been given.
+          #
+          # WINDOW_START > WINDOW_END means the band WRAPS midnight, and that wrap is
+          # the correction. The previous bound was 00:00-10:00, which called 18:00-24:00
+          # "daytime" and skipped genuine night work on those grounds: on 2026-07-30 the
+          # queue handed this workflow its runner at 20:22, 21:12, 23:32, 00:05 and
+          # 01:24 UTC, and the three jobs that landed BEFORE midnight were thrown away
+          # while their two siblings, later in real time but past the date line, ran.
+          # An evening is not a workday; the old band could not say so.
+          #
+          # Sized from every allocation hour measured over this workflow's scheduled
+          # history: 00,01,05,06,07,08,09,10,20,21,23. 18:00-12:00 admits all of them.
+          # The excluded 12:00-17:59 block (14:00-19:59 CEST, the heaviest PR-CI
+          # stretch) is what the gate still buys, and it has never once cost a landing.
           #
           # The five jobs SERIALIZE on the single runner, so each later one is
           # allocated later still and misses the window independently — which is why
           # each carries its OWN heartbeat, and why a single workflow-level
           # heartbeat would have been a lie.
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          WINDOW_START=18
+          WINDOW_END=12
+          HOUR=$(date -u +%-H)
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -251,11 +269,20 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # See diff-fuzz's gate above for why the band wraps midnight and why these
+          # two hours are declared as variables rather than inlined.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -325,11 +352,20 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # See diff-fuzz's gate above for why the band wraps midnight and why these
+          # two hours are declared as variables rather than inlined.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -398,11 +434,20 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # See diff-fuzz's gate above for why the band wraps midnight and why these
+          # two hours are declared as variables rather than inlined.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -573,11 +618,20 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # See diff-fuzz's gate above for why the band wraps midnight and why these
+          # two hours are declared as variables rather than inlined.
+          WINDOW_START=18
+          WINDOW_END=12
           HOUR=$(date -u +%-H)
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 10 ]; then
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-10:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
