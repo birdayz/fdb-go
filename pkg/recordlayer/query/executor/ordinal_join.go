@@ -64,9 +64,50 @@ type legSpan struct {
 // field's name, the baked FieldValue's type, ordinal = position.
 func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
 	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
+		if carriesNestedLeg(spans) {
+			return nil, nil, false
+		}
 		return spans, mergedType, true
 	}
-	return unnestMixedSeedSpans(v)
+	if spans, mergedType, ok = unnestMixedSeedSpans(v); ok {
+		if carriesNestedLeg(spans) {
+			return nil, nil, false
+		}
+		return spans, mergedType, true
+	}
+	return nil, nil, false
+}
+
+// carriesNestedLeg is the NARROW entry's fail-closed decline, and the executor
+// twin of values.OrdinalSeedLegWindows' own.
+//
+// The planner's narrow entry refuses a seed carrying a nested leg outright
+// rather than returning it top-level-only, because a caller given top-level-only
+// windows would silently be missing sub-windows it WOULD have had for a flat box
+// leg and has no way to tell the two apart. The executor's narrow entry owes the
+// identical refusal: the two walks must agree on the ACCEPT BOUNDARY, not merely
+// on the layout they produce once both accept.
+//
+// It was missing, and the divergence was invisible until a §1(b) fixture drove
+// it — measured: the planner's narrow walk DECLINED a seed whose leg run carried
+// a nested boundary while the executor's narrow walk ACCEPTED it. Before the
+// nested kind existed no producer could build such a seed, so the gap was
+// unreachable rather than benign; activation is what armed it.
+func carriesNestedLeg(spans []legSpan) bool {
+	for _, s := range spans {
+		if s.Kind == values.LegKindNested {
+			return true
+		}
+		if s.LegType == nil {
+			continue
+		}
+		for _, sub := range s.LegType.Legs {
+			if sub.Kind == values.LegKindNested {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ordinalJoinSpansAcceptingNested is ordinalJoinSpans plus the NESTED leg kind —
@@ -91,6 +132,9 @@ func ordinalJoinSpansAcceptingNested(v values.Value) (spans []legSpan, mergedTyp
 		return positionalMergeSpans(rc)
 	}
 	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
+		if !nestedSubLegsAreExpressible(spans) {
+			return nil, nil, false
+		}
 		return spans, mergedType, true
 	}
 	// The MIXED single-source lateral-unnest seed (baked outer run
@@ -98,7 +142,54 @@ func ordinalJoinSpansAcceptingNested(v values.Value) (spans []legSpan, mergedTyp
 	// ordinalJoinSpansOf declines it; derive its windows (outer leg + a
 	// synthesized 1-field element leg) so the shadowing element gets its own
 	// namespace. Decline-only for every other shape.
-	return unnestMixedSeedSpans(v)
+	if spans, mergedType, ok = unnestMixedSeedSpans(v); ok {
+		if !nestedSubLegsAreExpressible(spans) {
+			return nil, nil, false
+		}
+		return spans, mergedType, true
+	}
+	return nil, nil, false
+}
+
+// nestedSubLegsAreExpressible is the executor twin of the planner's refusal at
+// finalizeSeedWindows' nested sub-window insertion.
+//
+// A span's leg table may declare a NESTED sub-leg — RFC-200 §1(b), the shape the
+// three opt-in sites actually receive, where the merge appears as a leg's own
+// ROW TYPE rather than as the whole result value. Two things must hold for
+// either walk to address such a sub-leg, and the planner already refuses both:
+//
+//   - the slot it names must actually hold a RECORD. The leg table says a whole
+//     row lives there; if the type disagrees, two producers disagree about a
+//     slot's shape and neither side may guess which is right.
+//   - that record must carry NO leg table of its own, because those boundaries
+//     would be TWO steps from the merged row and neither walk has a two-step
+//     window to express them with.
+//
+// WITHOUT THIS THE TWO WALKS DIVERGED, measured rather than anticipated: on a
+// seed whose nested sub-leg carried its own leg table the planner declined and
+// the executor ACCEPTED — the cross-agreement invariant broken, and invisible
+// until a §1(b) fixture existed to drive it. The matrix had only covered §1(a),
+// the whole-RC head, which no opt-in site ever passes.
+func nestedSubLegsAreExpressible(spans []legSpan) bool {
+	for _, s := range spans {
+		if s.LegType == nil {
+			continue
+		}
+		for _, sub := range s.LegType.Legs {
+			if sub.Kind != values.LegKindNested {
+				continue
+			}
+			if sub.Start < 0 || sub.Start >= len(s.LegType.Fields) {
+				return false
+			}
+			subType, isRT := s.LegType.Fields[sub.Start].FieldType.(*values.RecordType)
+			if !isRT || subType == nil || len(subType.Legs) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // positionalMergeSpans derives one span per slot of a POSITIONAL MERGE row —

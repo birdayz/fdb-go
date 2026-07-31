@@ -136,6 +136,23 @@ const (
 	// wrap declined. HARD ZERO. See the header.
 	SeedWindowChildlessBaked
 
+	// SeedWindowNestedHit: the reference's identity selected a window whose Kind
+	// is LegKindNested — i.e. the read took the FUSED two-step address rather
+	// than flat offset arithmetic.
+	//
+	// IT IS A HIT, COUNTED SEPARATELY, and it exists to answer one question no
+	// other number on this path can: is RFC-200's nested reader arm LIVE on this
+	// corpus, or is it correct-but-unentered? Those two states print identically
+	// everywhere else — 174 leg-local reads unchanged, EXPLAIN identical,
+	// MergedReAnchor 0 — and RFC-200 §6 predicts explicitly that
+	// existentialRebase GROWS because the newly-accepted firings' existPreds
+	// rebase through it. A prediction with no instrument is a prediction nothing
+	// can refute.
+	//
+	// A read counted here is NOT also counted as SeedWindowHit; the classes
+	// partition.
+	SeedWindowNestedHit
+
 	seedWindowReadClassCount
 )
 
@@ -149,6 +166,8 @@ func (c SeedWindowReadClass) String() string {
 		return "QUALIFIED-NO-IDENTITY"
 	case SeedWindowChildlessBaked:
 		return "CHILDLESS-BAKED"
+	case SeedWindowNestedHit:
+		return "NESTED-HIT"
 	default:
 		return "unknown"
 	}
@@ -183,6 +202,22 @@ func seedWindowLookupClass(found bool) SeedWindowReadClass {
 	return SeedWindowMiss
 }
 
+// seedWindowLookupClassOfKind is the KIND-AWARE classifier: a hit on a NESTED
+// window is its own class, because whether that arm is entered at all is the
+// live-vs-latent question for RFC-200 step 3d and nothing else can see it.
+func seedWindowLookupClassOfKind(found bool, kind LegKind) SeedWindowReadClass {
+	if found && kind == LegKindNested {
+		return SeedWindowNestedHit
+	}
+	return seedWindowLookupClass(found)
+}
+
+// RecordSeedWindowLookupOfKind is the kind-aware counterpart of
+// RecordSeedWindowLookup, for the readers that dispatch on the window kind.
+func RecordSeedWindowLookupOfKind(site SeedWindowSite, found bool, kind LegKind) {
+	RecordSeedWindowRead(site, seedWindowLookupClassOfKind(found, kind))
+}
+
 // RecordSeedWindowLookup is the common shape: found or not.
 func RecordSeedWindowLookup(site SeedWindowSite, found bool) {
 	RecordSeedWindowRead(site, seedWindowLookupClass(found))
@@ -214,7 +249,11 @@ func FormatSeedWindowReaderCensus() string {
 		}
 		fmt.Fprintf(&b, "\n  %-24s reads %d", s, total)
 		for c := SeedWindowReadClass(0); c < seedWindowReadClassCount; c++ {
-			if counts[s][c] != 0 {
+			// NESTED-HIT prints even at ZERO. Its zero is the live-vs-latent
+			// answer for RFC-200 step 3d, and a class that vanishes when empty is
+			// exactly the reporting habit that makes a latent arm indistinguishable
+			// from an absent one.
+			if counts[s][c] != 0 || c == SeedWindowNestedHit {
 				fmt.Fprintf(&b, " | %s %d", c, counts[s][c])
 			}
 		}

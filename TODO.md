@@ -7816,9 +7816,20 @@ UPDATE by index 8.724 → 8.826ms; DELETE single 6.544 → 6.052ms. Bulk inserts
 had already been established at 3d and 3d′ independently — the full suite's
 goldens, plandiff and explaindiff are green, and the orientation-gate census
 shows all 72 newly-checked firings MATCHING (see CQ-67) — so any timing move
-here is load, not planning. The one outlier, JOIN at +67.9%, is a **10-row**
-shape at ~25ms whose EXPLAIN is byte-identical across the two runs; it is
-variance on the smallest-N measurement in the table.
+here is load, not planning.
+
+**The one outlier, JOIN at +67.9%, is CLOSED AS VARIANCE WITH DATA rather than
+by argument.** Three further uncached runs per side:
+
+| | run 1 | run 2 | run 3 | run 4 | range |
+|---|---|---|---|---|---|
+| before (`719f6c8b0`) | 15.25 | 29.97 | 26.85 | 23.94 | **15.2–30.0ms** |
+| after (branch) | 25.61 | 27.36 | 26.90 | 32.83 | **25.6–32.8ms** |
+
+The distributions OVERLAP, and the baseline's 15.25ms is the outlier LOW of its
+own four samples — the original comparison put the branch's median against the
+baseline's fastest run. It is a **10-row** shape at ~25ms, the smallest-N
+measurement in the table, and its EXPLAIN is byte-identical across both sides.
 
 **METHODOLOGY CAVEAT, recorded because it affects how these absolutes should be
 read:** the filesystem was at **96% utilisation** during both runs (40G free of
@@ -12257,18 +12268,44 @@ None is speculative: each was re-verified against the tree before booking.
   filesystem, sibling worktree, branch point `719f6c8b0`). Row counts identical
   on every shape, every EXPLAIN byte-identical, totals +0.34%.
 
-  **Gate (a) is NOT SATISFIED — blocked, see CQ-70.** The shape that reaches the
-  nested window is a PROJECTED-EXISTS fold over a THREE-source FROM (a plain
-  WHERE-EXISTS is declined by condition (2) as `rv-no-exist-ref` and never builds
-  a seed — measured: with a WHERE-EXISTS fixture all four mutation directions
-  stayed GREEN because the nested rebase was never entered). That query does not
-  execute, and does not execute with the nested acceptance DISABLED either. The
-  fixture and a two-source control that answers correctly are pinned in
-  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`, with the
-  four-direction recipe in the negative's failure message so the day it executes
-  the test goes red and hands over the whole gate. **Open question for the review
-  lap: does an unmeasurable gate (a) block THIS merge, given the blocker is
-  pre-existing and loud?**
+  **Gate (a) is NOT SATISFIED, and the reason was RE-DIAGNOSED after the first
+  review lap — the earlier text here was wrong and is replaced rather than
+  amended.**
+
+  It recorded that the shape reaching the nested window "does not execute". That
+  was true of the fixture as first written — a PREDICATE-FREE three-source comma
+  join — and false of the shape the corpus actually produces. Re-pointed at the
+  corpus's own form (three sources WITH EQUIJOINS, as
+  `TestFDB_CommaJoinProjectedExists_UnequalLegWidths` carries), the query RUNS
+  and returns correct rows on all four addresses.
+
+  **What is actually unmeasurable is the READER arm, and it is now measured as
+  LATENT.** The seed-window reader census reports `NESTED-HIT 0` at both keyed
+  readers over the whole corpus, and mutating the fused two-step address back to
+  flat `Offset + legOrdinal` leaves the end-to-end probe GREEN. The nested
+  acceptance is live at the LAYOUT — ACCEPT 78 to 138 exactly as predicted, and
+  `existentialRebase` 962 to 1086, which is RFC-200 section 6's own growth
+  prediction confirmed — but every window those reads select is a FLAT top-level
+  run. A nested SUB-window is only selected by a reference to a leg buried INSIDE
+  the merge, and no corpus query produces one.
+
+  So gate (a)'s four mutation directions are not writable until `NESTED-HIT` is
+  non-zero. The fixture, the two-source flat control and the row assertions are
+  in `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the
+  predicate-free failure is pinned separately there as CQ-70's reproducer.
+
+  **Open question for the review lap: does a latent reader arm block THIS
+  merge?** The layout half is measured live and exact; the reader half is
+  correct, cross-agreement-pinned on both entries, unit-pinned on both arms, and
+  unreached by any corpus query.
+
+  **VERIFICATION ARTIFACT — the branch's own merge gate, recorded rather than
+  asserted.** The merge commit `2d0c73ff2` used `--no-verify` on the ground that
+  "the merged HEAD gets a full run immediately after, and that run is the gate",
+  which left no artifact. Recorded here instead: `bazelisk test //pkg/...` at the
+  merged head `2d0c73ff2` on 2026-07-31 reported **62 of 62 targets passing**,
+  and every other commit on this branch ran the full pre-commit suite. A branch
+  that pins twelve mutations as tests may not exempt its own gate from evidence.
 
 - [ ] **CQ-68 (MED/L, M/L, gated on CQ-67, query-engine review gate) — the
   RFC-200 residue: 94 FlatMap result values are a BARE UNTYPED QOV where Java
@@ -12469,14 +12506,30 @@ None is speculative: each was re-verified against the tree before booking.
   task/transform counters that are meaningless for a different planner and would
   only rot), and there is NO Java-format plan renderer.
 
-- [ ] **CQ-70 (HIGH/M, M, gated on CQ-67 landing, query-engine review gate) — a
-  PROJECTED-EXISTS fold over a THREE-source FROM does not execute: `multi-leg row
-  cannot serve a source-relative ordinal / no frontier row resolved`.** This is a
-  live planner/executor defect on master, found while probing CQ-67 end-to-end,
-  and it is what makes RFC-200's gate (a) unmeasurable.
+- [ ] **CQ-70 (MED/M, M, gated on CQ-67 landing, query-engine review gate) — a
+  PREDICATE-FREE comma join under a PROJECTED-EXISTS fold does not execute:
+  `multi-leg row cannot serve a source-relative ordinal / no frontier row
+  resolved`.** A live planner/executor defect on master, found while probing
+  CQ-67 end-to-end.
+
+  **PREMISE CORRECTED after the first review lap.** This was first booked as "a
+  projected-EXISTS fold over a THREE-source FROM does not execute", and as "what
+  makes RFC-200's gate (a) unmeasurable". Both were wrong, and the branch's own
+  instruments refuted them:
+
+  - the three-source fold DOES execute when it carries EQUIJOIN predicates,
+    which is the form the corpus produces
+    (`TestFDB_CommaJoinProjectedExists_UnequalLegWidths`). Only the
+    predicate-free comma join fails. The defect is narrower than booked, hence
+    the priority drop from HIGH to MED;
+  - gate (a) is blocked by something else entirely — the nested READER arm is
+    LATENT (`NESTED-HIT 0` corpus-wide), so its mutation directions are not
+    writable even on a query that runs. Fixing this item does NOT unblock gate
+    (a), and CQ-67's entry carries that correction.
 
   Reproducer, over four tables (`ta` 3 cols with `k` at ordinal 1, `tb` 1 col,
-  `tc` 2 cols with `k` at ordinal 1, `tp` the existential inner):
+  `tc` 2 cols with `k` at ordinal 1, `tp` the existential inner) — note the
+  ABSENCE of any join predicate, which is the whole trigger:
 
   ```sql
   SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc
@@ -12501,32 +12554,30 @@ None is speculative: each was re-verified against the tree before booking.
   re-check if the failure mode ever changes — a silent variant is a different and
   much worse defect.
 
-  **The TWO-source form is CORRECT**, which is what localises this. `SELECT tc.k,
-  EXISTS (...) FROM ta, tc` executes and returns the right rows (flat leg windows
-  throughout — two sources means no collapsed pair). Both arms are pinned in
-  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`: the
-  two-source control asserts its rows, and the three-source shape is pinned as a
-  LOUD failure asserting the specific error text, so a change in failure mode reds
-  rather than passing.
+  **TWO forms are CORRECT, which is what localises this to the missing
+  predicate.** `SELECT tc.k, EXISTS (...) FROM ta, tc WHERE ta.aid = tc.cid`
+  executes (two sources, flat windows throughout), and so does the THREE-source
+  `FROM ta, tb, tc WHERE ta.aid = tb.bid AND tb.bid = tc.cid` — the corpus's own
+  shape, which returns correct rows on all four addresses. Only the
+  predicate-free comma join fails. All three are pinned in
+  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the failing
+  one asserts BOTH error substrings ("multi-leg row cannot serve a
+  source-relative ordinal" and "no frontier row resolved"), so a change in
+  failure mode reds rather than passing.
 
-  **WHAT THIS UNBLOCKS.** RFC-200 gate (a) — the end-to-end WRONG-ROWS probe for
-  the nested merge-leg window — cannot be measured on a query that cannot run. The
-  fixture already carries the three properties the gate needs (distinct leg widths
-  3/1/2, a duplicate column name `K` across legs so no name fallback can rescue a
-  wrong ordinal, and a projection from a non-first leg at a non-zero leg-local
-  ordinal), and the pinned negative's failure message carries the four mutation
-  directions verbatim: (1) nested window read as flat; (2) flat read as nested;
-  (3) leg ORIENTATION swapped — record the OBSERVED failure mode, since the site
-  claims an ordinal read there is "either right or loud" and silently wrong rows
-  would REFUTE that claim and are a finding in their own right; (4) the
-  census-invisible bare-column arm of `slotInGatheredSeed` allowed a `hits++` for
-  a nested window. The moment this item lands, that test goes RED and the gate
-  becomes writable.
+  **WHAT THIS DOES NOT UNBLOCK.** It was booked as the blocker for RFC-200's gate
+  (a); it is not. Gate (a)'s four mutation directions are unwritable because the
+  nested READER arm is LATENT — `NESTED-HIT 0` at both keyed readers over the
+  whole corpus, and mutating the fused two-step address back to flat leaves the
+  end-to-end probe green even on a query that runs. That is a separate condition
+  tracked in CQ-67, and it needs a query whose reference reaches a leg buried
+  INSIDE the merge, which is a different thing from making this one execute.
 
   Gated on CQ-67 only so the two do not contend for the same files; the defect
   itself is independent of it.
 
-  DONE = the three-source projected-EXISTS fold executes and returns correct
-  rows, the pinned negative is replaced by the four-direction wrong-rows probe
-  with its outcomes recorded in the fixture's doc comment, and CQ-67's gate (a) is
-  marked satisfied. Executor + NLJ rule, so: Graefe-gated.
+  DONE = the PREDICATE-FREE three-source comma join under a projected-EXISTS fold
+  executes and returns correct rows, and its pinned loud-failure test is replaced
+  by a row assertion. NOT tied to CQ-67's gate (a), which is blocked on the
+  latent reader arm and is unaffected by this item. Executor + NLJ rule, so:
+  Graefe-gated.

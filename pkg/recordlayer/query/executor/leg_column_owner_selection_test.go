@@ -299,13 +299,18 @@ func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 		}
 	}
 
-	// And the rendering channel, which is not memo identity but is what EXPLAIN
-	// goldens are diffed on. A leg table that showed up here would move plan
-	// records with no plan having changed.
+	// And the RENDERING channel, which is not identity at all. A leg table
+	// appearing here would move any diagnostic or golden that prints a record
+	// type, and the movement would be indistinguishable from a real change.
+	// Whether any golden currently prints one is deliberately NOT claimed.
 	if bare.String() != withLegs.String() {
 		t.Errorf("RecordType.String() renders the leg table:\n  %s\n  %s\n"+
-			"  Populating a leg table would then move every EXPLAIN golden that prints "+
-			"this type, and the movement would be indistinguishable from a real plan "+
-			"change in the diff.", bare.String(), withLegs.String())
+			"  This is the RENDERING channel, not an identity one, and the claim is "+
+			"correspondingly narrow: RecordType.String() is what type-printing "+
+			"diagnostics and any golden that prints a record type would show. Which "+
+			"goldens actually print one is NOT asserted here — that would be a claim "+
+			"about the golden set, which this test cannot see. What it does hold is "+
+			"that populating a leg table changes no rendering at all, so the question "+
+			"never arises.", bare.String(), withLegs.String())
 	}
 }

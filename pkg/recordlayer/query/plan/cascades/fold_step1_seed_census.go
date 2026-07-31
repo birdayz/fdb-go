@@ -176,6 +176,26 @@ type foldStep1SeedCounters struct {
 	// so it sums to the reconstruct-nil class exactly.
 	ReconstructNilLegShape [foldStep1LegShapeCount]int
 
+	// DeclinedStep1RVIsMerge counts firings that DECLINED and whose step1RV — the
+	// RAW sel.GetResultValue(), handed back unchanged — is itself a positional
+	// merge. HARD ZERO.
+	//
+	// It exists because implementJoinWithExistential's nested-entry opt-in reads
+	// step1RV on EVERY class, including the correlated wall. RFC-200 §8's guard
+	// chain — correlatedStep1 short-circuits foldStep1Seed before
+	// reconstructFoldStep1Seed runs — covers the RECONSTRUCTION, not this read. So
+	// if a declined firing's raw result value were a merge row, the nested entry
+	// would flip ordinalWindows from nil to NON-nil on an arm nothing analysed,
+	// and the correlated arm is exactly where a baked ordinal against a name-keyed
+	// row context raises values.BakedNameContextError. That arm carries a
+	// two-revert history.
+	//
+	// Gating the call on gatedSeedStep1 instead would be wrong: step1RV is
+	// legitimately a PRISTINE ordinal seed on some firings where gatedSeedStep1 is
+	// false (an earlier box dissolution baked it), and those must keep their
+	// windows. The hazard is specifically a MERGE row, so that is what is zeroed.
+	DeclinedStep1RVIsMerge int
+
 	// ReconstructNilBothLegsUnsafe counts firings where BOTH legs were
 	// ordinal-unsafe.
 	//
@@ -203,6 +223,15 @@ func recordFoldStep1Denominator() {
 
 // recordFoldStep1Outcome counts ONE classified firing. Callers must guard on
 // values.LegIdentityCensusEnabled().
+// recordFoldStep1DeclinedMergeRV counts a DECLINED firing whose step1RV is
+// itself a positional merge. Callers must guard on
+// values.LegIdentityCensusEnabled().
+func recordFoldStep1DeclinedMergeRV() {
+	foldStep1Mu.Lock()
+	defer foldStep1Mu.Unlock()
+	foldStep1Counts.DeclinedStep1RVIsMerge++
+}
+
 func recordFoldStep1Outcome(class foldStep1Class, decline foldStep1LegDecline) {
 	if class <= foldStep1ClassNone || class >= foldStep1ClassCount {
 		return
@@ -324,6 +353,22 @@ func assertFoldStep1SeedCounters(w io.Writer, c foldStep1SeedCounters, witnesses
 			"  reconstruct-nil class counted %d. The sub-partition is recorded from the same\n"+
 			"  call as the class, so a gap is a shape arm that returns before recording.\n",
 			shapeSum, c.Class[foldStep1DeclineReconstructNil])
+	}
+	if c.DeclinedStep1RVIsMerge != 0 {
+		failed = true
+		fmt.Fprintf(w, "FOLD-STEP1 SEED CENSUS FAIL: %d DECLINED firing(s) carried a step1RV\n"+
+			"  that is itself a POSITIONAL MERGE, want 0.\n"+
+			"  implementJoinWithExistential reads step1RV through the NESTED entry on\n"+
+			"  every class, including the correlated wall. RFC-200 §8's guard chain covers\n"+
+			"  the seed RECONSTRUCTION, not that read — so a declined firing whose raw\n"+
+			"  result value is a merge row flips ordinalWindows from nil to NON-nil on an\n"+
+			"  arm nothing analysed.\n"+
+			"  WHAT A NON-ZERO RE-ARMS: on the correlated arm a baked ordinal against a\n"+
+			"  name-keyed row context raises values.BakedNameContextError, and that arm has\n"+
+			"  a two-revert history. Do NOT simply gate the call on gatedSeedStep1: a\n"+
+			"  PRISTINE ordinal seed legitimately reaches that site with gatedSeedStep1\n"+
+			"  false and must keep its windows. Find the producer of the merge-shaped\n"+
+			"  result value instead.\n", c.DeclinedStep1RVIsMerge)
 	}
 	if c.ReconstructNilBothLegsUnsafe != 0 {
 		failed = true
@@ -520,6 +565,19 @@ type OrientationGateFloors struct {
 	// MapCountDiffers floors the population the step MOVES. This is the
 	// live/latent discriminator; see the type doc.
 	MapCountDiffers int
+	// UnverifiableCeiling CAPS the second fail-open — the firings where a leg
+	// plan cannot state its row shape, so the structural comparison has nothing
+	// to compare and the gate returns true.
+	//
+	// A CEILING, not a floor, because this counter's DANGEROUS DIRECTION IS
+	// GROWTH. Every other population on this path is watched for collapse; this
+	// one is a permissive answer, so more of it means more orientation checks
+	// silently skipped. Left uncapped it could absorb the entire tiled-by-2
+	// population — the gate would report a clean partition, no declines, and be
+	// checking nothing.
+	//
+	// Zero means uncapped.
+	UnverifiableCeiling int
 }
 
 // AssertOrientationGateCensus checks the partitions and the floors.
@@ -561,6 +619,20 @@ func assertOrientationGateCounters(w io.Writer, c orientationGateCounters, floor
 		failed = true
 		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: %d calls, want >= %d — the gate is "+
 			"not being reached at all.\n", c.Calls, floors.Calls)
+	}
+	if floors.UnverifiableCeiling > 0 && c.Unverifiable > floors.UnverifiableCeiling {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: %d UNVERIFIABLE firing(s), want <= %d.\n"+
+			"  This is a CEILING because this counter's dangerous direction is GROWTH. An\n"+
+			"  unverifiable firing is one where a leg plan cannot state its row shape, so\n"+
+			"  the structural orientation comparison has nothing to compare and the gate\n"+
+			"  returns TRUE — the permissive answer. It is a SECOND fail-open, separate\n"+
+			"  from the map-count one RFC-200 step 3d' closed, and left uncapped it can\n"+
+			"  absorb the whole checkable population while the census still reports a\n"+
+			"  clean partition and zero declines.\n"+
+			"  WHAT GROWTH MEANS: more join orientations are going unchecked. Find which\n"+
+			"  leg plans stopped stating a row type — that is the fixable half — rather\n"+
+			"  than raising this bound.\n", c.Unverifiable, floors.UnverifiableCeiling)
 	}
 	if c.MapCountDiffers < floors.MapCountDiffers {
 		failed = true

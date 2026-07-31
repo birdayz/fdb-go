@@ -155,7 +155,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// forbids it. Pinned by TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches,
 	// which holds the shape so the entry is about a real hazard rather than a
 	// hypothetical one — and which says to retire this entry if a guard appears.
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:154": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:156": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
 }
 
 type fieldDecisionSite struct {
@@ -421,7 +421,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// witnesses (`C.CV` and `O.ID` verbatim, `I.QTY` as the scalarCol half of
 	// `O.I.QTY`). The distinction is the whole of producer-first — pointed at the
 	// executor, this bucket's retirement waits on the wrong file.
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:139":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:143":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2937": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},

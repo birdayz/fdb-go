@@ -3980,6 +3980,27 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// when an ordinal seed was used (its FrontierPinned panic polices
 	// exactly that). An un-mappable reference DECLINES the yield
 	// (CORRECT-or-LOUD, never a half-rebased tree).
+	// THIS SITE READS step1RV ON EVERY CLASS, including the correlated wall,
+	// because a DECLINED foldStep1Seed hands back sel.GetResultValue() unchanged
+	// and this line does not ask which class it was.
+	//
+	// RFC-200 §8's guard chain — correlatedStep1 short-circuits foldStep1Seed
+	// before reconstructFoldStep1Seed runs — covers the seed RECONSTRUCTION, not
+	// this read. So the one shape that would matter is a declined firing whose
+	// RAW result value is itself a positional merge: the nested entry would then
+	// flip ordinalWindows from nil to NON-nil on an arm nothing analysed, and on
+	// the correlated arm a baked ordinal against a name-keyed row context raises
+	// values.BakedNameContextError.
+	//
+	// It is HARD-ZEROED rather than gated. Gating the call on gatedSeedStep1
+	// would be wrong: step1RV is legitimately a PRISTINE ordinal seed on firings
+	// where gatedSeedStep1 is false — an earlier box dissolution baked it, as the
+	// materializedNLJOrdinalLayoutMatches call above depends on — and those must
+	// keep their windows.
+	if values.LegIdentityCensusEnabled() && step1Origin.Step1 != foldStep1Accept &&
+		values.IsPositionalMergeRC(step1RV) {
+		recordFoldStep1DeclinedMergeRV()
+	}
 	ordinalWindows, mergedRowType := ordinalSeedLegWindowsAcceptingNestedOf(step1RV)
 	var mergedQOV *values.QuantifiedObjectValue
 	if ordinalWindows != nil {

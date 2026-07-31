@@ -4669,3 +4669,83 @@ func IsIndexOnly(v Value) bool {
 	}
 	return false
 }
+
+// NewFusedFieldValueOfNestedOrdinal builds the FUSED TWO-STEP address into a
+// NESTED merged-leg window: "slot slotOrdinal of child, then legOrdinal within
+// the leg row that slot holds".
+//
+// This is Java's `ofOrdinalNumberAndFuseIfPossible`, reached the same way.
+// PartitionSelectRule rewrites a reference to a collapsed sibling as
+// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`; when translateCorrelations
+// rebuilds the enclosing `FieldValue(QOV(lower), [f])`, the leaf swap produces
+// `FieldValue(FieldValue(QOV(upper),[i]), [f])` and `FieldValue.withNewChild` →
+// `ofFieldsAndFuseIfPossible` merges the two accessor lists via
+// `FieldPath.withSuffix` into the single two-step path
+// `FieldValue(QOV(upper), [i, f])`. Composition is a path FUSION, never a
+// flattening: nothing is materialized and nothing is re-offset.
+//
+// IT IS ONE FUNCTION BECAUSE THE RESULT TYPE IS THE EASY PART TO GET WRONG, and
+// it was gotten wrong. Both rebase sites built the fused node by copying the
+// SLOT's baked node and overwriting its path and display name — which leaves the
+// node reporting the LEG'S WHOLE RECORD TYPE as the type of a single column
+// read. Java does not have that bug because `ofFieldsAndFuseIfPossible`
+// RECOMPUTES the result type from the fused path rather than inheriting the
+// first step's. Two hand-written copies of a fusion is exactly the shape that
+// lets one of them keep a stale type.
+//
+// THE NULLABILITY RULE IS THE SECOND HALF, and it is why the leaf's own type is
+// not simply returned. `NewFieldValueOfOrdinal` implements Java's
+// `FieldValue.computeResultType`: a column read through a NULLABLE record is
+// nullable, because a null-supplied row serves NULL in every slot. Descending
+// two steps means that rule applies TWICE — once for the leg row (handled by the
+// leaf bake below) and once for the merged row whose slot may itself be
+// nullable. Taking the leaf's type verbatim would report a LEFT-outer-supplied
+// column as NOT NULL.
+func NewFusedFieldValueOfNestedOrdinal(child Value, slotOrdinal int, legType *RecordType, legOrdinal int) (*FieldValue, error) {
+	slot, err := NewFieldValueOfOrdinal(child, slotOrdinal)
+	if err != nil {
+		return nil, err
+	}
+	if legType == nil {
+		return nil, &OrdinalBakeError{
+			Ordinal: legOrdinal,
+			Reason:  "nested leg window states no record type to descend into",
+		}
+	}
+	// The leaf is baked against the LEG's own row, which is what makes its
+	// ordinal a proof rather than a claim: the domain stamped on it is the layout
+	// the ordinal indexes.
+	leaf, err := NewFieldValueOfOrdinal(NewQuantifiedObjectValueOfType(legAliasOf(child), legType), legOrdinal)
+	if err != nil {
+		return nil, err
+	}
+	typ := leaf.Typ
+	// The SLOT's own nullability, applied on top of the leaf bake's. See the doc.
+	if slot.Typ != nil && slot.Typ.IsNullable() && typ != nil && !typ.IsNullable() {
+		typ = WithNullability(typ, true)
+	}
+	return &FieldValue{
+		// The DISPLAY name is the LEAF's, matching what a one-step bake would
+		// have rendered. It is rendering only — a baked node's identity is its
+		// ordinal PATH alone (Java's ResolvedAccessor equality compares
+		// getOrdinal() only).
+		Field: leaf.Field,
+		Typ:   typ,
+		Child: slot.Child,
+		// The fused path. The frontier pin and the domain come from the RECEIVER,
+		// which is the SLOT step — both govern the ROOT read context, and the root
+		// of this path is the read against the merged row.
+		Resolved: slot.Resolved.WithSuffix(leaf.Resolved),
+	}, nil
+}
+
+// legAliasOf names the quantifier the leaf bake resolves against. It is
+// cosmetic — the leaf's correlation never survives into the fused node, whose
+// child is the MERGED quantifier — but a stated identifier keeps the
+// intermediate node from carrying the zero correlation into any future reader.
+func legAliasOf(child Value) CorrelationIdentifier {
+	if qov, isQOV := child.(*QuantifiedObjectValue); isQOV {
+		return qov.Correlation
+	}
+	return CorrelationIdentifier{}
+}

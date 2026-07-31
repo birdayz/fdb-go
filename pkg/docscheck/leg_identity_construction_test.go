@@ -143,8 +143,10 @@ func TestRecordTypeLegIsConstructed(t *testing.T) {
 			"fails to bind — silently, for a frontier-pinned reference. Deleting `Alias:` from\n"+
 			"two producers left the whole suite green, which is why this is a compile-time\n"+
 			"obligation rather than a test.\n"+
-			"Use values.NewRecordTypeLeg(values.LegKindFlatRun, alias, name, start, width); the identifier is the\n"+
-			"first positional parameter, so it cannot be forgotten.\n\n%s",
+			"Use values.NewRecordTypeLeg(kind, alias, name, start, width); the KIND and the\n"+
+			"IDENTIFIER are both positional parameters, so neither can be forgotten. An\n"+
+			"omitted kind is LegKindUnset, which every reader declines — the same failure\n"+
+			"one field over.\n\n%s",
 			len(findings), strings.Join(findings, "\n"))
 	}
 }

@@ -387,3 +387,82 @@ func TestJoinSeed_DupBareNameMemoIdentity(t *testing.T) {
 		t.Fatal("baked and lazy refs to the same column must be distinct by contract")
 	}
 }
+
+// The fused two-step node must report the LEAF COLUMN's type, not the SLOT's.
+//
+// This is the half a path-only assertion cannot see. Both rebase sites built the
+// fused node by copying the SLOT's baked node and overwriting its path and
+// display name, which left it reporting the LEG'S WHOLE RECORD TYPE as the type
+// of a single column read. Every ordinal in the path was correct; only the type
+// was wrong, so a test that compared accessor ordinals passed with the defect
+// fully present.
+//
+// Java does not have the bug because ofFieldsAndFuseIfPossible RECOMPUTES the
+// result type from the fused path rather than inheriting the first step's.
+func TestFusedNestedOrdinal_CarriesTheLeafsTypeNotTheSlots(t *testing.T) {
+	t.Parallel()
+
+	legRow := NewRecordType("", false, []Field{
+		{Name: "SID", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "SNAME", FieldType: NotNullString, Ordinal: 1},
+	})
+	merged := NewRecordType("", false, []Field{
+		{Name: OrdinalFieldName(0), FieldType: legRow, Ordinal: 0},
+		{Name: OrdinalFieldName(1), FieldType: NotNullLong, Ordinal: 1},
+	})
+	mergedQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("M"), merged)
+
+	fused, err := NewFusedFieldValueOfNestedOrdinal(mergedQOV, 0, legRow, 1)
+	if err != nil {
+		t.Fatalf("fusing slot 0 then leg-local 1: %v", err)
+	}
+
+	// The PATH: two steps, [0, 1].
+	if len(fused.Resolved.Accessors) != 2 ||
+		fused.Resolved.Accessors[0].Ordinal != 0 || fused.Resolved.Accessors[1].Ordinal != 1 {
+		t.Fatalf("fused path = %+v, want the two-step [0 1]", fused.Resolved.Accessors)
+	}
+
+	// THE TYPE. SNAME is a STRING; the slot holds a RECORD. Reporting the slot's
+	// type here is what the hand-written fusion did, and it is a type error that
+	// travels: a downstream comparison or cast against a record-typed operand
+	// where a string was meant.
+	if !fused.Type().Equals(NotNullString) {
+		t.Fatalf("fused node Type() = %v, want %v (the LEAF column SNAME).\n"+
+			"  If this reports a RECORD, the node inherited the SLOT's type — the "+
+			"fusion copied the first step's node instead of recomputing the result "+
+			"type from the fused path, which is what Java's ofFieldsAndFuseIfPossible "+
+			"does.", fused.Type(), NotNullString)
+	}
+	if fused.Field != "SNAME" {
+		t.Fatalf("fused node Field = %q, want the LEAF's display name SNAME", fused.Field)
+	}
+
+	// THE NULLABILITY RULE, applied at BOTH steps. A column read through a
+	// nullable record is nullable (Java's FieldValue.computeResultType): a
+	// null-supplied row serves NULL in every slot. Descending two steps means the
+	// rule applies twice, and taking the leaf's type verbatim would report a
+	// LEFT-outer-supplied column as NOT NULL.
+	nullableMerged := NewRecordType("", true, []Field{
+		{Name: OrdinalFieldName(0), FieldType: legRow, Ordinal: 0},
+	})
+	nullableQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("M"), nullableMerged)
+	nfused, err := NewFusedFieldValueOfNestedOrdinal(nullableQOV, 0, legRow, 1)
+	if err != nil {
+		t.Fatalf("fusing over a nullable merged row: %v", err)
+	}
+	if !nfused.Type().IsNullable() {
+		t.Fatalf("over a NULLABLE merged row the fused node reports %v (not nullable).\n"+
+			"  The slot step's nullability must propagate to the descended column, or a "+
+			"LEFT-outer null-supplied leg's columns are reported NOT NULL — which is "+
+			"metadata a consumer is entitled to trust.", nfused.Type())
+	}
+
+	// And a nested window with no record to descend into is an ERROR, not a
+	// silently mis-typed node.
+	if _, err := NewFusedFieldValueOfNestedOrdinal(mergedQOV, 0, nil, 0); err == nil {
+		t.Fatal("fusing with a nil leg type succeeded — a nested window that states no " +
+			"record type has nothing to descend into and must fail loudly rather than " +
+			"produce a node whose second step indexes nothing")
+	}
+}

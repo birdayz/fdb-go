@@ -510,6 +510,24 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 					// is not something to approximate around.
 					return nil, nil, nil
 				}
+				// A sub-leg whose OWN row carries leg boundaries puts those two steps
+				// from the merged row, and this authority has no two-step window to
+				// express them with — the same refusal positionalMergeSpans makes on
+				// the executor side, stated here so the two walks decline together.
+				//
+				// IT MUST BE TESTED AT THE INSERTION, NOT ONLY AT THE HEAD OF THE
+				// LOOP, and that is a correctness requirement rather than tidiness.
+				// This loop RANGES the same map it inserts into, and Go's spec leaves
+				// it unspecified whether an entry added during iteration is visited.
+				// The head-of-loop guard above would therefore decline this seed on
+				// the runs where the range happens to reach the newly inserted
+				// sub-window and accept it on the runs where it does not — making
+				// ACCEPT/DECLINE depend on map iteration order, which is randomised.
+				// A planner whose layout decision is nondeterministic produces
+				// different plans for the same query on different runs.
+				if len(subType.Legs) > 0 {
+					return nil, nil, nil
+				}
 				// The `taken` test above already ran and is not repeated here: a second
 				// copy of the ADD-beside/REPLACE rule is a second place for it to drift.
 				windows[leg.Alias] = OrdinalSeedLegWindow{

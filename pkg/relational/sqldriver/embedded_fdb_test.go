@@ -232,17 +232,19 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // a correct pass-through rather than a residue, because the projection sits
 // ABOVE the existential level and there is nothing to fold.
 //
-// EVERY load-bearing number is EXACT on this head: correlatedStep1 108, the
-// reconstruct-nil split 94 bare-QOV / 60 positional-merge, ACCEPT 78, and
-// both-legs-unsafe 0. Those are the four the design rests on and none of them
-// moved.
 // AND THEN THIS SUITE GREW BY ONE FILE, WHICH IS THE GATE WORKING.
 //
-// TestFDB_NestedMergeLegProjectedExistsFold — RFC-200 gate (a)'s fixture, and
-// the pinned blocker beside it — adds four firings: its two-source control
-// ACCEPTS twice, and its three-source negative declines reconstruct-nil twice
-// with a BARE-QOV leg. So the totals below are the post-3d numbers plus that
-// file: denominator 542+4, ACCEPT 138+2, reconstruct-nil 94+2 all bare-QOV.
+// The RFC-200 gate (a) fixtures — TestFDB_NestedMergeLegProjectedExistsFold with
+// its two-source control, its three-source probe and three companion-address
+// queries, plus TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud — add 30
+// firings between them. So the totals below are the post-3d numbers plus that
+// file: denominator 542+30 = 572, ACCEPT 138+22 = 160, reconstruct-nil 94+8 =
+// 102, all of the added declines bare-QOV.
+//
+// The added ACCEPTs are the point rather than noise: each equijoin variant is a
+// projected-EXISTS fold over ordinal-safe legs, which is exactly the population
+// this gate measures, and they land in ACCEPT because the layout authority now
+// admits the merged leg.
 //
 // The equality is stated at the new totals rather than relaxed into a range,
 // because a range would absorb the next four firings silently — and it was this
@@ -251,15 +253,15 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		Denominator:     n(546),
-		Accept:          n(140),
+		Denominator:     n(572),
+		Accept:          n(160),
 		CorrelatedStep1: n(108),
 		NoExistRef:      n(202),
-		ReconstructNil:  n(96),
+		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
 		// satisfied by any 94, including a mix that had let merge legs back in.
-		ReconstructNilBareQOV: n(96),
+		ReconstructNilBareQOV: n(102),
 		ReconstructNilMerge:   n(0),
 	}
 }()
@@ -602,7 +604,19 @@ var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
 // on the thing it is watching for.
 var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
 	var f values.SeedWindowReaderFloors
-	f.Reads[values.SeedWindowSiteExistentialRebase] = 90     // measured 962
+	// THIS ONE IS NOT AN ORDER OF MAGNITUDE BELOW, and the exception is
+	// deliberate. RFC-200 §6 predicts explicitly that existentialRebase GROWS
+	// once the nested acceptance lands, because the newly-accepted firings'
+	// existPreds rebase through it. Measured: 962 before activation, 1086 after —
+	// the prediction holds, and it is the only evidence that the 60 converted
+	// firings reach a reader at all.
+	//
+	// Floored at 1000, ABOVE the pre-activation 962, so the floor pins that
+	// growth rather than merely detecting collapse. If the converted firings stop
+	// reaching this reader the count falls back toward 962 and this reds — where
+	// an order-of-magnitude floor would have sat green through the entire
+	// regression.
+	f.Reads[values.SeedWindowSiteExistentialRebase] = 1000   // measured 1086 (962 pre-activation)
 	f.Reads[values.SeedWindowSiteBoxLegRef] = 9              // measured 92
 	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
 	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
@@ -9994,6 +10008,10 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 var orientationGateFloors = cascades.OrientationGateFloors{
 	Calls:           40, // measured 438
 	MapCountDiffers: 7,  // measured 72
+	// A CEILING, calibrated from the measured 84 with headroom for corpus growth.
+	// Unverifiable is the SECOND fail-open and its dangerous direction is GROWTH,
+	// so unlike every other number here it is capped rather than floored.
+	UnverifiableCeiling: 200, // measured 84
 }
 
 // assertOrientationGateCensus checks the gate census, dropping the population

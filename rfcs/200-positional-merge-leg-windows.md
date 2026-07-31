@@ -1,9 +1,34 @@
 # RFC-200 — A merged leg is a NESTED row, and the layout authority must say so
 
-Status: **proposed**, revision 2 — awaiting the query-engine joint-review ACK
-(Graefe + Torvalds) before implementation starts. Revision 1 was NAK'd by both,
-with the core design endorsed and six blockers between them. The material
-changes:
+Status: **ACCEPTED** (revision 2), and **IMPLEMENTED** — steps 3a through 3d′ are
+built and under the implementation review lap. The design below is what was
+built; nothing in it is re-decided by the implementation.
+
+Three of its claims were REFUTED by measurement during implementation and are
+corrected at the sites that carry them (TODO.md's CQ-67 entry, DIVERGENCES.md,
+and the fixture doc comments), rather than silently left standing here:
+
+1. **Gate (d) is VACUOUS.** §Gates denominates it in "the subset of
+   `LegLocalBakeCensus`' 174 reads belonging to reconstruct-nil /
+   positional-merge firings", asserting its post-change value is 0 — phrasing
+   that presumes the number FALLS. Measured in 3a it was ALREADY 0: all 174
+   reads sit under BARE-QOV firings, the residue §Residues fences. The nested
+   window converts 60 firings and removes ZERO pass-through reads, so the
+   `DIVERGENCES.md` retirement does not advance on the read axis.
+2. **The nested READER arm is LATENT.** §6 predicts `existentialRebase` grows,
+   and it does (962 → 1086, confirmed). But every window those reads select is a
+   FLAT top-level run: the seed-window reader census reports `NESTED-HIT 0`, and
+   mutating the fused two-step address back to flat leaves the end-to-end probe
+   green. A nested SUB-window is only selected by a reference to a leg buried
+   INSIDE the merge, which no corpus query produces. Gate (a)'s four mutation
+   directions are therefore not yet writable.
+3. **The population figures are +2/+4 against a moved corpus.** §Gates states
+   the denominator as 540 and `rv-no-exist-ref` as 200; measured 542/202 at the
+   implementation head, attributed to a specific test that is now planned twice.
+   Every load-bearing number — 108, 94, 60, 78 — is exact.
+
+Revision 1 was NAK'd by both reviewers, with the core design endorsed and six
+blockers between them. The material changes:
 
 - **Step 3c was not behaviour-neutral.** Revision 1 widened the SHARED accept
   boundary of `values.OrdinalSeedLegWindows`, whose consumers are mostly

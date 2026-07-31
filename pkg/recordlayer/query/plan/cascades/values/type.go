@@ -363,7 +363,19 @@ type RecordType struct {
 	// buried alias resolves positionally exactly like a top-level leg's
 	// (Java's rewire-by-ordinal: a buried source is just another
 	// quantifier's window). Empty for every non-clustered leg type; carries
-	// NO identity semantics (Equals/Hash ignore it — layout metadata only).
+	// NO identity semantics — layout metadata only.
+	//
+	// "Equals/Hash ignore it" is what this line used to say, and HASH NAMED
+	// NOTHING: there is no Hash method on RecordType, on Type, or anywhere in
+	// this file. A reader verifying the claim would have found no such method and
+	// moved on, which is the most durable way for an unchecked claim to read as
+	// checked. The channels the memo ACTUALLY keys a record type on are
+	// values.SemanticHashCode, values.SemanticEqualsUnderAliasMap and
+	// values.EqualsWithoutChildren (plus String(), which is not identity but is
+	// what EXPLAIN goldens diff on), pinned by
+	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity — and the two
+	// memo sites that genuinely dispatch into Equals, pinned by
+	// expressions.TestMemoExpressionIdentity_IgnoresTheLegTable.
 	Legs []RecordTypeLeg
 }
 

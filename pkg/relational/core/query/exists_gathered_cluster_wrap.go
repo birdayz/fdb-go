@@ -134,7 +134,9 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 			}
 			w, isLeg := windows[qov.Correlation]
 			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxLegRef, isLeg)
+				// KIND-AWARE, for the same live-vs-latent reason as its twin at
+				// cascades.rebaseOuterLegValueOrdinal.
+				values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteBoxLegRef, isLeg, w.Kind)
 			}
 			if !isLeg || w.Typ == nil {
 				return n
@@ -162,19 +164,17 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 				// into one path by FieldPath.WithSuffix exactly as Java's
 				// ofFieldsAndFuseIfPossible composes it. See the twin at
 				// cascades.rebaseOuterLegValueOrdinal for the full derivation.
-				slot, sErr := values.NewFieldValueOfOrdinal(boxQOV, w.Offset)
-				if sErr != nil {
+				// ONE constructor, shared with the planner twin. It also recomputes
+				// the result TYPE from the fused path, which the hand-written fusion
+				// this replaced did not: copying the slot's baked node and
+				// overwriting its path left the node reporting the LEG'S WHOLE
+				// RECORD TYPE as the type of a single column read.
+				fused, fErr := values.NewFusedFieldValueOfNestedOrdinal(
+					boxQOV, w.Offset, w.Typ, idx)
+				if fErr != nil {
 					return n
 				}
-				leaf, lErr := values.NewFieldValueOfOrdinal(
-					values.NewQuantifiedObjectValueOfType(qov.Correlation, w.Typ), idx)
-				if lErr != nil {
-					return n
-				}
-				fused := *slot
-				fused.Resolved = slot.Resolved.WithSuffix(leaf.Resolved)
-				fused.Field = leaf.Field
-				return &fused
+				return fused
 			}
 			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
 			if err != nil {

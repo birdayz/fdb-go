@@ -292,9 +292,50 @@ func assertSpanWindowAgreementVia(t *testing.T, label string, rc *values.RecordC
 				if !present {
 					t.Fatalf("%s: box-run sub %s in spans' Legs but not windows", label, sub.Name)
 				}
-				if w.Offset != s.Offset+sub.Start || len(w.Typ.Fields) != sub.Width {
-					t.Fatalf("%s: box-run sub %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span sub (offset %d, width %d)",
-						label, sub.Name, w.Offset, len(w.Typ.Fields), s.Offset+sub.Start, sub.Width)
+				if w.Kind != sub.Kind {
+					t.Fatalf("%s: box-run sub %s KIND DISAGREEMENT: window %v vs span sub %v",
+						label, sub.Name, w.Kind, sub.Kind)
+				}
+				// Width is a SLOT count on both sides. For a flat sub-leg that is
+				// its column count; for a NESTED one it is 1, however wide the
+				// sub-leg's row is — the window's Typ carries the columns.
+				wantSubWidth := len(w.Typ.Fields)
+				if w.Kind == values.LegKindNested {
+					wantSubWidth = 1
+				}
+				if w.Offset != s.Offset+sub.Start || wantSubWidth != sub.Width {
+					t.Fatalf("%s: box-run sub %s LAYOUT DISAGREEMENT: window (offset %d, slots %d) vs span sub (offset %d, width %d)",
+						label, sub.Name, w.Offset, wantSubWidth, s.Offset+sub.Start, sub.Width)
+				}
+			}
+			// THE TWO BOX REGIMES, and the accounting now covers both.
+			//
+			// This block used to assume the LEAF-NAMED regime only — a sub-leg
+			// carrying the RUN's own alias, where finalizeSeedWindows REPLACES the
+			// run's window with the leaf's narrower sub-window, so the run
+			// contributes no window of its own. Its own comment said to extend the
+			// accounting before adding a fixture of the other kind, and RFC-200
+			// §1(b) is exactly that fixture: a nested sub-leg with its OWN alias,
+			// which is ADDED BESIDE the run's window rather than replacing it.
+			//
+			// So: count the run's own window unless some sub-leg claimed its alias.
+			replaced := false
+			for _, sub := range s.LegType.Legs {
+				if values.SameLeg(sub.Alias, s.Alias) {
+					replaced = true
+				}
+			}
+			if !replaced {
+				wantWindows++
+				rw, present := windows[s.Alias]
+				if !present {
+					t.Fatalf("%s: box run %s is not REPLACED by a leaf sub-window and yet "+
+						"has no window of its own — a run whose subs are all separately "+
+						"aliased must remain addressable under its own alias", label, s.Alias)
+				}
+				if rw.Offset != s.Offset {
+					t.Fatalf("%s: box run %s window offset %d vs span offset %d",
+						label, s.Alias, rw.Offset, s.Offset)
 				}
 			}
 			continue
@@ -674,6 +715,179 @@ func TestNestedMergeWindows_OffsetIsTheSlotAndTypIsTheLegsOwnRow(t *testing.T) {
 				"SLOT count: every consumer computes Start+Width as a slot range into the "+
 				"carrying type's Fields, so a nested leg claiming its column count would "+
 				"put its range over its neighbours.", leg.Name, leg.Kind, leg.Width)
+		}
+	}
+}
+
+// nestedSubLegSeed builds the shape the OPT-IN SITES ACTUALLY RECEIVE: a
+// pristine flat seed whose leg RUN carries a LegKindNested boundary in its
+// Typ.Legs.
+//
+// This is RFC-200 §1(b), and it is the live path. §1(a) — the whole-RC
+// positional merge handed to the derivation directly — is what the head
+// recognizer accepts, but no opt-in site ever passes one: all three read
+// `step1RV`, which reconstructFoldStep1Seed builds as a FLAT concat of
+// `ofOrdinal(QOV(leg, rt), j)` per slot. The merge only appears as `rt` — the
+// leg's own row type — and therefore only ever reaches the layout authority as a
+// nested boundary inside a carrying run's leg table.
+//
+// The distinction matters because the two enter the derivation at completely
+// different places: §1(a) at positionalMergeWindows, §1(b) at
+// finalizeSeedWindows' sub-window loop. A matrix that only covered §1(a) tested
+// the branch the corpus does not take.
+//
+// Leg A is a plain 2-column run. Leg M is a 3-slot run whose slot 1 holds a
+// whole 2-column sub-leg row, declared nested in M's leg table.
+func nestedSubLegSeed(t *testing.T) (*values.RecordConstructorValue, *values.RecordType) {
+	t.Helper()
+	subRow := values.NewRecordType("", false, []values.Field{
+		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SV", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	mRow := values.NewRecordType("", false, []values.Field{
+		{Name: "M0", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: values.OrdinalFieldName(1), FieldType: subRow, Ordinal: 1},
+		{Name: "M2", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	mRow.Legs = []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.LegKindNested,
+			values.NamedCorrelationIdentifier("S"), "S", 1, 1),
+	}
+	a := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+		values.NewRecordType("", false, []values.Field{
+			{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+		}))
+	m := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mRow)
+	return values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, a, 0), bakeOrdinal(t, a, 1),
+		bakeOrdinal(t, m, 0), bakeOrdinal(t, m, 1), bakeOrdinal(t, m, 2),
+	), subRow
+}
+
+// TestSpanWindowCrossAgreement_NestedSubLeg is RFC-200 §1(b)'s matrix — the
+// shape the three opt-in sites actually receive.
+func TestSpanWindowCrossAgreement_NestedSubLeg(t *testing.T) {
+	t.Parallel()
+	seed, subRow := nestedSubLegSeed(t)
+
+	// Both nested-accepting walks agree, and both narrow walks DECLINE — the
+	// narrow entry's fail-closed refusal of a seed carrying a nested leg.
+	assertSpanWindowAgreementNested(t, "nested sub-leg", seed, true)
+	assertSpanWindowAgreement(t, "nested sub-leg [narrow]", seed, false)
+
+	windows, merged, runs := values.OrdinalSeedLegLayout(seed)
+	if windows == nil {
+		t.Fatal("the nested entry must accept a seed whose leg run carries a nested boundary")
+	}
+	// TWO tiles: leg A at 0, the carrying run M at 2. The nested sub-window is
+	// ADDED beside them, not a tile.
+	if len(runs) != 2 {
+		t.Fatalf("the seed reports %d tiles, want 2 — a nested SUB-window is addressable "+
+			"but does not tile the row", len(runs))
+	}
+
+	// THE SUB-WINDOW, by value. Offset is the carrying run's offset plus the
+	// leg's slot — 2 + 1 — and Typ is the sub-leg's OWN row by EXTRACTION.
+	ws := windows[values.NamedCorrelationIdentifier("S")]
+	if ws.Kind != values.LegKindNested || ws.Offset != 3 {
+		t.Fatalf("sub-window S = (kind %v, offset %d), want (nested, 3) = run offset 2 + "+
+			"slot 1", ws.Kind, ws.Offset)
+	}
+	if len(ws.Typ.Fields) != 2 || ws.Typ.Fields[1].Name != "SV" {
+		t.Fatalf("sub-window S Typ = %v, want the SUB-LEG's own 2-column row. An "+
+			"EXTRACTION, not a one-field wrapper describing the slot: a wrapper declines "+
+			"every leg-local ordinal >= 1 at the readers' bound check and resolves "+
+			"ordinal 0 against itself.", ws.Typ.Fields)
+	}
+	if ws.Typ != subRow {
+		t.Fatalf("sub-window S Typ is not the declared sub-row — it was rebuilt rather " +
+			"than extracted, which is how a slice-shaped copy creeps back in")
+	}
+
+	// THE MERGED LEG TABLE, which the executor's runtime binders read. The nested
+	// leg's Width is 1: a SLOT count, because every consumer computes Start+Width
+	// as a slot range into the carrying type's Fields.
+	var found bool
+	for _, leg := range merged.Legs {
+		if leg.Alias != values.NamedCorrelationIdentifier("S") {
+			continue
+		}
+		found = true
+		if leg.Kind != values.LegKindNested || leg.Start != 3 || leg.Width != 1 {
+			t.Fatalf("merged leg S = (kind %v, start %d, width %d), want (nested, 3, 1)",
+				leg.Kind, leg.Start, leg.Width)
+		}
+	}
+	if !found {
+		t.Fatal("the merged leg table has no entry for the nested sub-leg S — the " +
+			"executor's runtime binders read this table, so a missing entry is a leg " +
+			"that cannot be bound at all")
+	}
+}
+
+// The NONDETERMINISM guard (RFC-200 G-F4): a sub-leg whose own row carries leg
+// boundaries must decline DETERMINISTICALLY.
+//
+// finalizeSeedWindows RANGES the map it inserts into, and Go's spec leaves it
+// unspecified whether an entry added during iteration is visited. Without the
+// check at the INSERTION, the head-of-loop guard would decline this seed on runs
+// where the range happens to reach the inserted sub-window and accept it on runs
+// where it does not — accept/decline decided by map iteration order.
+//
+// Run repeatedly on purpose: one iteration cannot observe an order-dependent
+// answer, and this is the one defect class where a single green run is not
+// evidence.
+func TestNestedSubLeg_ALegsCarryingSubRowDeclinesDeterministically(t *testing.T) {
+	t.Parallel()
+
+	subRow := values.NewRecordType("", false, []values.Field{
+		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SV", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	// The sub-leg's OWN row carries a leg table — two steps from the merged row,
+	// which neither walk can express.
+	subRow.Legs = []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.LegKindFlatRun,
+			values.NamedCorrelationIdentifier("DEEP"), "DEEP", 0, 2),
+	}
+	mRow := values.NewRecordType("", false, []values.Field{
+		{Name: "M0", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: values.OrdinalFieldName(1), FieldType: subRow, Ordinal: 1},
+		{Name: "M2", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	mRow.Legs = []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.LegKindNested,
+			values.NamedCorrelationIdentifier("S"), "S", 1, 1),
+	}
+	a := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+		values.NewRecordType("", false, []values.Field{
+			{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+		}))
+	m := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mRow)
+	seed := values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, a, 0), bakeOrdinal(t, a, 1),
+		bakeOrdinal(t, m, 0), bakeOrdinal(t, m, 1), bakeOrdinal(t, m, 2),
+	)
+
+	for i := 0; i < 200; i++ {
+		if w, _ := values.OrdinalSeedLegWindowsAcceptingNested(seed); w != nil {
+			t.Fatalf("iteration %d ACCEPTED a seed whose nested sub-leg carries its own "+
+				"leg table.\n"+
+				"  Those boundaries are TWO steps from the merged row and this authority "+
+				"has no two-step window for them, so the honest answer is no ordinal "+
+				"layout at all.\n"+
+				"  If this fails on SOME iterations and not others, the decline has moved "+
+				"back to the head of finalizeSeedWindows' loop — which ranges the map it "+
+				"inserts into, so whether the inserted sub-window is visited is "+
+				"unspecified and ACCEPT/DECLINE becomes map-iteration-order dependent. "+
+				"That is nondeterministic PLANNING: the same query gets different plans "+
+				"on different runs.", i)
+		}
+		// The executor twin must refuse it too, on every iteration.
+		if _, _, ok := ordinalJoinSpansAcceptingNested(seed); ok {
+			t.Fatalf("iteration %d: the executor twin ACCEPTED what the planner declined", i)
 		}
 	}
 }

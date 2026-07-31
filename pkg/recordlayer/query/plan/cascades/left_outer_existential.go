@@ -78,7 +78,11 @@ func rebaseOuterLegValueOrdinal(
 		// disjoint.
 		w, isLeg := windows[qov.Correlation]
 		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowLookup(values.SeedWindowSiteExistentialRebase, isLeg)
+			// KIND-AWARE: a hit on a NESTED window is its own class, because
+			// whether the fused two-step arm is ever ENTERED on this corpus is the
+			// live-vs-latent question for RFC-200 step 3d, and every other number
+			// on this path prints identically either way.
+			values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteExistentialRebase, isLeg, w.Kind)
 		}
 		if !isLeg {
 			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
@@ -196,22 +200,16 @@ func rebaseOuterLegValueOrdinal(
 			// has an explicit OrdinalRow arm that descends a nested step by ordinal
 			// — and the executor's own span side already resolves the fused
 			// two-step address in resolveSpanLeaf.
-			var slot *values.FieldValue
-			slot, err = values.NewFieldValueOfOrdinal(mergedQOV, w.Offset)
+			rebased, err = values.NewFusedFieldValueOfNestedOrdinal(
+				mergedQOV, w.Offset, w.Typ, legOrdinal)
+			// The fused node's TYPE is authoritative and is NOT overwritten below.
+			// It is recomputed from the fused path — leaf column type, promoted
+			// nullable if the merged row's slot is nullable — which is Java's
+			// ofFieldsAndFuseIfPossible. The reference's own fv.Typ cannot know
+			// about the slot step, so taking it here would drop a LEFT-outer
+			// null-supplied column's nullability.
 			if err == nil {
-				var leaf *values.FieldValue
-				leaf, err = values.NewFieldValueOfOrdinal(
-					values.NewQuantifiedObjectValueOfType(qov.Correlation, w.Typ), legOrdinal)
-				if err == nil {
-					fused := *slot
-					fused.Resolved = slot.Resolved.WithSuffix(leaf.Resolved)
-					// The DISPLAY name is the leaf's, matching what a one-step bake
-					// would have rendered. It is rendering only — a baked node's
-					// identity is its ordinal PATH alone (Java's ResolvedAccessor
-					// equality compares getOrdinal() only).
-					fused.Field = leaf.Field
-					rebased = &fused
-				}
+				return rebased
 			}
 		default:
 			failed = true
@@ -222,7 +220,8 @@ func rebaseOuterLegValueOrdinal(
 			return node
 		}
 		// Keep the reference's own column type (the merged layout's field
-		// type IS the leg column's — same fv.Typ lineage).
+		// type IS the leg column's — same fv.Typ lineage). FLAT arm only; the
+		// nested arm returned above with its recomputed type.
 		rebased.Typ = fv.Typ
 		return rebased
 	})

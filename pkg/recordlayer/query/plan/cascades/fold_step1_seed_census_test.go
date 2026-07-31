@@ -159,7 +159,6 @@ func TestFoldStep1Census_AssertionArmsGoRed(t *testing.T) {
 	sixty, fiftyNine := 60, 59
 	c = base()
 	c.ReconstructNilLegShape[foldStep1LegShapePositionalMerge] = fiftyNine
-	c.ReconstructNilLegShape[foldStep1LegShapeBareQOV] = 3 - fiftyNine // keep the sub-partition honest
 	c.ReconstructNilLegShape[foldStep1LegShapeBareQOV] = 0
 	c.Class[foldStep1DeclineReconstructNil] = fiftyNine
 	c.Denominator = 4 + 2 + 1 + fiftyNine
