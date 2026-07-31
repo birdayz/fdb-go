@@ -109,6 +109,16 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 		}
 		// QOV-shaped leg reference.
 		if key, isRef := legRef(n); isRef {
+			if values.LegIdentityCensusEnabled() {
+				// legRef's key is the upper fold of the reference's own QOV
+				// correlation, and that correlation is still in hand on the node — so
+				// this lookup can be tried both ways and the two verdicts compared.
+				var corr values.CorrelationIdentifier
+				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+					corr = qov.Correlation
+				}
+				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxLegRef, windows, key, corr)
+			}
 			w, isLeg := windows[key]
 			if !isLeg || w.Typ == nil {
 				return n
@@ -128,6 +138,13 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 		}
 		// DOTTED frontier read ("LEG.COL").
 		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+			if values.LegIdentityCensusEnabled() {
+				// The key is SLICED OUT of a column name. The arm above bails on
+				// `fv.Child != nil`, so there is structurally no correlation here to
+				// key by — the zero identifier is the measurement, not a gap in it.
+				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxDottedSplit,
+					windows, strings.ToUpper(fv.Field[:dot]), values.CorrelationIdentifier{})
+			}
 			w, isLeg := windows[strings.ToUpper(fv.Field[:dot])]
 			if !isLeg || w.Typ == nil {
 				return n
@@ -162,6 +179,10 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 	ok := true
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := n.(*values.QuantifiedObjectValue); isQOV {
+			if values.LegIdentityCensusEnabled() {
+				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxSurvivorQOV,
+					windows, strings.ToUpper(qov.Correlation.Name()), qov.Correlation)
+			}
 			if _, isLeg := windows[strings.ToUpper(qov.Correlation.Name())]; isLeg {
 				ok = false
 				return false
@@ -444,6 +465,10 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// ordinal resolution over the wrap's positional output, so decline to the
 		// name model rather than ship an unbound reference.
 		for corr := range subRef.GetCorrelatedTo() {
+			if values.LegIdentityCensusEnabled() {
+				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxSurvivorCorrelation,
+					windows, strings.ToUpper(corr.Name()), corr)
+			}
 			if _, isLeg := windows[strings.ToUpper(corr.Name())]; isLeg {
 				return nil
 			}

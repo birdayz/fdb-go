@@ -360,12 +360,20 @@ func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSee
 			return node
 		}
 		alias, col := "", strings.ToUpper(fv.Field)
+		// corr is the reference's OWN correlation where it has one, and the zero
+		// identifier where the qualifier was sliced out of the name instead. This
+		// site is the only seed-window reader whose key provenance is not static —
+		// the two arms below produce the same kind of string from opposite sources —
+		// so the identity is threaded down rather than re-derived at the lookup,
+		// where the distinction would already be gone.
+		var corr values.CorrelationIdentifier
 		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
 			alias = strings.ToUpper(qov.Correlation.Name())
+			corr = qov.Correlation
 		} else if dot := strings.IndexByte(col, '.'); dot >= 0 {
 			alias, col = col[:dot], col[dot+1:]
 		}
-		if slot, ok := slotInGatheredSeed(windows, elementSlots, alias, col); ok {
+		if slot, ok := slotInGatheredSeed(windows, elementSlots, alias, col, corr); ok {
 			if baked, err := values.NewFieldValueOfOrdinal(seedQOV, slot); err == nil {
 				// The positional read (Resolved ordinal) is authoritative; Field is
 				// display-only. Preserve the ORIGINAL reference's display name so the
@@ -386,12 +394,15 @@ func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSee
 // substrate, no drift). A qualified LEG column routes through its leg's
 // [Offset,Width) window from the SHARED authority OrdinalSeedLegWindows (agreeing
 // bit-for-bit with the executor spans by the cross-agreement fixture).
-func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, alias, col string) (int, bool) {
+func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, alias, col string, corr values.CorrelationIdentifier) (int, bool) {
 	// A QUALIFIED read whose alias names a LEG window resolves to THAT leg's column —
 	// the qualifier wins (`U.V` is U's V, never the element, even when the element AS
 	// alias is also `V`). This precedes element-first so an explicit leg qualifier is
 	// never shadowed by a same-named element.
 	if alias != "" {
+		if values.LegIdentityCensusEnabled() {
+			values.RecordSeedWindowKeyLookup(values.SeedWindowSiteGatheredGroupSlot, windows, alias, corr)
+		}
 		if w, ok := windows[alias]; ok {
 			if idx, found := w.Typ.FieldIndex(col); found {
 				return w.Offset + idx, true

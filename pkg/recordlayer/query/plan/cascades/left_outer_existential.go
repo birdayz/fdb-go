@@ -73,6 +73,15 @@ func rebaseOuterLegValueOrdinal(
 			return node
 		}
 		alias := strings.ToUpper(qov.Correlation.Name())
+		if values.LegIdentityCensusEnabled() {
+			// The reference's own correlation is IN HAND here and the key is its
+			// upper fold, so both keys can be tried against the same map and
+			// compared. That comparison is what decides whether this lookup can be
+			// re-keyed by identity or whether the fold is carrying something the
+			// identity does not.
+			values.RecordSeedWindowKeyLookup(
+				values.SeedWindowSiteExistentialRebase, windows, alias, qov.Correlation)
+		}
 		w, isLeg := windows[alias]
 		if !isLeg {
 			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
@@ -249,6 +258,17 @@ func rebaseOuterLegRefsOrdinal(
 		// A shape the lazy twin also passes through untouched: safe
 		// only if it carries NO leg references — probe and decline if it does.
 		for alias := range windows {
+			if values.LegIdentityCensusEnabled() {
+				// A MINT from the map key, not a lookup by it: this probe
+				// manufactures a CorrelationIdentifier out of each window's key text
+				// and asks the predicate's correlation set about it, while the window
+				// it came from already states the identifier being manufactured. The
+				// census asks whether the mint reproduces that stated identifier
+				// EXACTLY — a round trip — or forges a different one. No correlation
+				// is held at this site, which is what the zero identifier records.
+				values.RecordSeedWindowKeyLookup(
+					values.SeedWindowSiteExistentialDeclineProbe, windows, alias, values.CorrelationIdentifier{})
+			}
 			if _, refs := predicates.GetCorrelatedToOfPredicate(p)[values.NamedCorrelationIdentifier(alias)]; refs {
 				return p, false
 			}

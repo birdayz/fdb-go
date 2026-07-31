@@ -100,6 +100,8 @@ func TestMain(m *testing.M) {
 // noise of this suite.
 func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
+	values.ResetSeedWindowKeyCensus()
+	values.ResetDottedLegQualifierCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -120,6 +122,24 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// also states an IDENTITY. That is the fact the reader's retirement rests on,
 	// and it is a different fact from how often the reader fires.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatLegColumnProvenanceCensus())
+	// The SEED-WINDOW KEY provenance census: every keyed read of an
+	// OrdinalSeedLegWindows map, cut by where the key text came from and by whether
+	// an identity-keyed lookup would have answered the same. That is the fact the
+	// retirement of the upper-folded window namespace rests on, and it is per-site
+	// because the sites' dispositions differ.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowKeyCensus())
+	if failed := assertSeedWindowKeyCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	// The TRANSLATOR twin of the executor's leg-column provenance census: the two
+	// readers that match a name-split qualifier against a leg table's text. They
+	// hold no correlation and cannot be re-keyed, so what this measures is whether
+	// the leg table's two spellings still agree on the one channel that has to
+	// keep working until its counterparty carries parsed segments.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedLegQualifierCensus())
+	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -403,6 +423,75 @@ func assertLegColumnProvenanceCensus(w io.Writer) bool {
 		floors = nil
 	}
 	return executor.AssertLegColumnProvenanceCensus(w, floors)
+}
+
+// seedWindowKeyFloors is the minimum lookup count each keyed seed-window reader
+// must report over the whole suite.
+//
+// Set an order of magnitude below the measured populations where there is an
+// order of magnitude, and at 1 where there is not. What a floor detects here is
+// a site going DARK, which is the failure mode that matters: every per-site
+// disposition this census licenses is of the form "the blocking class is empty",
+// and an unreached site prints that identically to a site measured clean.
+//
+// Sites left at 0 are UNFLOORED, and each one is a statement rather than an
+// omission — see the census's own per-site notes for which readers the corpus
+// does not reach and why that is not evidence of anything.
+var seedWindowKeyFloors = func() values.SeedWindowKeyFloors {
+	var f values.SeedWindowKeyFloors
+	f.Calls[values.SeedWindowSiteExistentialRebase] = 90 // measured 962
+	f.Calls[values.SeedWindowSiteBoxLegRef] = 9          // measured 92
+	f.Calls[values.SeedWindowSiteBoxSurvivorQOV] = 18    // measured 184
+	// measured 2 — no order of magnitude to drop to
+	f.Calls[values.SeedWindowSiteBoxSurvivorCorrelation] = 1
+	f.Calls[values.SeedWindowSiteGatheredGroupSlot] = 16 // measured 160
+	// existentialDeclineProbe and boxDottedSplit are measured 0 and left
+	// UNFLOORED. Neither is a quiet site — both are UNREACHABLE: a panic wired
+	// into each is reached by nothing in ./pkg/relational/... (this FDB corpus
+	// and all four conformance harnesses) nor ./pkg/recordlayer/query/... .
+	// Flooring them would demand traffic no query can produce.
+	return f
+}()
+
+// assertSeedWindowKeyCensus checks the seed-window key census, dropping the
+// population floors when -test.run narrows the corpus.
+//
+// The DIVERGED zero still runs under a filter — it holds over any population,
+// which is exactly why it is not a proof on its own.
+func assertSeedWindowKeyCensus(w io.Writer) bool {
+	floors := &seedWindowKeyFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "seed-window key census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
+			"The DIVERGED zero still runs, over whatever population this filter "+
+			"reached — at zero it holds VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertSeedWindowKeyCensus(w, floors)
+}
+
+// dottedLegQualifierFloors is the minimum match-attempt count each translator
+// dotted leg reader must report over the whole suite.
+var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
+	var f values.DottedLegQualifierFloors
+	f.Calls[values.DottedLegSiteFlatColumnBake] = 10 // measured 106
+	// measured 4 — no order of magnitude to drop to
+	f.Calls[values.DottedLegSiteLegQOVBake] = 1
+	return f
+}()
+
+// assertDottedLegQualifierCensus checks the translator dotted-leg census,
+// dropping the population floors when -test.run narrows the corpus.
+func assertDottedLegQualifierCensus(w io.Writer) bool {
+	floors := &dottedLegQualifierFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "translator dotted leg qualifier census: population floors NOT "+
+			"checked (-test.run=%q narrowed the corpus). The MATCH-ALIAS-DIFFERS zero "+
+			"still runs, over whatever population this filter reached — at zero it "+
+			"holds VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertDottedLegQualifierCensus(w, floors)
 }
 
 // assertLegLocalBakeCensus checks the bakeability census, dropping the
