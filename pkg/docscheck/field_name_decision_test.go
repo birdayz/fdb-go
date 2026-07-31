@@ -126,7 +126,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// from this branch made precisely this call for real, to mint an ordinal. A
 	// diagnostic that survived its deleted sibling is how the move gets
 	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:517": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:575": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
 
 	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
 	// deleted entries described, and calling it genuine debt rather than the
@@ -409,10 +409,20 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// way this list can lie: nothing was migrated, the sites still read a name.
 	//
 	// What remains here is genuinely dotted: readers of the merged-row `leg.col`
-	// channel, whose producers are executor-side (CQ-53), plus the group-key
-	// qualification probe.
+	// channel, plus the group-key qualification probe.
+	//
+	// "whose producers are executor-side (CQ-53)" stood here and is REFUTED. The
+	// producers are translator-side — the correlated-scalar ordinal seed builders
+	// in pkg/relational/core/query (scalar_subquery_seed.go:83,
+	// clustered_outer_scalar.go:493) name their record-constructor fields
+	// `LEG.COL` literally, and the executor merely CONSUMES that spelling when
+	// adaptLegPositional feeds those leg-type column names to rowSlotForLegColumn.
+	// Measured: instrumenting both builders reproduced the executor census's own
+	// witnesses (`C.CV` and `O.ID` verbatim, `I.QTY` as the scalarCol half of
+	// `O.I.QTY`). The distinction is the whole of producer-first — pointed at the
+	// executor, this bucket's retirement waits on the wrong file.
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:139":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2742": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2744": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:794":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
@@ -1356,7 +1366,18 @@ func isNilIdent(e ast.Expr) bool {
 // isEmptyStringLit reports whether e is the literal "".
 // flattenConcat returns the operands of a `+` chain in source order, descending
 // through nested `+` BinaryExprs. Anything else is one operand.
+// Parentheses are unwrapped first: `a + ("." + b)` is the same mint written
+// right-nested, and go/parser keeps the ParenExpr, so a walk that only descends
+// through BinaryExpr sees one operand that is neither the separator nor the name
+// and reports nothing.
 func flattenConcat(e ast.Expr) []ast.Expr {
+	for {
+		p, isParen := e.(*ast.ParenExpr)
+		if !isParen {
+			break
+		}
+		e = p.X
+	}
 	be, ok := e.(*ast.BinaryExpr)
 	if !ok || be.Op != token.ADD {
 		return []ast.Expr{e}
@@ -1417,9 +1438,25 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	// reached through one local hop is judged on what actually flows into it.
 	tainted := nameTaint{}
 
-	// Positions already reported by the MINT arm, so a left-nested `+` chain
-	// reports its site once rather than once per prefix.
-	mintedAt := map[token.Pos]bool{}
+	// Source RANGES already reported by the MINT arm, so one mint reports once
+	// however its `+` chain is nested.
+	//
+	// Ranges rather than start positions. A LEFT-nested chain shares its start
+	// with every prefix of itself, so a start-keyed set deduped it — but a
+	// RIGHT-nested one (`corr + ("." + fv.Field)`) gives the inner node a
+	// different start, and the same set let it report twice. Containment is the
+	// property that actually holds in both: pre-order reaches the outermost `+`
+	// first, and every sub-chain of it lies inside its range.
+	type srcRange struct{ lo, hi token.Pos }
+	var mintedRanges []srcRange
+	alreadyMinted := func(n ast.Node) bool {
+		for _, r := range mintedRanges {
+			if n.Pos() >= r.lo && n.End() <= r.hi {
+				return true
+			}
+		}
+		return false
+	}
 
 	// PARAMETERS a call site in this file feeds the name into. Computed once for
 	// the whole file because the propagation is a fixed point over all of it —
@@ -1531,13 +1568,36 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			// producer at all: `corr + "." + strings.ToUpper(fv.Field)` is a `+`
 			// BinaryExpr, so it fell through the comparison arm above and was
 			// reported by nothing. Measured — the mint that CQ-53 exists to delete
-			// could be restored at
-			// rule_implement_nested_loop_join.go and the whole ratchet stayed GREEN.
+			// could be restored at rule_implement_nested_loop_join.go and the whole
+			// ratchet stayed GREEN.
 			//
 			// What is reported is narrow on purpose: a concatenation that JOINS a
 			// display name to a QUALIFIER SEPARATOR literal. That is the shape that
 			// manufactures a two-level key out of a one-level name, and it is the
 			// shape every reader in the `dotted` bucket exists to take apart again.
+			//
+			// THE BOUND, stated because it is not obvious from the arm and because
+			// the sites it excludes are the ones that matter most right now. This
+			// arm inherits the whole gate's scope: `decides` reads FieldValue.Field
+			// and identifiers tainted from it. A mint whose operand is a plain
+			// string parameter, or a `.Name` selector off a schema/leg field, is
+			// INVISIBLE here. The two producers this branch measured as the live
+			// channel are both outside the scope for exactly that reason —
+			// scalar_subquery_seed.go:83 joins a plain `scalarCol` string, and
+			// clustered_outer_scalar.go:493 joins `leg.typ.Fields[i].Name`. Neither
+			// is a FieldValue, so neither is counted, and the `dotted` bucket's
+			// tally must not be read as "every dotted producer in the tree".
+			//
+			// One shape is undetectable rather than merely out of scope, and it is
+			// worth naming so nobody spends an afternoon on it: values.go:1713
+			// accumulates path steps into a SLICE (`steps[i] = ...`) and joins them
+			// with strings.Join, so there is no `+ "." +` node at all and the taint
+			// tracker cannot follow it either — taint() requires an *ast.Ident on
+			// the left of the assignment, and `steps[i]` is an IndexExpr. Its
+			// sibling at :1720 IS caught, because that one concatenates. A
+			// heuristic for the slice form would key on strings.Join's separator
+			// argument and would fire on every path-joining helper in the tree; the
+			// bound is stated instead.
 			// Plain concatenation is not reported — building a message, or suffixing
 			// a name, cannot confuse column A with column B, which is the only
 			// failure this gate is about.
@@ -1562,8 +1622,8 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 				// itself, so the inner nodes would re-report the same site. The first
 				// report at a position wins and the rest are dropped: one mint, one
 				// entry.
-				if hasSep && hasName && !mintedAt[x.Pos()] {
-					mintedAt[x.Pos()] = true
+				if hasSep && hasName && !alreadyMinted(x) {
+					mintedRanges = append(mintedRanges, srcRange{x.Pos(), x.End()})
 					report(x.Pos(), "a dotted-name MINT (qualifier joined to the name)"+
 						localNote(decidesRaw, operands...))
 				}

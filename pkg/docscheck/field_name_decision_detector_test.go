@@ -600,6 +600,25 @@ func TestFieldDecisionMintArmFlattensTheConcatChain(t *testing.T) {
 			name: "name in the middle of a longer chain",
 			body: `func f(a, b string, fv *values.FieldValue) string { return a + "." + fv.Field + "." + b }`,
 		},
+		{
+			// PARENTHESES SPLITTING THE SEPARATOR FROM THE NAME. This is the shape
+			// that needs flattenConcat to unwrap ParenExpr, and it is the only one:
+			// the outer `+` sees [ParenExpr, fv.Field] — a name but no separator —
+			// while the inner sees [corr, "."] — a separator but no name. Neither
+			// reports, and the mint is invisible.
+			//
+			// Its mirror `corr + ("." + fv.Field)` deliberately is NOT here. That one
+			// reports from the inner node whether or not parens are unwrapped, so it
+			// stays green under the mutation and pins nothing — it was in this table
+			// until the mutation check said so.
+			name: "parentheses splitting the separator from the name",
+			body: `func f(corr string, fv *values.FieldValue) string { return (corr + ".") + fv.Field }`,
+		},
+		{
+			// Parens around the operands themselves.
+			name: "redundant parens around operands",
+			body: `func f(corr string, fv *values.FieldValue) string { return (corr) + "." + (fv.Field) }`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

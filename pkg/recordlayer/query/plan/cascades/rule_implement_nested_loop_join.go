@@ -1204,9 +1204,9 @@ func buildCorrelatedFlatMapPlan(
 	if innerNullOnEmpty && len(buriedLegAliases) > 0 {
 		legLayout := buriedLegOrdinalLayout(outerPlan)
 		origInnerPlan := innerPlan
-		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, legLayout, nil)
+		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, legLayout, nil, legRebaseSiteBuried)
 		for i, p := range joinPreds {
-			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, legLayout, nil)
+			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, legLayout, nil, legRebaseSiteBuried)
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false
@@ -2642,14 +2642,15 @@ func rebaseOuterLegRefsToMerged(
 	mergedCorr values.CorrelationIdentifier,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
+	site legRebaseSite,
 ) predicates.QueryPredicate {
 	if p == nil {
 		return p
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, legLayout, legLocalTypes)
-		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, legLayout, legLocalTypes)
+		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
@@ -2665,7 +2666,7 @@ func rebaseOuterLegRefsToMerged(
 			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
-		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, legLayout, legLocalTypes)
+		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if newVal == pred.Value {
 			return p
 		}
@@ -2674,7 +2675,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 			if subs[i] != s {
 				changed = true
 			}
@@ -2687,7 +2688,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 			if subs[i] != s {
 				changed = true
 			}
@@ -2697,7 +2698,7 @@ func rebaseOuterLegRefsToMerged(
 		}
 		return predicates.NewOr(subs...)
 	case *predicates.NotPredicate:
-		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, legLayout, legLocalTypes)
+		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if newChild == pred.Child {
 			return p
 		}
@@ -2730,6 +2731,7 @@ func rebaseOuterLegValue(
 	mergedCorr values.CorrelationIdentifier,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
+	site legRebaseSite,
 ) values.Value {
 	if v == nil {
 		return v
@@ -2863,9 +2865,29 @@ func rebaseOuterLegValue(
 					// FDB driver incl. the RFC-153 matrix): a panic wired into it is
 					// reached only by TestRebaseOuterLegValue_OrdinalFirst, because
 					// the only callers holding a layout are the ordinal-seed paths and
-					// those rebase through rebaseOuterLegRefsOrdinal instead. It stays
-					// as the fail-closed net for shapes that arrive layout-bearing,
-					// and it stays FIRST because that is the precedence Java states.
+					// those rebase through rebaseOuterLegRefsOrdinal instead.
+					//
+					// WHY IT STAYS, correctly stated. An earlier version of this
+					// comment said it stays first "because that is the precedence Java
+					// states", and Java states no precedence at all: in the collapsing
+					// branch the ordinal re-anchor is Java's EXCLUSIVE disposition
+					// (PartitionSelectRule.java:296-303 rewrites every reference to a
+					// collapsed alias and the alias then ceases to exist), so there is
+					// no second arm for it to be ordered against. The arm below is
+					// Go's own widening — N sibling aliases kept bound at runtime —
+					// and it is the divergence DIVERGENCES.md books, not an
+					// alternative Java ranks lower.
+					//
+					// So the reason is that this arm is the ONLY Java-shaped
+					// disposition on the path. Delete it and what remains is the
+					// divergent arm alone, with nothing left that behaves the way the
+					// reference implementation does on a layout-bearing shape — and
+					// the divergence's stated retirement condition is precisely that
+					// this arm grows to cover every shape reaching the cursor. It is
+					// the fail-closed net for a shape that arrives layout-bearing, and
+					// it goes first because a reference Java would have re-anchored
+					// must not be left on a live sibling alias merely because the
+					// widening could also have resolved it.
 					//
 					// THE RE-ANCHORED NODE CARRIES NO LEG NAME. It used to be minted as
 					// `corr + "." + ToUpper(fv.Field)` — the leg packed into the display
@@ -2883,7 +2905,7 @@ func rebaseOuterLegValue(
 					if legLayout != nil && identity == legReadIdentityInLegDomain {
 						if ord, ok := legLayout[id]; ok {
 							recordRebaseOuterLegArm(legLocalBakeMergedReAnchor, fv, qov,
-								legLocalTypes, identity)
+								legLocalTypes, identity, site)
 							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 								values.NewQuantifiedObjectValue(mergedCorr),
 								values.OrdinalFieldName(ord), ord, fv.Typ,
@@ -2898,7 +2920,7 @@ func rebaseOuterLegValue(
 					// whose entire purpose is to stop losing it.
 					if identity == legReadIdentityInLegDomain {
 						recordRebaseOuterLegArm(legLocalBakeBaked, fv, qov,
-							legLocalTypes, identity)
+							legLocalTypes, identity, site)
 						return v
 					}
 
@@ -2909,7 +2931,7 @@ func rebaseOuterLegValue(
 					// truthful outcome, and the one that leaves the defect visible
 					// at the producer instead of papered over with a string here.
 					recordRebaseOuterLegArm(legLocalBakeDeclined, fv, qov,
-						legLocalTypes, identity)
+						legLocalTypes, identity, site)
 					return v
 				}
 			}
@@ -2922,7 +2944,7 @@ func rebaseOuterLegValue(
 	changed := false
 	newChildren := make([]values.Value, len(children))
 	for i, c := range children {
-		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, legLayout, legLocalTypes)
+		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if newChildren[i] != c {
 			changed = true
 		}
@@ -2949,30 +2971,30 @@ func rebaseOuterLegValue(
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
-func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) plans.RecordQueryPlan {
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) plans.RecordQueryPlan {
 	if p == nil || len(legAliases) == 0 {
 		return p
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryIndexPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if !changed {
 			return p
 		}
 		return pl.WithScanComparisons(newComps)
 	case *plans.RecordQueryScanPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if !changed {
 			return p
 		}
 		return pl.WithScanComparisons(newComps)
 	case *plans.RecordQueryPredicatesFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		preds := pl.GetPredicates()
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 			if newPreds[i] != pr {
 				changed = true
 			}
@@ -2982,12 +3004,12 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias())
 	case *plans.RecordQueryFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		preds := pl.GetPredicates()
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 			if newPreds[i] != pr {
 				changed = true
 			}
@@ -2997,19 +3019,19 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryFilterPlan(newPreds, inner)
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() {
 			return p
 		}
 		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords())
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() {
 			return p
 		}
 		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() {
 			return p
 		}
@@ -3018,25 +3040,25 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryTypeFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() {
 			return p
 		}
 		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner)
 	case *plans.RecordQueryMapPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
-		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
 			return p
 		}
 		return plans.NewRecordQueryMapPlan(inner, newResult)
 	case *plans.RecordQueryProjectionPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes)
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		projs := pl.GetProjections()
 		newProjs := make([]values.Value, len(projs))
 		changed := inner != pl.GetInner()
 		for i, v := range projs {
-			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, legLayout, legLocalTypes)
+			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 			if newProjs[i] != v {
 				changed = true
 			}
@@ -3057,11 +3079,11 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 
 // rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
 // comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
-func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) ([]*predicates.ComparisonRange, bool) {
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) ([]*predicates.ComparisonRange, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
-		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, legLayout, legLocalTypes)
+		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		out[i] = nc
 		if ch {
 			changed = true
@@ -3074,7 +3096,7 @@ func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []st
 // equality/inequality comparison operands. Returns the (possibly rebuilt) range and
 // whether it changed. A range whose rebuilt comparison cannot be re-merged is
 // returned unchanged (the verification then declines the probe).
-func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) (*predicates.ComparisonRange, bool) {
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) (*predicates.ComparisonRange, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false
 	}
@@ -3087,7 +3109,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 	rebuilt := predicates.EmptyComparisonRange()
 	changed := false
 	for _, c := range comparisons {
-		nc := rebaseComparison(c, legAliases, mergedCorr, legLayout, legLocalTypes)
+		nc := rebaseComparison(c, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if nc != c {
 			changed = true
 		}
@@ -3106,11 +3128,11 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 // rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
 // copying the comparison so every non-operand field (Type, Escape, ParameterName,
 // the Text*/vector fields) is preserved verbatim.
-func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) *predicates.Comparison {
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) *predicates.Comparison {
 	if c == nil || c.Operand == nil {
 		return c
 	}
-	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, legLayout, legLocalTypes)
+	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
 	if newOperand == c.Operand {
 		return c
 	}
@@ -3793,7 +3815,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			// The layouts come from the legs' physical plans; a read the layouts
 			// cannot place still falls through to the qualified-name mint, and
 			// the census records which.
-			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes)
+			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
 		}
 		existPreds = rebased
 	}
@@ -3844,7 +3866,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			}
 			existPlan = np
 		} else {
-			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes)
+			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
 		}
 		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
 			return
@@ -3906,7 +3928,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 				return
 			}
 		} else {
-			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, nil, existLegRowTypes)
+			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
 		}
 		// Existential quantifier alias → the FlatMap inner binding (existCorr).
 		if quants[2].GetAlias() != existCorr {

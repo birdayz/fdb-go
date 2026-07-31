@@ -10496,13 +10496,35 @@ None is speculative: each was re-verified against the tree before booking.
     two routes fails the pin, empties the registry, and turns those same reads
     into a red gate in the same run.
 
-    **Criterion amended on post-ACK evidence; re-confirmation pending.** The
-    double-ACK'd form was a bare *merged-shape read ⇒ Baked > 0*, resting on
-    the "3 single-leg-unnest reads" claim above. That claim is refuted, and the
-    bare form is unsatisfiable on this tree (3 multi-leg reads with Baked = 0
-    by construction). The amendment — the proven-redundant exclusion and its
-    pin — has NOT been through the architecture reviewer; it goes as a single
-    question.
+    **Criterion amended on post-ACK evidence. RULED SOUND, AND INERT — the
+    standing question is CLOSED and its premise was stale.** The double-ACK'd
+    form was a bare *merged-shape read ⇒ Baked > 0*, resting on the "3
+    single-leg-unnest reads" claim above. That claim is refuted. What this entry
+    then said — that the bare form is "unsatisfiable on this tree (3 multi-leg
+    reads with Baked = 0 by construction)" — is ALSO wrong, and in the opposite
+    direction: `Baked` counts the PASS-THROUGH, which is 174 of 174, so the bare
+    implication is not unsatisfiable but TRIVIALLY SATISFIED. Its antecedent
+    holds and its consequent holds, always, for reasons that have nothing to do
+    with each other.
+
+    The amended form (proven-redundant exclusion) was reviewed and is sound as
+    machinery: the exclusion is keyed on full read identity, the registration
+    happens only on the pin's passing path so a divergence empties the registry,
+    and `partitionMergedRowReads` is pure. But sound is not the same as useful.
+    The criterion can only fire if the PASS-THROUGH goes silent while merged-row
+    reads persist, which is a state no current shape produces. It is a gate
+    guarding a door nobody walks through.
+
+    **The gap that matters is elsewhere, and it has no instrument at all.** The
+    load-bearing claim on this path is "the bindings are not load-bearing" — and
+    what supports it is a HAND-RUN mutation: bind every leg to the wrong window,
+    observe the suite stays green. Nothing in CI does that. The redundancy pin
+    (`TestFDB_MergedLegBinding_ReaderShapeIsRedundant`) runs the reader shape
+    down both routes via `EvaluationContext.WithMergedLegReadBypass` and compares
+    rows, which proves the two ROUTES agree; it does not bind a wrong window, so
+    it cannot notice the day a binding starts to matter. Until a wrong-window arm
+    is standing, "not load-bearing" is a claim whose evidence expired the moment
+    it was measured. NOT BUILT HERE — see the phase-3 status list.
 
     Consequence for CQ-53's remainder: the shadowing and first-claim-wins
     semantics are, on the shapes that run, UNOBSERVABLE — and the
@@ -10840,6 +10862,34 @@ None is speculative: each was re-verified against the tree before booking.
   | `logical_predicate.go:9340` | the correlated-scalar column key, qualified or bare depending on a scoping test made elsewhere |
   | `values.go:1720` (`contract`) | `FieldPath.toString` rendering — debt through `ColumnNameValue`, not through `ExplainValue` beside it |
 
+  **WHAT THE MINT ARM COUNTS, AND WHAT IT CANNOT — read the six above with this
+  bound or the tally lies.** The arm inherits the whole gate's scope: it fires on
+  a `.` joined to `FieldValue.Field` or to an identifier tainted from it. Three
+  consequences, and the first is the one that matters:
+
+  - **The two producers this phase MEASURED as the live executor-side channel are
+    OUTSIDE the count.** `scalar_subquery_seed.go:83` joins a plain `scalarCol`
+    string parameter; `clustered_outer_scalar.go:493` joins
+    `leg.typ.Fields[i].Name`, a `.Name` selector off a schema field. Neither
+    operand is a `FieldValue`, so neither is a decision the gate can see. The
+    same holds for their siblings at `clustered_outer_scalar.go:510`, `:774` and
+    `cascades_translator.go:7036`. `dotted (14)` therefore means "fourteen
+    `.Field`-scoped dotted sites", NOT "every dotted producer in the tree".
+  - **One shape is structurally undetectable rather than merely out of scope.**
+    `values.go:1713` accumulates path steps into a SLICE (`steps[i] = …`) and
+    joins them with `strings.Join`, so there is no `+ "." +` node to match and
+    the taint tracker cannot follow it either — `taint()` requires an
+    `*ast.Ident` on the left of an assignment and `steps[i]` is an `IndexExpr`.
+    Its sibling at `:1720` IS counted, because that one concatenates. A
+    heuristic keyed on `strings.Join`'s separator argument would fire on every
+    path-joining helper in the tree; the bound is stated instead of guessed at.
+  - Widening to `.Name` selectors is the obvious next step and it is NOT free:
+    `.Name` is among the most common field spellings in the tree (schema fields,
+    protobuf descriptors, quantifier bindings), so the arm would need the type
+    discriminator the gate deliberately does not use on its shallow tier. That
+    trade is documented at `scanFieldDecisions`' `decides` closure and is a
+    change to the gate's precision policy, not an extension of this arm.
+
   THE REFUTATIONS. Each quotes the premise it kills:
 
   1. **"The `:2854` producer deleted ⇒ leg-column provenance 4 dotted hits → 0."**
@@ -10986,6 +11036,31 @@ None is speculative: each was re-verified against the tree before booking.
   result: the only production edit is ARM 1's display NAME, on an arm measured
   to return zero times over the whole corpus. If a future change makes ARM 1
   fire, that change owns its own stress run.
+
+  **STILL OPEN after phase 3, stated so neither is mistaken for done:**
+
+  1. **The standing WRONG-WINDOW instrument is NOT built.** The claim "the
+     merged-leg bindings are not load-bearing" rests on a mutation somebody runs
+     by hand — bind every leg to the wrong window, watch the suite stay green.
+     Nothing in CI performs it. `TestFDB_MergedLegBinding_ReaderShapeIsRedundant`
+     proves the two RESOLUTION ROUTES agree; it never binds a wrong window, so it
+     cannot go red on the day a binding starts to matter — which is exactly the
+     day this item has been waiting for. The shape of the fix is known: extend
+     that test (or add an FDB sibling) with a wrong-window arm asserting rows
+     still agree, so it REDS on activation, with a failure message naming the
+     procedure (exclusion comes out; activation has arrived). It needs its own
+     mutation check — make the binder correct-window-only and confirm the arm
+     still exercises the bypass — and that is why it was not squeezed in beside
+     the other folds.
+  2. **The MINT arm was NOT widened to `.Name` selectors** (resolution (b), not
+     (a)). The bound is stated at the arm and in the table above instead. The
+     reason is a real cost, not a shrug: `.Name` is one of the most common field
+     spellings in the tree, so catching `leg.typ.Fields[i].Name` without drowning
+     the bucket needs the TYPE DISCRIMINATOR the gate's shallow tier
+     deliberately does without — and that tier's precision trade is itself pinned
+     by two fixtures, so changing it is a policy change with its own mutation
+     matrix. Widening on spelling alone was not attempted because the measurement
+     that would license it does not exist yet.
 
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and

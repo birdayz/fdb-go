@@ -385,7 +385,14 @@ func mergedLegReadIsAlarm(reads int) bool {
 // opinion to absorb it: it lands in UnderivableLegs, which is asserted at zero.
 // That is what re-arms suspicion now.
 var legLocalBakeFloors = cascades.LegLocalBakeFloors{
-	Total:          12,
+	Total: 12,
+	// SiteExists floors the EXISTS lowering specifically. Total alone would let
+	// the whole population migrate to another entry point with the gate green,
+	// and the SiteBuried zero beside it would then be passing vacuously — the
+	// buried site reaching nothing looks identical to the buried site not being
+	// reached at all. Measured 174; floored an order of magnitude below, because
+	// what a floor detects here is COLLAPSE, not drift.
+	SiteExists:     12,
 	LegDerivations: 80,
 	MergeSlots:     1800,
 }

@@ -51,6 +51,12 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 	// stating an identity), and the difference is the whole of what phase 2 did.
 	healthy := legLocalBakeCounters{
 		Total: 174, Baked: 174, MergedReAnchor: 0, Declined: 0,
+		// The CALL-SITE cut: which lowering reached the arm. Measured 174 / 0 —
+		// every firing is the EXISTS site, none is the RFC-153 buried site. Two
+		// documents assert that zero in prose (DIVERGENCES.md's sibling-alias entry
+		// and TODO.md's CQ-53 phase-3 refutation 2), which is exactly why the gate
+		// has to hold it rather than the prose.
+		SiteExists: 174, SiteBuried: 0,
 		// Vacuous at HEAD: these partition MergedReAnchor, which is 0. The gate
 		// says so out loud rather than reporting a green check over nobody — the
 		// VACUOUS direction below is what pins that.
@@ -69,7 +75,7 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 		MergeSlotsTyped: 17604, MergeSlotsScavenged: 4, MergeSlotsScalar: 0,
 		MergeSlotsUntyped: 750,
 	}
-	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80, MergeSlots: 1800}
+	floors := &LegLocalBakeFloors{Total: 12, SiteExists: 12, LegDerivations: 80, MergeSlots: 1800}
 
 	var healthyOut strings.Builder
 	if assertLegLocalBakeCounters(&healthyOut, healthy, floors) {
@@ -136,6 +142,32 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 			name:     "a leg that leaves the derivation by an uncounted path",
 			mutate:   func(c *legLocalBakeCounters) { c.LegDerivations++ },
 			wantMsgs: []string{"but LegDerivations = 961"},
+		},
+		{
+			// THE CALL-SITE ZERO. A leg-correlated read reaching the arm from the
+			// RFC-153 buried lowering. The read MOVES between sites so Total and
+			// every other partition stay exact and only the zero this case is
+			// written for breaks — otherwise a passing case could be passing on the
+			// partition check instead.
+			//
+			// This is the phase-3 refutation being held. The buried site measured
+			// ZERO while DOING state a layout, which is why the entry's claim that
+			// the arm is reached "without a stated merged layout on the
+			// EXISTS-over-join and RFC-153 buried-leg paths" was wrong about half
+			// its subject. Nothing checked that until this dimension existed.
+			name: "a read reaching the arm from the RFC-153 buried lowering",
+			mutate: func(c *legLocalBakeCounters) {
+				c.SiteExists--
+				c.SiteBuried++
+			},
+			wantMsgs: []string{"SiteBuried = 1, want 0"},
+		},
+		{
+			// A firing whose site is counted into neither — the shape a THIRD entry
+			// point into rebaseOuterLegValue would produce.
+			name:     "a firing counted into Total but into no call site",
+			mutate:   func(c *legLocalBakeCounters) { c.SiteExists-- },
+			wantMsgs: []string{"SiteExists(173) + SiteBuried(0) = 173"},
 		},
 		{
 			// The identity cut is carried along so the identity/Total partition
@@ -266,12 +298,13 @@ func TestLegLocalBakeGateAnnouncesVacuousPartitions(t *testing.T) {
 	// the live number.
 	live := legLocalBakeCounters{
 		Total: 174, Baked: 174,
+		SiteExists:          174,
 		IdentityInLegDomain: 174,
 		FlowedLegs:          960, LegDerivations: 960,
 		MergeSlots: 18358, MergeSlotsTyped: 17604, MergeSlotsScavenged: 4,
 		MergeSlotsUntyped: 750,
 	}
-	floors := &LegLocalBakeFloors{Total: 12, LegDerivations: 80, MergeSlots: 1800}
+	floors := &LegLocalBakeFloors{Total: 12, SiteExists: 12, LegDerivations: 80, MergeSlots: 1800}
 
 	var out strings.Builder
 	if assertLegLocalBakeCounters(&out, live, floors) {
