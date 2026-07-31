@@ -227,18 +227,30 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // reconstruct-nil split 94 bare-QOV / 60 positional-merge, ACCEPT 78, and
 // both-legs-unsafe 0. Those are the four the design rests on and none of them
 // moved.
+// AND THEN THIS SUITE GREW BY ONE FILE, WHICH IS THE GATE WORKING.
+//
+// TestFDB_NestedMergeLegProjectedExistsFold — RFC-200 gate (a)'s fixture, and
+// the pinned blocker beside it — adds four firings: its two-source control
+// ACCEPTS twice, and its three-source negative declines reconstruct-nil twice
+// with a BARE-QOV leg. So the totals below are the post-3d numbers plus that
+// file: denominator 542+4, ACCEPT 138+2, reconstruct-nil 94+2 all bare-QOV.
+//
+// The equality is stated at the new totals rather than relaxed into a range,
+// because a range would absorb the next four firings silently — and it was this
+// gate going red on a test the author had just written that produced the
+// attribution above, from a run rather than from memory.
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		Denominator:     n(542),
-		Accept:          n(138),
+		Denominator:     n(546),
+		Accept:          n(140),
 		CorrelatedStep1: n(108),
 		NoExistRef:      n(202),
-		ReconstructNil:  n(94),
+		ReconstructNil:  n(96),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
 		// satisfied by any 94, including a mix that had let merge legs back in.
-		ReconstructNilBareQOV: n(94),
+		ReconstructNilBareQOV: n(96),
 		ReconstructNilMerge:   n(0),
 	}
 }()
