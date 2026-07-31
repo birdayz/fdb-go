@@ -7,6 +7,7 @@ go_library(
         "javarandom.go",
         "ledger.go",
         "match.go",
+        "resultmetadata.go",
         "runner.go",
         "testblock.go",
     ],
@@ -32,6 +33,8 @@ go_test(
         "javarandom_test.go",
         "match_internal_test.go",
         "pinned_ledger_test.go",
+        "resultmetadata_internal_test.go",
+        "typenames_internal_test.go",
     ],
     # keep: the run walks the vendored .yamsql tree, so it must be in runfiles.
     # Without this the ledger gate does not fail under `bazel test` — it cannot
@@ -39,6 +42,7 @@ go_test(
     data = ["//third_party/apple/fdb-record-layer:yamsql_corpus"],
     embed = [":javacorpus"],
     deps = [
+        "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",

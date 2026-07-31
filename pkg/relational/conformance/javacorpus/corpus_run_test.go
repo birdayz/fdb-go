@@ -208,9 +208,16 @@ func TestJavaCorpusRuns(t *testing.T) {
 	}
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
-	if booked != 20 || suppressed != 15 || claimedEarlier != 7 {
+	// 25 / 10 / 7. The five that moved from suppressed to booked are the
+	// scalar `check-result-metadata/shouldFail/*` files: their only failing
+	// assertion IS the metadata one, so while the directive was a counted skip
+	// they ran clean and had to be booked against the skip that removed it.
+	// Executing the assertion is what lets them fail as upstream requires —
+	// which makes this split, not the class counts, the measurement that shows
+	// the directive is really being checked.
+	if booked != 25 || suppressed != 10 || claimedEarlier != 7 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
-			"pinned baseline is 20 / 15 / 7 (42 manifest entries)", booked, suppressed, claimedEarlier)
+			"pinned baseline is 25 / 10 / 7 (42 manifest entries)", booked, suppressed, claimedEarlier)
 	}
 
 	if got := census.Line(); got != pinnedLedger {
@@ -250,6 +257,11 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipRandomInjection: "the !r / !a segments live in prepared.yamsql and showcasing-tests.yamsql, " +
 		"claimed first by engine-gap:array-literal-values and unsupported-DDL:struct",
+	javacorpus.SkipResultMetadataNested: "every vendored file whose resultMetadata descends into a column " +
+		"declares a struct type or inserts an array literal, so unsupported-DDL:struct and " +
+		"engine-gap:array-literal-values claim the file before a query runs. It becomes reachable the " +
+		"day RFC-201 Phase 3 lands struct DDL, and that is when the driver's flat ColumnDef truncation " +
+		"starts costing files rather than merely existing",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +
 		"CURRENT singleton, which sorts above every literal, so SupportedAtCurrentVersion is constantly true. " +
 		"It becomes reachable the day a second version is under test",

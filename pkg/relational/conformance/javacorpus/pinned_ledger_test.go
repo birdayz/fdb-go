@@ -13,7 +13,7 @@ package javacorpus_test
 // Read it as three groups:
 //
 //   - `polarity:*` and `fragment` — the corpus's own meta-tests. 25 files the
-//     parser must refuse, 20 that must fail at execution and do, 9 whose
+//     parser must refuse, 25 that must fail at execution and do, 9 whose
 //     polarity Java defines only against a version it pins, 2 include-only
 //     fragments. None of these measure the engine.
 //   - `unsupported-DDL:*` and `unsupported:*` — capabilities a later RFC-201
@@ -26,7 +26,7 @@ package javacorpus_test
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=32 fail=0 skip=206 queries=512 " +
+const pinnedLedger = "pass=32 fail=0 skip=206 queries=487 " +
 	"file_skips{conformance:go-accepts-what-java-rejects=1," +
 	"engine-gap:array-literal-values=5,engine-gap:cast-array-literal=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:correlated-exists-setop=1," +
@@ -35,10 +35,10 @@ const pinnedLedger = "pass=32 fail=0 skip=206 queries=512 " +
 	"engine-gap:planner-declines=1,engine-gap:returning-dry-run=1," +
 	"engine-gap:row-version-pseudocolumn=1,engine-gap:table-valued-function=1," +
 	"engine-gap:typed-integer-literal=1,fragment=2,no-checks=1,plan-assertion=7," +
-	"polarity:fixed-version-meta=9,polarity:negative-execution=20," +
+	"polarity:fixed-version-meta=9,polarity:negative-execution=25," +
 	"polarity:negative-parse=25,unsupported-DDL:other=6,unsupported-DDL:struct=39," +
-	"unsupported-DDL:value-index-as-select=42,unsupported:continuation=1," +
-	"unsupported:multi-cluster=2,unsupported:result-metadata=7," +
+	"unsupported-DDL:value-index-as-select=42,unsupported:continuation=3," +
+	"unsupported:multi-cluster=2," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
 	"vacuous:all-assertions-skipped=1} " +
 	"inner_skips{conformance:go-accepts-what-java-rejects=1," +
@@ -53,7 +53,7 @@ const pinnedLedger = "pass=32 fail=0 skip=206 queries=512 " +
 	"unsupported-DDL:value-index-as-select=42,unsupported:check-cache=94," +
 	"unsupported:continuation=16,unsupported:debugger=3," +
 	"unsupported:multi-cluster=2,unsupported:prepared=124," +
-	"unsupported:result-metadata=65,unsupported:schema-command=16," +
+	"unsupported:schema-command=16," +
 	"unsupported:temporary-function=191}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
@@ -68,4 +68,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "4c6f5dc175faacb138165a0a0ae8bde15d98e5f81ab7d8137ec683578f9cd3eb"
+const pinnedAssignmentDigest = "0d1f15ab4266e4e9a8a373eea2cbdba7460e749d2b61bf42c98f259365681de8"

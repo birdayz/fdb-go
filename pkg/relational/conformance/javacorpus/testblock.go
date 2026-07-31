@@ -232,8 +232,15 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	// First pass: decide what this query can assert at all. The version
 	// markers are sticky mode switches, so a config's fate depends on the most
 	// recent one before it.
+	//
+	// `resultMetadata:` is sticky in the same way, and in Java's own sense: it
+	// is never executed on its own, it arms an INLINE check that every later
+	// result-consuming config performs before drawing rows
+	// (QueryCommand.executeInternal's stickyMetadata). Recording the most
+	// recent one before each consumer reproduces that here.
 	shouldExecute := true
 	var consuming []*javayamsql.Config
+	var pendingMetadata, metadataFor *javayamsql.Config
 	skipQuery := SkipClass("")
 	for _, cfg := range cmd.Configs {
 		switch cfg.Kind {
@@ -260,17 +267,19 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 			// query's assertions are not reproducible at all.
 			skipQuery = SkipContinuation
 		case javayamsql.ConfigResultMetadata:
-			r.skip(SkipResultMetadata, at, "resultMetadata")
+			pendingMetadata = cfg
 		case javayamsql.ConfigSetup, javayamsql.ConfigSetupReference:
 			skipQuery = SkipTemporaryFunction
 		case javayamsql.ConfigDebugger:
 			r.skip(SkipDebugger, at, cfg.Text)
 		case javayamsql.ConfigResult, javayamsql.ConfigUnorderedResult,
 			javayamsql.ConfigCount, javayamsql.ConfigError:
+			if len(consuming) == 0 {
+				metadataFor = pendingMetadata
+			}
 			consuming = append(consuming, cfg)
 		}
 	}
-
 	if skipQuery != "" {
 		r.skip(skipQuery, at, truncate(query))
 		return nil
@@ -282,13 +291,24 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	}
 	if len(consuming) > 1 {
 		// Each result-consuming config draws one page. More than one means the
-		// query is paginated, which is the continuation surface's job.
+		// query is paginated, which is the continuation surface's job — and
+		// that claims any metadata directive on the query with it, since Java
+		// re-checks the sticky metadata on EVERY page.
 		r.skip(SkipContinuation, at, fmt.Sprintf("%d result-consuming configs require %d pages", len(consuming), len(consuming)))
 		return nil
 	}
+	// A metadata directive that no later consumer picks up asserts nothing.
+	// Java tolerates it silently — the sticky field is simply never read — but
+	// a directive this runner neither checks nor counts is exactly the shape
+	// the ledger exists to make impossible, and javayamsql is deliberately
+	// stricter than Java about corpus shapes it cannot account for.
+	if pendingMetadata != nil && metadataFor == nil {
+		return fmt.Errorf("%s: a resultMetadata config at line %d is followed by no result-consuming "+
+			"config, so nothing ever checks it", at, pendingMetadata.Line)
+	}
 
 	cfg := consuming[0]
-	if err := r.runConfig(ctx, conn, at, query, cfg); err != nil {
+	if err := r.runConfig(ctx, conn, at, query, cfg, metadataFor); err != nil {
 		return err
 	}
 	r.result.QueriesRun++
@@ -321,13 +341,25 @@ func (r *runner) adaptQuery(cmd *javayamsql.Command, at string) (string, bool) {
 }
 
 // runConfig executes the query once and checks the single result-consuming
-// config against it.
-func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config) error {
+// config against it, plus the sticky `resultMetadata:` directive armed before
+// it, if any.
+func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string, cfg, meta *javayamsql.Config) error {
 	if cfg.Kind == javayamsql.ConfigError {
+		// Java passes the sticky config down here too, but checkInline returns
+		// immediately unless the statement produced a RelationalResultSet — and
+		// a statement whose expectation is an error produced none.
+		if meta != nil {
+			return fmt.Errorf("%s: a resultMetadata config at line %d is armed for an `error:` "+
+				"expectation, which produces no result set to read metadata from", at, meta.Line)
+		}
 		return r.checkError(ctx, conn, at, query, cfg)
 	}
 
 	if cfg.Kind == javayamsql.ConfigCount {
+		if meta != nil {
+			return fmt.Errorf("%s: a resultMetadata config at line %d is armed for a `count:` "+
+				"expectation, which yields an update count, not a result set", at, meta.Line)
+		}
 		// `count:` is the JDBC update count, not a row count.
 		n, err := execAny(ctx, conn, query)
 		if err != nil {
@@ -342,6 +374,10 @@ func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string
 	if !isRowReturning(query) {
 		// A result expectation against a statement that produces no result set
 		// is Java's "actual result set is NULL" branch.
+		if meta != nil {
+			return fmt.Errorf("%s: a resultMetadata config at line %d is armed for a statement that "+
+				"returns no result set", at, meta.Line)
+		}
 		if _, err := execAny(ctx, conn, query); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
 		}
@@ -354,6 +390,17 @@ func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string
 	rs, err := queryRows(ctx, conn, query)
 	if err != nil {
 		return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
+	}
+	// Java reads the metadata off the OPEN result set before any row is drawn,
+	// then checks it (QueryExecutor.checkInlineMetadataIfPresent). queryRows
+	// captures the column identity at the same point, so the descriptors here
+	// are the same pre-iteration read.
+	if meta != nil {
+		if descends, why := metadataDescends(meta.Raw); descends {
+			r.skip(SkipResultMetadataNested, at, why)
+		} else if err := matchMetadata(meta.Raw, extractDescriptors(rs)); err != nil {
+			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
+		}
 	}
 	if err := matchResultSet(cfg, rs, cfg.Kind == javayamsql.ConfigResult); err != nil {
 		return fmt.Errorf("%s: %q: %w", at, truncate(query), err)

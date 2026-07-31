@@ -198,7 +198,12 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 // rather than restated in prose.
 func (c SkipClass) SuppressesAssertion() bool {
 	switch c {
-	case SkipPlanAssertion, SkipResultMetadata, SkipContinuation,
+	// SkipResultMetadataNested belongs here even though the row assertion
+	// survives it: the `check-result-metadata/shouldFail/wrong-nested-*` files
+	// are negatives whose ONLY failing assertion IS the metadata one, so
+	// declining it would let them run clean and be reported as negatives that
+	// wrongly passed — crediting a driver gap as a finding.
+	case SkipPlanAssertion, SkipResultMetadataNested, SkipContinuation,
 		SkipTemporaryFunction, SkipRandomInjection, SkipVersionGate,
 		SkipSchemaCommand, SkipNoChecks:
 		return true
