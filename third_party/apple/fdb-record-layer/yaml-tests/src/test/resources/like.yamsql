@@ -1,0 +1,389 @@
+#
+# like.yamsql
+#
+# This source file is part of the FoundationDB open source project
+#
+# Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+---
+options:
+  supported_version: 4.10.20.0
+---
+schema_template:
+    create table A(a1 string, primary key(a1))
+    create table B(b1 integer, b2 string, primary key(b1))
+    create table C(c1 integer, c2 string, primary key(c1))
+
+    create index c2 as select c2 from c order by c2
+---
+setup:
+  steps:
+    - query: insert into A values
+        (null),
+        ('abcdefghijklmnopqrstuvwxyz'),
+        ('___abcdef'),
+        ('%%abcdef'),
+        ('*abcdef'),
+        ('ABCDEFGHIJKLMNOPQRSTUVWXYZ'),
+        ('école'),
+        ('ありがとう'),
+        ('学校'),
+        ('مدرسة'),
+        ('(abcdefghijk)'),
+        ('[abcdefghijk]'),
+        ('{abcdefghijk}'),
+        ('^$'),
+        ('\\||%');
+    - query: insert into B values
+        (1, 'Y'),
+        (2, 'Z'),
+        (3, 'A'),
+        (4, 'Z'),
+        (5, 'B');
+    - query: insert into C values
+        ( 1, 'alphabet'),
+        ( 2, 'anticipation'),
+        ( 3, 'aplomb'),
+        ( 4, 'apple'),
+        ( 5, 'appliance'),
+        ( 6, 'application'),
+        ( 7, 'awry'),
+        ( 8, 'banal'),
+        ( 9, 'banana'),
+        (10, 'bench'),
+        (11, 'bento'),
+        (12, 'c'),
+        (13, 'cabal'),
+        (14, 'camel'),
+        (15, 'canal'),
+        (16, 'capital'),
+        (17, 'catch-all'),
+        (18, 'cavalry'),
+        (19, 'cb')
+        ;
+---
+test_block:
+  tests:
+    -
+      - query: select * from B WHERE B2 LIKE 'X'
+      - result: []
+    -
+      - query: select * from B WHERE B2 LIKE 'Y'
+      - result: [{1, 'Y'}]
+    -
+      # Issue #3099 found that the pattern was being put in the escape part of the LIKE on continuation
+      # which for all the other queries, would result in an error that the escape should be of length 1.
+      # I added these queries to see if that issue would expose differently if the query was only one character,
+      # and it kind of did, it ended up exposing issue: https://github.com/FoundationDB/fdb-record-layer/issues/3216
+      - query: select * from B WHERE B2 NOT LIKE 'Z'
+      - result: [{1, 'Y'}, {3, 'A'}, {5, 'B'}]
+    -
+      - query: select * from B WHERE B2 NOT LIKE 'Z' ESCAPE 'Z'
+      # This should error; see https://github.com/FoundationDB/fdb-record-layer/issues/3216
+      - result: [{1, 'Y'}, {3, 'A'}, {5, 'B'}]
+    -
+      - query: select * from B WHERE B2 NOT LIKE '\'
+      # This should error; see https://github.com/FoundationDB/fdb-record-layer/issues/3216
+      - result: [{1, 'Y'}, {2, 'Z'}, {3, 'A'}, {4, Z}, {5, 'B'}]
+    -
+      - query: select * from B WHERE B2 LIKE 'Z'
+      - result: [{2, 'Z'}, {4, 'Z'}]
+---
+test_block:
+  tests:
+    -
+      - query: select * from A WHERE A1 LIKE 'A'
+      - result: []
+    -
+      - query: select * from A WHERE A1 LIKE 'abc'
+      - result: []
+    -
+      - query: select * from A WHERE A1 LIKE '%abc'
+      - result: []
+    -
+      - query: select * from A WHERE A1 LIKE '%abc%'
+      - unorderedResult: [
+          {'abcdefghijklmnopqrstuvwxyz'},
+          {'___abcdef'},
+          {'%%abcdef'},
+          {'*abcdef'},
+          {'(abcdefghijk)'},
+          {'[abcdefghijk]'},
+          {'{abcdefghijk}'}]
+    -
+      - query: select * from A WHERE A1 LIKE '_abc%'
+      - unorderedResult: [
+          {'(abcdefghijk)'},
+          {'[abcdefghijk]'},
+          {'{abcdefghijk}'},
+          {'*abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '%ABC%'
+      - unorderedResult: [{'ABCDEFGHIJKLMNOPQRSTUVWXYZ'}]
+    -
+      - query: select * from A WHERE A1 LIKE '%ABC%X_Z'
+      - unorderedResult: [{'ABCDEFGHIJKLMNOPQRSTUVWXYZ'}]
+    -
+      - query: select * from A WHERE A1 LIKE '%ABC%XY_Z'
+      - unorderedResult: []
+    -
+      - query: select * from A WHERE A1 LIKE '__'
+      - unorderedResult: [
+          {'学校'},
+          {'^$'}]
+    -
+      - query: select * from A WHERE A1 LIKE '_____'
+      - unorderedResult: [
+          {'école'},
+          {'ありがとう'},
+          {'مدرسة'},
+          {'\\||%'}]
+    -
+      - query: select * from C WHERE C2 LIKE '%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1:  1, C2: alphabet},
+          { C1:  2, C2: anticipation},
+          { C1:  3, C2: aplomb},
+          { C1:  4, C2: apple},
+          { C1:  5, C2: appliance},
+          { C1:  6, C2: application},
+          { C1:  7, C2: awry},
+          { C1:  8, C2: banal},
+          { C1:  9, C2: banana},
+          { C1: 10, C2: bench},
+          { C1: 11, C2: bento},
+          { C1: 12, C2: c},
+          { C1: 13, C2: cabal},
+          { C1: 14, C2: camel},
+          { C1: 15, C2: canal},
+          { C1: 16, C2: capital},
+          { C1: 17, C2: catch-all},
+          { C1: 18, C2: cavalry},
+          { C1: 19, C2: cb},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'a%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1:  1, C2: alphabet},
+          { C1:  2, C2: anticipation},
+          { C1:  3, C2: aplomb},
+          { C1:  4, C2: apple},
+          { C1:  5, C2: appliance},
+          { C1:  6, C2: application},
+          { C1:  7, C2: awry},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ap%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1:  3, C2: aplomb},
+          { C1:  4, C2: apple},
+          { C1:  5, C2: appliance},
+          { C1:  6, C2: application},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'a%l%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1:  1, C2: alphabet},
+          { C1:  3, C2: aplomb},
+          { C1:  4, C2: apple},
+          { C1:  5, C2: appliance},
+          { C1:  6, C2: application},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'app%'
+      - result: [
+          { C1:  4, C2: apple},
+          { C1:  5, C2: appliance},
+          { C1:  6, C2: application},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'b%'
+      - result: [
+          { C1:  8, C2: banal},
+          { C1:  9, C2: banana},
+          { C1: 10, C2: bench},
+          { C1: 11, C2: bento},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ba%'
+      - result: [
+          { C1:  8, C2: banal},
+          { C1:  9, C2: banana},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ban%'
+      - result: [
+          { C1:  8, C2: banal},
+          { C1:  9, C2: banana},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'bana%'
+      - result: [
+          { C1:  8, C2: banal},
+          { C1:  9, C2: banana},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'banal%'
+      - result: [
+          { C1:  8, C2: banal},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'be%'
+      - result: [
+          { C1: 10, C2: bench},
+          { C1: 11, C2: bento},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ben%'
+      - result: [
+          { C1: 10, C2: bench},
+          { C1: 11, C2: bento},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'bent%'
+      - result: [
+          { C1: 11, C2: bento},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'c%'
+      - result: [
+          { C1: 12, C2: c},
+          { C1: 13, C2: cabal},
+          { C1: 14, C2: camel},
+          { C1: 15, C2: canal},
+          { C1: 16, C2: capital},
+          { C1: 17, C2: catch-all},
+          { C1: 18, C2: cavalry},
+          { C1: 19, C2: cb},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ca%'
+      # In theory, this could be executed optimally with prefix string scan with the prefix "ca"
+
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1: 13, C2: cabal},
+          { C1: 14, C2: camel},
+          { C1: 15, C2: canal},
+          { C1: 16, C2: capital},
+          { C1: 17, C2: catch-all},
+          { C1: 18, C2: cavalry},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ca_al'
+      # In theory, this could be optimized with prefix string scan with the prefix "ca" followed by compensation
+      # to handle filtering out based on the tail
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1: 13, C2: cabal},
+          { C1: 15, C2: canal},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ca%al'
+      # In theory, this could be optimized with prefix string scan with the prefix "ca" followed by compensation
+      # to handle matching the tail
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1: 13, C2: cabal},
+          { C1: 15, C2: canal},
+          { C1: 16, C2: capital},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ca_al%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1: 13, C2: cabal},
+          { C1: 15, C2: canal},
+          { C1: 18, C2: cavalry},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'ca%al%'
+      - explain: "COVERING(C2 <,> -> [C1: KEY:[2], C2: KEY:[0]]) | FILTER _.C2 LIKE @c7 ESCAPE 'null' | FETCH"
+      - result: [
+          { C1: 13, C2: cabal},
+          { C1: 15, C2: canal},
+          { C1: 16, C2: capital},
+          { C1: 17, C2: catch-all},
+          { C1: 18, C2: cavalry},
+        ]
+    -
+      - query: select * from C WHERE C2 LIKE 'd%'
+      - result: [
+        ]
+---
+test_block:
+  tests:
+    -
+      - query: select * from A WHERE A1 LIKE '|_|_%' ESCAPE '|'
+      - result: [{'___abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\_%' ESCAPE '\'
+      - result: [{'___abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\_%' ESCAPE '|'
+      - result: [{'\\||%'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\_%'
+      - result: [{'\\||%'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\_\_\_abcdef' ESCAPE '\'
+      - result: [{'___abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\_\_\_______' ESCAPE '\'
+      - result: [{'___abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\__\_______' ESCAPE '\'
+      - result: [{'___abcdef'}]
+    -
+      - query: select * from A WHERE A1 LIKE '\__\______\_' ESCAPE '\'
+      - result: []
+    -
+      - query: select * from A WHERE A1 LIKE '%\%' ESCAPE '\'
+      - result: [{'\\||%'}]
+    -
+      - query: select * from A WHERE A1 NOT LIKE '|_|_%' ESCAPE '|'
+      - unorderedResult: [
+          {'abcdefghijklmnopqrstuvwxyz'},
+          {'%%abcdef'},
+          {'*abcdef'},
+          {'ABCDEFGHIJKLMNOPQRSTUVWXYZ'},
+          {'école'},
+          {'ありがとう'},
+          {'学校'},
+    {'مدرسة'},
+          {'(abcdefghijk)'},
+          {'[abcdefghijk]'},
+          {'{abcdefghijk}'},
+          {'^$'},
+          {'\\||%'}
+          ]
+    -
+      - query: select * from A WHERE A1 NOT LIKE '%'
+      - unorderedResult: []
+    -
+      - query: select * from A WHERE A1 NOT LIKE '%abcde%'
+      - unorderedResult: [
+          {'ABCDEFGHIJKLMNOPQRSTUVWXYZ'},
+          {'école'},
+          {'ありがとう'},
+          {'学校'},
+          {'مدرسة'},
+          {'^$'},
+          {'\\||%'}
+          ]
+...

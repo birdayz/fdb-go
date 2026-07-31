@@ -4,6 +4,7 @@ go_library(
     name = "plans",
     srcs = [
         "aggregate_index.go",
+        "cardinality_bounds.go",
         "comparator.go",
         "cost.go",
         "default_on_empty.go",
@@ -185,6 +186,7 @@ go_test(
         "streaming_aggregation_ordering_key_name_test.go",
         "projection_alias_provenance_test.go",
         "ordering_provider_identity_test.go",
+        "cardinality_bounds.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

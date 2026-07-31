@@ -16,6 +16,8 @@
 package properties
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
@@ -61,11 +63,40 @@ func (c Cardinality) Value() int64 {
 
 // Times multiplies two cardinalities. If either is unknown, the
 // result is unknown. Matches Java's Cardinality.times().
+//
+// An UNREPRESENTABLE product conservatively becomes unknown rather than
+// wrapping. Java's Cardinality.times() multiplies raw and hands the result to
+// ofCardinality's non-negative Preconditions check, so an overflowing product
+// throws there; the Go port inherited that shape and would panic inside
+// OfCardinality — in library code, on a bound the planner derives while
+// costing (`LIMIT 4000000000` joined against itself reaches it through the
+// join arm). Unknown is the sound weakening: it only ever LOOSENS a bound, so
+// no clamp built on it can floor or cap past what is actually proved.
 func (c Cardinality) Times(other Cardinality) Cardinality {
 	if c.IsUnknown() || other.IsUnknown() {
 		return UnknownCardinality()
 	}
-	return OfCardinality(c.value * other.value)
+	return MultiplyCardinality(c.value, other)
+}
+
+// MultiplyCardinality multiplies an exact non-negative factor by one
+// cardinality bound without allowing int64 wraparound to reach OfCardinality.
+// An unrepresentable product conservatively becomes unknown.
+//
+// A negative factor is not a cardinality and cannot be scaled by one; it
+// yields unknown rather than a wrapped or panicking product.
+func MultiplyCardinality(factor int64, bound Cardinality) Cardinality {
+	if bound.IsUnknown() || factor < 0 {
+		return UnknownCardinality()
+	}
+	value := bound.Value()
+	if factor == 0 || value == 0 {
+		return OfCardinality(0)
+	}
+	if factor > math.MaxInt64/value {
+		return UnknownCardinality()
+	}
+	return OfCardinality(factor * value)
 }
 
 // Floor returns max(value, minimum). If unknown, returns the receiver

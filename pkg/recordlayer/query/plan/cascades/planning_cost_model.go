@@ -1538,15 +1538,39 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+	cost, _ := concretePlanCostAndBounds(p, stats, ctx)
+	return cost
+}
+
+// concretePlanCostAndBounds rolls a plan's Cost and its PROVEN cardinality
+// interval up the SAME recursion, so every node's clamp is applied against the
+// bound derived from the identical concrete sub-tree its cost came from
+// (RFC-195).
+//
+// Deriving bounds in-walk — rather than reading Reference property maps — is
+// what makes the clamp effective here: at this walk the children are never
+// primed, so a primed-map read would return unknown and no-op away five of the
+// six estimates the clamp corrects. It also keeps this walk decoupled from
+// shared-group winners, exactly as its cost side already is.
+func concretePlanCostAndBounds(
+	p plans.RecordQueryPlan,
+	stats properties.StatisticsProvider,
+	ctx PlanContext,
+) (properties.Cost, properties.Cardinalities) {
 	if p == nil {
-		return properties.Cost{}
+		return properties.Cost{}, properties.UnknownCardinalities()
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
+	childBounds := make([]properties.Cardinalities, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCost(c, stats, ctx)
+		child[i], childBounds[i] = concretePlanCostAndBounds(c, stats, ctx)
 	}
-	return combineConcreteCost(p, child, stats, ctx)
+	bounds := properties.UnknownCardinalities()
+	if prover, ok := p.(properties.CardinalityProver); ok {
+		bounds = prover.ProvenCardinalities(childBounds)
+	}
+	return combineConcreteCost(p, child, bounds, stats, ctx), bounds
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1554,7 +1578,28 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+// The returned Cost's Cardinality is CLAMPED into the interval the plan proves
+// (RFC-195). Bounds derive from the CONCRETE children this walk already holds,
+// never from a Reference's property map — which preserves this walk's
+// deliberate decoupling from shared-group winners, so no group-weakened
+// interval enters the join-ordering comparison. It is also why the clamp works
+// here at all: at this walk children are never primed, so reading primed maps
+// would have been a no-op for five of the six shapes it corrects.
+func combineConcreteCost(
+	p plans.RecordQueryPlan,
+	child []properties.Cost,
+	bounds properties.Cardinalities,
+	stats properties.StatisticsProvider,
+	ctx PlanContext,
+) properties.Cost {
+	return properties.CostWithinBounds(p, child, bounds, stats, func() properties.Cost {
+		return combineConcreteCostUnclamped(p, child, stats, ctx)
+	})
+}
+
+// combineConcreteCostUnclamped is the raw per-operator formula dispatch for the
+// concrete join-ordering walk. Callers want combineConcreteCost.
+func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]
@@ -2352,25 +2397,39 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 	if pl == nil {
 		return false, false
 	}
+	comps := pl.GetScanComparisons()
+
+	// Resolve the PK arity first, from either source, WITHOUT returning: the
+	// widening guard below has to see every path out of this function.
+	//
+	// It did not. The guard used to sit after the stamped-PK branch had already
+	// returned, so it covered only the ctx fallback while its own comment
+	// claimed it "covers both scanProvableMaxCard and scanPlanProvableMaxCard".
+	// A stamped-PK scan with a terminal zero-valued FLOAT equality was therefore
+	// PROVEN at-most-one by two of this helper's three callers, while
+	// isProvablePointProbe — consulting the same widening predicate directly —
+	// correctly declined to call it a point probe. One plan, two contradictory
+	// claims, and the prose asserting otherwise is exactly what kept it hidden.
 	pkLen := len(pl.GetPrimaryKeyValues())
-	if pkLen > 0 {
-		return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
-	}
-	recordTypes := pl.GetRecordTypes()
-	if ctx == nil || len(recordTypes) != 1 {
-		return false, false
-	}
-	pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
 	if pkLen == 0 {
-		return false, false
+		recordTypes := pl.GetRecordTypes()
+		if ctx == nil || len(recordTypes) != 1 {
+			return false, false
+		}
+		pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
+		if pkLen == 0 {
+			return false, false
+		}
 	}
-	// A widening equality (a terminal zero float) binds TWO keys, so a fully
-	// equality-bound PK is still not a one-row proof. Guarding the ONE shared
-	// helper covers both scanProvableMaxCard and scanPlanProvableMaxCard.
-	if properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
+
+	// A widening equality (a terminal zero float) binds TWO keys — the executor
+	// widens a zero bound across -0.0 and +0.0, which are IEEE-equal but pack to
+	// distinct adjacent keys — so a fully equality-bound PK is still not a
+	// one-row proof. The arity is known either way, hence provable=true.
+	if properties.AnyEqualityWidensBeyondOneKey(comps) {
 		return false, true
 	}
-	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
+	return properties.EqualityBoundsCoverKey(comps, pkLen), true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and

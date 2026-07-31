@@ -150,6 +150,60 @@ when the equivalence is over an ordered sequence rather than a multiset.
 durable reproducers rather than deleted: each one is the exact shape that broke, and the
 `ordered: true` flags are what make them able to express the defect at all.
 
+## FDB client — conflicting-keys readback (debugging surface + skew instrument)
+
+### [ ] Implement `report_conflicting_keys` + `\xff\xff/transaction/conflicting_keys/` in the pure-Go client
+
+`fdb.TransactionOptions.SetReportConflictingKeys` currently returns `UnsupportedOptionError`
+(`pkg/fdbgo/fdb/options.go`), and Go has no special-key module for the readback
+(`pkg/fdbgo/fdb/API_PARITY.md` lists `\xff\xff/transaction/conflicting_keys` as absent). C++ is
+the spec for both halves: the option sets `CommitTransactionRequest.transaction.report_conflicting_keys`,
+which the commit proxy reads (`CommitProxyServer.actor.cpp`), and the proxy answers a conflicting
+commit with `CommitID{version: invalidVersion, conflictingKRIndices}` — the in-band shape Go's
+`parseCommitReply` already recognises and maps to `not_committed`
+(`pkg/fdbgo/client/commitpath.go`, the `reply.Version == InvalidVersion` arm). The indices name
+which of the transaction's OWN read-conflict ranges the resolver rejected; the special-key module
+renders them as boundary keys valued `"1"` (a rejected range's begin) / `"0"` (its end).
+
+This is two things at once, which is why it is booked as one item:
+
+1. **The missing debugging surface.** When a Go transaction takes `not_committed`, there is
+   currently no way to ask *which* range conflicted. Every other client can.
+2. **The instrument for the go-vs-cgo spurious-conflict skew below.** The investigation that
+   booked this item had to route every conflict attribution through the CGO client because the
+   Go client cannot answer the question about itself.
+
+**The skew, with its measured facts.** The version-pinned conflict differentials in
+`pkg/fdbgo/bench` take spurious `not_committed(1020)` that no client caused. It hits BOTH clients
+— libfdb_c included — but not evenly: **12 go-side vs 5 cgo-side** over 204 full-package runs
+(`TestDifferential_GetKeyConflict`), and 25:5 on the explicit conflict-range differential in a
+second run. What is already excluded, by measurement:
+
+- The Go client's shipped read-conflict ranges for a failing transaction are exactly the intended
+  narrow ranges plus its own `\xff/SC/<uid>` self-conflict range (observed off the commit path).
+- `GetCommittedVersion()` does not under-report: a unique-nonce seed written by the setup
+  transaction is visible at the pinned version on both clients in every failing case.
+- The conflict is on the transaction's USER range, not the self-conflict range — libfdb_c's
+  conflicting-keys readback names it, and a canary whose only read-conflict range is its own
+  `\xff/SC/<uid>` took 0 hits in ~134k commits (`TestDifferential_SelfConflictRangeCanary`).
+- Window width does not explain the skew: the Go client's vSetup→commit window is 1.30x wider at
+  idle but 0.78x — i.e. *narrower* — under full-suite load, while the skew persists.
+- No committed Go write-conflict range overlaps the failing read set above its read snapshot
+  (ledger of the last 8192 Go commits). Bisecting the read version puts the covering write
+  several thousand versions ABOVE the setup, at a commit version SHARED by conflicts in unrelated
+  prefixes.
+
+**Leading hypothesis**, to be confirmed or killed with the readback once it exists: the resolver
+records the write-conflict ranges of transactions it later REJECTS, so a rejected transaction
+causes false conflicts for later ones. That fits every fact above — in particular the shared
+culprit version across unrelated prefixes, and the commit ledger's blindness to it, since the
+ledger only observes commits that SUCCEEDED. Confirming it needs the readback on the Go side so
+the rejected transaction and the false conflict can be attributed in the same client.
+
+Until then the differentials are gated on reproducibility rather than on a single disagreement
+(`pkg/fdbgo/bench/conflict_divergence_gate_test.go`), with the non-reproducing class counted
+against a ceiling rather than swallowed.
+
 ## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
 
 Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at
@@ -7805,6 +7859,54 @@ pre-existing baseline-vs-threshold gap already booked above (the entry
 beginning "Stress test 1M baseline Threshold column"), unchanged and
 unaffected by this branch.
 
+**2026-07-31 (RFC-195 — the cost model must not contradict what the property
+layer proves):** cost-model change, so the comparison is mandatory. Both sides
+run in the SAME worktree via a save-diff / `git apply -R` / `git apply` cycle
+rather than a second checkout — identical path, identical filesystem, identical
+Bazel cache by construction, which is a stronger version of the
+sibling-path-worktree rule (a cross-filesystem baseline is what produced the
+2.3x phantom regression). Baseline is the branch point `f50cee43e`.
+
+All 23 subtests PASS on both sides. **Every per-query row count identical** —
+diffed all 22 measured row lines, empty diff. Total runtime 152.70s baseline vs
+153.82s branch (+0.7%). Million-row scans baseline 2.99/3.37/3.20/3.33/2.95s vs
+branch 2.87/3.40/3.26/3.33/2.92s — the largest single move is
+`full_scan_count` at −0.12s (branch FASTER), and no subtest moves by more than
+0.12s in either direction. Point lookups 5.26ms, index equality 5.77ms,
+`in_list` 15.39ms on the branch: unchanged, and still against the pre-existing
+threshold gap already booked above (the entry beginning "Stress test 1M
+baseline Threshold column"), which this branch neither improves nor worsens.
+
+Both runs used `--nocache_test_results`, so neither side could have been served
+from the Bazel test cache — a cost-model change alters the test binary's inputs
+and would produce a fresh cache key anyway, but stating it removes the question.
+
+**Re-measured after the implementation review** (the DFS-join bound moves that
+operator's cardinality off zero, so the comparison was re-run on the final
+head). Post-review branch 306.96s. Read against the 152.70s baseline above this
+looks like a 2x regression, and it is NOT: the box was carrying other agents'
+full suites, load average 35 → 65 across the two runs. Root-caused by the
+controlled experiment rather than waved off as contention — the BASELINE was
+re-run immediately afterwards under the same load and came in at **319.18s**,
+i.e. SLOWER than the branch. Matched-load per-subtest deltas are at-or-faster on
+the branch everywhere (`order_by_pk_full` 9.05→5.86, `scan_all_narrow`
+8.35→6.90, `full_scan_count` 6.74→6.26; nothing slower by more than 0.01s), and
+every row count is identical across the matched pair. Wall-clock on a shared box
+is only meaningful against a same-load baseline; the 152.70/153.82 pair above is
+the quiet-box measurement and this pair is the loaded-box one.
+
+Interpretation, stated because the null result is easy to misread: the clamp
+DOES fire on real SQL — `SELECT COUNT(*) FROM orders` is priced at 700000 rows
+before and 1 after, measured by
+`pkg/relational/core/embedded/cardinality_clamp_reachable_test.go` — but no
+plan CHOICE moves, on this corpus or in the stress suite. The corpus-wide
+`explaindiff` agrees: 2643/2643 entries identical, 0 shape flips, 0
+regressions — re-run on the post-review head, DFS-join bound included, and
+still clean. Costs change substantially; rankings do not, because in these
+shapes the corrected operator has no competing alternative whose order flips.
+"Clean" here means low-risk, not inert, and the reachability test is what
+separates those two readings.
+
 **2026-07-25 (CQ-20 — PKScanOrdering drops the equality-bound PK prefix):**
 baseline worktree at the pre-change commit `473d0d0af` vs the working tree,
 same box, sequential fresh FDB containers, both runs `--nocache_test_results`.
@@ -9841,7 +9943,29 @@ the drafts being lost. Do not reuse numbers 193/194 for unrelated documents: a
 stale reference that resolves to the WRONG doc is worse than one that resolves
 to nothing.)
 
-- [ ] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
+- [x] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
+  DONE via RFC-195. SEVEN shapes in the end: the random-combo generator found a
+  sixth (`typeFilter` over an exactly-one child), and the implementation review
+  found a seventh — `RecordQueryRecursiveDfsJoinPlan` proved NOTHING, so the
+  identical zero-collapse fixed on the level union stayed live on the DFS join,
+  which is the alternative the cost model PREFERS (the level union carries a
+  strictly larger buffer term by construction). Measured on identical children:
+  `FlatMap(scan, dfsJoin)` costed 0 rows against `FlatMap(scan, levelUnion)` at
+  1e6. Both recursive plans now share ONE bound (`recursiveSeedBound`), matching
+  Java's single `visitRecursiveUnionExpression`; Java's own PLAN-level DFS arm
+  returns the looser `unknownMaxCardinality`, a divergence taken deliberately in
+  the sound direction and verified against Go's executor (`recursive_cursor.go`
+  emits every root row).
+
+  All seven now clamp to the proven boundary: ungrouped aggregation 700000→1,
+  recursive-level-union 0→1, recursive-DFS-join 0→1, defaultOnEmpty 0→1, both
+  distincts 0.7→1, typeFilter 0.5→1. The six
+  `addExcluded` registrations are deleted and so is the exclusion MECHANISM —
+  `cardinality_cost_bound_test.go` now holds the invariant over every shape with
+  ZERO exclusions and no way to add one. Measured reachable from real SQL
+  (`SELECT COUNT(*) FROM orders`: 700000→1) by
+  `pkg/relational/core/embedded/cardinality_clamp_reachable_test.go`; corpus
+  plan-diff over 2643 entries is CLEAN (costs move, plan CHOICES do not).
   Found by cross-checking the cost model against `CardinalitiesProperty` as an
   oracle; all five are pinned as self-cleaning exclusions in
   `pkg/recordlayer/query/plan/cascades/cardinality_cost_bound_test.go`, so fixing
@@ -9880,6 +10004,73 @@ to nothing.)
   `rfcs/195-cost-must-not-contradict-proof.md`, which covers this together with
   CQ-29 — they are the same defect (cardinality with two homes) seen from the
   two sides, and fixing one without the other leaves the disagreement intact.
+
+  **PARTIALLY DONE via RFC-195; the criterion-2 half is still open, and RFC-195
+  cannot close it as written.** What landed: the per-operator derivation moved
+  out of `cascades.computeCardinalities` into per-plan
+  `ProvenCardinalities` methods behind `properties.CardinalityProver`, so the
+  property map and all three COST walks (`localCost`, `combineConcreteCost`,
+  `partitionCost`) now consume ONE derivation; `computeCardinalities` is a thin
+  adapter that only resolves child edges, pinned by
+  `TestRFC195_AdapterDoesNotReForkTheDerivation`.
+
+  What remains: `planning_cost_model.go`'s criterion-2 walk still derives its
+  own data-access maxima via `scanProvableMaxCard` / `indexProvableMaxCard` /
+  `scanPlanProvableMaxCard` / `indexPlanProvableMaxCard`. Java is unambiguous
+  that this is a fork — `PlanningCostModel.java:336` maps every data access
+  through `cardinalities().evaluate(plan).getMaxCardinality()`, i.e. through
+  CardinalitiesProperty itself — so CQ-30's premise is CORRECT and this is a
+  real divergence.
+
+  It is NOT deferred out of convenience: RFC-195's own scope text rules it out
+  ("the clamp makes the rung internally consistent; **the tiers above it are
+  untouched**"), and its Decision section names exactly three cost walks, none
+  of which is criterion 2. Routing criterion 2 through the unified derivation is
+  a change to a Java-ported TIER, and it is not free: Go's variants take a
+  `PlanContext` and can prove a bound from METADATA when the plan carries no
+  stamped primary-key arity or index uniqueness, which the plan-local method
+  cannot. Collapsing them naively LOSES those proofs and makes criterion 2
+  abstain more often — a plan-movement change needing its own design ACK,
+  plan-diff and stress run.
+
+  **The ruling: the "sanctioned Go extension" framing is REJECTED.** Go's four
+  `PlanContext` variants are not a capability Java lacks; they are a WORKAROUND
+  for Go plans being under-stamped. Java's plans carry their match candidate, so
+  `cardinalities().evaluate(plan)` is fully plan-local and needs no context at
+  all. The eventual shape is therefore: stamp Go's plans with the metadata
+  equivalents Java's plans already carry (match-candidate equivalents — primary
+  key arity, index uniqueness and key columns), then DELETE
+  `scanProvableMaxCard`, `indexProvableMaxCard`, `scanPlanProvableMaxCard` and
+  `indexPlanProvableMaxCard` outright and route criterion 2 through the single
+  `ProvenCardinalities` derivation, faithful to `PlanningCostModel.java:336`.
+  Own RFC, own corpus plan-diff, own 1M stress run.
+
+  Until that lands the fork is held VISIBLE, not merely noted:
+  `TestRFC195_Criterion2AgreesWithTheProvenBound` requires criterion 2 and
+  `ProvenCardinalities` to reach the same verdict on every data-access shape in
+  the bound-test table, exceptions carrying explicit listed reasons. That gate
+  exists because this exact fork already hid a live disagreement for a long time
+  — see the false proof below.
+
+  While relocating the derivation, one FALSE PROOF in this area was found —
+  and, in the first pass, only HALF fixed. The correction is now complete, and
+  the distinction matters enough to record precisely:
+  `pkFullyEqualityBound`'s zero-float widening guard sat AFTER its
+  stamped-primary-key early return, so a scan with a stamped PK and a terminal
+  zero-valued FLOAT equality was proven at-most-one while the cost model
+  correctly declined to call it a point probe. The comment above the guard
+  claimed it covered `scanProvableMaxCard` and `scanPlanProvableMaxCard`; it
+  covered neither, only the ctx fallback path.
+
+  The first pass routed the PROPERTY side through `isProvablePointProbe` (which
+  guards correctly) and left the guard where it was — so the property stopped
+  proving the false bound while BOTH cost walks kept proving it. That is the
+  same defect with a smaller blast radius, not a fix. The guard is now HOISTED
+  above the early return so it covers every path out of the helper, which is
+  what the comment always claimed. Pinned by
+  `TestRFC195_StampedPKZeroFloatIsNotAtMostOne` and by the SCAN half of
+  `TestPointProbeProofsAgreeOnWideningEquality` — that test built only INDEX
+  shapes before, which is exactly why the disagreement was invisible to it.
 
 - [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
   Seven separate hand-rolled proofs of a semantic property by leaf-name
@@ -11093,6 +11284,22 @@ None is speculative: each was re-verified against the tree before booking.
      matrix. Widening on spelling alone was not attempted because the measurement
      that would license it does not exist yet.
 
+  **STATUS 2026-07-31 — phase 3a is MERGED (PR #544, master `7ce79fe38`), and
+  the REMAINING WORK OF THIS ITEM IS NOW `CQ-67`.** The merge carries the three
+  post-ACK census commits as well as the phase's body, and both review gates
+  confirmed the final head rather than an earlier one. Nothing above is revised
+  by this note — the refutations, the baseline censuses, and the two
+  left-open entries all still read as written.
+
+  What 3a landed is the INSTRUMENT LAYER the next step is denominated in, not a
+  plan movement: the `foldStep1Seed` outcome census with its independently
+  counted denominator, the read→firing mapping, and the producer pins. The step
+  the entry's "WHAT THE NEXT ATTEMPT IS" paragraph describes — teach the layout
+  authority to read `RC(_i: QOV(leg_i))` as a leg layout, then let
+  `legIsOrdinalSafe`/`planBuriedLegConcat` admit such a leg — was designed under
+  `rfcs/200-positional-merge-leg-windows.md` (merged, #543) and is booked as
+  **CQ-67**. CQ-53 closes when CQ-67 closes; it carries no separate remainder.
+
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and
   make the call-numbering ONE authority instead of two.** RFC-197 item 5 left
@@ -11767,3 +11974,343 @@ None is speculative: each was re-verified against the tree before booking.
   changes what 750 merge slots state, and the merged row type feeds ordinal
   baking and the executor -- a planner-wide change with a Graefe lap and a
   stress/golden comparison, not a rider on a typing sweep.
+
+- [ ] **CQ-67 (HIGH/L, L, executor-gated, query-engine review gate) — implement
+  RFC-200: the layout authority learns the NESTED merged leg, and CQ-53's 60
+  `reconstruct-nil / positional-merge` declines become ACCEPTs.** The design is
+  `rfcs/200-positional-merge-leg-windows.md` (merged, #543) and it is ACK'd;
+  nothing here re-decides it. **Closing this item CLOSES CQ-53** — that entry's
+  "WHAT THE NEXT ATTEMPT IS" paragraph is this work verbatim, and CQ-53 carries
+  no other remainder.
+
+  The defect in one line: Go's planner already BUILDS Java's merged row
+  (`positional_merge.go`'s `positionalMergeCase`, which is
+  `PartitionSelectRule.java:283-291`'s `RecordConstructorValue.ofColumns(...
+  Column::unnamedOf)` verbatim) and Go's executor already evaluates it, and Go's
+  own layout authority declines to read it — so 60 firings fall back to the
+  identity pass-through and keep the runtime name channel alive.
+
+  **Line numbers: RFC-200 was written against `f50cee43e`, and PR #544 shifted
+  its `rule_implement_nested_loop_join.go` references below ~`:3700` by +22.**
+  Verified on `7ce79fe38`: `foldStep1Seed`'s validation is `:2277` (unchanged),
+  `materializedNLJOrdinalLayoutMatches` `:2186` (unchanged),
+  `legIsOrdinalSafe` `:1956`, `planBuriedLegConcat` `:1997`, but
+  `implementJoinWithExistential`'s `ordinalSeedLegWindowsOf(step1RV)` is now
+  `:3781` (RFC says `:3759`), its three rebase sites `:3803` / `:3863` / `:3926`,
+  the seed-decision denominator call `:3668` (RFC says `:3646`), and the bare-QOV
+  mint `:3901` (RFC says `:3879`). Re-derive before citing; do not trust the
+  RFC's numbers mechanically.
+
+  The pieces, each of which the RFC decides and this item only builds:
+
+  - **A NARROW OPT-IN ENTRY POINT, and the shared accept boundary does NOT
+    move** (§3). `values.OrdinalSeedLegWindows` keeps its exact accept set and
+    gains a sibling that recognizes `IsPositionalMergeRC` at the head and emits
+    nested sub-windows. The narrow entry DECLINES, fail-closed, any seed carrying
+    a nested leg — top-level-only windows would silently lack sub-windows a flat
+    box leg would have had. **Exactly THREE sites opt in**, all reading the same
+    `step1RV`: `foldStep1Seed`'s validation of the seed it just built (it must
+    accept what it constructs), `implementJoinWithExistential`'s
+    `ordinalWindows, mergedRowType` (which feeds the three rebase sites), and
+    `materializedNLJOrdinalLayoutMatches` (it must see the windows to check the
+    orientation at all). The other fourteen callers consume the derivation as a
+    nil/non-nil PREDICATE, where population IS meaning — §3's table proves each
+    one's answer is unchanged on every input it can see. **If one of those
+    fourteen turns out to need the nested windows, that is a STOP, not a
+    widening**: widening the narrow entry to accommodate it re-opens every row of
+    that table, so halt and return to the RFC's reviewers with the site.
+  - **The nested window KIND is an explicit discriminator with an INVALID zero
+    value** (§2). `kindUnset` is the zero and every reader declines or panics on
+    it, because Go's zero would otherwise mean `flatRun` by language default —
+    the exact inference the section forbids. The kind lives on two carriers
+    (`OrdinalSeedLegWindow.Kind` and `values.RecordTypeLeg`), excluded from
+    identity as `RecordType.Legs` already is. **`NewRecordTypeLeg`'s positional
+    signature grows** to carry it: the positional constructor IS the compile-time
+    defence — its own doc records that deleting `Alias:` from two producers left
+    the whole suite green — so a kind that could be omitted reproduces that
+    failure one field over. All 13 non-test producers stamp or CARRY explicitly;
+    the three REBASE sites carry (a rebase that re-mints a kind is the same defect
+    class as one that re-mints an `Alias`). `Width`'s doc is corrected to "its
+    slot count in the carrying type", which is what every reader already assumes.
+  - **`legIsOrdinalSafe` and `planBuriedLegConcat` move in LOCKSTEP** (§4) —
+    same node census by construction, so a FlatMap arm in one without the other
+    is a layout the reconstruction cannot build. The arm is CONDITIONAL on the
+    FlatMap's result value being the positional merge, recognized by the FULL
+    structural recognizer and never by the looser "every field is a bare typed
+    QOV": `leg_layout_derivation_test.go:103-109` pins that a NAMED typed-leg RC
+    is still not a merge row, and it stays green only because its fixture names
+    the fields `"A"`/`"B"`. That pin's failure message is updated in the same
+    change to say what it now guards.
+  - **3d′ — the pre-existing FAIL-OPEN in `materializedNLJOrdinalLayoutMatches`
+    is FIXED, on its own sequencing step** (§9). `len(windows) != 2 → return
+    true` is the PERMISSIVE answer, not "the safe default"; the function's own doc
+    says declining is always safe because commutativity ADDS a candidate. It is
+    already reachable today (a box leg's sub-windows already push the count past
+    2) and the new population would make skipping UNIVERSAL. The fix is a
+    TOP-LEVEL RUN LIST alongside the map — the planner twin of the executor's
+    `ordinalJoinSpansOf` spans — because `finalizeSeedWindows`' rightmost-leaf
+    case REPLACES a box run's entry with a narrower sub-window, so "the windows
+    that tile the row" is not recoverable from the map after the fact. This moves
+    plans that have nothing to do with the merge row, so it carries its OWN
+    golden and stress burden and lands separately from 3d; the diffs must be
+    readable on their own.
+
+  **Gate (a) — an end-to-end WRONG-ROWS fixture, mutated in FOUR directions,
+  each separately.** Cross-agreement of two walks is necessary and not
+  sufficient: two walks of the same wrong model agree perfectly. Distinct leg
+  widths, at least one duplicate column NAME across legs (so a name fallback
+  cannot rescue a wrong ordinal), projected value drawn from a non-first leg at a
+  non-zero leg-local ordinal. Directions: (1) nested read as flat; (2) flat read
+  as nested; (3) **leg orientation** — legs swapped relative to the seed's baked
+  layout, expected observable a LOUD unbound-correlation error or an unexecutable
+  plan, not wrong rows, because `:2141-2150` claims the ordinal read is "either
+  right or loud"; **if that direction produces silently wrong rows, that claim is
+  REFUTED and it is a finding in its own right — it gets a line in RFC-200 and a
+  report before the gate is called satisfied**; (4) the census-invisible
+  bare-column arm of `slotInGatheredSeed` (`unnest_gather.go:467-471`), which
+  ranges every window and takes `w.Offset+idx`, allowed to contribute a `hits++`.
+  **The outcomes are recorded in the fixture's own doc comment**, naming per
+  direction what goes red and what re-arms if it stops — the discipline
+  `leg_layout_derivation_test.go` already applies to its negatives. A mutation
+  result that lives only in a PR description is a measurement that evaporates.
+
+  **Gate (b) — the 1M stress before and after, at 3d AND 3d′ separately**, real
+  plan movement expected at both, every moved `EXPLAIN` golden and plandiff
+  record justified line by line WITH ROW COUNTS. Never blanket re-blessed.
+  Results land in this file's baseline table. Run both sides on the SAME
+  FILESYSTEM — CLAUDE.md's recipe was corrected for exactly this after a
+  disk-utilisation artefact read as a 2.3x planner regression (CQ-53's
+  methodology note).
+
+  **Gate (c) — census EQUALITIES, not floors.** These are PREDICTIONS; a measured
+  deviation is a reportable finding and must not be absorbed by relaxing the
+  assertion. Post-3d the `foldStep1Seed` outcome census must satisfy
+  `ACCEPT == 138` (78 + 60), `DECLINE reconstruct-nil == 94` (154 − 60, all
+  bare-QOV), `DECLINE correlatedStep1 == 108` (unchanged — the wall),
+  `DECLINE rv-no-exist-ref == 200` (unchanged), and the four classes must sum to
+  a denominator of `540` **counted independently** at
+  `implementJoinWithExistential`'s seed-decision call site, never by summing the
+  four class counters (summing counters incremented inside the function they
+  partition is true by construction and gates nothing). "Up to 60" is deleted:
+  the prediction is 60. Alongside: `Declined` stays 0, both seed-window hard
+  zeros stay 0, all five reader floors hold, `IdentityInLegDomain == Baked +
+  MergedReAnchor` holds, `MergeSlotTypeDisagreements` stays 0, the executor's
+  leg-column provenance census does NOT move (movement there means this touched
+  the scalar-seed channel, which it must not), and `rule_select_merge.go:234`'s
+  `len(w) > 2` is re-measured explicitly — under the separate entry point it must
+  be unchanged, and that is the check that the narrow boundary held in practice
+  and not only on paper. Note `MergedReAnchor` may stay 0 on complete success and
+  is therefore BLIND to this change; nothing may be denominated in it.
+
+  **The two 3a measurement deliverables, which do not exist today and are
+  produced FIRST:** (i) the **read→firing mapping** — how many of
+  `LegLocalBakeCensus`' 174 reads occur under a firing the outcome census
+  classifies `reconstruct-nil / positional-merge`. Gate (d) is denominated in
+  that number and asserts its post-change value is 0, with the remainder
+  reported. (ii) whether **all 60** declined positional-merge legs satisfy
+  `IsPositionalMergeRC` and not merely "two bare QOVs over record types" — today
+  that is an INFERENCE, because the removed probe recorded value shapes, not
+  field names, and §1 makes the full recognizer load-bearing.
+
+  **Plus one addition that lands BEFORE everything above, because the conversion
+  leans on the leg-table-ignoring pin:
+  `TestLegColumnOwner_TheDestinationLegTypeCarriesNoLegTable`
+  (`pkg/recordlayer/query/executor/leg_column_owner_selection_test.go:142`) must
+  gain its hash twin.** Its doc comment states "RecordType.Legs is layout
+  metadata that Equals and Hash ignore", and that is the precondition the whole
+  conversion leans on — but only `Equals` is asserted (`:163-168`). The hash side
+  is unpinned prose. Measured on `7ce79fe38`: `values.RecordType` has NO `Hash`
+  method at all (`grep -i` for a hash function in
+  `pkg/recordlayer/query/plan/cascades/values/type.go` returns nothing), so the
+  first deliverable is to NAME the identity channel the memo actually keys a
+  record type on and pin THAT — the doc comment names a method that does not
+  exist, which is itself the finding. A channel that started reading `Legs` would
+  corrupt memo lookups far more quietly than a failed equality: two structurally
+  identical types would hash apart, splitting a memo group instead of raising
+  anything. Same failure message discipline as the existing half — name what
+  re-arms.
+
+  DONE = the three opt-in sites read the nested entry, the 60 firings ACCEPT,
+  gates (a)–(d) all satisfied and recorded, 3d and 3d′ landed as separate
+  sequencing steps with their own goldens, and CQ-53 marked `[x]` against this
+  item. Executor + NLJ rule + a physical row-layout contract between planner and
+  executor, so: Graefe-gated, one impl lap at phase completion, cross-agreement
+  fixture is the bit-for-bit gate.
+
+- [ ] **CQ-68 (MED/L, M/L, gated on CQ-67, query-engine review gate) — the
+  RFC-200 residue: 94 FlatMap result values are a BARE UNTYPED QOV where Java
+  types unconditionally, and they are the LARGEST addressable block, not the
+  one CQ-67 closes.** `94 > 60`. RFC-200 §Residues investigated this under
+  ruling and FENCED it out of that RFC's scope; the coordinator holds the
+  booking and this is it. Gated on CQ-67 landing — the two touch the same
+  `foldStep1Seed` decline population and the census equalities in CQ-67's gate
+  (c) are stated against a 94 that has not moved.
+
+  Java types the flowed object value unconditionally
+  (`Quantifier.java:801-803`). FOUR non-test `RecordQueryFlatMapPlan`
+  constructions in Go can emit a bare untyped one:
+  `rule_implement_nested_loop_join.go:3952`, fed by `:3901`'s `flatMapResult :=
+  values.Value(values.NewQuantifiedObjectValue(mergedOuterCorr))`; and `:1383`
+  (`buildCorrelatedFlatMapPlan`, passing its `resultValue` parameter through),
+  `:1797` (`implementExistentialSelect`), `:4196` (`yieldExistsFlatMap`) — the
+  latter three flowing `sel.GetResultValue()` essentially verbatim. A FIFTH site
+  feeds them: `cascades_translator.go:4097`, where the SQL translator mints
+  exactly a bare untyped QOV as a select result value. (Line numbers verified on
+  `7ce79fe38`; RFC-200 cites the pre-#544 numbering.)
+
+  **Two facts are explicitly UNMEASURED and are this item's FIRST deliverables,
+  before any producer is touched:**
+
+  1. **Producer attribution of the 94.** The census witness
+     (`describeSeedEscape`) records the declined leg's result-value SHAPE, not
+     its producer, so no line in the tree is currently known to emit them.
+     Structural reading says NOT `:3901` — the 94 are legs of a 3-quantifier
+     join+EXISTS, the accumulated side of an N-way join, which
+     `yieldGeneralFlatMap`/`buildCorrelatedFlatMapPlan` build. That is a
+     hypothesis and the item starts by making it a measurement.
+  2. **Reachability of `correlatedStep1 && ordinalWindows != nil`.** RFC-200
+     could not establish it BY READING. It matters because `:3901` and the
+     FlatMap construction at `:3952` execute on **both** the correlated and the
+     materialized arm — the `correlatedStep1` block only selects `step1Expr` —
+     so typing them contacts the `correlatedStep1` wall, and that arm carries a
+     documented two-revert history (a correlated FlatMap binds legs by NAME, and
+     a baked ordinal against a name-keyed row context raises
+     `values.BakedNameContextError`). Measure the wall contact before writing
+     the conversion, not after it reds.
+
+  **The two measured risks, which are why this is not a one-line typing sweep:**
+
+  - **`GetFlowedObjectType`'s silent-untyped-member semantics.** Today an untyped
+    member "cannot contradict a typed one — it reports nothing"
+    (`expressions/quantifier.go:322-328`). Typed, such members PARTICIPATE and
+    can raise `MemberResultTypeDisagreementError` (`:344-346`), which declines
+    the whole partition-select collapse (`positional_merge.go:79-96`,
+    `rule_partition_select.go:663`, `rule_partition_binary_select.go:246-256`)
+    and the leg derivation — where `DisagreeingLegs` and `UnderivableLegs` are
+    asserted as HARD ZEROS. A newly-typed member that disagrees with a sibling
+    turns a currently-green census gate red. Typing also propagates into
+    positional-merge slot types via `positional_merge.go:79`, moving
+    `leg_layout_derivation_test.go:112-141`, which pins BOTH directions of that
+    classification.
+  - **The Java-verbatim form degenerates at the site that needs it.** Building
+    the quantifier and taking `GetFlowedObjectValueTyped()`
+    (`expressions/quantifier.go:577-586`) derives from `GetFlowedObjectType`, a
+    reporting pass-through, so on the bare-QOV path it is a no-op: `mergedRowType`
+    is non-nil exactly when `ordinalWindows` is, which on that path holds only
+    when `sel.GetResultValue()` is ALREADY a pristine seed. A type IS derivable
+    from `existLegRowTypes`, but only for the materialized arm and only by
+    constructing a concat that does not exist at that site. So the port is not
+    "call the typed constructor" — establishing WHERE the type comes from is part
+    of the work.
+
+  DONE = the five producers type their result value the way Java does, the two
+  first deliverables are standing measurements rather than prose, the hard zeros
+  and the leg-derivation classification pins are re-argued against their new
+  populations (not relaxed), and the 94 `reconstruct-nil` declines are accounted
+  for — either accepted or re-classified with the reason measured. Planner-wide
+  typing change touching the executor's row contract: Graefe-gated RFC of its
+  own, with the stress/golden comparison.
+
+- [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
+  corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
+  which this item cites rather than restates. Layer 1 is Java's own acceptance
+  suite vendored verbatim (**238 `.yamsql` files, 2,997 query stanzas**; root
+  corpus 94 files / 2,691 queries — measured by the 2026-07-31 scoping study and
+  re-measured on every re-vendor); Layer 2 multiplies it through oracles that
+  need no hand-written expectations; Layer 3 generates and COMMITS blessed
+  tests. The phases below are independently landable and are checked off
+  individually.
+
+  - [~] **69.0 — Phase 0: vendor + parse.** No execution. **COMPLETE on branch
+    `feat/yamsql-corpus-phase0` (commits `f20c884a4` + `a076ba66c`); merge IN
+    FLIGHT** — `[~]` because the work is done but not on master; it flips to
+    `[x]` when the merge lands. Nothing in it is open work for another item to
+    pick up. What the branch carries, read off those two commits: 238 `.yamsql`
+    files vendored byte-for-byte under `third_party/` mirroring the upstream
+    path, `VERSION` pinned to 4.12.11.0, `.metrics.*` excluded (and with them
+    `metrics-diff/` entirely); the `javayamsql` parser plus `TestCorpusParses`
+    over all 238, each file either parsing clean or refused for the exact reason
+    upstream refuses it; block/command/config key and YAML tag as CLOSED
+    switches, while option maps stay open because Java's are — it probes with
+    `containsKey` and never checks for leftovers — so an unrecognised option key
+    is recorded as an `InertDirective` rather than rejected; and `manifest.go`
+    holding the polarity Java keeps in its test classes. The mutation matrix is
+    reported at 8 directions; that count was NOT re-verified from the branch's
+    commits here, so confirm it on merge.
+
+    **Discrepancy to reconcile at merge, flagged rather than smoothed over: the
+    branch's measured polarity does not match RFC-201 §3 ruling 3.** The RFC's
+    scoping study says "33 corpus files under `shouldFail/` trees" and "10 files
+    are include-only fragments"; `a076ba66c`'s own message says the manifest
+    carries **25 parse-level negatives, 35 execution-level ones, and 2
+    include-only fragments** — 60 negatives against 33, and 2 fragments against
+    10. The implementation re-measured and is the later number, so the likely
+    resolution is that the RFC's figures were a coarse pre-implementation count
+    (and that "negative" was split into two kinds only once the parser existed).
+    Do not assume that: check which is right and correct the loser, because §3's
+    numbers are what every later phase's file-count target is stated against.
+  - [ ] **69.1 — Phase 1: runner core, plan assertions suppressed.**
+    Multi-document blocks, the `schema_template` lifecycle (already structurally
+    identical to the Go harness's runner), the `connect:` URI registry,
+    `test_block` presets/modes/repetition/seed, `result`/`unorderedResult`/
+    `count`/`error`, all result-side tags, version gates collapsed to the single
+    Go version, `include:`. **Target ~95 files green**, and the skip ledger stays
+    LIVE — `explain:`/`explainContains:`/`planHash:` are COUNTED skips, never
+    silent ones (§8 governance; Java itself degrades those directives to no-ops
+    in multi-server mode because plan strings are not version-stable, and Go is
+    in effect another server version). Go-side plan-shape regression stays owned
+    by `explaindiff` and by `plan_contains` in Go-authored scenarios.
+  - [ ] **69.2 — Phase 2: `resultMetadata:` (+35 files) and per-page
+    continuations / `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no
+    planner risk. The continuation half is also the PREREQUISITE for the
+    ForceContinuations oracle, and it is under the hard wire-compat line, so it
+    is not a runner convenience.
+  - [ ] **69.3 — cross-engine differential wiring (§4.1). Any time after 69.1;
+    do it early.** Every query on both engines — Go in-process, Java via the
+    conformance server (`plandiff.SetupRunner.RunWithSetup` is the existing entry
+    point) — rows must agree, and where both error the error CLASS must agree
+    (the conformance principle). This pays before any engine work lands: the Java
+    leg has the full DDL surface, so every Phase-3/4 gap becomes a measured
+    per-query divergence instead of an estimate.
+  - [ ] **69.4 — the oracle layer (§4.2, §4.3).** ForceContinuations as a Go
+    execution mode: every SELECT re-executed with forced `maxRows=1`, the
+    reassembled pages equal to the one-shot result row for row, order for order.
+    And plan-diversity agreement: execute the memo's LOSERS too — every
+    alternative surviving to a costed candidate must return the winner's rows.
+    That second one is the strongest planner-bug detector this repo has; the
+    wrong-window and signed-zero-DISTINCT defects were both of its class (two
+    plans, one query, different rows). Instrument: an executor-side harness
+    enumerating the memo's plan set per corpus query, bounded per query, with the
+    per-run plan-pair count REPORTED AND FLOORED — an oracle without a gated
+    instrument is prose, not coverage.
+  - [ ] **69.5 — the factory pipeline (§5): generate → execute → bless-or-file →
+    dedup → commit.** Blessed tests are COMMITTED as permanent suite content, not
+    regenerated: a frozen expectation keeps testing the engine even if the
+    generator, the oracle infra, or the Java server is broken or gone, and it
+    converts oracle agreement (a moment-in-time fact) into a regression pin (a
+    permanent one). Grammar-driven generation from the actual ANTLR grammar,
+    weighted toward feature COMBINATIONS, seeded and deterministic with generator
+    version + seed recorded in every emitted test. Oracle disagreement is a bug:
+    auto-minimize and file the minimal reproducer for immediate root-cause under
+    the standing fix-now rules, committed as a pinned regression WITH the fix.
+    Dedup on plan fingerprint + feature vector, with the dedup census (candidates
+    seen / points covered / committed) part of every run's output — committing
+    90k variants of one shape is volume without coverage. Per-run commit quotas
+    (1–5k) keep PRs reviewable.
+  - [ ] **69.6 — Phase 3: struct types** (`create type as struct` + struct-typed
+    columns; 41 files, the single biggest engine gap). **NOTE: this is
+    query-engine + DDL scale and REQUIRES ITS OWN RFC AND A GRAEFE GATE BEFORE
+    IMPLEMENTATION.** RFC-201 is the corpus design, not this feature's design; it
+    does not authorize starting here.
+  - [ ] **69.7 — Phase 4: SQL functions** (`create function`, temporary
+    functions; 44 files), **views** (11), **enums** (3).
+  - [ ] **69.8 — Phase 5: parameter injection + prepared-statement mode** (13
+    files), **then the long tail** — proto-descriptor schemas, vector/semantic
+    search, bitmap indexes, `copy_block`.
+
+  Two standing rulings from §3 that constrain every phase: the corpus is
+  VENDORED VERBATIM and never rewritten (re-sync is a plain rsync from the tagged
+  Java checkout, moving in lockstep with the pinned version; the `.metrics.*`
+  companions are deliberately NOT vendored — they assert Java-Cascades-internal
+  task/transform counters that are meaningless for a different planner and would
+  only rot), and there is NO Java-format plan renderer.

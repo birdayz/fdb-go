@@ -35,44 +35,74 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 // A build break here is the substitute for the runtime signal that does not
 // exist yet.
 
-var (
-	_ properties.CostHinter = (*RecordQueryScanPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryIndexPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryVectorIndexPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryAggregateIndexPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryValuesPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryExplodePlan)(nil)
-	_ properties.CostHinter = (*RecordQueryTempTableScanPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryTableFunctionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryFilterPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryPredicatesFilterPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryTypeFilterPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryFetchFromPartialRecordPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryFirstOrDefaultPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryInMemorySortPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryDistinctPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryMapPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryProjectionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryDefaultOnEmptyPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryTempTableInsertPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryLimitPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryStreamingAggregationPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryInsertPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryDeletePlan)(nil)
-	_ properties.CostHinter = (*RecordQueryUpdatePlan)(nil)
-	_ properties.CostHinter = (*RecordQueryUnionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryUnorderedUnionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryMergeSortUnionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryIntersectionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryMultiIntersectionOnValuesPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryFlatMapPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryNestedLoopJoinPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryInJoinPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryInUnionPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryRecursiveDfsJoinPlan)(nil)
-	_ properties.CostHinter = (*RecordQueryRecursiveLevelUnionPlan)(nil)
-)
+// CostedPlan is the pair of questions the cost model asks every physical plan:
+// what does it COST, and what does it PROVE about its own row count. They are
+// one interface deliberately (RFC-195). The six impossible cost estimates that
+// RFC exists to correct each accumulated because a plan could answer the first
+// without the second — "this operator structurally guarantees a row" lived in a
+// different file from "this operator costs in*0.7", and nothing required the
+// two to agree, or even to both exist.
+//
+// Registering a plan as one pair rather than two independent assertions means a
+// new operator cannot gain a cost formula while silently proving nothing: the
+// single line that registers it demands both, at compile time.
+type CostedPlan interface {
+	properties.CostHinter
+	properties.CardinalityProver
+}
+
+// CostedPlanPrototypes is one typed-nil instance of every plan that answers the
+// CostedPlan contract. It serves two jobs at once: the slice's element type is
+// the compile-time completeness check (a plan missing either method will not go
+// in), and the slice itself is what the derivation-agreement and
+// logical/physical parity tests ENUMERATE.
+//
+// Enumeration is what keeps those tests from passing vacuously. A hand-written
+// pairing table checked only against itself stops testing anything the day
+// operator 38 is added; driven off this list, an operator with no table entry
+// fails with a message naming it, so an unpaired arm gets an explicit listed
+// reason rather than silence.
+//
+// Typed nils are safe here: every ProvenCardinalities implementation is
+// nil-receiver tolerant, which the enumeration tests exercise directly.
+var CostedPlanPrototypes = []CostedPlan{
+	(*RecordQueryScanPlan)(nil),
+	(*RecordQueryIndexPlan)(nil),
+	(*RecordQueryVectorIndexPlan)(nil),
+	(*RecordQueryAggregateIndexPlan)(nil),
+	(*RecordQueryValuesPlan)(nil),
+	(*RecordQueryExplodePlan)(nil),
+	(*RecordQueryTempTableScanPlan)(nil),
+	(*RecordQueryTableFunctionPlan)(nil),
+	(*RecordQueryFilterPlan)(nil),
+	(*RecordQueryPredicatesFilterPlan)(nil),
+	(*RecordQueryTypeFilterPlan)(nil),
+	(*RecordQueryFetchFromPartialRecordPlan)(nil),
+	(*RecordQueryFirstOrDefaultPlan)(nil),
+	(*RecordQueryInMemorySortPlan)(nil),
+	(*RecordQueryDistinctPlan)(nil),
+	(*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil),
+	(*RecordQueryMapPlan)(nil),
+	(*RecordQueryProjectionPlan)(nil),
+	(*RecordQueryDefaultOnEmptyPlan)(nil),
+	(*RecordQueryTempTableInsertPlan)(nil),
+	(*RecordQueryLimitPlan)(nil),
+	(*RecordQueryStreamingAggregationPlan)(nil),
+	(*RecordQueryInsertPlan)(nil),
+	(*RecordQueryDeletePlan)(nil),
+	(*RecordQueryUpdatePlan)(nil),
+	(*RecordQueryUnionPlan)(nil),
+	(*RecordQueryUnorderedUnionPlan)(nil),
+	(*RecordQueryMergeSortUnionPlan)(nil),
+	(*RecordQueryIntersectionPlan)(nil),
+	(*RecordQueryMultiIntersectionOnValuesPlan)(nil),
+	(*RecordQueryFlatMapPlan)(nil),
+	(*RecordQueryNestedLoopJoinPlan)(nil),
+	(*RecordQueryInJoinPlan)(nil),
+	(*RecordQueryInUnionPlan)(nil),
+	(*RecordQueryRecursiveDfsJoinPlan)(nil),
+	(*RecordQueryRecursiveLevelUnionPlan)(nil),
+}
 
 var (
 	_ properties.OrderingHinter = (*RecordQueryFilterPlan)(nil)

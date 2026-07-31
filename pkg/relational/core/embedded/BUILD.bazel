@@ -81,6 +81,7 @@ go_test(
         "ast_util_test.go",
         "bench_test.go",
         "bug_hunt_cascades_test.go",
+        "cardinality_clamp_reachable_test.go",
         "cardinality_ddl_test.go",
         "cascades_generator_pagination_test.go",
         "connection_recover_test.go",
@@ -234,6 +235,7 @@ go_test(
         "unnest_element_stays_untyped_test.go",
         "unnest_element_later_from_item_test.go",
         "proj_col_ref_test.go",
+        "cardinality_clamp_reachable_test.go",
     ],
     deps = [
         "//gen",

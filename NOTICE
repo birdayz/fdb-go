@@ -17,6 +17,10 @@ implementation (tag 4.12.11.0).
 The Protocol Buffer definitions under proto/apple/ are copied from the
 FoundationDB Record Layer and remain under the Apache License, Version 2.0.
 
+The .yamsql acceptance-test corpus under third_party/apple/fdb-record-layer/ is
+copied verbatim from the FoundationDB Record Layer and remains under the Apache
+License, Version 2.0.
+
 This product speaks the FoundationDB wire protocol. FoundationDB
 (https://github.com/apple/foundationdb) is developed by Apple Inc. and the
 FoundationDB project authors and is licensed under the Apache License,
