@@ -215,9 +215,14 @@ func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecision
 //   - contract:   the name IS the agreed output-naming contract with a consumer
 //     (executor group keys, hidden sort-key fields). Moves only when the
 //     contract itself becomes an ordinal slot.
-//   - dotted:     `strings.Contains(fv.Field, ".")` asking whether a reference
-//     is qualified. Structure encoded in a string; the flat "ALIAS.col"
-//     representation is the actual debt and these sites are its readers.
+//   - dotted:     the flat "ALIAS.col" representation — structure encoded in a
+//     string. Both ENDS of it: the READERS (`strings.Contains(fv.Field, ".")`
+//     asking whether a reference is qualified, then splitting it back apart) and
+//     the MINTS that build it (`corr + "." + fv.Field`). The bucket used to say
+//     "these sites are its readers", and that was true because the detector
+//     could only see readers — every arm watched a name being consumed. RFC-197
+//     orders this migration PRODUCER-FIRST, so the one end that mattered most
+//     was the end nothing was counting.
 //   - name-keyed: a set/map inside the engine keyed by leaf name, conflating
 //     two same-named columns. The original seven bugs.
 //   - translator: name resolution in the SQL translator, where a parsed
@@ -277,7 +282,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// than argument: name and ordinal answered identically on all 8358
 	// aggregate operands the relational suite produces.
 
-	// contract (15)
+	// contract (16)
 	//
 	// The four `contract:` entries below with a `normalizeAggOutputName` note
 	// were INVISIBLE when this bucket was sized, and their absence is the
@@ -313,12 +318,26 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:155": {1, "contract: same authority, AVG arm"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:157": {1, "contract: same authority, default arm"},
 
+	// Newly VISIBLE with the MINT arm (see the dotted bucket's note on the hole),
+	// and filed under contract rather than dotted because of WHO CALLS IT. The
+	// line is Java's FieldPath.toString port (FieldValue.java:428-433) and it has
+	// two callers wearing one face: ExplainValue, which is display and could never
+	// confuse two columns, and ColumnNameValue, which NAMES OUTPUT COLUMNS. The
+	// second is what makes it debt — a rendering that only ever rendered would
+	// belong on no list at all.
+	//
+	// It is also the one site here that already carries its own mitigation: the
+	// withOrdinals form appends `#ordinal` precisely so two reads of
+	// duplicate-named slots do not render alike. The naming caller is the one that
+	// passes false.
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1720": {1, "contract: FieldPath.toString rendering joins the child's rendering to the field name. Debt through ColumnNameValue (withOrdinals=false), which is an output-NAMING authority, not through ExplainValue beside it; retires when a projected column takes its name from a resolved slot rather than from a rendered path"},
+
 	"pkg/recordlayer/query/plan/cascades/values/values.go:1531":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
 	"pkg/relational/core/embedded/logical_predicate.go:6191":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4760":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (9)
+	// dotted (14)
 	//
 	// cascades_translator.go:988 arrived here with the launderer widening, not
 	// from another bucket. It asks whether a group-by output name is QUALIFIED
@@ -397,6 +416,29 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:794":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
+
+	// THE MINTS. Five sites, all newly VISIBLE rather than new — every one of
+	// them predates this entry by many commits. The detector had no arm for name
+	// CONSTRUCTION: `corr + "." + fv.Field` is a `+` BinaryExpr and fell through
+	// the comparison arm, so the producer end of the channel this bucket is named
+	// after was counted by nothing while the reader end was counted exhaustively.
+	// Measured at the moment the hole was found: the mint CQ-53 had just deleted
+	// (rule_implement_nested_loop_join.go:2854) could be restored verbatim and the
+	// whole ratchet stayed GREEN.
+	//
+	// The count going UP is the honest result of the instrument getting better,
+	// and it is the opposite of what closing CQ-53's mint was expected to do to
+	// this number. Both facts are true at once: one mint died, five became
+	// countable.
+	//
+	// These are the sites RFC-197's producer-first ordering points at. A reader in
+	// the list above cannot be re-keyed while its counterparty still arrives as a
+	// joined string, and each of these is somebody's counterparty.
+	"pkg/relational/core/query/cascades_translator.go:3598":   {1, "dotted: MINT. CQ-53's surviving producer — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap inner's binder can resolve the merged row by that string. Its twin in rule_implement_nested_loop_join.go is deleted (the re-anchor now carries Java's null-named ordinal accessor, FieldValue.java:335-338); this one is on the unnest-merge path and dies with the same work"},
+	"pkg/relational/core/query/cascades_translator.go:886":    {1, "dotted: MINT. Registers the QUALIFIED spelling of a quantifier-addressed group key as an alias of its output ordinal, because SELECT/HAVING/ORDER-BY re-read it qualified while AggregateKeyColumnName names it bare. The ordinal is in hand at the registration — what is missing is a reference that arrives stating it, which is the same resolver gap rule_projection_merge.go:113 records under name-keyed"},
+	"pkg/relational/core/query/cascades_translator.go:978":    {1, "dotted: MINT. The READ side of the same alias table — composes 'ALIAS.COL' to match a reference against the group-by output names registered at :886. The pair is one channel and retires as one; splitting them across buckets would let either end look closed while the other holds it open"},
+	"pkg/relational/core/embedded/cascades_generator.go:3073": {1, "dotted: MINT. Composes 'CORR.FIELD' as the lookup key into the null-supplying-window metadata map, so a QOV-addressed reference and a flat one reach the same nullability answer. The correlation is RIGHT THERE in the expression being joined — the key could be the identity pair rather than its rendering, which makes this the cheapest of the five to convert and the one whose conversion proves nothing about the others"},
+	"pkg/relational/core/embedded/logical_predicate.go:9340":  {1, "dotted: MINT. Builds the correlated-scalar column key qualified when the scalar is inner-scoped and bare when it is not, so the SAME column is two different keys depending on a scoping test performed elsewhere. That is the flat representation's characteristic failure and not a lookup detail: the key's shape encodes a decision, so a reader cannot tell a qualified column from a bare one that happens to contain a dot"},
 
 	// name-keyed (5). Two of these are newly VISIBLE rather than new: the
 	// call-boundary taint reached them through a plain string parameter.
@@ -1312,6 +1354,33 @@ func isNilIdent(e ast.Expr) bool {
 }
 
 // isEmptyStringLit reports whether e is the literal "".
+// flattenConcat returns the operands of a `+` chain in source order, descending
+// through nested `+` BinaryExprs. Anything else is one operand.
+func flattenConcat(e ast.Expr) []ast.Expr {
+	be, ok := e.(*ast.BinaryExpr)
+	if !ok || be.Op != token.ADD {
+		return []ast.Expr{e}
+	}
+	return append(flattenConcat(be.X), flattenConcat(be.Y)...)
+}
+
+// isQualifierJoinLit reports whether e is the string literal `"."` — the
+// separator that turns a one-level display name into a two-level key.
+//
+// EXACTLY that literal, not "contains a dot". A message fragment like
+// `" in leg "` or `"...: "` is not a qualifier join, and reporting it would
+// bury the mint arm's real finding under every error string that happens to
+// punctuate. The dotted channel is spelled one way by every producer in this
+// tree, and that spelling is what the `dotted` readers split back apart.
+func isQualifierJoinLit(e ast.Expr) bool {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	v, err := strconv.Unquote(lit.Value)
+	return err == nil && v == "."
+}
+
 func isEmptyStringLit(e ast.Expr) bool {
 	lit, ok := e.(*ast.BasicLit)
 	return ok && lit.Kind == token.STRING && (lit.Value == `""` || lit.Value == "``")
@@ -1347,6 +1416,10 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	// Identifiers the enclosing top-level func assigns the name to, so a sink
 	// reached through one local hop is judged on what actually flows into it.
 	tainted := nameTaint{}
+
+	// Positions already reported by the MINT arm, so a left-nested `+` chain
+	// reports its site once rather than once per prefix.
+	mintedAt := map[token.Pos]bool{}
 
 	// PARAMETERS a call site in this file feeds the name into. Computed once for
 	// the whole file because the propagation is a fixed point over all of it —
@@ -1449,6 +1522,50 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 				}
 				if decides(x.X) || decides(x.Y) {
 					report(x.Pos(), "a "+op+" comparison"+localNote(decidesRaw, x.X, x.Y))
+				}
+			}
+			// THE MINT ARM — the PRODUCER side of the dotted channel.
+			//
+			// Every other arm here watches a name being READ. RFC-197's rule is
+			// producer-first, and the instrument enforcing it could not see a
+			// producer at all: `corr + "." + strings.ToUpper(fv.Field)` is a `+`
+			// BinaryExpr, so it fell through the comparison arm above and was
+			// reported by nothing. Measured — the mint that CQ-53 exists to delete
+			// could be restored at
+			// rule_implement_nested_loop_join.go and the whole ratchet stayed GREEN.
+			//
+			// What is reported is narrow on purpose: a concatenation that JOINS a
+			// display name to a QUALIFIER SEPARATOR literal. That is the shape that
+			// manufactures a two-level key out of a one-level name, and it is the
+			// shape every reader in the `dotted` bucket exists to take apart again.
+			// Plain concatenation is not reported — building a message, or suffixing
+			// a name, cannot confuse column A with column B, which is the only
+			// failure this gate is about.
+			if op == "+" {
+				// The chain is FLATTENED before it is judged. `a + "." + b` parses
+				// left-nested as `(a + ".") + b`, so neither operand of the outer `+`
+				// IS the separator and neither operand of the inner one reads the
+				// name — testing the two operands in place reports nothing, which is
+				// how this arm silently passed the first time it was written.
+				operands := flattenConcat(x)
+				hasSep, hasName := false, false
+				for _, o := range operands {
+					if isQualifierJoinLit(o) {
+						hasSep = true
+					}
+					if decides(o) {
+						hasName = true
+					}
+				}
+				// Pre-order traversal reaches the OUTERMOST `+` first, and a
+				// left-nested chain shares its starting position with every prefix of
+				// itself, so the inner nodes would re-report the same site. The first
+				// report at a position wins and the rest are dropped: one mint, one
+				// entry.
+				if hasSep && hasName && !mintedAt[x.Pos()] {
+					mintedAt[x.Pos()] = true
+					report(x.Pos(), "a dotted-name MINT (qualifier joined to the name)"+
+						localNote(decidesRaw, operands...))
 				}
 			}
 		case *ast.SwitchStmt:

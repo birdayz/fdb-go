@@ -113,6 +113,14 @@ func TestFieldDecisionDetectorFiresOnEveryCoveredShape(t *testing.T) {
 			body: `func f(m map[string]bool, fv *values.FieldValue) bool { return m[fv.Field] }`,
 		},
 		{
+			// The PRODUCER end. Every other shape here watches a name being
+			// consumed; RFC-197 orders the migration producer-first, and until
+			// this arm existed the producing end was reported by nothing.
+			name: "dotted-name mint",
+			want: "dotted-name MINT",
+			body: `func f(corr string, fv *values.FieldValue) string { return corr + "." + fv.Field }`,
+		},
+		{
 			// Never produces an IndexExpr, so the index check alone misses it.
 			name: "composite-literal key",
 			want: "composite-literal key",
@@ -480,6 +488,15 @@ func (k SortKey) Name() string { return k.Field }`,
 	return dot >= 0
 }`,
 		},
+		{
+			// A separator with no NAME anywhere in the chain is somebody else's
+			// string. (The name-bearing counterpart cannot live in this table: any
+			// snippet that RETURNS a name-derived string fires the escape arm, which
+			// is that arm working. The mint arm's own silence is isolated in
+			// TestFieldDecisionMintArmIgnoresPlainConcatenation.)
+			name: "qualifier separator without a field name",
+			body: `func f(a, b string) string { return a + "." + b }`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -487,6 +504,120 @@ func (k SortKey) Name() string { return k.Field }`,
 				t.Fatalf("the gate fired on a shape that decides nothing: %v\n\nsource:\n%s\n\n"+
 					"False positives are not harmless here: the debt list is read by hand, and a "+
 					"gate padded with non-findings trains its readers to skip it.", got, tc.body)
+			}
+		})
+	}
+}
+
+// TestFieldDecisionMintArmIgnoresPlainConcatenation pins the mint arm's SCOPE:
+// it fires on the QUALIFIER SEPARATOR, not on concatenation.
+//
+// Suffixing or prefixing a display name cannot turn column A into column B,
+// which is the only failure this whole gate is about; what the separator does is
+// manufacture a level of STRUCTURE the string did not have, and that structure
+// is what every reader in the `dotted` bucket exists to take apart again. An arm
+// that fired on all `+` would bury five real producers under every rendered
+// message in the tree, and the debt list is read by hand.
+//
+// Asserted on the MINT report specifically rather than on silence, because these
+// bodies legitimately trip the escape arm beside it — a name-derived string
+// leaving as a return value is that arm working, not a false positive of this
+// one. A blanket silence assertion here would have to be written around the
+// escape arm and would then stop testing this arm at all.
+func TestFieldDecisionMintArmIgnoresPlainConcatenation(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "message built around the name",
+			body: `func f(fv *values.FieldValue) string { return "column " + fv.Field + " missing" }`,
+		},
+		{
+			name: "suffixed name",
+			body: `func f(fv *values.FieldValue) string { return fv.Field + "_hidden" }`,
+		},
+		{
+			// A dot INSIDE a longer literal is punctuation, not a qualifier join.
+			// The separator is spelled one way by every producer in this tree.
+			name: "dot inside a longer literal",
+			body: `func f(fv *values.FieldValue) string { return "resolving " + fv.Field + ". Giving up" }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, g := range scanSnippet(t, tc.body) {
+				if strings.Contains(g, "dotted-name MINT") {
+					t.Fatalf("the MINT arm fired on plain concatenation: %q\n\nsource:\n%s\n\n"+
+						"Prefixing or suffixing a name cannot confuse two columns. Widening "+
+						"this arm past the qualifier separator floods the debt list with "+
+						"message building and hides the producers it exists to surface.",
+						g, tc.body)
+				}
+			}
+		})
+	}
+}
+
+// TestFieldDecisionMintArmFlattensTheConcatChain pins the two ways this arm has
+// already been written wrong, because both fail SILENTLY — a mint arm that
+// reports nothing looks exactly like a tree with no mints in it.
+//
+//  1. ASSOCIATIVITY. `corr + "." + fv.Field` parses left-nested as
+//     `(corr + ".") + fv.Field`. Neither operand of the OUTER `+` is the
+//     separator literal, and neither operand of the INNER one reads a name, so an
+//     arm that tests the two operands in place fires on nothing at all. That is
+//     the first version of this arm, and it passed the whole tree green.
+//
+//  2. DOUBLE-REPORTING. A left-nested chain shares its starting position with
+//     every prefix of itself, so a flattening arm without a seen-set reports one
+//     mint two or three times — and the debt list counts DECISIONS PER LINE, so
+//     the inflated count becomes a ratchet entry that only stays green while the
+//     over-report persists.
+func TestFieldDecisionMintArmFlattensTheConcatChain(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			// The name is the LAST operand: the separator sits in the inner node.
+			name: "name last",
+			body: `func f(corr string, fv *values.FieldValue) string { return corr + "." + fv.Field }`,
+		},
+		{
+			// The name is the FIRST operand: it and the separator share the inner
+			// node, so the inner node ALSO matches — this is the shape that
+			// double-reports without the seen-set.
+			name: "name first",
+			body: `func f(corr string, fv *values.FieldValue) string { return fv.Field + "." + corr }`,
+		},
+		{
+			// Three-deep, name in the middle.
+			name: "name in the middle of a longer chain",
+			body: `func f(a, b string, fv *values.FieldValue) string { return a + "." + fv.Field + "." + b }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := scanSnippet(t, tc.body)
+			mints := 0
+			for _, g := range got {
+				if strings.Contains(g, "dotted-name MINT") {
+					mints++
+				}
+			}
+			if mints != 1 {
+				t.Fatalf("want EXACTLY 1 dotted-name MINT report, got %d: %v\n\nsource:\n%s\n\n"+
+					"Zero means the arm tested the `+` operands in place and the chain's "+
+					"associativity hid the separator from it — the arm then reports nothing "+
+					"anywhere and reads as a clean tree. More than one means a left-nested "+
+					"chain reported once per prefix; the debt list counts decisions PER LINE, "+
+					"so an inflated count becomes a ratchet entry that goes stale the moment "+
+					"the over-report is fixed.", mints, got, tc.body)
 			}
 		})
 	}

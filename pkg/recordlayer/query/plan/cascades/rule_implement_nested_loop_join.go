@@ -2851,7 +2851,6 @@ func rebaseOuterLegValue(
 					// the arm had emptied.
 					id, identityInLegDomain := legSlotIdentity(fv)
 					identity := classifyLegReadIdentity(fv.Resolved != nil, identityInLegDomain)
-					qualField := corr + "." + strings.ToUpper(fv.Field)
 
 					// ARM 1 — the merged re-anchor. The slot is found by the
 					// reference's own IDENTITY in its leg's row layout, the same
@@ -2867,13 +2866,27 @@ func rebaseOuterLegValue(
 					// those rebase through rebaseOuterLegRefsOrdinal instead. It stays
 					// as the fail-closed net for shapes that arrive layout-bearing,
 					// and it stays FIRST because that is the precedence Java states.
+					//
+					// THE RE-ANCHORED NODE CARRIES NO LEG NAME. It used to be minted as
+					// `corr + "." + ToUpper(fv.Field)` — the leg packed into the display
+					// string — which is the RFC-197 channel this whole item exists to
+					// remove, sitting on the one arm whose entire premise is that the
+					// ORDINAL is the answer. Java states the alternative exactly:
+					// PartitionSelectRule.java:296-303 re-anchors a collapsed alias as
+					// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`, and
+					// FieldValue.java:335-338 builds that from `new Accessor(null,
+					// ordinalNumber)` — the accessor's name is NULL. The sibling alias
+					// ceases to exist, so there is nothing to spell and nothing for a
+					// later reader to match on. OrdinalFieldName is Go's rendering of
+					// that null-named accessor (`_3`), the same one NewOrdinalFieldValue
+					// and the positional merge already use.
 					if legLayout != nil && identity == legReadIdentityInLegDomain {
 						if ord, ok := legLayout[id]; ok {
 							recordRebaseOuterLegArm(legLocalBakeMergedReAnchor, fv, qov,
 								legLocalTypes, identity)
 							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 								values.NewQuantifiedObjectValue(mergedCorr),
-								qualField, ord, fv.Typ,
+								values.OrdinalFieldName(ord), ord, fv.Typ,
 							)
 						}
 					}

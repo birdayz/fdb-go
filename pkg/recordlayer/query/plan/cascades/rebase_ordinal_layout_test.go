@@ -162,8 +162,29 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	if fv.Resolved == nil || fv.Resolved.Root().Ordinal != 3 {
 		t.Fatalf("want baked ordinal 3, got resolved=%v", fv.Resolved)
 	}
-	if fv.Field != "A.A_ID" {
-		t.Fatalf("display field: got %q, want A.A_ID", fv.Field)
+	// THE RE-ANCHORED NODE MUST NOT SPELL ITS LEG. Java re-anchors a collapsed
+	// alias as `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`
+	// (PartitionSelectRule.java:296-303), built from `new Accessor(null, ordinal)`
+	// (FieldValue.java:335-338) — a NULL-named accessor, because the sibling alias
+	// has ceased to exist and there is nothing left to name. This arm used to mint
+	// `corr + "." + ToUpper(fv.Field)` here ("A.A_ID"), which is the RFC-197
+	// leg-in-the-name channel reappearing on the one arm whose whole premise is
+	// that the ordinal is the answer.
+	//
+	// The assertion is EQUALITY against the ordinal's own rendering, not "does not
+	// contain a dot". The weaker form passes for the wrong reason the moment the
+	// name becomes some other non-dotted string, and it is anyway subsumed: any
+	// qualified spelling fails equality too. What reds here is the mint coming
+	// back — and the message names what that costs, because the failure looks
+	// cosmetic and is not: a leg-qualified name on this node is a string key the
+	// executor's merged-row binder can resolve by, which is the whole channel.
+	if want := values.OrdinalFieldName(3); fv.Field != want {
+		t.Fatalf("display field: got %q, want %q — the re-anchored node must carry "+
+			"Java's null-named ordinal accessor (FieldValue.java:335-338, reached from "+
+			"PartitionSelectRule.java:296-303), not a leg-qualified string. The "+
+			"collapsed alias CEASES TO EXIST at a re-anchor, so there is nothing left "+
+			"to spell; a name like \"A.A_ID\" here is the RFC-197 leg-in-the-name "+
+			"channel returning at rebaseOuterLegValue's ARM 1.", fv.Field, want)
 	}
 	if qov, isQ := fv.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != mergedCorr {
 		t.Fatalf("child must be QOV($m), got %T", fv.Child)

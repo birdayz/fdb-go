@@ -10794,6 +10794,167 @@ None is speculative: each was re-verified against the tree before booking.
   `10`, `1000000`, `46`, `97`, …); timings within run-to-run noise on a shared
   machine (full scan 3.51s vs 3.38s, sparse filter 2.92s vs 2.97s).
 
+  ---
+
+  **PHASE 3 (2026-07-31, branch `feat/cq53-parent-chained-binder`, base
+  `f50cee43e`). The NLJ mint is DELETED. The parent-chained binder work is NOT
+  done, and THREE MORE PREMISES OF THIS ENTRY ARE REFUTED BY MEASUREMENT** —
+  including the two the phase-3 plan was built on. Read the refutations before
+  planning the next attempt; the plan above targets the wrong sites.
+
+  Every number below is one run of the whole real-FDB sqldriver corpus at base
+  `f50cee43e` (`go test ./pkg/relational/sqldriver/ -count=1 -v`), the standing
+  censuses plus a call-site probe added for this question and removed after.
+
+  WHAT LANDED:
+
+  - **`rule_implement_nested_loop_join.go:2854`'s dotted mint is GONE.**
+    `qualField := corr + "." + strings.ToUpper(fv.Field)` is deleted; the merged
+    re-anchor (ARM 1) now names its node `values.OrdinalFieldName(ord)`. That is
+    Java, precisely: `PartitionSelectRule.java:296-303` re-anchors a collapsed
+    alias through `FieldValue.ofOrdinalNumber`, and `FieldValue.java:335-338`
+    builds it from `new Accessor(null, ordinalNumber)` — the accessor's name is
+    NULL, because the sibling alias has ceased to exist and there is nothing
+    left to spell. Pinned by `TestRebaseOuterLegValue_OrdinalFirst`, which now
+    asserts EQUALITY against the ordinal rendering (mutation-checked: restoring
+    the mint reds it with `got "A.A_ID", want "_3"`).
+  - **The RFC-197 ratchet gained a PRODUCER arm, and it was blind to producers
+    entirely.** Measured, not inferred: with the mint above restored verbatim,
+    `pkg/docscheck` stayed GREEN. `corr + "." + fv.Field` is a `+` BinaryExpr,
+    and every arm of `scanFieldDecisions` watched a name being READ —
+    comparisons, switch tags, map keys, composite-literal keys, escapes. RFC-197
+    orders this migration PRODUCER-FIRST and nothing was counting producers.
+    The new arm flattens the `+` chain (left-nesting hides the separator from an
+    in-place operand test — the first version of the arm reported nothing on the
+    whole tree and read as clean) and reports one site per line.
+
+  THE RATCHET COUNTS WENT **UP**, and that is the honest result. `dotted` 9 → 14,
+  `contract` 15 → 16, total 46 → 52. One mint died and five became countable:
+
+  | site | what it mints |
+  |---|---|
+  | `cascades_translator.go:3598` | CQ-53's SURVIVING producer — `QOV(leg).COL` → `QOV(merged)."LEG.COL"` on the unnest-merge path |
+  | `cascades_translator.go:886` | registers the QUALIFIED spelling of a group key as an alias of its output ordinal |
+  | `cascades_translator.go:978` | the READ side of that same alias table |
+  | `cascades_generator.go:3073` | `CORR.FIELD` as the key into the null-supplying-window metadata map |
+  | `logical_predicate.go:9340` | the correlated-scalar column key, qualified or bare depending on a scoping test made elsewhere |
+  | `values.go:1720` (`contract`) | `FieldPath.toString` rendering — debt through `ColumnNameValue`, not through `ExplainValue` beside it |
+
+  THE REFUTATIONS. Each quotes the premise it kills:
+
+  1. **"The `:2854` producer deleted ⇒ leg-column provenance 4 dotted hits → 0."**
+     A NON-SEQUITUR: the two are different channels. `:2854`'s only consumer is
+     ARM 1, and ARM 1 returned ZERO times over the corpus (`mergedReAnchor 0 of
+     174`), so the mint produced NOTHING that reached the executor. The
+     executor's four dotted hits come from the CORRELATED-SCALAR ORDINAL SEED
+     builders, which name their RC fields `LEG.COL` literally:
+     `scalar_subquery_seed.go:83` and `clustered_outer_scalar.go:493`. Measured
+     by instrumenting both producers and matching their output against the
+     census witnesses — `C.CV` and `O.ID` are minted VERBATIM by
+     `scalarSubqueryOrdinalSeed`; `I.QTY` arrives as the `scalarCol` half of its
+     `O.I.QTY`. Those leg-type names are what `adaptLegPositional` feeds to
+     `rowSlotForLegColumn`. The executor's dotted arm therefore retires with the
+     SCALAR-SEED representation, producer-first, and not with any NLJ work.
+     Deleting `:2854` moved the provenance census by zero, as it had to.
+  2. **"Go reaches `rebaseOuterLegValue` without a stated merged layout on the
+     EXISTS-over-join AND RFC-153 buried-leg paths."** Half wrong, and the
+     wrong half is the one the plan named first. Split by call site:
+
+     ```
+     EXISTS(implementJoinWithExistential)  174   <- ALL of the 174
+     BURIED (buildCorrelatedFlatMapPlan)     0
+     ```
+
+     The RFC-153 buried path DOES state a layout — `buriedLegOrdinalLayout`
+     answered on 314 of 362 firings (the 48 declines are a NLJ/Projection/Union
+     outer, not a FlatMap) — and it contributes NOTHING to the 174 because no
+     leg-correlated leaf reaches the match arm there at all. There is no buried
+     -leg work in this item.
+  3. **"Closing it means giving those two paths a merged layout, which is the
+     parent-chained per-alias bindings bullet — still the right plan, now
+     unblocked."** It is NOT unblocked, and the blocker is not the one booked.
+     On the EXISTS path the merged layout IS `ordinalSeedLegWindowsOf(step1RV)`;
+     it is nil exactly when `foldStep1Seed` declined. Decline census, per firing:
+
+     ```
+     DECLINE correlatedStep1                                    108
+     DECLINE reconstruct nil (left=FlatMap right=Scan)           77
+     DECLINE reconstruct nil (left=Scan  right=FlatMap)          77
+     DECLINE rv does not reference exist alias                  200
+     ACCEPT                                                      78
+     ```
+
+     and the step-1 result values that reach the pass-through are:
+
+     ```
+     RC(1) [ExistsValue:1]                     x26
+     RC(2) [ExistsValue:1 FV-multi:1]          x48
+     RC(2) [ExistsValue:1 FV-unpinned:1]       x80
+     ```
+
+     So the residue is a FOLDED PROJECTION CARRYING AN ExistsValue, not a leg
+     concat — there is nothing for `OrdinalSeedLegWindows` to read because the
+     value is not a merged row at all. The 154 `reconstruct nil` firings are
+     `legIsOrdinalSafe` declining a **FlatMap leg**, and what those FlatMap legs
+     flow is the sharp finding:
+
+     ```
+     rv=*values.QuantifiedObjectValue        x94   (identity pass-through)
+     rv=RC(2) [QOV-record:2]                 x60   (a nested UNNAMED merge)
+     ```
+
+     **The 60 are Java's own merged row.** `RC(_i: QOV(leg_i))` is
+     `PartitionSelectRule.java:283-291`'s
+     `RecordConstructorValue.ofColumns(... Column::unnamedOf)` verbatim — Go
+     builds it in `positional_merge.go`'s `positionalMergeCase`. The layout
+     authority cannot read it: `OrdinalSeedLegWindows` accepts only the FLAT
+     concat seed (every field a frontier-pinned single-accessor `FieldValue`
+     over a leg QOV), and a bare whole-leg QOV field is rejected unless it is a
+     non-record mixed-seed element. So Go already PRODUCES Java's merge shape on
+     this path and its own layout authority declines it.
+
+  WHAT THE NEXT ATTEMPT IS, stated so it is not re-derived: teach the layout
+  authority to read the NESTED UNNAMED merge row (`RC(_i: QOV(leg_i))`) as a leg
+  layout, then let `legIsOrdinalSafe`/`planBuriedLegConcat` admit such a leg so
+  `reconstructFoldStep1Seed` can build the step-1 seed and the ordinal rebase
+  (`rebaseOuterLegRefsOrdinal`) takes over from the pass-through. That is a
+  change to the PHYSICAL ROW LAYOUT CONTRACT between planner and executor
+  (nested-per-leg vs flat concat), so the executor's span twin has to agree
+  bit-for-bit and the cross-agreement fixture is the gate. It is NOT started
+  here: it needs the Graefe-ACK'd RFC that comes BEFORE implementation, and the
+  `correlatedStep1` arm above it carries a documented history of two reverts
+  (a correlated FlatMap binds legs by NAME; a baked seed there hits the loud
+  `BakedNameContextError`).
+
+  NOT DONE, and each is a consequence of the refutations rather than a choice:
+  the executor's `rowSlotForLegColumn` dotted arm SURVIVES (its producer is the
+  scalar seed, not the NLJ mint); `bakeDottedRefsToLegQOV`'s family survives
+  (re-measured this run: `flatColumnBake` 102 attempts / 98 matches,
+  `legQOVBake` 4 / 3 + 1 via table name — CQ-52 is still its successor step);
+  `mergedReAnchor` is still 0 of 174, so the redundancy exclusion is still
+  vacuous and the wrong-window mutation is still GREEN; and `RecordTypeLeg.Name`
+  does NOT retire — its contract at `values/type.go:372` is unchanged, because
+  the reader the phase-3 plan expected to kill was never fed by the mint it
+  deleted.
+
+  Baseline censuses at `f50cee43e`, for the next attempt to diff against:
+
+  ```
+  leg-local bakeability: total 174 (baked 174, mergedReAnchor 0, declined 0);
+    legs: flowed 960, underivable 0; identityInLegDomain 174, otherDomain 0, lazyNameOnly 0
+  merged-leg binding: 15677 windows bound over 299 shapes; 6 READ (all excused as proven-redundant)
+  leg-column provenance: calls 52 (flatHit 40, notDotted 8); dotted HITS available 4, unstated 0, diverged 0
+  translator dotted leg qualifier: flatColumnBake 102 (98 match), legQOVBake 4 (3 match, 1 via table name)
+  seed-window readers: existentialRebase 962 (461/501), boxLegRef 92 (62/30),
+    boxSurvivorQOV 184, boxSurvivorCorrelation 2, gatheredGroupSlot 160
+  ```
+
+  No 1M stress comparison was run for this phase and none is indicated: nothing
+  on an executed path changed. The only production edit is ARM 1's display
+  NAME, on an arm measured to return zero times over the whole corpus, so no
+  plan and no row can move. Stated rather than assumed — if a future change
+  makes ARM 1 fire, that change owns the stress run.
+
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and
   make the call-numbering ONE authority instead of two.** RFC-197 item 5 left
