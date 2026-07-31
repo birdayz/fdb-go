@@ -948,7 +948,7 @@ func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	// …so a leg row built by name (aggregate-box shape) adapts to a
 	// full-width binding the baked reference can read — not the zero-width
 	// death row.
-	adapted, aerr := adaptLegPositional(ojNameQR(legA, int64(7), int64(70)), outerType)
+	adapted, aerr := adaptLegPositional(ojNameQR(legA, int64(7), int64(70)), outerType, values.CorrelationIdentifier{})
 	if aerr != nil {
 		t.Fatalf("adaptLegPositional: %v", aerr)
 	}

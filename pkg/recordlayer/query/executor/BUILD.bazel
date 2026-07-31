@@ -72,6 +72,7 @@ go_test(
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
         "leg_column_dotted_containment_test.go",
+        "leg_column_owner_selection_test.go",
         "leg_column_provenance_census_test.go",
         "leg_identity_binding_test.go",
         "leg_layout_cross_agreement_test.go",
@@ -206,6 +207,7 @@ go_test(
         "leg_column_provenance_census_test.go",
         "leg_column_dotted_containment_test.go",
         "merged_leg_wrong_window_test.go",
+        "leg_column_owner_selection_test.go",
     ],
     deps = [
         "//gen",

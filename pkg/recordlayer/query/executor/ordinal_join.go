@@ -749,7 +749,7 @@ func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationI
 // This is format-only bridging — correlation-SEMANTIC bridging (an ordinal
 // join consumed as a leg of a wider merge select) is explicitly out of
 // scope and prevented upstream by the cluster-arity gate.
-func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
+func adaptLegPositional(qr QueryResult, legType *values.RecordType, owner values.CorrelationIdentifier) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
 		// The passthrough requires ORDERED per-slot name agreement with the
 		// leg type — a width-only check is not enough: two layouts of the
@@ -786,7 +786,7 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		matched := 0
 		if qr.Positional.Type != nil {
 			for i, f := range legType.Fields {
-				if idx, ok := rowSlotForLegColumn(qr.Positional.Type, f.Name); ok {
+				if idx, ok := rowSlotForLegColumn(qr.Positional.Type, f.Name, owner); ok {
 					v, _ := qr.Positional.Get(idx)
 					row.Slots[i] = v
 					matched++
@@ -825,18 +825,22 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 // correlated-scalar seed legs, whose seed leg types name columns literally
 // `LEG.COL` while the physical leg emits the merged row those names address.
 // First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
-func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
+// owner is the IDENTITY of the leg whose type supplied `name` — the correlation
+// adaptLegPositional is adapting a row FOR. It does not steer the lookup; it is
+// recorded so the census can answer the question the conversion turns on: would
+// selecting the source window by identity have chosen the leg the text chose?
+func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.CorrelationIdentifier) (int, bool) {
 	census := values.LegIdentityCensusEnabled()
 	if i, ok := rt.FieldIndex(name); ok {
 		if census {
-			recordLegColumnProvenance(rt, name, true, nil, "")
+			recordLegColumnProvenance(rt, name, true, nil, "", owner)
 		}
 		return i, true
 	}
 	di := strings.IndexByte(name, '.')
 	if di <= 0 || len(rt.Legs) == 0 {
 		if census {
-			recordLegColumnProvenance(rt, name, false, nil, "")
+			recordLegColumnProvenance(rt, name, false, nil, "", owner)
 		}
 		return 0, false
 	}
@@ -856,7 +860,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
 				// that leg also states an identity — the fact that decides
 				// whether this reader can be re-keyed off the name.
 				if census {
-					recordLegColumnProvenance(rt, name, false, &leg, qual)
+					recordLegColumnProvenance(rt, name, false, &leg, qual, owner)
 				}
 				return k, true
 			}
@@ -864,7 +868,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
 		break
 	}
 	if census {
-		recordLegColumnProvenance(rt, name, false, nil, qual)
+		recordLegColumnProvenance(rt, name, false, nil, qual, owner)
 	}
 	return 0, false
 }
@@ -1569,7 +1573,7 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 		raw[id] = qr.Positional.Slots[0]
 		return nil
 	}
-	row, err := adaptLegPositional(*qr, b.legType(id))
+	row, err := adaptLegPositional(*qr, b.legType(id), id)
 	if err != nil {
 		return err
 	}

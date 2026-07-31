@@ -1130,7 +1130,7 @@ func newNLJCursor(
 		innerType := build.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
 		for i := range innerRows {
-			row, aerr := adaptLegPositional(innerRows[i], innerType)
+			row, aerr := adaptLegPositional(innerRows[i], innerType, c.innerCorr)
 			if aerr != nil {
 				return nil, aerr
 			}
@@ -1163,7 +1163,7 @@ func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
 	if !c.build.enabled() {
 		return nil
 	}
-	row, err := adaptLegPositional(outerRow, c.build.legType(c.outerCorr))
+	row, err := adaptLegPositional(outerRow, c.build.legType(c.outerCorr), c.outerCorr)
 	if err != nil {
 		return err
 	}

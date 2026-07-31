@@ -648,7 +648,7 @@ func TestAdaptLegPositional(t *testing.T) {
 		t.Parallel()
 		pos := NewPositionalRow(legA)
 		pos.Set(0, int64(7))
-		got, err := adaptLegPositional(QueryResult{Positional: pos}, legA)
+		got, err := adaptLegPositional(QueryResult{Positional: pos}, legA, values.CorrelationIdentifier{})
 		if err != nil {
 			t.Fatalf("passthrough errored: %v", err)
 		}
@@ -659,7 +659,7 @@ func TestAdaptLegPositional(t *testing.T) {
 
 	t.Run("datum synthesis by leg-type names", func(t *testing.T) {
 		t.Parallel()
-		got, err := adaptLegPositional(dmap(map[string]any{"ID": int64(7)}), legA) // V missing
+		got, err := adaptLegPositional(dmap(map[string]any{"ID": int64(7)}), legA, values.CorrelationIdentifier{}) // V missing
 		if err != nil {
 			t.Fatalf("synthesis errored: %v", err)
 		}
@@ -679,7 +679,7 @@ func TestAdaptLegPositional(t *testing.T) {
 		t.Parallel()
 		// A genuine all-NULL row (keys present, nil values) is NOT the dotted
 		// zero-match shape — it matches every column and synthesizes quietly.
-		got, err := adaptLegPositional(dmap(map[string]any{"ID": nil, "V": nil}), legA)
+		got, err := adaptLegPositional(dmap(map[string]any{"ID": nil, "V": nil}), legA, values.CorrelationIdentifier{})
 		if err != nil {
 			t.Fatalf("genuine all-NULL row must synthesize silently, got %v", err)
 		}
@@ -695,7 +695,7 @@ func TestAdaptLegPositional(t *testing.T) {
 		// indistinguishable from a legitimate all-NULL row. The planner
 		// already gates a genuine join input from reaching this shape; this
 		// pins the tripwire that would catch it if that gate ever failed.
-		_, err := adaptLegPositional(dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}), legA)
+		_, err := adaptLegPositional(dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}), legA, values.CorrelationIdentifier{})
 		if err == nil || !strings.Contains(err.Error(), "leg adapter") {
 			t.Fatalf("dotted-key zero-match synthesis must be a loud leg-adapter error, got %v", err)
 		}
@@ -703,7 +703,7 @@ func TestAdaptLegPositional(t *testing.T) {
 
 	t.Run("nil datum", func(t *testing.T) {
 		t.Parallel()
-		got, err := adaptLegPositional(QueryResult{}, legA)
+		got, err := adaptLegPositional(QueryResult{}, legA, values.CorrelationIdentifier{})
 		if err != nil {
 			t.Fatalf("nil datum errored: %v", err)
 		}
@@ -820,7 +820,7 @@ func TestAdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 	cov := &PositionalRow{Type: indexShaped, Slots: []any{int64(20), int64(1)}}
 	qr := QueryResult{Positional: cov}
 
-	row, err := adaptLegPositional(qr, legType)
+	row, err := adaptLegPositional(qr, legType, values.CorrelationIdentifier{})
 	if err != nil {
 		t.Fatalf("adaptLegPositional: %v", err)
 	}
@@ -836,7 +836,7 @@ func TestAdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 
 	// ALIGNED positional: passthrough (same object).
 	aligned := &PositionalRow{Type: legType, Slots: []any{int64(1), int64(20)}}
-	row, err = adaptLegPositional(QueryResult{Positional: aligned}, legType)
+	row, err = adaptLegPositional(QueryResult{Positional: aligned}, legType, values.CorrelationIdentifier{})
 	if err != nil {
 		t.Fatalf("aligned adapt: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestAdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 		Type:  &values.RecordType{Fields: []values.Field{{Name: "V", FieldType: values.NotNullLong, Ordinal: 0}}},
 		Slots: []any{int64(20)},
 	}
-	row, err = adaptLegPositional(QueryResult{Positional: narrow}, legType)
+	row, err = adaptLegPositional(QueryResult{Positional: narrow}, legType, values.CorrelationIdentifier{})
 	if err != nil {
 		t.Fatalf("narrow adapt: %v", err)
 	}

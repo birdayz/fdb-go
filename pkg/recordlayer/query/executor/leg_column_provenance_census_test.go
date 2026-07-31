@@ -96,13 +96,32 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 
 	floors := &LegColumnProvenanceFloors{Calls: 1, DottedHitIdentityAvailable: 1}
 
-	// A state that HOLDS: the seven outcomes partition Calls and nothing diverged.
+	// A state that HOLDS: the seven outcomes partition Calls, nothing diverged, and
+	// the OWNER sub-partition accounts for every dotted hit. The owner numbers are
+	// the corpus's own — four hits, none of which an identity-keyed selection could
+	// have resolved, because the identity the reader holds names no leg of the
+	// source row.
 	ok := legColumnProvenanceCounters{
 		Calls: 52, FlatHit: 40, NotDotted: 8, DottedHitIdentityAvailable: 4,
+		DottedHitOwnerNamesNoLeg: 4,
 	}
 	var b strings.Builder
 	if assertLegColumnProvenanceCounters(&b, ok, floors) {
 		t.Fatalf("a partitioning, divergence-free census FAILED the gate:\n%s", b.String())
+	}
+
+	// A state that must FAIL: dotted hits reached the reader but no owner verdict
+	// was recorded for them. Without this the sub-partition can quietly stop being
+	// filled and its zeros — including "no dotted hit could have been resolved by
+	// identity", the finding that blocks the conversion — hold over nothing.
+	b.Reset()
+	ownerGap := ok
+	ownerGap.DottedHitOwnerNamesNoLeg = 0
+	if !assertLegColumnProvenanceCounters(&b, ownerGap, floors) {
+		t.Fatal("the gate accepted 4 dotted hits with no owner verdict recorded for any " +
+			"of them. The owner sub-partition is what says whether an identity-keyed " +
+			"selection would resolve the same window; unfilled, it reads as all-zero, " +
+			"which is indistinguishable from a measured all-miss.")
 	}
 
 	// A state that must FAIL: a call left the reader by a path with no counter.

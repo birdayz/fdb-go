@@ -126,7 +126,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// from this branch made precisely this call for real, to mint an ordinal. A
 	// diagnostic that survived its deleted sibling is how the move gets
 	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:575": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:588": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
 
 	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
 	// deleted entries described, and calling it genuine debt rather than the
@@ -1589,12 +1589,15 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			// tally must not be read as "every dotted producer in the tree".
 			//
 			// One shape is undetectable rather than merely out of scope, and it is
-			// worth naming so nobody spends an afternoon on it: values.go:1713
-			// accumulates path steps into a SLICE (`steps[i] = ...`) and joins them
-			// with strings.Join, so there is no `+ "." +` node at all and the taint
-			// tracker cannot follow it either — taint() requires an *ast.Ident on
-			// the left of the assignment, and `steps[i]` is an IndexExpr. Its
-			// sibling at :1720 IS caught, because that one concatenates. A
+			// worth naming so nobody spends an afternoon on it: values.go:1713-1715
+			// accumulate path steps into a SLICE (`steps[i] = ...`), and the taint
+			// tracker cannot follow that assignment — taint() requires an *ast.Ident
+			// on the left, and `steps[i]` is an IndexExpr. That blinds the arm twice
+			// over: :1713 joins the slice with strings.Join (no `+ "." +` node at
+			// all), and :1715 DOES concatenate `+ "." + path`, but `path` arrives
+			// clean through the untainted slice, so the separator node is there and
+			// the name never taints it. Its sibling at :1720 IS caught, because
+			// that one concatenates the tainted name directly. A
 			// heuristic for the slice form would key on strings.Join's separator
 			// argument and would fire on every path-joining helper in the tree; the
 			// bound is stated instead.

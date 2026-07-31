@@ -338,13 +338,13 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		var outerBinding any
 		switch {
 		case c.build.enabled():
-			row, aerr := adaptLegPositional(outerRow, c.build.legType(c.outerAlias))
+			row, aerr := adaptLegPositional(outerRow, c.build.legType(c.outerAlias), c.outerAlias)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
 			outerBinding = row
 		case c.outerBakedType != nil:
-			row, aerr := adaptLegPositional(outerRow, c.outerBakedType)
+			row, aerr := adaptLegPositional(outerRow, c.outerBakedType, c.outerAlias)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
@@ -770,7 +770,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			adaptType = c.outerMergedType
 		}
 		if adaptType != nil && outerRow.Positional != nil {
-			adapted, aerr := adaptLegPositional(outerRow, adaptType)
+			adapted, aerr := adaptLegPositional(outerRow, adaptType, c.outerAlias)
 			if aerr != nil {
 				return QueryResult{}, aerr
 			}

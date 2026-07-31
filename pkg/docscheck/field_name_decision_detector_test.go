@@ -607,12 +607,22 @@ func TestFieldDecisionMintArmFlattensTheConcatChain(t *testing.T) {
 			// while the inner sees [corr, "."] — a separator but no name. Neither
 			// reports, and the mint is invisible.
 			//
-			// Its mirror `corr + ("." + fv.Field)` deliberately is NOT here. That one
-			// reports from the inner node whether or not parens are unwrapped, so it
-			// stays green under the mutation and pins nothing — it was in this table
-			// until the mutation check said so.
+			// Its mirror `corr + ("." + fv.Field)` is NOT here but below, under a
+			// DIFFERENT question: it reports from the inner node whether or not
+			// parens are unwrapped, so it stays green under the flatten mutation and
+			// pins nothing for it — it left this slot when the mutation check said
+			// so, and returned as the dedup pin.
 			name: "parentheses splitting the separator from the name",
 			body: `func f(corr string, fv *values.FieldValue) string { return (corr + ".") + fv.Field }`,
+		},
+		{
+			// RIGHT-nested: the inner `+` has a DIFFERENT start position from the
+			// outer, so a start-keyed seen-set lets it report twice. Containment
+			// is what holds in both nestings. (Its ParenExpr sibling above pins
+			// the flatten; this one pins the dedup — different questions, and the
+			// shape that answers one is green under the other's mutation.)
+			name: "right-nested chain reports once",
+			body: `func f(corr string, fv *values.FieldValue) string { return corr + ("." + fv.Field) }`,
 		},
 		{
 			// Parens around the operands themselves.

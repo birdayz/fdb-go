@@ -54,7 +54,7 @@ func TestRowSlotForLegColumn_FlatExactMatchWinsOverTheLegWindow(t *testing.T) {
 		t.Fatal("fixture: leg C's window must declare CV for the dotted arm to answer")
 	}
 
-	got, ok := rowSlotForLegColumn(rt, "C.CV")
+	got, ok := rowSlotForLegColumn(rt, "C.CV", values.CorrelationIdentifier{})
 	if !ok {
 		t.Fatal("C.CV did not resolve at all")
 	}
@@ -87,12 +87,12 @@ func TestRowSlotForLegColumn_AManufacturedQualifierDeclines(t *testing.T) {
 	if _, found := rt.FieldIndex("V)"); !found {
 		t.Fatal("fixture: the manufactured leaf \"V)\" must exist, or the qualifier is not what declines")
 	}
-	if slot, ok := rowSlotForLegColumn(rt, "GA.V"); !ok || slot != 0 {
+	if slot, ok := rowSlotForLegColumn(rt, "GA.V", values.CorrelationIdentifier{}); !ok || slot != 0 {
 		t.Fatalf("fixture: the genuine qualified read GA.V = (%d,%v), want (0,true) — "+
 			"the dotted arm must be live for its refusal to mean anything", slot, ok)
 	}
 
-	if slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)"); ok {
+	if slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{}); ok {
 		t.Fatalf("the rendered aggregate label %q resolved to slot %d — its dot is inside "+
 			"the function argument, so the slice manufactured the leg alias %q and the "+
 			"reader bound a public output column to a leg window",
@@ -119,7 +119,7 @@ func TestRowSlotForLegColumn_ARenderedLabelPresentInTheRowStillWins(t *testing.T
 			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("GA"), "GA", 0, 1),
 		},
 	}
-	slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)")
+	slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{})
 	if !ok || slot != 1 {
 		t.Fatalf("SUM(GA.V) = (%d,%v), want (1,true) — a public aggregate label the row "+
 			"declares must resolve to its own column", slot, ok)
@@ -198,7 +198,7 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 				"witness arithmetic is stated wrong and the conversion would aim at it",
 				w.name, w.start, w.legOrdinal, got, w.want)
 		}
-		got, ok := rowSlotForLegColumn(merged, w.name)
+		got, ok := rowSlotForLegColumn(merged, w.name, values.CorrelationIdentifier{})
 		if !ok || got != w.want {
 			t.Fatalf("%s resolved to (%d,%v), want (%d,true)", w.name, got, ok, w.want)
 		}
@@ -207,8 +207,8 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 	// The pair that makes the hazard concrete: O.ID and I.ID are DIFFERENT slots,
 	// and a bare `ID` collapses them onto the first. Any retirement that answers
 	// both with 0 has reintroduced exactly this.
-	oid, _ := rowSlotForLegColumn(merged, "O.ID")
-	iid, ok := rowSlotForLegColumn(merged, "I.ID")
+	oid, _ := rowSlotForLegColumn(merged, "O.ID", values.CorrelationIdentifier{})
+	iid, ok := rowSlotForLegColumn(merged, "I.ID", values.CorrelationIdentifier{})
 	if !ok {
 		t.Fatal("I.ID did not resolve — leg I declares ID at slot 2")
 	}

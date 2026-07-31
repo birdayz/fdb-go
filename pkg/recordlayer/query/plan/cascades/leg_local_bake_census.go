@@ -93,20 +93,30 @@ const (
 type legRebaseSite int
 
 const (
+	// legRebaseSiteUnknown is deliberately the ZERO value and is counted into
+	// NEITHER site. A third entry point that threads a forgotten zero-valued
+	// site then increments Total without either site counter, and the partition
+	// assertion (SiteExists + SiteBuried == Total) goes red — instead of the
+	// newcomer being silently counted as EXISTS, which is what a zero-valued
+	// legRebaseSiteExists would have done.
+	legRebaseSiteUnknown legRebaseSite = iota
 	// legRebaseSiteExists: implementJoinWithExistential's two-level NLJ→FlatMap
 	// lowering, where the merged layout is ordinalSeedLegWindowsOf(step1RV) and
 	// is nil exactly when foldStep1Seed declined.
-	legRebaseSiteExists legRebaseSite = iota
+	legRebaseSiteExists
 	// legRebaseSiteBuried: buildCorrelatedFlatMapPlan's RFC-153 buried-preserved
 	// leg rebase, which computes a layout with buriedLegOrdinalLayout.
 	legRebaseSiteBuried
 )
 
 func (s legRebaseSite) String() string {
-	if s == legRebaseSiteBuried {
+	switch s {
+	case legRebaseSiteBuried:
 		return "BURIED(buildCorrelatedFlatMapPlan)"
+	case legRebaseSiteExists:
+		return "EXISTS(implementJoinWithExistential)"
 	}
-	return "EXISTS(implementJoinWithExistential)"
+	return "UNKNOWN-SITE"
 }
 
 type legLocalBakeCounters struct {
@@ -326,11 +336,14 @@ var (
 func recordLegRebaseSite(site legRebaseSite) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
-	if site == legRebaseSiteBuried {
+	switch site {
+	case legRebaseSiteExists:
+		legLocalBakeCounts.SiteExists++
+	case legRebaseSiteBuried:
 		legLocalBakeCounts.SiteBuried++
-		return
 	}
-	legLocalBakeCounts.SiteExists++
+	// legRebaseSiteUnknown (the zero value) is deliberately counted into
+	// neither: the partition assertion turns it red rather than misfiling it.
 }
 
 func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.CorrelationIdentifier, legTyp values.Type, column string, available ...string) {

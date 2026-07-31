@@ -156,7 +156,7 @@ func TestOrdinalAliasCollision(t *testing.T) {
 		{Name: "_1", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "_0", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	nameRow, err := adaptLegPositional(dmap(datum), nameLegType)
+	nameRow, err := adaptLegPositional(dmap(datum), nameLegType, values.CorrelationIdentifier{})
 	if err != nil {
 		t.Fatalf("adaptLegPositional (name-model _1/_0 columns): %v", err)
 	}
