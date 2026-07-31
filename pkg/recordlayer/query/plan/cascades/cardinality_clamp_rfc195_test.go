@@ -1364,12 +1364,16 @@ func TestRFC195_WholeCostConsistency_LevelUnionBuffer(t *testing.T) {
 	wantDelta := cost.Cardinality * properties.UnionCPU * levelUnionBufferTouches
 	gotDelta := cost.CPU - dfsCost.CPU
 	if math.Abs(gotDelta-wantDelta) > 1e-9 {
+		diagnosis := "the term is computed from a cardinality other than the clamped one"
+		if math.Abs(gotDelta) <= 1e-9 {
+			diagnosis = "a delta of ZERO means the term was computed from the PRE-clamp " +
+				"cardinality of 0, and the clamp then floored the output to 1 -- a Cost claiming " +
+				"it materializes a row while charging nothing to materialize it"
+		}
 		t.Fatalf("level-union buffer term = %v, want %v (= clamped cardinality %v x UnionCPU %v x %d touches).\n"+
-			"A delta of 0 means the term was computed from the PRE-clamp cardinality of 0 and the "+
-			"clamp then floored the output to 1 -- a Cost claiming it materializes a row while "+
-			"charging nothing to materialize it. The buffer charge must consume the CLAMPED value "+
-			"(HintCostWithin), which is the whole reason BoundedCostHinter exists.",
-			gotDelta, wantDelta, cost.Cardinality, properties.UnionCPU, levelUnionBufferTouches)
+			"%s. The buffer charge must consume the CLAMPED value (HintCostWithin), which is the "+
+			"whole reason BoundedCostHinter exists.",
+			gotDelta, wantDelta, cost.Cardinality, properties.UnionCPU, levelUnionBufferTouches, diagnosis)
 	}
 }
 

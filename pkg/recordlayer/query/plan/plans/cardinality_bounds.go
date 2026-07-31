@@ -406,9 +406,20 @@ func joinTimes(child []properties.Cardinalities) properties.Cardinalities {
 // disagree, and the plan arm is the loose one. Go follows the logical arm.
 //
 // Verified sound against Go's executor rather than assumed: recursive_cursor.go
-// pushes each root node with emitPending set, so every root row is emitted;
-// UNION DISTINCT deduplication can only collapse duplicates, and a set built
-// from at least one row still holds at least one row.
+// pushes each root node with emitPending set (:247), so every root row is
+// emitted; UNION DISTINCT deduplication can only collapse duplicates, and a set
+// built from at least one row still holds at least one row.
+//
+// The floor holds for BOTH traversal strategies, which the emitPending flag
+// alone does not show. PREORDER emits on the way down (:168, gated on
+// c.preorder); POSTORDER never takes that branch, and its rows come out of the
+// POP path instead (:203-210), which drains any node still flagged emitPending
+// as the walk unwinds — the same flag, consumed at the other end. A
+// continuation-restored node re-arms it precisely for that case
+// (`emitPending = !c.preorder`, :240): in preorder it was already emitted
+// before its children on the prior page and must not repeat, in postorder it
+// still owes its emission. So no root row is dropped under DfsPostorder, and
+// the bound is not a preorder-only argument.
 //
 // Leaving it at Java's looser answer is not cosmetic. Measured on identical
 // children, a LIMIT-0 recursive leg gives FlatMap(scan, dfsJoin) Cardinality 0

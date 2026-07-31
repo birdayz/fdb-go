@@ -160,6 +160,23 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add("scan/pointLookup", func(t *testing.T) plans.RecordQueryPlan {
 		return pointLookupScan(t, "SCAN_PL", "ID")
 	})
+	// A stamped-PK scan whose sole equality binds a ZERO FLOAT. The executor
+	// widens a zero bound across -0.0 and +0.0 (IEEE-equal, distinct adjacent
+	// keys), so this is NOT a point probe and nothing may prove at-most-one for
+	// it.
+	//
+	// Carried in the shape table rather than only in the point-probe agreement
+	// test because every table-driven check inherits the dimension:
+	// TestRFC195_Criterion2AgreesWithTheProvenBound claims to hold criterion 2
+	// against the proven bound for every data-access shape, and without a
+	// widening shape it never exercised the axis on which those two derivations
+	// actually diverged. A gate that cannot see the one historical divergence
+	// is not a gate.
+	add("scan/zeroFloatEqualityWidens", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryScanPlan([]string{"SCAN_ZF"}, values.UnknownType, false).
+			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: values.NullableDouble}}).
+			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, float64(0))})
+	})
 
 	// --- index scans -------------------------------------------------------
 	add("indexScan/nonUnique", func(t *testing.T) plans.RecordQueryPlan {
