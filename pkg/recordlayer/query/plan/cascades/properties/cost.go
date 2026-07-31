@@ -309,7 +309,12 @@ func EstimateCostWith(e expressions.RelationalExpression, stats StatisticsProvid
 	if stats == nil {
 		stats = DefaultStatistics{}
 	}
-	return estimateCostMemoised(e, nil, stats)
+	// The COST memo stays nil here (established behaviour), but the BOUNDS memo
+	// is allocated unconditionally: bounds recurse over ALL members of every
+	// child Reference, and this entry point runs twice per winner comparison, so
+	// an unmemoised all-members recursion would expand the memo DAG
+	// combinatorially on the planner's hottest path.
+	return estimateCostMemoised(e, nil, newBoundsWalk(), stats)
 }
 
 // estimateCostMemoised is the workhorse: with `memo == nil` it
@@ -320,19 +325,34 @@ func EstimateCostWith(e expressions.RelationalExpression, stats StatisticsProvid
 //
 // `stats` drives leaf-scan cardinality lookup; nil falls back to
 // DefaultStatistics.
-func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressions.Reference]Cost, stats StatisticsProvider) Cost {
+// `bounds` carries the per-Reference PROVEN-interval memo. It is threaded
+// BESIDE the cost memo, never inside it: costs resolve a child Reference to its
+// first member while bounds weaken across all of them, so the two answers are
+// keyed the same way but derived differently and must not share a cache entry.
+func estimateCostMemoised(
+	e expressions.RelationalExpression,
+	memo map[*expressions.Reference]Cost,
+	bounds *boundsWalk,
+	stats StatisticsProvider,
+) Cost {
 	if e == nil {
 		return Cost{}
 	}
 	if stats == nil {
 		stats = DefaultStatistics{}
 	}
+	if bounds == nil {
+		bounds = newBoundsWalk()
+	}
 	qs := e.GetQuantifiers()
 	childCosts := make([]Cost, len(qs))
+	childBounds := make([]Cardinalities, len(qs))
 	for i, q := range qs {
-		childCosts[i] = firstMemberCostMemoised(q.GetRangesOver(), memo, stats)
+		ref := q.GetRangesOver()
+		childCosts[i] = firstMemberCostMemoised(ref, memo, bounds, stats)
+		childBounds[i] = bounds.refBounds(ref)
 	}
-	return localCost(e, childCosts, stats)
+	return localCost(e, childCosts, childBounds, stats)
 }
 
 // firstMemberCost returns the cost of the first exploratory member of `ref`,
@@ -343,10 +363,19 @@ func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressi
 //
 // Exposed for use by callers that need the unmemoised path.
 func firstMemberCost(ref *expressions.Reference) Cost {
-	return firstMemberCostMemoised(ref, nil, DefaultStatistics{})
+	return firstMemberCostMemoised(ref, nil, newBoundsWalk(), DefaultStatistics{})
 }
 
-func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.Reference]Cost, stats StatisticsProvider) Cost {
+// firstMemberCostMemoised keeps its name and its COST-ONLY job. The bounds walk
+// travels beside it as a parameter and is never consulted here — a child's cost
+// comes from members[0], a child's bounds from all members, and conflating the
+// two is what would turn member insertion order into a cost difference.
+func firstMemberCostMemoised(
+	ref *expressions.Reference,
+	memo map[*expressions.Reference]Cost,
+	bounds *boundsWalk,
+	stats StatisticsProvider,
+) Cost {
 	if ref == nil {
 		return Cost{Cardinality: LeafScanCardinality}
 	}
@@ -363,7 +392,7 @@ func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.R
 		}
 		return c
 	}
-	c := estimateCostMemoised(member, memo, stats)
+	c := estimateCostMemoised(member, memo, bounds, stats)
 	if memo != nil {
 		memo[ref] = c
 	}
@@ -400,9 +429,10 @@ func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost 
 		stats = DefaultStatistics{}
 	}
 	memo := make(map[*expressions.Reference]Cost)
-	best := estimateCostMemoised(members[0], memo, stats)
+	bounds := newBoundsWalk()
+	best := estimateCostMemoised(members[0], memo, bounds, stats)
 	for _, m := range members[1:] {
-		c := estimateCostMemoised(m, memo, stats)
+		c := estimateCostMemoised(m, memo, bounds, stats)
 		if c.Less(best) {
 			best = c
 		}
@@ -435,6 +465,7 @@ func BestMemberCostWith(e expressions.RelationalExpression, stats StatisticsProv
 type costWalk struct {
 	memo    map[*expressions.Reference]Cost
 	visited map[*expressions.Reference]bool
+	bounds  *boundsWalk
 	stats   StatisticsProvider
 }
 
@@ -445,6 +476,7 @@ func newCostWalk(stats StatisticsProvider) *costWalk {
 	return &costWalk{
 		memo:    make(map[*expressions.Reference]Cost),
 		visited: make(map[*expressions.Reference]bool),
+		bounds:  newBoundsWalk(),
 		stats:   stats,
 	}
 }
@@ -459,10 +491,13 @@ func (w *costWalk) exprCost(e expressions.RelationalExpression) Cost {
 	}
 	qs := e.GetQuantifiers()
 	childCosts := make([]Cost, len(qs))
+	childBounds := make([]Cardinalities, len(qs))
 	for i, q := range qs {
-		childCosts[i] = w.refCost(q.GetRangesOver())
+		ref := q.GetRangesOver()
+		childCosts[i] = w.refCost(ref)
+		childBounds[i] = w.bounds.refBounds(ref)
 	}
-	return localCost(e, childCosts, w.stats)
+	return localCost(e, childCosts, childBounds, w.stats)
 }
 
 // refCost returns the cost of ref's BEST member, memoised. Defensive
@@ -508,7 +543,30 @@ func (w *costWalk) refCost(ref *expressions.Reference) Cost {
 // query directly. Empty record-type list (a "scan everything") falls
 // back to LeafScanCardinality — caller's responsibility to attach
 // metadata for that case.
-func localCost(e expressions.RelationalExpression, child []Cost, stats StatisticsProvider) Cost {
+// The returned Cost's Cardinality is CLAMPED into the interval the property
+// layer proves for e (RFC-195). The clamp sits HERE, at the dispatch, so it
+// applies to the logical switch arms below and to the physical CostHinter
+// default arm ALIKE — symmetry is not a nicety, it is what preserves
+// localCost's contract that a physical wrapper hints a cost equivalent to or
+// lower than its logical operator. Clamping only the physical side would floor
+// a physical Distinct over an exactly-one-row child to 1 while
+// LogicalDistinctExpression kept 0.7, inverting cost-driven extraction on
+// exactly the shapes this clamp exists to fix.
+func localCost(e expressions.RelationalExpression, child []Cost, childBounds []Cardinalities, stats StatisticsProvider) Cost {
+	bounds := provenCardinalities(e, childBounds)
+	// An operator whose CPU derives from its own OUTPUT cardinality must see the
+	// clamped value BEFORE computing that term, or the emitted Cost carries CPU
+	// computed from a cardinality it no longer reports. CostWithinBounds is the
+	// shared dispatch that decides which of the two paths applies.
+	return CostWithinBounds(e, child, bounds, stats, func() Cost {
+		return localCostUnclamped(e, child, stats)
+	})
+}
+
+// localCostUnclamped is the raw per-operator formula table. Callers want
+// localCost; this is split out only so the clamp has exactly one application
+// point rather than one per switch arm.
+func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats StatisticsProvider) Cost {
 	sumCPU := 0.0
 	for _, c := range child {
 		sumCPU += c.CPU

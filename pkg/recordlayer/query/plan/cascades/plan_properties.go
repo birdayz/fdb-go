@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"math"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -564,278 +562,77 @@ func GetRefPlanPropertiesMap(ref *expressions.Reference) *PlanPropertiesMap {
 	return pm
 }
 
-// computeCardinalities computes the Cardinalities property for a
-// physical plan wrapper. Matches Java's CardinalitiesVisitor per-plan-
-// type logic for all plan types Go supports.
+// computeCardinalities computes the Cardinalities property for a physical plan
+// wrapper. Matches Java's CardinalitiesVisitor per-plan-type logic for all plan
+// types Go supports.
+//
+// Since RFC-195 this is a THIN ADAPTER: the per-operator derivation lives on the
+// plans themselves (plans.CardinalityProver), and all that remains here is
+// resolving each child edge to an interval — which is genuinely this layer's
+// job, since only cascades knows about References, property maps and winners.
+// The signature is kept for the property-map consumers.
+//
+// The derivation moved because it lived at the TOP of the layering
+// (expressions <- properties <- plans <- cascades) while switching exclusively
+// on `plans.*` types, which put it out of reach of the `properties` cost walk
+// that the memo's winner selection actually ranks with. That unreachability is
+// why the cost model could contradict it six ways.
 func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) properties.Cardinalities {
-	switch p := plan.(type) {
+	prover, ok := plan.(properties.CardinalityProver)
+	if !ok {
+		return properties.UnknownCardinalities()
+	}
+	return prover.ProvenCardinalities(cardinalityChildrenForPlan(w, plan))
+}
 
-	// --- Exactly one row ---
-	case *plans.RecordQueryFirstOrDefaultPlan:
-		return properties.ExactlyOne()
+// cardinalityChildrenForPlan resolves plan's child edges to intervals,
+// preserving the per-arm resolver choice the derivation had before it moved to
+// the plans layer.
+//
+// Transparent (1:1) wrappers and the InUnion use the OrInner resolver: the
+// data-access path exposes a composite EITHER as a wrapper with a single
+// SNAPSHOT-quantifier child whose Reference carries no populated property map,
+// OR as an adapter reporting no child quantifier at all, and in both forms a
+// plain Reference read reports unknown so a point lookup never receives its
+// proven AtMostOne. Every other operator reads its children straight off the
+// wrapper's quantifiers.
+func cardinalityChildrenForPlan(w physicalPlanExpression, plan plans.RecordQueryPlan) []properties.Cardinalities {
+	// A LEAF proves its bound from its own shape alone and never consults a
+	// child, so it must stay answerable with no wrapper at all — callers wanting
+	// a plan-local proof legitimately pass a nil one, and the per-arm switch
+	// this adapter replaced never touched the wrapper on those arms. Resolving
+	// edges unconditionally would make a leaf's proof depend on a wrapper it
+	// does not use.
+	if w == nil {
+		return nil
+	}
+	if usesOrInnerChildResolver(plan) {
+		return []properties.Cardinalities{cardinalitiesFromChildRefOrInner(w, plan)}
+	}
+	return cardinalitiesFromChildRefs(w)
+}
 
-	// --- Transparent: same cardinality as child ---
+// usesOrInnerChildResolver reports whether plan's child edge must be resolved
+// through the OrInner fallback rather than straight off the wrapper's
+// quantifiers.
+//
+// Split out as a named predicate so a test can ENUMERATE this taxonomy instead
+// of re-typing it. A second hand-maintained list of plan types is exactly the
+// drift channel RFC-195 exists to close, one level down: a transparent wrapper
+// added later would silently take the plain resolver and lose its child's
+// proven bound wherever the data-access path exposes the composite without a
+// populated property map.
+func usesOrInnerChildResolver(plan plans.RecordQueryPlan) bool {
+	switch plan.(type) {
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryTempTableInsertPlan,
-		// A fetch is 1:1 — Java's CardinalitiesProperty passes it through, so a
-		// bounded index access under a Fetch keeps its proven max cardinality
-		// (feeds the M3 whole-plan guard and criterion #2).
-		*plans.RecordQueryFetchFromPartialRecordPlan:
-		return cardinalitiesFromChildRefOrInner(w, plan)
-
-	// --- DefaultOnEmpty: floor at 1 ---
-	case *plans.RecordQueryDefaultOnEmptyPlan:
-		child := cardinalitiesFromChildRef(w)
-		return child.Floor(1)
-
-	// --- Filters: min drops to 0, max stays ---
-	case *plans.RecordQueryFilterPlan:
-		child := cardinalitiesFromChildRef(w)
-		return properties.Cardinalities{
-			Min: properties.OfCardinality(0),
-			Max: child.GetMaxCardinality(),
-		}
-	case *plans.RecordQueryPredicatesFilterPlan:
-		child := cardinalitiesFromChildRef(w)
-		return properties.Cardinalities{
-			Min: properties.OfCardinality(0),
-			Max: child.GetMaxCardinality(),
-		}
-
-	// --- Scans ---
-	case *plans.RecordQueryScanPlan:
-		// A full-PK-equality primary scan is a point lookup (max 1), exactly as
-		// Java's CardinalitiesProperty.visitRecordQueryScanPlan bounds a scan
-		// whose equality-bound values cover the whole primary key. This feeds
-		// the M3 whole-plan-cardinality outer guard (RFC-188) so a
-		// bounded-primary-scan-vs-unbounded comparison is no longer reported
-		// unknown (over-abstaining criterion #2). A range / partial / prefix
-		// bind stays unknown. scanProvableMaxCard consults the PK arity stamped
-		// on the scan and proves full coverage, not merely that every comparison
-		// in the (possibly partial) prefix is an equality.
-		if _, known := scanProvableMaxCard(p); known {
-			return properties.AtMostOne()
-		}
-		return properties.UnknownMaxCardinality()
-
-	case *plans.RecordQueryIndexPlan:
-		// The index scan is its own physical expression now (RFC-184 W2) — its
-		// UNIQUE flag and column list live on the plan.
-		if p.IsUnique() {
-			comps := p.GetScanComparisons()
-			allEquality := true
-			for _, cr := range comps {
-				if !cr.IsEquality() {
-					allEquality = false
-					break
-				}
-			}
-			// A WIDENING equality does not pin a single key, so it cannot
-			// support an at-most-one PROOF. The executor widens a terminal
-			// zero-valued float bound across both signed zeros (-0.0 and +0.0
-			// are IEEE-equal but pack to distinct adjacent keys), and a UNIQUE
-			// index legitimately holds BOTH — uniqueness is enforced on the raw
-			// packed prefix, so the two are different entries. Measured: a
-			// unique index on a DOUBLE column holding both zeros returns TWO
-			// rows for `WHERE v = 0`. That is a false proof, not a loose
-			// estimate, and DISTINCT elision, single-row shortcuts and the cost
-			// model all inherit it.
-			//
-			// Uses the SHARED predicate, deliberately: a correlated or
-			// Unknown-typed operand — the QOV a multi-element float IN list
-			// produces — is not constant, yet the executor can still widen a
-			// zero binding at runtime. The matcher's constant-only helper is
-			// not runtime-safe, and using it here left the false proof
-			// reachable through exactly those operands.
-			if properties.AnyEqualityWidensBeyondOneKey(comps) {
-				allEquality = false
-			}
-			if allEquality && len(comps) == len(p.GetColumnNames()) {
-				return properties.AtMostOne()
-			}
-		}
-		return properties.UnknownMaxCardinality()
-
-	// --- Set operations: union ---
-	case *plans.RecordQueryUnionPlan:
-		return properties.UnionCardinalities(cardinalitiesFromChildRefs(w))
-	case *plans.RecordQueryMergeSortUnionPlan:
-		return properties.UnionCardinalities(cardinalitiesFromChildRefs(w))
-	case *plans.RecordQueryUnorderedUnionPlan:
-		return properties.UnionCardinalities(cardinalitiesFromChildRefs(w))
-
-	// --- Set operations: intersection ---
-	case *plans.RecordQueryIntersectionPlan:
-		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
-	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
-		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
-
-	// --- Full-row distinct: current model conservatively preserves child bounds ---
-	case *plans.RecordQueryDistinctPlan:
-		return cardinalitiesFromChildRef(w)
-
-	// --- Primary-key distinct: max is unchanged; any known non-empty input
-	// produces at least one unique key. ---
-	case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
-		child := cardinalitiesFromChildRef(w)
-		minCard := child.GetMinCardinality()
-		if !minCard.IsUnknown() && minCard.Value() > 0 {
-			minCard = properties.OfCardinality(1)
-		}
-		return properties.Cardinalities{
-			Min: minCard,
-			Max: child.GetMaxCardinality(),
-		}
-
-	// --- Limit: cap max at limit value ---
-	case *plans.RecordQueryLimitPlan:
-		child := cardinalitiesFromChildRef(w)
-		limit := p.GetLimit()
-		if limit == 0 {
-			// LIMIT 0 produces exactly zero rows — not "no cap". Folding it into
-			// the negative ("no limit") arm would mis-cost any parent over a
-			// LIMIT-0 subtree as the full child cardinality.
-			return properties.Cardinalities{
-				Min: properties.OfCardinality(0),
-				Max: properties.OfCardinality(0),
-			}
-		}
-		if limit < 0 {
-			// Negative limit = no cap (OFFSET-only stream). A RUNTIME-Value limit
-			// (GetLimitValue()!=nil) is also stored as limit=-1 and DELIBERATELY
-			// lands here: its real cap is only known at execution, so reading it as
-			// conservative no-cap (over-estimating cardinality) is the sound choice —
-			// over-estimation never enables an unsound rewrite (matching the explicit
-			// HintCost conservative choice). Do not "fix" this into reducing to -1.
-			return child
-		}
-		maxCard := child.GetMaxCardinality()
-		if !maxCard.IsUnknown() && maxCard.Value() <= limit {
-			return child
-		}
-		// Cap max at limit; min is min(child.min, limit).
-		newMin := child.GetMinCardinality()
-		if !newMin.IsUnknown() && newMin.Value() > limit {
-			newMin = properties.OfCardinality(limit)
-		}
-		return properties.Cardinalities{
-			Min: newMin,
-			Max: properties.OfCardinality(limit),
-		}
-
-	// --- InJoin: child × in-list-size ---
-	case *plans.RecordQueryInJoinPlan:
-		child := cardinalitiesFromChildRef(w)
-		inVals := p.GetInValues()
-		if len(inVals) == 0 {
-			// Unknown in-list size.
-			return properties.UnknownMaxCardinality()
-		}
-		inSize := properties.OfCardinality(int64(len(inVals)))
-		return properties.Cardinalities{
-			Min: inSize.Times(child.GetMinCardinality()),
-			Max: inSize.Times(child.GetMaxCardinality()),
-		}
-
-	// --- InUnion: child × Cartesian product of literal source sizes ---
-	case *plans.RecordQueryInUnionPlan:
-		fanout, known := p.LiteralFanout()
-		if !known {
-			return properties.UnknownMaxCardinality()
-		}
-		if fanout == 0 {
-			// Go precision extension: a known-empty dimension makes the
-			// executor return an empty cursor even when another dimension is
-			// runtime-unknown. Java's generic unknown multiplication keeps
-			// that mixed maximum unknown; exact zero is stronger but sound.
-			return properties.Cardinalities{
-				Min: properties.OfCardinality(0),
-				Max: properties.OfCardinality(0),
-			}
-		}
-		child := cardinalitiesFromChildRefOrInner(w, plan)
-		return properties.Cardinalities{
-			Min: multiplyCardinalityBound(fanout, child.GetMinCardinality()),
-			Max: multiplyCardinalityBound(fanout, child.GetMaxCardinality()),
-		}
-
-	// --- DML: same as child ---
-	case *plans.RecordQueryInsertPlan,
-		*plans.RecordQueryDeletePlan,
-		*plans.RecordQueryUpdatePlan:
-		return cardinalitiesFromChildRef(w)
-
-	// --- Streaming aggregation ---
-	case *plans.RecordQueryStreamingAggregationPlan:
-		if len(p.GetGroupingKeys()) == 0 {
-			// No grouping — single output row.
-			return properties.Cardinalities{
-				Min: properties.OfCardinality(0),
-				Max: properties.OfCardinality(1),
-			}
-		}
-		return properties.UnknownMaxCardinality()
-
-	// --- InMemorySort (Go-only): transparent ---
-	case *plans.RecordQueryInMemorySortPlan:
-		return cardinalitiesFromChildRef(w)
-
-	// --- Nested loop joins: outer × inner ---
-	case *plans.RecordQueryNestedLoopJoinPlan,
-		*plans.RecordQueryFlatMapPlan:
-		children := cardinalitiesFromChildRefs(w)
-		if len(children) < 2 {
-			return properties.UnknownCardinalities()
-		}
-		return children[0].Times(children[1])
-
-	// --- Recursive plans ---
-	case *plans.RecordQueryRecursiveDfsJoinPlan:
-		return properties.UnknownMaxCardinality()
-	case *plans.RecordQueryRecursiveLevelUnionPlan:
-		children := cardinalitiesFromChildRefs(w)
-		if len(children) == 0 {
-			return properties.UnknownMaxCardinality()
-		}
-		return properties.Cardinalities{
-			Min: children[0].GetMinCardinality(),
-			Max: properties.UnknownCardinality(),
-		}
-
-	// --- Leaf plans ---
-	case *plans.RecordQueryValuesPlan:
-		return properties.ExactlyOne()
-	case *plans.RecordQueryExplodePlan:
-		return properties.UnknownMaxCardinality()
-	case *plans.RecordQueryTableFunctionPlan:
-		return properties.UnknownMaxCardinality()
-	case *plans.RecordQueryTempTableScanPlan:
-		return properties.UnknownMaxCardinality()
-	case *plans.RecordQueryAggregateIndexPlan:
-		return properties.UnknownMaxCardinality()
-
-	default:
-		return properties.UnknownCardinalities()
+		*plans.RecordQueryFetchFromPartialRecordPlan,
+		*plans.RecordQueryInUnionPlan:
+		return true
 	}
-}
-
-// multiplyCardinalityBound multiplies an exact non-negative factor by one
-// cardinality bound without allowing int64 wraparound to reach OfCardinality.
-// An unrepresentable product conservatively becomes unknown.
-func multiplyCardinalityBound(factor int64, bound properties.Cardinality) properties.Cardinality {
-	if bound.IsUnknown() {
-		return properties.UnknownCardinality()
-	}
-	value := bound.Value()
-	if factor == 0 || value == 0 {
-		return properties.OfCardinality(0)
-	}
-	if factor > math.MaxInt64/value {
-		return properties.UnknownCardinality()
-	}
-	return properties.OfCardinality(factor * value)
+	return false
 }
 
 // cardinalitiesFromChildRef returns the Cardinalities from the first

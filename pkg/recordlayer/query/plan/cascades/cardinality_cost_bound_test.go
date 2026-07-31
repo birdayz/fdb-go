@@ -33,14 +33,16 @@ package cascades
 // gap is real: see the per-shape comments below for where the cost model
 // flies blind.
 //
-// Five violations are DOCUMENTED and KNOWN, not fixed by this file (fixing
-// the cost model is out of scope here — this file only proves the gap and
-// pins it so nobody re-introduces a regression on top of it). Each is a
-// SELF-CLEANING exclusion, the pattern cost_model_total_preorder_test.go
-// established for CQ-23/CQ-24: the shape asserts the documented violation
-// STILL REPRODUCES, in the documented direction. The moment someone fixes the
-// underlying formula, that assertion flips to "no longer reproduces" and
-// FAILS, forcing the entry's removal — the exclusion cannot outlive the bug.
+// There are ZERO exclusions, and there is no mechanism to add one. This file
+// once carried six documented-and-not-fixed violations under a self-cleaning
+// exclusion list; RFC-195 fixed all six at the root (the cost walks clamp every
+// estimate into the interval the property proves, at their combine step) and
+// deleted the list along with them. The absence of an exclusion mechanism is
+// deliberate: six violations accumulated precisely because there was somewhere
+// to write them down, and each formula that got "this operator guarantees a
+// row" wrong got it wrong independently. An estimate that cannot satisfy the
+// invariant is now a bug in the clamp or in the proof, and belongs in one of
+// those two places — not in a list here.
 import (
 	"fmt"
 	"math/rand/v2"
@@ -119,30 +121,9 @@ func costCardinality(plan plans.RecordQueryPlan) float64 {
 // Shape table.
 // ============================================================================
 
-// cardinalityViolation classifies a shape's expected relationship between the
-// proven bound and the cost estimate.
-type cardinalityViolation int
-
-const (
-	// noKnownViolation: the standing invariant must hold — cost estimate
-	// falls inside [provenMin, provenMax] whenever a bound is proven.
-	noKnownViolation cardinalityViolation = iota
-	// knownExceedsMax: a DOCUMENTED, NOT YET FIXED defect — the cost
-	// estimate exceeds the proven max. Self-cleaning: see cardinalityCostViolations.
-	knownExceedsMax
-	// knownBelowMin: a DOCUMENTED, NOT YET FIXED defect — the cost estimate
-	// falls below the proven min. Self-cleaning: see cardinalityCostViolations.
-	knownBelowMin
-)
-
 type cardinalityCostShape struct {
-	name      string
-	build     func(t *testing.T) plans.RecordQueryPlan
-	violation cardinalityViolation
-	// reason documents, for an excluded shape, what the operator structurally
-	// guarantees and why the cost formula misses it. Empty for non-excluded
-	// shapes.
-	reason string
+	name  string
+	build func(t *testing.T) plans.RecordQueryPlan
 }
 
 func cardinalityCostShapes() []cardinalityCostShape {
@@ -171,9 +152,6 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add := func(name string, build func(t *testing.T) plans.RecordQueryPlan) {
 		shapes = append(shapes, cardinalityCostShape{name: name, build: build})
 	}
-	addExcluded := func(name string, violation cardinalityViolation, reason string, build func(t *testing.T) plans.RecordQueryPlan) {
-		shapes = append(shapes, cardinalityCostShape{name: name, build: build, violation: violation, reason: reason})
-	}
 
 	// --- scans -----------------------------------------------------------
 	add("scan/unbounded", func(t *testing.T) plans.RecordQueryPlan {
@@ -181,6 +159,23 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	})
 	add("scan/pointLookup", func(t *testing.T) plans.RecordQueryPlan {
 		return pointLookupScan(t, "SCAN_PL", "ID")
+	})
+	// A stamped-PK scan whose sole equality binds a ZERO FLOAT. The executor
+	// widens a zero bound across -0.0 and +0.0 (IEEE-equal, distinct adjacent
+	// keys), so this is NOT a point probe and nothing may prove at-most-one for
+	// it.
+	//
+	// Carried in the shape table rather than only in the point-probe agreement
+	// test because every table-driven check inherits the dimension:
+	// TestRFC195_Criterion2AgreesWithTheProvenBound claims to hold criterion 2
+	// against the proven bound for every data-access shape, and without a
+	// widening shape it never exercised the axis on which those two derivations
+	// actually diverged. A gate that cannot see the one historical divergence
+	// is not a gate.
+	add("scan/zeroFloatEqualityWidens", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryScanPlan([]string{"SCAN_ZF"}, values.UnknownType, false).
+			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: values.NullableDouble}}).
+			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, float64(0))})
 	})
 
 	// --- index scans -------------------------------------------------------
@@ -309,29 +304,22 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		}, nil)
 	})
 
-	// --- distinct (both variants): KNOWN VIOLATIONS below min --------------
+	// --- distinct (both variants) -------------------------------------------
 	// Both use the SAME child: FirstOrDefault produces EXACTLY one row
 	// (property ExactlyOne(), cost also exactly 1 -- FirstOrDefaultCost floors
 	// unconditionally), so both distinct operators' PROPERTY says min=1 (an
-	// exactly-one-row input can't become fewer rows), but their COST applies a
-	// flat 0.7 selectivity multiplier with no floor at 1: 1*0.7=0.7 < 1.
+	// exactly-one-row input can't become fewer rows). DistinctCost's flat 0.7
+	// selectivity multiplier still computes 0.7; RFC-195's clamp raises it to
+	// the proven floor at the combine step.
 	distinctChild := func(t *testing.T) *plans.RecordQueryFirstOrDefaultPlan {
 		return plans.NewRecordQueryFirstOrDefaultPlan(scan("DISTINCT_SRC"), values.NewNullValue(values.UnknownType))
 	}
-	addExcluded("distinct/overExactlyOneChild", knownBelowMin,
-		"RecordQueryDistinctPlan reports the child's bounds UNCHANGED (transparent) -- an exactly-one-row "+
-			"child structurally proves min=1, but DistinctCost applies a flat DistinctSelectivity=0.7 with no "+
-			"floor, so 1 row costs out to 0.7",
-		func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryDistinctPlan(distinctChild(t))
-		})
-	addExcluded("unorderedPrimaryKeyDistinct/overExactlyOneChild", knownBelowMin,
-		"RecordQueryUnorderedPrimaryKeyDistinctPlan's OWN property explicitly floors min at 1 when the child's "+
-			"min is known-nonzero (an exactly-one-row child dedups to exactly one), but it shares DistinctCost's "+
-			"same unfloored 0.7 multiplier, so 1 row still costs out to 0.7",
-		func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(distinctChild(t))
-		})
+	add("distinct/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryDistinctPlan(distinctChild(t))
+	})
+	add("unorderedPrimaryKeyDistinct/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(distinctChild(t))
+	})
 	add("distinct/overUnboundedChild_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryDistinctPlan(scan("DISTINCT_UNB"))
 	})
@@ -364,18 +352,34 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		return plans.NewRecordQueryStreamingAggregationPlan(
 			scan("SAGG_GROUPED"), []values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, nil)
 	})
-	addExcluded("streamingAggregation/ungrouped", knownExceedsMax,
-		"an ungrouped RecordQueryStreamingAggregationPlan structurally emits EXACTLY ONE output row (property "+
-			"proves max=1), but its HintCost formula charges in*DistinctSelectivity with no cap at 1 -- for a "+
-			"1e6-row child that is ~700,000, wildly exceeding the proven max",
-		func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryStreamingAggregationPlan(scan("SAGG_UNGROUPED"), nil, nil)
-		})
+	// An ungrouped RecordQueryStreamingAggregationPlan structurally emits at
+	// most ONE output row. Its HintCost formula charges in*DistinctSelectivity
+	// with no cap of its own -- ~700,000 for a 1e6-row child -- and RFC-195's
+	// clamp caps it at the proven max. This is the five-orders-of-magnitude
+	// case: every join ordering above an ungrouped aggregate used to be
+	// computed against a row count wrong by 700,000x.
+	add("streamingAggregation/ungrouped", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryStreamingAggregationPlan(scan("SAGG_UNGROUPED"), nil, nil)
+	})
 
-	// --- recursive DFS join (always unknown-max) ------------------------------
-	add("recursiveDfsJoin/alwaysUnknownMax_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
+	// --- recursive DFS join ---------------------------------------------------
+	add("recursiveDfsJoin/unknownMaxOverUnboundedRoot", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryRecursiveDfsJoinPlan(
 			scan("DFS_ROOT"), scan("DFS_CHILD"), values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+	})
+	// The DFS join is the level union's twin: same logical recursion, same
+	// proven bound (root.Min, unknown). It proved NOTHING until RFC-195's
+	// review, which is why the identical zero-collapse survived here after
+	// being fixed on the level union — and survived on the alternative the
+	// cost model PREFERS, since the level union carries a strictly larger
+	// buffer term by construction. Measured before the arm existed:
+	// FlatMap(scan, dfsJoin) costed 0 rows while FlatMap(scan, levelUnion)
+	// costed 1e6 over the SAME children.
+	add("recursiveDfsJoin/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
+		seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("DFS_SEED"), values.NewNullValue(values.UnknownType))
+		rec := plans.NewRecordQueryLimitPlan(scan("DFS_REC_ZERO"), 0, 0)
+		return plans.NewRecordQueryRecursiveDfsJoinPlan(
+			seed, rec, values.NamedCorrelationIdentifier("dfs_prior2"), plans.DfsPreorder)
 	})
 
 	// --- recursive level union: KNOWN VIOLATION when the recursive leg's cost
@@ -393,17 +397,22 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		return plans.NewRecordQueryRecursiveLevelUnionPlan(
 			seed, rec, values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))
 	})
-	addExcluded("recursiveLevelUnion/recursiveLegCollapsesTowardZero", knownBelowMin,
-		"the property proves min=seed.Min (UNION ALL always emits at least the seed: a RecordQueryFirstOrDefaultPlan "+
-			"seed structurally guarantees exactly one row), but recursiveCost computes seedCard*recCard with NO "+
-			"additive seed term -- when the recursive leg's own cost estimate is exactly zero (a LIMIT 0 leg), the "+
-			"product collapses to zero even though the seed alone guarantees at least one row",
-		func(t *testing.T) plans.RecordQueryPlan {
-			seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("LU_SEED"), values.NewNullValue(values.UnknownType))
-			rec := plans.NewRecordQueryLimitPlan(scan("LU_REC_ZERO"), 0, 0)
-			return plans.NewRecordQueryRecursiveLevelUnionPlan(
-				seed, rec, values.NamedCorrelationIdentifier("lu_scan2"), values.NamedCorrelationIdentifier("lu_insert2"))
-		})
+	// The property proves min=seed.Min (UNION ALL always emits at least the
+	// seed: a RecordQueryFirstOrDefaultPlan seed structurally guarantees exactly
+	// one row), but recursiveCost computes seedCard*recCard with NO additive
+	// seed term -- when the recursive leg's own cost estimate is exactly zero (a
+	// LIMIT 0 leg), the product collapses to zero even though the seed alone
+	// guarantees a row, and that zero then propagates multiplicatively through
+	// FlatMapCost/NestedLoopJoinCost, costing an entire join subtree at zero.
+	// RFC-195's clamp floors it -- and, because this operator's buffer CPU
+	// derives from its OWN OUTPUT cardinality, it clamps BEFORE charging that
+	// term (HintCostWithin), so the emitted Cost stays internally consistent.
+	add("recursiveLevelUnion/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
+		seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("LU_SEED"), values.NewNullValue(values.UnknownType))
+		rec := plans.NewRecordQueryLimitPlan(scan("LU_REC_ZERO"), 0, 0)
+		return plans.NewRecordQueryRecursiveLevelUnionPlan(
+			seed, rec, values.NamedCorrelationIdentifier("lu_scan2"), values.NamedCorrelationIdentifier("lu_insert2"))
+	})
 
 	// --- explode (leaf) --------------------------------------------------------
 	add("explode/literalCollection", func(t *testing.T) plans.RecordQueryPlan {
@@ -432,35 +441,31 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		return plans.NewRecordQueryDefaultOnEmptyPlan(
 			pointLookupScan(t, "DOE_OK", "ID"), values.NewNullValue(values.UnknownType))
 	})
-	addExcluded("defaultOnEmpty/overZeroCostChild", knownBelowMin,
-		"the property applies child.Floor(1) (DefaultOnEmpty guarantees at least one row, real-or-default), but "+
-			"HintCost returns the child's cost UNCHANGED with no floor of its own -- when the child's own cost "+
-			"estimate is a genuine zero (a LIMIT 0 child), the DefaultOnEmpty cost stays zero. Contrast "+
-			"RecordQueryFirstOrDefaultPlan.HintCost (FirstOrDefaultCost), which floors unconditionally for the "+
-			"identical structural reason -- the same floor is simply missing here",
-		func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryDefaultOnEmptyPlan(
-				plans.NewRecordQueryLimitPlan(scan("DOE_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
-		})
+	// The property applies child.Floor(1) (DefaultOnEmpty guarantees at least
+	// one row, real-or-default), but HintCost returns the child's cost UNCHANGED
+	// with no floor of its own -- when the child's own cost estimate is a
+	// genuine zero (a LIMIT 0 child), the formula's DefaultOnEmpty cost is zero.
+	// RFC-195's clamp supplies the floor generically, rather than by adding a
+	// per-formula max(1, ...) that the next operator would get wrong again.
+	add("defaultOnEmpty/overZeroCostChild", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryDefaultOnEmptyPlan(
+			plans.NewRecordQueryLimitPlan(scan("DOE_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
+	})
 
-	// --- typeFilter over an EXACTLY-ONE child: KNOWN VIOLATION below min ------
+	// --- typeFilter over an EXACTLY-ONE child --------------------------------
 	// Found by the random-combo generator below (TypeFilter/Values(1) composes
 	// two building blocks neither the fixed shapes above ever pairs directly):
 	// RecordQueryValuesPlan proves ExactlyOne (min=1, max=1) -- it is a
 	// literal row, deterministic, no "might not exist" the way a point-lookup
-	// scan has -- but TypeFilterCost applies its flat TypeFilterSelectivity=0.5
-	// with no floor, same shape as the Distinct/StreamingAggregation-ungrouped
-	// exclusions above, just with TypeFilter as the unfloored operator. The
-	// fixed typeFilter/overBoundedChild shape above cannot see this: its child
-	// (pointLookupScan) proves AtMostOne (min=0), and 0.5 >= 0 never violates.
-	addExcluded("typeFilter/overExactlyOneChild", knownBelowMin,
-		"RecordQueryTypeFilterPlan reports the child's bounds UNCHANGED (transparent, matching Java's "+
-			"CardinalitiesVisitor) -- an exactly-one-row child (RecordQueryValuesPlan) structurally proves min=1, "+
-			"but TypeFilterCost applies a flat TypeFilterSelectivity=0.5 with no floor, so 1 row costs out to 0.5",
-		func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
-				plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
-		})
+	// scan has -- while TypeFilterCost applies its flat TypeFilterSelectivity=0.5
+	// with no floor of its own. The fixed typeFilter/overBoundedChild shape
+	// above cannot see this: its child (pointLookupScan) proves AtMostOne
+	// (min=0), and 0.5 >= 0 never violates. That dimensional gap is why this
+	// shape is kept explicitly rather than left to the random generator.
+	add("typeFilter/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
+		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
+			plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+	})
 
 	// --- FirstOrDefault: always exactly one, and the cost model agrees --------
 	add("firstOrDefault/overZeroCostChild_costFloorsCorrectly", func(t *testing.T) plans.RecordQueryPlan {
@@ -487,40 +492,15 @@ func cardinalityCostShapes() []cardinalityCostShape {
 // permanently in the suite.
 func cardinalityCostViolations(sh cardinalityCostShape, prov properties.Cardinalities, cost float64) []string {
 	var out []string
-	switch sh.violation {
-	case noKnownViolation:
-		if !prov.Min.IsUnknown() && cost < float64(prov.Min.Value()) {
-			out = append(out, fmt.Sprintf(
-				"%s: cost estimate %.4f is BELOW the proven min %d -- impossible by construction",
-				sh.name, cost, prov.Min.Value()))
-		}
-		if !prov.Max.IsUnknown() && cost > float64(prov.Max.Value()) {
-			out = append(out, fmt.Sprintf(
-				"%s: cost estimate %.4f EXCEEDS the proven max %d -- impossible by construction",
-				sh.name, cost, prov.Max.Value()))
-		}
-	case knownExceedsMax:
-		if prov.Max.IsUnknown() {
-			out = append(out, fmt.Sprintf(
-				"%s: exclusion expects a proven max, but the property now reports unknown -- "+
-					"shape changed, update or remove this exclusion entry", sh.name))
-		} else if cost <= float64(prov.Max.Value()) {
-			out = append(out, fmt.Sprintf(
-				"%s: documented cost>provenMax violation NO LONGER REPRODUCES (cost=%.4f provenMax=%d) -- "+
-					"the underlying formula was fixed, DELETE this exclusion entry (%s)",
-				sh.name, cost, prov.Max.Value(), sh.reason))
-		}
-	case knownBelowMin:
-		if prov.Min.IsUnknown() {
-			out = append(out, fmt.Sprintf(
-				"%s: exclusion expects a proven min, but the property now reports unknown -- "+
-					"shape changed, update or remove this exclusion entry", sh.name))
-		} else if cost >= float64(prov.Min.Value()) {
-			out = append(out, fmt.Sprintf(
-				"%s: documented cost<provenMin violation NO LONGER REPRODUCES (cost=%.4f provenMin=%d) -- "+
-					"the underlying formula was fixed, DELETE this exclusion entry (%s)",
-				sh.name, cost, prov.Min.Value(), sh.reason))
-		}
+	if !prov.Min.IsUnknown() && cost < float64(prov.Min.Value()) {
+		out = append(out, fmt.Sprintf(
+			"%s: cost estimate %.4f is BELOW the proven min %d -- impossible by construction",
+			sh.name, cost, prov.Min.Value()))
+	}
+	if !prov.Max.IsUnknown() && cost > float64(prov.Max.Value()) {
+		out = append(out, fmt.Sprintf(
+			"%s: cost estimate %.4f EXCEEDS the proven max %d -- impossible by construction",
+			sh.name, cost, prov.Max.Value()))
 	}
 	return out
 }
@@ -531,9 +511,7 @@ func assertCardinalityCostBound(t *testing.T, sh cardinalityCostShape, prov prop
 	for _, v := range cardinalityCostViolations(sh, prov, cost) {
 		t.Error(v)
 	}
-	if sh.violation != noKnownViolation {
-		t.Logf("%s: KNOWN violation still reproduces (cost=%.4f) -- %s", sh.name, cost, sh.reason)
-	} else if prov.Min.IsUnknown() && prov.Max.IsUnknown() {
+	if prov.Min.IsUnknown() && prov.Max.IsUnknown() {
 		t.Logf("%s: property proves NO bound at all (blind spot) -- cost estimate %.4f is unchecked", sh.name, cost)
 	} else if prov.Max.IsUnknown() {
 		t.Logf("%s: property proves min=%d but max is UNKNOWN (blind spot on the upper bound) -- "+
@@ -616,18 +594,12 @@ func TestCardinalityPropertyBoundsCostEstimate_MutationGuard(t *testing.T) {
 //	  --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate_RandomCombos" \
 //	  --test_arg="-test.v"
 //
-// The random generator draws ONLY from operators the fixed shape table
-// documents as noKnownViolation (scan/indexScan/fetch/filter/typeFilter/
-// projection/map/flatMap/nestedLoopJoin/union variants/intersection/sort) —
-// it deliberately excludes every operator with a DOCUMENTED violation
-// (Distinct, ungrouped StreamingAggregation, DefaultOnEmpty-over-zero-cost,
-// the collapsing RecursiveLevelUnion shape, …), because those violations are
-// conditional on a SPECIFIC child shape the fixed table constructs
-// deliberately; composing them into arbitrary random trees would require
-// re-deriving, per random shape, whether the violation propagates — turning
-// a scale exercise into a source of false, un-investigatable failures. The
-// well-behaved building blocks have no such precondition, so ANY composition
-// of them is a valid noKnownViolation check.
+// The generator draws from the transparent and set-shaped operators
+// (scan/indexScan/values/filter/typeFilter/projection/map/flatMap/
+// nestedLoopJoin/union variants/intersection/sort). The invariant holds for ANY
+// composition of them, so no per-shape precondition has to be re-derived per
+// random tree — which is what keeps a scale exercise from becoming a source of
+// false, un-investigatable failures.
 
 func cardinalityComboCount(defaultN int) int {
 	if v := os.Getenv("CARDINALITY_COMBOS"); v != "" {
@@ -656,24 +628,29 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 	scan := func(name string) *plans.RecordQueryScanPlan {
 		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
 	}
-	// Deliberately NO RecordQueryValuesPlan (ExactlyOne, min=1) in this leaf
-	// pool: composed under a TypeFilter anywhere in the random tree, it
-	// reproduces the ALREADY-KNOWN, ALREADY-PINNED
-	// "typeFilter/overExactlyOneChild" violation above on every run — a
-	// permanently red nightly for a gap that is already documented and
-	// tracked, not a new finding. Every leaf here proves either UNKNOWN
-	// bounds or AtMostOne (min=0), so no composition of transparent
-	// operators over it can ever push a cost estimate below a proven floor
-	// of 1 — keeping this generator a signal for genuinely NEW composition
-	// gaps instead of a rediscovery engine for this one.
+	// RecordQueryValuesPlan (ExactlyOne, min=1) is IN this leaf pool, and that
+	// is load-bearing. It used to be excluded: composed under a TypeFilter
+	// anywhere in the random tree it reproduced the then-unfixed
+	// "typeFilter/overExactlyOneChild" violation on every run, so the generator
+	// was restricted to leaves proving either UNKNOWN bounds or AtMostOne
+	// (min=0), over which no composition of transparent operators can push an
+	// estimate below a proven floor.
+	//
+	// That restriction also made the generator blind to the entire class of
+	// below-a-proven-FLOOR defects — it could only ever find above-a-proven-CAP
+	// ones. RFC-195 removed the violation it was avoiding, so the exactly-one
+	// leaf comes back and the generator regains the dimension that found the
+	// bug in the first place.
 	leaf := func() plans.RecordQueryPlan {
-		switch rng.IntN(3) {
+		switch rng.IntN(4) {
 		case 0:
 			return scan("RC_SCAN")
 		case 1:
 			return scan("RC_PL").
 				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}).
 				WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+		case 2:
+			return plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
 		default:
 			return plans.NewRecordQueryIndexPlan("RC_IDX", nil, []string{"RC_IDX_T"}, values.UnknownType, false)
 		}
@@ -723,7 +700,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 // it race-free without needing one.
 func TestCardinalityPropertyBoundsCostEstimate_RandomCombos(t *testing.T) {
 	t.Parallel()
-	n := cardinalityComboCount(50)
+	n := cardinalityComboCount(2000)
 	seed := cardinalityComboSeed(20260726)
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 

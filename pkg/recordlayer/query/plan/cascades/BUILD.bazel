@@ -219,6 +219,7 @@ go_test(
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
         "benchmark_test.go",
+        "cardinality_clamp_rfc195_test.go",
         "cardinality_cost_bound_test.go",
         "comparison_simplify_test.go",
         "compensation_determinism_test.go",
@@ -992,6 +993,7 @@ go_test(
         "simple_select_passthrough_test.go",
         "leg_local_bake_census_gate_test.go",
         "decline_probe_identity_test.go",
+        "cardinality_clamp_rfc195_test.go",
     ],
     deps = [
         "//gen",

@@ -441,18 +441,38 @@ func SelectMinCostPartition(partitions []*PlanPartition) *PlanPartition {
 	return best
 }
 
+// partitionCost ranks a partition by its first expression's estimated cost,
+// with the estimate CLAMPED into the interval that expression proves (RFC-195).
+//
+// This walk sees NO children (HintCost(nil, ...)), so the bounds it can derive
+// are the STRUCTURAL ones that need no child — an ungrouped aggregate's max=1,
+// a LIMIT 0's exact zero, a unique point probe's at-most-one. Child-floor bounds
+// are unknown here and the clamp is a deterministic no-op for them, which is the
+// honest answer rather than a guess: with no child interval there is nothing
+// proved to floor against.
+//
+// Partition ranking feeds RULE selection, not only plan choice, so a clamp here
+// can change which rule fires. That is the intended effect — a rule chosen
+// against an estimate the property layer disproves is chosen wrongly — and its
+// plan-shape diffs are reviewed with the same care as goldens.
 func partitionCost(p *PlanPartition) float64 {
 	exprs := p.GetExpressions()
 	if len(exprs) == 0 {
 		return 1e18
 	}
-	if hc, ok := exprs[0].(interface {
+	e := exprs[0]
+	hc, ok := e.(interface {
 		HintCost([]properties.Cost, properties.StatisticsProvider) properties.Cost
-	}); ok {
-		c := hc.HintCost(nil, properties.DefaultStatistics{})
-		return c.Cardinality + c.CPU
+	})
+	if !ok {
+		return 1e18
 	}
-	return 1e18
+	bounds := properties.ProvenCardinalitiesFrom(e, nil)
+	stats := properties.DefaultStatistics{}
+	c := properties.CostWithinBounds(e, nil, bounds, stats, func() properties.Cost {
+		return hc.HintCost(nil, stats)
+	})
+	return c.Cardinality + c.CPU
 }
 
 // WhereDistinct returns partitions where DistinctRecords is true.

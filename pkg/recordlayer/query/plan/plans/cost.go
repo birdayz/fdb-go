@@ -1002,17 +1002,14 @@ func (p *RecordQueryRecursiveDfsJoinPlan) HintCost(child []properties.Cost, _ pr
 // the drained buffer's charge is echoed (not refunded) into the next level (see
 // levelUnionBufferTouches). The added CPU term makes the union strictly costlier
 // than the DFS join for identical children, so the planner prefers DFS on cost.
-func (p *RecordQueryRecursiveLevelUnionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) < 2 {
-		return properties.Cost{}
-	}
-	cost := recursiveCost(child)
-	// The materialized set is the operator's output cardinality; each row pays
-	// levelUnionBufferTouches buffer operations at the union merge rate (UnionCPU).
-	// Charged on CPU ONLY — the union emits the SAME rows as the DFS join, so its
-	// OUTPUT cardinality (which rolls up into parents) must not change.
-	cost.CPU += cost.Cardinality * properties.UnionCPU * levelUnionBufferTouches
-	return cost
+// This formula's ONE body lives on HintCostWithin (cardinality_bounds.go),
+// because the buffer term is charged per materialized OUTPUT row and therefore
+// has to see the CLAMPED cardinality. Delegating with an unknown interval makes
+// the clamp a deterministic no-op, so an un-bounded caller gets exactly the
+// pre-RFC-195 answer — and there is no second copy for a test to exercise while
+// production runs the other one.
+func (p *RecordQueryRecursiveLevelUnionPlan) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return p.HintCostWithin(child, properties.UnknownCardinalities(), stats)
 }
 
 // defaultVectorHorizon is the bounded re-ranked horizon an ordered-stream scan

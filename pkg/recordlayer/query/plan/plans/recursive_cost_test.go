@@ -132,3 +132,35 @@ func TestRecursiveCost_DfsMatchesBaseRecursion(t *testing.T) {
 		t.Fatalf("DFS HintCost must equal bare recursiveCost: got %+v, want %+v", got, want)
 	}
 }
+
+// TestRecursiveCost_LevelUnionHintCostIsTheLivePath pins that the level union's
+// cost formula has exactly ONE body.
+//
+// It had two. HintCost carried a copy of the formula while production reached
+// HintCostWithin through the clamp dispatch, so every test in this file
+// exercised a body nothing called and the body that ran was untested —
+// demonstrable by poisoning either one and watching the suite stay green.
+// HintCost now delegates with an unknown interval (a deterministic clamp no-op).
+//
+// The assertion is that the delegation holds: same inputs, same answer, so a
+// future re-split cannot restore the split without failing here.
+func TestRecursiveCost_LevelUnionHintCostIsTheLivePath(t *testing.T) {
+	t.Parallel()
+	level := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("scan"),
+		values.NamedCorrelationIdentifier("insert"))
+
+	for _, child := range [][]properties.Cost{
+		{{Cardinality: 42, CPU: 7}, {Cardinality: 9, CPU: 3}},
+		{{Cardinality: 1, CPU: 0}, {Cardinality: 0, CPU: 0}},
+		{{Cardinality: 0, CPU: 0}, {Cardinality: 0, CPU: 0}},
+	} {
+		viaHintCost := level.HintCost(child, properties.DefaultStatistics{})
+		viaBounded := level.HintCostWithin(child, properties.UnknownCardinalities(), properties.DefaultStatistics{})
+		if viaHintCost != viaBounded {
+			t.Fatalf("HintCost and HintCostWithin(unknown) disagree for child=%+v: %+v vs %+v -- "+
+				"the formula has two bodies again, and only one of them is the one production runs",
+				child, viaHintCost, viaBounded)
+		}
+	}
+}
