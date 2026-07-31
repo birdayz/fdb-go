@@ -606,6 +606,23 @@ func cardinalityChildrenForPlan(w physicalPlanExpression, plan plans.RecordQuery
 	if w == nil {
 		return nil
 	}
+	if usesOrInnerChildResolver(plan) {
+		return []properties.Cardinalities{cardinalitiesFromChildRefOrInner(w, plan)}
+	}
+	return cardinalitiesFromChildRefs(w)
+}
+
+// usesOrInnerChildResolver reports whether plan's child edge must be resolved
+// through the OrInner fallback rather than straight off the wrapper's
+// quantifiers.
+//
+// Split out as a named predicate so a test can ENUMERATE this taxonomy instead
+// of re-typing it. A second hand-maintained list of plan types is exactly the
+// drift channel RFC-195 exists to close, one level down: a transparent wrapper
+// added later would silently take the plain resolver and lose its child's
+// proven bound wherever the data-access path exposes the composite without a
+// populated property map.
+func usesOrInnerChildResolver(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
@@ -613,9 +630,9 @@ func cardinalityChildrenForPlan(w physicalPlanExpression, plan plans.RecordQuery
 		*plans.RecordQueryTempTableInsertPlan,
 		*plans.RecordQueryFetchFromPartialRecordPlan,
 		*plans.RecordQueryInUnionPlan:
-		return []properties.Cardinalities{cardinalitiesFromChildRefOrInner(w, plan)}
+		return true
 	}
-	return cardinalitiesFromChildRefs(w)
+	return false
 }
 
 // cardinalitiesFromChildRef returns the Cardinalities from the first

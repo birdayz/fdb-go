@@ -1592,10 +1592,9 @@ func combineConcreteCost(
 	stats properties.StatisticsProvider,
 	ctx PlanContext,
 ) properties.Cost {
-	if bounded, ok := p.(properties.BoundedCostHinter); ok {
-		return properties.ClampCost(bounded.HintCostWithin(child, bounds, stats), bounds)
-	}
-	return properties.ClampCost(combineConcreteCostUnclamped(p, child, stats, ctx), bounds)
+	return properties.CostWithinBounds(p, child, bounds, stats, func() properties.Cost {
+		return combineConcreteCostUnclamped(p, child, stats, ctx)
+	})
 }
 
 // combineConcreteCostUnclamped is the raw per-operator formula dispatch for the
@@ -2398,25 +2397,39 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 	if pl == nil {
 		return false, false
 	}
+	comps := pl.GetScanComparisons()
+
+	// Resolve the PK arity first, from either source, WITHOUT returning: the
+	// widening guard below has to see every path out of this function.
+	//
+	// It did not. The guard used to sit after the stamped-PK branch had already
+	// returned, so it covered only the ctx fallback while its own comment
+	// claimed it "covers both scanProvableMaxCard and scanPlanProvableMaxCard".
+	// A stamped-PK scan with a terminal zero-valued FLOAT equality was therefore
+	// PROVEN at-most-one by two of this helper's three callers, while
+	// isProvablePointProbe — consulting the same widening predicate directly —
+	// correctly declined to call it a point probe. One plan, two contradictory
+	// claims, and the prose asserting otherwise is exactly what kept it hidden.
 	pkLen := len(pl.GetPrimaryKeyValues())
-	if pkLen > 0 {
-		return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
-	}
-	recordTypes := pl.GetRecordTypes()
-	if ctx == nil || len(recordTypes) != 1 {
-		return false, false
-	}
-	pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
 	if pkLen == 0 {
-		return false, false
+		recordTypes := pl.GetRecordTypes()
+		if ctx == nil || len(recordTypes) != 1 {
+			return false, false
+		}
+		pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
+		if pkLen == 0 {
+			return false, false
+		}
 	}
-	// A widening equality (a terminal zero float) binds TWO keys, so a fully
-	// equality-bound PK is still not a one-row proof. Guarding the ONE shared
-	// helper covers both scanProvableMaxCard and scanPlanProvableMaxCard.
-	if properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
+
+	// A widening equality (a terminal zero float) binds TWO keys — the executor
+	// widens a zero bound across -0.0 and +0.0, which are IEEE-equal but pack to
+	// distinct adjacent keys — so a fully equality-bound PK is still not a
+	// one-row proof. The arity is known either way, hence provable=true.
+	if properties.AnyEqualityWidensBeyondOneKey(comps) {
 		return false, true
 	}
-	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
+	return properties.EqualityBoundsCoverKey(comps, pkLen), true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and

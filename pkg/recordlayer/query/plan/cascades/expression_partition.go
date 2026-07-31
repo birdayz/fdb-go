@@ -469,13 +469,9 @@ func partitionCost(p *PlanPartition) float64 {
 	}
 	bounds := properties.ProvenCardinalitiesFrom(e, nil)
 	stats := properties.DefaultStatistics{}
-	var c properties.Cost
-	if bounded, isBounded := e.(properties.BoundedCostHinter); isBounded {
-		c = bounded.HintCostWithin(nil, bounds, stats)
-	} else {
-		c = hc.HintCost(nil, stats)
-	}
-	c = properties.ClampCost(c, bounds)
+	c := properties.CostWithinBounds(e, nil, bounds, stats, func() properties.Cost {
+		return hc.HintCost(nil, stats)
+	})
 	return c.Cardinality + c.CPU
 }
 

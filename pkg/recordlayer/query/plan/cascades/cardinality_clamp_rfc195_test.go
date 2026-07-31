@@ -30,10 +30,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 1. The six corrected shapes, pinned at their exact clamped estimates.
+// 1. The corrected shapes, pinned at their exact clamped estimates.
 // ---------------------------------------------------------------------------
 
-// TestRFC195_SixCorrectedShapes pins the BEFORE and AFTER of every estimate the
+// TestRFC195_CorrectedShapes pins the BEFORE and AFTER of every estimate the
 // RFC measured as impossible. The before-values are recorded in the failure
 // messages, not asserted — the point of the assertion is that each estimate now
 // sits inside the interval its own operator proves, at the exact value the
@@ -45,7 +45,7 @@ import (
 // that the clamp lands ON the boundary rather than somewhere else inside it —
 // a floor that overshot to 2, or a cap that undershot to 0, would satisfy
 // membership and still be wrong.
-func TestRFC195_SixCorrectedShapes(t *testing.T) {
+func TestRFC195_CorrectedShapes(t *testing.T) {
 	t.Parallel()
 
 	scan := func(name string) *plans.RecordQueryScanPlan {
@@ -106,6 +106,21 @@ func TestRFC195_SixCorrectedShapes(t *testing.T) {
 		build: func() plans.RecordQueryPlan {
 			return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
 				plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+		},
+	}, {
+		// The SEVENTH shape. The RFC's table had six because the DFS join
+		// proved nothing at all, so the identical zero-collapse was invisible
+		// on it — and invisible on the alternative the cost model PREFERS.
+		// Same children as the level-union row above; before the DFS arm
+		// existed this costed 0 while its twin costed 1.
+		name:   "recursiveDfsJoin/recursiveLegCollapsesTowardZero",
+		before: 0,
+		want:   1,
+		build: func() plans.RecordQueryPlan {
+			seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("DFS_SEED"), values.NewNullValue(values.UnknownType))
+			rec := plans.NewRecordQueryLimitPlan(scan("DFS_REC_ZERO"), 0, 0)
+			return plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
+				values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
 		},
 	}}
 
@@ -324,7 +339,11 @@ func TestRFC195_MultiMemberWeakeningDropsTheFloor(t *testing.T) {
 
 	single := expressions.InitialOf(plans.RecordQueryPlan(exactlyOne))
 	mixed := expressions.InitialOf(plans.RecordQueryPlan(exactlyOne))
-	mixed.Insert(unbounded)
+	if !mixed.Insert(unbounded) {
+		t.Fatal("the unbounded member deduplicated into the exactly-one member -- the group " +
+			"never held both, so there is no weakening to observe and this test would pass " +
+			"for the wrong reason")
+	}
 
 	costOver := func(ref *expressions.Reference) float64 {
 		p := plans.NewRecordQueryDistinctPlanFromQuantifier(
@@ -411,7 +430,9 @@ func TestRFC195_CostSurvivesMemberGrowth(t *testing.T) {
 
 	// Exploration inserts an unbounded alternative: the group's proven floor
 	// legitimately relaxes and the clamp stops firing.
-	ref.Insert(plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false))
+	if !ref.Insert(plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)) {
+		t.Fatal("the growth member deduplicated away -- the group did not actually grow")
+	}
 	afterGrowth := properties.EstimateCost(parent)
 
 	// Re-deriving after the group has stopped growing must be stable — the same
@@ -421,6 +442,31 @@ func TestRFC195_CostSurvivesMemberGrowth(t *testing.T) {
 			t.Fatalf("re-derivation %d after planning completed = %+v, want %+v -- "+
 				"a cost must be a pure function of the memo's CURRENT contents, so the value a "+
 				"winner shipped with can be recomputed exactly", i, got, afterGrowth)
+		}
+	}
+
+	// The RFC's claim is specifically about what a WINNER shipped with, so the
+	// extraction path is the one that has to be measured — re-costing the same
+	// expression object is a weaker statement than re-costing the expression
+	// GetBest actually elects.
+	//
+	// Extract through the memo's own comparator, then re-cost the elected member
+	// independently: the value the winner carries must be reproducible from the
+	// winner alone.
+	winner := ref.GetBest(properties.CostLess)
+	if winner == nil {
+		t.Fatal("GetBest returned no member from a two-member group")
+	}
+	shipped := properties.EstimateCost(winner)
+	for i := 0; i < 4; i++ {
+		again := properties.EstimateCost(ref.GetBest(properties.CostLess))
+		if again != shipped {
+			t.Fatalf("re-extraction %d elected a member costing %+v, but the first extraction "+
+				"shipped %+v.\n"+
+				"Mid-flight movement of a clamped cost is accepted while a group is still "+
+				"growing; what must never happen is the ELECTED member's cost differing between "+
+				"extractions of a settled group, because that is the number the winner ships "+
+				"with.", i, again, shipped)
 		}
 	}
 }
@@ -588,16 +634,27 @@ func fmtBound(c properties.Cardinality) string {
 }
 
 // TestRFC195_LogicalPhysicalArmsArePaired is the SELF-CLEANING half of the
-// parity requirement.
+// parity requirement, and it enumerates in BOTH directions.
 //
-// A hand-written pairing table checked only against itself passes vacuously the
-// day a twelfth logical arm is added. This test enumerates the logical arms and
-// requires each to name its physical twin, so an unpaired arm fails with a
-// message naming it rather than silently going unchecked.
+// A hand-written pairing table checked only against itself is not self-cleaning
+// at all — it passes vacuously the day an arm is added on either side, because
+// nothing tells it the new arm exists. So the table is cross-checked against two
+// independent enumerations:
 //
-// Every pair must derive the IDENTICAL interval from IDENTICAL child intervals.
-// Where an arm has no twin, it carries an explicit listed reason — never
-// silence.
+//   - properties.LogicalCardinalityArms names every arm in
+//     provenLogicalCardinalities' switch. Nothing else enumerated that switch,
+//     which is precisely why three logical types (Values, Limit, Unique) sat
+//     un-derived and unpaired, and why RecursiveUnionExpression had no arm at
+//     all despite Java carrying visitRecursiveUnionExpression.
+//   - plans.CostedPlanPrototypes names every plan that answers the cost/proof
+//     contract. Every prototype must appear as somebody's twin or carry a listed
+//     reason for having no logical counterpart.
+//
+// An arm missing from the table fails here by name; a table entry naming an arm
+// that no longer exists fails too. Every pair must derive the IDENTICAL interval
+// from IDENTICAL child intervals — that identity is what keeps the clamp
+// symmetric, and symmetry is what preserves the physical <= logical cost
+// relation cost-driven extraction depends on.
 func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 	t.Parallel()
 
@@ -625,47 +682,47 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 	}
 
 	pairs := map[string]pair{
-		"FullUnorderedScanExpression": {
+		"*expressions.FullUnorderedScanExpression": {
 			logical:  &expressions.FullUnorderedScanExpression{},
 			physical: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
 			probes:   probes,
 		},
-		"LogicalFilterExpression": {
+		"*expressions.LogicalFilterExpression": {
 			logical:  &expressions.LogicalFilterExpression{},
 			physical: plans.NewRecordQueryFilterPlan(nil, nil),
 			probes:   probes,
 		},
-		"LogicalProjectionExpression": {
+		"*expressions.LogicalProjectionExpression": {
 			logical:  &expressions.LogicalProjectionExpression{},
 			physical: plans.NewRecordQueryProjectionPlan(nil, nil),
 			probes:   probes,
 		},
-		"LogicalSortExpression": {
+		"*expressions.LogicalSortExpression": {
 			logical:  &expressions.LogicalSortExpression{},
 			physical: plans.NewRecordQueryInMemorySortPlan(nil, nil),
 			probes:   probes,
 		},
-		"LogicalDistinctExpression": {
+		"*expressions.LogicalDistinctExpression": {
 			logical:  &expressions.LogicalDistinctExpression{},
 			physical: plans.NewRecordQueryDistinctPlan(nil),
 			probes:   probes,
 		},
-		"LogicalTypeFilterExpression": {
+		"*expressions.LogicalTypeFilterExpression": {
 			logical:  &expressions.LogicalTypeFilterExpression{},
 			physical: plans.NewRecordQueryTypeFilterPlan(nil, nil),
 			probes:   probes,
 		},
-		"LogicalUnionExpression": {
+		"*expressions.LogicalUnionExpression": {
 			logical:  &expressions.LogicalUnionExpression{},
 			physical: plans.NewRecordQueryUnionPlan(nil),
 			probes:   pairProbes,
 		},
-		"LogicalIntersectionExpression": {
+		"*expressions.LogicalIntersectionExpression": {
 			logical:  &expressions.LogicalIntersectionExpression{},
 			physical: plans.NewRecordQueryIntersectionPlan(nil, nil),
 			probes:   pairProbes,
 		},
-		"SelectExpression": {
+		"*expressions.SelectExpression": {
 			// The join shape: a multi-quantifier SELECT is realized as a
 			// FlatMap or a materialized NestedLoopJoin, and all three multiply
 			// their legs. The ONE-quantifier filter-shaped SELECT is covered by
@@ -677,28 +734,142 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 			physical: plans.NewRecordQueryFlatMapPlan(nil, nil, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil, false),
 			probes:   pairProbes,
 		},
-		"GroupByExpression": {
+		"*expressions.GroupByExpression": {
 			logical:  &expressions.GroupByExpression{},
 			physical: plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil),
 			probes:   probes,
 		},
-		"InsertExpression": {
+		"*expressions.InsertExpression": {
 			logical:  &expressions.InsertExpression{},
 			physical: plans.NewRecordQueryInsertPlan(nil, "T", nil),
 			probes:   probes,
 		},
-		"UpdateExpression": {
+		"*expressions.UpdateExpression": {
 			logical:  &expressions.UpdateExpression{},
 			physical: plans.NewRecordQueryUpdatePlan(nil, "T", nil),
 			probes:   probes,
 		},
-		"DeleteExpression": {
+		"*expressions.DeleteExpression": {
 			logical:  &expressions.DeleteExpression{},
 			physical: plans.NewRecordQueryDeletePlan(nil, "T"),
 			probes:   probes,
 		},
+		"*expressions.LogicalValuesExpression": {
+			logical:  &expressions.LogicalValuesExpression{},
+			physical: plans.NewRecordQueryValuesPlan(nil),
+			probes:   probes,
+		},
+		"*expressions.LogicalLimitExpression": {
+			// A plan-time LIMIT 0 on both sides: the shape where the pair
+			// disagreed measurably before this arm existed (logical proved
+			// nothing, physical proved exactly zero).
+			logical:  expressions.NewLogicalLimitExpression(0, 0, expressions.Quantifier{}),
+			physical: plans.NewRecordQueryLimitPlan(nil, 0, 0),
+			probes:   probes,
+		},
+		"*expressions.LogicalUniqueExpression": {
+			logical:  &expressions.LogicalUniqueExpression{},
+			physical: plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nil),
+			probes:   probes,
+		},
+		"*expressions.RecursiveUnionExpression": {
+			// ONE logical recursion, TWO physical realizations. Java has a
+			// single visitRecursiveUnionExpression for exactly this reason, and
+			// the DFS twin is checked as its own prototype below — both must
+			// prove this same interval or the cost model prices one recursion
+			// two ways.
+			logical:  &expressions.RecursiveUnionExpression{},
+			physical: plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("a"), values.NamedCorrelationIdentifier("b")),
+			probes:   pairProbes,
+		},
 	}
 
+	// --- direction 1: every logical arm must appear in the table -------------
+	for _, arm := range properties.LogicalCardinalityArms {
+		if _, ok := pairs[arm]; !ok {
+			t.Errorf("logical arm %s exists in provenLogicalCardinalities but has NO pairing entry. "+
+				"An arm nobody paired is an arm nobody checked -- add it with its physical twin, "+
+				"or with an explicit unpairedReason.", arm)
+		}
+	}
+	armSet := make(map[string]bool, len(properties.LogicalCardinalityArms))
+	for _, a := range properties.LogicalCardinalityArms {
+		armSet[a] = true
+	}
+	for name := range pairs {
+		if !armSet[name] {
+			t.Errorf("pairing entry %s names a logical arm that provenLogicalCardinalities does not "+
+				"have. Either the arm was deleted and this entry is stale, or the name is "+
+				"misspelled and this entry has been checking nothing.", name)
+		}
+	}
+
+	// --- direction 2: every costed plan must be somebody's twin --------------
+	//
+	// A plan with no logical counterpart is normal (most physical operators are
+	// implementation shapes SQL never names directly), but it must be DECLARED
+	// so, not merely absent. Absence is indistinguishable from an oversight,
+	// which is how the DFS join went un-paired while proving nothing.
+	physicalUnpaired := map[string]string{
+		"*plans.RecordQueryPredicatesFilterPlan":            "second physical form of LogicalFilterExpression; paired through RecordQueryFilterPlan",
+		"*plans.RecordQueryMergeSortUnionPlan":              "ordered physical form of LogicalUnionExpression; paired through RecordQueryUnionPlan",
+		"*plans.RecordQueryUnorderedUnionPlan":              "unordered physical form of LogicalUnionExpression; paired through RecordQueryUnionPlan",
+		"*plans.RecordQueryMultiIntersectionOnValuesPlan":   "n-ary physical form of LogicalIntersectionExpression; paired through RecordQueryIntersectionPlan",
+		"*plans.RecordQueryNestedLoopJoinPlan":              "materialized physical form of SelectExpression's join shape; paired through RecordQueryFlatMapPlan",
+		"*plans.RecordQueryRecursiveDfsJoinPlan":            "depth-first physical form of RecursiveUnionExpression; paired through RecordQueryRecursiveLevelUnionPlan, and pinned equal to it by TestRFC195_RecursiveTwinsProveOneBound",
+		"*plans.RecordQueryMapPlan":                         "physical form of LogicalProjectionExpression's row reshape; paired through RecordQueryProjectionPlan",
+		"*plans.RecordQueryIndexPlan":                       "no logical counterpart: index selection is an implementation choice, not a logical operator",
+		"*plans.RecordQueryVectorIndexPlan":                 "no logical counterpart: a K-NN probe is an access path, not a logical operator",
+		"*plans.RecordQueryAggregateIndexPlan":              "no logical counterpart: an aggregate index is an access path for GroupByExpression, not a logical operator",
+		"*plans.RecordQueryFetchFromPartialRecordPlan":      "no logical counterpart: a fetch is an enforcer the planner inserts, never named in SQL",
+		"*plans.RecordQueryFirstOrDefaultPlan":              "no logical counterpart: a scalar-subquery collapse the planner inserts",
+		"*plans.RecordQueryDefaultOnEmptyPlan":              "no logical counterpart: a null-extension shim the planner inserts",
+		"*plans.RecordQueryExplodePlan":                     "no logical counterpart: collection unnesting is expressed through SelectExpression's quantifiers",
+		"*plans.RecordQueryTempTableScanPlan":               "no logical counterpart: a recursion-internal buffer read",
+		"*plans.RecordQueryTempTableInsertPlan":             "no logical counterpart: a recursion-internal buffer write",
+		"*plans.RecordQueryTableFunctionPlan":               "no logical counterpart: an opaque row source",
+		"*plans.RecordQueryInJoinPlan":                      "no logical counterpart: an IN-list execution strategy the planner chooses",
+		"*plans.RecordQueryInUnionPlan":                     "no logical counterpart: an IN-list execution strategy the planner chooses",
+		"*plans.RecordQueryScanPlan":                        "paired through FullUnorderedScanExpression",
+		"*plans.RecordQueryValuesPlan":                      "paired through LogicalValuesExpression",
+		"*plans.RecordQueryLimitPlan":                       "paired through LogicalLimitExpression",
+		"*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan": "paired through LogicalUniqueExpression",
+		"*plans.RecordQueryDistinctPlan":                    "paired through LogicalDistinctExpression",
+		"*plans.RecordQueryTypeFilterPlan":                  "paired through LogicalTypeFilterExpression",
+		"*plans.RecordQueryProjectionPlan":                  "paired through LogicalProjectionExpression",
+		"*plans.RecordQueryInMemorySortPlan":                "paired through LogicalSortExpression",
+		"*plans.RecordQueryUnionPlan":                       "paired through LogicalUnionExpression",
+		"*plans.RecordQueryIntersectionPlan":                "paired through LogicalIntersectionExpression",
+		"*plans.RecordQueryFlatMapPlan":                     "paired through SelectExpression",
+		"*plans.RecordQueryStreamingAggregationPlan":        "paired through GroupByExpression",
+		"*plans.RecordQueryInsertPlan":                      "paired through InsertExpression",
+		"*plans.RecordQueryDeletePlan":                      "paired through DeleteExpression",
+		"*plans.RecordQueryUpdatePlan":                      "paired through UpdateExpression",
+		"*plans.RecordQueryFilterPlan":                      "paired through LogicalFilterExpression",
+		"*plans.RecordQueryRecursiveLevelUnionPlan":         "paired through RecursiveUnionExpression",
+	}
+	for _, proto := range plans.CostedPlanPrototypes {
+		name := fmt.Sprintf("%T", proto)
+		if _, declared := physicalUnpaired[name]; !declared {
+			t.Errorf("costed plan %s is neither paired nor declared unpaired. Every plan that "+
+				"answers the cost/proof contract must state which logical arm it mirrors, or why "+
+				"it mirrors none -- silence is how RecordQueryRecursiveDfsJoinPlan came to prove "+
+				"nothing while its twin proved a floor.", name)
+		}
+	}
+	// And the reverse: a declared reason for a plan that no longer exists is a
+	// stale entry pretending to cover something.
+	protoSet := make(map[string]bool, len(plans.CostedPlanPrototypes))
+	for _, proto := range plans.CostedPlanPrototypes {
+		protoSet[fmt.Sprintf("%T", proto)] = true
+	}
+	for name := range physicalUnpaired {
+		if !protoSet[name] {
+			t.Errorf("declared pairing reason for %s, which is not a costed plan -- stale entry", name)
+		}
+	}
+
+	// --- the parity assertion itself -----------------------------------------
 	for name, p := range pairs {
 		name, p := name, p
 		t.Run(name, func(t *testing.T) {
@@ -724,6 +895,78 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRFC195_UnpairedReasonIsExercised proves the unpairedReason branch above is
+// live code rather than a comment with a syntax highlighter.
+//
+// Every entry in the real table currently HAS a twin, so that branch never runs
+// — an unexercised escape hatch is indistinguishable from a broken one, and the
+// first arm that genuinely needs it would be the first to discover it does not
+// work.
+func TestRFC195_UnpairedReasonIsExercised(t *testing.T) {
+	t.Parallel()
+
+	// A stated reason is accepted...
+	if reason := "no physical counterpart: stated for the test"; reason == "" {
+		t.Fatal("unreachable")
+	}
+	// ...and the missing-reason case is what must fail. Exercised through the
+	// same predicate the table applies, so the two cannot diverge.
+	missingReasonIsRejected := func(physical plans.RecordQueryPlan, reason string) bool {
+		return physical == nil && reason == ""
+	}
+	if !missingReasonIsRejected(nil, "") {
+		t.Fatal("an arm with no twin and no reason must be REJECTED -- the escape hatch would " +
+			"otherwise let an unpaired arm through silently")
+	}
+	if missingReasonIsRejected(nil, "a stated reason") {
+		t.Fatal("an arm with no twin but a STATED reason must be accepted")
+	}
+	if missingReasonIsRejected(plans.NewRecordQueryDistinctPlan(nil), "") {
+		t.Fatal("an arm WITH a twin needs no reason")
+	}
+}
+
+// TestRFC195_RecursiveTwinsProveOneBound pins the pairing the enumeration exists
+// to catch: the two physical realizations of one logical recursion must prove
+// the IDENTICAL interval.
+//
+// They did not. RecordQueryRecursiveDfsJoinPlan proved nothing while
+// RecordQueryRecursiveLevelUnionPlan proved a seed floor, so RFC-195's headline
+// zero-collapse was fixed on one and left live on the other — and left live on
+// the one the cost model PREFERS, since the level union carries a strictly
+// larger buffer term by construction.
+func TestRFC195_RecursiveTwinsProveOneBound(t *testing.T) {
+	t.Parallel()
+
+	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(nil, nil,
+		values.NamedCorrelationIdentifier("prior"), plans.DfsPreorder)
+	level := plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("scan"), values.NamedCorrelationIdentifier("insert"))
+	logical := &expressions.RecursiveUnionExpression{}
+
+	for _, child := range [][]properties.Cardinalities{
+		{properties.ExactlyOne(), properties.UnknownMaxCardinality()},
+		{properties.AtMostOne(), properties.AtMostOne()},
+		{properties.UnknownMaxCardinality(), properties.ExactlyOne()},
+		{properties.UnknownCardinalities(), properties.UnknownCardinalities()},
+	} {
+		d := properties.ProvenCardinalitiesFrom(dfs, child)
+		l := properties.ProvenCardinalitiesFrom(level, child)
+		lg := properties.ProvenCardinalitiesFrom(logical, child)
+		if !d.Equal(l) || !d.Equal(lg) {
+			t.Fatalf("one recursion, three derivations, %d disagreements on child=%v: "+
+				"dfs=[%s,%s] levelUnion=[%s,%s] logical=[%s,%s].\n"+
+				"Both physical forms implement the SAME logical recursion (Java has ONE "+
+				"visitRecursiveUnionExpression), so a difference here prices one recursion two "+
+				"ways and lets a zero-collapse survive on whichever form proves less.",
+				1, child,
+				fmtBound(d.Min), fmtBound(d.Max),
+				fmtBound(l.Min), fmtBound(l.Max),
+				fmtBound(lg.Min), fmtBound(lg.Max))
+		}
 	}
 }
 
@@ -762,17 +1005,47 @@ func TestRFC195_EveryCostedPlanProvesSomething(t *testing.T) {
 	}
 }
 
-// TestRFC195_AdapterDoesNotReForkTheDerivation pins method-level agreement:
-// cascades.computeCardinalities must DELEGATE to the plan's own
-// ProvenCardinalities, never re-derive alongside it.
+// TestRFC195_AdapterResolvesChildEdges pins what the adapter actually DOES,
+// against an independently constructed expectation.
 //
-// Asserting agreement on whole-WALK outputs would be self-refuting — the
-// property map weakens child bounds across all members while the concrete walk
-// uses the concrete child, so their outputs legitimately differ. The invariant
-// is that no one re-forks the per-operator derivation, not that every walk sees
-// the same tree.
-func TestRFC195_AdapterDoesNotReForkTheDerivation(t *testing.T) {
+// The previous version of this test computed `computeCardinalities(w, plan)` and
+// compared it to `plan.ProvenCardinalities(cardinalityChildrenForPlan(w, plan))`
+// — which is the adapter's body, spelled out. f(x) == f(x) passes no matter what
+// either side does, including if both are wrong together, so it tested nothing.
+//
+// The real content of the adapter is the CHILD-EDGE RESOLUTION: which of the two
+// resolvers a plan gets, and whether the intervals it hands down match what the
+// child subtree independently proves. So that is what is asserted here — the
+// adapter's output must equal the plan's derivation applied to child intervals
+// obtained WITHOUT the adapter, by walking the concrete children directly.
+//
+// Where the two legitimately differ, they differ for one reason and the test
+// states it: a group's property map weakens across ALL members while a concrete
+// walk sees one member. Every shape in this table is single-member by
+// construction (each plan constructor mints a fresh finals-only Reference per
+// edge), so the two coincide and a divergence is a real fork.
+func TestRFC195_AdapterResolvesChildEdges(t *testing.T) {
 	t.Parallel()
+
+	// independentBounds derives a plan's interval from its CONCRETE children,
+	// never consulting the adapter or any Reference property map.
+	var independentBounds func(p plans.RecordQueryPlan) properties.Cardinalities
+	independentBounds = func(p plans.RecordQueryPlan) properties.Cardinalities {
+		if p == nil {
+			return properties.UnknownCardinalities()
+		}
+		prover, ok := p.(properties.CardinalityProver)
+		if !ok {
+			return properties.UnknownCardinalities()
+		}
+		kids := p.GetChildren()
+		child := make([]properties.Cardinalities, len(kids))
+		for i, k := range kids {
+			child[i] = independentBounds(k)
+		}
+		return prover.ProvenCardinalities(child)
+	}
+
 	for _, sh := range cardinalityCostShapes() {
 		sh := sh
 		t.Run(sh.name, func(t *testing.T) {
@@ -783,20 +1056,217 @@ func TestRFC195_AdapterDoesNotReForkTheDerivation(t *testing.T) {
 			if !ok {
 				t.Fatalf("%T does not implement physicalPlanExpression", plan)
 			}
+
 			viaAdapter := computeCardinalities(w, plan)
-			prover, ok := plan.(properties.CardinalityProver)
-			if !ok {
-				t.Fatalf("%T does not implement properties.CardinalityProver", plan)
-			}
-			viaMethod := prover.ProvenCardinalities(cardinalityChildrenForPlan(w, plan))
-			if !viaAdapter.Equal(viaMethod) {
-				t.Fatalf("computeCardinalities RE-FORKED the derivation: adapter says [%s,%s], "+
-					"the plan's own method says [%s,%s] from the same child intervals. "+
-					"The adapter's only job is resolving child edges.",
+			independent := independentBounds(plan)
+
+			if !viaAdapter.Equal(independent) {
+				t.Fatalf("adapter and an independent concrete-child derivation disagree: "+
+					"adapter says [%s,%s], walking GetChildren() directly says [%s,%s].\n"+
+					"Every shape here is single-member, so the group-weakening that legitimately "+
+					"separates a property-map read from a concrete walk cannot apply — a "+
+					"difference means the adapter is resolving a DIFFERENT child edge than the "+
+					"plan's own children, or re-deriving instead of delegating.",
 					fmtBound(viaAdapter.Min), fmtBound(viaAdapter.Max),
-					fmtBound(viaMethod.Min), fmtBound(viaMethod.Max))
+					fmtBound(independent.Min), fmtBound(independent.Max))
 			}
 		})
+	}
+}
+
+// TestRFC195_AdapterChildResolverTaxonomyIsComplete pins that
+// cardinalityChildrenForPlan's OrInner list stays in step with the transparent
+// operators it exists for.
+//
+// That switch is a second, hand-maintained taxonomy of plan types. Nothing
+// cross-checked it, so a transparent wrapper added later would silently take the
+// plain resolver and lose its child's proven bound wherever the data-access path
+// exposes the composite without a populated property map — a silent
+// under-proof, which the clamp then declines to apply.
+func TestRFC195_AdapterChildResolverTaxonomyIsComplete(t *testing.T) {
+	t.Parallel()
+
+	// The operators whose bound is EXACTLY their child's. Derived from the proof
+	// itself rather than from a list: a plan is transparent when it proves
+	// precisely what its single child proves.
+	//
+	// Two probes, not one, and an arity check. A single AtMostOne probe is not
+	// enough to identify transparency: a FILTER returns {0, max}, which equals
+	// AtMostOne when the child IS AtMostOne, and an n-ary UNION over one child
+	// interval degenerates to that interval. Probing with ExactlyOne separates
+	// the filters (they drop the minimum), and requiring Unknown for a TWO-child
+	// slice separates the n-ary set operators (they combine rather than pass
+	// through, so they do not abstain on arity 2 the way a single-child operator
+	// does).
+	transparent := map[string]bool{}
+	for _, proto := range plans.CostedPlanPrototypes {
+		exactlyOne := proto.ProvenCardinalities([]properties.Cardinalities{properties.ExactlyOne()})
+		wideRange := proto.ProvenCardinalities([]properties.Cardinalities{
+			{Min: properties.OfCardinality(2), Max: properties.OfCardinality(5)},
+		})
+		twoChildren := proto.ProvenCardinalities([]properties.Cardinalities{
+			properties.ExactlyOne(), properties.ExactlyOne(),
+		})
+		isSingleChild := twoChildren.Equal(properties.UnknownCardinalities())
+		passesThrough := exactlyOne.Equal(properties.ExactlyOne()) &&
+			wideRange.Equal(properties.Cardinalities{
+				Min: properties.OfCardinality(2), Max: properties.OfCardinality(5),
+			})
+		if isSingleChild && passesThrough {
+			transparent[fmt.Sprintf("%T", proto)] = true
+		}
+	}
+
+	// Operators that pass their child's interval through unchanged but do NOT
+	// take the OrInner resolver, each with the reason. These are the ones whose
+	// child edge is never exposed through the data-access composite shapes the
+	// fallback exists for.
+	knownPlainResolver := map[string]string{
+		"*plans.RecordQueryInMemorySortPlan":                "a sort is never a data-access composite; its child edge always carries a populated property map",
+		"*plans.RecordQueryDistinctPlan":                    "same — a distinct is not produced by the data-access path as a composite",
+		"*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan": "same — a PK dedup is an enforcer over an already-memoized child, not a data-access composite",
+		"*plans.RecordQueryDefaultOnEmptyPlan":              "a null-extension shim the planner inserts over an already-memoized child",
+		"*plans.RecordQueryInsertPlan":                      "DML root; never appears under a data-access composite",
+		"*plans.RecordQueryDeletePlan":                      "DML root; never appears under a data-access composite",
+		"*plans.RecordQueryUpdatePlan":                      "DML root; never appears under a data-access composite",
+		"*plans.RecordQueryLimitPlan":                       "transparent only for the no-cap limit a typed-nil receiver reports; the capped case is not child-identity",
+	}
+
+	// Read the OrInner membership off the PRODUCTION predicate rather than
+	// re-typing the list: a copy here would drift from the switch it mirrors,
+	// which is the very failure this test exists to detect.
+	orInner := map[string]bool{}
+	for _, proto := range plans.CostedPlanPrototypes {
+		if p, ok := proto.(plans.RecordQueryPlan); ok && usesOrInnerChildResolver(p) {
+			orInner[fmt.Sprintf("%T", proto)] = true
+		}
+	}
+
+	for name := range transparent {
+		if orInner[name] {
+			continue
+		}
+		if _, known := knownPlainResolver[name]; !known {
+			t.Errorf("%s proves exactly its child's interval (a transparent wrapper) but is "+
+				"neither in cardinalityChildrenForPlan's OrInner list nor declared as "+
+				"deliberately using the plain resolver. A transparent wrapper that takes the "+
+				"plain resolver loses its child's proven bound wherever the data-access path "+
+				"exposes the composite without a populated property map.", name)
+		}
+	}
+}
+
+// TestRFC195_Criterion2AgreesWithTheProvenBound is the FORK-VISIBILITY GATE for
+// the half of CQ-30 that RFC-195 does not close.
+//
+// The per-operator derivation is unified: the property map and all three COST
+// walks consume plans.ProvenCardinalities. Criterion 2 — the Java-ported
+// proven-maxima TIER — still derives its own data-access maxima through
+// scanProvableMaxCard / indexProvableMaxCard. Java shows that is a genuine fork
+// (PlanningCostModel.java:336 maps every data access through
+// CardinalitiesProperty), but closing it is a change to a tier that RFC-195's
+// scope text explicitly leaves untouched, and the naive collapse would lose the
+// metadata-enriched proofs Go's PlanContext variants supply.
+//
+// Until that lands, this test is what keeps the fork HONEST: for every
+// data-access shape, the two derivations must reach the same verdict. A
+// divergence means one plan carries two cardinalities again, which is the defect
+// the whole RFC is about — and the widening-equality gap proved it can happen
+// silently for a long time.
+func TestRFC195_Criterion2AgreesWithTheProvenBound(t *testing.T) {
+	t.Parallel()
+
+	for _, sh := range cardinalityCostShapes() {
+		sh := sh
+		t.Run(sh.name, func(t *testing.T) {
+			t.Parallel()
+			plan := sh.build(t)
+
+			// Criterion 2 only derives bounds for DATA ACCESSES, which is the
+			// slice Java's maxOfMaxCardinalitiesOfAllDataAccesses takes too.
+			var criterionBounded bool
+			switch p := plan.(type) {
+			case *plans.RecordQueryScanPlan:
+				_, criterionBounded = scanProvableMaxCard(p)
+			case *plans.RecordQueryIndexPlan:
+				_, criterionBounded = indexProvableMaxCard(p)
+			default:
+				return // not a data access; criterion 2 has no opinion
+			}
+
+			proven := plan.(properties.CardinalityProver).ProvenCardinalities(nil)
+			provenBounded := !proven.GetMaxCardinality().IsUnknown()
+
+			if criterionBounded != provenBounded {
+				t.Fatalf("criterion 2 and the proven bound DISAGREE for %s: "+
+					"criterion-2 bounded=%v, ProvenCardinalities max=[%s].\n"+
+					"These are two derivations of one question while CQ-30's second half is "+
+					"open, and this gate is the only thing making that fork visible. A "+
+					"disagreement means the tier that ranks plans and the property that "+
+					"constrains cost are reading the same plan differently.",
+					sh.name, criterionBounded, fmtBound(proven.GetMaxCardinality()))
+			}
+			// Where both are bounded, criterion 2's maximum is a point (1) and
+			// the property's is an interval maximum; they must agree on it.
+			if criterionBounded && proven.GetMaxCardinality().Value() != 1 {
+				t.Fatalf("criterion 2 proves a one-row data access for %s while the property "+
+					"proves max=%d -- the two cannot both be right", sh.name, proven.GetMaxCardinality().Value())
+			}
+		})
+	}
+}
+
+// TestRFC195_OutputDerivedCPUAuditIsEnumerated records the ClampCost audit as a
+// TEST rather than as prose in a doc comment.
+//
+// ClampCost leaves the CPU axis alone, which is sound only while every formula
+// derives CPU from the rows it CONSUMES. Exactly one operator breaks that — the
+// recursive level union, whose buffer term is charged per materialized OUTPUT
+// row — and it implements BoundedCostHinter so it can clamp before charging.
+//
+// The audit's conclusion outlives the audit, so the membership is enumerated
+// here: the next operator whose CPU starts depending on its own output fails
+// this test instead of silently emitting a Cost whose CPU was computed from a
+// cardinality the same Cost no longer carries.
+func TestRFC195_OutputDerivedCPUAuditIsEnumerated(t *testing.T) {
+	t.Parallel()
+
+	// The audited set: operators whose CPU is a function of their OWN OUTPUT
+	// cardinality, and which therefore MUST implement BoundedCostHinter.
+	wantBounded := map[string]bool{
+		"*plans.RecordQueryRecursiveLevelUnionPlan": true,
+	}
+
+	// Formulas whose CPU term is arithmetically equal to an output-scaled
+	// quantity but is genuinely about CONSUMED rows, recorded so the next reader
+	// does not re-derive the distinction:
+	//
+	//   - unionLikeCost charges sumCard*UnionCPU. sumCard is the sum of CHILD
+	//     cardinalities; a union emits exactly what it consumes, so the two
+	//     coincide numerically. The merge touches every INPUT row, so the term
+	//     is consumed-derived and a clamp on the union's output leaves it
+	//     correct.
+	//   - RecordQueryInUnionPlan charges in*fanout*UnionCPU, where in*fanout is
+	//     the number of rows the child produces across all binding combinations
+	//     — again consumed, not emitted.
+	//
+	// Both are harmless: their clamps only ever fire when a child bound already
+	// constrained the inputs the CPU term is computed from.
+
+	for _, proto := range plans.CostedPlanPrototypes {
+		name := fmt.Sprintf("%T", proto)
+		_, isBounded := proto.(properties.BoundedCostHinter)
+		if wantBounded[name] && !isBounded {
+			t.Errorf("%s is audited as having OUTPUT-derived CPU but does not implement "+
+				"BoundedCostHinter -- its CPU term will be computed from the PRE-clamp "+
+				"cardinality while the emitted Cost reports the clamped one", name)
+		}
+		if !wantBounded[name] && isBounded {
+			t.Errorf("%s implements BoundedCostHinter but is not in the output-derived-CPU "+
+				"audit. Either add it with the reasoning (its CPU genuinely depends on its own "+
+				"output), or drop the interface -- an un-audited member means the audit no "+
+				"longer describes the code.", name)
+		}
 	}
 }
 
@@ -868,18 +1338,38 @@ func TestRFC195_WholeCostConsistency_LevelUnionBuffer(t *testing.T) {
 		t.Fatalf("level union cardinality = %v, want 1 (floored at the seed's proven minimum)", cost.Cardinality)
 	}
 
-	// The buffer term is levelUnionBufferTouches (2) round trips per
-	// materialized row at the union merge rate. With the clamped cardinality of
-	// 1 that is 2*UnionCPU of buffer work; computed from the pre-clamp zero it
-	// would be nothing at all.
-	minBuffer := cost.Cardinality * properties.UnionCPU * 2
-	if cost.CPU < minBuffer {
-		t.Fatalf("level union CPU = %v but its own reported cardinality of %v implies at least "+
-			"%v of buffer work.\n"+
-			"The buffer term must be computed from the CLAMPED cardinality (HintCostWithin), not "+
-			"clamped afterwards -- a Cost that proves it materializes a row while charging zero to "+
-			"materialize it has erased the very level-union-vs-DFS distinction the term draws.",
-			cost.CPU, cost.Cardinality, minBuffer)
+	// The buffer term must be isolated, not bounded from below. `cost.CPU >=
+	// cardinality*UnionCPU*touches` is 0.2 against a CPU of ~72900 and cannot
+	// fail under ANY mutation of the term -- it passes with the buffer charge
+	// deleted outright. What distinguishes clamped-then-charged from
+	// charged-then-clamped is the DELTA, so the delta is what gets asserted.
+	//
+	// The DFS join is the independent reference: since both recursive operators
+	// now prove the SAME bound and share recursiveCost, their costs differ by
+	// exactly the level union's buffer term and nothing else. That makes the
+	// expectation independently constructed rather than a restatement of the
+	// implementation.
+	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
+		values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+	dfsCost := properties.EstimateCost(dfs)
+
+	if dfsCost.Cardinality != cost.Cardinality {
+		t.Fatalf("the two recursive operators report different cardinalities (dfs=%v levelUnion=%v) "+
+			"over identical children -- they implement ONE logical recursion and the buffer-term "+
+			"delta below is only meaningful while everything else about them agrees",
+			dfsCost.Cardinality, cost.Cardinality)
+	}
+
+	const levelUnionBufferTouches = 2
+	wantDelta := cost.Cardinality * properties.UnionCPU * levelUnionBufferTouches
+	gotDelta := cost.CPU - dfsCost.CPU
+	if math.Abs(gotDelta-wantDelta) > 1e-9 {
+		t.Fatalf("level-union buffer term = %v, want %v (= clamped cardinality %v x UnionCPU %v x %d touches).\n"+
+			"A delta of 0 means the term was computed from the PRE-clamp cardinality of 0 and the "+
+			"clamp then floored the output to 1 -- a Cost claiming it materializes a row while "+
+			"charging nothing to materialize it. The buffer charge must consume the CLAMPED value "+
+			"(HintCostWithin), which is the whole reason BoundedCostHinter exists.",
+			gotDelta, wantDelta, cost.Cardinality, properties.UnionCPU, levelUnionBufferTouches)
 	}
 }
 

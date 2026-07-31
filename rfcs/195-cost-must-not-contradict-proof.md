@@ -1,7 +1,18 @@
 # RFC-195 — The cost model must not contradict what the property layer proves
 
 Status: **ACCEPTED**, revision 3 — joint review ACK'd; implemented.
-Closes: TODO CQ-29 (six violating estimates), CQ-30 (cost's private cardinality duplicate).
+Closes: TODO CQ-29. Partially addresses CQ-30 (derivation unified; criterion 2's
+data-access maxima still forked).
+
+The original header claimed to close CQ-30, which this document's own scope text
+contradicts: "the clamp makes the rung internally consistent; **the tiers above
+it are untouched**", and Decision §2 names exactly three cost walks, none of
+which is criterion 2. Java routes every data access through
+CardinalitiesProperty (`PlanningCostModel.java:336`), so the Go fork is real —
+but closing it changes a Java-ported TIER and would drop the metadata-enriched
+proofs Go's `PlanContext` variants supply, which needs its own design pass. The
+residual is booked on CQ-30 and held visible by a standing criterion-2 agreement
+test.
 
 Both delta reviews ACK'd revision 3, and their four conditions were folded into
 the text rather than left as review comments (the unconditional bounds-memo

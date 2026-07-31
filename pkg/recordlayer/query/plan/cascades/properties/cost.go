@@ -556,11 +556,11 @@ func localCost(e expressions.RelationalExpression, child []Cost, childBounds []C
 	bounds := provenCardinalities(e, childBounds)
 	// An operator whose CPU derives from its own OUTPUT cardinality must see the
 	// clamped value BEFORE computing that term, or the emitted Cost carries CPU
-	// computed from a cardinality it no longer reports.
-	if bounded, ok := e.(BoundedCostHinter); ok {
-		return ClampCost(bounded.HintCostWithin(child, bounds, stats), bounds)
-	}
-	return ClampCost(localCostUnclamped(e, child, stats), bounds)
+	// computed from a cardinality it no longer reports. CostWithinBounds is the
+	// shared dispatch that decides which of the two paths applies.
+	return CostWithinBounds(e, child, bounds, stats, func() Cost {
+		return localCostUnclamped(e, child, stats)
+	})
 }
 
 // localCostUnclamped is the raw per-operator formula table. Callers want

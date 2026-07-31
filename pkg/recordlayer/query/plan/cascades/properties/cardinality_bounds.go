@@ -124,6 +124,29 @@ type BoundedCostHinter interface {
 	HintCostWithin(childCosts []Cost, bounds Cardinalities, stats StatisticsProvider) Cost
 }
 
+// CostWithinBounds is the ONE dispatch every cost walk's combine step uses:
+// route through BoundedCostHinter when the operator has an output-derived CPU
+// term, otherwise run `unbounded` — and clamp either way.
+//
+// One helper rather than the same four-line type-assert repeated at each combine
+// site. Repeating it is how the sites drift: three of them would clamp and the
+// fourth would quietly not, which is the shape of the original defect (a rule
+// applied at some walks and not the one that elects plans) reproduced one level
+// down. ClampCost is idempotent, so applying it to an already-clamped bounded
+// result is a deliberate no-op rather than a special case.
+func CostWithinBounds(
+	e any,
+	child []Cost,
+	bounds Cardinalities,
+	stats StatisticsProvider,
+	unbounded func() Cost,
+) Cost {
+	if bounded, ok := e.(BoundedCostHinter); ok {
+		return ClampCost(bounded.HintCostWithin(child, bounds, stats), bounds)
+	}
+	return ClampCost(unbounded(), bounds)
+}
+
 // provenCardinalities derives the interval e proves for its own output from the
 // intervals proved for its children.
 //
@@ -255,9 +278,103 @@ func provenLogicalCardinalities(e expressions.RelationalExpression, child []Card
 	case *expressions.InsertExpression, *expressions.UpdateExpression, *expressions.DeleteExpression:
 		return only()
 
+	// Twin: RecordQueryValuesPlan — a literal row source is one deterministic row.
+	case *expressions.LogicalValuesExpression:
+		return ExactlyOne()
+
+	// Twin: RecordQueryLimitPlan. Delegating to the plan's own method keeps ONE
+	// body for the cap arithmetic (zero-vs-negative limit, min(child.min, limit))
+	// rather than a second transcription that has to be kept in step.
+	case *expressions.LogicalLimitExpression:
+		return limitBound(ex.GetLimit(), only())
+
+	// Twin: RecordQueryUnorderedPrimaryKeyDistinctPlan — dedup leaves the maximum
+	// alone, and a known non-empty input still yields at least one distinct row.
+	case *expressions.LogicalUniqueExpression:
+		c := only()
+		minCard := c.GetMinCardinality()
+		if !minCard.IsUnknown() && minCard.Value() > 0 {
+			minCard = OfCardinality(1)
+		}
+		return Cardinalities{Min: minCard, Max: c.GetMaxCardinality()}
+
+	// Twin: RecordQueryRecursiveLevelUnionPlan / RecordQueryRecursiveDfsJoinPlan
+	// — the recursion emits at least its seed leg, to an unknown depth.
+	//
+	// Java has exactly this arm (visitRecursiveUnionExpression) and exactly this
+	// answer, and having ONE logical arm for both physical realizations is the
+	// reason they must prove the same bound. Go's DFS plan proved nothing until
+	// this pairing was enumerated, which is how a zero-collapse survived on the
+	// physical alternative the cost model prefers.
+	case *expressions.RecursiveUnionExpression:
+		if len(child) == 0 {
+			return UnknownMaxCardinality()
+		}
+		return Cardinalities{Min: child[0].GetMinCardinality(), Max: UnknownCardinality()}
+
 	default:
 		return UnknownCardinalities()
 	}
+}
+
+// limitBound is the LIMIT cap arithmetic, shared by the logical arm above and
+// RecordQueryLimitPlan.ProvenCardinalities so the pair cannot drift.
+//
+// A zero limit produces exactly zero rows — not "no cap". A negative limit is no
+// cap at all (an OFFSET-only stream, and the sentinel a runtime-Value limit is
+// stored as, whose real cap is known only at execution).
+func limitBound(limit int64, child Cardinalities) Cardinalities {
+	if limit == 0 {
+		return Cardinalities{Min: OfCardinality(0), Max: OfCardinality(0)}
+	}
+	if limit < 0 {
+		return child
+	}
+	maxCard := child.GetMaxCardinality()
+	if !maxCard.IsUnknown() && maxCard.Value() <= limit {
+		return child
+	}
+	newMin := child.GetMinCardinality()
+	if !newMin.IsUnknown() && newMin.Value() > limit {
+		newMin = OfCardinality(limit)
+	}
+	return Cardinalities{Min: newMin, Max: OfCardinality(limit)}
+}
+
+// LimitBound exposes limitBound to the plans layer so RecordQueryLimitPlan's
+// method and the LogicalLimitExpression arm run the SAME arithmetic.
+func LimitBound(limit int64, child Cardinalities) Cardinalities { return limitBound(limit, child) }
+
+// LogicalCardinalityArms names every logical expression type
+// provenLogicalCardinalities has an arm for.
+//
+// Nothing else enumerates that switch, so the logical/physical pairing table had
+// no way to notice an arm nobody had paired — it could only fail on entries
+// someone had already thought to write down, which is the vacuous-pass shape
+// this RFC's own drift channel displaced one level up. The parity test walks
+// this list and requires an entry for each name.
+//
+// Adding an arm above without adding it here leaves the arm unpaired and
+// untested; adding it here without an arm makes the parity test fail on the
+// missing derivation. Either way the omission is loud.
+var LogicalCardinalityArms = []string{
+	"*expressions.FullUnorderedScanExpression",
+	"*expressions.LogicalFilterExpression",
+	"*expressions.LogicalProjectionExpression",
+	"*expressions.LogicalSortExpression",
+	"*expressions.LogicalDistinctExpression",
+	"*expressions.LogicalTypeFilterExpression",
+	"*expressions.LogicalUnionExpression",
+	"*expressions.LogicalIntersectionExpression",
+	"*expressions.SelectExpression",
+	"*expressions.GroupByExpression",
+	"*expressions.InsertExpression",
+	"*expressions.UpdateExpression",
+	"*expressions.DeleteExpression",
+	"*expressions.LogicalValuesExpression",
+	"*expressions.LogicalLimitExpression",
+	"*expressions.LogicalUniqueExpression",
+	"*expressions.RecursiveUnionExpression",
 }
 
 // ---------------------------------------------------------------------------

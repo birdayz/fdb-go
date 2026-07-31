@@ -289,25 +289,10 @@ func (p *RecordQueryLimitPlan) ProvenCardinalities(child []properties.Cardinalit
 	if p == nil {
 		return c
 	}
-	limit := p.GetLimit()
-	if limit == 0 {
-		return properties.Cardinalities{
-			Min: properties.OfCardinality(0),
-			Max: properties.OfCardinality(0),
-		}
-	}
-	if limit < 0 {
-		return c
-	}
-	maxCard := c.GetMaxCardinality()
-	if !maxCard.IsUnknown() && maxCard.Value() <= limit {
-		return c
-	}
-	newMin := c.GetMinCardinality()
-	if !newMin.IsUnknown() && newMin.Value() > limit {
-		newMin = properties.OfCardinality(limit)
-	}
-	return properties.Cardinalities{Min: newMin, Max: properties.OfCardinality(limit)}
+	// The cap arithmetic lives in properties.LimitBound, shared with the
+	// LogicalLimitExpression arm — the pair must prove the same interval, and a
+	// second transcription here is exactly how a pair drifts.
+	return properties.LimitBound(p.GetLimit(), c)
 }
 
 // --- IN operators -----------------------------------------------------------
@@ -408,9 +393,31 @@ func joinTimes(child []properties.Cardinalities) properties.Cardinalities {
 
 // --- recursive operators ----------------------------------------------------
 
-// ProvenCardinalities: a depth-first recursive traversal's depth is data.
-func (p *RecordQueryRecursiveDfsJoinPlan) ProvenCardinalities(_ []properties.Cardinalities) properties.Cardinalities {
-	return properties.UnknownMaxCardinality()
+// ProvenCardinalities: the traversal emits every ROOT row (plus whatever
+// descendants it finds), so the minimum is the root leg's; the depth is data,
+// so the maximum is unknown. Identical to the level union's bound, because the
+// two are physical realizations of ONE logical operator and cannot prove
+// different row counts for the same recursion.
+//
+// JAVA DIVERGENCE, deliberate and in the sound direction. Java's PLAN-level
+// visitRecordQueryRecursiveDfsJoinPlan returns unknownMaxCardinality (min 0),
+// while Java's own LOGICAL visitRecursiveUnionExpression proves
+// {initialState.min, unknown} for the same operator — so Java's two arms
+// disagree, and the plan arm is the loose one. Go follows the logical arm.
+//
+// Verified sound against Go's executor rather than assumed: recursive_cursor.go
+// pushes each root node with emitPending set, so every root row is emitted;
+// UNION DISTINCT deduplication can only collapse duplicates, and a set built
+// from at least one row still holds at least one row.
+//
+// Leaving it at Java's looser answer is not cosmetic. Measured on identical
+// children, a LIMIT-0 recursive leg gives FlatMap(scan, dfsJoin) Cardinality 0
+// against FlatMap(scan, levelUnion) 1e6 — so RFC-195's headline zero-collapse
+// survived on the DFS alternative, which is the one the cost model PREFERS (the
+// level union carries a strictly larger buffer term by construction). The
+// clamp cannot floor what the proof does not claim.
+func (p *RecordQueryRecursiveDfsJoinPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
+	return recursiveSeedBound(child)
 }
 
 // ProvenCardinalities: UNION ALL always emits at least the seed, so the minimum
@@ -426,6 +433,17 @@ func (p *RecordQueryRecursiveDfsJoinPlan) ProvenCardinalities(_ []properties.Car
 // multiplicatively through FlatMapCost and NestedLoopJoinCost, costing an
 // entire join subtree at zero.
 func (p *RecordQueryRecursiveLevelUnionPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
+	return recursiveSeedBound(child)
+}
+
+// recursiveSeedBound is the ONE bound both recursive physical operators prove:
+// at least the seed/root leg emits, and the recursion depth is unknown.
+//
+// Shared rather than duplicated because the two plans implement the SAME
+// logical recursion — Java has a single visitRecursiveUnionExpression for
+// exactly that reason. Two copies is how they came to disagree, with the DFS
+// side proving nothing and the level union proving a floor.
+func recursiveSeedBound(child []properties.Cardinalities) properties.Cardinalities {
 	if len(child) == 0 {
 		return properties.UnknownMaxCardinality()
 	}
@@ -449,6 +467,11 @@ func (p *RecordQueryRecursiveLevelUnionPlan) ProvenCardinalities(child []propert
 // computed, which is what keeps the emitted Cost internally consistent: no
 // component of it is a function of a cardinality the same Cost no longer
 // carries.
+// It is also the ONLY body: RecordQueryRecursiveLevelUnionPlan.HintCost
+// delegates here with an unknown interval (which makes the clamp a no-op), so
+// there is exactly one implementation of this formula rather than two that must
+// be kept in step. Two bodies is how a safety test comes to exercise the copy
+// nothing calls.
 func (p *RecordQueryRecursiveLevelUnionPlan) HintCostWithin(
 	child []properties.Cost,
 	bounds properties.Cardinalities,

@@ -7821,13 +7821,32 @@ branch 2.87/3.40/3.26/3.33/2.92s — the largest single move is
 threshold gap already booked above (the entry beginning "Stress test 1M
 baseline Threshold column"), which this branch neither improves nor worsens.
 
+Both runs used `--nocache_test_results`, so neither side could have been served
+from the Bazel test cache — a cost-model change alters the test binary's inputs
+and would produce a fresh cache key anyway, but stating it removes the question.
+
+**Re-measured after the implementation review** (the DFS-join bound moves that
+operator's cardinality off zero, so the comparison was re-run on the final
+head). Post-review branch 306.96s. Read against the 152.70s baseline above this
+looks like a 2x regression, and it is NOT: the box was carrying other agents'
+full suites, load average 35 → 65 across the two runs. Root-caused by the
+controlled experiment rather than waved off as contention — the BASELINE was
+re-run immediately afterwards under the same load and came in at **319.18s**,
+i.e. SLOWER than the branch. Matched-load per-subtest deltas are at-or-faster on
+the branch everywhere (`order_by_pk_full` 9.05→5.86, `scan_all_narrow`
+8.35→6.90, `full_scan_count` 6.74→6.26; nothing slower by more than 0.01s), and
+every row count is identical across the matched pair. Wall-clock on a shared box
+is only meaningful against a same-load baseline; the 152.70/153.82 pair above is
+the quiet-box measurement and this pair is the loaded-box one.
+
 Interpretation, stated because the null result is easy to misread: the clamp
 DOES fire on real SQL — `SELECT COUNT(*) FROM orders` is priced at 700000 rows
 before and 1 after, measured by
 `pkg/relational/core/embedded/cardinality_clamp_reachable_test.go` — but no
 plan CHOICE moves, on this corpus or in the stress suite. The corpus-wide
 `explaindiff` agrees: 2643/2643 entries identical, 0 shape flips, 0
-regressions. Costs change substantially; rankings do not, because in these
+regressions — re-run on the post-review head, DFS-join bound included, and
+still clean. Costs change substantially; rankings do not, because in these
 shapes the corrected operator has no competing alternative whose order flips.
 "Clean" here means low-risk, not inert, and the reachability test is what
 separates those two readings.
@@ -9869,10 +9888,22 @@ stale reference that resolves to the WRONG doc is worse than one that resolves
 to nothing.)
 
 - [x] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
-  DONE via RFC-195. Six shapes in the end (the random-combo generator found a
-  sixth, `typeFilter` over an exactly-one child). All six now clamp to the
-  proven boundary: ungrouped aggregation 700000→1, recursive-level-union 0→1,
-  defaultOnEmpty 0→1, both distincts 0.7→1, typeFilter 0.5→1. The six
+  DONE via RFC-195. SEVEN shapes in the end: the random-combo generator found a
+  sixth (`typeFilter` over an exactly-one child), and the implementation review
+  found a seventh — `RecordQueryRecursiveDfsJoinPlan` proved NOTHING, so the
+  identical zero-collapse fixed on the level union stayed live on the DFS join,
+  which is the alternative the cost model PREFERS (the level union carries a
+  strictly larger buffer term by construction). Measured on identical children:
+  `FlatMap(scan, dfsJoin)` costed 0 rows against `FlatMap(scan, levelUnion)` at
+  1e6. Both recursive plans now share ONE bound (`recursiveSeedBound`), matching
+  Java's single `visitRecursiveUnionExpression`; Java's own PLAN-level DFS arm
+  returns the looser `unknownMaxCardinality`, a divergence taken deliberately in
+  the sound direction and verified against Go's executor (`recursive_cursor.go`
+  emits every root row).
+
+  All seven now clamp to the proven boundary: ungrouped aggregation 700000→1,
+  recursive-level-union 0→1, recursive-DFS-join 0→1, defaultOnEmpty 0→1, both
+  distincts 0.7→1, typeFilter 0.5→1. The six
   `addExcluded` registrations are deleted and so is the exclusion MECHANISM —
   `cardinality_cost_bound_test.go` now holds the invariant over every shape with
   ZERO exclusions and no way to add one. Measured reachable from real SQL
@@ -9944,17 +9975,46 @@ to nothing.)
   stamped primary-key arity or index uniqueness, which the plan-local method
   cannot. Collapsing them naively LOSES those proofs and makes criterion 2
   abstain more often — a plan-movement change needing its own design ACK,
-  plan-diff and stress run. Needs a Graefe ruling on whether to (a) thread
-  metadata enrichment into the plan-side derivation or (b) accept the narrower
-  plan-local answer in criterion 2.
+  plan-diff and stress run.
 
-  While relocating the derivation, one FALSE PROOF in this area was found and
-  fixed: `pkFullyEqualityBound`'s zero-float widening guard sat AFTER its
+  **The ruling: the "sanctioned Go extension" framing is REJECTED.** Go's four
+  `PlanContext` variants are not a capability Java lacks; they are a WORKAROUND
+  for Go plans being under-stamped. Java's plans carry their match candidate, so
+  `cardinalities().evaluate(plan)` is fully plan-local and needs no context at
+  all. The eventual shape is therefore: stamp Go's plans with the metadata
+  equivalents Java's plans already carry (match-candidate equivalents — primary
+  key arity, index uniqueness and key columns), then DELETE
+  `scanProvableMaxCard`, `indexProvableMaxCard`, `scanPlanProvableMaxCard` and
+  `indexPlanProvableMaxCard` outright and route criterion 2 through the single
+  `ProvenCardinalities` derivation, faithful to `PlanningCostModel.java:336`.
+  Own RFC, own corpus plan-diff, own 1M stress run.
+
+  Until that lands the fork is held VISIBLE, not merely noted:
+  `TestRFC195_Criterion2AgreesWithTheProvenBound` requires criterion 2 and
+  `ProvenCardinalities` to reach the same verdict on every data-access shape in
+  the bound-test table, exceptions carrying explicit listed reasons. That gate
+  exists because this exact fork already hid a live disagreement for a long time
+  — see the false proof below.
+
+  While relocating the derivation, one FALSE PROOF in this area was found —
+  and, in the first pass, only HALF fixed. The correction is now complete, and
+  the distinction matters enough to record precisely:
+  `pkFullyEqualityBound`'s zero-float widening guard sat AFTER its
   stamped-primary-key early return, so a scan with a stamped PK and a terminal
   zero-valued FLOAT equality was proven at-most-one while the cost model
-  correctly declined to call it a point probe — the comment above the guard
-  claimed it covered both callers. Pinned by
-  `TestRFC195_StampedPKZeroFloatIsNotAtMostOne`.
+  correctly declined to call it a point probe. The comment above the guard
+  claimed it covered `scanProvableMaxCard` and `scanPlanProvableMaxCard`; it
+  covered neither, only the ctx fallback path.
+
+  The first pass routed the PROPERTY side through `isProvablePointProbe` (which
+  guards correctly) and left the guard where it was — so the property stopped
+  proving the false bound while BOTH cost walks kept proving it. That is the
+  same defect with a smaller blast radius, not a fix. The guard is now HOISTED
+  above the early return so it covers every path out of the helper, which is
+  what the comment always claimed. Pinned by
+  `TestRFC195_StampedPKZeroFloatIsNotAtMostOne` and by the SCAN half of
+  `TestPointProbeProofsAgreeOnWideningEquality` — that test built only INDEX
+  shapes before, which is exactly why the disagreement was invisible to it.
 
 - [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
   Seven separate hand-rolled proofs of a semantic property by leaf-name

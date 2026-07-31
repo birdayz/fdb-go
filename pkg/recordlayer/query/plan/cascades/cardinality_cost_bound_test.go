@@ -345,10 +345,24 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		return plans.NewRecordQueryStreamingAggregationPlan(scan("SAGG_UNGROUPED"), nil, nil)
 	})
 
-	// --- recursive DFS join (always unknown-max) ------------------------------
-	add("recursiveDfsJoin/alwaysUnknownMax_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
+	// --- recursive DFS join ---------------------------------------------------
+	add("recursiveDfsJoin/unknownMaxOverUnboundedRoot", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryRecursiveDfsJoinPlan(
 			scan("DFS_ROOT"), scan("DFS_CHILD"), values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+	})
+	// The DFS join is the level union's twin: same logical recursion, same
+	// proven bound (root.Min, unknown). It proved NOTHING until RFC-195's
+	// review, which is why the identical zero-collapse survived here after
+	// being fixed on the level union — and survived on the alternative the
+	// cost model PREFERS, since the level union carries a strictly larger
+	// buffer term by construction. Measured before the arm existed:
+	// FlatMap(scan, dfsJoin) costed 0 rows while FlatMap(scan, levelUnion)
+	// costed 1e6 over the SAME children.
+	add("recursiveDfsJoin/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
+		seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("DFS_SEED"), values.NewNullValue(values.UnknownType))
+		rec := plans.NewRecordQueryLimitPlan(scan("DFS_REC_ZERO"), 0, 0)
+		return plans.NewRecordQueryRecursiveDfsJoinPlan(
+			seed, rec, values.NamedCorrelationIdentifier("dfs_prior2"), plans.DfsPreorder)
 	})
 
 	// --- recursive level union: KNOWN VIOLATION when the recursive leg's cost
@@ -669,7 +683,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 // it race-free without needing one.
 func TestCardinalityPropertyBoundsCostEstimate_RandomCombos(t *testing.T) {
 	t.Parallel()
-	n := cardinalityComboCount(50)
+	n := cardinalityComboCount(2000)
 	seed := cardinalityComboSeed(20260726)
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 
