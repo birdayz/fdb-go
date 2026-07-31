@@ -26,12 +26,13 @@ import (
 // over an EMPTY existential table
 // (TestFDB_ProjectedExistsCorrelatedToNonFirstLeg pins the SQL).
 //
-// So the asymmetry this pins is the whole content: the INNER binds its datum,
-// the OUTER binds its row. It is asserted here rather than argued in a comment
-// because the corpus does NOT distinguish the two — unwrapping the outer as well
-// leaves the whole sqldriver suite green (measured), so nothing else would fail
-// if the restriction were dropped, and a restriction nothing checks is a
-// restriction that drifts.
+// The unwrap is UNIFORM across both sides, as Java's is: Java decides from the
+// VALUE's own static result type (QuantifiedObjectValue.java:82-95), and the
+// two FlatMap bindings are the identical call (RecordQueryFlatMapPlan.java:135,
+// :140), so there is no side for a rule to key on. What keeps a row-shaped leg
+// out of the unwrap is the SHAPE test, not a role: isBareScalarRow matches the
+// 1-slot `_0` carrier, and a genuine one-column leg carries the COLUMN's name.
+// That is the invariant the last subtest pins.
 func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 	t.Parallel()
 
@@ -85,25 +86,57 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 		})
 	}
 
-	// The OUTER keeps its ROW. A projection over the outer reads its columns, so
-	// unwrapping a one-column outer to its datum would hand a row-shaped
-	// reference a scalar. Nothing in the corpus separates this from the inner
-	// rule (measured), which is precisely why it is stated here.
-	t.Run("scalar outer keeps its row", func(t *testing.T) {
+	// A NAMED ONE-COLUMN LEG KEEPS ITS ROW — the invariant that makes the
+	// uniform unwrap safe, and the only thing standing between it and a
+	// projection over a one-column source being handed a scalar.
+	//
+	// The unwrap's test is the CARRIER's shape (`_0`), not arity: a leg
+	// projecting a single real column carries that column's NAME, so it is not
+	// bare and the unwrap cannot reach it. Both sides are asserted because
+	// neither side is exempt — the rule is uniform, so a regression on either is
+	// the same regression.
+	//
+	// This replaces an earlier subtest that fed a `_0`-shaped carrier in as the
+	// OUTER and asserted it kept its row. That shape cannot arise from a real
+	// outer, so the assertion pinned the role flag rather than any property of
+	// the data — and it went green either way once the flag was gone.
+	t.Run("a named one-column leg keeps its row", func(t *testing.T) {
 		t.Parallel()
-		legs, raw, err := b.legRows(outer.Name(), inner.Name(), emptyExistential, outerRow)
-		if err != nil {
-			t.Fatalf("legRows: %v", err)
-		}
-		if _, unwrapped := raw[outer]; unwrapped {
-			t.Fatalf("the OUTER's one-slot scalar row was unwrapped to its datum "+
-				"(raw = %#v). The two sides are bound differently on purpose, mirroring "+
-				"computeResultLegs — which unwraps its inner and calls "+
-				"qualifyOuterPositional on its outer — and the two paths disagreeing "+
-				"about exactly this is the defect this arm exists to close.", raw)
-		}
-		if _, bound := legs[outer]; !bound {
-			t.Fatalf("the OUTER bound no row at all; legs = %#v raw = %#v", legs, raw)
+		oneCol := &QueryResult{Positional: &PositionalRow{
+			Type: values.NewRecordType("", false, []values.Field{
+				{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+			}),
+			Slots: []any{int64(7)},
+		}}
+		for _, side := range []struct {
+			name         string
+			outer, inner *QueryResult
+			corr         values.CorrelationIdentifier
+		}{
+			{"as outer", oneCol, nonEmptyExistential, outer},
+			{"as inner", outerRow, oneCol, inner},
+		} {
+			t.Run(side.name, func(t *testing.T) {
+				t.Parallel()
+				legs, raw, err := b.legRows(outer.Name(), inner.Name(), side.outer, side.inner)
+				if err != nil {
+					t.Fatalf("legRows: %v", err)
+				}
+				if _, unwrapped := raw[side.corr]; unwrapped {
+					t.Fatalf("a NAMED one-column leg (%s) was unwrapped to its datum "+
+						"(raw = %#v).\n"+
+						"  The datum unwrap keys on the one-slot `_0` CARRIER Go wraps a\n"+
+						"  computed scalar in — Java's \"result type is not a record\" test.\n"+
+						"  A leg projecting one real column carries that column's NAME and is\n"+
+						"  a row; unwrapping it hands a scalar to every reference that reads\n"+
+						"  its columns. If the unwrap's test was widened to arity, this is the\n"+
+						"  regression.", side.name, raw)
+				}
+				if _, bound := legs[side.corr]; !bound {
+					t.Fatalf("the one-column leg (%s) bound no row at all; legs = %#v raw = %#v",
+						side.name, legs, raw)
+				}
+			})
 		}
 	})
 }

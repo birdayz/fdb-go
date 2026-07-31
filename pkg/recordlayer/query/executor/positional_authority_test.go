@@ -117,7 +117,7 @@ func TestOrdinalAliasCollision(t *testing.T) {
 		legs := map[values.CorrelationIdentifier]values.OrdinalRow{}
 		raw := map[values.CorrelationIdentifier]any{}
 		row := ordRow
-		if err := b.bindLeg(legs, raw, innerCorr.Name(), &row, legRoleInner); err != nil {
+		if err := b.bindLeg(legs, raw, innerCorr.Name(), &row); err != nil {
 			t.Fatalf("bindLeg: %v", err)
 		}
 		return legs[innerCorr]
