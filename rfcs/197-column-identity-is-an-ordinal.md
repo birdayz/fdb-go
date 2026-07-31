@@ -25,15 +25,26 @@ paths gets treated as two.
 Fixing the seven and stopping guarantees an eighth, so `pkg/docscheck`'s
 `TestFieldNameNeverDecides` now fails the build when `.Field` reaches a
 decision. That gate makes violations LOUD. It does not make them
-IMPOSSIBLE, and 68 sites are grandfathered on its ratchet. (38 when this
-revision was first drafted; two rounds of detector widening — same-package
-escapes, laundering via concatenation/slicing/nested helpers, then
-intra-function taint through local variables — surfaced 30 more, including
-the LAST TWO of the original seven bugs, which had been absent from the
-inventory the whole time. A count that grows when the instrument improves
-is the instrument working.)
+IMPOSSIBLE. What it does instead is hold a RATCHET: every surviving site is
+listed in `knownFieldDecisionDebt`, a new one fails the build, and a fixed one
+must be DELETED from the list rather than edited — so the list cannot rot into
+a standing exemption. The separate allowlist, for sites where the name genuinely
+IS the identity, is EMPTY, and its emptiness is itself pinned.
 
-This RFC is about closing those 68.
+`pkg/docscheck` is the live count; no number in this document is. It stood at
+38 when this revision was first drafted, then 68 after two rounds of detector
+widening (same-package escapes; laundering via concatenation/slicing/nested
+helpers; intra-function taint through local variables) — which surfaced the LAST
+TWO of the original seven bugs, absent from the inventory the whole time. It is
+46 as of this line. The count moves in BOTH directions and neither direction is
+by itself good news: it falls when a bucket migrates, and it RISES when the
+detector learns to follow a name somewhere it could not see before. The most
+recent rise was exactly that — call-argument taint following a name across a
+plain string parameter, which surfaced comparisons a refactor had HIDDEN behind
+a helper's signature rather than fixed, the leg-window lookup's two among them.
+A count that grows when the instrument improves is the instrument working.
+
+This RFC is about closing them.
 
 ## The rule, and where it comes from
 

@@ -434,12 +434,12 @@ var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
 	f.Calls[values.DottedLegSiteFlatColumnBake] = 10 // measured 106
 	// measured 4 — no order of magnitude to drop to
 	f.Calls[values.DottedLegSiteLegQOVBake] = 1
-	// singleForEachBake is deliberately UNFLOORED: measured 0, and UNREACHED
-	// rather than quiet — a panic at its match point is hit by nothing across
-	// ./pkg/relational/core/... nor the explaindiff and plandiff harnesses. A
-	// floor here would red on the corpus as it stands. Its hard zeros still run,
-	// vacuously, and that is the honest state: the site is watched, not proven
-	// exercised. If a query ever drives it, floor it then.
+	// There is no third floor to write. singleForEachBake was the UNFLOORED
+	// site here — measured 0 and unreached rather than quiet — and its ARM is
+	// now deleted, after the panic probe came back empty at the full reach
+	// (./pkg/relational/... and ./pkg/recordlayer/query/...). The census site
+	// retired with the arm, so the entry that used to explain a permanent zero
+	// is gone rather than left describing a reader nothing can drive.
 	return f
 }()
 

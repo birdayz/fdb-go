@@ -71,6 +71,7 @@ go_test(
         "in_union_empty_test.go",
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
+        "leg_column_dotted_containment_test.go",
         "leg_column_provenance_census_test.go",
         "leg_identity_binding_test.go",
         "leg_layout_cross_agreement_test.go",
@@ -202,6 +203,7 @@ go_test(
         "existential_datum_binding_test.go",
         "leg_column_provenance_census.go",
         "leg_column_provenance_census_test.go",
+        "leg_column_dotted_containment_test.go",
     ],
     deps = [
         "//gen",

@@ -418,32 +418,39 @@ type RecordTypeLeg struct {
 
 	// Name is the leg's binding as TEXT, conventionally UPPER.
 	//
-	// It is NOT the identity — Alias is. Name survives for exactly ONE family of
-	// consumer now, and stating it precisely is what makes its retirement a
-	// checkable condition rather than an aspiration:
+	// It is NOT the identity — Alias is. TWO readers still decide with it, and
+	// naming exactly those two is what makes this field's retirement a checkable
+	// condition rather than an aspiration. Both are DOTTED-TEXT readers: the
+	// qualifier reaches them as text — sliced out of a column-name string
+	// ("A.ID"), or carried as a parse-tree segment — so there is no correlation
+	// on the reader's side to key an identity lookup WITH. Neither converts by
+	// rewriting its comparison:
 	//
-	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
-	//     column-name string ("A.ID") and can therefore only be matched as a
-	//     string. There are FOUR, and at least one is LIVE, which is why this
-	//     field cannot go yet: executor.ordinal_join's dotted arm (the leg-column
-	//     provenance census measures it answering FOUR times over the real-FDB
-	//     corpus — `C.CV`, `I.QTY`, `O.ID` — every one over a leg that also states
-	//     an identity), and the translator's THREE dotted bakers (the dotted-leg
-	//     qualifier census: 110 match attempts, 101 matches, and the leg table's
-	//     two spellings agree on every one).
+	//   - executor.rowSlotForLegColumn's dotted arm (`EqualFold(leg.Name, qual)`
+	//     in executor/ordinal_join.go). The leg-column provenance census measures
+	//     it answering FOUR times over the real-FDB sqldriver corpus — `C.CV`,
+	//     `I.QTY`, `O.ID` — every one over a leg that also states an identity, so
+	//     the leg TABLE is ready. The READER is blocked at its PRODUCER, not at
+	//     the comparison: the qualifier is split out of a column name a producer
+	//     PACKED, and those producers are CQ-53's booked mints (the join rule's
+	//     `corr + "." + field` and the translator's merged-QOV twin). They delete
+	//     outright when the FlatMap inner binder gets Java's parent-chained
+	//     per-alias bindings, and this reader retires with them — producer-first.
+	//   - query.legWindowSlot, the translator's flat leg-window lookup (serving
+	//     both bakeFlatRefsAgainstColumns' re-split arm and the segment-carrying
+	//     caller). The dotted-leg qualifier census measured 106 calls over the
+	//     same corpus: 98 matched a leg whose stated Alias IS the qualifier, 8
+	//     matched nothing, and neither blocking class (MATCH-ALIAS-DIFFERS,
+	//     MATCH-NO-ALIAS) appeared. CQ-52 converted this reader's COUNTERPARTY —
+	//     a qualifier now arrives as a parse-tree segment instead of a slice of a
+	//     rendered name — and that fixes a different defect: it decides
+	//     QUALIFICATION correctly (a quoted `"A.B"` is one leaf, not a reference
+	//     to leg A), but a segment is still text. Its re-split arm survives the
+	//     conversion for carriers that state no segments at all — including one
+	//     class that structurally cannot; the open question about those is
+	//     stated at the arm itself.
 	//
-	//     Three, not two: bakeDottedRefsToLegQOV has a MULTI-ForEach arm and a
-	//     SINGLE-ForEach arm making the same decision on the same counterparty,
-	//     and only the first was counted, because the census was built around a
-	//     map read and the second compares one layout's key directly. Instrumented
-	//     now, and measured UNREACHED — 0 over the corpus, with a panic at its
-	//     match point hit by nothing across ./pkg/relational/core/... nor the
-	//     explaindiff and plandiff harnesses. So the count that matters for this
-	//     field's retirement is unchanged; what changed is that the third site's
-	//     MATCH-ALIAS-DIFFERS and MATCH-NO-ALIAS populations are now gated rather
-	//     than unmeasured.
-	//
-	// The SEED-WINDOW map's KEYS used to be the second family and are GONE. That
+	// The SEED-WINDOW map's KEYS were a third reader of this field and are GONE. That
 	// map is keyed by CorrelationIdentifier; finalizeSeedWindows files a
 	// sub-window under the buried leg's own identity and carries its Name as a
 	// LABEL for the merged leg table rather than as the address of anything. The
@@ -456,12 +463,30 @@ type RecordTypeLeg struct {
 	// seed_window_reader_census.go, which floors each one and hard-zeros the two
 	// declines that replaced the text lookups.
 	//
+	// Two further uses are not decisions and gate nothing. finalizeSeedWindows
+	// SKIPS a leg whose Name is empty — a test for the absence of a string, which
+	// selects no leg and resolves no reference — and CARRIES the Name into the
+	// merged leg table as that leg's display label. A label is what the dotted
+	// readers above match against; it is not itself a match.
+	//
 	// Every reader whose counterparty is a correlation goes through Alias — there
-	// are no exceptions left. The retirement condition is now single: when the
-	// dotted channel's counterparty carries the parser's qualifier/leaf segments
-	// instead of a joined string (CQ-52), those three readers go and this field
-	// goes with them. Until then, a new comparison against Name is a regression,
-	// full stop.
+	// are no exceptions left.
+	//
+	// CQ-52 HAS LANDED AND THIS FIELD SURVIVED IT. The contract this block used
+	// to state — "when the dotted channel's counterparty carries the parser's
+	// segments, those three readers go and this field goes with them" — was wrong
+	// in both halves. It counted FOUR consumers, but one was
+	// bakeDottedRefsToLegQOV's SINGLE-ForEach arm, since deleted as unreached,
+	// and another was that baker's MULTI-ForEach arm, which reads its own
+	// per-leg layout map and has never read this field. And segments alone were
+	// never sufficient: they decide whether a reference is qualified, not which
+	// quantifier the qualifier names.
+	//
+	// So the condition, restated against what is actually left: CQ-53's binder
+	// deletes the executor reader's producer; legWindowSlot converts when the
+	// resolver hands the baker the correlation it already held at mint time,
+	// rather than a segment; and this field goes when the last of the two does.
+	// Until then, a new comparison against Name is a regression, full stop.
 	//
 	// Consumers whose counterparty is a correlation must use Alias. A comparison
 	// against Name is a text match dressed as an identity check, and text

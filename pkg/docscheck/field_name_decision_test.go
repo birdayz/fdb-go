@@ -240,13 +240,18 @@ type fieldDebt struct {
 }
 
 var knownFieldDecisionDebt = map[string]fieldDebt{
-	// boundary (0) — MIGRATED (RFC-197 item 1). Both covered-column sites now
-	// resolve the index definition's column names against each record type's
-	// descriptor when the translate function is built, and match a
-	// domain-checked ordinal (values.FieldValue.OrdinalIn) at push time. The
-	// bucket is empty rather than deleted: the partition test counts buckets,
-	// and a bucket that reaches zero is the shape every other bucket is aiming
-	// for.
+	// boundary (1). It was 0 — MIGRATED (RFC-197 item 1): both covered-column
+	// sites now resolve the index definition's column names against each record
+	// type's descriptor when the translate function is built, and match a
+	// domain-checked ordinal (values.FieldValue.OrdinalIn) at push time.
+	//
+	// The bucket is NON-EMPTY again, and not because anything regressed. The
+	// call-boundary taint made a site visible that was always there: a name
+	// handed to a helper as a plain string parameter was invisible until the
+	// detector followed it across the call. Reporting the bucket as migrated
+	// while the walk could not reach one of its members is exactly the false
+	// green this pass was built to end, so the count rises and says why.
+	"pkg/recordlayer/query/plan/cascades/values/values.go:902": {1, "boundary: descendResolvedPath's nested-record step resolves a ResolvedAccessor's per-step name against a PROTO DESCRIPTOR (protoFieldByName, called with acc.Field at :856) -- three spellings tried, then a case-insensitive scan. Newly visible: the name crossed a plain string parameter. This is the documented survivor of the accessor name (values.go's own contract: the name lives on ONLY for nested descent into a proto.Message or nested record map), and it may well be correct -- but it is the boundary shape by definition, the descriptor layer stores names, and the fix if there is one is to resolve the nested path to field NUMBERS once at the boundary. Recorded rather than allowlisted: the allowlist's emptiness is itself a pinned claim, and opening it needs the nested-descent audit, not a judgement call here"},
 
 	// escape (0) -- MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
 	// and bareColumnName are gone: the join fast path asks a value for its
@@ -311,9 +316,9 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/values.go:1531":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
 	"pkg/relational/core/embedded/logical_predicate.go:6191":          {1, "contract: aggregate group-key output name, same contract family"},
-	"pkg/relational/core/query/cascades_translator.go:4741":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
+	"pkg/relational/core/query/cascades_translator.go:4760":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (7)
+	// dotted (9)
 	//
 	// cascades_translator.go:988 arrived here with the launderer widening, not
 	// from another bucket. It asks whether a group-by output name is QUALIFIED
@@ -322,6 +327,25 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// with the binder it sits inside, because the debt is the flat
 	// representation, not the lookup around it.
 	"pkg/relational/core/query/cascades_translator.go:993": {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4147"},
+	// The clustered-outer-scalar round trip is HALF gone. flattenClusterLegRefs
+	// is deleted: it took a FieldValue already carrying QOV(alias), joined the
+	// alias into `LEG.COL` text, and left it for the flat baker to slice apart —
+	// destroying an identity that was in hand so a later reader could guess it
+	// back. The reference now binds straight to its seed slot from the identity
+	// (bakeClusterLegRefs), and the SPLIT that read it (`strings.IndexByte` plus
+	// legByBinding[f[:i]]) is gone with it.
+	//
+	// What remains is the seed's output REPRESENTATION: its columns are literally
+	// named `LEG.COL`, so the two sites below still compare against that
+	// spelling. They no longer MANUFACTURE a qualifier — the comparison is
+	// against the name the seed builder itself constructs, so a column literally
+	// named `A.B` is one name here and cannot conjure a leg out of its own dot.
+	//
+	// One entry became TWO because the walk that was a slice is now an explicit
+	// scan. The arithmetic got worse and the code got right, and that is recorded
+	// rather than hidden by keeping the comparison fused onto one line.
+	"pkg/relational/core/query/clustered_outer_scalar.go:670": {1, "dotted: clusterFieldResolvable matches a flat projection name against the inner SCALAR key -- the constructed `INNER.SCALARCOL` spelling of the seed's last column. Retires with the dotted seed representation itself: when the seed's columns carry leg identity plus a bare name instead of a joined one, this becomes an identity lookup"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:683": {1, "dotted: clusterSeedSlotByName scans the seed's OWN constructed `LEG.COL` names for a flat projection name. It replaced a first-dot SLICE of the reference, which is the difference between reading the producer's spelling and inventing a qualifier -- but the spelling is still dotted text, so it retires with the seed representation, not before"},
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
@@ -374,12 +398,16 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:794":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
-	// name-keyed (3)
+	// name-keyed (5). Two of these are newly VISIBLE rather than new: the
+	// call-boundary taint reached them through a plain string parameter.
+	"pkg/recordlayer/query/plan/cascades/rule_implement_in_union.go:125": {1, "name-keyed: uniqueUpperFieldIndex scans a RecordType for the field whose name matches, called with fv.Field at :89. It already DECLINES on a duplicate name rather than first-matching, which is the mitigation for exactly the conflation this gate names -- but declining is not resolving: the reference still selects its slot by leaf name, and over a merged join RecordType the decline is a lost bake rather than a correct one. Newly visible through the call boundary"},
+	"pkg/relational/core/query/unnest_gather.go:456":                     {1, "name-keyed: slotInGatheredSeed's BARE arm keys elementSlots by leaf name, reached with a col parameter the caller derives from fv.Field. The element-first shadowing rule it implements is a NAME-precedence rule (an element alias shadows a later leg column), so the map key is the shadowing decision itself -- it closes when the gathered seed carries element identity rather than an element name. Newly visible through the call boundary"},
+
 	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":       {1, "name-keyed: referenced-field set keyed by leaf name. Java's member is a Set<FieldValue> (ReferencedFieldsConstraint.java:41), keyed by semanticEquals/semanticHashCode, so the port is unambiguous -- and it was BUILT and MEASURED, then reverted: keying by value makes the set grow where two quantifiers share a leaf name, and this constraint's every growth re-fires the push rules. 4-table chain tasksRun 10255 -> 12901, 3-spoke ordinal star 9481 -> 12644 (both budget baselines are +-2% pins), and the hub+5 star stops planning entirely -- ErrPlannerCapHit becomes a rule-cycle round-cap divergence at 87642 tasks. plan_shape.golden does not move. The conversion is correct and the coupling between constraint growth and re-exploration is what has to change first; that is planner machinery with its own review gate, not this bucket"},
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":   {1, "name-keyed: projection merge composes an outer LAZY read by unique output-name match against the inner projection's slot names. Probed: the arm is HEAVILY LIVE -- a panic at its match point reds dozens of FDB tests (derived tables, CTEs, RFC-128 limits, cross-table predicates), so it cannot be failed closed where it stands. The outer read has no ordinal to select a slot with, and the conversion is therefore upstream: the resolver must bake a projection-output reference to its output ordinal, the way it already bakes a source-column reference (expr.go:296-297). That is translator/resolver work, not a rewrite of this site"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354": {1, "name-keyed: EqualsWithoutChildren's LAZY-vs-LAZY arm. Probed: it returns TRUE constantly in production (a panic on the true branch reds the sqldriver FDB suite and the explaindiff corpus immediately), so it is load-bearing for memo dedup of lazy carriers. It is also the one site in this bucket with NO Java counterpart to port: Java's FieldValue is resolved at construction (FieldValue.java:273-299), a lazy name carrier is a shape it cannot express, and for such a carrier the pending name IS the whole identity. Failing it closed makes two lazy references to one column unequal, which un-interns memo members rather than fixing a conflation. This closes when lazy FieldValues stop being minted, not before"},
 
-	// translator (14)
+	// translator (15)
 	//
 	// Two entries left by DELETION, not by migration: cascades_translator.go's
 	// :6078 and :6086 (the BareRef / rendered-item name-match loops that resolved
@@ -412,19 +440,49 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
 	"pkg/relational/core/embedded/cascades_generator.go:3182": {1, "translator: parsed column ref matched against declared inner columns"},
-	"pkg/relational/core/query/cascades_translator.go:5769":   {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5763, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5796; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5796":   {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5982, reached through a local leaf"},
-	"pkg/relational/core/query/cascades_translator.go:5839":   {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5831, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5998":   {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5976, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 6028; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:6028":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
+	// CQ-52 converted the PROJECTION channel: LogicalProject now carries the
+	// parser's segment triple beside Projections, so a projected reference
+	// arrives at these bakers already segmented and nothing slices its name.
+	// Measured over the real-FDB sqldriver corpus, the dotted re-split fell from
+	// 110 calls to 3 — those three in the sort-key and aggregate-operand
+	// channels — and then to ZERO when the remaining parsed channels (ORDER BY
+	// keys, GROUP BY keys, aggregate operands) carried their segments too. These
+	// numbers are quoted OUT of here into RFC-197 and road-to-prod.md, which is
+	// exactly why the intermediate figure could not be left standing as the
+	// current one.
+	//
+	// The re-split arms survive that zero on purpose: they serve carriers that
+	// state NO segments, and one class of those — a projection machinery mints,
+	// named for body output columns with no parse tree behind them — never can.
+	// That class is STOPPED on an open behaviour question rather than converted
+	// by guesswork; the question is stated at the arm in cascades_translator.go.
+	//
+	// The FIVE entries this replaces (:5769/:5796/:5839/:5998/:6028) are NOT all
+	// retirements. Two of the three qualifier slices CONSOLIDATED into one
+	// (`segmentsOf` serves both arms of the leg baker, and takes the segments
+	// when they are present). The other three moved BEHIND A PLAIN STRING
+	// PARAMETER — bakeFlatRefsAgainstColumns' leg walk is now
+	// `legWindowSlot(qual, leaf, ...)`.
+	//
+	// That move made them INVISIBLE, and the invisibility was the point of
+	// closing the blind spot: the call-boundary taint now follows a name into a
+	// helper's parameter, so :6070 and :6102 below are those comparisons, back
+	// on the ratchet where they belong. A refactor can no longer walk this count
+	// down without changing a single decision.
+	"pkg/relational/core/query/cascades_translator.go:5742":   {1, "translator: LEAF segment of a parsed identifier escaping as a bare string, leg baker's segmentsOf fallback -- reached only when the carrier arrived with NO parse-tree segments (ref.Present false), so it is the un-migrated producers' path; guarded by `Child != nil || Resolved != nil → bail` at the caller, and every match downstream emits a born-baked ordinal. Retires when the remaining LogicalProject producers carry ProjectionRefs"},
+	"pkg/relational/core/query/cascades_translator.go:5744":   {1, "translator: QUALIFIER segment of the same fallback slice as 5742 -- one site now serves BOTH the single-ForEach and multi-ForEach arms, which previously sliced separately at :5769 and :5839. The leg-window comparisons it feeds are invisible to this gate (plain-string parameters into legWindowSlot / legBake)"},
+	"pkg/relational/core/query/cascades_translator.go:6034":   {1, "translator: bakeSegmentedColumnRef's exact first-match of the SEGMENTED carrier's rendered name against the output column list -- the name is still what selects the slot, so it is still debt, but it is no longer the name that decides QUALIFICATION: that comes from the parser's segment count. Same resolve-then-bake shape as 6130, on the converted path"},
 	"pkg/relational/core/embedded/cascades_generator.go:3202": {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3196": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6767":  {1, "translator: join-side name set during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:2060":   {1, "translator: unnest element alias resolution, flat arm; the sibling arm consults the ordinal"},
 	"pkg/relational/core/query/cascades_translator.go:2074":   {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},
-	"pkg/relational/core/query/cascades_translator.go:3855":   {1, "translator: element slot lookup during translation (laundered map key)"},
-	"pkg/relational/core/query/cascades_translator.go:5048":   {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at 5046, so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4731, NOT on values.go:1510: this site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends, each named by sortKeyFieldRef's strings.ToUpper(fv.Field) at 4741 -- a contract-bucket entry. Converting ProjectionColumnName leaves this one red"},
-	"pkg/relational/core/query/cascades_translator.go:5982":   {1, "translator: column list membership during resolution"},
+	"pkg/relational/core/query/cascades_translator.go:3874":   {1, "translator: element slot lookup during translation (laundered map key)"},
+	"pkg/relational/core/query/cascades_translator.go:5067":   {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at 5046, so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4731, NOT on values.go:1510: this site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends, each named by sortKeyFieldRef's strings.ToUpper(fv.Field) at 4741 -- a contract-bucket entry. Converting ProjectionColumnName leaves this one red"},
+	"pkg/relational/core/query/cascades_translator.go:6130":   {1, "translator: column list membership during resolution (bakeFlatRefsAgainstColumns' exact first-match; was :5982 before CQ-52 moved the leg walk into legWindowSlot)"},
+	"pkg/relational/core/query/cascades_translator.go:3748":   {1, "translator: ordinalSlotInLegWindow scans the selected leg's window for the field NAME, after selecting the leg by IDENTITY (values.SameLeg on the window's Alias, :3697). Newly visible through the call boundary. Half-migrated by construction and worth reading as such: the QUANTIFIER side is already identity-keyed, the COLUMN side is still a name -- which is the same split the leg census reports from the reader side, and it closes with the column domain, not with the leg table"},
+	"pkg/relational/core/query/cascades_translator.go:6070":   {1, "translator: QUALIFIER match inside legWindowSlot -- the leg the qualifier selects, matched against leg.Name TEXT. Reached through a plain string parameter, and tainted by the SPLITTING caller only: the converted projection path passes ref.Qualifier (parse-tree segments, not a display name) and does not taint it. So this entry is precisely the un-migrated channels' debt, and it retires when the last caller stops slicing a rendered name. The comparison itself converts separately, when the leg table is matched by identity rather than by Name"},
+	"pkg/relational/core/query/cascades_translator.go:6102":   {1, "translator: LEAF match inside legWindowSlot -- the column within the selected leg window, by name. Same parameter provenance as :6070, and the half that was never on the ratchet at all before the call-boundary taint: it was the LEAF of an identifier whose qualifier half was recorded, which is the split-across-buckets misfiling the dotted-bucket note describes"},
 
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go:241": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
@@ -793,7 +851,19 @@ func (t nameTaint) has(e ast.Expr) bool {
 // the name, and it is safe without type information for the same reason the
 // shallow sink tier is — `strings.ToUpper(x)` only type-checks if x is a string.
 func nameDerivedIdents(fn ast.Node) nameTaint {
+	return nameDerivedIdentsSeeded(fn, nil)
+}
+
+// nameDerivedIdentsSeeded is nameDerivedIdents with an initial taint set — the
+// PARAMETERS a caller fed the name into. Seeding rather than unioning
+// afterwards is what makes the transitive step work: a parameter tainted at the
+// call boundary must be able to taint the locals derived FROM it inside the
+// callee, and a set merged after the walk cannot.
+func nameDerivedIdentsSeeded(fn ast.Node, seed nameTaint) nameTaint {
 	t := nameTaint{}
+	for obj := range seed {
+		t[obj] = true
+	}
 	taint := func(lhs ast.Expr, rhs ast.Expr) {
 		id, ok := lhs.(*ast.Ident)
 		if !ok || id.Name == "_" || id.Obj == nil || !escapesFieldName(rhs, t) {
@@ -822,6 +892,150 @@ func nameDerivedIdents(fn ast.Node) nameTaint {
 		return true
 	})
 	return t
+}
+
+// callArgParamTaint propagates the name across a CALL BOUNDARY.
+//
+// A helper whose string parameter is fed a name-derived argument at ANY call
+// site holds the display name inside its own body, and a comparison it makes on
+// that parameter conflates column A with column B exactly as much as the caller
+// would have. Until this pass existed the gate went blind at the boundary, and
+// the blindness had a direction: EXTRACTING a helper converted a visible
+// `.Field` decision into an invisible plain-string one, so the ratchet's count
+// could be walked down by refactoring alone. That is how three sites left the
+// ledger while the decisions stayed exactly where they were — which is the
+// failure this pass exists to make impossible, not a hypothetical.
+//
+// The propagation predicate is escapesFieldName, the same one the RETURN check
+// uses, and for the same reason: passing an argument IS an escape into another
+// frame. It answers "does this expression yield a string that is still the
+// name, with at most a decoration on it" — which is precisely what has to be
+// true for the callee's parameter to be a display name.
+//
+// SCOPE, and the two over-approximations it accepts.
+//
+// Per FILE, not per package. The tree walk parses one file at a time with its
+// own FileSet, and *ast.Object identity — the key this taint is built on — does
+// not survive across those parses. A cross-file helper is therefore still
+// invisible; that hole is real and stated rather than papered over. It is the
+// smaller half: an extraction lands beside its caller far more often than in
+// another file, and both halves of the shape this pass was built for
+// (legWindowSlot, legBake) are same-file.
+//
+// A call site is matched by the callee's NAME, so two same-named methods on
+// different types in one file cross-taint. That over-approximates toward MORE
+// reported sites, which is the safe direction for a ratchet: a false report
+// costs an audit and an explicit entry, a false silence costs a defect. It is
+// deliberate and not a limitation to be quietly fixed by narrowing.
+//
+// Iterated to a FIXED POINT because a tainted parameter can itself be passed
+// on: `a(fv.Field)` → a's param → `b(param)` → b's param. Stopping at one hop
+// would be the same arbitrary depth limit the intra-function taint already
+// rejected.
+func callArgParamTaint(f *ast.File) map[*ast.FuncDecl]nameTaint {
+	plain := map[string]*ast.FuncDecl{}
+	methods := map[string]*ast.FuncDecl{}
+	var decls []*ast.FuncDecl
+	for _, d := range f.Decls {
+		fn, isFn := d.(*ast.FuncDecl)
+		if !isFn || fn.Name == nil || fn.Body == nil {
+			continue
+		}
+		decls = append(decls, fn)
+		if fn.Recv == nil {
+			if _, dup := plain[fn.Name.Name]; !dup {
+				plain[fn.Name.Name] = fn
+			}
+			continue
+		}
+		if _, dup := methods[fn.Name.Name]; !dup {
+			methods[fn.Name.Name] = fn
+		}
+	}
+
+	out := map[*ast.FuncDecl]nameTaint{}
+	for _, fn := range decls {
+		out[fn] = nameTaint{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range decls {
+			caller := nameDerivedIdentsSeeded(fn, out[fn])
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, isCall := n.(*ast.CallExpr)
+				if !isCall {
+					return true
+				}
+				var callee *ast.FuncDecl
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					callee = plain[fun.Name]
+				case *ast.SelectorExpr:
+					callee = methods[fun.Sel.Name]
+				}
+				if callee == nil || out[callee] == nil {
+					return true
+				}
+				params := flatParams(callee)
+				for i, arg := range call.Args {
+					p := paramAt(params, i, callee)
+					if p == nil || p.Obj == nil || p.Name == "_" {
+						continue
+					}
+					if !escapesFieldName(arg, caller) || out[callee][p.Obj] {
+						continue
+					}
+					out[callee][p.Obj] = true
+					changed = true
+				}
+				return true
+			})
+		}
+	}
+	return out
+}
+
+// flatParams flattens a signature's parameter list into positional order,
+// expanding grouped declarations (`a, b string` is two parameters, not one).
+func flatParams(fn *ast.FuncDecl) []*ast.Ident {
+	var out []*ast.Ident
+	if fn.Type == nil || fn.Type.Params == nil {
+		return out
+	}
+	for _, field := range fn.Type.Params.List {
+		if len(field.Names) == 0 {
+			out = append(out, nil) // unnamed parameter: positional, unusable
+			continue
+		}
+		out = append(out, field.Names...)
+	}
+	return out
+}
+
+// paramAt maps an argument position to its parameter, folding every trailing
+// argument of a VARIADIC signature onto the final parameter — `f(a, b, c)` on
+// `f(xs ...string)` puts all three into xs, so any one of them tainting it is
+// enough.
+func paramAt(params []*ast.Ident, i int, fn *ast.FuncDecl) *ast.Ident {
+	if len(params) == 0 {
+		return nil
+	}
+	if i < len(params) {
+		return params[i]
+	}
+	if last := lastParamField(fn); last != nil {
+		if _, variadic := last.Type.(*ast.Ellipsis); variadic {
+			return params[len(params)-1]
+		}
+	}
+	return nil
+}
+
+func lastParamField(fn *ast.FuncDecl) *ast.Field {
+	if fn.Type == nil || fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+		return nil
+	}
+	return fn.Type.Params.List[len(fn.Type.Params.List)-1]
 }
 
 // readsFieldName reports whether e delivers the leaf name through wrapping that
@@ -1134,6 +1348,12 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	// reached through one local hop is judged on what actually flows into it.
 	tainted := nameTaint{}
 
+	// PARAMETERS a call site in this file feeds the name into. Computed once for
+	// the whole file because the propagation is a fixed point over all of it —
+	// the callee is routinely declared after the caller, so a per-function pass
+	// in source order would see half the call graph.
+	paramTaint := callArgParamTaint(f)
+
 	// A sink decides on the name if the name PROVABLY reaches it (readsFieldName,
 	// safe without type information), or if it reaches it through arbitrary
 	// wrapping in a function that demonstrably handles a FieldValue.
@@ -1204,7 +1424,7 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 		switch x := n.(type) {
 		case *ast.FuncDecl:
 			handlesFieldValue = funcTouchesFieldValue(x, inValuesPkg)
-			tainted = nameDerivedIdents(x)
+			tainted = nameDerivedIdentsSeeded(x, paramTaint[x])
 		case *ast.BinaryExpr:
 			op := x.Op.String()
 			if op == "==" || op == "!=" || isOrderingOp(op) {
