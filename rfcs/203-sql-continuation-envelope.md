@@ -91,6 +91,13 @@ grounds with a **per-path** fence.
     eight, and G14 carries reachability as a tracked field so a rule that later
     starts constructing an inert node converts it into a live regression
     loudly.
+13. **The `Any` extension point is ADOPTED WITH CONDITIONS** as R1's closure
+    mechanism for the three Go-only holes (§3.3), with the counter-cost recorded
+    beside it: R1 is restated so an `Any`-encoded node is **not** cross-engine
+    representable, because otherwise adopting `Any` would launder leg 2 of the
+    cross-engine decline into a gate satisfied by construction. **C2-C5 of the
+    ruling were not relayed into this document and must be pasted in verbatim
+    before merge** — see §3.3.
 
 **Closes:** CQ-69.2's continuation half (`TODO.md:12558-12562`); unblocks CQ-69.4
 (`TODO.md:12570-12580`).
@@ -666,7 +673,7 @@ $ grep -n "^message PRecordQueryComparatorPlan\|^message PRecordQuerySelectorPla
 a filter plan cannot be a `PRecordQueryPlan` either.)
 
 **DECOMPOSED BY CAUSE — and this is the correction that matters, because an
-earlier draft framed all seven as a Go deficiency that "must not be
+earlier draft framed all eight as a Go deficiency that "must not be
 soft-pedalled".** Five of them are not Go's gap at all. `Comparator`, `Selector`,
 `TextIndex`, `LoadByKeys` and `Filter` are **Java's own unserializable plans**:
 each Java class overrides `toRecordQueryPlanProto` to throw —
@@ -720,23 +727,64 @@ the numbers G11(b)'s regression and R1's scope should be read against: five
 affected shapes, four actionable nodes. Not "eight unrepresentable", which counts
 four nodes no SQL query can reach.
 
-**A sanctioned extension point exists, and R1 should evaluate it before assuming
-a schema fork is required.** Arm 1 of the oneof is
+**The `Any` extension point — ADOPTED WITH CONDITIONS as R1's closure mechanism
+for the Go-only holes.** Arm 1 of the oneof is
 `google.protobuf.Any additional_plans = 1`, and the message carries
-`extensions 5000 to max` (`:1700-1702`). That is Java's own escape hatch for
-plans outside the closed set, so a Go-only node could in principle be transported
-inside an `Any` **without forking the schema** — Java would fail to decode the
-`Any`'s type URL, which is the fence behaving correctly rather than a divergence.
-This is recorded, not decided: it would materially shrink G11(b)'s regression,
-but it is a mechanism question and the mechanism is under review. **Reviewers
-should rule on it explicitly**; if the answer is yes, it becomes R1's closure
-path for the three Go-only holes and §4.1's rejection narrows to `InMemorySort`
-plus the five Java-parity nodes.
+`extensions 5000 to max` (`:1700-1702`) — Java's own escape hatch for plans
+outside the closed set. A Go-only node can therefore be transported inside an
+`Any` **without forking the schema**, and a peer that cannot decode the type URL
+fails loudly rather than mis-reading it. This is the ruled closure path for
+`Limit`, `VectorIndex` and `Distinct`; `InMemorySort` is **not** covered by it,
+because its problem is a lossy *key representation* inside an arm that already
+exists, not a missing arm.
+
+Conditions:
+
+- **C1 — Go-owned type URLs in a Go namespace.** The `Any` type URL must name a
+  Go-owned type in a Go namespace, never a `com.apple.foundationdb.record.*` URL.
+  A Go message masquerading under an Apple type URL is precisely the wire lie
+  §4.1 refuses elsewhere, and it would make the peer's failure a decode error
+  instead of an honest unknown-type rejection.
+- **C2-C5 — NOT YET RELAYED TO THIS DOCUMENT.** The ruling states five
+  conditions beyond the probe requirement; only C1 and C6 reached the RFC. **They
+  must be pasted in verbatim before this RFC merges** — an adoption recorded with
+  three of its six conditions missing is worse than no adoption, because the
+  missing ones are invisible to every later reader. Flagged rather than guessed:
+  inventing plausible conditions here would be indistinguishable, to a future
+  reader, from conditions the reviewer actually set.
+- **C6 — the fence gets a PROBE ARM before step 1 depends on it.** Same shape as
+  probe A: a continuation whose `compiled_statement.plan` carries an `Any` with a
+  Go-owned type URL, capturing exception class, message and SQLSTATE. **Expected**
+  (read, to be measured): `PlanSerialization.dispatchFromProto` (`:177-191`)
+  routes an `Any` through `registry.lookUpMessageClass(any.getTypeUrl())`, and
+  `DefaultPlanSerializationRegistry.lookUpMessageClass` (`:74-82`) throws
+  `RecordCoreException("unable to dispatch for type url " + typeUrl)` when the
+  URL is absent from `fromProtoTypeUrlClassMap`. **Measure it.** If the observed
+  behaviour differs, both C1 and the better-fence rationale move with it — §9.1
+  is the precedent for why: the Path-1 fence read as a clean typed gate and
+  measured as `XXXXX`.
+
+**The counter-cost, recorded beside the ruling because the ruling argued one
+side.** Adopting `Any` requires **restating R1** so that an `Any`-encoded node
+counts as **NOT cross-engine representable**. Without that restatement, R1 —
+"a bijection between Go's plan node set and `PRecordQueryPlan`'s oneof arms" —
+becomes trivially satisfiable: every Go-only node gets an `Any`, the bijection
+closes on paper, and R1 reports green while no peer engine can execute any of
+those plans. That would **launder leg 2 of the cross-engine decline** (§3.3) into
+a gate that passes by construction, and leg 2 is one of the three legs the
+decline rests on. So R1's condition is explicitly: *representable through a
+Java-decodable oneof arm* — `Any` closes the **resumability** gap (G11(b)'s
+regression) and closes **nothing** in R1.
 
 A further group — `InJoin`, `Intersection`, `Union`, `MergeSortUnion`,
-`Projection`, `NestedLoopJoin`, `Filter` — has no *same-named* arm but plausibly
-maps onto a differently-named Java arm (Go's `InJoinPlan` onto Java's three
-`In*JoinPlan` arms, `Projection` onto `Map`, `NestedLoopJoin` onto `FlatMap`).
+`Projection`, `NestedLoopJoin` — has no *same-named* arm but plausibly maps onto
+a differently-named Java arm (Go's `InJoinPlan` onto Java's three `In*JoinPlan`
+arms, `Projection` onto `Map`, `NestedLoopJoin` onto `FlatMap`). **`Filter` is
+NOT in this group**, though an earlier draft placed it there: the nearby
+`PRecordQueryPredicatesFilterPlan` arm does not cover it, because Java's own
+`RecordQueryFilterPlan.toRecordQueryPlanProto` throws (`:220-221`). A plan type
+whose Java counterpart refuses serialization has no arm to be mapped onto — it
+belongs with the unrepresentable set above, which is where the table places it.
 **That mapping is a step-1 deliverable and a gate (G14), not an assumption** — a
 name-level survey is evidence that the set is larger than one, not evidence of
 its exact size.
@@ -776,11 +824,16 @@ Cross-engine plan resume is reconsidered when **all three** hold, each
 demonstrated by a committed test:
 
 - **R1 (vocabulary).** A bijection between Go's physical plan node set and
-  `PRecordQueryPlan`'s oneof arms for every plan the corpus produces, measured by
-  an enumeration test reporting zero unrepresentable nodes. Falsified today by
-  `RecordQueryInMemorySortPlan` alone. Closing it means either an upstream
-  Value-keyed sort message or Go ordering coverage that removes the operator from
-  corpus plans.
+  `PRecordQueryPlan`'s **Java-decodable oneof arms** for every plan the corpus
+  produces, measured by an enumeration test reporting zero unrepresentable nodes.
+  **An `Any`-encoded node does NOT count as representable for R1** (§3.3): the
+  `Any` escape hatch closes the *resumability* gap while leaving the peer unable
+  to decode the plan, so counting it here would let R1 close on paper while no
+  Java engine can execute a single one of those plans — laundering leg 2 of the
+  decline into a gate satisfied by construction. Falsified today by the reachable
+  unrepresentable nodes of §3.3. Closing it means an upstream arm for each (for
+  `InMemorySort`, a Value-keyed sort message), or Go ordering/planning coverage
+  that removes the operator from corpus plans.
 - **R3 (execution state).** Every `execution_state` payload Go can emit is
   byte-identical to Java's for the same cursor position, retiring all three
   Go-private shapes (§9.4). Two of the three are **checkable** work against a
@@ -1226,9 +1279,23 @@ sufficient.
 and back; the loud `RecordQueryInMemorySortPlan` rejection; a `GO_V0` plan hash
 over the serialized form. Updates `plan_hash.go:14-18`'s comment, which today
 says nothing wire-facing embeds the hash — that stops being true here and the
-comment must move with the fact. Deliverables: G11, **G14 (the unrepresentable
-census — this must land before step 4 depends on the resumable surface)**, and
-the per-plan-class round-trip golden.
+comment must move with the fact.
+
+Deliverables: G11; **G14 — which must land GENUINELY FIRST within this step, not
+merely inside it, because G3's scope is *defined by* G14's census.** A G3 written
+before the census exists would have to guess its own query set, which is how G3
+acquired the shape list that contradicted G11 in the first place. Also the C6
+`Any`-fence probe arm (§3.3) **before** step 1 depends on the ruling, and the
+per-plan-class round-trip golden.
+
+**Also a step-1 deliverable: prove the cross-JVM arm is actually cross-JVM.**
+§9.3's second launch is asserted only by the hashes agreeing, which would remain
+green if the isolated invoker were ever pooled or silently reused — the arm would
+degrade to a within-JVM comparison and nothing would say so. The probe must emit
+`ProcessHandle.current().pid()` as a field and assert `pid1 != pid2`. Until that
+lands, the pid-salt mutation that justifies the arm (§9) is **prose**: it
+demonstrates the arm *can* catch a cross-process defect, but nothing pins that
+the arm is still measuring two processes.
 
 **Step 2 — the `AstNormalizer` port.** **Still built, on its own step**, though
 §4.3 no longer needs it to recover query text. Two independent justifications:
@@ -1505,7 +1572,11 @@ reports progress, and every node it moves out of the unrepresentable set moves a
 query from G11(b) into G3.
 
 **G14 — the unrepresentable set is MEASURED before anything depends on it, and
-reported as TWO numbers.** An enumeration test walks every plan the corpus
+reported as TWO numbers.** *(Out of numeric order deliberately: it sits beside
+G11 because it is the census G11's rejection is defined against, and moving it
+away from G11 to satisfy numbering would separate the two things a reader needs
+together. Left as G14 rather than renamed G11c so existing references stay
+valid.)* An enumeration test walks every plan the corpus
 produces and reports, per Go plan type, whether it has a `PRecordQueryPlan`
 encoding: representable, representable only via a differently-named Java arm
 (with the mapping named), or unrepresentable.
@@ -1641,9 +1712,14 @@ Instrument: `@ConformanceStep("continuationProbe")` in
 ```
 bazelisk test //conformance:conformance_test --test_output=streamed \
   --test_arg="--ginkgo.focus=ContinuationProbe" --test_arg="--ginkgo.v"
-Ran 1 of 1362 Specs in 6.877 seconds
+Ran 1 of 1362 Specs in 8.924 seconds
 SUCCESS! -- 1 Passed | 0 Failed | 0 Pending | 1361 Skipped
+--- PASS: TestConformance (9.02s)
 ```
+
+The spec spawns **two** JVMs (§9.3), which is where the runtime goes; the earlier
+`6.877s` transcript predates the cross-JVM arm and is stale, not a regression.
+The full pre-commit suite is green at this head (`70 tests pass`).
 
 Mutation directions, each RED separately and each measured: revert the step
 (`No conformance step found with name: continuationProbe`); `GO_V0`→`VC0`; false
@@ -1764,13 +1840,21 @@ attached.
 ### 9.3 `binding_hash` stability for a bytes-literal query — CONFIRMED unstable
 
 ```
-probeC_bytes_hash1: 1045894765
-probeC_bytes_hash2: 1264480623
-probeC_bytes_equal: false
+probeC_bytes_hash1: 1426995473     <- ILLUSTRATIVE: differs every run
+probeC_bytes_hash2: -2067991506    <- ILLUSTRATIVE: differs every run
+probeC_bytes_equal: false          <- the assertion
 probeC_int_hash1:   677421547
 probeC_int_hash2:   677421547
-probeC_int_equal:   true
+probeC_int_equal:   true           <- the assertion
 ```
+
+**The two bytes values are display only and change on every run** — that is the
+finding, not a transcription to be kept current. Three consecutive runs while
+preparing this section produced `1098926995/-429908348`, `138492709/-1063249143`
+and `1426995473/-2067991506`. What the gate asserts is `bytes_equal == false`
+and `int_equal == true` **and** `int != 0`; no bytes constant is or could be
+pinned. The integer value is stable and is quoted below as a fact, but is
+likewise not asserted here — see the ruling at the end of this section.
 
 Two executions of the identical query text `SELECT * FROM T WHERE B = x'0a0b'`,
 **same connection, same JVM**, produce different binding hashes. The integer

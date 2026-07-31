@@ -191,6 +191,15 @@ var _ = Describe("ContinuationProbe", func() {
 		Expect(probeString(pretty, "probeB_hashPerturbed_message")).To(
 			ContainSubstring("cannot continue query due to mismatch between serialized and actual plan hash"),
 			"PlanGenerator's plan-hash rejection message moved")
+		// The cause chain, not just the SQLSTATE. 24F00 is raised from several
+		// sites (mode, constraint, binding hash, plan hash); asserting only the
+		// code would stay green if Java kept the code but rerouted the rejection
+		// off PlanValidationException — i.e. if this stopped being the
+		// PlanGenerator:340-341 gate the RFC cites and became some other check
+		// that happens to share the code.
+		Expect(probeString(pretty, "probeB_hashPerturbed_causeChain")).To(
+			ContainSubstring("PlanValidator$PlanValidationException"),
+			"the plan-hash mismatch no longer arrives via PlanValidationException — same SQLSTATE, different gate")
 
 		// --- Probe C: binding-hash stability. ---
 		GinkgoWriter.Printf("[C] bytes: %v vs %v (equal=%v) | int: %v vs %v (equal=%v)\n",
