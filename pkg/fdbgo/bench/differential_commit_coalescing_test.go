@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
@@ -40,6 +41,14 @@ func mustReadCgo(t *testing.T, k cgofdb.Key) []byte {
 	return b
 }
 
+// coalRun makes this file's prefixes unique per test-function INVOCATION, not just per process.
+// The repeated_add case folds N Adds onto one key and asserts the committed value is exactly
+// le8b(n); a process-scoped prefix makes that assertion false on the second run, because the key
+// survives and the Adds accumulate on top of it. Both clients drift together, so it never
+// diverges — it just makes the whole package unrunnable under -test.count>1, which is exactly the
+// instrument needed to soak the conflict differentials in one process.
+var coalRun atomic.Int64
+
 // TestDifferential_CommitCoalescing_2101 pins RFC-172 / #28: a transaction that hammers ONE key N times
 // ships ONE folded mutation (+ one write-conflict range) — the coalesced RYW write map libfdb_c commits —
 // so under a SIZE_LIMIT the UNFOLDED op-log would exceed, the pure-Go client and libfdb_c must BOTH commit
@@ -48,7 +57,7 @@ func mustReadCgo(t *testing.T, k cgofdb.Key) []byte {
 // a cross-client app break (the same transaction works in C/Java on the shared cluster, fails in Go).
 func TestDifferential_CommitCoalescing_2101(t *testing.T) {
 	t.Parallel()
-	pfx := fmt.Sprintf("coal2101_%d_", os.Getpid())
+	pfx := fmt.Sprintf("coal2101_%d_%d_", os.Getpid(), coalRun.Add(1))
 	const n = 2000
 	const sizeLimit = 2000 // fits ONE folded mutation+conflict (~120B); the unfolded N-op log is ~240KB.
 
@@ -131,7 +140,7 @@ func TestDifferential_CommitCoalescing_2101(t *testing.T) {
 // committed values — the value-correctness companion to the 2101 size proof above.
 func TestDifferential_CommitCoalescing_ChainState(t *testing.T) {
 	t.Parallel()
-	pfx := fmt.Sprintf("coalstate_%d_", os.Getpid())
+	pfx := fmt.Sprintf("coalstate_%d_%d_", os.Getpid(), coalRun.Add(1))
 
 	cases := []struct {
 		name string

@@ -249,26 +249,44 @@ func cgoWriteConflict(t *testing.T, pfx string, keyVariant bool, probe string) c
 func runConflictDifferential(t *testing.T, name string, goFn, cgoFn func(*testing.T, string, bool, string) conflictOutcome, keyVariant bool, probe string, wantConflict bool) {
 	t.Helper()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
-	const maxAttempts = 12
-	for attempt := 0; ; attempt++ {
-		if attempt >= maxAttempts {
-			t.Fatalf("%s: did not clear transient errors in %d attempts", name, maxAttempts)
-		}
-		goPfx := fmt.Sprintf("crconf_%d_%s_%d_go_", os.Getpid(), ns, attempt)
-		cPfx := fmt.Sprintf("crconf_%d_%s_%d_c_", os.Getpid(), ns, attempt)
+	// One monotonic attempt counter feeds both the main attempts and any confirmation replays, so
+	// no two scenario runs ever share a prefix — every run gets its own setup commit and therefore
+	// its own pinned read version.
+	attempt := 0
+	const attemptBudget = 24
+	run := func() (conflictOutcome, conflictOutcome, bool) {
+		a := attempt
+		attempt++
+		goPfx := fmt.Sprintf("crconf_%d_%s_%d_go_", os.Getpid(), ns, a)
+		cPfx := fmt.Sprintf("crconf_%d_%s_%d_c_", os.Getpid(), ns, a)
 		goOut := goFn(t, goPfx, keyVariant, probe)
 		cOut := cgoFn(t, cPfx, keyVariant, probe)
-		if goOut.retry || cOut.retry {
-			continue
+		return goOut, cOut, !goOut.retry && !cOut.retry
+	}
+	for attempt < attemptBudget {
+		goOut, cOut, ok := run()
+		if !ok {
+			continue // transient (1007 etc.) on either side — fresh prefixes + versions
 		}
+		noteConflictVerdict()
 		if goOut.conflicted != cOut.conflicted {
-			t.Fatalf("%s: conflict DIVERGES: go=%v cgo=%v (keyVariant=%v probe=%q)", name, goOut.conflicted, cOut.conflicted, keyVariant, probe)
+			// Disagreement is not yet a verdict — replay at a fresh read version. See
+			// conflict_divergence_gate_test.go for why and for the measurements behind it.
+			first := fmt.Sprintf("go=%v cgo=%v", goOut.conflicted, cOut.conflicted)
+			reproduced, confirm := confirmConflictDivergence(run)
+			if reproduced {
+				t.Fatalf("%s: conflict DIVERGES and REPRODUCES at a fresh read version — first %s, confirm %s "+
+					"(keyVariant=%v probe=%q)", name, first, confirm, keyVariant, probe)
+			}
+			noteEnvironmentalDivergence(t, name, first, confirm)
+			continue
 		}
 		if goOut.conflicted != wantConflict {
 			t.Fatalf("%s: both conflicted=%v but expected %v (keyVariant=%v probe=%q)", name, goOut.conflicted, wantConflict, keyVariant, probe)
 		}
 		return
 	}
+	t.Fatalf("%s: did not reach a conclusive verdict in %d attempts", name, attemptBudget)
 }
 
 func TestDifferential_ReadConflictRange(t *testing.T) {

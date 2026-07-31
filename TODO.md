@@ -150,6 +150,60 @@ when the equivalence is over an ordered sequence rather than a multiset.
 durable reproducers rather than deleted: each one is the exact shape that broke, and the
 `ordered: true` flags are what make them able to express the defect at all.
 
+## FDB client — conflicting-keys readback (debugging surface + skew instrument)
+
+### [ ] Implement `report_conflicting_keys` + `\xff\xff/transaction/conflicting_keys/` in the pure-Go client
+
+`fdb.TransactionOptions.SetReportConflictingKeys` currently returns `UnsupportedOptionError`
+(`pkg/fdbgo/fdb/options.go`), and Go has no special-key module for the readback
+(`pkg/fdbgo/fdb/API_PARITY.md` lists `\xff\xff/transaction/conflicting_keys` as absent). C++ is
+the spec for both halves: the option sets `CommitTransactionRequest.transaction.report_conflicting_keys`,
+which the commit proxy reads (`CommitProxyServer.actor.cpp`), and the proxy answers a conflicting
+commit with `CommitID{version: invalidVersion, conflictingKRIndices}` — the in-band shape Go's
+`parseCommitReply` already recognises and maps to `not_committed`
+(`pkg/fdbgo/client/commitpath.go`, the `reply.Version == InvalidVersion` arm). The indices name
+which of the transaction's OWN read-conflict ranges the resolver rejected; the special-key module
+renders them as boundary keys valued `"1"` (a rejected range's begin) / `"0"` (its end).
+
+This is two things at once, which is why it is booked as one item:
+
+1. **The missing debugging surface.** When a Go transaction takes `not_committed`, there is
+   currently no way to ask *which* range conflicted. Every other client can.
+2. **The instrument for the go-vs-cgo spurious-conflict skew below.** The investigation that
+   booked this item had to route every conflict attribution through the CGO client because the
+   Go client cannot answer the question about itself.
+
+**The skew, with its measured facts.** The version-pinned conflict differentials in
+`pkg/fdbgo/bench` take spurious `not_committed(1020)` that no client caused. It hits BOTH clients
+— libfdb_c included — but not evenly: **12 go-side vs 5 cgo-side** over 204 full-package runs
+(`TestDifferential_GetKeyConflict`), and 25:5 on the explicit conflict-range differential in a
+second run. What is already excluded, by measurement:
+
+- The Go client's shipped read-conflict ranges for a failing transaction are exactly the intended
+  narrow ranges plus its own `\xff/SC/<uid>` self-conflict range (observed off the commit path).
+- `GetCommittedVersion()` does not under-report: a unique-nonce seed written by the setup
+  transaction is visible at the pinned version on both clients in every failing case.
+- The conflict is on the transaction's USER range, not the self-conflict range — libfdb_c's
+  conflicting-keys readback names it, and a canary whose only read-conflict range is its own
+  `\xff/SC/<uid>` took 0 hits in ~134k commits (`TestDifferential_SelfConflictRangeCanary`).
+- Window width does not explain the skew: the Go client's vSetup→commit window is 1.30x wider at
+  idle but 0.78x — i.e. *narrower* — under full-suite load, while the skew persists.
+- No committed Go write-conflict range overlaps the failing read set above its read snapshot
+  (ledger of the last 8192 Go commits). Bisecting the read version puts the covering write
+  several thousand versions ABOVE the setup, at a commit version SHARED by conflicts in unrelated
+  prefixes.
+
+**Leading hypothesis**, to be confirmed or killed with the readback once it exists: the resolver
+records the write-conflict ranges of transactions it later REJECTS, so a rejected transaction
+causes false conflicts for later ones. That fits every fact above — in particular the shared
+culprit version across unrelated prefixes, and the commit ledger's blindness to it, since the
+ledger only observes commits that SUCCEEDED. Confirming it needs the readback on the Go side so
+the rejected transaction and the false conflict can be attributed in the same client.
+
+Until then the differentials are gated on reproducibility rather than on a single disagreement
+(`pkg/fdbgo/bench/conflict_divergence_gate_test.go`), with the non-reproducing class counted
+against a ceiling rather than swallowed.
+
 ## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
 
 Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at
