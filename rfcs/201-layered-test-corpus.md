@@ -90,11 +90,23 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
    plan strings are not version-stable — Go is, in effect, another server
    version. Go-side plan-shape regression is owned by `explaindiff` (2,485
    queries baselined) and by `plan_contains` assertions in Go-authored scenarios.
-3. **The polarity manifest lives in the Go tree.** 33 corpus files under
-   `shouldFail/` trees are negative meta-tests whose pass/fail polarity is
-   encoded in Java *test classes*, not in the data; 10 files are include-only
-   fragments never run standalone. A Go-side manifest records polarity, fragment
-   status, and per-file skip reasons, so re-vendoring stays a clean copy.
+3. **The polarity manifest lives in the Go tree.** Corpus files whose pass/fail
+   polarity is encoded in Java *test classes* rather than in the data get a
+   Go-side manifest recording polarity, fragment status, and per-file skip
+   reasons, so re-vendoring stays a clean copy.
+
+   *Measured (Phase 0 parser, Phase 1 execution; supersedes this ruling's
+   original "33 negatives / 10 fragments", which was a coarse pre-implementation
+   count):* **25 parse-level negatives, 20 execution-level negatives, 9
+   fixed-version meta-tests, 2 include-only fragments.** The parse/execution
+   split only became drawable once a parser existed. The 9 fixed-version
+   meta-tests are the subtler correction: their polarity is defined solely
+   against a version the Java test class pins (`SupportedVersionTest` and
+   `InitialVersionTest` both pin 3.0.18.0), and no current-version stream runs
+   them — so a single-current-version runner, which is what Go is, cannot
+   evaluate them in either direction. `InitialVersionTest`'s own
+   `shouldPassOnCurrent` / `shouldFailOnCurrent` streams are the authority for
+   which files flip.
 4. **Strict parsing.** Unknown block, directive, or tag is a parse error, and
    `TestCorpusParses` walks every vendored file asserting the full directive
    surface is understood, emitting a census (files, blocks, queries, configs,
@@ -109,9 +121,19 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
   the `schema_template` lifecycle (already structurally identical to the Go
   harness's runner), `connect:` URI registry, `test_block` presets/modes/
   repetition/seed, `result`/`unorderedResult`/`count`/`error`, all result-side
-  tags, version gates collapsed to the single Go version, `include:`. Target:
-  ~95 files green (the meta-test directories are self-validating — they test the
-  runner, not the engine — plus doc-queries and the plain root files).
+  tags, version gates collapsed to the single Go version, `include:`.
+
+  *This phase's original target of "~95 files green" is SUPERSEDED by
+  measurement: **33 pass, 0 fail, 205 counted skips, 518 asserted queries.***
+  The target was not missed so much as never grounded — it was formed before
+  anyone had executed the corpus. Running it showed 42 files blocked by a single
+  unmeasured DDL gap (a value index written as `CREATE INDEX … AS SELECT`,
+  which turns out to be a bigger blocker than struct types at 39), and 54 files
+  that are meta-tests of the runner rather than tests of the engine. The
+  reachable ceiling for Phase 1 as scoped is ~87 files. The lesson generalises
+  to the later phases' `+35` / `+16` / `41` / `44` figures: those are file
+  counts derived from directive census, not from execution, and each should be
+  re-stated as a measurement when its phase lands.
 - **Phase 2 — `resultMetadata:` (+35 files) and per-page continuations /
   `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no planner risk. The
   continuation work is also the prerequisite for the ForceContinuations oracle

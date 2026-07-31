@@ -26,6 +26,14 @@ const (
 	// Fragment: the file is never run on its own, only pulled in by an
 	// `include:`. It is not self-sufficient and asserts nothing standalone.
 	Fragment
+	// FixedVersionMeta: the file's polarity is defined ONLY against a version
+	// the Java test class pins, and it is not run by any current-version
+	// stream. A single-current-version runner cannot evaluate it in either
+	// direction — the gate it exercises resolves the other way, so both "it
+	// passed" and "it failed" are meaningless.
+	//
+	// These are meta-tests of the version machinery itself, not of the engine.
+	FixedVersionMeta
 )
 
 func (p Polarity) String() string {
@@ -38,6 +46,8 @@ func (p Polarity) String() string {
 		return "negative(execution)"
 	case Fragment:
 		return "fragment"
+	case FixedVersionMeta:
+		return "fixed-version-meta"
 	default:
 		return "unknown"
 	}
@@ -268,14 +278,40 @@ var supportedVersionEntries = []ManifestEntry{
 	{"supported-version/unspecified.yamsql", NegativeExecution, "no gate at all, so the broken query runs", "SupportedVersionTest"},
 	{"supported-version/lower-at-block.yamsql", NegativeExecution, "the gate is below the version under test", "SupportedVersionTest"},
 	{"supported-version/lower-at-query.yamsql", NegativeExecution, "the gate is below the version under test", "SupportedVersionTest"},
+
+	// SupportedVersionTest's shouldPass stream, and it passes ONLY because the
+	// class pins the version under test to 3.0.18.0 — every one of these files
+	// declares a gate ABOVE that, so the deliberately broken query is skipped.
+	//
+	// No current-version stream runs them. Under `SemanticVersion.current()`,
+	// which sorts above every literal, all these gates ADMIT instead, the
+	// broken query executes, and the file fails. That makes them neither
+	// positive nor negative for a single-current-version runner: they test the
+	// version gate against a version such a runner does not have.
+	{"supported-version/unsupported-at-file.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/unsupported-at-block.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/unsupported-at-query.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/current-version-at-file.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/current-version-at-block.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/current-version-at-query.yamsql", FixedVersionMeta, "!current_version gate excludes 3.0.18.0 but admits current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/higher-at-block.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
+	{"supported-version/higher-at-query.yamsql", FixedVersionMeta, "gate above the pinned 3.0.18.0; admits under current", "SupportedVersionTest.shouldPass"},
 }
 
-// InitialVersionTest.java: shouldFail at :88-117 against a pinned 3.0.18.0.
+// InitialVersionTest.java. The class carries FOUR streams, and which pair
+// applies is the whole of how these files are read: shouldFail/shouldPass run
+// against a pinned 3.0.18.0, while shouldFailOnCurrent/shouldPassOnCurrent
+// (:135-174) run against `SemanticVersion.current()`.
 //
-// Polarity here is version-dependent for the `wrong-*-less-than` files, which
-// appear in shouldFail (fixed version) and shouldPassOnCurrent alike. They are
-// recorded as execution-level negatives because that is what they are under the
-// fixed-version stream; either way the parser must accept them.
+// A Go run is a current-version run — its single version under test is the
+// CURRENT singleton, exactly as EmbeddedYamlConnectionFactory reports — so the
+// *OnCurrent streams are the applicable ones and are what the entries below
+// record. That is a correction: the `wrong-*-less-than` files were previously
+// booked here as execution-level negatives, which is their polarity under the
+// FIXED-version stream only. InitialVersionTest lists all four of them in
+// shouldPassOnCurrent (:164-167), because an `initialVersionLessThan: <literal>`
+// branch is never selected when the version under test sorts above every
+// literal — so the wrong expectation they carry is never reached.
 var initialVersionEntries = []ManifestEntry{
 	{
 		"initial-version/do-not-allow-max-rows-in-at-least.yamsql", NegativeParse,
@@ -318,14 +354,23 @@ var initialVersionEntries = []ManifestEntry{
 		"initial-version/mid-query.yamsql", NegativeExecution,
 		"maxRows leaves a continuation open, so a version check is reached mid-query; the config list itself is well-formed and covers all versions", "InitialVersionTest",
 	},
-	{"initial-version/wrong-result-at-least.yamsql", NegativeExecution, "expected rows are wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-result-less-than.yamsql", NegativeExecution, "expected rows are wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-count-at-least.yamsql", NegativeExecution, "expected count is wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-count-less-than.yamsql", NegativeExecution, "expected count is wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-unordered-at-least.yamsql", NegativeExecution, "expected rows are wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-unordered-less-than.yamsql", NegativeExecution, "expected rows are wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-error-at-least.yamsql", NegativeExecution, "expected error code is wrong for the version under test", "InitialVersionTest"},
-	{"initial-version/wrong-error-less-than.yamsql", NegativeExecution, "expected error code is wrong for the version under test", "InitialVersionTest"},
+	{"initial-version/wrong-result-at-least.yamsql", NegativeExecution, "the at-least branch IS selected under current, so its wrong rows are checked", "InitialVersionTest.shouldFailOnCurrent"},
+	{"initial-version/wrong-count-at-least.yamsql", NegativeExecution, "the at-least branch IS selected under current, so its wrong count is checked", "InitialVersionTest.shouldFailOnCurrent"},
+	{"initial-version/wrong-unordered-at-least.yamsql", NegativeExecution, "the at-least branch IS selected under current, so its wrong rows are checked", "InitialVersionTest.shouldFailOnCurrent"},
+	{"initial-version/wrong-error-at-least.yamsql", NegativeExecution, "the at-least branch IS selected under current, so its wrong error code is checked", "InitialVersionTest.shouldFailOnCurrent"},
+
+	// The less-than mirror images. Positive on current: the branch carrying the
+	// wrong expectation is never selected, so nothing wrong is ever asserted.
+	{"initial-version/wrong-result-less-than.yamsql", Positive, "the less-than branch is not selected under current, so its wrong rows are never checked", "InitialVersionTest.shouldPassOnCurrent"},
+	{"initial-version/wrong-count-less-than.yamsql", Positive, "the less-than branch is not selected under current", "InitialVersionTest.shouldPassOnCurrent"},
+	{"initial-version/wrong-unordered-less-than.yamsql", Positive, "the less-than branch is not selected under current", "InitialVersionTest.shouldPassOnCurrent"},
+	{"initial-version/wrong-error-less-than.yamsql", Positive, "the less-than branch is not selected under current", "InitialVersionTest.shouldPassOnCurrent"},
+
+	// In shouldPass (pinned 3.0.18.0) but in NEITHER current-version stream:
+	// every one of its assertions sits behind an `initialVersionLessThan`
+	// branch that current never selects, so on current the file asserts
+	// nothing at all.
+	{"initial-version/less-than-version-tests.yamsql", FixedVersionMeta, "all assertions sit behind less-than branches that current does not select", "InitialVersionTest.shouldPass (no OnCurrent stream)"},
 }
 
 // fragmentEntries are the only files no Java test class runs directly. They are
