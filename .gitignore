@@ -37,7 +37,11 @@ service-account*.json
 
 # OS files
 .DS_Store
-fdb-record-layer
+
+# The Java reference checkout, cloned at the repo root. Anchored with a leading
+# slash: unanchored, this pattern also swallows the vendored corpus under
+# third_party/apple/fdb-record-layer/, which is checked in on purpose.
+/fdb-record-layer
 
 # SIFT-1M benchmark data
 pkg/recordlayer/testdata/*.fvecs

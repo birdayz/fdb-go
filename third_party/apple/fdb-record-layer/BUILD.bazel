@@ -1,0 +1,15 @@
+# Vendored, verbatim yamsql acceptance corpus from Apple's fdb-record-layer.
+# See README.md for provenance and the re-sync procedure; VERSION pins the tag.
+
+# keep: the corpus is data, not Go sources — gazelle has nothing to generate here.
+filegroup(
+    name = "yamsql_corpus",
+    srcs = glob(["yaml-tests/src/test/resources/**/*.yamsql"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "version",
+    srcs = ["VERSION"],
+    visibility = ["//visibility:public"],
+)
