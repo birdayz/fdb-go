@@ -122,15 +122,16 @@ engine's error string (`runner.go:378-381`), `gaps.go` carries no entry for it,
 and per-file identity is pinned only as the opaque `pinnedAssignmentDigest`
 (`pinned_ledger_test.go:71`). Recovering it required the run above.
 
-**Baseline caveat, and the first task of S0.** The two hotfixes described in
-§1.4 turn two silent accept-and-mis-build paths into fail-closed rejections. A
-fail-closed rejection is a *new* DDL failure, so it can change which class
-claims a file — in particular `index-ddl.yamsql` and
-`documentation-queries/index-documentation-queries.yamsql`, which carry
-`LEGACY_EXTREMUM_EVER` and ON-source `orderClause` respectively. **The 42-file
-list and the class's size are therefore re-measured against the post-hotfix head
-as S0's second step, and this section is updated in the same commit.** Every
-gate in §8 denominates against that re-measured list, not this one.
+**Baseline, checked against the hotfix.** The §1.4 hotfixes turn four silent
+accept-and-mis-build paths into fail-closed rejections, and a fail-closed
+rejection is a *new* DDL failure — it could have changed which class claims a
+file, in particular `index-ddl.yamsql` and
+`documentation-queries/index-documentation-queries.yamsql`. It did not: the
+hotfix's AS-SELECT guard runs *after* the aggregate check precisely so the
+value-index gap keeps this bucket, and
+`git diff ef2b5911a fix/ddl-fail-closed-ordering-attrs -- pkg/relational/conformance/javacorpus/`
+is empty. **The list above is the post-hotfix baseline, unchanged**, and every
+gate in §8 denominates against it.
 
 ### 1.2 Which rejection each file hits — and what actually caused it
 
@@ -194,7 +195,9 @@ ANTLR alternative and routes **every** `IndexAsSelectDefinitionContext` to
 `parseAggregateIndexDefinition` at `ddl.go:237-238`, with no inspection of the
 SELECT. That routing point has no counterpart in Java (§2.1).
 
-The clauses it drops divide into two groups, and revision 1 had them backwards.
+The clauses it drops divide into two groups. Revision 1 had them backwards;
+revision 2 fixed two of the four and still mis-filed `UNIQUE` and `WHERE` as
+latent, because it triaged the corpus's carriers instead of the code path.
 
 **LIVE — silent accept-and-mis-build. Nothing rejects these; the engine builds a
 different index than the DDL asked for.**
@@ -203,12 +206,26 @@ different index than the DDL asked for.**
 |---|---|---|
 | `WITH ATTRIBUTES LEGACY_EXTREMUM_EVER` | `MIN_EVER_TUPLE` / `MAX_EVER_TUPLE` **unconditionally**; `IndexAttributes()` is never read | `ddl.go:597-617` |
 | ON-source per-column `orderClause` | an **ascending** index for `ON t(a DESC)`; only `GetColumnName()` is read | `ddl.go:227-229` |
+| `UNIQUE` (AS-SELECT) — *live on the aggregate-paired path; the corpus's 2 carriers are non-aggregate and pre-empted at `:566`* | a **non-unique** index; `parseAggregateIndexDefinition` never calls `def.UNIQUE()` (its only call site in the file is the ON-source branch, `ddl.go:210`) | `ddl.go:391-493` |
+| `WHERE` (AS-SELECT) — *same qualifier; 17 carriers, all non-aggregate* | a **full** index where Java builds a sparse one, holding entries Java deliberately omits; the aggregate path reads only `fc.TableSources()` and `WhereExpr()` appears nowhere in `ddl.go` | `ddl.go:404-419` |
 
-Java picks `MAX_EVER_LONG`/`MIN_EVER_LONG` when the attribute is present
-(`MaterializedViewIndexGenerator.java:449-465`) and threads the per-column
-direction into `OrderByExpression`s (`OnSourceIndexGenerator.java:205-209`,
-`:280-299`). Both defects are on the wire: a Go-created index and a Java-created
-index from identical DDL get different types, or different entry byte order.
+Java honours all four: `MAX_EVER_LONG`/`MIN_EVER_LONG` when the attribute is
+present (`MaterializedViewIndexGenerator.java:449-465`); the per-column
+direction threaded into `OrderByExpression`s
+(`OnSourceIndexGenerator.java:205-209`, `:280-299`); `isUnique` at
+`DdlVisitor.java:215`, which becomes `IndexOptions.UNIQUE_OPTION` in the stored
+proto; and the predicate at `MaterializedViewIndexGenerator.java:169-172`. Every
+one is on the wire: from identical DDL, Go and Java get different index types,
+different entry byte order, different uniqueness enforcement, or different
+entry SETS.
+
+`UNIQUE` and `WHERE` are in this group because the *clause* is live even though
+its *corpus carriers* are not: reached through an aggregate or `CARDINALITY`
+select element, `extractAggregateFromSelectElement` succeeds and the drop
+happens. The hotfix's `TestDDLRejectsAsSelectUniqueAndWhere` demonstrates it
+directly with `CREATE UNIQUE INDEX mvu AS SELECT min_ever(col2) FROM t1 GROUP BY
+col1` and its `WHERE` twin. Revision 2 listed both as latent, which was true of
+the 19 corpus carriers and false of the code.
 
 **Corpus reach, measured**: 4 AS-SELECT statements carry `LEGACY_EXTREMUM_EVER`
 (`aggregate-index-tests.yamsql:39-40`, `index-ddl.yamsql:82-83`) and 2 ON-source
@@ -219,22 +236,41 @@ statements carry an explicit `orderClause`, across `index-ddl.yamsql`,
 today** — `aggregate-index-tests.yamsql` dies in the table pass
 (`unsupported-DDL:struct`, `column "C"`), and the other three die at their first
 AS-SELECT value index (`index-ddl.yamsql` at `IDX_MV_NAME`, line 39, well before
-line 82). So the corpus does not currently witness either defect — **and closing
-CQ-71 is exactly what arms them.** That is why they are hotfixed fail-closed on
-a separate branch *before* S1, and why this RFC builds on that baseline rather
-than shipping the arming change first.
+line 82). So the corpus does not currently witness those two defects — **and
+closing CQ-71 is exactly what arms them.** `UNIQUE` and `WHERE` have no corpus
+carrier on the reachable path at all, which is why they went unnoticed until the
+hotfix probed for them directly.
 
-**LATENT — measurably pre-empted in the same statement.**
+**The hotfix has landed** as `c058d48ee` on `fix/ddl-fail-closed-ordering-attrs`
+— one commit off this RFC's own base `ef2b5911a`, rejecting all four shapes (and
+the vector arm's copy of the order-clause drop) with
+`ErrCodeUnsupportedOperation` on the `INCLUDE`-rejection precedent, with sixteen
+rejection pins and three mutation directions each. Its AS-SELECT guard runs
+*after* the aggregate check deliberately, so the value-index gap keeps its
+42-file bucket. **Measured: S0's baseline is unchanged** —
+`git diff ef2b5911a fix/ddl-fail-closed-ordering-attrs -- pkg/relational/conformance/javacorpus/`
+is empty, so the ledger of §1.1 stands byte-identical and every gate in §8
+denominates against the list already printed there. S0's re-measurement step
+(§6) is therefore discharged, not skipped.
+
+**LATENT — one clause, measurably pre-empted in the same statement.**
 
 | clause | statements | why latent |
 |---|---|---|
 | `ORDER BY` (AS-SELECT) | 134 | every carrier is non-aggregate → `ddl.go:566-567` rejects the statement first |
-| `WHERE` (AS-SELECT) | 17 | same |
-| `UNIQUE` (AS-SELECT) | 2 | same |
 
-The distinction drives sequencing: the latent three are closed *by* the
-generator port and need no separate hotfix, while the live two must be closed
-*before* it or the port ships a wire divergence the corpus then reaches.
+`ORDER BY` is the one clause that stays latent under scrutiny, and the reasoning
+is worth recording because it is what makes it safe to leave to S3 rather than
+hotfix. Every corpus aggregate AS-SELECT that carries an `ORDER BY` is
+multi-element and dies at `ddl.go:451-453` first. The single-element aggregate
+shapes that would slip past that check and reach the drop are exactly the ones
+**Java itself rejects** — `MaterializedViewIndexGenerator.java:229-231`
+("attempt to create a covering aggregate index") and `:241-243` ("Cannot order
+%s index by aggregate value"). So a dropped `ORDER BY` there is
+Go-accepts-what-Java-rejects, a conformance divergence, never two engines
+writing mutually unreadable indexes for DDL both accept. That is the
+qualitative line between the hotfix group and this one, and it is why `ORDER BY`
+is closed properly by the generator in S3 instead of being fail-closed first.
 
 ---
 
@@ -809,15 +845,15 @@ writers, not about the defect. **The negative pin is therefore built from
 Java-authored metadata bytes**, not from a hand-built Go index — the latter
 would pin the wrong thing.
 
-Separately, `keyExpressionFlatColumnDescriptors` (`index_expansion.go:773-822`)
+Separately, `keyExpressionFlatColumnDescriptors` (`pkg/recordlayer/query/plan/cascades/index_expansion.go:773-822`)
 has no `KeyWithValue` case and returns false at `:820`, so the candidate
 declines rather than mis-plans — safe, but not "planned". Both are fixed here:
 the split point becomes the key/value boundary, key columns bound the scan
 prefix, value columns are available for covering.
 
 **(b) order-function-wrapped columns.** Only `"cardinality"` is accepted as a
-function-keyed column (`index_expansion.go:801-806`;
-`match_candidate_index.go:716-720`), and `indexColumnFunctionTags`
+function-keyed column (`pkg/recordlayer/query/plan/cascades/index_expansion.go:801-806`;
+`pkg/recordlayer/query/plan/cascades/match_candidate_index.go:716-720`), and `indexColumnFunctionTags`
 (`cascades_generator.go:2237-2263`) tags a generic `FunctionKeyExpression` as
 `""`, reporting it as a plain field. 16 AS-SELECT and 16 ON-source statements
 carry explicit `ASC`/`DESC`/`NULLS`. The four `order_*` functions are already
@@ -884,11 +920,14 @@ the **stored** bytes match, which is the property a shared cluster depends on.
 
 Each step ends green and is committed on its own.
 
-- **S0 (separate branch, lands first)** — the two §1.4 hotfixes: reject
-  `WITH ATTRIBUTES` / `OPTIONS(LEGACY_EXTREMUM_EVER)` and a per-column
-  `orderClause` fail-closed rather than dropping them. **Then re-measure §1.1's
-  ledger and re-pin the 42-file list against the post-hotfix head.** Every gate
-  below denominates against that re-measured baseline.
+- **S0 — DONE, `c058d48ee` on `fix/ddl-fail-closed-ordering-attrs`** (one commit
+  off this RFC's base `ef2b5911a`). The §1.4 hotfixes: `WITH ATTRIBUTES` /
+  `OPTIONS(LEGACY_EXTREMUM_EVER)`, the per-column `orderClause` (plus the vector
+  arm's copy of it), and AS-SELECT `UNIQUE` / `WHERE` all reject fail-closed
+  instead of being dropped. Ledger re-measured and **byte-identical** (§1.1), so
+  the baseline every gate below denominates against is the one already printed
+  there. S2–S6 retire each of these rejections as the generator grows the
+  capability it stands in for.
 - **S1 — `metadata.Builder` carries an explicit index** (D8). No behaviour
   change; existing derivation paths keep working with the new fields unset.
 - **S2 — the generator, value/version arm** (D1, D3, D4, D5), driven from the
@@ -1013,9 +1052,10 @@ surface is the whole surface — a class left half-deleted repopulates silently:
 - `SkipDDLValueIndexAsSelect` removed from `ledger.go:106-110` **and** from the
   `AllSkipClasses()` list at `:195` (it is a function, not a var);
 - the class removed from both `pinnedLedger` strings
-  (`pinned_ledger_test.go:40`, `:53`) and every affected count among the **63**
-  pinned `class=count` pairs re-measured, with `pinnedFileTotal = 238` still
-  closing and `fail=0` holding;
+  (`pinned_ledger_test.go:40`, `:53`) and every affected count among the **60**
+  pinned numbers re-measured — 4 header pairs (`pass`, `fail`, `skip`,
+  `queries`) + 29 `file_skips` + 27 `inner_skips` — with
+  `pinnedFileTotal = 238` still closing and `fail=0` holding;
 - `pinnedAssignmentDigest` (`:71`) recomputed — the only thing that catches two
   files trading classes at constant totals;
 - **`maskedClasses` (`corpus_run_test.go:246-256`) updated**: its
@@ -1100,9 +1140,12 @@ statements blocked behind an already-booked gap.
 `INCLUDE` indexes at `:70-106`, so §8(c) is unreachable while the rejection
 stands.
 
-**Land the generator before the §1.4 hotfixes.** The generator is what makes
-`index-ddl.yamsql` reach line 82; landing it first arms a silent
-wrong-index-type build in the same commit that claims to fix index DDL.
+**Land the generator before the §1.4 hotfixes.** Rejected, and the hotfix
+landed first (`c058d48ee`). The generator is what makes `index-ddl.yamsql` reach
+line 82; landing it first would have armed a silent wrong-index-type build in
+the same commit that claims to fix index DDL. The ordering also bought the
+`UNIQUE`/`WHERE` finding: probing for a fail-closed rejection is what showed
+both were live on the aggregate-paired path, which no corpus file reaches.
 
 ---
 
