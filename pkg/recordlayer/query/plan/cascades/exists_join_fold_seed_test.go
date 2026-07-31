@@ -61,11 +61,11 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	if w == nil {
 		t.Fatal("OrdinalSeedLegWindows must accept the full-coverage reconstructed seed")
 	}
-	if w["T1"].Offset != 0 {
-		t.Fatalf("T1 window offset = %d, want 0", w["T1"].Offset)
+	if w[values.NamedCorrelationIdentifier("T1")].Offset != 0 {
+		t.Fatalf("T1 window offset = %d, want 0", w[values.NamedCorrelationIdentifier("T1")].Offset)
 	}
-	if w["T2"].Offset != 2 {
-		t.Fatalf("T2 window offset = %d, want 2 (after T1's two columns)", w["T2"].Offset)
+	if w[values.NamedCorrelationIdentifier("T2")].Offset != 2 {
+		t.Fatalf("T2 window offset = %d, want 2 (after T1's two columns)", w[values.NamedCorrelationIdentifier("T2")].Offset)
 	}
 }
 

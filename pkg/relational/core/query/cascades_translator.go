@@ -5260,7 +5260,7 @@ func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions
 // when the input is NOT a genuine ordinal seed (a name-model FALLBACK RC is ANCHORED
 // and excluded); the caller then keeps the plain named quantifier and skips baking.
 type gatheredSeedBake struct {
-	windows      map[string]values.OrdinalSeedLegWindow
+	windows      map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow
 	elementSlots map[string]int
 	seedQOV      values.Value
 	quant        expressions.Quantifier
@@ -5765,7 +5765,29 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 			}
 			leaf := fv.Field
 			if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
-				if strings.ToUpper(fv.Field[:dot]) != lay.key {
+				qual := strings.ToUpper(fv.Field[:dot])
+				matched := qual == lay.key
+				if values.LegIdentityCensusEnabled() {
+					// The THIRD dotted baker, and the same reader shape as its two
+					// siblings: a qualifier sliced out of a parsed name, matched against a
+					// leg's binding TEXT, with the same `Child != nil || Resolved != nil`
+					// bail above guaranteeing no correlation is in hand.
+					//
+					// It compares ONE layout rather than reading a map, which is how it
+					// stayed uncounted while its sibling three lines of control flow away
+					// was measured. Its ambiguity outcome does not exist — a single-ForEach
+					// select has one leg, so a qualifier either names it or does not.
+					lookup := values.DottedLegLookupMiss
+					var matchedAlias values.CorrelationIdentifier
+					var matchedBinding string
+					if matched {
+						lookup = values.DottedLegLookupHit
+						matchedAlias, matchedBinding = lay.alias, lay.key
+					}
+					values.RecordDottedLegQualifier(
+						values.DottedLegSiteSingleForEachBake, qual, matchedAlias, matchedBinding, lookup)
+				}
+				if !matched {
 					return node
 				}
 				leaf = fv.Field[dot+1:]
@@ -5813,7 +5835,31 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 		if dot <= 0 {
 			return node
 		}
-		lay := layouts[strings.ToUpper(fv.Field[:dot])]
+		qual := strings.ToUpper(fv.Field[:dot])
+		lay, registered := layouts[qual]
+		if values.LegIdentityCensusEnabled() {
+			// The counterparty is a qualifier SLICED OUT of a parsed name — the guard
+			// above bails on `Child != nil || Resolved != nil`, so no correlation can
+			// be in hand here. What is measurable is whether the layout this text
+			// selected states the identity the text would mint.
+			//
+			// The map read's THREE outcomes are threaded through, not collapsed to a
+			// bool. A qualifier with no entry and one whose entry was POISONED for
+			// ambiguity (addKey's `layouts[key] = nil`) arrive here as the same nil,
+			// and reporting the second as "no leg carried the qualifier" describes a
+			// qualifier carried by TWO as one carried by none.
+			lookup := values.DottedLegLookupMiss
+			var matchedAlias values.CorrelationIdentifier
+			var matchedBinding string
+			switch {
+			case registered && lay != nil:
+				lookup = values.DottedLegLookupHit
+				matchedAlias, matchedBinding = lay.alias, lay.key
+			case registered:
+				lookup = values.DottedLegLookupAmbiguous
+			}
+			values.RecordDottedLegQualifier(values.DottedLegSiteLegQOVBake, qual, matchedAlias, matchedBinding, lookup)
+		}
 		if lay == nil || lay.cols == nil {
 			return node
 		}
@@ -5942,24 +5988,52 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 		// Dotted qualifier → leg window → leaf within the window.
 		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 && len(legs) > 0 {
 			qual, leaf := fv.Field[:dot], fv.Field[dot+1:]
-			for _, leg := range legs {
-				if !strings.EqualFold(leg.Name, qual) {
-					continue
-				}
-				end := leg.Start + leg.Width
-				if leg.Start < 0 || end > len(cols) {
+			// The leg the qualifier selects is found ONCE and then acted on, rather
+			// than selected inside the acting loop. The loop used to do both, which
+			// left no point at which the choice existed as a value — so the census
+			// below had to re-scan, and a duplicated name comparison beside the real
+			// one is a second decision site with nothing keeping the two in step.
+			matched := -1
+			for i, leg := range legs {
+				if strings.EqualFold(leg.Name, qual) {
+					matched = i
 					break
 				}
-				for k := leg.Start; k < end; k++ {
-					if strings.EqualFold(cols[k], leaf) {
-						// k indexes the WHOLE flat row (the leg window is a
-						// range within it), so the domain is cols — not the
-						// leg's slice of it.
-						return values.NewFieldValueWithResolvedOrdinalInDomain(
-							fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
+			}
+			if values.LegIdentityCensusEnabled() {
+				// Same reader shape as the executor's rowSlotForLegColumn, measured for
+				// the same reason: this site holds no correlation (the guard above bails
+				// on `Child != nil || Resolved != nil`), so the only question it can
+				// answer is whether the leg its text selected states an identity naming
+				// the same thing.
+				var matchedAlias values.CorrelationIdentifier
+				var matchedBinding string
+				lookup := values.DottedLegLookupMiss
+				if matched >= 0 {
+					lookup = values.DottedLegLookupHit
+					matchedAlias, matchedBinding = legs[matched].Alias, legs[matched].Name
+				}
+				// No AMBIGUOUS outcome here: this reader walks a leg SLICE and takes the
+				// first match, so a qualifier carried by two legs is a first-match, not a
+				// poisoned key. That is a real difference from the map-based sibling and
+				// is why the class is not recorded rather than recorded as zero.
+				values.RecordDottedLegQualifier(
+					values.DottedLegSiteFlatColumnBake, qual, matchedAlias, matchedBinding, lookup)
+			}
+			if matched >= 0 {
+				leg := legs[matched]
+				end := leg.Start + leg.Width
+				if leg.Start >= 0 && end <= len(cols) {
+					for k := leg.Start; k < end; k++ {
+						if strings.EqualFold(cols[k], leaf) {
+							// k indexes the WHOLE flat row (the leg window is a
+							// range within it), so the domain is cols — not the
+							// leg's slice of it.
+							return values.NewFieldValueWithResolvedOrdinalInDomain(
+								fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
+						}
 					}
 				}
-				break
 			}
 		}
 		return node

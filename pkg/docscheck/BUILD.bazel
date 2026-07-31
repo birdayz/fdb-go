@@ -10,6 +10,7 @@ go_library(
 go_test(
     name = "docscheck_test",
     srcs = [
+        "build_constrained_filename_test.go",
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "docs_consistency_test.go",

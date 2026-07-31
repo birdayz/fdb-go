@@ -82,7 +82,7 @@ func TestSeedWindowAuthority(t *testing.T) {
 		t.Fatal("mixed no-AT seed yielded NO executor windows — the structural fix requires the synthesized element window (translator must not pre-rebase)")
 	}
 	n := len(mixedRC.Fields)
-	elemWin, hasElem := w["X"]
+	elemWin, hasElem := w[values.NamedCorrelationIdentifier("X")]
 	if !hasElem || elemWin.Offset != n-1 || len(elemWin.Typ.Fields) != 1 {
 		t.Fatalf("mixed seed element window = %+v (present=%v), want a 1-field window at slot %d keyed by the AS alias X", elemWin, hasElem, n-1)
 	}
@@ -510,7 +510,7 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 	// For every box leaf + column: the leg-window walk's slot == the
 	// seed-window builder's slot.
 	for _, leg := range boxType.Legs {
-		w, present := windows[leg.Name]
+		w, present := windows[leg.Alias]
 		if !present {
 			t.Fatalf("box leaf %s absent from the seed windows %v", leg.Name, windows)
 		}
@@ -832,12 +832,12 @@ func TestBoxBoxBindingDeclinesAndStillFilesTheLeaf(t *testing.T) {
 	if windows == nil {
 		t.Fatalf("OrdinalSeedLegWindows declined the pristine box+plain seed")
 	}
-	boxRun, hasBoxRun := windows[boxKey]
+	boxRun, hasBoxRun := windows[boxCorr]
 	if !hasBoxRun {
 		t.Fatalf("the box RUN window %q is absent from %v — the decline must ADD the "+
 			"leaf window, never replace the run", boxKey, windowKeys(windows))
 	}
-	leafWin, hasLeaf := windows[rightmost.Name]
+	leafWin, hasLeaf := windows[rightmost.Alias]
 	if !hasLeaf {
 		t.Fatalf("the rightmost leaf's sub-window %q is absent from %v.\n"+
 			"  The decline is only harmless because the leaf is filed under its OWN name\n"+
@@ -865,10 +865,10 @@ func TestBoxBoxBindingDeclinesAndStillFilesTheLeaf(t *testing.T) {
 }
 
 // windowKeys lists a window map's keys for failure messages.
-func windowKeys(windows map[string]values.OrdinalSeedLegWindow) []string {
+func windowKeys(windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow) []string {
 	out := make([]string, 0, len(windows))
 	for k := range windows {
-		out = append(out, k)
+		out = append(out, k.Name())
 	}
 	sort.Strings(out)
 	return out

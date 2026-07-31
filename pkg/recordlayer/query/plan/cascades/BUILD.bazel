@@ -233,6 +233,7 @@ go_test(
         "cross_product_test.go",
         "data_access_fixture_guard_test.go",
         "data_access_types_test.go",
+        "decline_probe_identity_test.go",
         "default_on_empty_count_test.go",
         "default_rules_test.go",
         "depth_rung_sort_gate_test.go",
@@ -990,6 +991,7 @@ go_test(
         "plan_leg_concat_layout_test.go",
         "simple_select_passthrough_test.go",
         "leg_local_bake_census_gate_test.go",
+        "decline_probe_identity_test.go",
     ],
     deps = [
         "//gen",

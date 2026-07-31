@@ -516,7 +516,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 	}
 	// Sanity-check the setup matches TestReconstructFoldStep1Seed's own pin:
 	// T1 at offset 0 (2 columns), T2 at offset 2.
-	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil || w["T1"].Offset != 0 || w["T2"].Offset != 2 {
+	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil || w[values.NamedCorrelationIdentifier("T1")].Offset != 0 || w[values.NamedCorrelationIdentifier("T2")].Offset != 2 {
 		t.Fatalf("setup: unexpected seed layout %+v", w)
 	}
 

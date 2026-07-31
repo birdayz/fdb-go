@@ -418,26 +418,50 @@ type RecordTypeLeg struct {
 
 	// Name is the leg's binding as TEXT, conventionally UPPER.
 	//
-	// It is NOT the identity — Alias is. Name survives for exactly two families of
-	// consumer, and stating them precisely is what makes its retirement a checkable
-	// condition rather than an aspiration:
+	// It is NOT the identity — Alias is. Name survives for exactly ONE family of
+	// consumer now, and stating it precisely is what makes its retirement a
+	// checkable condition rather than an aspiration:
 	//
 	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
-	//     column-name string ("A.ID") and can therefore only be matched as a string
-	//     (executor.ordinal_join's dotted arm and the translator's multi-leg baker);
-	//   - the SEED-WINDOW map's KEYS, whose namespace is an upper fold of the
-	//     correlations. finalizeSeedWindows FILES a sub-window under leg.Name
-	//     because its readers arrive holding that text — but it no longer DECIDES
-	//     by it: the rightmost-leaf question is an identity question and goes
-	//     through SameLeg like every other. Storing under a folded key and deciding
-	//     by identity is the honest split; conflating them was the last folding
-	//     comparison on this field.
+	//     column-name string ("A.ID") and can therefore only be matched as a
+	//     string. There are FOUR, and at least one is LIVE, which is why this
+	//     field cannot go yet: executor.ordinal_join's dotted arm (the leg-column
+	//     provenance census measures it answering FOUR times over the real-FDB
+	//     corpus — `C.CV`, `I.QTY`, `O.ID` — every one over a leg that also states
+	//     an identity), and the translator's THREE dotted bakers (the dotted-leg
+	//     qualifier census: 110 match attempts, 101 matches, and the leg table's
+	//     two spellings agree on every one).
+	//
+	//     Three, not two: bakeDottedRefsToLegQOV has a MULTI-ForEach arm and a
+	//     SINGLE-ForEach arm making the same decision on the same counterparty,
+	//     and only the first was counted, because the census was built around a
+	//     map read and the second compares one layout's key directly. Instrumented
+	//     now, and measured UNREACHED — 0 over the corpus, with a panic at its
+	//     match point hit by nothing across ./pkg/relational/core/... nor the
+	//     explaindiff and plandiff harnesses. So the count that matters for this
+	//     field's retirement is unchanged; what changed is that the third site's
+	//     MATCH-ALIAS-DIFFERS and MATCH-NO-ALIAS populations are now gated rather
+	//     than unmeasured.
+	//
+	// The SEED-WINDOW map's KEYS used to be the second family and are GONE. That
+	// map is keyed by CorrelationIdentifier; finalizeSeedWindows files a
+	// sub-window under the buried leg's own identity and carries its Name as a
+	// LABEL for the merged leg table rather than as the address of anything. The
+	// conversion was measured first, per lookup, over the whole corpus — a DATED
+	// POINT MEASUREMENT, quoted as history: 1400 keyed reads, every one holding a
+	// correlation, the identity selecting the same window the fold did on every
+	// one, and the only two text-keyed readers unreachable by panic probe across
+	// the entire relational tree. The census that produced it retired with the
+	// namespace it measured; the STANDING instrument over those readers is
+	// seed_window_reader_census.go, which floors each one and hard-zeros the two
+	// declines that replaced the text lookups.
 	//
 	// Every reader whose counterparty is a correlation goes through Alias — there
-	// are no exceptions left. That is the retirement condition: when the seed rebake
-	// replaces the text-keyed window namespace and the dotted channel with parsed
-	// segments, both families go, and this field goes with them. Until then, a new
-	// comparison against Name is a regression, full stop.
+	// are no exceptions left. The retirement condition is now single: when the
+	// dotted channel's counterparty carries the parser's qualifier/leaf segments
+	// instead of a joined string (CQ-52), those three readers go and this field
+	// goes with them. Until then, a new comparison against Name is a regression,
+	// full stop.
 	//
 	// Consumers whose counterparty is a correlation must use Alias. A comparison
 	// against Name is a text match dressed as an identity check, and text

@@ -179,7 +179,7 @@ func TestSpanWindowCrossAgreement_PlainSeed(t *testing.T) {
 		t.Fatalf("leg count disagreement: %d spans vs %d windows", len(spans), len(windows))
 	}
 	for _, s := range spans {
-		w, present := windows[strings.ToUpper(s.Alias.Name())]
+		w, present := windows[s.Alias]
 		if !present {
 			t.Fatalf("leg %s in spans but not windows", s.Alias)
 		}
@@ -268,7 +268,7 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 		if len(s.LegType.Legs) > 0 {
 			wantWindows += len(s.LegType.Legs)
 			for _, sub := range s.LegType.Legs {
-				w, present := windows[sub.Name]
+				w, present := windows[sub.Alias]
 				if !present {
 					t.Fatalf("%s: box-run sub %s in spans' Legs but not windows", label, sub.Name)
 				}
@@ -280,7 +280,7 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 			continue
 		}
 		wantWindows++
-		w, present := windows[strings.ToUpper(s.Alias.Name())]
+		w, present := windows[s.Alias]
 		if !present {
 			t.Fatalf("%s: leg %s in spans but not windows", label, s.Alias)
 		}
@@ -469,10 +469,10 @@ func TestSpanWindowCrossAgreement_BoxLeg(t *testing.T) {
 
 	// The alias-keyed window is the rightmost LEAF's slice.
 	windows, merged := values.OrdinalSeedLegWindows(seed)
-	if w := windows["E"]; w.Offset != 4 || len(w.Typ.Fields) != 1 || w.Typ.Fields[0].Name != "EID" {
+	if w := windows[values.NamedCorrelationIdentifier("E")]; w.Offset != 4 || len(w.Typ.Fields) != 1 || w.Typ.Fields[0].Name != "EID" {
 		t.Fatalf("windows[E] = (offset %d, %v) — want the rightmost LEAF window (offset 4, [EID])", w.Offset, w.Typ.Fields)
 	}
-	if w := windows["B"]; w.Offset != 2 || len(w.Typ.Fields) != 2 {
+	if w := windows[values.NamedCorrelationIdentifier("B")]; w.Offset != 2 || len(w.Typ.Fields) != 2 {
 		t.Fatalf("windows[B] = (offset %d, width %d) — want the buried sub-window (offset 2, width 2)", w.Offset, len(w.Typ.Fields))
 	}
 	wantLegs := []values.RecordTypeLeg{
