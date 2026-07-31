@@ -470,10 +470,20 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 			"whole identity channel back on the qualified name.")
 	}
 
+	// TWO legs, not one, and they carry the SAME layout — the self-join twin
+	// hazard in miniature. With a single alias in the set every wrong-leg outcome
+	// is unrepresentable: there is no other leg to be wrong about, so a rebase
+	// that ignored the correlation entirely would pass. Two legs sharing a layout
+	// leave the CORRELATION as the only thing distinguishing their column
+	// identities, which is exactly the condition under which a name-keyed lookup
+	// used to pick whichever leg it saw first.
+	legB := values.NamedCorrelationIdentifier("R")
+	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType, legB: aType}
+	aliasSet := []string{"L", "R"}
+
 	// The pass-through: the SAME value comes back, so the ordinal, the domain and
 	// the leg correlation are all intact by identity rather than by re-derivation.
-	legTypes := map[values.CorrelationIdentifier]*values.RecordType{legA: aType}
-	out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, legTypes)
+	out := rebaseOuterLegValue(read, aliasSet, merged, nil, legTypes)
 	if out != values.Value(read) {
 		t.Fatalf("a read that ALREADY carried the right leg-local ordinal was rewritten "+
 			"to %v.\n"+
@@ -482,5 +492,50 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 			"  QOV(merged).\"L.CATEGORY\" — states strictly less: a name where an ordinal\n"+
 			"  was. The merged RE-ANCHOR is the one legitimate rewrite here and it needs a\n"+
 			"  merged layout, which this call path does not pass.", out)
+	}
+
+	// THE WRONG-LEG DIRECTION, which the pass-through alone cannot express: hand
+	// the arm a merged layout carrying BOTH legs' identities at DIFFERENT merged
+	// ordinals, so the merged re-anchor fires and has to choose. The two legs'
+	// CATEGORY columns share a name, a leg-relative ordinal and an ordinal domain
+	// — the correlation is the whole of the difference — so a lookup that keyed on
+	// anything else lands on R's slot and the test says which.
+	twinRead := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValueOfType(legB, values.Type(aType)), "CATEGORY", 1, values.UnknownType, legDomain)
+	idL, _ := legSlotIdentity(read)
+	idR, okR := legSlotIdentity(twinRead)
+	if !okR || idL == idR {
+		t.Fatalf("the twin fixture is degenerate: leg L's identity %+v and leg R's %+v "+
+			"must be DISTINCT (stated=%v) or the wrong-leg assertion below cannot "+
+			"fail. They differ only by correlation, which is the property under test.",
+			idL, idR, okR)
+	}
+	const slotL, slotR = 4, 9
+	layout := map[values.ColumnIdentity]int{idL: slotL, idR: slotR}
+	for _, tc := range []struct {
+		name string
+		read *values.FieldValue
+		want int
+	}{
+		{"leg L", read, slotL},
+		{"leg R", twinRead, slotR},
+	} {
+		anchored, isFV := rebaseOuterLegValue(tc.read, aliasSet, merged, layout, legTypes).(*values.FieldValue)
+		if !isFV || anchored.Resolved == nil {
+			t.Fatalf("%s: the merged re-anchor produced %v, which states no ordinal",
+				tc.name, anchored)
+		}
+		if got := anchored.Resolved.Root().Ordinal; got != tc.want {
+			t.Errorf("%s's read re-anchored to merged slot %d, want %d.\n"+
+				"  Both legs carry the same layout, so their CATEGORY columns agree on\n"+
+				"  name, leg-relative ordinal and ordinal domain; only the correlation\n"+
+				"  tells them apart. Landing on the other leg's slot means the lookup is\n"+
+				"  keyed on something that is not the identity — which returns a real\n"+
+				"  value from the wrong leg, on every row, with no error.",
+				tc.name, got, tc.want)
+		}
+		if qov, isQ := anchored.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != merged {
+			t.Errorf("%s: re-anchored child = %T, want QOV(merged)", tc.name, anchored.Child)
+		}
 	}
 }
