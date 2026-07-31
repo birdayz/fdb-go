@@ -7735,6 +7735,23 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-31 (CQ-53 phase 2c — the seed-window map is keyed by leg identity):**
+baseline worktree at the phase-2 head `6f9b718e2` vs the branch, same box,
+sequential fresh FDB containers, `go test -tags stress`.
+
+All 23 subtests PASS on both sides. **Every row count and every label
+identical** (diffed the 35 measurement lines with the timing column stripped —
+empty diff), and **every EXPLAIN string identical** (10 lines, diffed, empty).
+No plan in the corpus moved, which is the load-bearing result: the change is
+planner/translator identity plumbing plus the deletion of a bake arm measured
+unreachable.
+
+Timings within run-to-run noise. Two rows looked otherwise on the first pair
+and are recorded because they did: `full scan filter amount>5000` 506ms base vs
+694ms branch, and `idx_status count pending` 358ms vs 402ms. A second branch run
+put them at 521ms and 353ms — inside the base. Reported rather than dropped, so
+nobody re-derives the scare from the first pair alone.
+
 **2026-07-31 (CQ-53 phase 2 — leg-correlated reads keep the ordinal they
 arrive with; the qualified-name mint, `legRole` and the text alias half die):**
 baseline worktree at the phase-1 merge `457c18ba8` vs the branch, same box,
