@@ -224,6 +224,9 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		}
 		var cols []string
 		if cl := def.IndexColumnList(); cl != nil {
+			if err := rejectIndexOrderClause(cl.AllIndexColumnSpec(), "index", indexName); err != nil {
+				return err
+			}
 			for _, spec := range cl.AllIndexColumnSpec() {
 				cols = append(cols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
 			}
@@ -242,6 +245,38 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported index definition type %T", idxDef)
 	}
+}
+
+// rejectIndexOrderClause fails closed on a per-column ASC/DESC/NULLS clause in
+// an index column list.
+//
+// The grammar admits `indexColumnSpec: columnName=uid orderClause?`, and every
+// caller here reads only columnName. Dropping the orderClause is a WIRE
+// divergence, not a cosmetic one: Java wraps an ordered column in an
+// OrderFunctionKeyExpression — `CREATE INDEX i ON t(a DESC)` builds
+// function("order_desc_nulls_last", field("a")), whose entries are the
+// order-inverted encoding of the value — while dropping it here builds a plain
+// ascending field index. A Go app and a Java app issuing the identical DDL
+// against the same cluster would then disagree on the index's entry bytes, and
+// neither could read the other's index.
+//
+// A column with NO order clause is genuinely ascending in both engines (Java
+// maps ASCENDING to a null ordering function and emits the bare field), so
+// only an explicit clause is refused.
+//
+// Fail closed until the ordered-index generator lands (RFC-202), at which
+// point this rejection is deleted rather than relaxed.
+func rejectIndexOrderClause(specs []antlrgen.IIndexColumnSpecContext, kind, indexName string) error {
+	for _, spec := range specs {
+		sc, ok := spec.(*antlrgen.IndexColumnSpecContext)
+		if !ok || sc.OrderClause() == nil {
+			continue
+		}
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"%s %q: per-column ordering (ASC/DESC/NULLS) on column %q is not yet supported",
+			kind, indexName, functions.StripIdentifierQuotes(sc.GetColumnName().GetText()))
+	}
+	return nil
 }
 
 // parseVectorIndexDefinition handles
@@ -264,6 +299,9 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	// Exactly one indexed (vector) column.
 	var vecCols []string
 	if cl := def.IndexColumnList(); cl != nil {
+		if err := rejectIndexOrderClause(cl.AllIndexColumnSpec(), "vector index", indexName); err != nil {
+			return err
+		}
 		for _, spec := range cl.AllIndexColumnSpec() {
 			vecCols = append(vecCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
 		}
@@ -277,6 +315,9 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 	// PARTITION BY prefix columns (optional).
 	var partitionCols []string
 	if pc := def.IndexPartitionClause(); pc != nil {
+		if err := rejectIndexOrderClause(pc.AllIndexColumnSpec(), "vector index PARTITION BY", indexName); err != nil {
+			return err
+		}
 		for _, spec := range pc.AllIndexColumnSpec() {
 			partitionCols = append(partitionCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
 		}
@@ -466,14 +507,23 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"cardinality index %q: GROUP BY is not supported", indexName)
 		}
+		if err := rejectDroppedAsSelectClauses(def, fc, indexName); err != nil {
+			return err
+		}
 		b.AddCardinalityIndex(tableName, indexName, cardColumn)
 		return nil
 	}
 
+	// The non-aggregate select element is refused HERE, ahead of the dropped-clause
+	// guard below, so a value index written in AS-SELECT form keeps reporting the
+	// value-index gap as its cause rather than a UNIQUE/WHERE it also happens to carry.
 	aggType, aggColumn, err := extractAggregateFromSelectElement(allElems[0])
 	if err != nil {
 		return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q", indexName)
+	}
+	if err := rejectDroppedAsSelectClauses(def, fc, indexName); err != nil {
+		return err
 	}
 
 	var groupColumns []string
@@ -489,6 +539,44 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 
 	b.AddAggregateIndex(tableName, indexName, groupColumns, aggType, aggColumn)
+	return nil
+}
+
+// rejectDroppedAsSelectClauses fails closed on the clauses an AS-SELECT index
+// definition may carry that the builder below does not read.
+//
+// Each would otherwise build an index that differs from Java's for the SAME
+// DDL, which is a wire divergence rather than a missing convenience:
+//
+//   - `WITH ATTRIBUTES LEGACY_EXTREMUM_EVER` selects Java's LONG-based extremum
+//     maintainer — MIN_EVER_LONG / MAX_EVER_LONG instead of the TUPLE variants
+//     this builder always emits. That is a different index type with a
+//     different maintainer writing a different value encoding (a packed long,
+//     not a tuple), so the two engines' entries are mutually unreadable.
+//   - `UNIQUE` is carried by Java into the index's options map, where it both
+//     records the constraint in metadata and arms duplicate detection. Dropping
+//     it yields an index Java would consider a different object, and silently
+//     stops enforcing a constraint the DDL asked for.
+//   - `WHERE` makes the index SPARSE in Java, which stores the predicate on the
+//     index and maintains entries only for matching records. Dropping it builds
+//     a FULL index — it contains entries for rows Java's index deliberately
+//     omits, so a shared cluster sees two different key sets under one name.
+//
+// Fail closed until the AS-SELECT generator carries these through (RFC-202);
+// the rejections are deleted then, not relaxed.
+func rejectDroppedAsSelectClauses(def *antlrgen.IndexAsSelectDefinitionContext, fc antlrgen.IFromClauseContext, indexName string) error {
+	if def.IndexAttributes() != nil {
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"index %q: WITH ATTRIBUTES is not yet supported", indexName)
+	}
+	if def.UNIQUE() != nil {
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"index %q: UNIQUE on an AS-SELECT index is not yet supported", indexName)
+	}
+	if fcc, ok := fc.(*antlrgen.FromClauseContext); ok && fcc.WhereExpr() != nil {
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"index %q: a WHERE clause (sparse index) is not yet supported", indexName)
+	}
 	return nil
 }
 

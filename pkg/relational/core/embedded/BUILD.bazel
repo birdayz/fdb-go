@@ -90,6 +90,7 @@ go_test(
         "correlated_primary_unnest_test.go",
         "correlated_scalar_cardinality_plan_test.go",
         "cost_selectivity_test.go",
+        "ddl_fail_closed_test.go",
         "derived_unnest_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
@@ -236,6 +237,7 @@ go_test(
         "unnest_element_later_from_item_test.go",
         "proj_col_ref_test.go",
         "cardinality_clamp_reachable_test.go",
+        "ddl_fail_closed_test.go",
     ],
     deps = [
         "//gen",
