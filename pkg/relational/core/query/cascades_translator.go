@@ -6295,8 +6295,14 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				return nil
 			}
 		}
+		// minted is the lazy carrier THIS iteration created from the key's
+		// canonical text — the one value whose parse-tree segments the SortKey
+		// still carries. A key that arrived with a resolved Value, or that a
+		// rebase pass below rewrites, is not it, and pointer identity says so.
+		var minted *values.FieldValue
 		if v == nil {
-			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
+			minted = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
+			v = minted
 		}
 		if sortGB != nil && !exactAggregateValue {
 			// WHOLE-value match first: an ORDER BY key that IS a group key /
@@ -6331,10 +6337,21 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if bake.seedQOV != nil {
 			v = bakeGatheredGroupValue(v, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
-		v = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+		// An ORDER BY key still holding the carrier minted above resolves from
+		// the PARSER's segments — the same conversion the projection channel
+		// got, on the channel that carried the segments first.
+		ref := logical.ColumnRef{}
+		if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted {
+			ref = k.Ref()
+		}
+		if ref.Present {
+			v = bakeSegmentedColumnRef(minted, ref, inputCols, inputLegs)
+		} else {
+			v = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+		}
 		// A surviving dotted read over a leg of the input select bakes
 		// LEG-ADDRESSED (same rationale as translateProject's pass).
-		v = bakeDottedRefsToLegQOV(v, innerRef.Get())
+		v = bakeDottedRefsToLegQOVWithRef(v, ref, innerRef.Get())
 		sortKeys[i] = expressions.SortKey{
 			Value:      v,
 			Reverse:    k.Dir == logical.SortDesc,
@@ -6900,6 +6917,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	joinRef := expressions.InitialOf(joinSelect)
 
 	projected := make([]values.Value, len(p.Projections))
+	minted := make([]*values.FieldValue, len(p.Projections))
 	innerCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
 	// Derived BEFORE the projection loop so the scalar reference can bind to its
 	// slot where the layout is in hand, instead of being rendered into text for
@@ -6913,13 +6931,22 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return nil
 		}
-		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		projected[i] = fv
+		minted[i] = fv
 	}
 	// Flat lazy references (the outer-column reads) bake against the seed
 	// select's output layout — the same generic plan-time bind translateProject
-	// applies.
+	// applies, resolving from the PARSER's segments where the slot still holds
+	// the carrier minted above.
 	if inputCols != nil {
 		for i, v := range projected {
+			if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted[i] {
+				if ref := projectionRefAt(p, i); ref.Present {
+					projected[i] = bakeSegmentedColumnRef(fv, ref, inputCols, nil)
+					continue
+				}
+			}
 			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols)
 		}
 	}
@@ -7393,13 +7420,24 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	aggInputFields := t.legColumns(a.Input)
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
+		var minted *values.FieldValue
 		if key.Value != nil {
 			groupKeys[i] = key.Value
 		} else {
-			groupKeys[i] = &values.FieldValue{Field: key.Display, Typ: values.UnknownType}
+			minted = &values.FieldValue{Field: key.Display, Typ: values.UnknownType}
+			groupKeys[i] = minted
 		}
 		if bake.seedQOV != nil {
 			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], bake.windows, bake.elementSlots, bake.seedQOV)
+		}
+		// A key still holding the carrier minted above resolves from the
+		// PARSER's segments; GroupKey has carried them since RFC-180 F-3 and
+		// only the joined Display ever reached the baker.
+		if fv, isMinted := groupKeys[i].(*values.FieldValue); isMinted && fv == minted {
+			if ref := key.Ref(); ref.Present {
+				groupKeys[i] = bakeSegmentedColumnRef(minted, ref, aggInputCols, aggInputLegs)
+				continue
+			}
 		}
 		groupKeys[i] = bakeFlatRefsAgainstColumns(groupKeys[i], aggInputCols, aggInputLegs...)
 	}
@@ -7451,6 +7489,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			return nil
 		}
 		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand}
+		// operandMinted is the lazy carrier the BareColumn arm below creates
+		// from the operand's canonical text — the one value whose parse-tree
+		// segments the AggregateCall still carries.
+		var operandMinted *values.FieldValue
 		// The resolved operand (set by upgradeAggregateOperands /
 		// buildCorrelatedScalar via resolver.WalkExpression) is the single
 		// source of truth. A parse-tree-classified BARE COLUMN keeps its
@@ -7463,7 +7505,8 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		case call.Star:
 			spec.Operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
 		case call.BareColumn:
-			spec.Operand = &values.FieldValue{Field: strings.ToUpper(call.Operand), Typ: values.UnknownType}
+			operandMinted = &values.FieldValue{Field: strings.ToUpper(call.Operand), Typ: values.UnknownType}
+			spec.Operand = operandMinted
 		default:
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 				"aggregate operand %q did not resolve to a typed Value; computed operands are never re-parsed from text", call.Operand))
@@ -7472,9 +7515,18 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if bake.seedQOV != nil && spec.Operand != nil {
 			spec.Operand = bakeGatheredGroupValue(spec.Operand, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
-		// Flat lazy operand references bake against the
-		// aggregate input's derivable output layout (see groupKeys above).
-		spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
+		// A bare operand still holding the carrier minted above resolves from the
+		// PARSER's segments; otherwise it bakes against the aggregate input's
+		// derivable output layout (see groupKeys above).
+		if fv, isMinted := spec.Operand.(*values.FieldValue); isMinted && fv == operandMinted && operandMinted != nil {
+			if ref := call.Ref(); ref.Present {
+				spec.Operand = bakeSegmentedColumnRef(operandMinted, ref, aggInputCols, aggInputLegs)
+			} else {
+				spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
+			}
+		} else {
+			spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
+		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
 		}

@@ -291,6 +291,55 @@ type ColumnRef struct {
 	Qualified bool   // parse-tree segment count > 1
 }
 
+// ColumnRefFor states a segment triple against the name that was actually
+// RENDERED for it, and is the only way a ColumnRef should be built from a
+// producer's fields.
+//
+// The reconciliation is the invariant, not a formality. The rendered name is
+// not always the segments joined: the derived-table shell strips a `X.`
+// qualifier prefix off the rendering, and a rebase can rewrite a key's text
+// entirely. A triple describing a DIFFERENT string than the one downstream
+// carries is worse than no triple, because it is trusted — told a bare `ID` is
+// qualified by X, a consumer looks for leg X's ID instead of the flat column
+// the shell just produced.
+//
+// So Present is claimed only when the triple demonstrably spells the rendered
+// name. Anything else reads as "not captured", which every consumer already
+// handles by keeping the behaviour it had.
+//
+// It lives here rather than beside any one producer because three of them now
+// build these — projected columns, ORDER BY keys and aggregate operands — and
+// three copies of an invariant is three chances for one to drift.
+func ColumnRefFor(bare, qualifier string, qualified bool, rendered string) ColumnRef {
+	if bare == "" || rendered == "" {
+		return ColumnRef{}
+	}
+	if strings.EqualFold(rendered, bare) {
+		// Either the reference was never qualified, or a prefix strip removed
+		// the qualifier — in both cases what survives is ONE segment.
+		return ColumnRef{Present: true, Bare: bare}
+	}
+	if qualified && strings.EqualFold(rendered, qualifier+"."+bare) {
+		return ColumnRef{Present: true, Bare: bare, Qualifier: qualifier, Qualified: true}
+	}
+	return ColumnRef{}
+}
+
+// Ref is the SortKey's segment triple, reconciled against its canonical text.
+// A positional or computed key captures nothing: its Expr is a rendering only,
+// and BareRef is what says so.
+func (k SortKey) Ref() ColumnRef {
+	if k.Pos > 0 {
+		return ColumnRef{}
+	}
+	return ColumnRefFor(k.Bare, k.Qualifier, k.Qualified, k.Expr)
+}
+
+// Ref is the GroupKey's segment triple, reconciled against its display text.
+func (g GroupKey) Ref() ColumnRef {
+	return ColumnRefFor(g.Bare, g.Qualifier, g.Qualified, g.Display)
+}
+
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {
 	return &LogicalProject{Input: input, Projections: projs, Aliases: aliases}
 }
@@ -532,6 +581,24 @@ type AggregateCall struct {
 	// real qualified reference or a quoted literal, and the gate is
 	// optimization-only).
 	Qualified bool
+	// Bare/Qualifier are the SEGMENTS behind Operand for a BareColumn — the
+	// last segment and the leading one(s). Qualified already said whether a
+	// qualifier exists; these say what it IS, which is what a consumer needs to
+	// resolve the operand WITHOUT slicing the rendered text apart at its first
+	// dot. Empty for computed operands and for producers that have not been
+	// taught to carry them; read them only through Ref().
+	Bare      string
+	Qualifier string
+}
+
+// Ref is the operand's segment triple, reconciled against its canonical text.
+// A COUNT(*) or computed operand captures nothing: its Operand is a rendering,
+// and BareColumn is what says so.
+func (c AggregateCall) Ref() ColumnRef {
+	if c.Star || !c.BareColumn {
+		return ColumnRef{}
+	}
+	return ColumnRefFor(c.Bare, c.Qualifier, c.Qualified, c.Operand)
 }
 
 // CanonicalName renders the call in the canonical upper-case display form —

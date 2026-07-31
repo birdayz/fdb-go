@@ -642,20 +642,7 @@ type projCol struct {
 // anything else reads as "not captured", which every consumer must already
 // handle.
 func projColRef(col projCol, rendered string) logical.ColumnRef {
-	if col.bare == "" || rendered == "" {
-		return logical.ColumnRef{}
-	}
-	if strings.EqualFold(rendered, col.bare) {
-		// Either the item was never qualified, or the shell's prefix strip
-		// removed the qualifier — in both cases what survives is one segment.
-		return logical.ColumnRef{Present: true, Bare: col.bare}
-	}
-	if col.qualified && strings.EqualFold(rendered, col.qualifier+"."+col.bare) {
-		return logical.ColumnRef{
-			Present: true, Bare: col.bare, Qualifier: col.qualifier, Qualified: true,
-		}
-	}
-	return logical.ColumnRef{}
+	return logical.ColumnRefFor(col.bare, col.qualifier, col.qualified, rendered)
 }
 
 // projColNames renders the name list for name-only consumers.

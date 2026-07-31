@@ -833,6 +833,7 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	joinRef := expressions.InitialOf(joinSelect)
 
 	projected := make([]values.Value, len(p.Projections))
+	minted := make([]*values.FieldValue, len(p.Projections))
 	// The projection reads the seed field by its SQL-alias-based NAME — the
 	// unique correlation is a leg-typing key only.
 	innerNameCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
@@ -845,7 +846,9 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerNameCorr, inputCols)
 			continue
 		}
-		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		projected[i] = fv
+		minted[i] = fv
 	}
 	// The level-2 output row is the seed RC's POSITIONAL row
 	// (dotted `LEG.COL` names plus the scalar's `ALIAS.COL` field) — bake each
@@ -856,6 +859,12 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	// resolution no longer serves it.
 	if inputCols != nil {
 		for i, v := range projected {
+			if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted[i] {
+				if ref := projectionRefAt(p, i); ref.Present {
+					projected[i] = bakeSegmentedColumnRef(fv, ref, inputCols, nil)
+					continue
+				}
+			}
 			projected[i] = bakeFlatRefsAgainstColumns(bakeClusterLegRefs(v, pu, inputCols), inputCols)
 		}
 	}

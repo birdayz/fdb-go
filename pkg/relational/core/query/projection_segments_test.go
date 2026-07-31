@@ -187,3 +187,214 @@ func TestBakers_UncapturedRefKeepTheSplittingBehaviour(t *testing.T) {
 			"that splits", out)
 	}
 }
+
+// TestSortKeyRef_ReconcilesAgainstTheCanonicalText pins the ORDER BY channel's
+// triple. SortKey has carried Bare/Qualifier/Qualified since RFC-180 F-3 and
+// only the JOINED Expr ever reached the baker — this is the accessor that
+// stopped that.
+func TestSortKeyRef_ReconcilesAgainstTheCanonicalText(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		key  logical.SortKey
+		want logical.ColumnRef
+	}{
+		{
+			"a qualified key carries its qualifier",
+			logical.SortKey{Expr: "D.X", Bare: "X", Qualifier: "D", Qualified: true},
+			logical.ColumnRef{Present: true, Bare: "X", Qualifier: "D", Qualified: true},
+		},
+		{
+			"a bare key is one segment",
+			logical.SortKey{Expr: "X", Bare: "X"},
+			logical.ColumnRef{Present: true, Bare: "X"},
+		},
+		{
+			// The shape the whole change exists for: `ORDER BY "D.X"` naming one
+			// quoted column. Splitting it would sort by leg D's X.
+			"a quoted one-segment key with a dot is still one segment",
+			logical.SortKey{Expr: "D.X", Bare: "D.X"},
+			logical.ColumnRef{Present: true, Bare: "D.X"},
+		},
+		{
+			// A POSITIONAL key's Expr is a rendering of a SELECT-list slot, not
+			// a column reference, so it must claim nothing even if segments were
+			// left on it by a rebase.
+			"a positional key claims nothing",
+			logical.SortKey{Expr: "D.X", Bare: "X", Qualifier: "D", Qualified: true, Pos: 2},
+			logical.ColumnRef{},
+		},
+		{
+			// An aggregate/computed key: its canonical rendering is not the
+			// segments joined, so the triple does not describe it.
+			"a computed key's rendering is not its segments",
+			logical.SortKey{Expr: "SUM(D.X)", Bare: "X", Qualifier: "D", Qualified: true},
+			logical.ColumnRef{},
+		},
+	} {
+		if got := tc.key.Ref(); got != tc.want {
+			t.Errorf("%s: Ref() = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestAggregateCallRef_OnlyABareColumnOperandCaptures pins the aggregate
+// channel. COUNT(*) and computed operands have no column reference to segment,
+// and a triple claimed for them would authorize a leg-window lookup on a
+// rendering like `SUM(A+B)`.
+func TestAggregateCallRef_OnlyABareColumnOperandCaptures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		call logical.AggregateCall
+		want logical.ColumnRef
+	}{
+		{
+			"a qualified bare-column operand carries its qualifier",
+			logical.AggregateCall{
+				Func: "SUM", Operand: "V.X", BareColumn: true,
+				Qualified: true, Bare: "X", Qualifier: "V",
+			},
+			logical.ColumnRef{Present: true, Bare: "X", Qualifier: "V", Qualified: true},
+		},
+		{
+			"COUNT(*) captures nothing",
+			logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true},
+			logical.ColumnRef{},
+		},
+		{
+			"a COMPUTED operand captures nothing — its rendering is not a reference",
+			logical.AggregateCall{
+				Func: "SUM", Operand: "V.X + 1", Qualified: true,
+				Bare: "X", Qualifier: "V",
+			},
+			logical.ColumnRef{},
+		},
+		{
+			"a quoted one-segment operand with a dot is still one segment",
+			logical.AggregateCall{Func: "SUM", Operand: "V.X", BareColumn: true, Bare: "V.X"},
+			logical.ColumnRef{Present: true, Bare: "V.X"},
+		},
+		{
+			// CONTRACT pin, not a reachable-input reproducer, and recorded as
+			// such because that decides what it is worth. Every computed operand
+			// this file's producers build renders differently from its segments,
+			// so the case above is also declined by the reconciliation alone.
+			// That makes BareColumn's authority an accident of today's canonical
+			// rendering unless it decides on its own — and a rendering that
+			// happens to spell the segments (a parenthesised or re-canonicalised
+			// operand) is one rendering change away.
+			"a rendering that SPELLS the segments still needs BareColumn to be a reference",
+			logical.AggregateCall{
+				Func: "SUM", Operand: "V.X", BareColumn: false,
+				Qualified: true, Bare: "X", Qualifier: "V",
+			},
+			logical.ColumnRef{},
+		},
+	} {
+		if got := tc.call.Ref(); got != tc.want {
+			t.Errorf("%s: Ref() = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestTranslateSort_RoutesAQuotedKeyAwayFromTheLegWindow pins the ORDER BY
+// channel's ROUTING, not just its accessor.
+//
+// SortKey.Ref() being correct buys nothing if translateSort never consults it,
+// and the two are separately breakable: deleting the consumer leaves every
+// Ref() unit test green while the key resolves by a dot slice again. The
+// difference is only observable where the two disagree, so the key here is one
+// quoted segment whose spelling names a live leg.
+func TestTranslateSort_RoutesAQuotedKeyAwayFromTheLegWindow(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	key := func(k logical.SortKey) values.Value {
+		sorted := tr.translateOp(logical.NewSort(
+			inner(scan("Order", "o"), scan("Customer", "c")), []logical.SortKey{k}))
+		sortExpr, isSort := sorted.(*expressions.LogicalSortExpression)
+		if !isSort {
+			t.Fatalf("translate produced %T, want a sort", sorted)
+		}
+		if len(sortExpr.GetSortKeys()) != 1 {
+			t.Fatalf("got %d sort keys, want 1", len(sortExpr.GetSortKeys()))
+		}
+		return sortExpr.GetSortKeys()[0].Value
+	}
+
+	// Guard the fixture: the QUALIFIED spelling really does resolve, or the
+	// refusal below would be indistinguishable from "this key never resolved".
+	qualified := key(logical.SortKey{
+		Expr: "C.NAME", Bare: "NAME", Qualifier: "C", Qualified: true,
+	})
+	qfv, isFV := qualified.(*values.FieldValue)
+	if !isFV || qfv.Resolved == nil {
+		t.Fatalf("fixture: the qualified key C.NAME did not resolve (%#v) — there is no "+
+			"leg C column NAME for a slice to reach, so the pin below proves nothing",
+			qualified)
+	}
+
+	// The same bytes, seen by the parser as ONE segment: `ORDER BY "C.NAME"`.
+	whole := key(logical.SortKey{Expr: "C.NAME", Bare: "C.NAME"})
+	wfv, isFV := whole.(*values.FieldValue)
+	if !isFV {
+		t.Fatalf("quoted key produced %#v, want a FieldValue", whole)
+	}
+	if wfv.Resolved != nil || wfv.Child != nil {
+		t.Fatalf("a quoted one-segment ORDER BY key %q resolved to %#v — translateSort "+
+			"stopped consulting the key's segments and sliced its rendering at the dot, "+
+			"so the sort orders by leg C's NAME instead of the column so named",
+			"C.NAME", whole)
+	}
+}
+
+// TestTranslateAggregate_RoutesAQuotedGroupKeyAwayFromTheLegWindow is the
+// GROUP BY channel's routing pin, and it exists for the reason the sort one
+// does: GroupKey.Ref() being correct proves nothing about whether
+// translateAggregate consults it, and deleting the consumer left every unit
+// test in this file green.
+func TestTranslateAggregate_RoutesAQuotedGroupKeyAwayFromTheLegWindow(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	groupKey := func(g logical.GroupKey) values.Value {
+		agg := tr.translateOp(&logical.LogicalAggregate{
+			Input:     inner(scan("Order", "o"), scan("Customer", "c")),
+			GroupKeys: []logical.GroupKey{g},
+			Calls:     []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}},
+			Aliases:   []string{"N"},
+		})
+		gb, isGB := agg.(*expressions.GroupByExpression)
+		if !isGB {
+			t.Fatalf("translate produced %T, want a group-by", agg)
+		}
+		keys := gb.GetGroupingKeys()
+		if len(keys) != 1 {
+			t.Fatalf("got %d grouping keys, want 1", len(keys))
+		}
+		return keys[0]
+	}
+
+	// Guard the fixture: the QUALIFIED spelling really does resolve.
+	qualified := groupKey(logical.GroupKey{
+		Display: "C.NAME", Bare: "NAME", Qualifier: "C", Qualified: true,
+	})
+	if qfv, isFV := qualified.(*values.FieldValue); !isFV || qfv.Resolved == nil {
+		t.Fatalf("fixture: the qualified group key C.NAME did not resolve (%#v) — there "+
+			"is no leg C column NAME for a slice to reach", qualified)
+	}
+
+	// The same bytes as ONE segment: `GROUP BY "C.NAME"`.
+	whole := groupKey(logical.GroupKey{Display: "C.NAME", Bare: "C.NAME"})
+	wfv, isFV := whole.(*values.FieldValue)
+	if !isFV {
+		t.Fatalf("quoted group key produced %#v, want a FieldValue", whole)
+	}
+	if wfv.Resolved != nil || wfv.Child != nil {
+		t.Fatalf("a quoted one-segment GROUP BY key %q resolved to %#v — "+
+			"translateAggregate stopped consulting the key's segments and sliced its "+
+			"rendering at the dot, so it groups by leg C's NAME instead of the column "+
+			"so named", "C.NAME", whole)
+	}
+}
