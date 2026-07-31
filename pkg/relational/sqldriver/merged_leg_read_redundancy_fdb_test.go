@@ -20,10 +20,12 @@ import (
 // The merged-leg binding census alarms when a read resolves to a
 // bindMergedOuterLegs window on a MULTI-LEG merged row while no leg-local bake
 // produced anything (assertMergedLegBindingCensus). The corpus contains such
-// reads today — three over a full run, all on the alias above, from the shape
-// below; this test's own active route adds three more of the same shape, so a
-// full run reports six. Without an exclusion the gate is permanently red and says
-// nothing; with an exclusion resting on prose it is an assertion nobody checks.
+// reads today — three over a full run, all on redundantReaderAlias, out of the
+// shape newMergedLegReaderShape builds. This test's own active route adds three
+// more, and the wrong-window instrument runs the same shape twice again, so a full
+// run reports twelve; only the three are the corpus's. Without an exclusion the
+// gate is permanently red and says nothing; with an exclusion resting on prose it
+// is an assertion nobody checks.
 //
 // So the exclusion is granted HERE, by measurement, and it is registered under the
 // read's FULL identity — alias plus the merged row's leg layout — so it excuses

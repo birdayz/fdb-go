@@ -6230,9 +6230,11 @@ and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-
 UN-BOOKED. The "ordinal-fold-over-index-matched-box" enhancement is **NOT ACHIEVABLE and NOT NEEDED**
 (Graefe feasibility ruling, confirmed at 4 code sites). A WHERE-EXISTS correlating into a leg BURIED in an
 inner join is the canonical semijoin; its good plan is a CORRELATED INDEX SCAN (`Scan(A,[=b.aid])` SARG'd
-under the FlatMap) which REQUIRES NAME BINDING to flow the sibling comparand into A's index. `correlatedStep1`
-(rule_implement_nested_loop_join.go:1973) IS the index-SARG signal; `buildCorrelatedFlatMapPlan` (:449)
-passes the name-model RC straight through with NAMED correlations; `foldStep1Seed` (:1244) returns
+under the FlatMap) which REQUIRES NAME BINDING to flow the sibling comparand into A's index. All three sites
+below are in `rule_implement_nested_loop_join.go`, named by SYMBOL rather than by line because the line
+numbers this ruling first carried (`:1973`, `:449`, `:1244`) had all rotted by the time anyone re-read it:
+the `correlatedStep1` predicate IS the index-SARG signal; `buildCorrelatedFlatMapPlan`
+passes the name-model RC straight through with NAMED correlations; `foldStep1Seed` returns
 gated=false the instant correlatedStep1 is set — no ordinal seed is ever born, deliberately. Baked
 positional `ofOrdinal` refs cannot resolve against the box's name-keyed runtime row; re-birthing the box
 ordinal BREAKS the SARG (BakedNameContextError). **The "ordinal twin of name resolution over an index-matched

@@ -17,9 +17,11 @@ import (
 // dormant. It is not dormant — it executes on the real-FDB corpus on every
 // clustered-box gather, over ten thousand times in one sqldriver run. It also has
 // a READER, on a multi-leg merged row: over that same run its bindings are looked
-// up six times, every one of them on a merged row carrying SIBLING legs. What
+// up twelve times, every one of them on a merged row carrying SIBLING legs. What
 // those reads are not is LOAD-BEARING — neither removing the bindings entirely
-// nor pointing every window at the wrong slot changes a single assertion.
+// nor aiming every window at a sibling leg's slots changes a single assertion,
+// and both of those perturbations are performed by a standing test on every run
+// rather than by hand.
 //
 // A claim like that decays the moment someone adds a load-bearing consumer, and
 // it decays SILENTLY — the binder keeps working, so nothing goes red, and the
@@ -85,7 +87,7 @@ var (
 	// built expecting the corpus's reads to be SHADOWING reads — an alias already
 	// resolvable without the binder — so that "shadowed nothing" could stand in
 	// for "the binder is the only route, therefore load-bearing". Measured over a
-	// full sqldriver run: ZERO of the reads shadow, all six are UNSHADOWED. Wiring
+	// full sqldriver run: ZERO of the reads shadow, all twelve are UNSHADOWED. Wiring
 	// this tally into the gate would therefore fire on every run while Baked=0 and
 	// say nothing about consumer arrival.
 	//
@@ -106,6 +108,7 @@ var (
 	// it: if the pin's proof fails it does not register, the set is empty, and the
 	// same reads it used to excuse turn the gate red. There is no way to keep the
 	// exclusion while losing the proof.
+	//
 	// It holds a SET of proof names per shape, not one name, because one shape can
 	// have more than one live proof and they perturb it differently: the redundancy
 	// pin DECLINES the window, the wrong-window instrument MISAIMS it. Last-wins on
