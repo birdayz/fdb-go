@@ -4865,7 +4865,7 @@ cross-product (discards the index where it matters MOST). **CONSEQUENCE — THE 
 RE-SCOPED: it CANNOT delete NewAnchoredJoinRecord entirely. The correlated-index existential shape (a common
 textbook semijoin) KEEPS the name model, correctly. The cap deletes the name model ONLY for shapes that do
 NOT need name binding (independent-legs materialized joins); the correlatedStep1 name path survives as
-Java-correct, not a shortfall.** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed (EXPLAIN asserts
+Java-correct, not a shortfall.** Pinned: TestFDB_CorrelatedIndexExistsStaysIndexed (EXPLAIN asserts
 the SARG'd `[=]` index scan + correct rows) — the permanence sentinel; trips if a future producer-retirement
 re-ordinalizes this shape and drops the index. The "HARD PREREQUISITE for the cap" framing below is
 WITHDRAWN — there is no prerequisite; there is a permanent Java-correct name path.

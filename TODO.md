@@ -3520,7 +3520,7 @@ suites are the correctness authority (the §5 dual-window is already retired —
     (EXISTS→3rd-leg → [2], →4th-leg 4-way → [3], distinct from 1st-leg [1] — the per-alias legTypes bake maps to
     the correct window regardless of leg count, confirming Java's alias-keyed semantics) + mixed conjunct + NOT
     EXISTS. BUT it broke TWO existing tests, so it was reverted (uncommitted): (1)
-    **TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
+    **TestFDB_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
     EXISTS(...)` LOST its SARG'd index scan and collapsed to a full A×B×C cross product. (2)
     **TestFDB_RFC173Item1_KeyBindingAndBuriedExists/P4b_arity3_dup_exists** — a duplicate FROM alias must LOUDLY
     decline; B1 bypassed the minted-binding decline.
@@ -6244,7 +6244,7 @@ cross-product (throws away the index where it matters MOST — a regression, not
 ATOMIC CAP (task #16): it CANNOT delete NewAnchoredJoinRecord entirely — the correlated-index existential
 shape KEEPS it, correctly (Java-aligned). The cap's premise "delete the name model in ONE commit" is
 re-scoped: the correlatedStep1 name path survives; the cap deletes the name model only for the shapes that
-do NOT need name binding (independent-legs materialized joins).** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed
+do NOT need name binding (independent-legs materialized joins).** Pinned: TestFDB_CorrelatedIndexExistsStaysIndexed
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
