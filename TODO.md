@@ -10768,7 +10768,7 @@ None is speculative: each was re-verified against the tree before booking.
     both hard zeros gating it. Same class as the two arms already deleted from
     the box wrap; a candidate for the same treatment, not taken here because
     removing it is a behaviour change this census has only just begun watching.
-    Neither reader can be re-keyed
+    None of the three readers can be re-keyed
     and the reason is structural, not a shortfall: each is guarded on
     `Child != nil || Resolved != nil → bail`, so it only ever sees a lazy
     carrier minted from parsed text. One of them is worse than that — its layout

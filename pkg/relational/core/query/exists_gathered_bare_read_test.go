@@ -307,11 +307,9 @@ func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
 			"  blind-spot entry is describing something else. If it DECLINES, an\n"+
 			"  ambiguity guard was added — retire the entry.", got)
 	}
-	// The domain IS fixed by the identity: the resolution stayed inside the
-	// window (offset 1), never scanning the merged concat from 0. That is the
-	// half this site gets right, and the reason the entry is narrow debt rather
-	// than the class the two deleted arms were in.
-	if got == 0 {
-		t.Fatal("the resolution escaped its window into the merged concat")
-	}
+	// The domain IS fixed by the identity: the assertion above proves the
+	// resolution stayed inside the window (offset 1), never scanning the
+	// merged concat from 0. That is the half this site gets right, and the
+	// reason the entry is narrow debt rather than the class the two deleted
+	// arms were in.
 }
