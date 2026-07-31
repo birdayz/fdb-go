@@ -7803,6 +7803,35 @@ pre-existing baseline-vs-threshold gap already booked above (the entry
 beginning "Stress test 1M baseline Threshold column"), unchanged and
 unaffected by this branch.
 
+**2026-07-31 (RFC-195 — the cost model must not contradict what the property
+layer proves):** cost-model change, so the comparison is mandatory. Both sides
+run in the SAME worktree via a save-diff / `git apply -R` / `git apply` cycle
+rather than a second checkout — identical path, identical filesystem, identical
+Bazel cache by construction, which is a stronger version of the
+sibling-path-worktree rule (a cross-filesystem baseline is what produced the
+2.3x phantom regression). Baseline is the branch point `f50cee43e`.
+
+All 23 subtests PASS on both sides. **Every per-query row count identical** —
+diffed all 22 measured row lines, empty diff. Total runtime 152.70s baseline vs
+153.82s branch (+0.7%). Million-row scans baseline 2.99/3.37/3.20/3.33/2.95s vs
+branch 2.87/3.40/3.26/3.33/2.92s — the largest single move is
+`full_scan_count` at −0.12s (branch FASTER), and no subtest moves by more than
+0.12s in either direction. Point lookups 5.26ms, index equality 5.77ms,
+`in_list` 15.39ms on the branch: unchanged, and still against the pre-existing
+threshold gap already booked above (the entry beginning "Stress test 1M
+baseline Threshold column"), which this branch neither improves nor worsens.
+
+Interpretation, stated because the null result is easy to misread: the clamp
+DOES fire on real SQL — `SELECT COUNT(*) FROM orders` is priced at 700000 rows
+before and 1 after, measured by
+`pkg/relational/core/embedded/cardinality_clamp_reachable_test.go` — but no
+plan CHOICE moves, on this corpus or in the stress suite. The corpus-wide
+`explaindiff` agrees: 2643/2643 entries identical, 0 shape flips, 0
+regressions. Costs change substantially; rankings do not, because in these
+shapes the corrected operator has no competing alternative whose order flips.
+"Clean" here means low-risk, not inert, and the reachability test is what
+separates those two readings.
+
 **2026-07-25 (CQ-20 — PKScanOrdering drops the equality-bound PK prefix):**
 baseline worktree at the pre-change commit `473d0d0af` vs the working tree,
 same box, sequential fresh FDB containers, both runs `--nocache_test_results`.
