@@ -402,6 +402,46 @@ func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias val
 // in targetSet (the OTHER leg's provided aliases) via Reference.GetCorrelatedTo.
 // (An ordinal seed's correlations are reported directly by GetCorrelatedTo —
 // no re-exposure walk is needed.)
+// existentialLegCorrelations builds the fail-closed verification set for an
+// existential subtree: the two join quantifiers, every seed-window leg, and every
+// outer leg alias.
+//
+// It is a named function rather than three loops inline because the set IS the
+// decision — `legReferencesAny` against it is what selects between rebasing an
+// existential subtree and shipping it untouched — and a decision built inline has
+// no point at which it can be examined. It could not be tested before, and it was
+// wrong in a way no test could have caught.
+//
+// The seed windows are filed under leg IDENTITIES and join the set AS THEMSELVES.
+// They used to be re-minted here from the upper fold of those identities, a round
+// trip through text that is a no-op wherever a leg is already upper — which is
+// every leg the corpus produces at this site, and why reverting it leaves the
+// whole suite green. It is NOT a no-op for a machine mint: UniqueCorrelationIdentifier
+// mints lowercase, so folding `q$7` yields `Q$7`, the set does not contain the leg
+// the reference actually names, legReferencesAny answers FALSE, and the subtree
+// skips BOTH the rebase and the fail-closed check that exists to catch exactly
+// that. An unbound leg-correlated reference then ships — the failure this set is
+// the guard against, waved through by the guard itself.
+func existentialLegCorrelations(
+	q0Alias, q1Alias values.CorrelationIdentifier,
+	ordinalWindows map[values.CorrelationIdentifier]ordinalLegWindow,
+	outerLegAliases []string,
+) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{
+		q0Alias: {},
+		q1Alias: {},
+	}
+	for legCorr := range ordinalWindows {
+		out[legCorr] = struct{}{}
+	}
+	for _, a := range outerLegAliases {
+		if a != "" {
+			out[values.NamedCorrelationIdentifier(a)] = struct{}{}
+		}
+	}
+	return out
+}
+
 func legReferencesAny(ref *expressions.Reference, targetSet map[values.CorrelationIdentifier]struct{}) bool {
 	for a := range ref.GetCorrelatedTo() {
 		if _, ok := targetSet[a]; ok {
@@ -3764,27 +3804,21 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// before, so a decline is strictly no worse). Window keys usually repeat
 	// the leg aliases — duplicates and map order are irrelevant (every
 	// consumer builds a set).
-	existLegCorrs := map[values.CorrelationIdentifier]struct{}{
-		q0.GetAlias(): {},
-		q1.GetAlias(): {},
-	}
-	// The seed windows are filed under the leg IDENTITIES, so they join the
-	// verification set as themselves. They used to be filed under an upper fold of
-	// those identities and were re-minted here — a round trip that turned a minted
-	// lowercase leg into a leg the set could not match, i.e. exactly the reference
-	// this fail-closed check exists to catch, waved through.
-	for legCorr := range ordinalWindows {
-		existLegCorrs[legCorr] = struct{}{}
-	}
-	for _, a := range outerLegAliases {
-		if a != "" {
-			existLegCorrs[values.NamedCorrelationIdentifier(a)] = struct{}{}
-		}
-	}
-	// planReferencesAnyBuriedAlias below is a NAME-channel checker — it folds
-	// whatever it is given and matches dotted merged-row keys — so the window legs
-	// reach it as their own names. That direction (identity to text) is safe; the
-	// one this conversion removed was text to identity.
+	existLegCorrs := existentialLegCorrelations(q0.GetAlias(), q1.GetAlias(), ordinalWindows, outerLegAliases)
+	// planReferencesAnyBuriedAlias below is a NAME-channel checker, and the
+	// previous description of it here was wrong in a way worth correcting rather
+	// than quietly deleting: it said the checker "matches dotted merged-row keys".
+	// It does not, anywhere. All three of its arms — comparisonRangesReferenceAlias,
+	// predsReferenceAlias, valueReferencesAlias — enumerate the node's own
+	// GetCorrelatedTo set and test `strings.ToUpper(correlation.Name())` against an
+	// upper-folded alias set. There is no dot, no split, and no merged-row key
+	// involved; the only channel is a correlation's name, folded on both sides.
+	//
+	// That is why passing the window legs as their own NAMES is safe. Folding both
+	// sides of a comparison that is textual to begin with cannot manufacture an
+	// identity — identity to text loses information harmlessly. The direction this
+	// conversion removed was the other one, text to identity, where the fold MINTS
+	// an identifier the leg it names may disagree with.
 	verifyAliases := append([]string{}, outerLegAliases...)
 	for legCorr := range ordinalWindows {
 		verifyAliases = append(verifyAliases, legCorr.Name())
