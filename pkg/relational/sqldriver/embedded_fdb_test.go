@@ -103,6 +103,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
 	cascades.ResetFoldStep1SeedCensus()
+	cascades.ResetOrientationGateCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -142,6 +143,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// one question and removed after, leaving RFC-200's population numbers as a
 	// dated point measurement with nothing keeping them true.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFoldStep1SeedCensus())
+	// The ORIENTATION-GATE census: whether RFC-200 step 3d's fail-open fix is
+	// LIVE (box-leg seeds reaching the check and passing) or LATENT (no shape
+	// reaching it at all). A printed zero cannot tell those apart; MapCountDiffers
+	// can.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatOrientationGateCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -172,6 +178,9 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	if failed := assertFoldStep1SeedCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertOrientationGateCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code
@@ -9965,4 +9974,38 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	}
 	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
 		To(gomega.ContainElement([]string{"ALPHA_BY_NAME"}), "INDEXES Alpha contains ALPHA_BY_NAME")
+}
+
+// orientationGateFloors is RFC-200 step 3d”s live/latent discriminator.
+//
+// MEASURED over this corpus: calls 438 (not-a-seed 96, tiled-by-2 342,
+// tiled-by-other 0); of the tiled-by-2, unverifiable 84, matched 197, declined
+// 61; and 72 firings where the MAP count differs from the TILE count — of which
+// DECLINED zero.
+//
+// That last pair is the whole explanation for why 3d' moved no plan. 72 firings
+// that the old map-count gate skipped are now checked, and every one of them
+// matches; the 61 declines were all firings the old gate already checked and
+// already declined. So the step changes no decision on this corpus while making
+// 72 previously-unanswerable firings answerable.
+//
+// Floored an order of magnitude below, like every population floor on this path:
+// what a floor detects here is the shape going DARK, not drift.
+var orientationGateFloors = cascades.OrientationGateFloors{
+	Calls:           40, // measured 438
+	MapCountDiffers: 7,  // measured 72
+}
+
+// assertOrientationGateCensus checks the gate census, dropping the population
+// floors when -test.run narrows the corpus — the same split its siblings make.
+// The partitions still run: they hold over any population.
+func assertOrientationGateCensus(w io.Writer) bool {
+	floors := &orientationGateFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "orientation gate census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The partitions still run over whatever "+
+			"population this filter reached.\n", f.Value.String())
+		floors = nil
+	}
+	return cascades.AssertOrientationGateCensus(w, floors)
 }

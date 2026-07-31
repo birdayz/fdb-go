@@ -413,3 +413,168 @@ func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string)
 		return foldStep1LegShapeOther, fmt.Sprintf("%T rv=%T", node, rv)
 	}
 }
+
+// The ORIENTATION-GATE census (RFC-200 step 3d').
+//
+// It exists because the fix's expected side effect did not appear. Replacing
+// materializedNLJOrdinalLayoutMatches' map-count gate with the top-level RUN
+// LIST closes a pre-existing fail-open, and RFC-200 says that "CHANGES BEHAVIOUR
+// TODAY for box-leg seeds: they stop failing open and start being checked, which
+// can DECLINE plans currently yielded". Over the whole suite, nothing moved — no
+// golden, no plandiff, no row.
+//
+// "Nothing moved" has two very different causes and a printed zero cannot tell
+// them apart: either no seed reaches the gate in a shape the old count skipped,
+// or they all reach it correctly oriented and the check passes. The first means
+// the fix is latent; the second means it is live and agreeing. This census
+// separates them, so the null result is a measurement rather than an absence.
+type orientationGateCounters struct {
+	// Calls is every invocation of the gate.
+	Calls int
+	// NotASeed: the result value yields no run list at all — the overwhelming
+	// majority, and not this check's concern under either gate.
+	NotASeed int
+	// TiledByTwo: exactly two legs tile the row, so the check is ANSWERABLE.
+	TiledByTwo int
+	// TiledByOther: some other number of tiles — genuinely outside a
+	// 2-quantifier join's scope, and skipped under both gates.
+	TiledByOther int
+	// MapCountDiffers counts the firings where the MAP count and the TILE count
+	// disagree. This is the whole population the fix moves: under the old gate
+	// these skipped the check, under the new one they are checked.
+	//
+	// A ZERO here means the fix is LATENT — correct, but no corpus shape reaches
+	// it — and that is a different claim from "the fix is live and everything
+	// passes". Nothing else can distinguish them.
+	MapCountDiffers int
+	// Unverifiable: two tiles, but a leg plan cannot state its row type, so the
+	// structural comparison has nothing to compare. Skipped under both gates —
+	// a SECOND, separate fail-open that this change does not address.
+	Unverifiable int
+	// Matched / Declined partition the firings the check actually decided.
+	Matched  int
+	Declined int
+	// DeclinedNewlyChecked is the CROSS of Declined with MapCountDiffers: a
+	// decline on a firing the OLD map-count gate would have skipped.
+	//
+	// This is the number 3d' is actually accountable for. Declined alone mixes
+	// firings the old gate already checked and already declined (no change) with
+	// the ones it waved through (the change), and only the second kind can move a
+	// plan.
+	DeclinedNewlyChecked int
+}
+
+var (
+	orientationGateMu     sync.Mutex
+	orientationGateCounts orientationGateCounters
+)
+
+// recordOrientationGate counts one firing of the orientation check. Callers must
+// guard on values.LegIdentityCensusEnabled().
+func recordOrientationGate(mut func(*orientationGateCounters)) {
+	orientationGateMu.Lock()
+	defer orientationGateMu.Unlock()
+	mut(&orientationGateCounts)
+}
+
+// OrientationGateCensus reports the counters.
+func OrientationGateCensus() orientationGateCounters {
+	orientationGateMu.Lock()
+	defer orientationGateMu.Unlock()
+	return orientationGateCounts
+}
+
+// ResetOrientationGateCensus clears the counters.
+func ResetOrientationGateCensus() {
+	orientationGateMu.Lock()
+	defer orientationGateMu.Unlock()
+	orientationGateCounts = orientationGateCounters{}
+}
+
+// FormatOrientationGateCensus renders the census for a harness to log.
+func FormatOrientationGateCensus() string {
+	c := OrientationGateCensus()
+	return fmt.Sprintf("orientation gate (materializedNLJOrdinalLayoutMatches): calls %d "+
+		"(not-a-seed %d, tiled-by-2 %d, tiled-by-other %d); of the tiled-by-2: "+
+		"unverifiable %d, matched %d, DECLINED %d; firings where the MAP count "+
+		"differs from the TILE count (the population 3d' moves) %d, of which "+
+		"DECLINED (the plans 3d' is accountable for) %d",
+		c.Calls, c.NotASeed, c.TiledByTwo, c.TiledByOther,
+		c.Unverifiable, c.Matched, c.Declined, c.MapCountDiffers, c.DeclinedNewlyChecked)
+}
+
+// OrientationGateFloors pins that RFC-200 step 3d' stays LIVE.
+//
+// The step closed a pre-existing fail-open and moved NO plan, and the reason is
+// measured rather than assumed: 72 firings that the old map-count gate skipped
+// are now checked, and every one of them MATCHES. The 61 declines the gate
+// reports were all firings the old gate already checked and already declined.
+//
+// So the floor that matters is MapCountDiffers. If it reaches zero the fix has
+// gone LATENT — no corpus shape reaches the newly-answerable path — and every
+// claim that the fail-open is closed becomes vacuous, printing exactly the same
+// "no plans moved" as today.
+type OrientationGateFloors struct {
+	// Calls floors the gate's overall population.
+	Calls int
+	// MapCountDiffers floors the population the step MOVES. This is the
+	// live/latent discriminator; see the type doc.
+	MapCountDiffers int
+}
+
+// AssertOrientationGateCensus checks the partitions and the floors.
+func AssertOrientationGateCensus(w io.Writer, floors *OrientationGateFloors) bool {
+	return assertOrientationGateCounters(w, OrientationGateCensus(), floors)
+}
+
+func assertOrientationGateCounters(w io.Writer, c orientationGateCounters, floors *OrientationGateFloors) bool {
+	failed := false
+	// The partition, which holds over any population: every call lands in exactly
+	// one of the three shape buckets.
+	if got := c.NotASeed + c.TiledByTwo + c.TiledByOther; got != c.Calls {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: notASeed(%d) + tiledByTwo(%d) + "+
+			"tiledByOther(%d) = %d, but calls = %d.\n"+
+			"  Every firing has exactly one tile count, so these must partition the\n"+
+			"  calls. A gap means a shape arm returns before recording.\n",
+			c.NotASeed, c.TiledByTwo, c.TiledByOther, got, c.Calls)
+	}
+	if got := c.Unverifiable + c.Matched + c.Declined; got != c.TiledByTwo {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: unverifiable(%d) + matched(%d) + "+
+			"declined(%d) = %d, but tiledByTwo = %d.\n"+
+			"  Only a two-tile row reaches the structural comparison, and it then takes\n"+
+			"  exactly one of the three dispositions.\n",
+			c.Unverifiable, c.Matched, c.Declined, got, c.TiledByTwo)
+	}
+	if c.DeclinedNewlyChecked > c.Declined || c.DeclinedNewlyChecked > c.MapCountDiffers {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: declinedNewlyChecked(%d) exceeds "+
+			"declined(%d) or mapCountDiffers(%d) — it is the CROSS of those two and "+
+			"cannot be larger than either.\n",
+			c.DeclinedNewlyChecked, c.Declined, c.MapCountDiffers)
+	}
+	if floors == nil {
+		return failed
+	}
+	if c.Calls < floors.Calls {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: %d calls, want >= %d — the gate is "+
+			"not being reached at all.\n", c.Calls, floors.Calls)
+	}
+	if c.MapCountDiffers < floors.MapCountDiffers {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: only %d firing(s) have a MAP count "+
+			"differing from the TILE count, want >= %d.\n"+
+			"  This is RFC-200 step 3d''s live/latent discriminator. That step replaced a\n"+
+			"  map-count gate with the top-level RUN LIST, closing a pre-existing\n"+
+			"  fail-open, and it moved NO plan — measured: 72 firings became newly\n"+
+			"  checkable and ALL of them matched.\n"+
+			"  WHAT A ZERO RE-ARMS: with no firing reaching the newly-answerable path,\n"+
+			"  'the fail-open is closed' becomes an untested claim that prints exactly\n"+
+			"  the same clean result as a live, agreeing check. Find out why the box-leg\n"+
+			"  seed shapes stopped being planned before concluding anything from the\n"+
+			"  zero declines beside it.\n", c.MapCountDiffers, floors.MapCountDiffers)
+	}
+	return failed
+}

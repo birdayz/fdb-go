@@ -351,11 +351,24 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[values.CorrelationIdentifier]
 // needs the nested windows is a change to RFC-200's design, not an addition to
 // this list: the per-consumer argument has to be re-made before it can be added.
 func ordinalSeedLegWindowsAcceptingNestedOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType) {
+	w, m, _ := ordinalSeedLegLayoutOf(rv)
+	return w, m
+}
+
+// ordinalSeedLegLayoutOf adds the TOP-LEVEL RUN LIST — the windows that TILE the
+// merged row, in offset order — for the one consumer that asks a positional
+// question about the whole row rather than addressing one leg of it.
+//
+// The map cannot answer it. finalizeSeedWindows' rightmost-leaf case REPLACES a
+// box run's own entry with a narrower sub-window, so after finalization the map
+// no longer states which windows tile the row, and a narrowed tile is
+// indistinguishable from a leg that was always that narrow.
+func ordinalSeedLegLayoutOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType, []ordinalLegWindow) {
 	rc, isRC := rv.(*values.RecordConstructorValue)
 	if !isRC {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return values.OrdinalSeedLegWindowsAcceptingNested(rc)
+	return values.OrdinalSeedLegLayout(rc)
 }
 
 // rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the lazy

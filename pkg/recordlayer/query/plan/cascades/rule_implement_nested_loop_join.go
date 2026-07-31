@@ -2286,25 +2286,84 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 // the ordinals address a structurally valid slot of either physical leg
 // either way, so there is nothing for this check to distinguish.
 func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, innerPlan plans.RecordQueryPlan) bool {
-	windows, _ := ordinalSeedLegWindowsAcceptingNestedOf(resultValue)
-	if len(windows) != 2 {
-		// Not a pristine 2-leg ordinal seed (nil: not an ordinal seed at all;
-		// any count other than 2 is outside a 2-quantifier join's own scope,
-		// e.g. a buried/nested leg layout this check does not reason about)
-		// — not this check's concern either way.
+	windows, _, runs := ordinalSeedLegLayoutOf(resultValue)
+	census := values.LegIdentityCensusEnabled()
+	// Whether the OLD map-count gate would have skipped this firing. Computed
+	// once and carried, because it is the discriminator both recordings need and
+	// re-deriving it at the second one is a second copy of the rule.
+	newlyChecked := runs != nil && len(windows) != len(runs)
+	if census {
+		// The MAP-vs-TILE disagreement is recorded FIRST and unconditionally,
+		// because it is the population this step moves and it is the one number
+		// that separates "the fix is live and agreeing" from "the fix is latent".
+		recordOrientationGate(func(c *orientationGateCounters) { c.Calls++ })
+		recordOrientationGate(func(c *orientationGateCounters) {
+			switch {
+			case runs == nil:
+				c.NotASeed++
+			case len(runs) == 2:
+				c.TiledByTwo++
+			default:
+				c.TiledByOther++
+			}
+			if newlyChecked {
+				c.MapCountDiffers++
+			}
+		})
+	}
+	// THE GATE IS THE RUN LIST, NOT THE MAP, and the correction is a behaviour
+	// change rather than a refactor.
+	//
+	// This used to read `len(windows) != 2 → return true`, described as "the safe
+	// default". It is backwards: returning TRUE is the PERMISSIVE answer. The
+	// function's own doc says declining is always safe, because the
+	// commutativity exploration ADDS an alternative candidate and never removes
+	// the non-swapped one — so a decline costs at most a lost alternative, while
+	// an accept can promote a swapped orientation whose baked ordinals no longer
+	// address the row this physical plan produces.
+	//
+	// The map's count was never the right question. finalizeSeedWindows ADDS a
+	// sub-window per buried leaf of a clustered box leg, so a 2-quantifier join
+	// with a box leg has ALWAYS reported more than 2 entries and has ALWAYS
+	// skipped this check — a fail-open that predates the nested kind. The run
+	// list asks what the check actually means: how many legs TILE this row.
+	if len(runs) != 2 {
+		// Genuinely outside a 2-quantifier join's scope: not an ordinal seed at
+		// all, or a row tiled by some other number of legs. Nothing for this
+		// check to compare.
 		return true
 	}
 	outerType := planRowRecordType(outerPlan)
 	innerType := planRowRecordType(innerPlan)
 	if outerType == nil || innerType == nil {
-		return true // can't verify structurally — safe default
+		// A SECOND fail-open, separate from the one 3d' closes and left standing
+		// deliberately: a leg whose plan cannot state its row shape gives the
+		// structural comparison nothing to compare, and guessing is what this
+		// check was rewritten to stop doing. Counted so it is visible rather than
+		// merely true.
+		if census {
+			recordOrientationGate(func(c *orientationGateCounters) { c.Unverifiable++ })
+		}
+		return true
 	}
-	legs := make([]ordinalLegWindow, 0, 2)
-	for _, w := range windows {
-		legs = append(legs, w)
+	// runs arrives in OFFSET order from the derivation, which is the seed's own
+	// physical order and the only thing that identifies which leg occupies which
+	// slot without naming anything. Sorting here as well would be a second copy
+	// of that ordering rule.
+	ok := recordFieldsMatch(runs[0].Typ, outerType) && recordFieldsMatch(runs[1].Typ, innerType)
+	if census {
+		recordOrientationGate(func(c *orientationGateCounters) {
+			if ok {
+				c.Matched++
+				return
+			}
+			c.Declined++
+			if newlyChecked {
+				c.DeclinedNewlyChecked++
+			}
+		})
 	}
-	sort.Slice(legs, func(i, j int) bool { return legs[i].Offset < legs[j].Offset })
-	return recordFieldsMatch(legs[0].Typ, outerType) && recordFieldsMatch(legs[1].Typ, innerType)
+	return ok
 }
 
 // recordFieldsMatch compares two RecordTypes by FIELDS only (name + ordinal +

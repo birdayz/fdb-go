@@ -105,7 +105,31 @@ type OrdinalSeedLegWindow struct {
 // silently be missing sub-windows it would have had for a flat box leg, and a
 // declined optimization is recoverable while a wrong ordinal is not.
 func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType) {
-	return ordinalSeedLegWindows(rc, false)
+	w, m, _ := ordinalSeedLegWindows(rc, false)
+	return w, m
+}
+
+// OrdinalSeedLegLayout is OrdinalSeedLegWindowsAcceptingNested plus the
+// TOP-LEVEL RUN LIST: the windows that TILE the merged row, in offset order.
+//
+// THE MAP CANNOT SERVE THIS, and that is why the walk returns it rather than a
+// caller deriving it. finalizeSeedWindows' rightmost-leaf case REPLACES a box
+// run's own entry with a narrower sub-window — deliberately, because the box IS
+// its rightmost leaf under the sourceBinding convention and an alias-qualified
+// read must window the leaf rather than FieldIndex across the whole concat. So
+// after finalization "the windows that tile the row" is simply not recoverable
+// from the map: one of the tiles has been overwritten by something narrower, and
+// nothing distinguishes that from a seed that always had a narrow leg there.
+//
+// It is the planner twin of what the executor already returns —
+// ordinalJoinSpansOf's `spans []legSpan`, in offset order — which is the shape
+// this list is modelled on rather than invented against.
+//
+// Callers that only need the addressable map keep the two-value entries; this
+// exists for the ONE consumer that has to ask "how many legs tile this row, and
+// what shape is each" (materializedNLJOrdinalLayoutMatches' orientation check).
+func OrdinalSeedLegLayout(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
+	return ordinalSeedLegWindows(rc, true)
 }
 
 // OrdinalSeedLegWindowsAcceptingNested is OrdinalSeedLegWindows plus the NESTED
@@ -124,12 +148,13 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 // Everything else — the pristine walk, the mixed-element walk, the coverage
 // checks, the >= 2 window rule — is byte-identical between the two entries.
 func OrdinalSeedLegWindowsAcceptingNested(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType) {
-	return ordinalSeedLegWindows(rc, true)
+	w, m, _ := ordinalSeedLegWindows(rc, true)
+	return w, m
 }
 
-func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType) {
+func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	if rc == nil || len(rc.Fields) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// THE WHOLE-RC RECOGNIZER RUNS BEFORE THE PER-FIELD WALK, and the ordering is
 	// LOAD-BEARING rather than stylistic.
@@ -170,7 +195,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 			elemQOV := f.Value.(*QuantifiedObjectValue)
 			elemName := strings.ToUpper(f.Name)
 			if _, dup := windows[elemQOV.Correlation]; dup {
-				return nil, nil // two element fields over one correlation — not a seed
+				return nil, nil, nil // two element fields over one correlation — not a seed
 			}
 			// The window's IDENTITY is the element QOV's own correlation, carried —
 			// and it is now the KEY as well. It used to be minted as
@@ -199,27 +224,27 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 		}
 		fv, isFV := f.Value.(*FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
-			return nil, nil
+			return nil, nil, nil
 		}
 		acc, single := fv.Resolved.Single()
 		if !single {
-			return nil, nil
+			return nil, nil, nil
 		}
 		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
 		if !isQOV {
-			return nil, nil
+			return nil, nil, nil
 		}
 		legType, isRT := qov.Typ.(*RecordType)
 		if !isRT {
-			return nil, nil
+			return nil, nil, nil
 		}
 		alias := qov.Correlation
 		if alias != curAlias {
 			if _, dup := windows[alias]; dup {
-				return nil, nil // a split run — not pristine
+				return nil, nil, nil // a split run — not pristine
 			}
 			if acc.Ordinal != 0 {
-				return nil, nil
+				return nil, nil, nil
 			}
 			curAlias = alias
 			curStart = i
@@ -231,7 +256,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 			windows[alias] = OrdinalSeedLegWindow{Kind: LegKindFlatRun, Offset: curStart, Typ: legType, Alias: alias}
 			names[alias] = strings.ToUpper(alias.Name())
 		} else if acc.Ordinal != i-curStart {
-			return nil, nil
+			return nil, nil, nil
 		}
 		counts[alias]++
 		mergedFields[i] = Field{Name: f.Name, FieldType: fv.Typ, Ordinal: i}
@@ -240,7 +265,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 	// the element's synthesized 1-field window has count 1).
 	for alias, w := range windows {
 		if counts[alias] != len(w.Typ.Fields) {
-			return nil, nil
+			return nil, nil, nil
 		}
 	}
 	// ACCEPT-EQUIVALENCE with the executor twin (ordinalJoinSpansOf/unnestMixedSeedSpans,
@@ -249,9 +274,33 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 	// leg is a folded projection; a lone element is not a gather. finalizeSeedWindows then
 	// emits per-buried-leg sub-windows for any clustered BOX leg (box-alias→rightmost-leaf).
 	if len(windows) < 2 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return finalizeSeedWindows(windows, names, mergedFields, acceptNested)
+	return finalizeSeedWindows(windows, names, mergedFields, acceptNested, topLevelRuns(windows))
+}
+
+// topLevelRuns snapshots the windows that TILE the merged row, in offset order,
+// BEFORE finalizeSeedWindows can alter them.
+//
+// The snapshot has to be taken here and cannot be recovered later, and the
+// reason is a deliberate feature of finalization rather than an accident: the
+// rightmost-leaf case REPLACES a clustered box run's own entry with a narrower
+// sub-window, because the box IS its rightmost leaf under the sourceBinding
+// convention and an alias-qualified read must window the leaf rather than
+// FieldIndex across the whole concat. After that, one of the tiles has been
+// overwritten by something narrower and nothing in the map distinguishes it from
+// a seed that always had a narrow leg there.
+//
+// Offset order, not map order, because the consumer asks a POSITIONAL question:
+// which physical leg occupies which slot. Map iteration order is randomised in
+// Go, so an unsorted list would make that consumer nondeterministic.
+func topLevelRuns(windows map[CorrelationIdentifier]OrdinalSeedLegWindow) []OrdinalSeedLegWindow {
+	runs := make([]OrdinalSeedLegWindow, 0, len(windows))
+	for _, w := range windows {
+		runs = append(runs, w)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].Offset < runs[j].Offset })
+	return runs
 }
 
 // positionalMergeWindows derives one window per slot of a POSITIONAL MERGE row —
@@ -266,7 +315,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 // one-step ordinal walk (FieldValue.ofOrdinalNumber over the merge quantifier)
 // that returns the leg's whole Message because the field is of message type.
 // Nesting is free there. Here it needs a window that SAYS the slot is nested.
-func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType) {
+func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	n := len(rc.Fields)
 	windows := make(map[CorrelationIdentifier]OrdinalSeedLegWindow, n)
 	names := make(map[CorrelationIdentifier]string, n)
@@ -315,7 +364,7 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 	}
 	// IsPositionalMergeRC already requires >= 2 fields over DISTINCT quantifiers,
 	// so the >= 2 window rule the other branches enforce holds by construction.
-	return finalizeSeedWindows(windows, names, mergedFields, true)
+	return finalizeSeedWindows(windows, names, mergedFields, true, topLevelRuns(windows))
 }
 
 // finalizeSeedWindows runs the ADDITIVE per-buried-leg sub-window derivation over
@@ -329,7 +378,7 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 // exactly like a top-level leg's (Java's rewire-by-ordinal — a buried source is
 // just another window). Sub-windows are slices of a run (no counts), never
 // overwrite a top-level run's own window.
-func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow, names map[CorrelationIdentifier]string, mergedFields []Field, acceptNested bool) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType) {
+func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow, names map[CorrelationIdentifier]string, mergedFields []Field, acceptNested bool, runs []OrdinalSeedLegWindow) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	for _, w := range windows {
 		// A NESTED window's own Typ is a leg row ONE LEVEL DOWN, so its .Legs
 		// describe boundaries inside that row — two steps from the merged row, and
@@ -340,7 +389,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 		// is a seed whose qualified reads resolve to the WRONG SLOTS, so the honest
 		// answer is no ordinal layout at all and the name model instead.
 		if w.Kind == LegKindNested && len(w.Typ.Legs) > 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
 		for li, leg := range w.Typ.Legs {
 			if leg.Name == "" {
@@ -351,7 +400,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// top-level-only windows would silently be missing sub-windows it WOULD
 			// have had for a flat box leg, and it has no way to tell the two apart.
 			if leg.Kind == LegKindNested && !acceptNested {
-				return nil, nil
+				return nil, nil, nil
 			}
 			// A leg that states a NAME but no IDENTITY declines the whole seed.
 			//
@@ -374,7 +423,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// qualified reads resolve to the wrong slots, so the honest answer is no
 			// ordinal layout at all and the name model instead.
 			if leg.Alias.IsZero() {
-				return nil, nil
+				return nil, nil, nil
 			}
 			if LegIdentityCensusEnabled() {
 				// The RETIRED predicate is reproduced from the identity so the census
@@ -452,14 +501,14 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 				// the shape the bound check exists to catch. Typ must be the LEG's own
 				// record type so the bound is the leg's real width.
 				if leg.Start < 0 || leg.Start >= len(w.Typ.Fields) {
-					return nil, nil // malformed bounds on a nested leg — no layout at all
+					return nil, nil, nil // malformed bounds on a nested leg — no layout at all
 				}
 				subType, isRT := w.Typ.Fields[leg.Start].FieldType.(*RecordType)
 				if !isRT || subType == nil {
 					// The carrying run says slot leg.Start holds a whole leg row and the
 					// TYPE says otherwise. Two producers disagreeing about a slot's shape
 					// is not something to approximate around.
-					return nil, nil
+					return nil, nil, nil
 				}
 				// The `taken` test above already ran and is not repeated here: a second
 				// copy of the ADD-beside/REPLACE rule is a second place for it to drift.
@@ -561,7 +610,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 		}
 		return mergedLegs[i].Name < mergedLegs[j].Name
 	})
-	return windows, &RecordType{Fields: mergedFields, Legs: mergedLegs}
+	return windows, &RecordType{Fields: mergedFields, Legs: mergedLegs}, runs
 }
 
 // isMixedSeedElement reports whether an RC field is the MIXED-seed scalar element

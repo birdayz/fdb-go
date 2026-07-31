@@ -195,3 +195,170 @@ func TestLegKind_ThePlannerLegConcatStampsFlatRun(t *testing.T) {
 			legs[0].Kind)
 	}
 }
+
+// RFC-200 step 3d': materializedNLJOrdinalLayoutMatches gates on the TOP-LEVEL
+// RUN LIST, and the map cannot serve that question.
+//
+// The old gate was `len(windows) != 2 -> return true`, described as "the safe
+// default". It is the PERMISSIVE answer: the function's own doc says declining
+// is always safe, because the join-commutativity exploration ADDS an alternative
+// candidate and never removes the non-swapped one. Returning true admits a
+// swapped orientation whose baked ordinals no longer address the row the
+// physical plan produces.
+//
+// THE FAIL-OPEN IS PRE-EXISTING, not introduced by the nested kind, and this
+// test is the demonstration. finalizeSeedWindows ADDS a sub-window per buried
+// leaf of a clustered BOX leg, so a 2-quantifier join with a box leg already
+// reports more than two map entries today and already skips the check. The run
+// list says two, because two legs tile the row.
+func TestLegKind_TheOrientationGateCountsTilesNotMapEntries(t *testing.T) {
+	t.Parallel()
+
+	mk := func(alias string, cols ...string) *values.QuantifiedObjectValue {
+		fields := make([]values.Field, len(cols))
+		for i, c := range cols {
+			fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
+		}
+		return values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier(alias),
+			values.NewRecordType("", false, fields))
+	}
+	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		fv, err := values.NewFieldValueOfOrdinal(qov, i)
+		if err != nil {
+			t.Fatalf("bake: %v", err)
+		}
+		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+	}
+
+	// A plain 2-leg seed: two tiles, two map entries. The two questions coincide
+	// here, which is why a fixture without a box leg cannot tell them apart.
+	a := mk("A", "AID", "AV")
+	b := mk("B", "BID")
+	plain := values.NewRawRecordConstructorValue(bake(a, 0), bake(a, 1), bake(b, 0))
+	if _, _, runs := ordinalSeedLegLayoutOf(plain); len(runs) != 2 {
+		t.Fatalf("a plain 2-leg seed reports %d tiles, want 2 — the control is broken", len(runs))
+	}
+
+	// A 2-leg seed whose SECOND leg is a clustered BOX carrying two buried
+	// leaves. Still TWO tiles; the map gains the buried leaves' sub-windows.
+	boxTyp := values.NewRecordType("", false, []values.Field{
+		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "BV", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "EID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	boxTyp.Legs = []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 0, 2),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("E"), "E", 2, 1),
+	}
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	boxSeed := values.NewRawRecordConstructorValue(
+		bake(a, 0), bake(a, 1), bake(boxQOV, 0), bake(boxQOV, 1), bake(boxQOV, 2))
+
+	windows, _, runs := ordinalSeedLegLayoutOf(boxSeed)
+	if len(runs) != 2 {
+		t.Fatalf("a 2-leg seed with a BOX second leg reports %d TILES, want 2 — the run "+
+			"list is what makes the orientation gate answerable, and it must count the "+
+			"legs that tile the row rather than the addressable names", len(runs))
+	}
+	if len(windows) <= 2 {
+		t.Fatalf("the map reports %d entries for the box seed, want MORE than 2.\n"+
+			"  This test's whole point is that the map's count and the tile count "+
+			"diverge for a box leg — finalizeSeedWindows adds a sub-window per buried "+
+			"leaf. If they no longer diverge, the fixture has stopped reproducing the "+
+			"shape the pre-existing fail-open fires on, and the assertion above holds "+
+			"for the uninteresting reason that the two counts agree.", len(windows))
+	}
+
+	// And the tiles arrive in OFFSET order, which is what identifies which
+	// physical leg occupies which slot without consulting a name. Map iteration
+	// order is randomised, so an unsorted list would make the gate
+	// nondeterministic — passing on one run and declining on the next.
+	if runs[0].Offset != 0 || runs[1].Offset != 2 {
+		t.Fatalf("tiles arrived at offsets (%d, %d), want (0, 2) in offset order",
+			runs[0].Offset, runs[1].Offset)
+	}
+	if len(runs[0].Typ.Fields) != 2 || len(runs[1].Typ.Fields) != 3 {
+		t.Fatalf("tile widths (%d, %d), want (2, 3) — the SECOND tile is the whole box "+
+			"run, not its narrowed rightmost-leaf sub-window. If it is 1, the run list "+
+			"is being read out of the map AFTER finalization replaced that tile, which "+
+			"is exactly the thing the map cannot serve.",
+			len(runs[0].Typ.Fields), len(runs[1].Typ.Fields))
+	}
+}
+
+// The CONSUMER half of 3d': materializedNLJOrdinalLayoutMatches must actually
+// DECLINE a swapped box-leg seed, where it used to fail open.
+//
+// The test above pins the derivation — that the run list counts tiles while the
+// map counts addressable names. This one pins that the gate READS the run list,
+// which is a separate fact: a gate that still counted map entries would go on
+// skipping this shape with the derivation perfectly correct.
+//
+// THE SHAPE IS THE PRE-EXISTING FAIL-OPEN, not a nested one. A 2-quantifier join
+// whose second leg is a clustered BOX already reports more than two map entries
+// today, so `len(windows) != 2 → return true` already skipped it — which is why
+// this change moves box-leg plans that have nothing to do with the merge row,
+// and why it lands on its own sequencing step.
+func TestOrientationGate_DeclinesASwappedBoxLegSeed(t *testing.T) {
+	t.Parallel()
+
+	legA := values.NewRecordType("", false, []values.Field{
+		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	boxTyp := values.NewRecordType("", false, []values.Field{
+		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "BV", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "EID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	boxTyp.Legs = []values.RecordTypeLeg{
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 0, 2),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("E"), "E", 2, 1),
+	}
+
+	aQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		fv, err := values.NewFieldValueOfOrdinal(qov, i)
+		if err != nil {
+			t.Fatalf("bake: %v", err)
+		}
+		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+	}
+	// The seed's baked layout: leg A tiles slots [0,2), the box tiles [2,5).
+	seed := values.NewRawRecordConstructorValue(
+		bake(aQOV, 0), bake(aQOV, 1),
+		bake(boxQOV, 0), bake(boxQOV, 1), bake(boxQOV, 2))
+
+	aPlan := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
+	boxPlan := plans.NewRecordQueryScanPlan([]string{"E"}, boxTyp, false)
+
+	// CORRECT orientation: outer is A, inner is the box — exactly what the seed's
+	// ordinals were baked against.
+	if !materializedNLJOrdinalLayoutMatches(seed, aPlan, boxPlan) {
+		t.Fatal("the gate DECLINED the correctly-oriented seed. Declining is always " +
+			"safe, so this is not a correctness bug — but it means the negative below " +
+			"holds for the uninteresting reason that the gate declines everything, and " +
+			"it costs every box-leg plan its commutativity alternative.")
+	}
+
+	// SWAPPED orientation: the same seed with the legs exchanged, which is what a
+	// WithSwappedQuantifiers firing produces — it reuses resultValue UNCHANGED.
+	// The seed's ordinals now address the wrong row.
+	if materializedNLJOrdinalLayoutMatches(seed, boxPlan, aPlan) {
+		t.Fatal("the gate ACCEPTED a SWAPPED box-leg seed.\n" +
+			"  This is the pre-existing FAIL-OPEN: `len(windows) != 2 -> return true`\n" +
+			"  read the MAP, and a box leg's buried sub-windows already push that count\n" +
+			"  past 2, so this shape has always skipped the check. Returning true is the\n" +
+			"  PERMISSIVE answer, not the safe one — the function's own doc says\n" +
+			"  declining is always safe because commutativity ADDS a candidate and never\n" +
+			"  removes the non-swapped one.\n" +
+			"  WHAT IT ADMITS: a stale-cost-model victory can promote this orientation to\n" +
+			"  the memo's winner, and every baked reference into the seed then reads the\n" +
+			"  wrong slot or fails loud with an unbound correlation — a plan the query\n" +
+			"  cannot execute.\n" +
+			"  If this went green again, the gate is reading the MAP instead of the\n" +
+			"  top-level RUN LIST.")
+	}
+}
