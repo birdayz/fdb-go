@@ -246,10 +246,12 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 				"binder-produced window on a MULTI-LEG merged row (%s) while the "+
 				"leg-local bake produced NOTHING (Baked=0), and no proof in this run "+
 				"showed them redundant.\n\n"+
-				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's only\n"+
-				"  planner-side producer, the leg-local bake, is deleted on this branch\n"+
-				"  and returns with CQ-63, so a read appearing while Baked is still 0\n"+
-				"  means a consumer arrived by some OTHER route.\n\n"+
+				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's\n"+
+				"  planner-side producer is rebaseOuterLegValue's PASS-THROUGH — the arm\n"+
+				"  that hands a leg-correlated read back on its own leg correlation —\n"+
+				"  and it is measured at 162 of 162 firings on this corpus. Baked = 0\n"+
+				"  therefore means that arm stopped producing, so a read appearing\n"+
+				"  anyway arrived by some OTHER route.\n\n"+
 				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
 				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
 				"      agree, the way TestFDB_MergedLegBinding_ReaderShapeIsRedundant\n"+
