@@ -136,9 +136,16 @@ func TestLegColumnOwner_ASourceLegOwnerWouldSelect(t *testing.T) {
 //
 // The seed leg types that drive the dotted arm are SINGLE-COLUMN and their Legs
 // slice is empty — measured at all four hits. RecordType.Legs is layout metadata
-// that Equals and Hash ignore, so a producer COULD populate it without moving any
-// name, any label, or any type identity. That is the shape of the unblocking
-// change, and this test states the precondition it would remove.
+// that the type's identity ignores, so a producer COULD populate it without
+// moving any name, any label, or any type identity. That is the shape of the
+// unblocking change, and this test states the precondition it would remove.
+//
+// This test asserts the EQUALS half. The identity-hash half is
+// TestLegColumnOwner_TheLegTableReachesNoMemoIdentity, and the split is
+// deliberate: this comment used to say "Equals and Hash ignore it" while only
+// Equals was checked, and RecordType has no Hash method at all — the sentence
+// named a mechanism that does not exist, so a reader chasing it would have found
+// nothing and concluded the claim was covered.
 func TestLegColumnOwner_TheDestinationLegTypeCarriesNoLegTable(t *testing.T) {
 	t.Parallel()
 
@@ -165,5 +172,140 @@ func TestLegColumnOwner_TheDestinationLegTypeCarriesNoLegTable(t *testing.T) {
 			"documented to ignore Legs (layout metadata only); if that is no longer true, " +
 			"populating the seed leg's table is a plan-visible change and the label-stability " +
 			"argument for doing it has to be re-made.")
+	}
+}
+
+// TestLegColumnOwner_TheLegTableReachesNoMemoIdentity is the identity-hash twin
+// of the test above, and it exists because the claim it checks was stated
+// against a mechanism that does not exist.
+//
+// RecordType.Legs' own doc says "Equals/Hash ignore it — layout metadata only",
+// and the sibling test's comment repeated it. There is NO Hash method on
+// RecordType, on Type, or anywhere in values/type.go. So the second half of the
+// claim named nothing, and a reader verifying it would have found no such method
+// and moved on — the most durable way for an unchecked claim to read as checked.
+//
+// WHAT THE MEMO ACTUALLY KEYS ON, read rather than assumed. Two channels, and a
+// *RecordType can ride into both:
+//
+//   - values.SemanticHashCode (semantic_hash.go), the memo's structural hash.
+//     Its QuantifiedObjectValue arm folds the bare tag "qov" with the alias AND
+//     the type excluded; its FieldValue arm folds ordinals only; its
+//     RecordConstructorValue arm folds field NAMES only.
+//   - values.EqualsWithoutChildren (map_field_values.go:320), the memo's
+//     structural equality, reached through SemanticEqualsUnderAliasMap and
+//     expressions.memoEqual. Its QOV arm compares Correlation only; its
+//     FieldValue arm compares the resolved ordinal path (or, lazy, the name);
+//     its RC arm compares field names. The only arms that look at a type at all
+//     are Cast/Promote, through typesEqual — which compares Code() and
+//     IsNullable() and never reaches a record's fields, let alone its legs.
+//
+// THE HAZARD THIS GUARDS, stated so a future reader does not have to reconstruct
+// it: RFC-200 gives RecordTypeLeg an explicit Kind and lets a producer populate
+// a leg table where none was populated before. If any identity channel started
+// reading Legs, two structurally identical rows carrying different leg tables
+// would stop interning as one memo member — silently, as a duplicate group and
+// a lost dedup rather than as an error — and every "populating the leg table is
+// label-safe" argument in this file and in RFC-200 §Decision would be void.
+//
+// It is asserted over every carrier a leg-table-bearing record type actually
+// travels on, not just one, because the arms above are per-carrier: a hash arm
+// that started folding a type would move exactly one of these.
+func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
+	t.Parallel()
+
+	fields := []values.Field{{Name: "ID", Ordinal: 0}, {Name: "QTY", Ordinal: 1}}
+	bare := &values.RecordType{Fields: fields}
+	withLegs := &values.RecordType{
+		Fields: fields,
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 1, 1),
+		},
+	}
+	corr := values.NamedCorrelationIdentifier("Q")
+
+	fieldValueOver := func(rt *values.RecordType) values.Value {
+		fv, err := values.NewFieldValueOfOrdinal(values.NewQuantifiedObjectValueOfType(corr, rt), 1)
+		if err != nil {
+			t.Fatalf("ofOrdinal over the leg-table fixture failed: %v", err)
+		}
+		return fv
+	}
+	rcOver := func(rt *values.RecordType) values.Value {
+		return values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{
+				Name:  values.OrdinalFieldName(0),
+				Value: values.NewQuantifiedObjectValueOfType(corr, rt),
+			})
+	}
+
+	for _, tc := range []struct {
+		carrier string
+		a, b    values.Value
+	}{
+		{
+			carrier: "a typed QuantifiedObjectValue — how a leg's row reaches a seed",
+			a:       values.NewQuantifiedObjectValueOfType(corr, bare),
+			b:       values.NewQuantifiedObjectValueOfType(corr, withLegs),
+		},
+		{
+			carrier: "a baked FieldValue over that QOV — how a seed slot addresses it",
+			a:       fieldValueOver(bare),
+			b:       fieldValueOver(withLegs),
+		},
+		{
+			carrier: "a RecordConstructorValue holding it — the positional merge's own shape",
+			a:       rcOver(bare),
+			b:       rcOver(withLegs),
+		},
+	} {
+		if ha, hb := values.SemanticHashCode(tc.a), values.SemanticHashCode(tc.b); ha != hb {
+			t.Errorf("%s: SemanticHashCode moved when a leg table was added (%d vs %d).\n"+
+				"  RecordType.Legs is documented as layout metadata carrying NO identity "+
+				"semantics, and the memo's hash is the channel that claim has to hold in. "+
+				"With it reading Legs, two structurally identical rows carrying different "+
+				"leg tables stop interning as one member — silently, as a duplicate group "+
+				"and a lost dedup, never as an error. Every 'populating the leg table is "+
+				"label-safe' argument in this file and in RFC-200 is void until this is "+
+				"fixed at the hash, not here.", tc.carrier, ha, hb)
+		}
+		if !values.SemanticEqualsUnderAliasMap(tc.a, tc.b, values.AliasMap{}) {
+			t.Errorf("%s: SemanticEqualsUnderAliasMap says a leg table changes the value's "+
+				"identity.\n"+
+				"  This is the equality half of the same claim, and it is the half that "+
+				"decides membership after the hash decides the bucket. Equal-implies-"+
+				"same-hash still holds if BOTH move, so both are asserted separately — a "+
+				"test that only checked the hash would pass while interning was broken.",
+				tc.carrier)
+		}
+		// EqualsWithoutChildren is asserted SEPARATELY and not as a formality.
+		// SemanticEqualsUnderAliasMap INTERCEPTS correlation-bearing leaves before
+		// the structural path (semantic_equals.go:25-56), so a QuantifiedObjectValue
+		// never reaches EqualsWithoutChildren's own QOV arm through it — the two are
+		// independent copies of the "a QOV is its correlation" rule, and a mutation
+		// to one is invisible through the other. Measured: teaching
+		// EqualsWithoutChildren's QOV arm to read Legs left the
+		// SemanticEqualsUnderAliasMap assertion above entirely GREEN.
+		//
+		// The arm is live for the relational layer's own EqualsWithoutChildren
+		// (RFC-040 040.2), so it is a second real channel, not dead code.
+		if !values.EqualsWithoutChildren(tc.a, tc.b) {
+			t.Errorf("%s: EqualsWithoutChildren says a leg table changes the node's "+
+				"identity.\n"+
+				"  This is a SECOND identity rule for the same carrier, reached by a "+
+				"different path than the one above, and the two can drift apart because "+
+				"neither consults the other.", tc.carrier)
+		}
+	}
+
+	// And the rendering channel, which is not memo identity but is what EXPLAIN
+	// goldens are diffed on. A leg table that showed up here would move plan
+	// records with no plan having changed.
+	if bare.String() != withLegs.String() {
+		t.Errorf("RecordType.String() renders the leg table:\n  %s\n  %s\n"+
+			"  Populating a leg table would then move every EXPLAIN golden that prints "+
+			"this type, and the movement would be indistinguishable from a real plan "+
+			"change in the diff.", bare.String(), withLegs.String())
 	}
 }
