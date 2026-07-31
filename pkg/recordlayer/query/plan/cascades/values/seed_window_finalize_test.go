@@ -39,7 +39,7 @@ func TestFinalizeSeedWindows_BoxBuried(t *testing.T) {
 		c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c}, // the box run at prefix offset 0
 	}
 	names := map[CorrelationIdentifier]string{c: "C"}
-	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4))
+	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4), false)
 
 	ow, hasO := out[o]
 	cw, hasC := out[c]
@@ -189,7 +189,7 @@ func TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed(t *testing.T) {
 		c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c},
 	}
 	names := map[CorrelationIdentifier]string{c: "C"}
-	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4))
+	out, mergedType := finalizeSeedWindows(windows, names, make([]Field, 4), false)
 	if out != nil || mergedType != nil {
 		legs := 0
 		if mergedType != nil {
@@ -214,7 +214,7 @@ func TestFinalizeSeedWindows_AliaslessLegsDeclineTheSeed(t *testing.T) {
 	}
 	okOut, okMerged := finalizeSeedWindows(
 		map[CorrelationIdentifier]OrdinalSeedLegWindow{c: {Kind: LegKindFlatRun, Offset: 0, Typ: boxType, Alias: c}},
-		map[CorrelationIdentifier]string{c: "C"}, make([]Field, 4))
+		map[CorrelationIdentifier]string{c: "C"}, make([]Field, 4), false)
 	if okOut == nil || okMerged == nil {
 		t.Fatal("control: the same layout with identities stated must be ACCEPTED")
 	}

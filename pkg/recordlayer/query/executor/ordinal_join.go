@@ -26,7 +26,12 @@ import (
 // cursor construction (the RC is the single authority)
 // — never stored or maintained as independent bookkeeping.
 type legSpan struct {
-	Alias   values.CorrelationIdentifier
+	Alias values.CorrelationIdentifier
+	// Kind is the planner twin's values.LegKind, carried so the two walks can be
+	// compared on it. A span whose kind disagrees with its window is a layout
+	// disagreement exactly as an offset disagreement is — it says the two sides
+	// read the same slot with different arithmetic.
+	Kind    values.LegKind
 	LegType *values.RecordType
 	Offset  int
 	Width   int
@@ -61,12 +66,89 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
 		return spans, mergedType, true
 	}
+	return unnestMixedSeedSpans(v)
+}
+
+// ordinalJoinSpansAcceptingNested is ordinalJoinSpans plus the NESTED leg kind —
+// the executor twin of values.OrdinalSeedLegWindowsAcceptingNested, and the
+// second half of the ONE-PREDICATE rule.
+//
+// The two walks are independent and a disagreement about which field is a leg
+// and which is an element shifts the offset of every field after it, so the
+// element test is one shared function (values.IsMixedSeedElementType) under a
+// structural ban on discarded *RecordType assertions in these two files. The
+// nested kind extends that SAME shared predicate: the recognizer is
+// values.IsPositionalMergeRC — already this file's ordinal-build trigger — plus
+// the per-slot BOUND record test, which the ban permits precisely because it
+// binds. Neither side gets a private copy.
+//
+// It is a SEPARATE entry for the same reason the planner's is. ordinalJoinSpans
+// drives windowsOK at the cursor, which is a nil/non-nil decision about whether
+// leg windows apply to a join's output row at all; widening it in place would
+// flip that decision for every positional-merge row in the corpus.
+func ordinalJoinSpansAcceptingNested(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
+	if rc, isRC := v.(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
+		return positionalMergeSpans(rc)
+	}
+	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
+		return spans, mergedType, true
+	}
 	// The MIXED single-source lateral-unnest seed (baked outer run
 	// + a bare-scalar element) is not a pristine all-baked seed, so
 	// ordinalJoinSpansOf declines it; derive its windows (outer leg + a
 	// synthesized 1-field element leg) so the shadowing element gets its own
 	// namespace. Decline-only for every other shape.
 	return unnestMixedSeedSpans(v)
+}
+
+// positionalMergeSpans derives one span per slot of a POSITIONAL MERGE row —
+// the executor twin of values.positionalMergeWindows, and it must agree with it
+// bit for bit on (Alias, Kind, Offset, LegType).
+//
+// The shape is one bare QOV per collapsed lower quantifier, each holding that
+// quantifier's WHOLE row, and the executor has spoken it at runtime since before
+// this window existed: newOrdinalJoinBuild ENABLES on values.IsPositionalMergeRC
+// precisely because the lowest merge level carries no baked refs at all while
+// the level above reads its rows by ordinal, and at evaluation each `_i` field
+// binds the leg's adapted OrdinalRow, so slot i of the built PositionalRow holds
+// the leg's whole row object. What was missing was a layout that could SAY so.
+func positionalMergeSpans(rc *values.RecordConstructorValue) (spans []legSpan, mergedType *values.RecordType, ok bool) {
+	n := len(rc.Fields)
+	spansList := make([]legSpan, 0, n)
+	mergedFields := make([]values.Field, n)
+	for i, f := range rc.Fields {
+		// Guaranteed by IsPositionalMergeRC: a bare QOV of a DISTINCT quantifier,
+		// named OrdinalFieldName(i) in position order.
+		qov := f.Value.(*values.QuantifiedObjectValue)
+		mergedFields[i] = values.Field{Name: f.Name, FieldType: qov.Type(), Ordinal: i}
+		// The per-slot record test BINDS the type and requires non-nil — the same
+		// test the planner twin makes, for the same reason: routing it through
+		// IsMixedSeedElementType would classify a nil-typed slot as nested and hand
+		// a nil LegType to every reader of this span.
+		legType, isRT := qov.Typ.(*values.RecordType)
+		if !isRT || legType == nil {
+			elemName := strings.ToUpper(f.Name)
+			spansList = append(spansList, legSpan{
+				Alias: qov.Correlation, Kind: values.LegKindFlatRun,
+				LegType: &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: qov.Type(), Ordinal: 0}}},
+				Offset:  i, Width: 1,
+			})
+			continue
+		}
+		// A nested slot's own row carrying LEG BOUNDARIES puts those boundaries TWO
+		// steps from the merged row, and neither this walk nor its planner twin has
+		// a two-step span to express them with. DECLINE, exactly as the planner
+		// declines: a layout missing a sub-window is a layout whose qualified reads
+		// resolve to the wrong slots, so the honest answer is no layout at all.
+		if len(legType.Legs) > 0 {
+			return nil, nil, false
+		}
+		spansList = append(spansList, legSpan{
+			Alias: qov.Correlation, Kind: values.LegKindNested,
+			LegType: legType, Offset: i, Width: 1,
+		})
+	}
+	return spansList, &values.RecordType{Fields: mergedFields, Legs: mergedLegsOfSpans(spansList)}, true
 }
 
 // unnestMixedSeedSpans derives leg windows for the MIXED single-
@@ -88,8 +170,16 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 // genuine 2-field record leg, which ordinalJoinSpansOf already windows) and
 // RFC-142's AS-alias shadowing rule. DECLINE-only
 // (ok=false) for every other shape: the trailing-bare-QOV-over-non-record
-// discriminator never matches a folded projection, a baked+constant fold, or the
-// positional-merge RC (whose bare QOVs are over RECORD leg types).
+// discriminator never matches a folded projection or a baked+constant fold.
+//
+// It also does not match the POSITIONAL-MERGE RC, whose bare QOVs are over
+// RECORD leg types — and that sentence used to be the end of the story. It is
+// not any more: the merge row IS derivable, by positionalMergeSpans, and this
+// walk declining it is now a property of the NARROW entry rather than a
+// statement about the shape. ordinalJoinSpansAcceptingNested is where it is
+// admitted, as one NESTED span per slot. The narrow entry keeps declining
+// because its answer drives windowsOK at the cursor, and that is a nil/non-nil
+// decision no caller of this entry asked to have changed.
 func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
 	rc, isRC := v.(*values.RecordConstructorValue)
 	if !isRC || len(rc.Fields) < 2 {
@@ -138,7 +228,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 				elemName := strings.ToUpper(f.Name)
 				elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}}
 				mergedFields[i] = values.Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
-				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation, LegType: elemLegType, Offset: i, Width: 1})
+				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation, Kind: values.LegKindFlatRun, LegType: elemLegType, Offset: i, Width: 1})
 				curIdx = -1
 				hasElement = true
 				continue
@@ -160,7 +250,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 				return nil, nil, false // a split run — not pristine
 			}
 			seen[alias.String()] = struct{}{}
-			spansList = append(spansList, legSpan{Alias: alias, LegType: legType, Offset: i, Width: 1})
+			spansList = append(spansList, legSpan{Alias: alias, Kind: values.LegKindFlatRun, LegType: legType, Offset: i, Width: 1})
 			curIdx = len(spansList) - 1
 		} else {
 			if ord != spansList[curIdx].Width {
@@ -222,7 +312,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 				return nil, nil, false // a split run (leg recurs) — not the concat
 			}
 			seen[alias] = struct{}{}
-			spans = append(spans, legSpan{Alias: alias, LegType: legType, Offset: i, Width: 1})
+			spans = append(spans, legSpan{Alias: alias, Kind: values.LegKindFlatRun, LegType: legType, Offset: i, Width: 1})
 		} else {
 			cur := &spans[len(spans)-1]
 			if ord != cur.Width {
@@ -271,7 +361,13 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	var mergedLegs []values.RecordTypeLeg
 	for _, s := range spans {
-		if len(s.LegType.Legs) > 0 {
+		// Only a FLAT run's leg table describes slots of the merged row. A nested
+		// span's LegType is a row one level down, so its boundaries are not
+		// s.Offset-relative and splicing them would place them over its
+		// neighbours. Both walks refuse such a span upstream; this is the
+		// belt-and-braces reading, so the arithmetic below cannot be reached with
+		// an operand it does not describe.
+		if s.Kind == values.LegKindFlatRun && len(s.LegType.Legs) > 0 {
 			for _, sub := range s.LegType.Legs {
 				// A REBASE, not a re-mint: the sub-leg's identity is carried
 				// verbatim and only its offset moves.
@@ -283,9 +379,11 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 			}
 			continue
 		}
+		// The span's OWN kind, carried. A top-level span is a flat run for every
+		// shape the pristine and mixed walks produce; the positional-merge walk
+		// produces nested ones, and a stamp here would flatten them.
 		mergedLegs = append(mergedLegs, values.NewRecordTypeLeg(
-			// A plain top-level RUN of the span's own columns.
-			values.LegKindFlatRun, s.Alias, s.Alias.Name(), s.Offset, s.Width))
+			s.Kind, s.Alias, s.Alias.Name(), s.Offset, s.Width))
 	}
 	return mergedLegs
 }
@@ -473,7 +571,10 @@ func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifie
 			continue
 		}
 		for _, ss := range spliceLegSpansDepth(sub, legRVs, depth+1) {
-			out = append(out, legSpan{Alias: ss.Alias, LegType: ss.LegType, Offset: s.Offset + ss.Offset, Width: ss.Width})
+			// A SPLICE is a rebase: the sub-span's kind rides with its alias, as at
+			// every other rebase site. Re-minting a kind here would describe a
+			// nested sub-leg as flat the moment one existed.
+			out = append(out, legSpan{Alias: ss.Alias, Kind: ss.Kind, LegType: ss.LegType, Offset: s.Offset + ss.Offset, Width: ss.Width})
 		}
 	}
 	return out

@@ -2812,7 +2812,11 @@ func spansFromMergedLegs(pos *PositionalRow) []legSpan {
 			// identifier and the consumer manufactured another from its text — and a
 			// second spelling is how an alias-qualified read binds a different leg's
 			// slots than the one it names.
-			Alias:   leg.Alias,
+			Alias: leg.Alias,
+			// The KIND is carried from the leg table for the same reason the Alias
+			// is: this span is a reading of a leg somebody else described, not a
+			// fresh description.
+			Kind:    leg.Kind,
 			LegType: &values.RecordType{Fields: legFields},
 			Offset:  leg.Start,
 			Width:   leg.Width,
