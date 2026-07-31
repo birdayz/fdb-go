@@ -187,8 +187,34 @@ func (e *GroupByExpression) GetQuantifiers() []Quantifier    { return []Quantifi
 func (e *GroupByExpression) CanCorrelate() bool              { return false }
 func (e *GroupByExpression) ChildrenAsSet() bool             { return false }
 
+// GetResultValue passes the inner's flowed object through with the TYPE
+// DELIBERATELY STRIPPED. Both halves need saying, and the passthrough half is
+// already a known, measured divergence.
+//
+// Java's GroupByExpression.getResultValue() (:129) is
+// `resultValueFunction.apply(groupingValue, aggregateValue)` (:152) — a record
+// constructor of the GROUPING columns and the AGGREGATE columns, i.e. the row the
+// operator OUTPUTS. Go returns the inner's row, which is the row it CONSUMES.
+// The consequence is measured and documented at the site that pays for it
+// (rule_push_requested_ordering_through_groupby.go): pushing an output-slot
+// reference through Go's result value is the identity, so a request for output
+// slot 0 pushes to input slot 0, value equality fails on every group-by in the
+// corpus, and an index that served the grouping order is replaced by a
+// materialized sort.
+//
+// While the flowed accessor carried no type that wrongness was confined to the
+// Value's shape. Typed, the site additionally ASSERTS that a GROUP BY flows its
+// input row — legs and all — and a reader that believes a stated row takes it at
+// its word. Stating no type is the honest interim; stating the input's is a wrong
+// answer with a stated type on it.
+//
+// The real fix is the output row, built from GetGroupingKeys and GetAggregates,
+// and it is CQ-59's exact territory: it changes the space every downstream
+// reference to a group-by's result is baked against, so it is that item's unit of
+// work rather than a rider here. Until it lands this site must not be "cleaned up"
+// back onto the typed accessor.
 func (e *GroupByExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
 }
 
 func (e *GroupByExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

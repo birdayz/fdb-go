@@ -2338,9 +2338,16 @@ func legSlotIdentity(fv *values.FieldValue) (values.ColumnIdentity, bool) {
 	return fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Typ))
 }
 
-// legRowTypeSource is one join leg as this derivation sees it: the QUANTIFIER
-// (the layout authority), plus the chosen physical plan the subordinate walk
-// falls back on, plus the correlation the layout is filed under.
+// legRowTypeSource is one join leg as this derivation sees it: the QUANTIFIER —
+// the layout authority, and now the only one — plus the correlation the layout is
+// filed under, plus the chosen physical plan.
+//
+// The plan no longer produces a layout. It is carried for the census WITNESS on
+// the underivable arm: a leg the quantifier cannot state is CQ-63's acceptance
+// number, and the two facts that make such a leg actionable are the plan's shape
+// and what the seeded-result-value escape would have made of it
+// (describeSeedEscape). Both are questions about the plan, so the plan has to
+// reach the arm that asks them.
 type legRowTypeSource struct {
 	Quantifier expressions.Quantifier
 	Plan       plans.RecordQueryPlan
@@ -2360,28 +2367,46 @@ type legRowTypeSource struct {
 // every member of the reference agrees on the row type instead of taking members[0]
 // — Java gets the verification for free from Reference.java:504-513.
 //
-// The physical-plan walk (`planBuriedLegConcat`) is SUBORDINATE and it is a
-// DIVERGENCE: it reconstructs a concat from the chosen plan's scan leaves, which
-// is a different question from what the quantifier flows. It is consulted only
-// where the quantifier declines, because a leg whose reference members are all
-// untyped can still have a physical plan whose scan leaves are typed. Every such
-// leg is counted (WALK-ONLY) so the second authority's continued existence stays a
-// measurement rather than a habit; if that count reaches zero the walk goes.
+// It is the ONLY authority. There used to be a second one — a fallback that
+// reconstructed a concat from the chosen physical plan's scan leaves
+// (`planBuriedLegConcat`) whenever the quantifier declined — and it was a
+// DIVERGENCE from the start: what a plan's scan leaves concatenate to is a
+// different question from what the quantifier flows, and answering the second
+// with the first is right only by coincidence.
 //
-// MEASURED over the real-FDB corpus, 846 leg derivations:
+// It was kept under a stated retirement condition — a WALK-ONLY census counter,
+// retire at zero — and the condition is met and acted on. MEASURED over the
+// real-FDB corpus, 848 leg derivations:
 //
-//	flowed 656, walkOnly 108, underivable 82, memberDisagreement 0
+//	flowed 848, underivable 0, memberDisagreement 0 (walkOnly 0 -- the
+//	counter that gated this deletion, before the bucket went with the walk)
 //
-// So neither derivation subsumes the other. The quantifier answers 656 and closes
-// 40 of the 122 the walk alone could not state; the walk answers 108 the
-// quantifier cannot, and those are not exotic — the witnesses are plain
+// Before the flowed object value carried its row type the same corpus put on the
+// order of a hundred legs through the walk, and they were not exotic: plain
 // RecordQueryScanPlan and RecordQueryPredicatesFilterPlan legs whose LOGICAL
-// members carry an untyped result value while the physical scan is typed. That
-// gap is CQ-63 seen from the other side, and it is why the walk stays.
+// members carried an untyped result value while the physical scan was typed.
+// Typing the flowed value closed that residue at the source — those legs' logical
+// members now state the row — and the walk went from a fallback to dead weight
+// that still RAN in production, filing a documented divergence under the leg's
+// own alias if it ever answered.
 //
-// A leg neither can state contributes nothing rather than a guess, and is counted:
-// those 82 are CQ-63's acceptance number, over 3 distinct witnesses, every one a
-// *plans.RecordQueryFlatMapPlan flowing a bare untyped quantifier object.
+// The historical split is given as an order of magnitude on purpose. These are
+// rule FIRINGS, and the memo may explore one rule once or many times for a query
+// depending on exploration order, so successive full-suite runs of the same tree
+// do not reproduce each other exactly — measuring the pre-typing state twice gave
+// 656/846 and 658/848. Writing either down as a figure invites the next reader to
+// treat a two-count difference as a regression. What is stable, and what the
+// retirement turned on, is the ZERO.
+//
+// So the branch is gone. `planBuriedLegConcat` and its exported wrapper
+// `PlanLegConcatLayout` stay, because they serve a different and live purpose:
+// the planner/executor cross-agreement pin, where the walk's answer is compared
+// against the runtime's `concatLegPositionals` so a planner-stated ordinal cannot
+// index a slot the cursor filled from another leg.
+//
+// What re-arms suspicion is UnderivableLegs, not a walk counter: a leg the
+// quantifier cannot state now contributes no layout at all, which is the honest
+// answer and the one the census gates on.
 func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.CorrelationIdentifier]*values.RecordType {
 	out := make(map[values.CorrelationIdentifier]*values.RecordType, len(legs))
 	for _, leg := range legs {
@@ -2389,7 +2414,7 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 			continue
 		}
 		if values.LegIdentityCensusEnabled() {
-			// The DENOMINATOR, counted before any outcome is decided: the four
+			// The DENOMINATOR, counted before any outcome is decided: the three
 			// per-leg outcomes below must partition exactly this.
 			recordLegDerivation()
 		}
@@ -2413,48 +2438,28 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 			addBuriedLegLayouts(out, flowed.Fields, flowed.Legs)
 			continue
 		}
-		if leg.Plan == nil {
-			if values.LegIdentityCensusEnabled() {
-				recordUnderivableLegLayout(leg.Alias, describeLegQuantifier(leg.Quantifier),
-					"no physical plan in hand")
-			}
-			continue
-		}
-		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.Plan, leg.Alias, 0)
-		if !ok || len(concatFields) == 0 {
-			// The scan-leaf walk reduces scans, filters and INNER nested-loop
-			// joins. It has no arm for a leg that is itself a FlatMap — the
-			// accumulated side of an N-way join. A FlatMap's row is whatever its
-			// result value computes, so there is nothing to walk to; the layout is
-			// the result value's to state, and these result values state nothing
-			// because they flow an UNTYPED quantifier object. That is the defect
-			// booked as CQ-63, and the reason the qualified-name channel cannot
-			// close here. Reading the layout off a SEEDED result value was tried
-			// and declined on every one of them (pinned by
-			// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg), so no arm is
-			// added on speculation.
-			if values.LegIdentityCensusEnabled() {
-				// The residue's CAUSE, recorded where it is decided. A leg whose
-				// layout cannot be stated is why a read correlated to it still has
-				// to be re-anchored, and knowing WHICH shape declines is the
-				// difference between an actionable gap and a mystery. The witness
-				// carries the ESCAPE that was tried and removed — reading the
-				// layout off the leg's result value as an ordinal seed — so its
-				// decline stays a measured fact rather than a remembered one.
-				recordUnderivableLegLayout(leg.Alias, fmt.Sprintf("%T", leg.Plan),
-					describeSeedEscape(leg.Plan))
-			}
-			continue
-		}
+		// The quantifier states no row, so neither does this derivation. The shape
+		// that reaches here is a leg that is itself a FlatMap — the accumulated side
+		// of an N-way join — whose row is whatever its result value computes, and
+		// whose result value states nothing. That is the defect booked as CQ-63 and
+		// the reason the qualified-name channel cannot close for such a leg.
 		if values.LegIdentityCensusEnabled() {
-			recordWalkOnlyLegLayout(leg.Alias, leg.Plan)
+			// The residue's CAUSE, recorded where it is decided, because knowing
+			// WHICH shape declines is the difference between an actionable gap and a
+			// mystery. The QUANTIFIER is what declined, so it is what the witness
+			// describes; the plan supplies the shape and the verdict of the escape
+			// that was tried and removed — reading the layout off the leg's result
+			// value as an ordinal seed — so that decline stays a measured fact
+			// rather than a remembered one (pinned at unit scale by
+			// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg).
+			shape, escape := "no physical plan in hand", "seed escape N/A (no plan)"
+			if leg.Plan != nil {
+				shape, escape = fmt.Sprintf("%T", leg.Plan), describeSeedEscape(leg.Plan)
+			}
+			recordUnderivableLegLayout(leg.Alias,
+				fmt.Sprintf("%s [chosen plan %s]", describeLegQuantifier(leg.Quantifier), shape),
+				escape)
 		}
-		var nested []values.RecordTypeLeg
-		if len(buriedLegs) > 1 {
-			nested = buriedLegs
-		}
-		out[leg.Alias] = &values.RecordType{Fields: concatFields, Legs: nested}
-		addBuriedLegLayouts(out, concatFields, nested)
 	}
 	if len(out) == 0 {
 		return nil

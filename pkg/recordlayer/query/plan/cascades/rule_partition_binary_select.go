@@ -241,6 +241,17 @@ func (r *PartitionBinarySelectRule) tryPartition(
 		if leftQuantifier.Kind() == expressions.QuantifierForEach {
 			// buildSimpleSelectOverQuantifier: result value = quantifier's
 			// flowed object value.
+			//
+			// The SWALLOWING accessor, deliberately, where the sibling merge arm in
+			// PartitionSelectRule takes GetFlowedObjectValueTyped and declines on the
+			// error. The two arms differ in what they DO with the row, which is the
+			// whole basis for choosing between the accessors: this one builds a
+			// passthrough select over ONE quantifier and bakes no ordinal against the
+			// row, so a member disagreement costs it nothing it can act on and
+			// declining would drop a predicate absorption for a defect elsewhere. The
+			// merge arm packs several legs into positional slots, where an invented
+			// row shape is a wrong-slot read. The disagreement still surfaces — it
+			// surfaces there, counted and witnessed, rather than being reported twice.
 			leftSelectExpr = leftBuilder.Build().Seal().BuildSelectWithResultValue(
 				leftQuantifier.GetFlowedObjectValue(),
 			)
@@ -268,6 +279,7 @@ func (r *PartitionBinarySelectRule) tryPartition(
 
 		var rightSelectExpr *expressions.SelectExpression
 		if rightQuantifier.Kind() == expressions.QuantifierForEach {
+			// The swallowing accessor, for the reason stated on the left arm above.
 			rightSelectExpr = rightBuilder.Build().Seal().BuildSelectWithResultValue(
 				rightQuantifier.GetFlowedObjectValue(),
 			)

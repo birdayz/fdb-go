@@ -70,47 +70,73 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 			"everywhere.", got)
 	}
 
-	// 2. WHY THE DECLINE IS NOT THE INTERESTING PART — measured, and the opposite
-	// of what it looks like.
+	// 2. THE WIDTH HAZARD, and where it now stands.
 	//
 	// The obvious repair for "the result value is not a record constructor" is to
-	// wrap it in one. That does NOT run into a conservative seed authority: the
-	// authority ACCEPTS, and what it accepts is wrong. `isMixedSeedElement` admits
-	// any bare quantifier object whose type is not a RecordType, which is the arm
-	// for Java's isPrimitive() whole-object scalar element — and an UNTYPED
-	// quantifier object is not a RecordType either. So each untyped leg is admitted
-	// as a one-column scalar element, and a leg flowing a whole multi-column row
-	// gets a 1-column window.
+	// wrap it in one, and that used to walk straight into a worse answer than a
+	// decline: `isMixedSeedElement` admits a bare quantifier object whose type is
+	// not a RecordType — Java's isPrimitive() whole-object element — and an UNTYPED
+	// quantifier object is not a RecordType either. Each untyped LEG was therefore
+	// admitted as a one-column scalar element, so a 2-slot constructor of bare
+	// untyped legs was ACCEPTED and a leg flowing a whole multi-column row got a
+	// ONE-column window. Silent layouts at the wrong widths.
 	//
-	// That is the real reason the escape was removed, and it is a stronger reason
-	// than "it declines": the escape would have produced layouts, silently, at the
-	// wrong widths. Pinned here because the decline in (1) is an accident of this
-	// leg's result-value SHAPE, and shape is exactly what a well-meaning repair
-	// changes first.
-	wrapped := values.NewRecordConstructorValue(
+	// Typing the flowed object value closes it, and closes it at the SOURCE rather
+	// than by tightening the predicate: a leg's quantifier now states its row, so
+	// the leg reads as a RecordType and the element arm rejects it. That is the
+	// direction that matters, because the predicate CANNOT be tightened into doing
+	// this job — demanding a STATED type declines the genuine whole-object element
+	// of a struct array, whose type is UNKNOWN because Go does not infer array
+	// element types that far, and `SELECT "X" FROM TS, TS."ITEMS" AS "X"` stops
+	// resolving (measured). The discrimination lives on the leg side or nowhere.
+	typedLeg := func(name string) values.Value {
+		return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name),
+			&values.RecordType{Nullable: true, Fields: []values.Field{
+				{Name: "C1", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "C2", FieldType: values.NotNullLong, Ordinal: 1},
+			}})
+	}
+	twoTypedLegs := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: typedLeg("A")},
+		values.RecordConstructorField{Name: "B", Value: typedLeg("B")},
+	)
+	if windows, merged := values.OrdinalSeedLegWindows(twoTypedLegs); windows != nil || merged != nil {
+		t.Fatalf("a 2-slot record constructor of bare TYPED leg objects was ACCEPTED "+
+			"(%d windows, merged %v). Each leg flows a 2-column row; admitting it as the "+
+			"seed's whole-object element gives it a ONE-column window and every field "+
+			"after it reads at the wrong offset. A leg that states a row type must be "+
+			"rejected by the element arm.", len(windows), merged)
+	}
+
+	// The residual, stated rather than implied: an UNTYPED quantifier object is
+	// still admitted as a one-column element, because that is what a struct-array
+	// element looks like and there is no way to tell the two apart from the type
+	// alone. It is not the hazard above only because a LEG is no longer untyped —
+	// measured flowed 848 of 848 leg derivations, underivable 0, and
+	// ASSERTED by the bakeability census gate. If that gate ever goes yellow, this
+	// is what it re-arms.
+	untypedPair := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "A", Value: values.NewQuantifiedObjectValue(legAlias)},
 		values.RecordConstructorField{Name: "B", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B"))},
 	)
-	windows, merged := values.OrdinalSeedLegWindows(wrapped)
+	windows, merged := values.OrdinalSeedLegWindows(untypedPair)
 	if windows == nil || merged == nil {
 		t.Fatalf("OrdinalSeedLegWindows now DECLINES a record constructor of bare " +
-			"untyped quantifier objects. That is a safer answer than the measured one " +
-			"and it may well be the right fix — but it is a change in seed acceptance, " +
-			"and the executor twin (unnestMixedSeedSpans/ordinalJoinSpans) has to move " +
-			"with it or the cross-agreement invariant breaks. Re-measure both sides " +
-			"before adopting this as the new expectation.")
+			"untyped quantifier objects. That is the safer answer, and it may be the " +
+			"right one — but it also declines the struct-array whole-object element, " +
+			"which is untyped for an unrelated reason, and the executor twin " +
+			"(unnestMixedSeedSpans/ordinalJoinSpans) has to move with it or the " +
+			"cross-agreement invariant breaks. Re-measure both sides before adopting " +
+			"this as the new expectation.")
 	}
 	for alias, w := range windows {
 		if len(w.Typ.Fields) != 1 {
-			t.Fatalf("window %s has %d columns; the measured behaviour is that an "+
-				"untyped quantifier object is admitted as a ONE-column scalar element. "+
-				"If it is now typed properly, the hazard this pins is gone and the test "+
-				"should be retargeted.", alias, len(w.Typ.Fields))
+			t.Fatalf("window %s has %d columns; an untyped quantifier object is admitted "+
+				"as a ONE-column whole-object element", alias, len(w.Typ.Fields))
 		}
 	}
 	if len(merged.Fields) != 2 {
-		t.Fatalf("merged type has %d columns, want 2 one-column scalar elements — the "+
-			"measured shape of the trap", len(merged.Fields))
+		t.Fatalf("merged type has %d columns, want 2 one-column elements", len(merged.Fields))
 	}
 }
 

@@ -91,10 +91,36 @@ func (e *LogicalProjectionExpression) GetAliasMinted() []bool {
 // GetInner returns the inner Quantifier.
 func (e *LogicalProjectionExpression) GetInner() Quantifier { return e.inner }
 
-// GetResultValue passes the inner's flowed object value through —
-// matches Java's contract.
+// GetResultValue passes the inner's flowed object value through, and does so
+// with the TYPE DELIBERATELY STRIPPED. Both halves of that need saying.
+//
+// The passthrough is Java's contract literally
+// (LogicalProjectionExpression.java:105 is `inner.getFlowedObjectValue()`), and
+// in Java it is harmless because that class is used only for planning legacy
+// RecordQuerys — its own javadoc says so — where nothing reads a projection's
+// result TYPE. Go uses this expression as the SQL projection, which is a
+// different job, and under it the inherited contract is simply false: a
+// projection outputs its PROJECTED columns, not its inner's row.
+//
+// While the flowed value carried no type that falsehood was inert — an untyped
+// value claims nothing. The moment the accessor became typed (Java's shape) this
+// site started asserting that the projection flows the inner's whole row, legs
+// and all, and it is not a theoretical wrongness: measured on
+// `WITH C AS (…) SELECT "EL" FROM (SELECT "ID" FROM T1 AS "D") AS "X", "C" AS
+// "D", "D"."DARR" AS "EL"`, a downstream reader took the stated multi-leg row at
+// its word and refused to serve a source-relative ordinal against it —
+// `correlated FieldValue "EL" … multi-leg row cannot serve a source-relative
+// ordinal`. Stating no type is the honest answer here; stating the inner's is a
+// wrong one.
+//
+// The real fix is for this expression to state the row it actually produces,
+// built from GetProjectedValues and GetAliases — and for its physical twin to do
+// the same (RecordQueryProjectionPlan.GetResultType is UnknownType for the same
+// reason). That is a change to what a projection REPORTS, not to how a flowed
+// value is typed, so it is its own piece of work. Until it lands this site must
+// not be "cleaned up" back onto the typed accessor.
 func (e *LogicalProjectionExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
 }
 
 // GetQuantifiers returns the single inner Quantifier.

@@ -230,10 +230,30 @@ func (q Quantifier) IsStrictSingle() bool { return q.strictSingle }
 // owning expression use this Value (via FieldValue accesses) to refer
 // to columns of the inner expression's output.
 //
-// Equivalent to Java's `Quantifier.getFlowedObjectValue()`. Implemented
-// via QuantifiedObjectValue, which already exists in cascades/values/.
+// Java's `Quantifier.getFlowedObjectValue()` verbatim (Quantifier.java:801-803):
+// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`, i.e. ALWAYS
+// carrying the row type when the ranged-over reference states one.
+//
+// It used to mint the alias with no type, and the reason recorded for that was
+// that typing it "changes expression identity across the whole planner". That is
+// measured FALSE and pinned: a QuantifiedObjectValue's identity is its
+// CORRELATION in all three paths that decide it — EqualsWithoutChildren,
+// SemanticEqualsUnderAliasMap, and SemanticHashCode, which folds the tag "qov"
+// with the alias excluded. Typing one changes what it SAYS, never which
+// expression it IS. (TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity.)
+//
+// On a member DISAGREEMENT this returns the alias with no type, because it has no
+// error channel to report one through. That is NOT the collapse
+// GetFlowedObjectValueTyped's doc forbids: a caller that BAKES AN ORDINAL against
+// this row must use that accessor and refuse to proceed, because for it a row
+// shape chosen by memo insertion order is a wrong-slot read. A caller merely
+// reporting what flows loses type information it never had.
 func (q Quantifier) GetFlowedObjectValue() values.Value {
-	return values.NewQuantifiedObjectValue(q.alias)
+	rt, err := q.GetFlowedObjectType()
+	if err != nil || rt == nil {
+		return values.NewQuantifiedObjectValue(q.alias)
+	}
+	return values.NewQuantifiedObjectValueOfType(q.alias, rt)
 }
 
 // MemberResultTypeDisagreementError reports that a Reference's members do not
@@ -292,7 +312,6 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 		return nil, nil
 	}
 	var found *values.RecordType
-	var foundRaw values.Type
 	for _, member := range members {
 		if member == nil {
 			continue
@@ -309,16 +328,219 @@ func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
 			continue
 		}
 		if found == nil {
-			found, foundRaw = rt, rv.Type()
+			found = rt
 			continue
 		}
-		if !found.Equals(rt) {
+		refined, agree := refineRowTypes(found, rt)
+		if !agree {
+			// The ACCUMULATED row on the left, not the first typed member's. Those
+			// differ from the third member onwards, and the error used to report the
+			// first — a row that was not what the failing comparison saw. On the shape
+			// this reduction exists for (one member unresolved, a later one resolving
+			// it, a third conflicting) the reported left-hand row still carried the
+			// UNKNOWN the second member had already resolved, so the message described
+			// a conflict nobody had, and the real one was invisible. Both sides are the
+			// unwrapped ROW types, because those are what refineRowTypes compared.
 			return nil, &MemberResultTypeDisagreementError{
-				Alias: q.alias, Left: foundRaw, Right: rv.Type(),
+				Alias: q.alias, Left: found, Right: rt,
 			}
 		}
+		found = refined
 	}
 	return found, nil
+}
+
+// refineRowTypes reduces two members' row types to the single row the quantifier
+// flows — Java's `Verify.verify(left.equals(right))` reduction
+// (Reference.java:504-513), corrected for the one thing Go has that Java does
+// not: a type that means "not inferred yet".
+//
+// Java can use bare equality because every Java Value carries a resolved type, so
+// two members of one equivalence class either describe the same row or the memo
+// is broken. Go's UnknownType is neither — it is the ABSENCE of a stated type,
+// and the same row reached by two rules routinely arrives with different amounts
+// of it resolved (an unnest element inferred as INT down one path and left
+// UNKNOWN down the other). Comparing those with Equals reports a disagreement
+// between a row and ITSELF, and the caller then declines work it should have
+// done: a bipartition that yields nothing, a merge slot left untyped.
+//
+// So an unstated field cannot contradict a stated one — the same rule this
+// function's member scan already applies to a member that states no row type at
+// all, one level further down. Everything else stays a real disagreement:
+// different field counts, names, ordinals, nullability, or two fields that both
+// state a type and state different ones. Those are the memo defects the
+// verification exists to catch, and they still surface as errors.
+//
+// The RECORD NAME follows the unstated rule rather than the strict one, because
+// Go has an "unstated" spelling for it too and it is documented as such: the empty
+// string means ANONYMOUS (RecordType.RecordName's own doc), which is the ordinary
+// state of a projection result row that has not been bound to a named struct. Go's
+// own type merge already treats it that way — MaximumType takes the other side's
+// name when one is empty (values/type.go) — so treating "" as a conflict here
+// would make this function disagree with the type system it is reducing over, and
+// disagree in the direction that costs a plan: two members of one class, one of
+// them anonymous because inference had no name to give it, reported as flowing
+// different rows. Two members that both STATE a name and state different ones is a
+// genuine conflict and still errors.
+//
+// The result is the more RESOLVED row, so a later member cannot un-resolve what
+// an earlier one established — the record name included.
+//
+// The LEG TABLE (RecordType.Legs) is carried through, and it is checked BEFORE
+// the equality fast path rather than after. Both halves matter. Carrying it
+// matters because the merged row is what the leg-layout derivation hands to
+// addBuriedLegLayouts and what the translator's `len(rt.Legs)` gate and the
+// seed-window authority read: a merge that rebuilt the row without Legs would
+// silently strip the buried-leg boundary table, which is the same defect
+// WithNullability's comment warns about on the nullability flip (values/type.go).
+// Checking it before the fast path matters because RecordType.Equals IGNORES Legs
+// — deliberately, Legs carries no identity semantics — so two members stating the
+// SAME fields under DIFFERENT leg tables satisfy Equals, and the fast path would
+// then resolve a boundary-table conflict by returning whichever member the memo
+// scan reached first. That is exactly the pick-by-insertion-order this whole
+// verification exists to refuse.
+//
+// The leg table is not subject to the unstated/stated rule the FIELD types are.
+// An unstated field type means "inference has not reached here"; an EMPTY leg
+// table means "this row has no buried-leg boundaries", which is a statement about
+// the row's structure, not a gap in inference. So two members must carry
+// IDENTICAL tables, and a mismatch — including one member stating boundaries the
+// other denies — is a genuine conflict and surfaces as one.
+func refineRowTypes(a, b *values.RecordType) (*values.RecordType, bool) {
+	if a == nil || b == nil {
+		return nil, false
+	}
+	if !legTablesAgree(a.Legs, b.Legs) {
+		return nil, false
+	}
+	if a.Equals(b) {
+		return a, true
+	}
+	name, nameAgrees := refineRecordNames(a.RecordName, b.RecordName)
+	if !nameAgrees || a.Nullable != b.Nullable || len(a.Fields) != len(b.Fields) {
+		return nil, false
+	}
+	merged := make([]values.Field, len(a.Fields))
+	for i := range a.Fields {
+		af, bf := a.Fields[i], b.Fields[i]
+		if af.Name != bf.Name || af.Ordinal != bf.Ordinal {
+			return nil, false
+		}
+		ft, agree := refineFieldTypes(af.FieldType, bf.FieldType)
+		if !agree {
+			return nil, false
+		}
+		merged[i] = values.Field{Name: af.Name, FieldType: ft, Ordinal: af.Ordinal}
+	}
+	return &values.RecordType{RecordName: name, Nullable: a.Nullable, Fields: merged, Legs: a.Legs}, true
+}
+
+// refineRecordNames is the unstated/stated rule for the record NAME: "" is
+// anonymous — the absence of a name, not a name of its own — so it takes the
+// other side's, and two stated-and-different names are a conflict.
+func refineRecordNames(a, b string) (string, bool) {
+	switch {
+	case a == "":
+		return b, true
+	case b == "" || a == b:
+		return a, true
+	}
+	return "", false
+}
+
+// legTablesAgree reports whether two members state the SAME buried-leg boundary
+// table. nil and empty are the same statement ("no boundaries"); anything else is
+// compared element-wise on all four fields, because a leg differing only in Start
+// or Width relocates every buried read filed against it.
+func legTablesAgree(a, b []values.RecordTypeLeg) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// refineFieldTypes is refineRowTypes for one field: the more resolved of two
+// types, or (nil, false) when both are stated and they differ.
+//
+// It recurses into every type that CARRIES another type, because the rule that
+// makes the recursion necessary does not care about depth or container: an
+// unstated type states nothing, so it cannot contradict a stated one, and a row
+// whose only difference is an unresolved type two levels down is the same row for
+// exactly the reason it is one level down. Stopping at RECORD only was an
+// accident of which container the first misreport happened to be found in.
+//
+//   - RECORD recurses field-wise (refineRowTypes).
+//   - ARRAY recurses into the element. An array's ElementType is nil while
+//     inference has not filled it in — the type's own doc says so — and Go does
+//     not infer array element types far, so `ARRAY<?>` against `ARRAY<INT>` is
+//     the single commonest shape this rule exists for. Nullability is compared
+//     strictly, as it is on a row.
+//   - RELATION recurses into the inner row. An ERASED relation (nil inner) is the
+//     unstated case and refines to the stated one.
+//
+// ENUM deliberately does NOT recurse, and the decision is worth stating because
+// it looks like an omission next to RECORD's anonymous name. An enum's content is
+// a DECLARED value list: there is no "not inferred yet" enum member the way there
+// is an unresolved field type. Its EnumName can be empty, but the type's own doc
+// calls that an anonymous enum — "rare in real schemas but legal" — a legal schema
+// state rather than an unfilled inference slot, which is the exact opposite of
+// RecordName's "not bound to a named struct yet". Go's own type merge declines
+// anonymous-enum handling for the same reason (values/type.go). So two enums
+// either state the same type or they state different ones, and Equals above
+// already decides that. Pinned by
+// TestGetFlowedObjectType_AnAnonymousEnumIsNotUnstated so this stays a decision.
+func refineFieldTypes(a, b values.Type) (values.Type, bool) {
+	switch {
+	case isUnstatedType(a):
+		return b, true
+	case isUnstatedType(b):
+		return a, true
+	case a.Equals(b):
+		return a, true
+	}
+	switch at := a.(type) {
+	case *values.RecordType:
+		if bt, ok := b.(*values.RecordType); ok {
+			return refineRowTypes(at, bt)
+		}
+	case *values.ArrayType:
+		bt, ok := b.(*values.ArrayType)
+		if !ok || at.Nullable != bt.Nullable {
+			return nil, false
+		}
+		elem, agree := refineFieldTypes(at.ElementType, bt.ElementType)
+		if !agree {
+			return nil, false
+		}
+		return &values.ArrayType{Nullable: at.Nullable, ElementType: elem}, true
+	case *values.RelationType:
+		bt, ok := b.(*values.RelationType)
+		if !ok {
+			return nil, false
+		}
+		inner, agree := refineFieldTypes(at.InnerType, bt.InnerType)
+		if !agree {
+			return nil, false
+		}
+		return &values.RelationType{InnerType: inner}, true
+	}
+	return nil, false
+}
+
+// isUnstatedType reports whether t carries no type information — Go's
+// "inference has not reached here", which Java has no counterpart for.
+//
+// nil is included because the containers spell the gap that way: an ArrayType
+// whose element inference has not reached carries a nil ElementType, and an
+// ERASED RelationType carries a nil InnerType. Both mean the same thing
+// UnknownType means in a record field.
+func isUnstatedType(t values.Type) bool {
+	return t == nil || t.Code() == values.TypeCodeUnknown
 }
 
 // rowTypeOf unwraps a member's result type to its ROW type, through the RELATION
@@ -335,22 +557,23 @@ func rowTypeOf(t values.Type) *values.RecordType {
 	return nil
 }
 
-// GetFlowedObjectValueTyped is GetFlowedObjectValue carrying the quantifier's
-// flowed ROW type when that type is resolvable — Java's getFlowedObjectValue()
-// exactly (`QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`,
-// Quantifier.java:801-803), which is ALWAYS typed.
+// GetFlowedObjectValueTyped is GetFlowedObjectValue with the member DISAGREEMENT
+// surfaced instead of swallowed. Both accessors type the value; they differ only
+// in what they do when the reference's members cannot agree on the row they flow.
 //
-// It is a separate accessor rather than a change to GetFlowedObjectValue
-// because the untyped form is what ~40 GetResultValue() implementations return
-// and what the memo has interned on; typing every one of them at once changes
-// expression identity across the whole planner. Callers that BAKE ORDINALS
-// against the flowed row — the ones for which an untyped QOV silently degrades
-// a reference to source-relative and then to NULL at runtime — use this.
+// So the choice between them is NOT "do I want the type" — it is "can I proceed
+// without one". Callers that BAKE ORDINALS against the flowed row use this and
+// refuse to proceed on the error, because for them an invented row shape is a
+// wrong-slot read that no test can predict; an untyped QOV degrades a reference
+// to source-relative, and a source-relative operand pushed into a scan evaluates
+// to NULL against the build-bound row, so the join returns zero rows with no
+// error. Callers merely reporting what flows take GetFlowedObjectValue and lose
+// type information they never had.
 //
-// The error is the member DISAGREEMENT (see MemberResultTypeDisagreementError),
-// never the ordinary "no type yet": that returns the untyped QOV and a nil error,
-// as before. A caller must not collapse the two — falling back to the untyped
-// value on a disagreement is choosing a row shape by memo insertion order.
+// The error is the DISAGREEMENT only (see MemberResultTypeDisagreementError),
+// never the ordinary "no type yet": that returns the untyped QOV and a nil error.
+// A caller must not collapse the two — falling back to the untyped value on a
+// disagreement is choosing a row shape by memo insertion order.
 func (q Quantifier) GetFlowedObjectValueTyped() (values.Value, error) {
 	rt, err := q.GetFlowedObjectType()
 	if err != nil {

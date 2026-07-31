@@ -94,10 +94,30 @@ func (r *PartitionSelectRule) positionalMergeCase(
 			recordMergeSlotTypeDisagreement(err)
 			return nil
 		}
+		scavenged := false
 		if _, typed := fov.Type().(*values.RecordType); !typed {
 			if rt := legTypes[a]; rt != nil {
 				fov = values.NewQuantifiedObjectValueOfType(a, rt)
+				scavenged = true
 			}
+		}
+		if values.LegIdentityCensusEnabled() {
+			// What this slot ended up stating, counted where it is decided. The
+			// interesting outcome is the MISS — a slot that enters the merged record
+			// constructor stating nothing — because that is the one remaining path by
+			// which a leg's row type is lost here, and it is silent: the reference
+			// degrades to source-relative, a source-relative operand pushed into a
+			// leg's scan evaluates to NULL against the build-bound row, and the join
+			// returns zero rows with no error. It was previously argued to be
+			// unreachable; an argument about which shapes can reach a fallback is what
+			// a change to the fallback invalidates without telling anyone.
+			//
+			// The census classifies FINER than the gate above, which is why it takes
+			// the type rather than the gate's boolean. The gate asks "is this a
+			// RecordType", so an unnest ELEMENT — which flows one array element, a
+			// scalar, and is correct — fails it exactly as a leg that lost its row
+			// does. Inheriting that test would report every unnest element as a defect.
+			recordMergeSlotTyping(a, fov.Type(), scavenged)
 		}
 		fields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
 		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}
@@ -155,11 +175,31 @@ func (r *PartitionSelectRule) positionalMergeCase(
 
 // legRowTypes recovers each quantifier's flowed ROW type from a select's value
 // surfaces (result value + predicates): every QOV embedded in a baked/fused
-// reference is a copy of the ONE planner-constructed typed leg QOV
-// (seed-baked, or a previous merge round's typed merge QOV), so first-found is
-// authoritative. Needed because Go's Quantifier.GetFlowedObjectValue flows an
-// UNTYPED QOV — a leg referenced nowhere stays absent (and the merge slot then
-// flows untyped, exactly today's shape).
+// reference is a copy of the ONE planner-constructed typed leg QOV (seed-baked,
+// or a previous merge round's typed merge QOV), so first-found is authoritative.
+//
+// It used to be described as NEEDED "because Go's Quantifier.GetFlowedObjectValue
+// flows an UNTYPED QOV". That has not been true since the accessor was typed —
+// the sentence outlived the thing it explained, over a channel still carrying
+// live traffic, which is the failure class this branch keeps finding. What
+// legRowTypes actually is now is a FALLBACK for a quantifier whose reference
+// carries no typed result value yet, exactly as the caller above states.
+//
+// How much traffic it carries is now MEASURED rather than argued, because an
+// argument about which shapes can reach a fallback is what a change to the
+// fallback invalidates silently (see recordMergeSlotTyping). Over the real-FDB
+// corpus, of 18246 merge slots: 17492 typed by the quantifier, 4 recovered here,
+// 0 stating a non-row scalar, 750 stating nothing at all.
+//
+// The 750 are not 750 lost leg rows. Every distinct witness is an unnest ELEMENT
+// alias, and an unnest element over an array is UNKNOWN because Go does not infer
+// array element types that far — the same gap values.IsMixedSeedElementType
+// documents, and the reason its predicate must NOT demand a stated type. But an
+// element and a leg that lost its row are not separable from the type alone, so
+// the counter is an upper bound on the residual and is reported rather than
+// asserted at zero. Typing the unnest element quantifier is what would collapse
+// it, and that changes what 750 merge slots state — a planner-wide change, not a
+// rider here.
 func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) map[values.CorrelationIdentifier]*values.RecordType {
 	types := make(map[values.CorrelationIdentifier]*values.RecordType)
 	collect := func(v values.Value) bool {

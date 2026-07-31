@@ -32,9 +32,23 @@ func (e *DeleteExpression) GetInner() Quantifier { return e.inner }
 // GetTargetRecordType returns the target record-type name.
 func (e *DeleteExpression) GetTargetRecordType() string { return e.targetRecordType }
 
-// GetResultValue is the inner's flowed object value — DELETE
-// passes-through the rows it deleted (lets callers chain a count or
-// projection over them).
+// GetResultValue is the inner's flowed object value — DELETE passes through the
+// rows it deleted (lets callers chain a count or projection over them).
+//
+// It stays TYPED, and it is the DML site that does. Java's
+// DeleteExpression.java:62 is literally `inner.getFlowedObjectValue()`, which in
+// Java is `QuantifiedObjectValue.of(alias, getFlowedObjectType())`
+// (Quantifier.java:801-803) — typed. So this is not a passthrough Go invented and
+// then typed by accident; it is Java's own answer, and a DELETE really does flow
+// the rows it deleted.
+//
+// Its siblings do not, and the difference is easy to lose. INSERT flows the TARGET
+// row (`new QueriedValue(targetType)`, InsertExpression.java:71) and UPDATE flows
+// an OLD/NEW pair (UpdateExpression.java:84, :209-213). Both Go sites therefore
+// state no type until they can state the right one; this one states the inner's
+// because that is the right one. Pinned by
+// TestDeleteResultValueStatesTheInnerRow so the three are not "made consistent"
+// in either direction.
 func (e *DeleteExpression) GetResultValue() values.Value {
 	return e.inner.GetFlowedObjectValue()
 }

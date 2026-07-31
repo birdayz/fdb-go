@@ -165,6 +165,32 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 // simple — the MAP must be kept to express the widening (Java's
 // QuantifiedObjectValue.isSimpleQuantifiedObjectValueOver + the
 // resultType.equals(flowedType) gate; RFC-144 BC2).
+//
+// Both operands are Java's verbatim ones, and that is load-bearing on each side:
+//
+//   - The right-hand side is the QUANTIFIER's flowed object type
+//     (`Quantifier.GetFlowedObjectType`, Java's
+//     `ImplementSimpleSelectRule.java:129-130` reading
+//     `innerQuantifier.getFlowedObjectType()`). Asking the quantifier's UNTYPED
+//     flowed VALUE for its type instead answers `UNKNOWN` for every quantifier
+//     in the planner, which makes the whole comparison "is v also untyped?" —
+//     agreeing with Java only while nothing carries a type, and inverting the
+//     moment a result value does: an EXACT passthrough of a typed row stops
+//     being recognised and an identity Map is wrapped around a plan that needs
+//     none.
+//   - The left-hand side is the QOV's STORED type, not `v.Type()`. Java's
+//     `QuantifiedObjectValue.getResultType()` returns the constructed result
+//     type verbatim (QuantifiedObjectValue.java:70-73), whereas Go's
+//     `QuantifiedObjectValue.Type()` re-wraps it as nullable unconditionally.
+//     Comparing through that wrapper erases the one distinction this gate
+//     exists to draw, because a widened passthrough and an exact one report the
+//     same nullable type.
+//
+// A type absent on EITHER side is Go's reporting gap, not a mismatch, and the
+// gap is symmetric: an untyped QOV states no type exactly as an underivable
+// flowed type states none. With nothing to compare, alias identity is the whole
+// answer — which is what this site gave every value before any of them carried
+// a type.
 func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 	qov, ok := v.(*values.QuantifiedObjectValue)
 	if !ok {
@@ -173,8 +199,18 @@ func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 	if qov.Correlation != q.GetAlias() {
 		return false
 	}
-	flowedType := q.GetFlowedObjectValue().Type()
-	return v.Type().Equals(flowedType)
+	flowedType, err := q.GetFlowedObjectType()
+	if err != nil {
+		// The reference's members disagree on the row they flow, so there is no
+		// single flowed type to be an exact passthrough OF. Declining the skip
+		// keeps the Map, which is the conservative side: a redundant projection,
+		// never a dropped one.
+		return false
+	}
+	if flowedType == nil || qov.Typ == nil || qov.Typ.Code() == values.TypeCodeUnknown {
+		return true
+	}
+	return qov.Typ.Equals(flowedType)
 }
 
 var _ ImplementationRule = (*ImplementSimpleSelectRule)(nil)

@@ -122,7 +122,12 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 	for i := 0; i < n; i++ {
 		f := rc.Fields[i]
 		if elemQOV, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
-			if _, isRecord := elemQOV.Type().(*values.RecordType); !isRecord {
+			// The element test is values.IsMixedSeedElementType on BOTH sides, not a
+			// second copy of it here: this walk and the planner's must agree bit for
+			// bit about which field is the element, because disagreeing about that
+			// shifts the offset of every field after it. Two copies of a rule agree
+			// until one is edited.
+			if values.IsMixedSeedElementType(elemQOV.Type()) {
 				if !coverageOK() {
 					return nil, nil, false // an unfinished leg run before the element
 				}
@@ -350,13 +355,18 @@ func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.
 	// element's 1-field leg: alias = the SLOT QOV's correlation (the AS alias,
 	// never the merge alias), the sole column named from the enclosing RC
 	// field (fieldName — the same naming authority as the top-level
-	// synthesis). The discriminator is the SLOT SHAPE: the non-record guard is
-	// load-bearing against whole-leg record slots (the pristine positional-
-	// merge RC), which must keep resolving as merge-leg runs.
+	// synthesis). The discriminator is the SLOT SHAPE, and the test for it is
+	// values.IsMixedSeedElementType — the SAME authority the seed walk above and
+	// the planner's window derivation ask, because all three decide which field is
+	// the element and disagreeing about that shifts the offset of every field after
+	// it. This site carried a third hand-rolled copy of the assertion; it was
+	// bit-identical, which is how a copy stays until one of them is edited. The
+	// non-record test is load-bearing against whole-leg record slots (the pristine
+	// positional-merge RC), which must keep resolving as merge-leg runs.
 	term := accs[0].Ordinal
 	if rc, isRC := legRVs[alias].(*values.RecordConstructorValue); isRC && term >= 0 && term < len(rc.Fields) {
 		if slotQOV, isQ := rc.Fields[term].Value.(*values.QuantifiedObjectValue); isQ {
-			if _, isRecord := slotQOV.Type().(*values.RecordType); !isRecord {
+			if values.IsMixedSeedElementType(slotQOV.Type()) {
 				elemName := strings.ToUpper(fieldName)
 				return slotQOV.Correlation, &values.RecordType{Fields: []values.Field{
 					{Name: elemName, FieldType: slotQOV.Type(), Ordinal: 0},
