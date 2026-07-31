@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "factory",
+    srcs = [
+        "batch.go",
+        "candidate.go",
+        "execute.go",
+        "featurevector.go",
+        "sweep.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/conformance/factory",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/explaindiff",
+        "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/conformance/rowdiff",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_test(
+    name = "factory_test",
+    timeout = "long",  # keep: re-plans every committed scenario's four renderings
+    srcs = [
+        "determinism_test.go",
+        "export_test.go",
+        "pipeline_test.go",
+        "tlp_render_test.go",
+    ],
+    # keep: the determinism gate regenerates every COMMITTED file from its seed,
+    # so it needs the corpus the sibling package owns.
+    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    embed = [":factory"],
+    deps = [
+        "//pkg/relational/conformance/explaindiff",
+        "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
+    ],
+)

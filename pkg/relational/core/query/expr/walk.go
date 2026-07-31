@@ -1528,6 +1528,64 @@ func flattenOr(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
 	return out
 }
 
+// walkIsOperand resolves the left operand of `IS [NOT] NULL / TRUE / FALSE`.
+//
+// It differs from walkAtom in one respect: a COMPARISON is a legal operand
+// here. `(a > 3) IS NULL` asks whether the comparison evaluated to UNKNOWN,
+// which is a question about three-valued logic and the only way to ask it in
+// SQL — so it is the third branch of every ternary-logic partition.
+//
+// Java accepts it. Comparisons there are always Values (RelOpValue), the
+// one-field record flatten (SqlFunctionCatalog.flattenRecordWithOneField)
+// removes the parentheses, and IsNullFn declares its parameter as Type.Any, so
+// the operand reaches Comparisons.Type.IS_NULL as a boolean-typed Value
+// (RelOpValue.java: IS_NULL_BI). Go reaches the same predicate by a different
+// route — a comparison in a value position becomes a predicateValue, whose
+// Evaluate returns nil for UNKNOWN — and the AND/OR/NOT and nested-IS-NULL
+// operand shapes already travelled it. Only the BARE comparison did not,
+// because walkAtom resolves a paren-wrap through WalkExpression, which
+// suppresses comparisons.
+//
+// That suppression is deliberate and is NOT relaxed here: it exists so a CASE
+// WHEN ... THEN branch cannot take a comparison, matching Java's rejection of
+// `WHERE CASE WHEN ... THEN a < b`. The IS operand is a different position
+// with a different Java answer, so it gets its own resolver rather than a flag
+// on the shared one.
+func (r *Resolver) walkIsOperand(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
+	switch a := atom.(type) {
+	case *antlrgen.BinaryComparisonPredicateContext:
+		pred, err := r.walkBinaryComparison(a)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		if inner := parenWrappedExpression(a.RecordConstructor()); inner != nil {
+			return r.walkExpressionInner(inner, true)
+		}
+	}
+	return r.walkAtom(atom)
+}
+
+// parenWrappedExpression returns the single expression a `(x)` paren-wrap
+// carries, or nil when the record constructor is a real one (multi-element,
+// named field, or OF TYPE) rather than parentheses.
+func parenWrappedExpression(rc antlrgen.IRecordConstructorContext) antlrgen.IExpressionContext {
+	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
+	if !ok || rcc.OfTypeClause() != nil {
+		return nil
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	if len(exprs) != 1 {
+		return nil
+	}
+	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
+	if !ok || ewon.Uid() != nil {
+		return nil
+	}
+	return ewon.Expression()
+}
+
 // walkGrammarPredicate handles PredicateContext shapes that modify
 // a preceding atom — IS [NOT] NULL today, BETWEEN / IN / LIKE in
 // follow-up commits.
@@ -1537,7 +1595,7 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 	}
 	switch p := pred.(type) {
 	case *antlrgen.IsExpressionContext:
-		lhs, err := r.walkAtom(atom)
+		lhs, err := r.walkIsOperand(atom)
 		if err != nil {
 			return nil, err
 		}

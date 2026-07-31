@@ -457,6 +457,21 @@ type Query struct {
 	Limit     int  // 0 = no LIMIT
 	Offset    int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
 	Distinct  bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
+
+	// WhereOverride, when non-nil, REPLACES the rendered WHERE conjunct list
+	// with this literal SQL expression; the empty string means "no WHERE at
+	// all". It exists for the RFC-201 §5.5 ternary-logic-partitioning oracle,
+	// which needs `WHERE NOT (p)` and `WHERE (p) IS NULL` rendered from the
+	// SAME predicate tree as `WHERE p` — forms no BoolNode can express (Kleene
+	// NOT is not SQL NOT, and "the predicate evaluated to UNKNOWN" is not a
+	// boolean node at all).
+	//
+	// Oracle M cannot evaluate an overridden query: the override is opaque SQL
+	// and the oracle walks the typed tree. OracleRows therefore REFUSES such a
+	// query with an error rather than silently evaluating q.Where and reporting
+	// a divergence that is really a harness bug. The TLP oracle needs no Oracle
+	// M — its property is the partition across the four renderings.
+	WhereOverride *string
 }
 
 // Case is everything one seed produces.
@@ -1706,7 +1721,17 @@ func (c *Case) SQL(q Query, projection []string) string {
 		if joinEq != "" {
 			conj = append(conj, joinEq)
 		}
-		if q.Where != nil {
+		switch {
+		case q.WhereOverride != nil:
+			// The override replaces ONLY the predicate-tree conjunct. The join
+			// equality and the appended subquery filters stay, so a TLP triple
+			// built over a comma join or an EXISTS query still partitions: those
+			// conjuncts are identical in all four renderings, so they factor out
+			// of the partition property exactly as a FROM clause does.
+			if *q.WhereOverride != "" {
+				conj = append(conj, *q.WhereOverride)
+			}
+		case q.Where != nil:
 			var wb strings.Builder
 			renderBool(&wb, q.Where)
 			w := wb.String()
@@ -1885,6 +1910,21 @@ func (c *Case) aggSQL(q Query) string {
 // alias ("l_id").
 func joinOutputAlias(qualified string) string {
 	return strings.ToLower(strings.ReplaceAll(qualified, ".", "_"))
+}
+
+// PredicateSQL renders a boolean predicate tree as a SQL expression, the same
+// rendering `Case.SQL` puts in the WHERE clause. Exported so the RFC-201 §5.5
+// ternary-logic-partitioning oracle can build the three branches of the
+// partition — `p`, `NOT (p)`, `(p) IS NULL` — from the one tree that produced
+// the query under test, rather than re-deriving the predicate from SQL text.
+// A nil tree renders as the empty string.
+func PredicateSQL(n *BoolNode) string {
+	if n == nil {
+		return ""
+	}
+	var b strings.Builder
+	renderBool(&b, n)
+	return b.String()
 }
 
 func renderBool(b *strings.Builder, n *BoolNode) {

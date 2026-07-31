@@ -85,7 +85,9 @@ jobs:
           fuzz-race|nightly-heartbeat-fuzz-race|3
           fuzz-binding|nightly-heartbeat-fuzz-binding|3
           fuzz-client|nightly-heartbeat-fuzz-client|3
-          fuzz-engine|nightly-heartbeat-fuzz-engine|3'
+          fuzz-engine|nightly-heartbeat-fuzz-engine|3
+          factory-corpus|nightly-heartbeat-factory-corpus|3
+          factory-batch|nightly-heartbeat-factory-batch|3'
 
           # NO-OP GUARD, the same discipline the nightlies themselves carry: a
           # reconciler that iterates an empty list passes green having verified

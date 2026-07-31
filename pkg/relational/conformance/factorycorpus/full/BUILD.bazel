@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# The FULL committed RFC-201 factory corpus — the nightly tier.
+#
+# `manual` is what actually keeps it out of `bazelisk test //...`: manual
+# targets are dropped during wildcard expansion, BEFORE any tag filter runs.
+# `factorycorpus` is the selector — it makes the exclusion explicit for callers
+# that name targets directly, and it makes
+# `bazelisk query 'attr(tags, factorycorpus, tests(//pkg/...))'` find the
+# nightly's target without hard-coding the label.
+#
+# The corpus grows toward six figures of committed tests and each scenario
+# pays a schema create/drop against a real container, so it cannot live in a
+# lane that must stay fast. The per-PR tier runs a feature-vector-stratified
+# sample of the SAME corpus from the parent package, so a broken batch cannot
+# land and sit until morning.
+go_test(
+    name = "full_test",
+    timeout = "eternal",  # keep: 3600s via .bazelrc's --test_timeout override
+    srcs = ["full_corpus_fdb_test.go"],
+    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    # keep: the scenarios are independent, so sharding is pure parallelism —
+    # bounded by .bazelrc's --local_test_jobs=4, since every shard spins its own
+    # FDB container and they contend for one Docker socket.
+    shard_count = 4,
+    tags = [
+        "factorycorpus",
+        "manual",
+    ],
+    deps = [
+        "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

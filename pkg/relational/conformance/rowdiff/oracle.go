@@ -25,6 +25,13 @@ import (
 // the expected sequence is total), original insertion order otherwise (the
 // caller compares as a multiset in that case).
 func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
+	// A WhereOverride is opaque SQL the typed walk below cannot evaluate. It
+	// must REFUSE, not fall through to q.Where: falling through would evaluate
+	// a different predicate than the engine ran and report the difference as a
+	// soundness divergence — a harness bug wearing a finding's clothes.
+	if q.WhereOverride != nil {
+		return nil, fmt.Errorf("OracleRows: query carries a WhereOverride (%q); Oracle M evaluates the typed predicate tree and cannot interpret raw SQL", *q.WhereOverride)
+	}
 	if q.Agg != nil {
 		return oracleAggRows(c, q)
 	}
