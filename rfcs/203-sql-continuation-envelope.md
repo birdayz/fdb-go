@@ -91,13 +91,17 @@ grounds with a **per-path** fence.
     eight, and G14 carries reachability as a tracked field so a rule that later
     starts constructing an inert node converts it into a live regression
     loudly.
-13. **The `Any` extension point is ADOPTED WITH CONDITIONS** as R1's closure
-    mechanism for the three Go-only holes (§3.3), with the counter-cost recorded
-    beside it: R1 is restated so an `Any`-encoded node is **not** cross-engine
-    representable, because otherwise adopting `Any` would launder leg 2 of the
-    cross-engine decline into a gate satisfied by construction. **C2-C5 of the
-    ruling were not relayed into this document and must be pasted in verbatim
-    before merge** — see §3.3.
+13. **The `Any` extension point is ADOPTED WITH SIX CONDITIONS, in step 1**
+    (§3.3). It covers `Limit`, `Distinct`, `VectorIndex` **and** `InMemorySort`,
+    which narrows G11(b)'s regression from five shape families to **one** —
+    `RecordQueryFilterPlan`, a hole Go shares with Java. R1 is restated (C3) as
+    *zero `additional_plans`-encoded **and** zero unrepresentable* nodes, so the
+    escape hatch cannot launder leg 2 of the decline into a gate satisfied by
+    construction; the clarification travelling with C3 is that `Any` does not
+    weaken leg 2 but **sharpens** it, since "a type URL Java does not recognise"
+    is better evidence than "the sort key doesn't fit". G14 becomes a **three-way**
+    census (shared-arm / `Any` / unrepresentable) so a C2 violation — a node with
+    a shared arm routed through `Any` — is visible at all.
 
 **Closes:** CQ-69.2's continuation half (`TODO.md:12558-12562`); unblocks CQ-69.4
 (`TODO.md:12570-12580`).
@@ -727,54 +731,107 @@ the numbers G11(b)'s regression and R1's scope should be read against: five
 affected shapes, four actionable nodes. Not "eight unrepresentable", which counts
 four nodes no SQL query can reach.
 
-**The `Any` extension point — ADOPTED WITH CONDITIONS as R1's closure mechanism
-for the Go-only holes.** Arm 1 of the oneof is
+**The `Any` extension point — ADOPTED WITH CONDITIONS, and adopted NOW in step 1
+(C5), not deferred to R1.** Arm 1 of the oneof is
 `google.protobuf.Any additional_plans = 1`, and the message carries
 `extensions 5000 to max` (`:1700-1702`) — Java's own escape hatch for plans
-outside the closed set. A Go-only node can therefore be transported inside an
-`Any` **without forking the schema**, and a peer that cannot decode the type URL
-fails loudly rather than mis-reading it. This is the ruled closure path for
-`Limit`, `VectorIndex` and `Distinct`; `InMemorySort` is **not** covered by it,
-because its problem is a lossy *key representation* inside an arm that already
-exists, not a missing arm.
+outside the closed set. A Go-only node is therefore transported inside an `Any`
+**without forking the schema**, and a peer that cannot decode the type URL fails
+loudly rather than mis-reading it.
 
-Conditions:
+**Covered:** `Limit`, `VectorIndex`, `Distinct` **and `InMemorySort`** (C2). An
+earlier draft of this passage excluded `InMemorySort` on the reasoning that its
+defect is a lossy key representation "inside an arm that already exists" rather
+than a missing arm. C2 supersedes that: the test is whether Java has an operator
+that can *express* the node, and `PRecordQuerySortKey` demonstrably cannot
+express a `ValueExpr`/`Desc`/`NullsFirst` key. A node Java cannot express is a
+node with no usable arm, whatever the arm's name.
 
-- **C1 — Go-owned type URLs in a Go namespace.** The `Any` type URL must name a
-  Go-owned type in a Go namespace, never a `com.apple.foundationdb.record.*` URL.
-  A Go message masquerading under an Apple type URL is precisely the wire lie
-  §4.1 refuses elsewhere, and it would make the peer's failure a decode error
-  instead of an honest unknown-type rejection.
-- **C2-C5 — NOT YET RELAYED TO THIS DOCUMENT.** The ruling states five
-  conditions beyond the probe requirement; only C1 and C6 reached the RFC. **They
-  must be pasted in verbatim before this RFC merges** — an adoption recorded with
-  three of its six conditions missing is worse than no adoption, because the
-  missing ones are invisible to every later reader. Flagged rather than guessed:
-  inventing plausible conditions here would be indistinguishable, to a future
-  reader, from conditions the reviewer actually set.
-- **C6 — the fence gets a PROBE ARM before step 1 depends on it.** Same shape as
-  probe A: a continuation whose `compiled_statement.plan` carries an `Any` with a
-  Go-owned type URL, capturing exception class, message and SQLSTATE. **Expected**
-  (read, to be measured): `PlanSerialization.dispatchFromProto` (`:177-191`)
-  routes an `Any` through `registry.lookUpMessageClass(any.getTypeUrl())`, and
-  `DefaultPlanSerializationRegistry.lookUpMessageClass` (`:74-82`) throws
-  `RecordCoreException("unable to dispatch for type url " + typeUrl)` when the
-  URL is absent from `fromProtoTypeUrlClassMap`. **Measure it.** If the observed
-  behaviour differs, both C1 and the better-fence rationale move with it — §9.1
-  is the precedent for why: the Path-1 fence read as a clean typed gate and
-  measured as `XXXXX`.
+**Six conditions.**
 
-**The counter-cost, recorded beside the ruling because the ruling argued one
-side.** Adopting `Any` requires **restating R1** so that an `Any`-encoded node
-counts as **NOT cross-engine representable**. Without that restatement, R1 —
-"a bijection between Go's plan node set and `PRecordQueryPlan`'s oneof arms" —
-becomes trivially satisfiable: every Go-only node gets an `Any`, the bijection
-closes on paper, and R1 reports green while no peer engine can execute any of
-those plans. That would **launder leg 2 of the cross-engine decline** (§3.3) into
-a gate that passes by construction, and leg 2 is one of the three legs the
-decline rests on. So R1's condition is explicitly: *representable through a
-Java-decodable oneof arm* — `Any` closes the **resumability** gap (G11(b)'s
-regression) and closes **nothing** in R1.
+**C1 — Go-owned type-URL prefix AND Go-owned proto package. Hard condition.**
+Java packs with
+`Any.pack(proto, serializationContext.getRegistry().getTypeUrlPrefix())`
+(`PlanSerialization.java:157-159`), and the URL is
+`TYPE_URL_PREFIX + "/" + descriptor.getFullName()` where the default prefix is
+`"c.a.fdb.types"` (`DefaultPlanSerializationRegistry.java:44`, `:116-118`). The
+prefix is **registry-scoped**, so Go controls it entirely: use a Go-owned prefix,
+and put the Go-only plan messages in a **Go-owned proto package**. Do not repeat
+the squat §8.7 already books as a defect —
+`proto/relational/distinct_continuation.proto:11` declares
+`package com.apple.foundationdb.relational.cursors;` for a Go-private message. A
+Go message under an Apple-shaped full name is **worse than a name collision**: a
+future Java registry that gained a message at that name could **dispatch** Go's
+bytes rather than refuse them, turning a clean fence into a silent mis-decode.
+
+**C2 — `Any` is permitted ONLY for nodes with no Java operator at all, and it
+wraps the NODE, not the sub-expressions.** Qualifying today: `Limit`, `Distinct`
+and `VectorIndex` (no Java class exists at all), and `InMemorySort` (Java has
+`RecordQuerySortPlan`, but `PRecordQuerySortKey` is a `KeyExpression` plus one
+`reverse` bit and cannot express Go's `ValueExpr`/`Desc`/`NullsFirst` key — the
+representational gap documented above). **Barred:** any node with a shared oneof
+arm must use that arm. Routing a node through `Any` because the shared arm is
+inconvenient would make Java unable to read a plan it otherwise could — a real
+divergence, not an extension. **Within** a Go-only node's own message the
+children must still be the standard shared types (`PValue`,
+`PPhysicalQuantifier`, …), so the payload stays maximally shared and R1's residue
+stays as small as possible.
+
+*A step-1 consequence that follows from C2:* Go has **no `values.Value` ↔
+`PValue` bridge** today — `PValue` appears only in `gen/` and in
+`pkg/docscheck/plan_proto_schema_test.go`. That serializer has to be built. It is
+**required for plan transport generally**, not extra work created by this ruling.
+
+**C3 — restate R1 so the `Any` route cannot launder it. This is the trap in the
+whole adoption.** R1 as first written ("a bijection … reporting zero
+unrepresentable nodes") becomes trivially satisfiable if `Any`-encoded counts as
+representable: G14's census reports zero and **leg 2 of the cross-engine decline
+evaporates as a MEASUREMENT while its substance is completely untouched** — Java
+still cannot execute a Go in-memory sort. R1 is therefore restated as **zero
+`additional_plans`-encoded nodes AND zero unrepresentable nodes**; an
+`Any`-encoded node counts explicitly as **NOT cross-engine representable**. This
+is also the counter-cost the RFC's own earlier `Any` passage failed to state, and
+stating it is why the adoption carries conditions rather than being a bare yes.
+
+*Clarification travelling with C3:* adopting `Any` **does not weaken leg 2**.
+Leg 2 claims Go's vocabulary is not losslessly representable **in the shared
+proto**. An `Any` makes a node **transportable to Go**, not **representable to
+Java** — the same axis-separation §3.4 already draws between *reading* the peer's
+envelope and *executing* the peer's plan. If anything it **sharpens** leg 2,
+because the reason Java cannot resume a Go token becomes a named type URL it does
+not recognise, which is better-evidenced than "the sort key doesn't fit".
+
+**C4 — the `GO_V0` mode fence stays, unchanged.** It refuses a Go token before
+Java ever looks at the plan (`PlanValidator.java:54-56`, measured in §9.1 as
+loud-but-not-well-formed, SQLSTATE `XXXXX`). The `Any` type-URL failure is a
+**second, deeper** fence sitting behind it. This is defense in depth, and the new
+fence **must not become an argument for relaxing the old one**: the mode fence
+fails earliest and cheapest, and it holds even for a token whose `plan` field is
+absent entirely.
+
+**C5 — adopt NOW, in step 1; not later as R1's named mechanism.** The question
+posed was "now, or as R1's closure path"; the answer is **now**, because it
+changes what step 1 builds. Deferring means step 1 ships an encoder **plus** a
+rejection path for four node types, G11 pins that rejection, G3's resumable-only
+query set is drawn to exclude them, and every one of those artifacts is rebuilt
+and re-pinned when `Any` arrives. **Building a rejection you already know you
+will delete is precisely the deferral pattern the house rules forbid.**
+
+**C6 — the `Any` fence gets a PROBE ARM before step 1 depends on it.** Today the
+claim rests on source reading: `PlanSerialization.dispatchFromProto` (`:177-191`)
+special-cases `Any` and calls `registry.lookUpMessageClass(any.getTypeUrl())`,
+which throws `RecordCoreException("unable to dispatch for type url " + typeUrl)`
+at `DefaultPlanSerializationRegistry.java:74-82`. **This RFC has already set its
+own standard for exactly this class of claim** — §9.1 *measured* the `GO_V0` mode
+fence rather than inferring it — and the `Any` fence is now a second fence of the
+same class underpinning an adoption ruling. Build it in probe A's shape: hand
+Java a continuation whose `compiled_statement.plan` carries an `Any` with a
+Go-owned type URL; capture exception class, message and SQLSTATE. A typed
+`RecordCoreException` naming the offending URL is expected, which would be
+materially better than probe A's measured `XXXXX` — **but expecting is the thing
+§9 exists to replace.** If it measures otherwise, both C1's namespace requirement
+and this ruling's "better fence than the one already relied on" rationale move
+with it.
 
 A further group — `InJoin`, `Intersection`, `Union`, `MergeSortUnion`,
 `Projection`, `NestedLoopJoin` — has no *same-named* arm but plausibly maps onto
@@ -823,17 +880,17 @@ compatible either — three Go-private inner shapes (§9.4).
 Cross-engine plan resume is reconsidered when **all three** hold, each
 demonstrated by a committed test:
 
-- **R1 (vocabulary).** A bijection between Go's physical plan node set and
-  `PRecordQueryPlan`'s **Java-decodable oneof arms** for every plan the corpus
-  produces, measured by an enumeration test reporting zero unrepresentable nodes.
-  **An `Any`-encoded node does NOT count as representable for R1** (§3.3): the
-  `Any` escape hatch closes the *resumability* gap while leaving the peer unable
-  to decode the plan, so counting it here would let R1 close on paper while no
-  Java engine can execute a single one of those plans — laundering leg 2 of the
-  decline into a gate satisfied by construction. Falsified today by the reachable
-  unrepresentable nodes of §3.3. Closing it means an upstream arm for each (for
-  `InMemorySort`, a Value-keyed sort message), or Go ordering/planning coverage
-  that removes the operator from corpus plans.
+- **R1 (vocabulary), restated per C3 so the `Any` route cannot launder it.**
+  **Zero `additional_plans`-encoded nodes AND zero unrepresentable nodes**, over
+  every plan the corpus produces, measured by G14's census. An `Any`-encoded node
+  counts explicitly as **NOT cross-engine representable**: the escape hatch makes
+  a node *transportable to Go*, never *representable to Java*. Without this
+  restatement every Go-only node gets an `Any`, the census reports zero, and leg
+  2 of the decline **evaporates as a measurement while its substance is
+  untouched** — Java still cannot execute a Go in-memory sort. Closing R1 means
+  an upstream arm for each node (for `InMemorySort`, a Value-keyed sort message),
+  or Go planning coverage that stops producing the operator. Adopting `Any`
+  therefore moves **nothing** in R1; it moves G11(b)'s regression only.
 - **R3 (execution state).** Every `execution_state` payload Go can emit is
   byte-identical to Java's for the same cursor position, retiring all three
   Go-private shapes (§9.4). Two of the three are **checkable** work against a
@@ -918,16 +975,15 @@ second vocabulary would only imply a distinction that does not exist at the call
 site. The *census* keeps the two apart (G14), which is where the distinction is
 actionable.
 
-Consequence, stated at its measured width rather than either minimised or
-inflated: `ORDER BY` without a satisfying access path, `LIMIT`/`OFFSET`, vector
-search, `SELECT DISTINCT`, and the `RecordQueryFilterPlan` shapes (nested-loop
-join, left-outer-existential) are **not resumable under `GO_V0`**. Five shapes,
-of which one (`Filter`) is a limitation Java shares. `Comparator`, `Selector`,
-`TextIndex` and `LoadByKeys` are unrepresentable too but no Cascades rule
-constructs them, so they cost nothing (§3.3). That is a real, stated, tested
-limitation (G11(a) for the loudness, G14 for the exact set), not a silent gap —
-and the honest price of transporting through a proto written for a different
-plan vocabulary.
+Consequence, at its measured width after the C5 `Any` adoption:
+`RecordQueryFilterPlan` shapes (nested-loop join, left-outer-existential) are
+**not resumable under `GO_V0`**. One shape family — and a limitation **Java
+shares**, throwing the same exception at
+`RecordQueryFilterPlan.java:220-221`. `ORDER BY` without a satisfying access
+path, `LIMIT`/`OFFSET`, vector search and `SELECT DISTINCT` are `Any`-transported
+(§3.3 C2) and remain resumable; `Comparator`, `Selector`, `TextIndex` and
+`LoadByKeys` are unreachable and cost nothing. That residue is real, stated and
+tested (G11(a) for the loudness, G14 for the exact set), not a silent gap.
 
 **And it is a user-visible regression, not merely a missing feature.** Setting
 `MAX_ROWS` on such a query returns rows today and **errors** after steps 4+5,
@@ -1284,9 +1340,18 @@ comment must move with the fact.
 Deliverables: G11; **G14 — which must land GENUINELY FIRST within this step, not
 merely inside it, because G3's scope is *defined by* G14's census.** A G3 written
 before the census exists would have to guess its own query set, which is how G3
-acquired the shape list that contradicted G11 in the first place. Also the C6
-`Any`-fence probe arm (§3.3) **before** step 1 depends on the ruling, and the
-per-plan-class round-trip golden.
+acquired the shape list that contradicted G11 in the first place.
+
+**Also in step 1, per C5: the `Any` encoding itself** — Go-owned type-URL prefix
+and Go-owned proto package (C1), for `Limit`, `Distinct`, `VectorIndex` and
+`InMemorySort`, with shared child types inside each message (C2). Adopting here
+rather than deferring is what keeps step 1 from building a rejection path for
+four node types that G11 would pin, G3 would route around, and `Any` would then
+delete. The **C6 probe arm lands before the encoder depends on the fence**, and
+the **`values.Value` ↔ `PValue` serializer** is built here — it does not exist
+today (`PValue` appears only in `gen/` and `pkg/docscheck/plan_proto_schema_test.go`)
+and plan transport needs it regardless of `Any`. Plus the per-plan-class
+round-trip golden.
 
 **Also a step-1 deliverable: prove the cross-JVM arm is actually cross-JVM.**
 §9.3's second launch is asserted only by the hashes agreeing, which would remain
@@ -1518,15 +1583,22 @@ mode with the per-run count of queries actually multiplied REPORTED and FLOORED.
 **G11 — the unrepresentable-node rejection is loud, specific, and CLEAN AT THE
 PAGE BOUNDARY.** Two parts:
 
-*(a) Mint-time.* Minting a token for a plan containing
-`RecordQueryInMemorySortPlan` — or any member of the unrepresentable set (§3.3,
-both the five Java-parity nodes and the three Go-only ones) — fails with Java's
+*(a) Mint-time.* Minting a token for a plan containing a node in the residual
+unrepresentable set (§3.3 — after the C5 `Any` adoption this is the five
+Java-parity nodes: `Filter`, plus the four unreachable ones) fails with Java's
 `"serialization of this plan is not supported"` message, the node name, and the
-R1 reference as structured context. *Mutations:*
-encode the sort lossily as `PRecordQuerySortPlan` → the error assertion reds,
-**and** a companion test showing a `NULLS FIRST` sort resuming in the wrong order
-under that lossy encoding reds too — the second mutation is what proves the
-rejection protects correctness and not taste.
+R1 reference as structured context. **`InMemorySort`, `Limit`, `Distinct` and
+`VectorIndex` are NO LONGER in this arm** — they are `Any`-transported under C2,
+and a test still asserting their rejection would be pinning behaviour this
+ruling deleted.
+
+*Mutations:* route a shared-arm node through `Any` → the **C2** assertion in
+G14's three-way census reds; encode the sort lossily as `PRecordQuerySortPlan`
+instead of `Any` → the error assertion reds, **and** a companion test showing a
+`NULLS FIRST` sort resuming in the wrong order under that lossy encoding reds too
+— the second mutation is what proves the choice protects correctness and not
+taste, and it survives the `Any` adoption because the lossy encoding remains the
+tempting wrong answer.
 
 *(b) The user-facing path, which (a) alone does not cover.* Setting `MAX_ROWS` on
 a query whose plan contains an unrepresentable node must surface a **clean SQL
@@ -1548,14 +1620,25 @@ chosen because the alternative is minting a token that cannot be redeemed or,
 worse, one redeemed against a lossily-encoded plan that resumes in a different
 order.
 
-**The affected surface is five shapes, not eight** (§3.3's reachability axis):
-`SELECT DISTINCT`, `LIMIT`/`OFFSET`, vector search, `ORDER BY` with no satisfying
-access path, and the `RecordQueryFilterPlan` shapes (nested-loop join,
-left-outer-existential). `Comparator`, `Selector`, `TextIndex` and `LoadByKeys`
-are **not** in the regression: no Cascades rule constructs them, so no SQL query
-can reach them. Listing them would have inflated the stated blast radius by four
-— and an overstated regression is as much a documentation defect as an
-understated one, because it invites the wrong mitigation.
+**After the C5 `Any` adoption the affected surface is ONE shape family, not five
+and not eight.** `SELECT DISTINCT`, `LIMIT`/`OFFSET`, vector search and
+`ORDER BY` with no satisfying access path are all `Any`-transported (C2) and stay
+resumable. `Comparator`, `Selector`, `TextIndex` and `LoadByKeys` are
+unrepresentable but unreachable — no Cascades rule constructs them (§3.3), so no
+SQL query reaches them.
+
+The genuine residue is **`RecordQueryFilterPlan`** — the nested-loop-join and
+left-outer-existential shapes — and it is a hole **Go shares with Java**, which
+throws `RecordCoreException("serialization of this plan is not supported")` at
+`RecordQueryFilterPlan.java:220-221` in exactly the same way. So the regression
+this RFC introduces is one shape family, on a limitation neither engine has
+closed.
+
+This is a large narrowing from the five shapes an earlier draft stated, and it is
+the concrete payoff of adopting `Any` in step 1 rather than deferring it: under
+the deferred plan, step 1 would have shipped a rejection path for four node
+types, G11 would have pinned it, G3's query set would have been drawn to exclude
+them, and all of it would be deleted when `Any` landed.
 
 Two honest qualifications on its blast radius, neither of which excuses it:
 `OptMaxRows` has no production setter today (§1.1), so the regression is
@@ -1581,7 +1664,14 @@ produces and reports, per Go plan type, whether it has a `PRecordQueryPlan`
 encoding: representable, representable only via a differently-named Java arm
 (with the mapping named), or unrepresentable.
 
-**Unrepresentable splits by cause, and the split is the point** (§3.3):
+**The classification is THREE-WAY, per C2 — shared-arm / `Any` / unrepresentable
+— superseding the two-way form an earlier draft specified.** The middle class is
+what enforces C2: a node with a shared arm that shows up as `Any`-encoded is a
+divergence (Java could have read that plan and now cannot), and only the census
+can see it. A two-way census cannot express the violation at all.
+
+**And unrepresentable still splits by cause, which is the other half of the
+point** (§3.3):
 
 - **shared-with-Java holes** — nodes whose Java counterpart also refuses
   serialization (`Comparator`, `Selector`, `TextIndex`, `LoadByKeys`, `Filter`).
@@ -1693,6 +1783,15 @@ invites the whole thing to be dismissed on its weakest item.
 `package com.apple.foundationdb.relational.cursors;` for a **Go-private** message.
 Java has no proto in that package today, so there is no collision now, but the
 squat means a future upstream message there would collide by full name. §9.4.
+
+**C1 promotes this from tidiness to a correctness requirement, and it is no
+longer optional.** Once Go-only plans travel inside an `Any`, the type URL is
+`prefix + "/" + descriptor.getFullName()` (`DefaultPlanSerializationRegistry.java:116-118`),
+so a Go message under an Apple-shaped full name is **worse than a collision**: a
+future Java registry that gained a message at that name could **dispatch** Go's
+bytes instead of refusing them, converting the C6 fence into a silent mis-decode.
+Fixing the squat and choosing a Go-owned prefix and package are the same task,
+and both land in step 1.
 
 ---
 
