@@ -586,12 +586,48 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 	return true
 }
 
-// flattenClusterLegRefs rewrites QUANTIFIER-ADDRESSED cluster-leg reads
-// (FieldValue{Child: QOV(leg), COL} — the resolver's SourceRelativeBaked emission for a
-// qualified projection over a join) into the level-2 output's flat dotted
-// read `LEG.COL`, left lazy so bakeFlatRefsAgainstColumns bakes it against
-// the output layout. Non-leg and machinery-baked references pass through.
-func flattenClusterLegRefs(v values.Value, pu *clusterPullUp) values.Value {
+// clusterSeedSlot is the level-2 output slot of one leg column, walking the
+// legs in the ORDER AND SHAPE clusteredOuterOrdinalSeed emits them.
+//
+// It mirrors that builder's loop deliberately rather than reusing leg.start.
+// leg.start is a CONCAT ordinal, and the seed's row is not the concat: it
+// re-emits only the PLAIN leg spans, so any concat column no leg covers would
+// make the two indexings diverge silently — an off-by-N read of a neighbouring
+// column, which is the failure mode this whole file exists to prevent. Two
+// loops in the same order over the same slice cannot drift; a shared constant
+// and a derived one can.
+func clusterSeedSlot(pu *clusterPullUp, binding, col string) (int, bool) {
+	pos := 0
+	for _, leg := range pu.legs {
+		if leg.binding == binding {
+			if idx, found := leg.typ.FieldIndex(col); found {
+				return pos + idx, true
+			}
+			return 0, false
+		}
+		pos += len(leg.typ.Fields)
+	}
+	return 0, false
+}
+
+// bakeClusterLegRefs binds QUANTIFIER-ADDRESSED cluster-leg reads
+// (FieldValue{Child: QOV(leg), COL} — the resolver's SourceRelativeBaked
+// emission for a qualified projection over a join) to their slot in the level-2
+// output row.
+//
+// It used to JOIN instead: the reference carries the leg's own
+// CorrelationIdentifier, and this function rendered that identifier and the
+// column into the text `LEG.COL` so the flat baker could slice it apart again
+// and match the seed's dotted column name. Nothing was gained by the round trip
+// and one thing was lost — the identity. A quoted column named `"A.B"` and a
+// reference to leg A's B became the same bytes, which is the defect this port
+// removes everywhere it appears; here it was self-inflicted, on a value that
+// arrived correct.
+//
+// The seed's row is built from the same legs in the same order, so the slot is
+// derivable from the identity alone. Non-leg and machinery-baked references
+// pass through untouched.
+func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, cols []string) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		fv, isFV := node.(*values.FieldValue)
 		if !isFV || fv.Child == nil {
@@ -605,35 +641,47 @@ func flattenClusterLegRefs(v values.Value, pu *clusterPullUp) values.Value {
 			return node
 		}
 		alias := strings.ToUpper(qov.Correlation.Name())
-		leg, isLeg := pu.legByBinding[alias]
-		if !isLeg {
+		slot, found := clusterSeedSlot(pu, alias, strings.ToUpper(fv.Field))
+		if !found || slot >= len(cols) {
 			return node
 		}
-		col := strings.ToUpper(fv.Field)
-		if _, found := leg.typ.FieldIndex(col); !found {
-			return node
-		}
-		return &values.FieldValue{Field: alias + "." + col, Typ: fv.Typ}
+		// The display name keeps the seed's own spelling for EXPLAIN; the
+		// ordinal is what reads the row.
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			cols[slot], slot, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 	})
 }
 
-// clusterFieldResolvable resolves one flat field name against the dotted seed
-// output: the inner scalar key, or `LEG.COL` through the leg spans.
+// clusterFieldResolvable reports whether one flat projection NAME resolves
+// against the seed output: the inner scalar key, or a leg column.
+//
+// The leg arm compares against the name the SEED BUILDER constructs, instead of
+// slicing the reference at its first dot and treating the prefix as a leg
+// alias. The two agree on every reference that is genuinely qualified and
+// disagree on the one that is not: a column literally named `A.B` is one name
+// here, and a manufactured qualifier cannot conjure a leg out of it.
 func clusterFieldResolvable(field string, pu *clusterPullUp, innerKey string) bool {
 	f := strings.ToUpper(field)
 	if f == innerKey {
 		return true
 	}
-	i := strings.IndexByte(f, '.')
-	if i <= 0 {
-		return false
-	}
-	leg, isLeg := pu.legByBinding[f[:i]]
-	if !isLeg {
-		return false
-	}
-	_, found := leg.typ.FieldIndex(f[i+1:])
+	_, found := clusterSeedSlotByName(pu, f)
 	return found
+}
+
+// clusterSeedSlotByName finds the seed output slot whose constructed NAME is f,
+// walking the legs exactly as clusteredOuterOrdinalSeed does.
+func clusterSeedSlotByName(pu *clusterPullUp, f string) (int, bool) {
+	pos := 0
+	for _, leg := range pu.legs {
+		for i := range leg.typ.Fields {
+			if strings.EqualFold(leg.binding+"."+strings.ToUpper(leg.typ.Fields[i].Name), f) {
+				return pos + i, true
+			}
+		}
+		pos += len(leg.typ.Fields)
+	}
+	return 0, false
 }
 
 // translateClusteredOuterScalar is the shape-1 dispatch, run BEFORE the
@@ -788,9 +836,13 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	// The projection reads the seed field by its SQL-alias-based NAME — the
 	// unique correlation is a leg-typing key only.
 	innerNameCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	// Derived BEFORE the loop for the same reason the single-source twin does
+	// it: the scalar reference binds to its slot here, where the layout is in
+	// hand, instead of being rendered into text for a later pass to re-match.
+	inputCols := expressionOutputColumns(joinSelect)
 	for i, col := range p.Projections {
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
-			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerNameCorr)
+			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerNameCorr, inputCols)
 			continue
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
@@ -802,9 +854,9 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	// dotted name, then bakes with the rest. A lazy dotted read reaching the
 	// runtime positional row fails loud (ordinal -1); the retired name
 	// resolution no longer serves it.
-	if inputCols := expressionOutputColumns(joinSelect); inputCols != nil {
+	if inputCols != nil {
 		for i, v := range projected {
-			projected[i] = bakeFlatRefsAgainstColumns(flattenClusterLegRefs(v, pu), inputCols)
+			projected[i] = bakeFlatRefsAgainstColumns(bakeClusterLegRefs(v, pu, inputCols), inputCols)
 		}
 	}
 	projQ := t.namedQuantifier("", joinRef)

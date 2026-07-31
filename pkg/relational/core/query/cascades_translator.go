@@ -6901,9 +6901,13 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 
 	projected := make([]values.Value, len(p.Projections))
 	innerCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	// Derived BEFORE the projection loop so the scalar reference can bind to its
+	// slot where the layout is in hand, instead of being rendered into text for
+	// a later pass to match by name.
+	inputCols := expressionOutputColumns(joinSelect)
 	for i, col := range p.Projections {
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
-			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerCorr)
+			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerCorr, inputCols)
 			continue
 		}
 		if i < len(p.IsComputed) && p.IsComputed[i] {
@@ -6911,10 +6915,10 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
-	// Flat lazy references (the scalar-column pickup and the
-	// outer-column reads) bake against the seed select's output layout — the
-	// same generic plan-time bind translateProject applies.
-	if inputCols := expressionOutputColumns(joinSelect); inputCols != nil {
+	// Flat lazy references (the outer-column reads) bake against the seed
+	// select's output layout — the same generic plan-time bind translateProject
+	// applies.
+	if inputCols != nil {
 		for i, v := range projected {
 			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols)
 		}
@@ -6929,13 +6933,34 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	)
 }
 
-func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubquery, innerCorr values.CorrelationIdentifier) values.Value {
+// It binds to the seed row's LAST slot, which is where both correlated-scalar
+// seeds put the scalar leg (scalarSubqueryOrdinalSeed and
+// clusteredOuterOrdinalSeed each append it after every outer column).
+//
+// It used to render the inner correlation and the scalar column into the text
+// `INNER.SCALARCOL` and leave a lazy carrier for the flat baker to match by
+// name — a joined identifier minted from an identity that was already in hand,
+// purely so a downstream reader could take it apart. The name is kept as the
+// DISPLAY spelling; the ordinal is what reads the row.
+func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubquery, innerCorr values.CorrelationIdentifier, cols []string) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
-		if ssq, ok := node.(*values.ScalarSubqueryValue); ok && ssq.Alias == csq.Alias {
-			qualifiedName := strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol)
-			return &values.FieldValue{Field: qualifiedName, Typ: values.UnknownType}
+		ssq, isSSQ := node.(*values.ScalarSubqueryValue)
+		if !isSSQ || ssq.Alias != csq.Alias {
+			return node
 		}
-		return node
+		if len(cols) == 0 {
+			// The seed's output layout is not derivable, so there is no slot to
+			// bind to. Mint the lazy carrier the un-migrated path produced: it
+			// resolves to nothing and is loud at eval, which is what happens
+			// today and is the correct outcome for a row nobody can address.
+			return &values.FieldValue{
+				Field: strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol),
+				Typ:   values.UnknownType,
+			}
+		}
+		slot := len(cols) - 1
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			cols[slot], slot, values.UnknownType, values.OrdinalDomainOfColumnNames(cols))
 	})
 }
 

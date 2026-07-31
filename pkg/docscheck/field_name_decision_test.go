@@ -318,7 +318,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/embedded/logical_predicate.go:6191":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4741":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (8)
+	// dotted (9)
 	//
 	// cascades_translator.go:988 arrived here with the launderer widening, not
 	// from another bucket. It asks whether a group-by output name is QUALIFIED
@@ -326,8 +326,26 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// to cascades_generator.go:4122 below, and it is filed with it rather than
 	// with the binder it sits inside, because the debt is the flat
 	// representation, not the lookup around it.
-	"pkg/relational/core/query/cascades_translator.go:993":    {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4147"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:624": {1, "dotted: clusterFieldResolvable resolves a flat name against the DOTTED seed output -- the inner scalar key, else `LEG.COL` through the leg spans -- called with n.Field at :567. Newly visible through the call boundary. It is the READER half of the same round trip flattenClusterLegRefs opens at :616, which takes a FieldValue that already carries QOV(alias) and joins the alias into text so this side can slice it apart again. Both halves retire together, and the fix there is DELETION, not segment-carrying: the identity is in hand at the producer"},
+	"pkg/relational/core/query/cascades_translator.go:993": {1, "dotted: groupByOutputBaker asks whether a reference is qualified by comparing its name to stripColumnQualifier of itself, then re-looks-up the leaf; same shape as cascades_generator.go:4147"},
+	// The clustered-outer-scalar round trip is HALF gone. flattenClusterLegRefs
+	// is deleted: it took a FieldValue already carrying QOV(alias), joined the
+	// alias into `LEG.COL` text, and left it for the flat baker to slice apart —
+	// destroying an identity that was in hand so a later reader could guess it
+	// back. The reference now binds straight to its seed slot from the identity
+	// (bakeClusterLegRefs), and the SPLIT that read it (`strings.IndexByte` plus
+	// legByBinding[f[:i]]) is gone with it.
+	//
+	// What remains is the seed's output REPRESENTATION: its columns are literally
+	// named `LEG.COL`, so the two sites below still compare against that
+	// spelling. They no longer MANUFACTURE a qualifier — the comparison is
+	// against the name the seed builder itself constructs, so a column literally
+	// named `A.B` is one name here and cannot conjure a leg out of its own dot.
+	//
+	// One entry became TWO because the walk that was a slice is now an explicit
+	// scan. The arithmetic got worse and the code got right, and that is recorded
+	// rather than hidden by keeping the comparison fused onto one line.
+	"pkg/relational/core/query/clustered_outer_scalar.go:665": {1, "dotted: clusterFieldResolvable matches a flat projection name against the inner SCALAR key -- the constructed `INNER.SCALARCOL` spelling of the seed's last column. Retires with the dotted seed representation itself: when the seed's columns carry leg identity plus a bare name instead of a joined one, this becomes an identity lookup"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:678": {1, "dotted: clusterSeedSlotByName scans the seed's OWN constructed `LEG.COL` names for a flat projection name. It replaced a first-dot SLICE of the reference, which is the difference between reading the producer's spelling and inventing a qualifier -- but the spelling is still dotted text, so it retires with the seed representation, not before"},
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a
