@@ -229,8 +229,39 @@ func FormatLegColumnProvenanceCensus() string {
 	return b.String()
 }
 
-// AssertLegColumnProvenanceCensus checks the census's partition and its one
-// zero, and reports whether it failed.
+// LegColumnProvenanceFloors is the minimum population this census must report
+// over a whole suite run.
+//
+// It exists for the reason its two siblings' floors exist, and the reason is
+// sharper here than for either of them. This census's entire finding is a pair
+// of small numbers — the dotted arm answers FOUR times in the whole corpus, and
+// all four have an identity available — and the retirement decision rests on
+// BOTH halves: on the four being all there is, and on all four being
+// identity-available. A zero population satisfies the second half vacuously. It
+// also satisfies the DottedHitIdentityDiverged zero vacuously, and the partition
+// as 0 == 0.
+//
+// So a census that stopped being driven at all reports exactly the shape of a
+// census reporting good news, and the numbers are small enough that "4" and "0"
+// do not look different at a glance. The floors are what make them different.
+//
+// Set at 1 rather than an order of magnitude below the measurement, because
+// there is no order of magnitude here: the measured DottedHitIdentityAvailable
+// is 4. What a floor detects at this scale is DISAPPEARANCE, which is the whole
+// failure mode — the shapes that drive the dotted arm ceasing to be planned, or
+// the reader ceasing to be reached.
+type LegColumnProvenanceFloors struct {
+	// Calls floors the denominator every share is taken against.
+	Calls int
+	// DottedHitIdentityAvailable floors the population the retirement decision
+	// is ABOUT. Calls alone does not cover it: the flat-hit arm carries 40 of
+	// the 52 calls, so Calls can stay healthy while the dotted arm — the only
+	// arm this census exists for — goes to zero.
+	DottedHitIdentityAvailable int
+}
+
+// AssertLegColumnProvenanceCensus checks the census's partition, its one zero
+// and its population floors, and reports whether it failed.
 //
 // The partition is the point: every share this census prints is a share of
 // Calls, and a share only means something if the shares add up. The zero is
@@ -238,12 +269,18 @@ func FormatLegColumnProvenanceCensus() string {
 // different things, resolved by the text. That is not a residue to shrink, it is
 // a contradiction: two keys for one leg, disagreeing, with only the weaker one
 // consulted.
-func AssertLegColumnProvenanceCensus(w io.Writer) bool {
+//
+// floors is nil when the run is NARROWED, exactly as its siblings do it: the
+// floors describe a whole-suite population, and a -test.run selecting tests that
+// never adapt a leg row reaches this reader zero times. The partition and the
+// zero still run — they hold over any population, which is precisely why they
+// are not a proof on their own.
+func AssertLegColumnProvenanceCensus(w io.Writer, floors *LegColumnProvenanceFloors) bool {
 	c, _ := LegColumnProvenanceCensus()
-	return assertLegColumnProvenanceCounters(w, c)
+	return assertLegColumnProvenanceCounters(w, c, floors)
 }
 
-func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounters) bool {
+func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounters, floors *LegColumnProvenanceFloors) bool {
 	failed := false
 	got := c.FlatHit + c.NotDotted + c.NoLegs + c.DottedMiss +
 		c.DottedHitIdentityAvailable + c.DottedHitIdentityUnstated + c.DottedHitIdentityDiverged
@@ -264,6 +301,36 @@ func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounter
 			"  disagree, so one of them is already resolving to the wrong window — this is\n"+
 			"  not a residue to shrink but a contradiction to find. Look at the PRODUCER\n"+
 			"  that built the leg, not at this reader.\n", c.DottedHitIdentityDiverged)
+	}
+	if floors != nil {
+		for _, f := range []struct {
+			name  string
+			got   int
+			floor int
+			why   string
+		}{
+			{
+				"Calls", c.Calls, floors.Calls,
+				"Nothing reached the reader at all, so the partition held as 0 == 0 and\n" +
+					"  the DottedHitIdentityDiverged zero held vacuously. Either leg rows stopped\n" +
+					"  being adapted or the census stopped being enabled.",
+			},
+			{
+				"DottedHitIdentityAvailable", c.DottedHitIdentityAvailable,
+				floors.DottedHitIdentityAvailable,
+				"The DOTTED arm — the only arm this census exists to measure — answered\n" +
+					"  zero times. The retirement decision rests on the claim that every dotted\n" +
+					"  hit has an identity available; over an empty population that claim costs\n" +
+					"  nothing and proves nothing, and it reads on the report exactly like the\n" +
+					"  measured four-of-four that licensed it.",
+			},
+		} {
+			if f.got < f.floor {
+				failed = true
+				fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: %s = %d, want >= %d.\n  %s\n",
+					f.name, f.got, f.floor, f.why)
+			}
+		}
 	}
 	return failed
 }

@@ -94,12 +94,14 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 func TestLegColumnProvenanceGate(t *testing.T) {
 	t.Parallel()
 
+	floors := &LegColumnProvenanceFloors{Calls: 1, DottedHitIdentityAvailable: 1}
+
 	// A state that HOLDS: the seven outcomes partition Calls and nothing diverged.
 	ok := legColumnProvenanceCounters{
 		Calls: 52, FlatHit: 40, NotDotted: 8, DottedHitIdentityAvailable: 4,
 	}
 	var b strings.Builder
-	if assertLegColumnProvenanceCounters(&b, ok) {
+	if assertLegColumnProvenanceCounters(&b, ok, floors) {
 		t.Fatalf("a partitioning, divergence-free census FAILED the gate:\n%s", b.String())
 	}
 
@@ -107,7 +109,7 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	b.Reset()
 	gap := ok
 	gap.Calls = 53
-	if !assertLegColumnProvenanceCounters(&b, gap) {
+	if !assertLegColumnProvenanceCounters(&b, gap, floors) {
 		t.Fatal("the gate accepted a census whose outcomes do not sum to Calls. Every " +
 			"share it prints — including the one that decides whether this reader can be " +
 			"re-keyed by identity — is then a share of an unknown whole.")
@@ -118,7 +120,7 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	div := ok
 	div.DottedHitIdentityAvailable = 3
 	div.DottedHitIdentityDiverged = 1
-	if !assertLegColumnProvenanceCounters(&b, div) {
+	if !assertLegColumnProvenanceCounters(&b, div, floors) {
 		t.Fatal("the gate accepted a DIVERGED dotted hit. That is not a residue to " +
 			"shrink but a contradiction: two keys for one leg, disagreeing, with only " +
 			"the weaker one consulted — one of them is already resolving to the wrong " +
@@ -126,5 +128,60 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "DottedHitIdentityDiverged") {
 		t.Fatalf("the divergence failure does not name the counter that fired:\n%s", b.String())
+	}
+}
+
+// The census's whole finding is a pair of SMALL numbers — the dotted arm answers
+// four times in the corpus, and all four have an identity available — so a
+// population that disappears reports the identical shape as one that is healthy:
+// the partition holds as 0 == 0, the divergence zero holds vacuously, and "0 of
+// 0 are identity-available" reads on a report exactly like "4 of 4".
+//
+// The floors are the only thing that separates those, and they are dropped on a
+// narrowed run, so both directions get asserted: the floors must fire on an
+// empty population, and dropping them must not drop the partition or the zero.
+func TestLegColumnProvenanceGateFloors(t *testing.T) {
+	t.Parallel()
+
+	floors := &LegColumnProvenanceFloors{Calls: 1, DottedHitIdentityAvailable: 1}
+
+	var b strings.Builder
+	if !assertLegColumnProvenanceCounters(&b, legColumnProvenanceCounters{}, floors) {
+		t.Fatal("an EMPTY census passed the gate. Every assertion above it holds " +
+			"vacuously at zero population, so a reader that stopped being reached " +
+			"reports as a reader with nothing wrong.")
+	}
+	if !strings.Contains(b.String(), "Calls = 0, want >= 1") {
+		t.Errorf("the empty-population failure does not name Calls:\n%s", b.String())
+	}
+
+	// Calls alone does not cover it: the FLAT arm carries most of the traffic, so
+	// the denominator can stay healthy while the arm the census exists for goes
+	// silent. That is the state a Calls-only floor would pass.
+	b.Reset()
+	flatOnly := legColumnProvenanceCounters{Calls: 52, FlatHit: 44, NotDotted: 8}
+	if !assertLegColumnProvenanceCounters(&b, flatOnly, floors) {
+		t.Fatal("a census whose DOTTED arm answered zero times passed the gate on the " +
+			"strength of its flat-hit traffic. The dotted arm is the only thing this " +
+			"census measures; its disappearance is the failure, not the flat arm's health.")
+	}
+	if !strings.Contains(b.String(), "DottedHitIdentityAvailable = 0, want >= 1") {
+		t.Errorf("the silent-dotted-arm failure does not name the counter:\n%s", b.String())
+	}
+
+	// Floors dropped (a narrowed run): an empty census must PASS, and a real
+	// contradiction must still FAIL.
+	b.Reset()
+	if assertLegColumnProvenanceCounters(&b, legColumnProvenanceCounters{}, nil) {
+		t.Errorf("with floors dropped, an EMPTY census failed:\n%s\n"+
+			"  A narrowed -test.run reaches this reader zero times; failing there would "+
+			"make every focused run red.", b.String())
+	}
+	b.Reset()
+	if !assertLegColumnProvenanceCounters(&b,
+		legColumnProvenanceCounters{Calls: 1, DottedHitIdentityDiverged: 1}, nil) {
+		t.Error("with floors dropped, a DIVERGED dotted hit passed. The floors describe " +
+			"a whole-suite population; the zero describes a contradiction, and dropping " +
+			"the first must not drop the second.")
 	}
 }

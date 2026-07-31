@@ -3,6 +3,7 @@ package embedded
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -40,6 +41,13 @@ import (
 // a representation detail.
 func TestLazyLegMintReachesNoWinningPlan(t *testing.T) {
 	t.Parallel()
+
+	// Counted across the parallel shape subtests, so the positive sentinel's own
+	// emptiness is a checked fact rather than an invisible pass. Local, not
+	// package-level: a package variable would be summed across whichever tests
+	// happened to run, which is how a census in this repo once reported three
+	// concurrent tests' planning as one number.
+	var sentinelPopulation atomic.Int64
 
 	const schema = `CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))
 CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))
@@ -124,8 +132,137 @@ CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 					"which binding changed before updating this expectation.\n"+
 					"explain:\n%s", dotted, explain)
 			}
+
+			// THE POSITIVE SENTINEL, walking the same winner. See
+			// legLocalReadsOf for why the dotted zero above no longer covers
+			// this arm.
+			for _, r := range legLocalReadsOf(plan) {
+				if !r.identityOK {
+					t.Errorf("a leg-correlated read reached the WINNING plan without an "+
+						"identity in its OWN leg's domain: %s\n\n"+
+						"  The read is a single-accessor column off a quantifier that STATES "+
+						"a row, which is exactly the shape the rebase arm's pass-through "+
+						"hands back — so its ordinal is about to be resolved against that "+
+						"quantifier's window at runtime. An ordinal whose domain is not that "+
+						"window's indexes a DIFFERENT layout, and the failure is silent: the "+
+						"read returns whatever sits at that slot in the wrong row.\n\n"+
+						"  Do NOT relax this into a domain-agnostic check. The domain token "+
+						"is the only thing separating a leg-local ordinal from a merged-row "+
+						"ordinal that happens to be in range.\n  explain:\n%s",
+						r.describe(), explain)
+				}
+				sentinelPopulation.Add(1)
+			}
 		})
 	}
+
+	// A zero-population sentinel is a green that says nothing, and this one is
+	// especially prone to it: the qualifying shape (single accessor, typed
+	// quantifier) is exactly the shape a planner change can rewrite away, and the
+	// self-join-twin shape ALREADY has none — its leg reads are re-anchored onto
+	// the merged correlation as two-accessor paths, which is a different and also
+	// correct form. So the assertion above holds vacuously for that shape today,
+	// and it would hold vacuously for all of them if the pass-through's product
+	// stopped surviving anywhere.
+	//
+	// MEASURED: three of the four shapes carry exactly one qualifying read (P.V,
+	// ordinal 1 in P's own two-column domain).
+	t.Cleanup(func() {
+		if n := sentinelPopulation.Load(); n == 0 {
+			t.Errorf("the leg-local identity sentinel found NO qualifying read in any " +
+				"winning plan.\n" +
+				"  It asserts a property of leg-correlated reads that reach execution; " +
+				"over an empty population it asserts nothing, and reports green.\n" +
+				"  Either the shapes stopped producing a leg-local read (find where the " +
+				"reads went — a merged two-accessor re-anchor is fine and expected, an " +
+				"untyped quantifier is not) or the walk stopped finding them.")
+		}
+	})
+}
+
+// legLocalRead is one candidate leg-local read found in a winning plan, plus
+// whether its identity answers.
+type legLocalRead struct {
+	field      string
+	corr       string
+	ordinal    int
+	pathDomain values.OrdinalDomain
+	legDomain  values.OrdinalDomain
+	identityOK bool
+}
+
+func (r legLocalRead) describe() string {
+	return fmt.Sprintf("%s.%s#%d — path domain %v, quantifier domain %v",
+		r.corr, r.field, r.ordinal, r.pathDomain, r.legDomain)
+}
+
+// legLocalReadsOf collects every read in a winning plan that has the shape the
+// rebase arm's PASS-THROUGH hands back: a SINGLE-accessor column read off a
+// QuantifiedObjectValue that STATES A ROW.
+//
+// WHY THIS EXISTS BESIDE THE DOTTED ZERO. The dotted zero measures the absence
+// of the deleted mint's product. That mint is gone, and the arm's live output is
+// something else entirely — a read that keeps its own leg correlation and its own
+// leg-local ordinal. So the zero is now structurally decoupled from the arm: it
+// would stay at zero whether the pass-through were correct, wrong, or absent, and
+// on the day an arm-2 candidate wins there would be nothing watching what it
+// carries. This is what watches it.
+//
+// The two DISQUALIFIERS are the content, and both are correct forms rather than
+// residues:
+//
+//   - a FUSED multi-accessor path (`#leg#col`) is a read against the MERGED
+//     quantifier, Java's own re-anchor. Its ordinals index the merge layout, not
+//     a leg's, so asking for a leg-domain identity would red on a correct plan.
+//     Measured on the self-join-twin shape, where both leg reads take this form.
+//   - a quantifier that states NO row has no domain to compare against — the
+//     existential inner's scan-bound read is this. A read there is not a
+//     leg-local read; it is a bare correlated read whose binder is the
+//     existential's own.
+//
+// What remains is exactly the population whose ordinal is about to be resolved
+// against the leg window its quantifier names, and the only thing that can be
+// wrong about one is that its ordinal belongs to a different layout.
+func legLocalReadsOf(plan plans.RecordQueryPlan) []legLocalRead {
+	var out []legLocalRead
+	visit := func(v values.Value) values.Value {
+		fv, ok := v.(*values.FieldValue)
+		if !ok {
+			return v
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			return v
+		}
+		legDomain := values.OrdinalDomainOfType(qov.Typ)
+		if !legDomain.IsKnown() {
+			return v
+		}
+		if fv.Resolved == nil {
+			return v
+		}
+		if _, single := fv.Resolved.Single(); !single {
+			return v
+		}
+		id, identityOK := fv.CorrelatedIdentityIn(legDomain)
+		// The identity must also be IN the domain it was asked about — a
+		// ColumnIdentity carries its domain, and a match on the ordinal alone
+		// would accept a slot number that means something else here.
+		if identityOK && id.Domain != legDomain {
+			identityOK = false
+		}
+		out = append(out, legLocalRead{
+			field:      fv.Field,
+			corr:       qov.Correlation.Name(),
+			ordinal:    fv.Resolved.Root().Ordinal,
+			pathDomain: fv.Resolved.Domain,
+			legDomain:  legDomain,
+			identityOK: identityOK,
+		})
+		return v
+	}
+	walkPlanValues(plan, visit)
+	return out
 }
 
 // dottedMergedRowKeysOf collects every dotted FieldValue over a
@@ -135,14 +272,27 @@ CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 // columns.
 func dottedMergedRowKeysOf(plan plans.RecordQueryPlan) []string {
 	var out []string
-	visit := func(v values.Value) values.Value {
+	walkPlanValues(plan, func(v values.Value) values.Value {
 		if fv, ok := v.(*values.FieldValue); ok && strings.Contains(fv.Field, ".") {
 			if q, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
 				out = append(out, fmt.Sprintf("%s@%s", fv.Field, q.Correlation.Name()))
 			}
 		}
 		return v
-	}
+	})
+	return out
+}
+
+// walkPlanValues applies visit to every Value surface a rebased reference can
+// land on: each node's result value, the three predicate-carrying plan kinds,
+// and scan/index bounds.
+//
+// It is ONE function rather than a copy per collector so the negative walk (the
+// dotted zero) and the positive one (the identity sentinel) cannot come to cover
+// different surfaces. A surface missing here makes both of them weaker in the
+// same direction, which is at least a visible fact; two walks drifting apart
+// would make the zero look stronger than the sentinel for no stated reason.
+func walkPlanValues(plan plans.RecordQueryPlan, visit func(values.Value) values.Value) {
 	collectComparison := func(c *predicates.Comparison) {
 		if c != nil && c.Operand != nil {
 			values.Replace(c.Operand, visit)
@@ -184,5 +334,4 @@ func dottedMergedRowKeysOf(plan plans.RecordQueryPlan) []string {
 		}
 		return true
 	})
-	return out
 }

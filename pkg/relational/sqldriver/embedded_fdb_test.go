@@ -123,7 +123,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
-	if failed := executor.AssertLegColumnProvenanceCensus(os.Stderr); failed && code == 0 {
+	if failed := assertLegColumnProvenanceCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	// The bakeability census is ASSERTED, not merely printed. It was printed
@@ -364,6 +364,43 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,
 	MergeSlots:     1800,
+}
+
+// legColumnProvenanceFloors is the minimum population the leg-column provenance
+// census must report over the whole suite.
+//
+// MEASURED over this corpus: calls 52 (flatHit 40, notDotted 8, noLegs 0,
+// dottedMiss 0), dotted hits available 4, unstated 0, diverged 0. The
+// retirement decision this census feeds rests on the SMALL number — four dotted
+// hits, all four with a stated identity naming the same leg — and a small number
+// is exactly the kind that reads the same whether it is measured or absent.
+//
+// Both floors are 1, not an order of magnitude below the measurement, because
+// there is no order of magnitude below 4. What is being detected here is
+// DISAPPEARANCE: the shapes that drive the dotted arm ceasing to be planned, or
+// the reader ceasing to be reached. DottedHitIdentityAvailable is floored
+// separately from Calls because the flat arm carries 40 of the 52 calls, so the
+// denominator can look healthy while the arm the census exists for goes silent.
+var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
+	Calls:                      1,
+	DottedHitIdentityAvailable: 1,
+}
+
+// assertLegColumnProvenanceCensus checks the provenance census, dropping the
+// population floors when -test.run narrows the corpus — the same split its two
+// siblings make, for the same reason.
+func assertLegColumnProvenanceCensus(w io.Writer) bool {
+	floors := &legColumnProvenanceFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		c, _ := executor.LegColumnProvenanceCensus()
+		fmt.Fprintf(w, "leg-column provenance census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The partition and the divergence zero "+
+			"still run, over the population this filter actually reached: calls %d, "+
+			"dotted hits with an identity available %d. At zero they hold VACUOUSLY.\n",
+			f.Value.String(), c.Calls, c.DottedHitIdentityAvailable)
+		floors = nil
+	}
+	return executor.AssertLegColumnProvenanceCensus(w, floors)
 }
 
 // assertLegLocalBakeCensus checks the bakeability census, dropping the
