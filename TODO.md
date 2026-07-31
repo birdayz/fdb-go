@@ -7791,6 +7791,55 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-31 (CQ-67 / RFC-200 — the NESTED merged leg, steps 3a–3d′):**
+baseline worktree at the branch point `719f6c8b0` vs the branch head, SAME
+FILESYSTEM (sibling worktree under `.claude/worktrees/`), sequential fresh FDB
+containers.
+
+All subtests PASS on both sides. **Every row count identical on every shape**,
+and **every EXPLAIN string identical** (10 lines, diffed, empty). Totals
+151.64s → 152.16s (**+0.34%**).
+
+Per-shape, before → after: PK lookups 5.105/5.061/4.973ms → 5.138/4.879/5.338ms;
+idx_customer eq 5.894 → 5.992ms; idx_amount range (100017 rows) 133.04 →
+142.08ms; idx_status count 332.54 → 339.08ms; full-scan filter 485.32 →
+519.68ms; GROUP BY status 5.656 → 4.953ms; GROUP BY COUNT-only 5.307 → 4.530ms;
+SUM by status 5.376 → 5.277ms; GROUP BY customer HAVING (47271 rows) 137.40 →
+141.89ms; **JOIN 10×customers 15.25 → 25.61ms**; ORDER BY PK full (1M) 3.355 →
+3.445s; ORDER BY PK + index filter 11.060 → 7.571ms; scan-all ordered (1M) 3.180
+→ 3.338s; scan-all wide (1M) 3.360 → 3.410s; IN-list 15.28 → 15.87ms; PK needle
+5.258 → 5.444ms; PK+filter needle 5.806 → 6.156ms; sparse filter 2.917 → 3.014s;
+UPDATE by index 8.724 → 8.826ms; DELETE single 6.544 → 6.052ms. Bulk inserts
+6.259 → 6.325s (100k) and 2m8.289 → 2m8.135s (1M).
+
+**PARITY WAS THE EXPECTATION, and it is what was measured.** Zero plan movement
+had already been established at 3d and 3d′ independently — the full suite's
+goldens, plandiff and explaindiff are green, and the orientation-gate census
+shows all 72 newly-checked firings MATCHING (see CQ-67) — so any timing move
+here is load, not planning.
+
+**The one outlier, JOIN at +67.9%, is CLOSED AS VARIANCE WITH DATA rather than
+by argument.** Three further uncached runs per side:
+
+| | run 1 | run 2 | run 3 | run 4 | range |
+|---|---|---|---|---|---|
+| before (`719f6c8b0`) | 15.25 | 29.97 | 26.85 | 23.94 | **15.2–30.0ms** |
+| after (branch) | 25.61 | 27.36 | 26.90 | 32.83 | **25.6–32.8ms** |
+
+The distributions OVERLAP, and the baseline's 15.25ms is the outlier LOW of its
+own four samples — the original comparison put the branch's median against the
+baseline's fastest run. It is a **10-row** shape at ~25ms, the smallest-N
+measurement in the table, and its EXPLAIN is byte-identical across both sides.
+
+**METHODOLOGY CAVEAT, recorded because it affects how these absolutes should be
+read:** the filesystem was at **96% utilisation** during both runs (40G free of
+932G). CLAUDE.md's own recipe warns that ext4 point-lookup latency degrades
+sharply above ~95% and reports as a planner regression. Both sides ran on that
+same filesystem, so the COMPARISON is sound — that is exactly what the
+same-filesystem rule buys — but the absolute figures are inflated relative to a
+healthy disk and should not be compared against rows measured at lower
+utilisation.
+
 **2026-07-31 (CQ-53 phase 2c — the seed-window map is keyed by leg identity):**
 baseline worktree at the phase-2 head `6f9b718e2` vs the branch, same box,
 sequential fresh FDB containers, `go test -tags stress`.
@@ -12137,6 +12186,152 @@ None is speculative: each was re-verified against the tree before booking.
   executor, so: Graefe-gated, one impl lap at phase completion, cross-agreement
   fixture is the bit-for-bit gate.
 
+  ---
+
+  **IMPLEMENTED on `feat/rfc200-nested-leg-windows`, steps 3a–3d′, awaiting the
+  joint review lap.** Measured state:
+
+  **Gate (c) — EVERY prediction landed EXACTLY.** The `foldStep1Seed` outcome
+  census is now a standing instrument (it replaced a probe that had been deleted)
+  with its denominator counted INDEPENDENTLY at the seed-decision call site:
+
+  | | before | after | predicted |
+  |---|---|---|---|
+  | ACCEPT | 78 | **138** | 138 (78+60) HIT |
+  | DECLINE correlatedStep1 | 108 | 108 | unchanged HIT |
+  | DECLINE rv-no-exist-ref | 202 | 202 | unchanged HIT |
+  | DECLINE reconstruct-nil | 154 | **94** | 94 (154−60) HIT |
+  | — of which bare-QOV | 94 | 94 | 94 HIT |
+  | — of which positional-merge | 60 | **0** | 0 HIT |
+  | DECLINE windows-nil | 0 | 0 | HIT |
+  | denominator | 542 | 542 | unchanged HIT |
+  | firings with BOTH legs unsafe | 0 | 0 | HIT |
+
+  This entry states the denominator as `540` and rv-no-exist-ref as `200`;
+  measured they are `542` / `202`. The `+2` is **corpus growth, identified rather
+  than assumed**: the merged-leg reader-shape fixture became shared between the
+  redundancy pin and the wrong-window mutation pin, so its WHERE-EXISTS query is
+  planned twice where it was planned once, and that test alone contributes
+  exactly 2 firings, both in that class. Every load-bearing number is exact. (The
+  committed gate values are higher again — 546 / 140 / 96 — because this branch's
+  own gate-(a) fixture adds four more firings; the delta is attributed at the
+  assertion.)
+
+  **Gate (d) is VACUOUS, and that CONTRADICTS this entry's framing.** The
+  read→firing mapping (3a deliverable (i)) did not exist and is now a standing
+  cut: `legRebaseOrigin` carries the firing's class AND its refused-leg SHAPE down
+  to the leg-match arm, because the two censuses count different events (reads
+  vs rule firings) and their totals cannot be apportioned into one another by
+  arithmetic. Measured: **all 174 leg-local reads sit under BARE-QOV firings and
+  NONE under a positional-merge firing — already true BEFORE the change.** So the
+  gate holds vacuously, and **the nested window converts 60 firings while removing
+  ZERO pass-through reads.** `LegLocalBakeCensus` still reports 174/174 taking the
+  leg-alias pass-through.
+
+  **CONSEQUENCE: the read-axis retirement of the runtime binding-namespace
+  widening (`executor.bindMergedOuterLegs`) moves ENTIRELY to CQ-68.** All 174 of
+  DIVERGENCES.md's reads belong to the 94-firing bare-QOV block. This item was a
+  necessary STRUCTURAL step — the layout authority can now express a nested row at
+  all, and the executor twin agrees with it bit-for-bit — but on the read axis the
+  divergence is exactly where it was. DIVERGENCES.md is updated with the
+  60-closed / 94-open / 108-permanent decomposition.
+
+  **3a deliverable (ii): all 60 declined positional-merge legs DO satisfy
+  `IsPositionalMergeRC`**, not merely "two bare QOVs over record types" — the
+  RC-not-a-merge bucket measured 0 and the witness is one distinct shape,
+  `x60 FlatMap rv=positional-merge RC(2)`. The inference is now a measurement.
+
+  **The hash twin: the doc comment named a method that does not exist.**
+  `values.RecordType` has no `Hash`. The identity channels the memo ACTUALLY keys
+  a record type on were read and pinned instead — `SemanticHashCode`,
+  `SemanticEqualsUnderAliasMap`, `EqualsWithoutChildren`, and `String()` (the
+  EXPLAIN-golden channel) — over all three carriers a leg-table-bearing type
+  travels on. Four mutations, each RED separately. Mutation 2 exposed that
+  `SemanticEqualsUnderAliasMap` INTERCEPTS correlation-bearing leaves before
+  `EqualsWithoutChildren`, so they are independent copies of one rule and one
+  stays green while the other breaks — which is why both are asserted.
+
+  **3d′ closed the fail-open and moved NO plan, with the reason MEASURED rather
+  than assumed.** The gate now counts TILES via a top-level run list the walk
+  returns (the map cannot serve it — the rightmost-leaf case replaces a box run's
+  tile with a narrower sub-window). An orientation-gate census separates
+  live-and-agreeing from latent: `calls 438 (not-a-seed 96, tiled-by-2 342,
+  tiled-by-other 0); of the tiled-by-2: unverifiable 84, matched 197, declined 61;
+  firings where the MAP count differs from the TILE count — the population 3d′
+  moves — 72, of which DECLINED 0.` **72 firings became newly checkable and ALL 72
+  MATCH**; the 61 declines were already being checked. `MapCountDiffers` is
+  floored as the live/latent discriminator. A SECOND fail-open (84 "unverifiable"
+  — a leg plan that cannot state its row shape) is left standing deliberately and
+  is now counted rather than merely true.
+
+  **Gate (b): stress before/after recorded** in this file's baseline table (same
+  filesystem, sibling worktree, branch point `719f6c8b0`). Row counts identical
+  on every shape, every EXPLAIN byte-identical, totals +0.34%.
+
+  **Gate (a) is NOT SATISFIED, and the reason was RE-DIAGNOSED after the first
+  review lap — the earlier text here was wrong and is replaced rather than
+  amended.**
+
+  It recorded that the shape reaching the nested window "does not execute". That
+  was true of the fixture as first written — a PREDICATE-FREE three-source comma
+  join — and false of the shape the corpus actually produces. Re-pointed at the
+  corpus's own form (three sources WITH EQUIJOINS, as
+  `TestFDB_CommaJoinProjectedExists_UnequalLegWidths` carries), the query RUNS
+  and returns correct rows on all four addresses.
+
+  **What is actually unmeasurable is the READER arm, and it is now measured as
+  LATENT.** The seed-window reader census reports `NESTED-HIT 0` at both keyed
+  readers over the whole corpus, and mutating the fused two-step address back to
+  flat `Offset + legOrdinal` leaves the end-to-end probe GREEN. The nested
+  acceptance is live at the LAYOUT — ACCEPT 78 to 138 exactly as predicted, and
+  `existentialRebase` 962 to 1086, which is RFC-200 section 6's own growth
+  prediction confirmed — but every window those reads select is a FLAT top-level
+  run. A nested SUB-window is only selected by a reference to a leg buried INSIDE
+  the merge, and no corpus query produces one.
+
+  So gate (a)'s four mutation directions are not writable until `NESTED-HIT` is
+  non-zero. The fixture, the two-source flat control and the row assertions are
+  in `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the
+  predicate-free failure is pinned separately there as CQ-70's reproducer.
+
+  **RULED: the latent reader arm MERGES.** It clears a strictly higher bar than
+  3d′ set — correct, cross-agreement-pinned on both entries, unit-pinned on both
+  arms, and instrumented — and holding correct instrumented code hostage to
+  CQ-68/CQ-70 is the deferral pattern this project forbids.
+
+  **REOPEN TRIGGER — THIS ITEM IS NOT FINISHED, IT IS PARKED ON A TRIPWIRE.**
+
+  > **When the seed-window reader census reports a non-zero `NESTED-HIT` at any
+  > site, CQ-67 REOPENS and gate (a) becomes the work.**
+
+  Whoever lands **CQ-68** is the most likely person to trip it: typing the 94
+  bare-QOV result values is precisely what could produce a reference reaching a
+  leg buried INSIDE the merge, which is the only thing that selects a nested
+  sub-window. **Read this before starting CQ-68** — it is here, and not only in a
+  test file, so it cannot be missed by someone who never opens the census.
+
+  The trigger is ASSERTED, not printed: `SeedWindowReaderFloors.NestedHitMustBeZero`
+  is armed in the sqldriver corpus harness, so activation day is a RED test whose
+  failure message carries the whole hand-over (the fixture, the four mutation
+  directions, the "either right or loud" refutation clause, and how to clear the
+  flag). Without it, activation would change nothing visible and gate (a) would
+  stay unwritten BY DEFAULT rather than by decision.
+
+  On trip: write gate (a)'s four directions against
+  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go` (already
+  built, already carrying distinct leg widths, a cross-leg duplicate column name
+  and a non-first-leg non-zero-ordinal projection), record the outcomes in that
+  fixture's own doc comment, clear `NestedHitMustBeZero`, floor `NESTED-HIT`
+  instead, and mark gate (a) satisfied.
+
+  **VERIFICATION ARTIFACT — the branch's own merge gate, recorded rather than
+  asserted.** The merge commit `2d0c73ff2` used `--no-verify` on the ground that
+  "the merged HEAD gets a full run immediately after, and that run is the gate",
+  which left no artifact. Recorded here instead: `bazelisk test //pkg/...` at the
+  merged head `2d0c73ff2` on 2026-07-31 reported **62 of 62 targets passing**,
+  and every other commit on this branch ran the full pre-commit suite. A branch
+  that pins twelve mutations as tests may not exempt its own gate from evidence.
+
 - [ ] **CQ-68 (MED/L, M/L, gated on CQ-67, query-engine review gate) — the
   RFC-200 residue: 94 FlatMap result values are a BARE UNTYPED QOV where Java
   types unconditionally, and they are the LARGEST addressable block, not the
@@ -12145,6 +12340,38 @@ None is speculative: each was re-verified against the tree before booking.
   booking and this is it. Gated on CQ-67 landing — the two touch the same
   `foldStep1Seed` decline population and the census equalities in CQ-67's gate
   (c) are stated against a 94 that has not moved.
+
+  **THIS ITEM'S PREMISE IS NOW STRONGER THAN `94 > 60`, and the strengthening is
+  measured.** CQ-67's implementation produced the read→firing mapping that did
+  not exist when either entry was written: **all 174 of `LegLocalBakeCensus`'
+  leg-local pass-through reads sit under firings whose refused leg is a BARE QOV,
+  and ZERO under a positional-merge firing.** That was already true before CQ-67
+  and is still true after it.
+
+  So the 94 are not merely the larger block by firing count — **they carry the
+  ENTIRE read population**, and CQ-67 removed none of it. The retirement condition
+  for the runtime binding-namespace widening
+  (`executor.bindMergedOuterLegs`, DIVERGENCES.md) therefore rests on THIS item
+  alone on the read axis; CQ-67 advanced it by zero reads. DIVERGENCES.md now
+  states that decomposition (60 closed / 94 open / 108 permanent), and CQ-67's
+  gate (d) is documented as holding VACUOUSLY.
+
+  The instrument that answers this is standing, not a probe: `legRebaseOrigin`
+  threads the firing's class and refused-leg SHAPE to the leg-match arm, the cut
+  is a partition assertion in the bakeability census, and
+  `Step1ReconstructNilMustBeZero` is wired ON — so when this item moves the 94,
+  the reads it removes are counted at the site rather than argued.
+
+  **BEFORE STARTING: THIS ITEM CAN REOPEN CQ-67.** Typing the 94 result values is
+  the most likely way to produce a reference that reaches a leg buried INSIDE the
+  merge — which is the only thing that selects a NESTED sub-window, and therefore
+  the trigger that makes RFC-200's gate (a) writable. CQ-67 merged with its
+  nested reader arm correct and UNREACHED (`NESTED-HIT 0` corpus-wide), parked on
+  an armed tripwire: `SeedWindowReaderFloors.NestedHitMustBeZero`. If this item
+  trips it the suite goes RED with the full hand-over in the failure message, and
+  **gate (a) becomes part of this item's work** rather than a surprise. Read
+  CQ-67's REOPEN TRIGGER paragraph first; it names the fixture and the four
+  mutation directions.
 
   Java types the flowed object value unconditionally
   (`Quantifier.java:801-803`). FOUR non-test `RecordQueryFlatMapPlan`
@@ -12314,3 +12541,79 @@ None is speculative: each was re-verified against the tree before booking.
   companions are deliberately NOT vendored — they assert Java-Cascades-internal
   task/transform counters that are meaningless for a different planner and would
   only rot), and there is NO Java-format plan renderer.
+
+- [ ] **CQ-70 (MED/M, M, gated on CQ-67 landing, query-engine review gate) — a
+  PREDICATE-FREE comma join under a PROJECTED-EXISTS fold does not execute:
+  `multi-leg row cannot serve a source-relative ordinal / no frontier row
+  resolved`.** A live planner/executor defect on master, found while probing
+  CQ-67 end-to-end.
+
+  **PREMISE CORRECTED after the first review lap.** This was first booked as "a
+  projected-EXISTS fold over a THREE-source FROM does not execute", and as "what
+  makes RFC-200's gate (a) unmeasurable". Both were wrong, and the branch's own
+  instruments refuted them:
+
+  - the three-source fold DOES execute when it carries EQUIJOIN predicates,
+    which is the form the corpus produces
+    (`TestFDB_CommaJoinProjectedExists_UnequalLegWidths`). Only the
+    predicate-free comma join fails. The defect is narrower than booked, hence
+    the priority drop from HIGH to MED;
+  - gate (a) is blocked by something else entirely — the nested READER arm is
+    LATENT (`NESTED-HIT 0` corpus-wide), so its mutation directions are not
+    writable even on a query that runs. Fixing this item does NOT unblock gate
+    (a), and CQ-67's entry carries that correction.
+
+  Reproducer, over four tables (`ta` 3 cols with `k` at ordinal 1, `tb` 1 col,
+  `tc` 2 cols with `k` at ordinal 1, `tp` the existential inner) — note the
+  ABSENCE of any join predicate, which is the whole trigger:
+
+  ```sql
+  SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc
+  ```
+
+  fails with
+
+  ```
+  correlated FieldValue "K" (correlation "TC") evaluated against an
+  unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
+  source-relative ordinal)) — no frontier row resolved (planner/executor bug)
+  ```
+
+  **PRE-EXISTING, verified with an arm-disabled control.** The same query fails
+  identically with RFC-200's nested acceptance turned OFF — the comparison was
+  made by disabling `legOrdinalSafety`'s FlatMap arm, the single line that
+  activates it, and re-running. Same error, same message. It is not a CQ-67
+  regression.
+
+  **LOUD, not silent.** No wrong row reaches a user; the query errors. That is
+  what makes it survivable rather than an emergency, and it is the FIRST thing to
+  re-check if the failure mode ever changes — a silent variant is a different and
+  much worse defect.
+
+  **TWO forms are CORRECT, which is what localises this to the missing
+  predicate.** `SELECT tc.k, EXISTS (...) FROM ta, tc WHERE ta.aid = tc.cid`
+  executes (two sources, flat windows throughout), and so does the THREE-source
+  `FROM ta, tb, tc WHERE ta.aid = tb.bid AND tb.bid = tc.cid` — the corpus's own
+  shape, which returns correct rows on all four addresses. Only the
+  predicate-free comma join fails. All three are pinned in
+  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the failing
+  one asserts BOTH error substrings ("multi-leg row cannot serve a
+  source-relative ordinal" and "no frontier row resolved"), so a change in
+  failure mode reds rather than passing.
+
+  **WHAT THIS DOES NOT UNBLOCK.** It was booked as the blocker for RFC-200's gate
+  (a); it is not. Gate (a)'s four mutation directions are unwritable because the
+  nested READER arm is LATENT — `NESTED-HIT 0` at both keyed readers over the
+  whole corpus, and mutating the fused two-step address back to flat leaves the
+  end-to-end probe green even on a query that runs. That is a separate condition
+  tracked in CQ-67, and it needs a query whose reference reaches a leg buried
+  INSIDE the merge, which is a different thing from making this one execute.
+
+  Gated on CQ-67 only so the two do not contend for the same files; the defect
+  itself is independent of it.
+
+  DONE = the PREDICATE-FREE three-source comma join under a projected-EXISTS fold
+  executes and returns correct rows, and its pinned loud-failure test is replaced
+  by a row assertion. NOT tied to CQ-67's gate (a), which is blocked on the
+  latent reader arm and is unaffected by this item. Executor + NLJ rule, so:
+  Graefe-gated.

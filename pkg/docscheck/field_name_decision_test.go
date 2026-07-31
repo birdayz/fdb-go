@@ -126,7 +126,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// from this branch made precisely this call for real, to mint an ordinal. A
 	// diagnostic that survived its deleted sibling is how the move gets
 	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:588": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:647": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
 
 	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
 	// deleted entries described, and calling it genuine debt rather than the
@@ -155,7 +155,7 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// forbids it. Pinned by TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches,
 	// which holds the shape so the entry is about a real hazard rather than a
 	// hypothetical one — and which says to retire this entry if a guard appears.
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:142": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:156": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
 }
 
 type fieldDecisionSite struct {
@@ -421,11 +421,11 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// witnesses (`C.CV` and `O.ID` verbatim, `I.QTY` as the scalarCol half of
 	// `O.I.QTY`). The distinction is the whole of producer-first — pointed at the
 	// executor, this bucket's retirement waits on the wrong file.
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:139":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2744": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:143":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2937": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
-	"pkg/relational/core/query/ordinal_seed.go:794":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
+	"pkg/relational/core/query/ordinal_seed.go:795":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
 	// THE MINTS. Five sites, all newly VISIBLE rather than new — every one of
 	// them predates this entry by many commits. The detector had no arm for name
@@ -453,7 +453,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// name-keyed (5). Two of these are newly VISIBLE rather than new: the
 	// call-boundary taint reached them through a plain string parameter.
 	"pkg/recordlayer/query/plan/cascades/rule_implement_in_union.go:125": {1, "name-keyed: uniqueUpperFieldIndex scans a RecordType for the field whose name matches, called with fv.Field at :89. It already DECLINES on a duplicate name rather than first-matching, which is the mitigation for exactly the conflation this gate names -- but declining is not resolving: the reference still selects its slot by leaf name, and over a merged join RecordType the decline is a lost bake rather than a correct one. Newly visible through the call boundary"},
-	"pkg/relational/core/query/unnest_gather.go:456":                     {1, "name-keyed: slotInGatheredSeed's BARE arm keys elementSlots by leaf name, reached with a col parameter the caller derives from fv.Field. The element-first shadowing rule it implements is a NAME-precedence rule (an element alias shadows a later leg column), so the map key is the shadowing decision itself -- it closes when the gathered seed carries element identity rather than an element name. Newly visible through the call boundary"},
+	"pkg/relational/core/query/unnest_gather.go:466":                     {1, "name-keyed: slotInGatheredSeed's BARE arm keys elementSlots by leaf name, reached with a col parameter the caller derives from fv.Field. The element-first shadowing rule it implements is a NAME-precedence rule (an element alias shadows a later leg column), so the map key is the shadowing decision itself -- it closes when the gathered seed carries element identity rather than an element name. Newly visible through the call boundary"},
 
 	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":       {1, "name-keyed: referenced-field set keyed by leaf name. Java's member is a Set<FieldValue> (ReferencedFieldsConstraint.java:41), keyed by semanticEquals/semanticHashCode, so the port is unambiguous -- and it was BUILT and MEASURED, then reverted: keying by value makes the set grow where two quantifiers share a leaf name, and this constraint's every growth re-fires the push rules. 4-table chain tasksRun 10255 -> 12901, 3-spoke ordinal star 9481 -> 12644 (both budget baselines are +-2% pins), and the hub+5 star stops planning entirely -- ErrPlannerCapHit becomes a rule-cycle round-cap divergence at 87642 tasks. plan_shape.golden does not move. The conversion is correct and the coupling between constraint growth and re-exploration is what has to change first; that is planner machinery with its own review gate, not this bucket"},
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":   {1, "name-keyed: projection merge composes an outer LAZY read by unique output-name match against the inner projection's slot names. Probed: the arm is HEAVILY LIVE -- a panic at its match point reds dozens of FDB tests (derived tables, CTEs, RFC-128 limits, cross-table predicates), so it cannot be failed closed where it stands. The outer read has no ordinal to select a slot with, and the conversion is therefore upstream: the resolver must bake a projection-output reference to its output ordinal, the way it already bakes a source-column reference (expr.go:296-297). That is translator/resolver work, not a rewrite of this site"},

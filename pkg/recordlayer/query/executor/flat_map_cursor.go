@@ -648,7 +648,7 @@ func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifi
 		Nullable:   row.Type.Nullable,
 		Fields:     row.Type.Fields,
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(alias, alias.Name(), 0, len(row.Type.Fields)),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), 0, len(row.Type.Fields)),
 		},
 	}
 	return &PositionalRow{Type: qualified, Slots: row.Slots}

@@ -154,7 +154,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 
 	// Layout answers → born baked at the global ordinal.
-	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseSiteExists)
+	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	fv, isFV := baked.(*values.FieldValue)
 	if !isFV {
 		t.Fatalf("got %T", baked)
@@ -197,7 +197,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// different row type would let the domain do the refusing and the test would
 	// pass with the correlation dropped entirely.
 	otherLegID, _ := legSlotIdentity(legRead("B", aType, 0))
-	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3}, nil, legRebaseSiteExists)
+	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if miss != values.Value(legRef) {
 		t.Fatalf("a SELF-JOIN twin leg's identical column answered the lookup: the read "+
 			"was rewritten to %v — ordinal 0 of two quantifiers are different columns, "+
@@ -214,7 +214,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), aType),
 		"A_ID", values.UnknownType,
 	)
-	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseSiteExists)
+	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if lazyOut != values.Value(lazyRef) {
 		t.Fatalf("a lazy reference was rewritten to %v. It states no identity, so the "+
 			"layout cannot key it and there is nothing left to key it BY except its "+
@@ -224,7 +224,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// No layout → the PASS-THROUGH. The read already names its leg and already
 	// carries its ordinal in that leg's domain, so re-anchoring it onto the merge
 	// correlation would trade a stated identity for a name.
-	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil, nil, legRebaseSiteExists)
+	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if lazy2 != values.Value(legRef) {
 		t.Fatalf("a nil layout rewrote the read to %v. With no merged layout to state "+
 			"an ordinal in, the reference's OWN leg-local ordinal is the only honest "+
@@ -232,7 +232,7 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 
 	// Non-matching leg → untouched.
-	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseSiteExists)
+	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if same != legRef {
 		t.Fatal("non-matching leg must return the value unchanged")
 	}
@@ -285,7 +285,7 @@ func TestMergedOuterLegAliasesIsIdentitiesOnly(t *testing.T) {
 		if !ok {
 			t.Fatal("test setup: a bare leg read must state an identity")
 		}
-		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseSiteExists)
+		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 		fv, isFV := out.(*values.FieldValue)
 		if !isFV {
 			t.Fatalf("rebase returned %T", out)
@@ -334,7 +334,7 @@ func TestMergedOuterLegAliasesIsIdentitiesOnly(t *testing.T) {
 		ref := legRead("E", rt, 0)
 		id, _ := legSlotIdentity(ref)
 		set := mergedOuterLegAliases(values.NamedCorrelationIdentifier("Z"))
-		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseSiteExists)
+		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 		if out != values.Value(ref) {
 			t.Fatalf("a read whose leg the alias set does not name was rewritten to %v "+
 				"(set %v). The set is what decides which correlations this arm may touch; "+

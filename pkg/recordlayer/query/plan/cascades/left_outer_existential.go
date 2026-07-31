@@ -78,7 +78,11 @@ func rebaseOuterLegValueOrdinal(
 		// disjoint.
 		w, isLeg := windows[qov.Correlation]
 		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowLookup(values.SeedWindowSiteExistentialRebase, isLeg)
+			// KIND-AWARE: a hit on a NESTED window is its own class, because
+			// whether the fused two-step arm is ever ENTERED on this corpus is the
+			// live-vs-latent question for RFC-200 step 3d, and every other number
+			// on this path prints identically either way.
+			values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteExistentialRebase, isLeg, w.Kind)
 		}
 		if !isLeg {
 			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
@@ -161,13 +165,63 @@ func rebaseOuterLegValueOrdinal(
 			failed = true
 			return node
 		}
-		rebased, err := values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
+		// DISPATCH ON THE KIND, never on the shape. `w.Offset + legOrdinal` is only
+		// an address under LegKindFlatRun, where Offset starts a run of the leg's
+		// own columns; under LegKindNested Offset names ONE slot holding the whole
+		// leg row, and the same arithmetic walks off into the next leg's slots
+		// while producing a perfectly valid merged ordinal — a silent wrong-column
+		// read that NewFieldValueOfOrdinal cannot catch.
+		//
+		// LegKindUnset DECLINES rather than defaulting: a window that reached this
+		// rebase without a stated kind is a producer bug, and a declined
+		// optimization is recoverable while a wrong ordinal is not.
+		var rebased *values.FieldValue
+		var err error
+		switch w.Kind {
+		case values.LegKindFlatRun:
+			rebased, err = values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
+		case values.LegKindNested:
+			// THE FUSED TWO-STEP ADDRESS — Java's
+			// ofOrdinalNumberAndFuseIfPossible, arrived at the same way.
+			//
+			// Java rewrites a reference to a collapsed sibling as
+			// FieldValue.ofOrdinalNumber(QOV(newUpper), index)
+			// (PartitionSelectRule.java:301-302). When translateCorrelations then
+			// rebuilds the enclosing FieldValue(QOV(lower), [f]), the leaf swap
+			// produces FieldValue(FieldValue(QOV(upper),[i]), [f]) and
+			// FieldValue.withNewChild → ofFieldsAndFuseIfPossible merges the two
+			// accessor lists via FieldPath.withSuffix into the single two-step path
+			// FieldValue(QOV(upper), [i, f]). Nothing is materialized and nothing is
+			// re-offset — composition is a path FUSION, never a flattening.
+			//
+			// Go does the same with the same primitives: bake the ONE-step path to
+			// the slot, then WithSuffix the leg-local accessor onto it. The
+			// executor already reads such a path — FieldValue.descendResolvedPath
+			// has an explicit OrdinalRow arm that descends a nested step by ordinal
+			// — and the executor's own span side already resolves the fused
+			// two-step address in resolveSpanLeaf.
+			rebased, err = values.NewFusedFieldValueOfNestedOrdinal(
+				mergedQOV, w.Offset, w.Typ, legOrdinal)
+			// The fused node's TYPE is authoritative and is NOT overwritten below.
+			// It is recomputed from the fused path — leaf column type, promoted
+			// nullable if the merged row's slot is nullable — which is Java's
+			// ofFieldsAndFuseIfPossible. The reference's own fv.Typ cannot know
+			// about the slot step, so taking it here would drop a LEFT-outer
+			// null-supplied column's nullability.
+			if err == nil {
+				return rebased
+			}
+		default:
+			failed = true
+			return node
+		}
 		if err != nil {
 			failed = true
 			return node
 		}
 		// Keep the reference's own column type (the merged layout's field
-		// type IS the leg column's — same fv.Typ lineage).
+		// type IS the leg column's — same fv.Typ lineage). FLAT arm only; the
+		// nested arm returned above with its recomputed type.
 		rebased.Typ = fv.Typ
 		return rebased
 	})
@@ -279,6 +333,41 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[values.CorrelationIdentifier]
 		return nil, nil
 	}
 	return ordinalSeedLegWindows(rc)
+}
+
+// ordinalSeedLegWindowsAcceptingNestedOf is ordinalSeedLegWindowsOf over the
+// NESTED-accepting entry (RFC-200).
+//
+// EXACTLY THREE SITES CALL IT, all in rule_implement_nested_loop_join.go and all
+// reading the SAME step1RV: foldStep1Seed's validation of the seed it just
+// built, implementJoinWithExistential's ordinalWindows derivation, and
+// materializedNLJOrdinalLayoutMatches' orientation check.
+//
+// A FOURTH SITE IS A STOP, NOT A WIDENING. Every other consumer's proof rests on
+// the narrow entry's accept set being FROZEN — their answer is unchanged on
+// every input they can see, which is stronger than "their meaning is unchanged"
+// — and admitting a fourth caller here re-opens all of it. A site that genuinely
+// needs the nested windows is a change to RFC-200's design, not an addition to
+// this list: the per-consumer argument has to be re-made before it can be added.
+func ordinalSeedLegWindowsAcceptingNestedOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType) {
+	w, m, _ := ordinalSeedLegLayoutOf(rv)
+	return w, m
+}
+
+// ordinalSeedLegLayoutOf adds the TOP-LEVEL RUN LIST — the windows that TILE the
+// merged row, in offset order — for the one consumer that asks a positional
+// question about the whole row rather than addressing one leg of it.
+//
+// The map cannot answer it. finalizeSeedWindows' rightmost-leaf case REPLACES a
+// box run's own entry with a narrower sub-window, so after finalization the map
+// no longer states which windows tile the row, and a narrowed tile is
+// indistinguishable from a leg that was always that narrow.
+func ordinalSeedLegLayoutOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType, []ordinalLegWindow) {
+	rc, isRC := rv.(*values.RecordConstructorValue)
+	if !isRC {
+		return nil, nil, nil
+	}
+	return values.OrdinalSeedLegLayout(rc)
 }
 
 // rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the lazy

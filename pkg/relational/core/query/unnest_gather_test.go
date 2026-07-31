@@ -848,6 +848,7 @@ func gatheredSeedProbeWindows() (map[values.CorrelationIdentifier]values.Ordinal
 	legA := values.NamedCorrelationIdentifier("A")
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
 		legA: {
+			Kind:   values.LegKindFlatRun,
 			Offset: 0,
 			Alias:  legA,
 			Typ: &values.RecordType{Fields: []values.Field{

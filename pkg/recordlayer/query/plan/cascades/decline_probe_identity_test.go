@@ -36,7 +36,7 @@ func TestExistentialLegCorrelations_CarriesAMachineMintedLegAsItself(t *testing.
 	t.Parallel()
 	machine := machineLegCorr()
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
-		machine: {Offset: 0, Alias: machine, Typ: &values.RecordType{Fields: []values.Field{
+		machine: {Kind: values.LegKindFlatRun, Offset: 0, Alias: machine, Typ: &values.RecordType{Fields: []values.Field{
 			{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
 		}}},
 	}
@@ -94,7 +94,7 @@ func TestRebaseOuterLegRefsOrdinal_DeclineProbeMatchesAMachineMintedLeg(t *testi
 		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
 	}}
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
-		machine: {Offset: 0, Alias: machine, Typ: legType},
+		machine: {Kind: values.LegKindFlatRun, Offset: 0, Alias: machine, Typ: legType},
 	}
 	mergedQOV := values.NewQuantifiedObjectValueOfType(
 		values.NamedCorrelationIdentifier("MERGED"), legType)

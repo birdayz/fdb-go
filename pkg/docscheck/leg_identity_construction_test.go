@@ -143,8 +143,10 @@ func TestRecordTypeLegIsConstructed(t *testing.T) {
 			"fails to bind — silently, for a frontier-pinned reference. Deleting `Alias:` from\n"+
 			"two producers left the whole suite green, which is why this is a compile-time\n"+
 			"obligation rather than a test.\n"+
-			"Use values.NewRecordTypeLeg(alias, name, start, width); the identifier is the\n"+
-			"first positional parameter, so it cannot be forgotten.\n\n%s",
+			"Use values.NewRecordTypeLeg(kind, alias, name, start, width); the KIND and the\n"+
+			"IDENTIFIER are both positional parameters, so neither can be forgotten. An\n"+
+			"omitted kind is LegKindUnset, which every reader declines — the same failure\n"+
+			"one field over.\n\n%s",
 			len(findings), strings.Join(findings, "\n"))
 	}
 }
@@ -217,12 +219,12 @@ func TestRecordTypeLegDetectorPrecisionAndRecall(t *testing.T) {
 		{
 			// PRECISION: the fix must be legal, or the gate has no exit.
 			name:     "constructor call",
-			body:     `func f() any { return values.NewRecordTypeLeg(a, "A", 0, 1) }`,
+			body:     `func f() any { return values.NewRecordTypeLeg(values.LegKindFlatRun, a, "A", 0, 1) }`,
 			wantFind: false,
 		},
 		{
 			name:     "slice literal of constructor calls",
-			body:     `func f() any { return []values.RecordTypeLeg{values.NewRecordTypeLeg(a, "A", 0, 1)} }`,
+			body:     `func f() any { return []values.RecordTypeLeg{values.NewRecordTypeLeg(values.LegKindFlatRun, a, "A", 0, 1)} }`,
 			wantFind: false,
 		},
 		{

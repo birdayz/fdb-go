@@ -26,9 +26,9 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 			Legs: legs,
 		}
 	}
-	stated := values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("C"), "C", 0, 2)
+	stated := values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("C"), "C", 0, 2)
 	unstated := values.RecordTypeLeg{Name: "C", Start: 0, Width: 2}
-	diverged := values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("Q$7"), "C", 0, 2)
+	diverged := values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("Q$7"), "C", 0, 2)
 
 	for _, tc := range []struct {
 		name     string

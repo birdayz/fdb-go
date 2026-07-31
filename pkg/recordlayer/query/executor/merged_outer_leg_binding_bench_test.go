@@ -27,7 +27,7 @@ func benchMergedRow(nLegs, colsPerLeg int) *PositionalRow {
 	slots := make([]any, 0, nLegs*colsPerLeg)
 	for l := 0; l < nLegs; l++ {
 		alias := values.NamedCorrelationIdentifier(fmt.Sprintf("LEG%d", l))
-		legs = append(legs, values.NewRecordTypeLeg(alias, alias.Name(), l*colsPerLeg, colsPerLeg))
+		legs = append(legs, values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), l*colsPerLeg, colsPerLeg))
 		for c := 0; c < colsPerLeg; c++ {
 			fields = append(fields, values.Field{
 				Name:      fmt.Sprintf("L%dC%d", l, c),

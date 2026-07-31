@@ -57,6 +57,19 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 		// and TODO.md's CQ-53 phase-3 refutation 2), which is exactly why the gate
 		// has to hold it rather than the prose.
 		SiteExists: 174, SiteBuried: 0,
+		// The READ→FIRING cut: the foldStep1Seed class of the firing each read
+		// happened under, and — finer — the SHAPE of the leg that firing's seed
+		// reconstruction refused. Measured 174 reconstruct-nil, all of them under a
+		// firing whose refused leg was a BARE QOV, none under a positional merge.
+		//
+		// The two levels are both here because only the finer one is RFC-200 gate
+		// (d): the class holds the whole population while the bare-QOV share is the
+		// LARGER residue the RFC explicitly fences, so a gate stated at the class
+		// level would demand that the fenced population reach zero too.
+		Step1: [foldStep1ClassCount]int{foldStep1DeclineReconstructNil: 174},
+		Step1ReconstructNilShape: [foldStep1LegShapeCount]int{
+			foldStep1LegShapeBareQOV: 174,
+		},
 		// Vacuous at HEAD: these partition MergedReAnchor, which is 0. The gate
 		// says so out loud rather than reporting a green check over nobody — the
 		// VACUOUS direction below is what pins that.
@@ -168,6 +181,44 @@ func TestLegLocalBakeGateFailsOnEachViolation(t *testing.T) {
 			name:     "a firing counted into Total but into no call site",
 			mutate:   func(c *legLocalBakeCounters) { c.SiteExists-- },
 			wantMsgs: []string{"SiteExists(173) + SiteBuried(0) = 173"},
+		},
+		{
+			// THE READ→FIRING CUT, unthreaded. A new entry point that carries the
+			// site but drops the step-1 class produces exactly this: Total and every
+			// other partition exact, and the one cut RFC-200 gate (d) is denominated
+			// in short by that many reads. It fails SILENTLY without this check —
+			// an unthreaded class simply reads as "not a reconstruct-nil firing",
+			// which is the answer the gate is looking for.
+			name: "a read whose firing dropped its step-1 class",
+			mutate: func(c *legLocalBakeCounters) {
+				c.Step1[foldStep1DeclineReconstructNil]--
+				c.Step1ReconstructNilShape[foldStep1LegShapeBareQOV]--
+			},
+			wantMsgs: []string{"the STEP-1 CLASS cut sums to 173, but Total = 174"},
+		},
+		{
+			// The class threaded and the SHAPE dropped. Finer than the case above
+			// and not covered by it: the class cut still sums to Total, so only the
+			// shape sub-partition can see it — and the shape is the level the gate
+			// is stated at, because the class holds the fenced bare-QOV residue too.
+			name: "a reconstruct-nil read whose refused-leg shape was dropped",
+			mutate: func(c *legLocalBakeCounters) {
+				c.Step1ReconstructNilShape[foldStep1LegShapeBareQOV]--
+			},
+			wantMsgs: []string{"REFUSED\n  LEG SHAPE sum to 173"},
+		},
+		{
+			// An EXISTS-site read filed under NO step-1 class. The class cut still
+			// sums to Total — nothing is missing, it is MISFILED — so the partition
+			// above cannot see it. The EXISTS lowering always has a class in hand,
+			// so this state can only mean a call site dropped it on the way down.
+			name: "an EXISTS-site read filed under no step-1 class at all",
+			mutate: func(c *legLocalBakeCounters) {
+				c.Step1[foldStep1DeclineReconstructNil]--
+				c.Step1ReconstructNilShape[foldStep1LegShapeBareQOV]--
+				c.Step1[foldStep1ClassNone]++
+			},
+			wantMsgs: []string{"arrived with NO step-1 class"},
 		},
 		{
 			// The identity cut is carried along so the identity/Total partition
@@ -298,7 +349,11 @@ func TestLegLocalBakeGateAnnouncesVacuousPartitions(t *testing.T) {
 	// the live number.
 	live := legLocalBakeCounters{
 		Total: 174, Baked: 174,
-		SiteExists:          174,
+		SiteExists: 174,
+		Step1:      [foldStep1ClassCount]int{foldStep1DeclineReconstructNil: 174},
+		Step1ReconstructNilShape: [foldStep1LegShapeCount]int{
+			foldStep1LegShapeBareQOV: 174,
+		},
 		IdentityInLegDomain: 174,
 		FlowedLegs:          960, LegDerivations: 960,
 		MergeSlots: 18358, MergeSlotsTyped: 17604, MergeSlotsScavenged: 4,
@@ -482,5 +537,83 @@ func TestClassifyLegReadIdentity(t *testing.T) {
 			t.Errorf("classifyLegReadIdentity(hasResolved=%v, identityInLegDomain=%v) = %v, want %v — %s",
 				tc.hasResolved, tc.identityInLegDomain, got, tc.want, tc.because)
 		}
+	}
+}
+
+// RFC-200 gate (d) is a FLAG, and this is the red it produces.
+//
+// The gate asserts that no leg-local read survives under a firing whose seed
+// reconstruction refused a POSITIONAL-MERGE leg — the population the nested
+// window admits. It is a flag rather than an always-on zero because before
+// activation that number is the MEASUREMENT the gate is denominated in, and
+// asserting it early would red on the very thing the sequencing step exists to
+// produce.
+//
+// WHAT THE MEASUREMENT ACTUALLY SAID, recorded here because it contradicts the
+// RFC and a contradiction that lives only in a report evaporates: over the
+// real-FDB corpus the positional-merge subset of those 174 reads is ALREADY
+// ZERO. All 174 sit under firings whose refused leg is a bare QOV — the LARGER
+// residue RFC-200 explicitly fences (§Residues). So gate (d) is satisfied
+// VACUOUSLY, and the honest statement of what the nested window buys on this
+// axis is: nothing. It converts 60 firings from decline to accept (gate (c)),
+// and it removes zero pass-through reads.
+//
+// The gate stays wired anyway, and the reason is the one this whole census
+// family is built on: a zero that is true today because a population is empty
+// reads identically to a zero that is true because a mechanism works. If a
+// future change routes a positional-merge firing's reads back onto the
+// pass-through, this is what says so.
+func TestLegLocalBakeGate200DFiresOnASurvivingMergeRead(t *testing.T) {
+	t.Parallel()
+
+	postActivation := legLocalBakeCounters{
+		Total: 100, Baked: 100,
+		SiteExists:          100,
+		IdentityInLegDomain: 100,
+		Step1:               [foldStep1ClassCount]int{foldStep1DeclineReconstructNil: 100},
+		Step1ReconstructNilShape: [foldStep1LegShapeCount]int{
+			foldStep1LegShapeBareQOV: 100,
+		},
+		FlowedLegs: 900, LegDerivations: 900,
+		MergeSlots: 1800, MergeSlotsTyped: 1800,
+	}
+	gated := &LegLocalBakeFloors{
+		Total: 12, SiteExists: 12, LegDerivations: 80, MergeSlots: 1800,
+		Step1ReconstructNilMustBeZero: true,
+	}
+
+	var out strings.Builder
+	if assertLegLocalBakeCounters(&out, postActivation, gated) {
+		t.Fatalf("gate (d) reds on a state where every surviving read is under a BARE-QOV "+
+			"firing — the fenced residue RFC-200 does not claim to touch:\n%s\n"+
+			"  A gate that cannot tell the fenced population from the target one is a gate "+
+			"that will be relaxed the first time it fires.", out.String())
+	}
+
+	// One read moved from the fenced bucket to the target one. Nothing else
+	// changes: Total, both partitions and every other cut stay exact, so this
+	// input violates only the zero it is written for.
+	survived := postActivation
+	survived.Step1ReconstructNilShape[foldStep1LegShapeBareQOV]--
+	survived.Step1ReconstructNilShape[foldStep1LegShapePositionalMerge]++
+
+	out.Reset()
+	if !assertLegLocalBakeCounters(&out, survived, gated) {
+		t.Fatal("a leg-local read surviving under a POSITIONAL-MERGE firing left gate (d) " +
+			"GREEN. That read is the exact shape the nested window exists to remove, and " +
+			"the DIVERGENCES retirement condition is stated against its absence.")
+	}
+	if !strings.Contains(out.String(), "POSITIONAL MERGE") {
+		t.Errorf("gate (d)'s failure must name the SHAPE it is stated against, not just the "+
+			"class — the class also holds the fenced bare-QOV residue:\n%s", out.String())
+	}
+
+	// And with the flag OFF the same state is green, which is what makes this a
+	// sequencing gate rather than a permanent invariant.
+	ungated := *gated
+	ungated.Step1ReconstructNilMustBeZero = false
+	out.Reset()
+	if assertLegLocalBakeCounters(&out, survived, &ungated) {
+		t.Fatalf("the gate fired with its flag OFF, so it is not a flag:\n%s", out.String())
 	}
 }

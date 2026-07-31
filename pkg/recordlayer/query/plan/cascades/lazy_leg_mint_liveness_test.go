@@ -359,7 +359,7 @@ func TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity(t *testing.T) {
 			t.Parallel()
 			read := values.NewFieldValue(
 				values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "ID", values.UnknownType)
-			out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, tc.legTypes, legRebaseSiteExists)
+			out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, tc.legTypes, legRebaseOrigin{Site: legRebaseSiteExists})
 			if out != values.Value(read) {
 				t.Fatalf("the arm rewrote a read that states NO identity to %v (%s).\n"+
 					"  It has nothing to place the read BY except the display name, and\n"+
@@ -483,7 +483,7 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 
 	// The pass-through: the SAME value comes back, so the ordinal, the domain and
 	// the leg correlation are all intact by identity rather than by re-derivation.
-	out := rebaseOuterLegValue(read, aliasSet, merged, nil, legTypes, legRebaseSiteExists)
+	out := rebaseOuterLegValue(read, aliasSet, merged, nil, legTypes, legRebaseOrigin{Site: legRebaseSiteExists})
 	if out != values.Value(read) {
 		t.Fatalf("a read that ALREADY carried the right leg-local ordinal was rewritten "+
 			"to %v.\n"+
@@ -520,7 +520,7 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 		{"leg L", read, slotL},
 		{"leg R", twinRead, slotR},
 	} {
-		anchored, isFV := rebaseOuterLegValue(tc.read, aliasSet, merged, layout, legTypes, legRebaseSiteExists).(*values.FieldValue)
+		anchored, isFV := rebaseOuterLegValue(tc.read, aliasSet, merged, layout, legTypes, legRebaseOrigin{Site: legRebaseSiteExists}).(*values.FieldValue)
 		if !isFV || anchored.Resolved == nil {
 			t.Fatalf("%s: the merged re-anchor produced %v, which states no ordinal",
 				tc.name, anchored)

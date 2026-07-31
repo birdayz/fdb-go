@@ -155,8 +155,8 @@ func TestSpanLegType_ALabelInTheQUANTIFIERTypeDoesReachTheReader(t *testing.T) {
 			{Name: "QTY", Ordinal: 4},
 		},
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 2),
-			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 2, 3),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("O"), "O", 0, 2),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("I"), "I", 2, 3),
 		},
 	}
 	slot, resolved := rowSlotForLegColumn(merged, "I.QTY", values.CorrelationIdentifier{})

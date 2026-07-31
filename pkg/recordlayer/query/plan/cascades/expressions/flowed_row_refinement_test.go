@@ -316,7 +316,7 @@ func withLegs(rt *values.RecordType, legs ...values.RecordTypeLeg) *values.Recor
 // legOf is a boundary entry whose four fields are all stated, so a fixture can
 // vary exactly one of them.
 func legOf(name string, start, width int) values.RecordTypeLeg {
-	return values.NewRecordTypeLeg(values.NamedCorrelationIdentifier(name), name, start, width)
+	return values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier(name), name, start, width)
 }
 
 // TestGetFlowedObjectType_CarriesTheBuriedLegTable pins that the member
@@ -679,5 +679,72 @@ func TestGetFlowedObjectType_DisagreementNamesTheAccumulatedRow(t *testing.T) {
 	if right := rowTypeOf(de.Right); right == nil || !right.Equals(conflicting) {
 		t.Errorf("the disagreement reports Right = %v, want the conflicting member's row %v",
 			de.Right, conflicting)
+	}
+}
+
+// The leg table must not reach MEMO EXPRESSION identity either — at the two
+// sites that genuinely dispatch a *RecordType into RecordType.Equals.
+//
+// The value-level pin (executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity)
+// covers SemanticHashCode / SemanticEqualsUnderAliasMap / EqualsWithoutChildren,
+// and it found that none of those reach RecordType.Equals at all: the QOV arm
+// compares a correlation, the FieldValue arm compares ordinals. So a
+// Legs-reading RecordType.Equals would have been invisible to every assertion in
+// that test — it pins that the memo does not care, not that Equals does not read
+// Legs.
+//
+// These two DO dispatch there, through typeEquals: FullUnorderedScanExpression's
+// flowedType and InsertExpression's targetType. They are the sites where a
+// Legs-reading Equals would actually split a memo group — silently, as a
+// duplicate group and a lost dedup, never as an error — so this is where the
+// claim is worth holding.
+func TestMemoExpressionIdentity_IgnoresTheLegTable(t *testing.T) {
+	t.Parallel()
+
+	fields := []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	}
+	bare := &values.RecordType{RecordName: "T", Fields: fields}
+	withLegs := &values.RecordType{
+		RecordName: "T",
+		Fields:     fields,
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.LegKindFlatRun,
+				values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindNested,
+				values.NamedCorrelationIdentifier("I"), "I", 1, 1),
+		},
+	}
+
+	// The direct dispatch, which is what both call sites reach.
+	if !typeEquals(bare, withLegs) {
+		t.Fatalf("typeEquals says a leg table changes a record type's identity.\n"+
+			"  RecordType.Legs is documented as layout metadata carrying NO identity\n"+
+			"  semantics, and these are the memo sites where that claim is load-bearing:\n"+
+			"  FullUnorderedScanExpression.flowedType and InsertExpression.targetType\n"+
+			"  both compare through here.\n"+
+			"  WHAT A FAILURE MEANS: two structurally identical expressions whose types\n"+
+			"  differ only in a leg table stop interning as one memo member — a duplicate\n"+
+			"  group and a lost dedup, with nothing raised. RFC-200 lets producers\n"+
+			"  populate leg tables that were empty before, so this is reachable now in a\n"+
+			"  way it was not.\n  bare=%v withLegs=%v", bare, withLegs)
+	}
+	// And with the KIND differing too, since RFC-200 added that field and an
+	// Equals that grew a Legs comparison would most likely compare the whole
+	// struct.
+	nestedOnly := &values.RecordType{
+		RecordName: "T",
+		Fields:     fields,
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.LegKindNested,
+				values.NamedCorrelationIdentifier("O"), "O", 0, 1),
+		},
+	}
+	if !typeEquals(withLegs, nestedOnly) {
+		t.Fatal("typeEquals distinguishes two record types by their leg tables' CONTENT " +
+			"(different kinds and lengths). Legs carries no identity semantics; if that " +
+			"is no longer true, RFC-200's whole 'populating a leg table is label-safe' " +
+			"argument is void.")
 	}
 }

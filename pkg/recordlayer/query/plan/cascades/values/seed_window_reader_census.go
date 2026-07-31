@@ -136,6 +136,23 @@ const (
 	// wrap declined. HARD ZERO. See the header.
 	SeedWindowChildlessBaked
 
+	// SeedWindowNestedHit: the reference's identity selected a window whose Kind
+	// is LegKindNested — i.e. the read took the FUSED two-step address rather
+	// than flat offset arithmetic.
+	//
+	// IT IS A HIT, COUNTED SEPARATELY, and it exists to answer one question no
+	// other number on this path can: is RFC-200's nested reader arm LIVE on this
+	// corpus, or is it correct-but-unentered? Those two states print identically
+	// everywhere else — 174 leg-local reads unchanged, EXPLAIN identical,
+	// MergedReAnchor 0 — and RFC-200 §6 predicts explicitly that
+	// existentialRebase GROWS because the newly-accepted firings' existPreds
+	// rebase through it. A prediction with no instrument is a prediction nothing
+	// can refute.
+	//
+	// A read counted here is NOT also counted as SeedWindowHit; the classes
+	// partition.
+	SeedWindowNestedHit
+
 	seedWindowReadClassCount
 )
 
@@ -149,6 +166,8 @@ func (c SeedWindowReadClass) String() string {
 		return "QUALIFIED-NO-IDENTITY"
 	case SeedWindowChildlessBaked:
 		return "CHILDLESS-BAKED"
+	case SeedWindowNestedHit:
+		return "NESTED-HIT"
 	default:
 		return "unknown"
 	}
@@ -183,6 +202,22 @@ func seedWindowLookupClass(found bool) SeedWindowReadClass {
 	return SeedWindowMiss
 }
 
+// seedWindowLookupClassOfKind is the KIND-AWARE classifier: a hit on a NESTED
+// window is its own class, because whether that arm is entered at all is the
+// live-vs-latent question for RFC-200 step 3d and nothing else can see it.
+func seedWindowLookupClassOfKind(found bool, kind LegKind) SeedWindowReadClass {
+	if found && kind == LegKindNested {
+		return SeedWindowNestedHit
+	}
+	return seedWindowLookupClass(found)
+}
+
+// RecordSeedWindowLookupOfKind is the kind-aware counterpart of
+// RecordSeedWindowLookup, for the readers that dispatch on the window kind.
+func RecordSeedWindowLookupOfKind(site SeedWindowSite, found bool, kind LegKind) {
+	RecordSeedWindowRead(site, seedWindowLookupClassOfKind(found, kind))
+}
+
 // RecordSeedWindowLookup is the common shape: found or not.
 func RecordSeedWindowLookup(site SeedWindowSite, found bool) {
 	RecordSeedWindowRead(site, seedWindowLookupClass(found))
@@ -214,7 +249,11 @@ func FormatSeedWindowReaderCensus() string {
 		}
 		fmt.Fprintf(&b, "\n  %-24s reads %d", s, total)
 		for c := SeedWindowReadClass(0); c < seedWindowReadClassCount; c++ {
-			if counts[s][c] != 0 {
+			// NESTED-HIT prints even at ZERO. Its zero is the live-vs-latent
+			// answer for RFC-200 step 3d, and a class that vanishes when empty is
+			// exactly the reporting habit that makes a latent arm indistinguishable
+			// from an absent one.
+			if counts[s][c] != 0 || c == SeedWindowNestedHit {
 				fmt.Fprintf(&b, " | %s %d", c, counts[s][c])
 			}
 		}
@@ -235,6 +274,24 @@ type SeedWindowReaderFloors struct {
 	// Reads is the per-site minimum, indexed by site. A zero entry means the site
 	// is not floored, which is a statement about the corpus and not an omission.
 	Reads [seedWindowSiteCount]int
+
+	// NestedHitMustBeZero asserts that NO read selects a NESTED window.
+	//
+	// IT IS A TRIPWIRE, NOT A DEFECT GATE, and the inversion is the whole point:
+	// a non-zero here is GOOD NEWS that requires ACTION. RFC-200's nested reader
+	// arm is correct, cross-agreement-pinned on both entries and unit-pinned on
+	// both arms, and no corpus query reaches it — a nested SUB-window is only
+	// selected by a reference to a leg buried INSIDE the merge. Gate (a)'s four
+	// mutation directions are therefore not writable, and the branch merged with
+	// that stated.
+	//
+	// Without this assertion, activation day changes nothing visible. Whoever
+	// lands CQ-68 (typing the 94 bare-QOV result values) or otherwise produces a
+	// query whose reference reaches a buried leg would see a green suite, a
+	// printed NESTED-HIT that nobody diffs, and gate (a) left unwritten BY
+	// DEFAULT rather than by decision. This is what turns that day into a red
+	// test with the hand-over in its failure message.
+	NestedHitMustBeZero bool
 }
 
 // AssertSeedWindowReaderCensus checks the two hard zeros and the floors.
@@ -276,6 +333,47 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [seedWindowSiteCount][seed
 				"  downstream can rebase it onto the box row. Either the producer should be\n"+
 				"  emitting the QOV-shaped spelling (which carries the correlation the rebase\n"+
 				"  needs), or the rebase owes this shape an answer.\n", s, n)
+		}
+	}
+	if floors != nil && floors.NestedHitMustBeZero {
+		for s := SeedWindowSite(0); s < seedWindowSiteCount; s++ {
+			n := counts[s][SeedWindowNestedHit]
+			if n == 0 {
+				continue
+			}
+			failed = true
+			fmt.Fprintf(w, "SEED-WINDOW READER CENSUS: %s reported %d NESTED-HIT read(s).\n"+
+				"  NESTED-HIT is non-zero: RFC-200's nested reader arm is now LIVE. Gate\n"+
+				"  (a)'s four mutation directions are writable; WRITE THEM.\n"+
+				"\n"+
+				"  THIS IS NOT A DEFECT. It is the hand-over RFC-200 merged with, and it is\n"+
+				"  a red test rather than a printed number precisely so that activation day\n"+
+				"  cannot pass unnoticed. The nested arm was correct, cross-agreement-pinned\n"+
+				"  on both entries and unit-pinned on both arms, and simply unreached: a\n"+
+				"  nested SUB-window is only selected by a reference to a leg buried INSIDE\n"+
+				"  the merge, and no corpus query produced one. Something now does.\n"+
+				"\n"+
+				"  WHAT TO DO. The fixture is already built and carries the three properties\n"+
+				"  the gate needs — distinct leg widths (3/1/2), a duplicate column name\n"+
+				"  across legs so no name fallback can rescue a wrong ordinal, and a\n"+
+				"  projection from a non-first leg at a non-zero leg-local ordinal:\n"+
+				"    pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go\n"+
+				"  Mutate FOUR directions, each SEPARATELY, and record the outcomes in that\n"+
+				"  fixture's own doc comment (a mutation result living only in a PR\n"+
+				"  description is a measurement that evaporates):\n"+
+				"    1. a NESTED window read as FLAT (Offset + legOrdinal);\n"+
+				"    2. a FLAT window read as NESTED (the fused two-step);\n"+
+				"    3. leg ORIENTATION swapped relative to the seed's baked layout —\n"+
+				"       record the OBSERVED failure mode. The site claims an ordinal read\n"+
+				"       there is \"either right or loud\", so a loud unbound-correlation\n"+
+				"       error or an unexecutable plan is expected; SILENTLY WRONG ROWS\n"+
+				"       would REFUTE that claim and are a finding in their own right,\n"+
+				"       needing their own line in RFC-200 and a report before the gate is\n"+
+				"       called satisfied;\n"+
+				"    4. the census-invisible bare-column arm of query.slotInGatheredSeed\n"+
+				"       allowed to contribute a hits++ for a nested window.\n"+
+				"  Then clear NestedHitMustBeZero, floor NESTED-HIT instead, and mark\n"+
+				"  CQ-67's gate (a) satisfied.\n", s, n)
 		}
 	}
 	if floors == nil {

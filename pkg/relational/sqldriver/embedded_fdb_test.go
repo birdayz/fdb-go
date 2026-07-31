@@ -102,6 +102,8 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
+	cascades.ResetFoldStep1SeedCensus()
+	cascades.ResetOrientationGateCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -136,6 +138,16 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// than in a test for the reason every census on this path is: the population
 	// is only complete after m.Run().
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
+	// The foldStep1Seed OUTCOME census: whether step 1 got an ordinal seed, and
+	// why not when it did not. It replaces a call-site probe that was added for
+	// one question and removed after, leaving RFC-200's population numbers as a
+	// dated point measurement with nothing keeping them true.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFoldStep1SeedCensus())
+	// The ORIENTATION-GATE census: whether RFC-200 step 3d's fail-open fix is
+	// LIVE (box-leg seeds reaching the check and passing) or LATENT (no shape
+	// reaching it at all). A printed zero cannot tell those apart; MapCountDiffers
+	// can.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatOrientationGateCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -165,7 +177,113 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	if failed := assertMergedLegBindingCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	if failed := assertFoldStep1SeedCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertOrientationGateCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	return code
+}
+
+// foldStep1SeedGates is RFC-200's acceptance gate (c): EXACT equalities, not
+// floors.
+//
+// They are PREDICTIONS. A measured deviation is a reportable finding and must be
+// reported rather than absorbed by relaxing the assertion — which is why these
+// are equalities while every other census on this path is floored an order of
+// magnitude below its measurement. The two disciplines are answering different
+// questions: a floor detects a site going DARK over a corpus that churns, while
+// these numbers are the arithmetic a design decision was made on and any
+// movement in them invalidates that arithmetic.
+//
+// The values below are the state AFTER RFC-200 activated the nested window, and
+// the transition is recorded here rather than re-blessed, because the whole
+// point of an equality is that its movement is legible.
+//
+//	                          before   after   RFC-200's prediction
+//	ACCEPT                        78     138   138 (78 + 60)   HIT
+//	DECLINE correlatedStep1      108     108   108 unchanged   HIT
+//	DECLINE rv-no-exist-ref      202     202   200 unchanged   HIT (see below)
+//	DECLINE reconstruct-nil      154      94    94 (154 - 60)  HIT
+//	  of which bare-QOV           94      94    94 all of it   HIT
+//	  of which positional-merge   60       0     0             HIT
+//	denominator                  542     542   540             HIT (see below)
+//
+// Every one of the six load-bearing numbers landed exactly. The 60 declined
+// positional-merge legs became 60 ACCEPTs; the fenced bare-QOV residue did not
+// move; the permanent correlatedStep1 wall did not move.
+//
+// RFC-200 states rv-no-exist-ref at 200 over a denominator of 540, measured on
+// branch feat/cq53-parent-chained-binder at HEAD 4dccc50f0. On this tree both
+// are +2, and the +2 is identified rather than assumed: the merged-leg
+// reader-shape fixture became shared between the redundancy pin and the
+// wrong-window mutation pin, so its WHERE-EXISTS query is planned twice where it
+// was planned once, and that test alone contributes exactly 2 firings, both in
+// that class — the class the RFC calls a correct pass-through rather than a
+// residue, because the projection sits ABOVE the existential level.
+//
+// THE DEVIATION IS EXPLAINED, not absorbed. It is corpus growth, and the growth
+// is identified rather than assumed: the merged-leg reader-shape fixture became
+// shared between TestFDB_MergedLegBinding_ReaderShapeIsRedundant and the
+// wrong-window mutation pin, so its `SELECT OT."K" FROM ST, OT WHERE EXISTS (…)`
+// is now planned twice where it was planned once. Isolated, that one test
+// contributes exactly 2 firings, both rv-no-exist-ref — the class the RFC calls
+// a correct pass-through rather than a residue, because the projection sits
+// ABOVE the existential level and there is nothing to fold.
+//
+// AND THEN THIS SUITE GREW BY ONE FILE, WHICH IS THE GATE WORKING.
+//
+// The RFC-200 gate (a) fixtures — TestFDB_NestedMergeLegProjectedExistsFold with
+// its two-source control, its three-source probe and three companion-address
+// queries, plus TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud — add 30
+// firings between them. So the totals below are the post-3d numbers plus that
+// file: denominator 542+30 = 572, ACCEPT 138+22 = 160, reconstruct-nil 94+8 =
+// 102, all of the added declines bare-QOV.
+//
+// The added ACCEPTs are the point rather than noise: each equijoin variant is a
+// projected-EXISTS fold over ordinal-safe legs, which is exactly the population
+// this gate measures, and they land in ACCEPT because the layout authority now
+// admits the merged leg.
+//
+// The equality is stated at the new totals rather than relaxed into a range,
+// because a range would absorb the next four firings silently — and it was this
+// gate going red on a test the author had just written that produced the
+// attribution above, from a run rather than from memory.
+var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
+	n := func(v int) *int { return &v }
+	return cascades.FoldStep1SeedGates{
+		Denominator:     n(572),
+		Accept:          n(160),
+		CorrelatedStep1: n(108),
+		NoExistRef:      n(202),
+		ReconstructNil:  n(102),
+		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
+		// separately on purpose. A single "reconstruct-nil == 94" would be
+		// satisfied by any 94, including a mix that had let merge legs back in.
+		ReconstructNilBareQOV: n(102),
+		ReconstructNilMerge:   n(0),
+	}
+}()
+
+// assertFoldStep1SeedCensus checks the outcome census, dropping the population
+// EQUALITIES when -test.run narrows the corpus — the same split its siblings
+// make for their floors, and for the same reason: a filtered run measures a
+// subset, and a subset cannot satisfy an equality stated over the whole.
+//
+// The structural checks — the independent-denominator partition, the
+// shape-sub-partition, and the both-legs-unsafe zero — still run, because those
+// hold over ANY population.
+func assertFoldStep1SeedCensus(w io.Writer) bool {
+	gates := &foldStep1SeedGates
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "foldStep1Seed outcome census: population EQUALITIES not checked "+
+			"(-test.run=%q narrowed the corpus). The independent-denominator partition, the "+
+			"refused-leg sub-partition and the both-legs-unsafe zero still run over whatever "+
+			"population this filter reached.\n", f.Value.String())
+		gates = nil
+	}
+	return cascades.AssertFoldStep1SeedCensus(w, gates)
 }
 
 // mergedLegReadFloor is the merged-leg binding census's whole-suite READ floor.
@@ -395,6 +513,32 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	SiteExists:     12,
 	LegDerivations: 80,
 	MergeSlots:     1800,
+	// RFC-200 gate (d), ON — and REPORTED AS VACUOUS, which is a finding rather
+	// than a formality.
+	//
+	// The gate asserts that no leg-local pass-through read survives under a firing
+	// whose seed reconstruction refused a POSITIONAL-MERGE leg. RFC-200 §Gates
+	// says "that subset size is unknown today; 3a produces it, and this gate
+	// asserts its post-change value is 0", which reads as a number expected to
+	// FALL to zero.
+	//
+	// MEASURED, 3a: it was ALREADY zero. All 174 leg-local reads sit under firings
+	// whose refused leg is a BARE QOV — the larger residue RFC-200 explicitly
+	// fences (§Residues) — and NONE under a positional-merge firing. Post-3d the
+	// count is still 174 and still all bare-QOV.
+	//
+	// So the honest statement of what the nested window buys on THIS axis is:
+	// nothing. It converts 60 firings from decline to accept (gate (c), measured
+	// exactly), and it removes zero pass-through reads, so the DIVERGENCES
+	// retirement condition for executor.bindMergedOuterLegs does not advance. The
+	// RFC already says the retirement is not completed here; the correction is
+	// that it is not ADVANCED here either, on the read axis.
+	//
+	// The gate stays wired for the reason this whole census family exists: a zero
+	// that is true because a population is empty prints identically to a zero that
+	// is true because a mechanism works. If a later change routes a merge firing's
+	// reads back onto the pass-through, this is what says so.
+	Step1ReconstructNilMustBeZero: true,
 }
 
 // legColumnProvenanceFloors is the minimum population the leg-column provenance
@@ -460,11 +604,32 @@ var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
 // on the thing it is watching for.
 var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
 	var f values.SeedWindowReaderFloors
-	f.Reads[values.SeedWindowSiteExistentialRebase] = 90     // measured 962
+	// THIS ONE IS NOT AN ORDER OF MAGNITUDE BELOW, and the exception is
+	// deliberate. RFC-200 §6 predicts explicitly that existentialRebase GROWS
+	// once the nested acceptance lands, because the newly-accepted firings'
+	// existPreds rebase through it. Measured: 962 before activation, 1086 after —
+	// the prediction holds, and it is the only evidence that the 60 converted
+	// firings reach a reader at all.
+	//
+	// Floored at 1000, ABOVE the pre-activation 962, so the floor pins that
+	// growth rather than merely detecting collapse. If the converted firings stop
+	// reaching this reader the count falls back toward 962 and this reds — where
+	// an order-of-magnitude floor would have sat green through the entire
+	// regression.
+	f.Reads[values.SeedWindowSiteExistentialRebase] = 1000   // measured 1086 (962 pre-activation)
 	f.Reads[values.SeedWindowSiteBoxLegRef] = 9              // measured 92
 	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
 	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
 	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 16     // measured 160
+	// RFC-200's ACTIVATION TRIPWIRE. Measured NESTED-HIT 0 at every site: the
+	// nested reader arm is correct and unreached, so gate (a)'s four mutation
+	// directions are not writable and the branch merged with that stated.
+	//
+	// A non-zero is GOOD NEWS that requires ACTION, and it is asserted rather
+	// than printed so that activation day is a red test with a hand-over in its
+	// message instead of a number nobody diffs. See the failure text and
+	// CQ-67's reopen trigger.
+	f.NestedHitMustBeZero = true
 	return f
 }()
 
@@ -9832,4 +9997,42 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	}
 	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
 		To(gomega.ContainElement([]string{"ALPHA_BY_NAME"}), "INDEXES Alpha contains ALPHA_BY_NAME")
+}
+
+// orientationGateFloors is RFC-200 step 3d”s live/latent discriminator.
+//
+// MEASURED over this corpus: calls 438 (not-a-seed 96, tiled-by-2 342,
+// tiled-by-other 0); of the tiled-by-2, unverifiable 84, matched 197, declined
+// 61; and 72 firings where the MAP count differs from the TILE count — of which
+// DECLINED zero.
+//
+// That last pair is the whole explanation for why 3d' moved no plan. 72 firings
+// that the old map-count gate skipped are now checked, and every one of them
+// matches; the 61 declines were all firings the old gate already checked and
+// already declined. So the step changes no decision on this corpus while making
+// 72 previously-unanswerable firings answerable.
+//
+// Floored an order of magnitude below, like every population floor on this path:
+// what a floor detects here is the shape going DARK, not drift.
+var orientationGateFloors = cascades.OrientationGateFloors{
+	Calls:           40, // measured 438
+	MapCountDiffers: 7,  // measured 72
+	// A CEILING, calibrated from the measured 84 with headroom for corpus growth.
+	// Unverifiable is the SECOND fail-open and its dangerous direction is GROWTH,
+	// so unlike every other number here it is capped rather than floored.
+	UnverifiableCeiling: 200, // measured 84
+}
+
+// assertOrientationGateCensus checks the gate census, dropping the population
+// floors when -test.run narrows the corpus — the same split its siblings make.
+// The partitions still run: they hold over any population.
+func assertOrientationGateCensus(w io.Writer) bool {
+	floors := &orientationGateFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "orientation gate census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The partitions still run over whatever "+
+			"population this filter reached.\n", f.Value.String())
+		floors = nil
+	}
+	return cascades.AssertOrientationGateCensus(w, floors)
 }

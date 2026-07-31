@@ -39,8 +39,8 @@ func mergedOuterRowFixture(aAlias, bAlias values.CorrelationIdentifier) *Positio
 				{Name: "BK", FieldType: values.NotNullLong, Ordinal: 2},
 			},
 			Legs: []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 0, 2),
-				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 2, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, aAlias, aAlias.Name(), 0, 2),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, bAlias, bAlias.Name(), 2, 1),
 			},
 		},
 		Slots: []any{int64(10), int64(11), int64(22)},
@@ -165,8 +165,8 @@ func TestBindMergedOuterLegs_DeclinesAnUnstatedLegIdentity(t *testing.T) {
 				{Name: "BK", FieldType: values.NotNullLong, Ordinal: 1},
 			},
 			Legs: []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(unstated, "", 0, 1),
-				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 1, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, unstated, "", 0, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, bAlias, bAlias.Name(), 1, 1),
 			},
 		},
 		Slots: []any{int64(10), int64(22)},
@@ -261,10 +261,10 @@ func TestBindMergedOuterLegs_FirstClaimWinsOnADuplicateAlias(t *testing.T) {
 				{Name: "BK", FieldType: values.NotNullLong, Ordinal: 3},
 			},
 			Legs: []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 0, 3),
-				values.NewRecordTypeLeg(bAlias, bAlias.Name(), 3, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, aAlias, aAlias.Name(), 0, 3),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, bAlias, bAlias.Name(), 3, 1),
 				// The buried re-use, appended after the top-level pair.
-				values.NewRecordTypeLeg(aAlias, aAlias.Name(), 2, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, aAlias, aAlias.Name(), 2, 1),
 			},
 		},
 		Slots: []any{int64(70), int64(71), int64(72), int64(83)},

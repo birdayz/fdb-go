@@ -218,8 +218,8 @@ func TestSpansFromMergedLegs_CarriesLegIdentity(t *testing.T) {
 				{Name: "EK", FieldType: values.NotNullLong, Ordinal: 2},
 			},
 			Legs: []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(minted, "Q$9", 0, 2),
-				values.NewRecordTypeLeg(outer, "E", 2, 1),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, minted, "Q$9", 0, 2),
+				values.NewRecordTypeLeg(values.LegKindFlatRun, outer, "E", 2, 1),
 			},
 		},
 		Slots: []any{int64(1), int64(2), int64(3)},
@@ -290,8 +290,8 @@ func TestRowLegsBinder_ZeroIdentityBindsNothing(t *testing.T) {
 		// A leg from a producer that forgot to state its identity. The constructor
 		// makes this a deliberate act rather than an omission, which is the point —
 		// but the runtime must still decline it.
-		values.NewRecordTypeLeg(unstated, "A", 0, 1),
-		values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("B"), "B", 1, 1),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, unstated, "A", 0, 1),
+		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 1, 1),
 	}
 	b := &rowLegsBinder{row: legRowFixture(legs)}
 

@@ -111,3 +111,61 @@ func TestSeedWindowReader_LookupHelperMapsBothWays(t *testing.T) {
 		}
 	}
 }
+
+// RFC-200's ACTIVATION TRIPWIRE fires, and it is OFF by default.
+//
+// NESTED-HIT is unlike every other assertion in this census: a non-zero is GOOD
+// NEWS. RFC-200 merged with the nested reader arm correct, pinned on both
+// entries and both arms, and UNREACHED — no corpus query selects a nested
+// window, so gate (a)'s four mutation directions are not writable. The tripwire
+// is what turns activation day into a red test carrying the hand-over, rather
+// than a printed number nobody diffs and a gate left unwritten by default.
+func TestSeedWindowReader_NestedHitTripwireHandsOverGateA(t *testing.T) {
+	t.Parallel()
+
+	var live [seedWindowSiteCount][seedWindowReadClassCount]int
+	live[SeedWindowSiteExistentialRebase][SeedWindowHit] = 100
+	live[SeedWindowSiteExistentialRebase][SeedWindowNestedHit] = 1
+
+	// OFF by default: the flag is what arms it, so an unrelated caller cannot be
+	// surprised by a red on news it did not ask about.
+	var quiet strings.Builder
+	if assertSeedWindowReaderCounts(&quiet, live, &SeedWindowReaderFloors{}) {
+		t.Fatalf("a NESTED-HIT red fired with the tripwire OFF:\n%s", quiet.String())
+	}
+
+	var out strings.Builder
+	if !assertSeedWindowReaderCounts(&out, live, &SeedWindowReaderFloors{NestedHitMustBeZero: true}) {
+		t.Fatal("a NESTED-HIT read left the census GREEN with the tripwire ARMED.\n" +
+			"  Without this red, the day RFC-200's nested reader arm goes live nothing is " +
+			"visible: the suite passes, the number is printed, and gate (a) stays " +
+			"unwritten BY DEFAULT rather than by decision. That is the whole reason the " +
+			"count is asserted instead of reported.")
+	}
+	// The message has to HAND OVER, not merely fail. Whoever sees it is someone
+	// who landed an unrelated change and needs the whole task in front of them.
+	for _, want := range []string{
+		"nested reader arm is now LIVE",
+		"WRITE THEM",
+		"THIS IS NOT A DEFECT",
+		"nested_merge_leg_wrong_rows_fdb_test.go",
+		"SILENTLY WRONG ROWS",
+		"NestedHitMustBeZero",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the activation message is missing %q — it is a HAND-OVER, and a "+
+				"hand-over that omits the fixture, the four directions, the refutation "+
+				"clause or the way to clear it sends the reader back to the RFC to "+
+				"reconstruct what this branch already knew:\n%s", want, out.String())
+		}
+	}
+
+	// And a clean census with the tripwire armed stays green, so arming it is not
+	// a permanent red.
+	var clean strings.Builder
+	var none [seedWindowSiteCount][seedWindowReadClassCount]int
+	none[SeedWindowSiteExistentialRebase][SeedWindowHit] = 100
+	if assertSeedWindowReaderCounts(&clean, none, &SeedWindowReaderFloors{NestedHitMustBeZero: true}) {
+		t.Fatalf("the armed tripwire reds on a census with NO nested hits:\n%s", clean.String())
+	}
+}

@@ -34,9 +34,14 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
 	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
 
-	seed := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	seed, decline := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
+	}
+	if decline != (foldStep1LegDecline{}) {
+		t.Fatalf("an ACCEPTED reconstruction must state no decline, got %+v — the census "+
+			"sub-partitions reconstruct-nil firings by this value, so a decline stated "+
+			"alongside a seed files a firing that did not happen", decline)
 	}
 	rc, ok := seed.(*values.RecordConstructorValue)
 	if !ok {
@@ -89,15 +94,27 @@ func TestLegIsOrdinalSafe(t *testing.T) {
 	if !legIsOrdinalSafe(idxRec) {
 		t.Fatal("an index-scan leg is a single source — ordinal-safe")
 	}
-	if reconstructFoldStep1Seed(scan, idxRec, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2")) == nil {
+	if s, _ := reconstructFoldStep1Seed(scan, idxRec, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2")); s == nil {
 		t.Fatal("two single-source legs (scan + record-typed index) must reconstruct a seed")
 	}
 	// A covering index whose flowed type is NOT a record: ordinal-safe by shape,
 	// but the reconstruction DECLINES (leg type is not addressable positionally)
 	// — the leg keeps the name model, correct-or-conservative.
 	idxOpaque := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, values.UnknownType, false)
-	if reconstructFoldStep1Seed(scan, idxOpaque, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2")) != nil {
+	opaqueSeed, opaqueDecline := reconstructFoldStep1Seed(scan, idxOpaque, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2"))
+	if opaqueSeed != nil {
 		t.Fatal("a non-record-typed index leg must decline the seed reconstruction (name model)")
+	}
+	// Both legs were ordinal-SAFE by shape and the concat still failed, so this
+	// decline belongs in the census's no-unsafe-leg bucket and NOT in a
+	// refused-leg-shape bucket. The distinction is what keeps RFC-200's exact
+	// equality on positional-merge legs from absorbing a residue with a different
+	// fix.
+	if opaqueDecline.Shape != foldStep1LegShapeNone {
+		t.Fatalf("an opaque index leg declined with shape %v, want %v — this nil comes from "+
+			"BELOW legIsOrdinalSafe (planBuriedLegConcat could not state the leg's row), so "+
+			"filing it under a refused-leg shape would attribute it to a population it is "+
+			"not part of", opaqueDecline.Shape, foldStep1LegShapeNone)
 	}
 	// A filter over a scan (a leg with a pushed predicate) unwraps to the scan.
 	filtered := plans.NewRecordQueryPredicatesFilterPlan(scan, nil)
@@ -111,8 +128,22 @@ func TestLegIsOrdinalSafe(t *testing.T) {
 	}
 	// A reconstruction over a join leg must therefore DECLINE (nil), keeping the
 	// name model for that shape.
-	if reconstructFoldStep1Seed(nlj, scan, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("T")) != nil {
+	nljSeed, nljDecline := reconstructFoldStep1Seed(nlj, scan, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("T"))
+	if nljSeed != nil {
 		t.Fatal("a join leg must decline the seed reconstruction")
+	}
+	// Exactly ONE leg was refused, and the census's per-firing sub-partition
+	// records the first refused leg on the premise that this is always so. The
+	// premise came from a removed probe's own breakdown and nothing was checking
+	// it; this is the unit half of that check, the corpus half being the census's
+	// both-legs-unsafe zero.
+	if nljDecline.BothLegsUnsafe {
+		t.Fatal("only the join leg is ordinal-unsafe here, but the decline reports BOTH legs unsafe")
+	}
+	if nljDecline.Shape != foldStep1LegShapeOther {
+		t.Fatalf("a nil-result-value join leg classified as %v, want %v — this fixture's NLJ "+
+			"carries no result value at all, which is neither the bare-QOV residue nor the "+
+			"positional merge", nljDecline.Shape, foldStep1LegShapeOther)
 	}
 }
 
@@ -133,9 +164,14 @@ func TestFoldStep1SeedGate(t *testing.T) {
 	)
 
 	// GATED: independent scan legs + a projected fold → the reconstructed seed.
-	rv, gated := foldStep1Seed(foldRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	rv, gated, class := foldStep1Seed(foldRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if !gated {
 		t.Fatal("a projected-EXISTS fold over independent scan legs must ordinalize (gated=true)")
+	}
+	if class.Step1 != foldStep1Accept {
+		t.Fatalf("a gated fold classified as %v, want ACCEPT — the class is what the census "+
+			"partitions on AND what is threaded to the leg rebase sites, so a wrong class "+
+			"is a wrong number in both instruments", class)
 	}
 	if _, isRC := rv.(*values.RecordConstructorValue); !isRC || rv == foldRV {
 		t.Fatal("gated step1RV must be the reconstructed seed, not the projection")
@@ -146,21 +182,25 @@ func TestFoldStep1SeedGate(t *testing.T) {
 
 	// DECLINE, correlated step 1: stays name-model. A correlated FlatMap binds
 	// legs by NAME, so a baked seed would hit a loud BakedNameContextError.
-	if _, g := foldStep1Seed(foldRV, existAlias, true, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g {
-		t.Fatal("a correlated step-1 must NOT ordinalize")
+	if _, g, c := foldStep1Seed(foldRV, existAlias, true, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || c.Step1 != foldStep1DeclineCorrelatedStep1 {
+		t.Fatalf("a correlated step-1 must NOT ordinalize and must classify as the "+
+			"correlatedStep1 wall, got gated=%t class=%v", g, c)
 	}
 
 	// DECLINE, not a projected fold (WHERE-EXISTS pass-through — RV is bare QOV,
 	// no existential reference): stays name-model, RV unchanged.
 	bareRV := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"))
-	if rv2, g := foldStep1Seed(bareRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || rv2 != bareRV {
-		t.Fatal("a non-fold RV must NOT ordinalize and must pass through unchanged")
+	if rv2, g, c := foldStep1Seed(bareRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || rv2 != bareRV || c.Step1 != foldStep1DeclineNoExistRef {
+		t.Fatalf("a non-fold RV must NOT ordinalize, must pass through unchanged, and must "+
+			"classify as rv-no-exist-ref (a correct pass-through, not a residue), got "+
+			"gated=%t class=%v", g, c)
 	}
 
 	// DECLINE, a non-scan (join) leg: stays name-model.
 	njoin := plans.NewRecordQueryNestedLoopJoinPlan(t1, t2, []predicates.QueryPredicate(nil), plans.JoinInner, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), nil)
-	if _, g := foldStep1Seed(foldRV, existAlias, false, njoin, t2, values.NamedCorrelationIdentifier("J"), values.NamedCorrelationIdentifier("T2")); g {
-		t.Fatal("a name-model join leg must NOT ordinalize")
+	if _, g, c := foldStep1Seed(foldRV, existAlias, false, njoin, t2, values.NamedCorrelationIdentifier("J"), values.NamedCorrelationIdentifier("T2")); g || c.Step1 != foldStep1DeclineReconstructNil {
+		t.Fatalf("a name-model join leg must NOT ordinalize and must classify as "+
+			"reconstruct-nil, got gated=%t class=%v", g, c)
 	}
 }
 
@@ -190,7 +230,7 @@ func TestReconstructFoldStep1Seed_CarriesTheThreadedIdentityVerbatim(t *testing.
 	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
 	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
 
-	seed := reconstructFoldStep1Seed(t1, t2, minted, other)
+	seed, _ := reconstructFoldStep1Seed(t1, t2, minted, other)
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
 	}

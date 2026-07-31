@@ -38,6 +38,7 @@ func TestRebaseOuterLegValueOrdinal_LegLocalFrontierPinned_UsesBakedOrdinal(t *t
 	const legOffset = 10
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		values.NamedCorrelationIdentifier("L"): {
+			Kind:   values.LegKindFlatRun,
 			Offset: legOffset, Typ: dupLeg, Alias: values.NamedCorrelationIdentifier("L"),
 		},
 	}
@@ -98,6 +99,7 @@ func TestRebaseOuterLegValueOrdinal_LegLocalOrdinalPastWindow_Declines(t *testin
 	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		values.NamedCorrelationIdentifier("L"): {
+			Kind:   values.LegKindFlatRun,
 			Offset: 10, Typ: narrowLeg, Alias: values.NamedCorrelationIdentifier("L"),
 		},
 	}
@@ -126,6 +128,7 @@ func TestRebaseOuterLegValueOrdinal_MergedRefPassesThrough(t *testing.T) {
 	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		values.NamedCorrelationIdentifier("L"): {
+			Kind:   values.LegKindFlatRun,
 			Offset: 10, Typ: mergedType, Alias: values.NamedCorrelationIdentifier("L"),
 		},
 	}
@@ -180,7 +183,7 @@ func TestRebaseOuterLegValueOrdinal_DriftBetweenWindowsAndMergedLegs_Declines(t 
 	mergedType := &values.RecordType{
 		Fields: mergedFields,
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(driftCorr, "D", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, driftCorr, "D", 0, 1),
 		},
 	}
 	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
@@ -189,6 +192,7 @@ func TestRebaseOuterLegValueOrdinal_DriftBetweenWindowsAndMergedLegs_Declines(t 
 	// a reference over D misses it. That mismatch is the drift.
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		values.NamedCorrelationIdentifier("L"): {
+			Kind:   values.LegKindFlatRun,
 			Offset: 4, Typ: legType, Alias: values.NamedCorrelationIdentifier("L"),
 		},
 	}
@@ -236,7 +240,7 @@ func TestRebaseOuterLegValueOrdinal_DriftBetweenWindowsAndMergedLegs_Declines(t 
 	forgedType := &values.RecordType{
 		Fields: mergedFields,
 		Legs: []values.RecordTypeLeg{
-			values.NewRecordTypeLeg(minted, "Q$11", 0, 1),
+			values.NewRecordTypeLeg(values.LegKindFlatRun, minted, "Q$11", 0, 1),
 		},
 	}
 	forgedMergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), forgedType)

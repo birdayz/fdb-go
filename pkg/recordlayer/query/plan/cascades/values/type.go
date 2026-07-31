@@ -363,13 +363,98 @@ type RecordType struct {
 	// buried alias resolves positionally exactly like a top-level leg's
 	// (Java's rewire-by-ordinal: a buried source is just another
 	// quantifier's window). Empty for every non-clustered leg type; carries
-	// NO identity semantics (Equals/Hash ignore it — layout metadata only).
+	// NO identity semantics — layout metadata only.
+	//
+	// "Equals/Hash ignore it" is what this line used to say, and HASH NAMED
+	// NOTHING: there is no Hash method on RecordType, on Type, or anywhere in
+	// this file. A reader verifying the claim would have found no such method and
+	// moved on, which is the most durable way for an unchecked claim to read as
+	// checked. The channels the memo ACTUALLY keys a record type on are
+	// values.SemanticHashCode, values.SemanticEqualsUnderAliasMap and
+	// values.EqualsWithoutChildren (plus String(), which is not identity but is
+	// what EXPLAIN goldens diff on), pinned by
+	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity — and the two
+	// memo sites that genuinely dispatch into Equals, pinned by
+	// expressions.TestMemoExpressionIdentity_IgnoresTheLegTable.
 	Legs []RecordTypeLeg
+}
+
+// LegKind says HOW a leg occupies the carrying type: as a flat RUN of columns,
+// or as a single slot holding the leg's whole row.
+//
+// It is an EXPLICIT discriminator with an INVALID zero value, and both halves of
+// that are decided rather than incidental.
+//
+// EXPLICIT, because the alternative is inference and every candidate inference
+// is wrong on a legitimate shape. `len(Typ.Fields) == 1`, "the field type is a
+// record", `Width == 1` — a one-column flat leg whose single column is a struct
+// satisfies all three and is not nested. An inference that is silently wrong is
+// silently wrong about WHICH COLUMN a read addresses, which is the wrong-offset
+// wrong-rows failure this layout authority was consolidated into one place to
+// prevent.
+//
+// INVALID at zero, because Go's zero value would otherwise mean LegKindFlatRun —
+// the same inference one level down, made by the language instead of by a
+// reader, and made for a producer that never thought about the question. The
+// precedent is on this file's own constructor: deleting `Alias:` from two
+// producers left the whole suite green, because the zero CorrelationIdentifier
+// is a legal value nobody checks. A kind that could be omitted reproduces that
+// failure one field over.
+//
+// Every reader DECLINES or fails LOUD on LegKindUnset. A leg reaching a consumer
+// without a stated kind is a producer bug and must surface as one.
+type LegKind int
+
+const (
+	// LegKindUnset is the INVALID zero. See the type doc.
+	LegKindUnset LegKind = iota
+
+	// LegKindFlatRun: the leg occupies the consecutive slot range
+	// [Start, Start+Width) of the carrying type, one slot per leg column. Every
+	// leg boundary that existed before nested windows is this kind.
+	LegKindFlatRun
+
+	// LegKindNested: the leg occupies the SINGLE slot at Start, and that slot
+	// holds the leg's whole row.
+	//
+	// This is Java's shape, not a Go extension. PartitionSelectRule collapses the
+	// lower quantifiers into `RecordConstructorValue.ofColumns(… Column::unnamedOf)`
+	// — one unnamed column per quantifier, each holding that quantifier's whole
+	// record Message — and a reference to a collapsed sibling becomes
+	// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`, a one-step ordinal walk
+	// that returns the leg's whole Message because the field is of message type.
+	// Nesting is free there; here it needs saying out loud.
+	LegKindNested
+)
+
+func (k LegKind) String() string {
+	switch k {
+	case LegKindFlatRun:
+		return "flatRun"
+	case LegKindNested:
+		return "nested"
+	}
+	return "UNSET"
 }
 
 // RecordTypeLeg is one buried source's boundary within a clustered box leg's
 // flat ordinal concat (see RecordType.Legs).
 type RecordTypeLeg struct {
+	// Kind says whether this leg is a flat RUN of Width columns starting at
+	// Start, or a single NESTED slot at Start holding the leg's whole row.
+	//
+	// It is carried on the leg and not only on the seed window because the layout
+	// crosses two carriers: the planner's rebase authority reads
+	// OrdinalSeedLegWindow, and the executor's runtime binders read this table off
+	// the merged row type. A discriminator on one of the two is a discriminator
+	// the other has to infer.
+	//
+	// Excluded from identity exactly as the RecordType.Legs table that holds it
+	// already is — pinned by
+	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity, over every
+	// channel the memo actually keys a record type on.
+	Kind LegKind
+
 	// Alias is the leg's IDENTITY: the CorrelationIdentifier of the quantifier
 	// whose row occupies [Start, Start+Width). It is the field every consumer
 	// asking "does this correlation name this leg?" must compare, through
@@ -498,26 +583,51 @@ type RecordTypeLeg struct {
 	Name string
 
 	Start int // its first slot within the carrying type
-	Width int // its column count
+	// Width is the leg's SLOT COUNT in the carrying type — not its column count,
+	// which is what this line used to say.
+	//
+	// The correction matters because every consumer already computes Start+Width
+	// as a slot RANGE into the carrying type's Fields (flat_map_cursor.go,
+	// executor/ordinal_join.go in three places, executor.go's concatLegPositionals,
+	// merged_leg_binding_census.go, the planner's leg-concat walk). For a
+	// LegKindFlatRun leg the two readings coincide and the old wording was
+	// harmless. For a LegKindNested leg they diverge: it occupies exactly ONE
+	// slot, so Width is 1 while the leg may have any number of columns, and every
+	// one of those range computations stays in-bounds and truthful only under the
+	// slot reading.
+	//
+	// The leg's COLUMN count is not lost. It is
+	// len(Fields[Start].FieldType.(*RecordType).Fields), and the seed window's Typ
+	// carries it directly. A consumer that wants the leg's columns must go through
+	// the type; under the kind discriminator each of them declines a nested leg
+	// rather than iterating it flat.
+	Width int
 }
 
 // NewRecordTypeLeg constructs a leg boundary: the quantifier identified by
 // `alias` owns slots [start, start+width) of the carrying type's flat concat,
-// and `name` is that binding's text for the dotted channel.
+// `kind` says whether that range is a flat run of columns or a single slot
+// holding the leg's whole row, and `name` is that binding's text for the dotted
+// channel.
 //
-// It exists to make the IDENTITY unforgettable. A composite literal lets a
-// producer state Name and omit Alias, and the result is not a compile error but
-// a leg whose identity is the zero CorrelationIdentifier — which every reader
-// then fails to bind, silently for a frontier-pinned reference (see
+// It exists to make the IDENTITY and the KIND unforgettable. A composite literal
+// lets a producer state Name and omit Alias, and the result is not a compile
+// error but a leg whose identity is the zero CorrelationIdentifier — which every
+// reader then fails to bind, silently for a frontier-pinned reference (see
 // executor.buriedLegWindow's comment for the per-reference-kind disposition).
 // That is not hypothetical: deleting `Alias:` from two producers left the whole
-// suite green. Taking the identifier as the FIRST positional parameter makes the
-// omission a compile error instead.
+// suite green.
+//
+// The kind is here for exactly the same reason and it is the newer half of the
+// argument: an omitted kind is LegKindUnset, and a producer that omits it is a
+// producer that never decided. Both are POSITIONAL parameters so that omitting
+// either is a compile error rather than a silent zero — that, and not the
+// literal index, is what the parameter list buys.
 //
 // A docscheck AST scan (TestRecordTypeLegIsConstructed) keeps the composite
 // literal from coming back in non-test production code.
-func NewRecordTypeLeg(alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
-	return RecordTypeLeg{Alias: alias, Name: name, Start: start, Width: width}
+func NewRecordTypeLeg(kind LegKind, alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
+	return RecordTypeLeg{Kind: kind, Alias: alias, Name: name, Start: start, Width: width}
 }
 
 // NewRecordType constructs a RecordType. The Fields slice is

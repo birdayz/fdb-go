@@ -134,14 +134,47 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 			}
 			w, isLeg := windows[qov.Correlation]
 			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxLegRef, isLeg)
+				// KIND-AWARE, for the same live-vs-latent reason as its twin at
+				// cascades.rebaseOuterLegValueOrdinal.
+				values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteBoxLegRef, isLeg, w.Kind)
 			}
 			if !isLeg || w.Typ == nil {
+				return n
+			}
+			// DISPATCH ON THE KIND. `w.Offset + idx` addresses a column only under
+			// LegKindFlatRun; under LegKindNested, Offset is the leg's ONE slot and
+			// the sum walks into whatever follows it, producing a valid merged
+			// ordinal that reads the wrong column. LegKindUnset is refused rather
+			// than defaulted.
+			//
+			// Leaving the node unrewritten is the correct decline at this site: the
+			// caller's survivor verification sees a leg-correlated reference that
+			// survived the rebase and declines the whole wrap.
+			if w.Kind != values.LegKindFlatRun && w.Kind != values.LegKindNested {
 				return n
 			}
 			idx, found := w.Typ.FieldIndex(fv.Field)
 			if !found {
 				return n // survives → the caller's verification declines
+			}
+			if w.Kind == values.LegKindNested {
+				// THE FUSED TWO-STEP ADDRESS — Java's
+				// ofOrdinalNumberAndFuseIfPossible. The slot holds the leg's WHOLE
+				// row, so the address is "slot w.Offset, then leg-local idx", composed
+				// into one path by FieldPath.WithSuffix exactly as Java's
+				// ofFieldsAndFuseIfPossible composes it. See the twin at
+				// cascades.rebaseOuterLegValueOrdinal for the full derivation.
+				// ONE constructor, shared with the planner twin. It also recomputes
+				// the result TYPE from the fused path, which the hand-written fusion
+				// this replaced did not: copying the slot's baked node and
+				// overwriting its path left the node reporting the LEG'S WHOLE
+				// RECORD TYPE as the type of a single column read.
+				fused, fErr := values.NewFusedFieldValueOfNestedOrdinal(
+					boxQOV, w.Offset, w.Typ, idx)
+				if fErr != nil {
+					return n
+				}
+				return fused
 			}
 			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
 			if err != nil {
@@ -215,6 +248,14 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	})
 	// Post-walk: no leg-correlated QOV may survive, and no childless lazy read may
 	// either (see the decline above).
+	//
+	// This reader and the correlation scan in translateExistsOverGatheredCluster
+	// are MEMBERSHIP tests — "is this correlation a leg of the seed at all?" — and
+	// membership is KIND-INDEPENDENT. They deliberately do not dispatch on
+	// LegKind, and the omission is decided rather than overlooked: a nested leg is
+	// still a leg, and a survivor correlated to one must still decline the wrap.
+	// Adding a kind test here would make a nested leg invisible to the very check
+	// that keeps an unrebased reference from shipping.
 	ok := !childlessRead
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := n.(*values.QuantifiedObjectValue); isQOV {
