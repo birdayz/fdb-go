@@ -10697,6 +10697,32 @@ None is speculative: each was re-verified against the tree before booking.
     gatheredGroupSlot        calls 160 | identityAgreesHit 160
     ```
 
+    That table is a DATED POINT MEASUREMENT and the census behind it retired
+    with the text namespace it measured — its classes were all about text
+    versus identity, and there is no text side left. What replaced it is a
+    NARROWED STANDING instrument, `seed_window_reader_census.go`, wired into
+    the sqldriver `TestMain`: per read it records only hit/miss plus the two
+    DECLINE classes, floors each of the five surviving readers, and hard-zeros
+    the declines. It reproduces the populations above exactly:
+
+    ```
+    existentialRebase        reads 962 | hit 461 | miss 501
+    boxLegRef                reads  92 | hit  62 | miss  30
+    boxSurvivorQOV           reads 184 | miss 184
+    boxSurvivorCorrelation   reads   2 | miss   2
+    gatheredGroupSlot        reads 160 | hit 160
+    ```
+
+    The floors are what the deletion took away: every claim here has the shape
+    "this class is EMPTY", and an unreached site prints that identically to a
+    site measured clean, so a change that silenced a reader would read GREEN.
+    Mutation-checked — deleting the `gatheredGroupSlot` recorder reds the
+    corpus run with `gatheredGroupSlot reached 0 reads, want >= 16`. The two
+    hard zeros are `QUALIFIED-NO-IDENTITY` (a group-by reference stating a
+    qualifier with no correlation) and `CHILDLESS-BAKED` (a source-relative
+    baked read with no child reaching the box rebase's tail); each failure
+    message names what a non-zero re-arms.
+
     1400 lookups; every blocking class EMPTY (no TEXT-ONLY-HIT, no
     IDENTITY-ONLY-HIT, no DIVERGED). The two text-only sites are the zeros, and
     the panic probe above says they are unreachable rather than quiet — so the
@@ -10724,9 +10750,20 @@ None is speculative: each was re-verified against the tree before booking.
     named and measured.** Its two families are down to one: the DOTTED-TEXT
     consumers, which are live. `executor.ordinal_join`'s dotted arm answers 4
     times over the corpus (`C.CV`, `I.QTY`, `O.ID`, all over legs that also
-    state an identity), and the translator's two dotted bakers take 110 match
+    state an identity), and the translator's THREE dotted bakers take 110 match
     attempts with 101 matches — measured by a new census, the translator twin of
-    the executor's leg-column provenance census. Neither reader can be re-keyed
+    the executor's leg-column provenance census. Three, not two:
+    `bakeDottedRefsToLegQOV` has a MULTI-ForEach arm and a SINGLE-ForEach arm
+    making the same decision on the same counterparty, and only the first was
+    counted because the census was built around a map read while the second
+    compares one layout's key directly. The third is now instrumented and
+    measured **UNREACHED** — 0 over the corpus, with a panic at its match point
+    hit by nothing across `./pkg/relational/core/...` nor the explaindiff and
+    plandiff harnesses — so it is left standing, deliberately UNFLOORED, with
+    both hard zeros gating it. Same class as the two arms already deleted from
+    the box wrap; a candidate for the same treatment, not taken here because
+    removing it is a behaviour change this census has only just begun watching.
+    Neither reader can be re-keyed
     and the reason is structural, not a shortfall: each is guarded on
     `Child != nil || Resolved != nil → bail`, so it only ever sees a lazy
     carrier minted from parsed text. One of them is worse than that — its layout

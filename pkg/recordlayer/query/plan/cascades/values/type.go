@@ -424,22 +424,37 @@ type RecordTypeLeg struct {
 	//
 	//   - DOTTED-TEXT consumers, where the qualifier is embedded inside a
 	//     column-name string ("A.ID") and can therefore only be matched as a
-	//     string. There are two left and both are LIVE, which is why this field
-	//     cannot go yet: executor.ordinal_join's dotted arm (the leg-column
+	//     string. There are FOUR, and at least one is LIVE, which is why this
+	//     field cannot go yet: executor.ordinal_join's dotted arm (the leg-column
 	//     provenance census measures it answering FOUR times over the real-FDB
 	//     corpus — `C.CV`, `I.QTY`, `O.ID` — every one over a leg that also states
-	//     an identity), and the translator's two dotted bakers (the dotted-leg
+	//     an identity), and the translator's THREE dotted bakers (the dotted-leg
 	//     qualifier census: 110 match attempts, 101 matches, and the leg table's
 	//     two spellings agree on every one).
+	//
+	//     Three, not two: bakeDottedRefsToLegQOV has a MULTI-ForEach arm and a
+	//     SINGLE-ForEach arm making the same decision on the same counterparty,
+	//     and only the first was counted, because the census was built around a
+	//     map read and the second compares one layout's key directly. Instrumented
+	//     now, and measured UNREACHED — 0 over the corpus, with a panic at its
+	//     match point hit by nothing across ./pkg/relational/core/... nor the
+	//     explaindiff and plandiff harnesses. So the count that matters for this
+	//     field's retirement is unchanged; what changed is that the third site's
+	//     MATCH-ALIAS-DIFFERS and MATCH-NO-ALIAS populations are now gated rather
+	//     than unmeasured.
 	//
 	// The SEED-WINDOW map's KEYS used to be the second family and are GONE. That
 	// map is keyed by CorrelationIdentifier; finalizeSeedWindows files a
 	// sub-window under the buried leg's own identity and carries its Name as a
 	// LABEL for the merged leg table rather than as the address of anything. The
-	// conversion was measured first, per lookup, over the whole corpus: 1400 keyed
-	// reads, every one holding a correlation, the identity selecting the same
-	// window the fold did on every one, and the only two text-keyed readers
-	// unreachable by panic probe across the entire relational tree.
+	// conversion was measured first, per lookup, over the whole corpus — a DATED
+	// POINT MEASUREMENT, quoted as history: 1400 keyed reads, every one holding a
+	// correlation, the identity selecting the same window the fold did on every
+	// one, and the only two text-keyed readers unreachable by panic probe across
+	// the entire relational tree. The census that produced it retired with the
+	// namespace it measured; the STANDING instrument over those readers is
+	// seed_window_reader_census.go, which floors each one and hard-zeros the two
+	// declines that replaced the text lookups.
 	//
 	// Every reader whose counterparty is a correlation goes through Alias — there
 	// are no exceptions left. The retirement condition is now single: when the

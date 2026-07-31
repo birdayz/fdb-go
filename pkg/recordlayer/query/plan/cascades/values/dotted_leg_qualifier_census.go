@@ -14,7 +14,17 @@ import (
 // Both measure the same reader shape: a qualifier SPLIT OUT of a column name is
 // matched, case-insensitively, against a leg table's Name text. The executor's
 // copy lives beside its one reader (`rowSlotForLegColumn`); this one covers the
-// translator's two, which no census reached.
+// translator's THREE, which no census reached.
+//
+// Three, not two. `bakeDottedRefsToLegQOV` has TWO arms and they were counted as
+// one reader: the MULTI-ForEach arm keys a layout map by qualifier, and the
+// SINGLE-ForEach arm compares the qualifier against its one layout's key
+// directly. Same guard, same shape, same counterparty — a qualifier sliced out
+// of a parsed name — so the second was invisible to a census that named the
+// function rather than the comparison. It differs from its siblings in one way
+// worth recording: it compares ONLY `lay.key`, never the scan TABLE name, so a
+// `PA."ID"` read over `FROM PA AS "s"` misses there while the multi-ForEach arm
+// resolves it.
 //
 // The question is the same and so is the reason it is asked per CALL rather than
 // per site. A site's key provenance is static — these readers hold no
@@ -39,17 +49,40 @@ import (
 // is ready for the day their counterparty carries segments instead of a joined
 // string (CQ-52), and whether the channel is live enough for that to matter.
 //
-// WHAT IT MEASURED, whole real-FDB sqldriver corpus:
+// WHAT IT MEASURED — a POINT measurement over the whole real-FDB sqldriver
+// corpus, dated to the addition of the third site. Re-measure rather than
+// trusting the digits; the durable claim is the SHAPE (the blocking classes
+// empty), not the totals, which move whenever a query is added anywhere in that
+// suite. The standing instrument is `AssertDottedLegQualifierCensus`, wired into
+// the sqldriver `TestMain`, and it is what keeps these numbers honest.
 //
-//	flatColumnBake  calls 106 | matchAliasIsQualifier 98 | noMatch 8
-//	legQOVBake      calls   4 | matchAliasIsQualifier  3 | matchViaTableName 1
+//	flatColumnBake     calls 106 | matchAliasIsQualifier 98 | noMatch 8
+//	legQOVBake         calls   4 | matchAliasIsQualifier  3 | matchViaTableName 1
+//	singleForEachBake  calls   0
 //
-// The channel is LIVE — 110 match attempts, 101 of them matching — and the leg
-// table's two spellings agree on every one of them: no MATCH-ALIAS-DIFFERS, no
-// MATCH-NO-ALIAS. So the table is ready; the READERS are not, and cannot be made
-// so from this side. Their retirement is CQ-52's, which gives their counterparty
-// the parser's qualifier/leaf segments instead of a joined string these sites
-// then split back apart.
+// The channel is LIVE and the leg table's two spellings agree on every match:
+// no MATCH-ALIAS-DIFFERS, no MATCH-NO-ALIAS. So the table is ready; the READERS
+// are not, and cannot be made so from this side. Their retirement is CQ-52's,
+// which gives their counterparty the parser's qualifier/leaf segments instead of
+// a joined string these sites then split back apart.
+//
+// THE THIRD SITE'S ZERO IS A FINDING, not a gap in the measurement, and it is
+// recorded here because a zero is exactly what a census cannot leave in prose.
+// singleForEachBake is UNREACHED: a panic wired into its match point is hit by
+// nothing across ./pkg/relational/core/... nor the explaindiff and plandiff
+// harnesses, and it reports 0 over the real-FDB sqldriver corpus. Note the
+// scope — it is the DOTTED arm of that baker that is dark. The same baker's BARE
+// leaf path is live and is a separate debt entry; only the qualifier comparison
+// has no traffic.
+//
+// That puts it in the same class as the two arms already deleted from the box
+// wrap (a childless dotted splitter and a bare name matcher, both retired after
+// the same probe came back empty). It is left standing and INSTRUMENTED rather
+// than removed, because removing it is a behaviour change for a shape this
+// census has only just started watching, and both hard zeros now gate it: the
+// day it fires, a leg with two disagreeing spellings or no identity at all reds
+// instead of resolving quietly. It is deliberately UNFLOORED, which is a
+// statement about the corpus and not an omission.
 //
 // The single matchViaTableName is the finding that keeps this census from being
 // a formality: `FROM PA AS "s"` registers the layout under BOTH `S` and the scan
@@ -71,12 +104,27 @@ const (
 	// expressionOutputLegs or from the wholeRowLegFor TEXT-BOUNDARY mint.
 	DottedLegSiteFlatColumnBake DottedLegSite = iota
 
-	// DottedLegSiteLegQOVBake is query.bakeDottedRefsToLegQOV's per-leg layout
-	// lookup: qualifier → the leg's own layout, leaf → an ordinal in that leg's
-	// OWN column domain. Its layouts are keyed by upper-folded text while each
-	// layout carries the quantifier's identity, so it is the same held-apart
-	// namespace pair the seed windows had.
+	// DottedLegSiteLegQOVBake is query.bakeDottedRefsToLegQOV's MULTI-ForEach
+	// per-leg layout lookup: qualifier → the leg's own layout, leaf → an ordinal
+	// in that leg's OWN column domain. Its layouts are keyed by upper-folded text
+	// while each layout carries the quantifier's identity, so it is the same
+	// held-apart namespace pair the seed windows had.
 	DottedLegSiteLegQOVBake
+
+	// DottedLegSiteSingleForEachBake is the SAME function's SINGLE-ForEach arm,
+	// which bakes FLAT over the one quantifier's row. It holds a single layout
+	// rather than a map, so its "lookup" is one comparison of the qualifier
+	// against that layout's key — which is why it stayed invisible to a census
+	// built around a map read, while being the same decision on the same
+	// counterparty.
+	//
+	// It is NOT a duplicate of its sibling. The multi-ForEach arm registers each
+	// leg under its scan TABLE name as well as its alias; this arm compares
+	// `lay.key` only, so the table-name addressing route does not exist here and a
+	// `PA."ID"` read over `FROM PA AS "s"` falls through unbaked. That asymmetry
+	// is a documented debt entry, and its MATCH-ALIAS-DIFFERS population was
+	// simply unmeasured until this site existed.
+	DottedLegSiteSingleForEachBake
 
 	dottedLegSiteCount
 )
@@ -87,12 +135,14 @@ func (s DottedLegSite) String() string {
 		return "flatColumnBake"
 	case DottedLegSiteLegQOVBake:
 		return "legQOVBake"
+	case DottedLegSiteSingleForEachBake:
+		return "singleForEachBake"
 	default:
 		return "unknown"
 	}
 }
 
-// DottedLegClass is one call's bucket. The four partition every call.
+// DottedLegClass is one call's bucket. The six partition every call.
 type DottedLegClass int
 
 const (
@@ -121,6 +171,21 @@ const (
 	// a live contradiction where there is a documented feature, and the census
 	// did exactly that before this class existed.
 	DottedLegMatchViaTableName
+	// DottedLegAmbiguousQualifier: the qualifier named MORE THAN ONE leg and the
+	// layout map POISONED that key (`layouts[key] = nil`) so nothing bakes
+	// through it. Two legs sharing an alias, or two legs scanning one table under
+	// the table-name addressing route.
+	//
+	// It is a fifth thing, not a flavour of noMatch, and folding it into noMatch
+	// is what this class fixes. The census recorded its call BEFORE the `lay ==
+	// nil` bail, and a poisoned key and an absent one are the same nil at that
+	// point — so "no leg carried the qualifier" was reported for a qualifier
+	// carried by two. The two mean opposite things about the leg table: absent is
+	// a reference the table does not describe, ambiguous is a table that
+	// describes it twice and refuses to choose. Only the second is a fact about
+	// how much this channel is being asked to do.
+	DottedLegAmbiguousQualifier
+
 	// DottedLegNoMatch: no leg carried the qualifier. Not a name decision — the
 	// reference falls through unbaked.
 	DottedLegNoMatch
@@ -138,12 +203,33 @@ func (c DottedLegClass) String() string {
 		return "MATCH-NO-ALIAS"
 	case DottedLegMatchViaTableName:
 		return "matchViaTableName"
+	case DottedLegAmbiguousQualifier:
+		return "ambiguousQualifier"
 	case DottedLegNoMatch:
 		return "noMatch"
 	default:
 		return "unknown"
 	}
 }
+
+// DottedLegLookup is what the READER's own map read produced, before any
+// question about the leg it found. It is threaded in rather than inferred from
+// the matched leg, because two of its three values arrive at the reader as the
+// same nil: a qualifier with no entry and a qualifier whose entry was POISONED
+// for ambiguity are indistinguishable once the map read is over, and they mean
+// opposite things.
+type DottedLegLookup int
+
+const (
+	// DottedLegLookupMiss: the layout map/leg table has no entry for this
+	// qualifier.
+	DottedLegLookupMiss DottedLegLookup = iota
+	// DottedLegLookupAmbiguous: an entry exists and is POISONED — two legs claim
+	// the qualifier, so nothing may bake through it.
+	DottedLegLookupAmbiguous
+	// DottedLegLookupHit: exactly one leg carried the qualifier.
+	DottedLegLookupHit
+)
 
 const dottedLegWitnessCap = 128
 
@@ -165,10 +251,12 @@ var (
 // of its alternate addressing routes. It is threaded in rather than inferred,
 // because from the qualifier and the alias alone a table-name route and a
 // two-spellings contradiction are the same observation.
-func classifyDottedLegQualifier(qual string, matchedAlias CorrelationIdentifier, matchedBinding string, matched bool) DottedLegClass {
+func classifyDottedLegQualifier(qual string, matchedAlias CorrelationIdentifier, matchedBinding string, lookup DottedLegLookup) DottedLegClass {
 	switch {
-	case !matched:
+	case lookup == DottedLegLookupMiss:
 		return DottedLegNoMatch
+	case lookup == DottedLegLookupAmbiguous:
+		return DottedLegAmbiguousQualifier
 	case !strings.EqualFold(qual, matchedBinding):
 		return DottedLegMatchViaTableName
 	case matchedAlias.IsZero():
@@ -182,8 +270,8 @@ func classifyDottedLegQualifier(qual string, matchedAlias CorrelationIdentifier,
 
 // RecordDottedLegQualifier counts one qualifier-against-leg-table match.
 // Callers must guard on LegIdentityCensusEnabled().
-func RecordDottedLegQualifier(site DottedLegSite, qual string, matchedAlias CorrelationIdentifier, matchedBinding string, matched bool) {
-	class := classifyDottedLegQualifier(qual, matchedAlias, matchedBinding, matched)
+func RecordDottedLegQualifier(site DottedLegSite, qual string, matchedAlias CorrelationIdentifier, matchedBinding string, lookup DottedLegLookup) {
+	class := classifyDottedLegQualifier(qual, matchedAlias, matchedBinding, lookup)
 	dottedLegMu.Lock()
 	defer dottedLegMu.Unlock()
 	if site < 0 || site >= dottedLegSiteCount {
@@ -253,27 +341,39 @@ func FormatDottedLegQualifierCensus() string {
 // a whole suite run.
 //
 // Same reason as every floor on this path, and it bites harder here than usual:
-// the finding this census produces is "the MATCH-ALIAS-DIFFERS population is
-// empty", and an unreached site prints that identically to a site measured
-// clean. A site left at 0 is UNFLOORED and that is a statement about the corpus,
-// not an omission.
+// the findings this census produces are "the MATCH-ALIAS-DIFFERS population is
+// empty" and "the MATCH-NO-ALIAS population is empty", and an unreached site
+// prints both identically to a site measured clean. A site left at 0 is
+// UNFLOORED and that is a statement about the corpus, not an omission.
 type DottedLegQualifierFloors struct {
 	Calls [dottedLegSiteCount]int
 }
 
-// AssertDottedLegQualifierCensus checks the census's hard zero and its floors.
+// AssertDottedLegQualifierCensus checks the census's hard zeros and its floors.
 //
-// The hard zero is MATCH-ALIAS-DIFFERS: a leg matched on its OWN BINDING text
-// while stating a different identity. That is the leg table having two spellings
-// that disagree, resolved by the weaker one — the same contradiction the
-// seed-window census refuses, seen through the one channel that cannot be
-// re-keyed. A leg matched through its scan TABLE name is a different fact and
-// has its own class; the zero would be unsatisfiable if the two were folded
-// together, which is what the first measurement did. It is
-// worth asserting HERE precisely because this reader will keep matching on text
-// until its counterparty carries parsed segments: the guarantee that the text it
-// matches names the leg the identity names is all that holds the channel
-// together in the meantime.
+// There are TWO hard zeros and they are different failures of the same table.
+//
+// MATCH-ALIAS-DIFFERS: a leg matched on its OWN BINDING text while stating a
+// different identity. That is the leg table having two spellings that disagree,
+// resolved by the weaker one — the same contradiction the seed-window census
+// refuses, seen through the one channel that cannot be re-keyed. A leg matched
+// through its scan TABLE name is a different fact and has its own class; the
+// zero would be unsatisfiable if the two were folded together, which is what the
+// first measurement did. It is worth asserting HERE precisely because this
+// reader will keep matching on text until its counterparty carries parsed
+// segments: the guarantee that the text it matches names the leg the identity
+// names is all that holds the channel together in the meantime.
+//
+// MATCH-NO-ALIAS: a leg matched and states NO identity at all. This class was
+// documented as blocking from the day it was written and was never gated, so its
+// zero was a sentence rather than a check. It is the same defect the seed-window
+// authority now declines on (an Alias-less leg files under the zero identifier
+// and a second one displaces it), seen from the reader side: the leg table
+// carries an entry whose identity nothing can compare, so the day the
+// counterparty carries segments this leg has nothing to be matched against and
+// the conversion silently loses it. Fix the PRODUCER; the two documented text
+// boundaries that mint a leg from a string both set Name and Alias from that one
+// string, so a leg reaching here without an identity came from neither.
 func AssertDottedLegQualifierCensus(w io.Writer, floors *DottedLegQualifierFloors) bool {
 	counts, _ := DottedLegQualifierCensus()
 	return assertDottedLegQualifierCounts(w, counts, floors)
@@ -293,6 +393,19 @@ func assertDottedLegQualifierCounts(w io.Writer, counts [dottedLegSiteCount][dot
 				"  PRODUCER that gave the leg two spellings; this reader has no identifier to\n"+
 				"  key with and cannot defend itself.\n", s, counts[s][DottedLegMatchAliasDiffers])
 		}
+		if counts[s][DottedLegMatchNoAlias] != 0 {
+			failed = true
+			fmt.Fprintf(w, "DOTTED LEG QUALIFIER CENSUS FAIL: %s reported %d MATCH-NO-ALIAS, want 0.\n"+
+				"  A qualifier matched a leg that states NO identity at all. The leg table\n"+
+				"  carries an entry nothing can compare by identity, so the day this reader's\n"+
+				"  counterparty carries parsed segments (CQ-52) that leg has nothing to be\n"+
+				"  matched against and the conversion loses it silently. It is also the reader\n"+
+				"  side of the collision the seed-window authority now declines on: two\n"+
+				"  Alias-less legs file under the ZERO identifier and the second displaces the\n"+
+				"  first. Fix the PRODUCER — both documented text boundaries set Name and\n"+
+				"  Alias from the one string they have, so a leg arriving here without an\n"+
+				"  identity came from neither.\n", s, counts[s][DottedLegMatchNoAlias])
+		}
 	}
 	if floors == nil {
 		return failed
@@ -308,9 +421,11 @@ func assertDottedLegQualifierCounts(w io.Writer, counts [dottedLegSiteCount][dot
 		if total < floors.Calls[s] {
 			failed = true
 			fmt.Fprintf(w, "DOTTED LEG QUALIFIER CENSUS FAIL: %s reached %d match attempts, want >= %d.\n"+
-				"  Nothing drove this reader, so its MATCH-ALIAS-DIFFERS zero held vacuously —\n"+
-				"  and that zero is the whole claim that the leg table's two spellings still\n"+
-				"  agree on the one channel that cannot be re-keyed by identity.\n",
+				"  Nothing drove this reader, so BOTH its hard zeros held vacuously —\n"+
+				"  MATCH-ALIAS-DIFFERS and MATCH-NO-ALIAS. Between them they are the whole\n"+
+				"  claim that the leg table's two spellings still agree, and that every leg\n"+
+				"  this channel matches states an identity to agree WITH, on the one channel\n"+
+				"  that cannot be re-keyed by identity.\n",
 				s, total, floors.Calls[s])
 		}
 	}

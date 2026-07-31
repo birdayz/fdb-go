@@ -133,6 +133,9 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 				return n
 			}
 			w, isLeg := windows[qov.Correlation]
+			if values.LegIdentityCensusEnabled() {
+				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxLegRef, isLeg)
+			}
 			if !isLeg || w.Typ == nil {
 				return n
 			}
@@ -159,13 +162,18 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 		//
 		// The dotted arm is removed rather than re-keyed because re-keying it means
 		// minting a CorrelationIdentifier out of a column name, which is the forgery
-		// this whole conversion exists to remove, and because it is REACHED BY
-		// NOTHING: a panic wired into it is hit by no test in ./pkg/relational/...
+		// this whole conversion exists to remove, and because it was REACHED BY
+		// NOTHING: a panic wired into it was hit by no test in ./pkg/relational/...
 		// (the sqldriver FDB corpus plus the explaindiff, plandiff, rowdiff,
 		// memoinvariant and yamsql harnesses) nor in ./pkg/recordlayer/query/... —
-		// the same evidence that retired the bare arm three lines above it. The
-		// QOV-shaped arm carries every reference that reaches this walk, because it
-		// is the only one with a leg to key on.
+		// the same evidence that retired the bare arm three lines above it. That is
+		// a DATED POINT MEASUREMENT of arms that no longer exist. What keeps it from
+		// becoming a claim nobody re-checks is the seed-window READER census, which
+		// FLOORS this walk's QOV arm (so it cannot go dark unnoticed) and hard-zeros
+		// the CHILDLESS-BAKED decline below (so a shape arriving here reds instead
+		// of quietly switching the wrap off). The QOV-shaped arm carries every
+		// reference that reaches this walk, because it is the only one with a leg
+		// to key on.
 		//
 		// What replaces the bake is a DECLINE, not a pass-through, and that is
 		// deliberately stricter than what it replaces. A surviving lazy read is only
@@ -196,6 +204,13 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 		// nv.SourceRelativeBaked()`). The asymmetry between the two was the bug; they
 		// now answer alike.
 		childlessRead = true
+		if values.LegIdentityCensusEnabled() && fv.Resolved != nil {
+			// Only the BAKED flavor is counted. The lazy one is the long-standing
+			// decline this walk was already built around; the baked one is the class
+			// that used to pass through with a leg-relative ordinal, and its zero is
+			// what says the wrap is not silently turning itself off for it.
+			values.RecordSeedWindowRead(values.SeedWindowSiteBoxLegRef, values.SeedWindowChildlessBaked)
+		}
 		return n
 	})
 	// Post-walk: no leg-correlated QOV may survive, and no childless lazy read may
@@ -203,7 +218,11 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	ok := !childlessRead
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := n.(*values.QuantifiedObjectValue); isQOV {
-			if _, isLeg := windows[qov.Correlation]; isLeg {
+			_, isLeg := windows[qov.Correlation]
+			if values.LegIdentityCensusEnabled() {
+				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxSurvivorQOV, isLeg)
+			}
+			if isLeg {
 				ok = false
 				return false
 			}
@@ -485,7 +504,11 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// ordinal resolution over the wrap's positional output, so decline to the
 		// name model rather than ship an unbound reference.
 		for corr := range subRef.GetCorrelatedTo() {
-			if _, isLeg := windows[corr]; isLeg {
+			_, isLeg := windows[corr]
+			if values.LegIdentityCensusEnabled() {
+				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxSurvivorCorrelation, isLeg)
+			}
+			if isLeg {
 				return nil
 			}
 		}

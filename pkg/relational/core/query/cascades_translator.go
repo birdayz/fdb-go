@@ -5765,7 +5765,29 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 			}
 			leaf := fv.Field
 			if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
-				if strings.ToUpper(fv.Field[:dot]) != lay.key {
+				qual := strings.ToUpper(fv.Field[:dot])
+				matched := qual == lay.key
+				if values.LegIdentityCensusEnabled() {
+					// The THIRD dotted baker, and the same reader shape as its two
+					// siblings: a qualifier sliced out of a parsed name, matched against a
+					// leg's binding TEXT, with the same `Child != nil || Resolved != nil`
+					// bail above guaranteeing no correlation is in hand.
+					//
+					// It compares ONE layout rather than reading a map, which is how it
+					// stayed uncounted while its sibling three lines of control flow away
+					// was measured. Its ambiguity outcome does not exist — a single-ForEach
+					// select has one leg, so a qualifier either names it or does not.
+					lookup := values.DottedLegLookupMiss
+					var matchedAlias values.CorrelationIdentifier
+					var matchedBinding string
+					if matched {
+						lookup = values.DottedLegLookupHit
+						matchedAlias, matchedBinding = lay.alias, lay.key
+					}
+					values.RecordDottedLegQualifier(
+						values.DottedLegSiteSingleForEachBake, qual, matchedAlias, matchedBinding, lookup)
+				}
+				if !matched {
 					return node
 				}
 				leaf = fv.Field[dot+1:]
@@ -5814,18 +5836,29 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 			return node
 		}
 		qual := strings.ToUpper(fv.Field[:dot])
-		lay := layouts[qual]
+		lay, registered := layouts[qual]
 		if values.LegIdentityCensusEnabled() {
 			// The counterparty is a qualifier SLICED OUT of a parsed name — the guard
 			// above bails on `Child != nil || Resolved != nil`, so no correlation can
 			// be in hand here. What is measurable is whether the layout this text
 			// selected states the identity the text would mint.
+			//
+			// The map read's THREE outcomes are threaded through, not collapsed to a
+			// bool. A qualifier with no entry and one whose entry was POISONED for
+			// ambiguity (addKey's `layouts[key] = nil`) arrive here as the same nil,
+			// and reporting the second as "no leg carried the qualifier" describes a
+			// qualifier carried by TWO as one carried by none.
+			lookup := values.DottedLegLookupMiss
 			var matchedAlias values.CorrelationIdentifier
 			var matchedBinding string
-			if lay != nil {
+			switch {
+			case registered && lay != nil:
+				lookup = values.DottedLegLookupHit
 				matchedAlias, matchedBinding = lay.alias, lay.key
+			case registered:
+				lookup = values.DottedLegLookupAmbiguous
 			}
-			values.RecordDottedLegQualifier(values.DottedLegSiteLegQOVBake, qual, matchedAlias, matchedBinding, lay != nil)
+			values.RecordDottedLegQualifier(values.DottedLegSiteLegQOVBake, qual, matchedAlias, matchedBinding, lookup)
 		}
 		if lay == nil || lay.cols == nil {
 			return node
@@ -5975,11 +6008,17 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 				// the same thing.
 				var matchedAlias values.CorrelationIdentifier
 				var matchedBinding string
+				lookup := values.DottedLegLookupMiss
 				if matched >= 0 {
+					lookup = values.DottedLegLookupHit
 					matchedAlias, matchedBinding = legs[matched].Alias, legs[matched].Name
 				}
+				// No AMBIGUOUS outcome here: this reader walks a leg SLICE and takes the
+				// first match, so a qualifier carried by two legs is a first-match, not a
+				// poisoned key. That is a real difference from the map-based sibling and
+				// is why the class is not recorded rather than recorded as zero.
 				values.RecordDottedLegQualifier(
-					values.DottedLegSiteFlatColumnBake, qual, matchedAlias, matchedBinding, matched >= 0)
+					values.DottedLegSiteFlatColumnBake, qual, matchedAlias, matchedBinding, lookup)
 			}
 			if matched >= 0 {
 				leg := legs[matched]

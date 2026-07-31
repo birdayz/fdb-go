@@ -30,10 +30,19 @@ type OrdinalSeedLegWindow struct {
 	//
 	// The map's KEYS are now this same identifier, so Alias is no longer one of two
 	// namespaces held apart — it is the only one. Every keyed reader was measured
-	// first (the seed-window key provenance census): over the real-FDB corpus all
-	// 1400 lookups had a correlation in hand and the identity selected the same
-	// window the fold did, on every one; the two readers that had only text were
-	// unreachable by panic probe across the whole relational tree.
+	// first, by a census built to answer exactly that question and retired with it:
+	// over the real-FDB corpus all 1400 lookups had a correlation in hand and the
+	// identity selected the same window the fold did, on every one; the two readers
+	// that had only text were unreachable by panic probe across the whole
+	// relational tree. That is a DATED POINT MEASUREMENT of a namespace that no
+	// longer exists, not a live claim.
+	//
+	// What stands in its place is the seed-window READER census
+	// (seed_window_reader_census.go), a STANDING instrument: it floors each of the
+	// five keyed readers so one going dark reds instead of printing a clean-looking
+	// zero, and it hard-zeros the two DECLINE classes that replaced the text
+	// lookups. The conversion's own evidence is history; the readers' continued
+	// exercise is checked on every suite run.
 	//
 	// What the key change buys is not tidiness. A text key merges the two alias
 	// namespaces the rest of this package keeps deliberately DISJOINT — user

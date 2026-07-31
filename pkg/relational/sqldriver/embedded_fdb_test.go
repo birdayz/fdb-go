@@ -101,6 +101,7 @@ func TestMain(m *testing.M) {
 func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
+	values.ResetSeedWindowReaderCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -127,7 +128,18 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// the leg table's two spellings still agree on the one channel that has to
 	// keep working until its counterparty carries parsed segments.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedLegQualifierCensus())
+	// The seed-window READER census: the five keyed readers of an
+	// OrdinalSeedLegWindows map, plus the two decline classes that are hard zeros.
+	// Its predecessor measured whether a text key and an identity key selected the
+	// same window; that question died with the text namespace, but the five
+	// readers did not, and nothing else asserts they still run. It is here rather
+	// than in a test for the reason every census on this path is: the population
+	// is only complete after m.Run().
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertSeedWindowReaderCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
@@ -422,8 +434,48 @@ var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
 	f.Calls[values.DottedLegSiteFlatColumnBake] = 10 // measured 106
 	// measured 4 — no order of magnitude to drop to
 	f.Calls[values.DottedLegSiteLegQOVBake] = 1
+	// singleForEachBake is deliberately UNFLOORED: measured 0, and UNREACHED
+	// rather than quiet — a panic at its match point is hit by nothing across
+	// ./pkg/relational/core/... nor the explaindiff and plandiff harnesses. A
+	// floor here would red on the corpus as it stands. Its hard zeros still run,
+	// vacuously, and that is the honest state: the site is watched, not proven
+	// exercised. If a query ever drives it, floor it then.
 	return f
 }()
+
+// seedWindowReaderFloors is the minimum keyed-read count each seed-window reader
+// must report over the whole suite.
+//
+// Set an ORDER OF MAGNITUDE below the measured population, like its siblings:
+// what a floor detects is the site going DARK, not drift. The reader population
+// churns with unrelated work — a query added anywhere in this suite moves every
+// one of these numbers — and a floor pinned tight would red on that instead of
+// on the thing it is watching for.
+var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
+	var f values.SeedWindowReaderFloors
+	f.Reads[values.SeedWindowSiteExistentialRebase] = 90     // measured 962
+	f.Reads[values.SeedWindowSiteBoxLegRef] = 9              // measured 92
+	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
+	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
+	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 16     // measured 160
+	return f
+}()
+
+// assertSeedWindowReaderCensus checks the seed-window reader census, dropping
+// the population floors when -test.run narrows the corpus — the same split its
+// siblings make, for the same reason.
+func assertSeedWindowReaderCensus(w io.Writer) bool {
+	floors := &seedWindowReaderFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "seed-window reader census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The two decline hard zeros "+
+			"(QUALIFIED-NO-IDENTITY, CHILDLESS-BAKED) still run, over whatever "+
+			"population this filter reached — at zero they hold VACUOUSLY.\n",
+			f.Value.String())
+		floors = nil
+	}
+	return values.AssertSeedWindowReaderCensus(w, floors)
+}
 
 // assertDottedLegQualifierCensus checks the translator dotted-leg census,
 // dropping the population floors when -test.run narrows the corpus.

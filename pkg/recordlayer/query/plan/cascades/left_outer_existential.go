@@ -77,6 +77,9 @@ func rebaseOuterLegValueOrdinal(
 		// through a namespace that merges the two the rest of this package keeps
 		// disjoint.
 		w, isLeg := windows[qov.Correlation]
+		if values.LegIdentityCensusEnabled() {
+			values.RecordSeedWindowLookup(values.SeedWindowSiteExistentialRebase, isLeg)
+		}
 		if !isLeg {
 			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
 			// leg is a window, so !isLeg means a genuinely non-outer ref (the FlatMap

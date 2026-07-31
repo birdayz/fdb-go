@@ -114,9 +114,12 @@ func TestRebaseLegRefsToBox_BareReadIsNotBakedByName(t *testing.T) {
 // seed-window identity-keying conversion.
 //
 // The window lookup used to key on `strings.ToUpper(correlation.Name())`. On the
-// corpus that fold agreed with the identity on all 92 lookups this site takes,
-// which is exactly why it cannot be the detector: every leg the corpus produces
-// here is already upper. The shape that separates them is a MACHINE-MINTED leg,
+// corpus that fold agreed with the identity on all 92 lookups this site took —
+// a dated point measurement, reproduced since by the STANDING seed-window reader
+// census, which reports the same 92 at boxLegRef and floors it so the site
+// cannot go dark unnoticed. That agreement is exactly why the corpus cannot be
+// the detector: every leg it produces here is already upper. The shape that
+// separates them is a MACHINE-MINTED leg,
 // whose correlation is lowercase by construction (UniqueCorrelationIdentifier)
 // — fold it and the lookup misses the window filed under it, the reference is
 // never rebased, and the wrap ships a correlation the box row cannot bind.
@@ -237,5 +240,78 @@ func TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines(t *testing.T) {
 			"  Gate the decline on CHILDLESS-NESS, not on `Resolved == nil` — that predicate\n"+
 			"  is true only for the lazy flavor, and wrapRVFullyBaked already gets it right.",
 			got, got, mergedType.Fields[0].Name, "V")
+	}
+}
+
+// TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches holds the shape behind
+// the wrap's one recorded FieldIndex blind-spot entry.
+//
+// The rebase resolves a column by NAME inside the window the reference's own
+// correlation selected. The identity fixes WHICH row, which is the half the two
+// deleted text arms got wrong — but it does not make the window unambiguous. A
+// CLUSTERED BOX run window concatenates every buried leaf's columns, so two
+// leaves' same-named columns share one window and FieldIndex first-matches
+// between them.
+//
+// Measured: the ambiguous case is UNREACHED — a panic wired at this call on "the
+// selected window holds more than one field named fv.Field" is hit by nothing
+// over the real-FDB sqldriver corpus or ./pkg/relational/core/... . This test
+// exists because that is a negative result, and a negative result recorded only
+// in prose is one nobody re-checks. It pins the shape so the debt entry names a
+// real hazard, and it pins the CURRENT answer so a guard cannot be added
+// silently.
+//
+// The sibling reader already has the fix: left_outer_existential.go's
+// leg-relative arm carries the reference's already-BAKED ordinal precisely so an
+// opaque box leg's duplicate buried names cannot remap it. When a reference
+// arrives here carrying its leg-local ordinal too, this site stops resolving by
+// name and the blind-spot entry retires.
+func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
+	t.Parallel()
+
+	// A clustered BOX run window: two buried leaves, both carrying `K`, filed as
+	// ONE window under the box quantifier's own correlation.
+	boxRun := &values.RecordType{Fields: []values.Field{
+		{Name: "K", FieldType: values.UnknownType, Ordinal: 0}, // leaf A's K
+		{Name: "K", FieldType: values.UnknownType, Ordinal: 1}, // leaf B's K
+	}}
+	boxLeg := values.NamedCorrelationIdentifier("C$BOX")
+	mergedType := &values.RecordType{Fields: []values.Field{
+		{Name: "PAD", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "K", FieldType: values.UnknownType, Ordinal: 1},
+		{Name: "K", FieldType: values.UnknownType, Ordinal: 2},
+	}}
+	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
+		boxLeg: {Offset: 1, Typ: boxRun, Alias: boxLeg},
+	}
+	boxQOV := values.NewQuantifiedObjectValueOfType(
+		values.NamedCorrelationIdentifier("$box"), mergedType)
+
+	ref := values.NewFieldValue(values.NewQuantifiedObjectValue(boxLeg), "K", values.UnknownType)
+	out, ok := rebaseLegRefsToBox(ref, windows, mergedType, boxQOV)
+	if !ok {
+		t.Fatal("the rebase must not decline this shape — the reference carries a " +
+			"correlation and the window exists; if a decline was ADDED for ambiguity, " +
+			"that is the fix, and the exists_gathered_cluster_wrap.go FieldIndex entry " +
+			"in fieldIndexBlindSpotDebt should be retired with it")
+	}
+	fv, isFV := out.(*values.FieldValue)
+	if !isFV || fv.Resolved == nil {
+		t.Fatalf("the reference must rebase, got %v", out)
+	}
+	got := fv.Resolved.Root().Ordinal
+	if got != 1 {
+		t.Fatalf("a dup-named box-run window resolved `K` to merged slot %d, want 1 "+
+			"(the FIRST match, window offset 1 + leg-local index 0).\n"+
+			"  If this now answers 2, the resolution rule changed and the recorded\n"+
+			"  blind-spot entry is describing something else. If it DECLINES, an\n"+
+			"  ambiguity guard was added — retire the entry.", got)
+	}
+	// The domain IS fixed by the identity: the resolution stayed inside the
+	// window (offset 1), never scanning the merged concat from 0. That is the
+	// half this site gets right, and the reason the entry is narrow debt rather
+	// than the class the two deleted arms were in.
+	if got == 0 {
+		t.Fatal("the resolution escaped its window into the merged concat")
 	}
 }

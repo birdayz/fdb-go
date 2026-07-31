@@ -429,6 +429,10 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// the qualifier/leaf segments and joins them only for this site to split them
 	// back apart. Until it hands them over, this shape goes to the name model.
 	if qualified && corr.IsZero() {
+		if values.LegIdentityCensusEnabled() {
+			values.RecordSeedWindowRead(values.SeedWindowSiteGatheredGroupSlot,
+				values.SeedWindowQualifiedNoIdentity)
+		}
 		return 0, false
 	}
 	// A QUALIFIED read whose CORRELATION names a LEG window resolves to THAT leg's
@@ -436,7 +440,11 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// element AS alias is also `V`). This precedes element-first so an explicit leg
 	// qualifier is never shadowed by a same-named element.
 	if !corr.IsZero() {
-		if w, ok := windows[corr]; ok {
+		w, isLeg := windows[corr]
+		if values.LegIdentityCensusEnabled() {
+			values.RecordSeedWindowLookup(values.SeedWindowSiteGatheredGroupSlot, isLeg)
+		}
+		if isLeg {
 			if idx, found := w.Typ.FieldIndex(col); found {
 				return w.Offset + idx, true
 			}

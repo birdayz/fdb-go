@@ -100,19 +100,23 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// comparison, which the detector does see and which is already on the main
 	// ratchet — the invisible lookups are the two below. Prose naming the wrong
 	// line while claiming to name a blind spot is the decay this list replaces.
-	// exists_gathered_cluster_wrap.go had TWO entries here and both are GONE, by
-	// deletion rather than migration. The wrap.s window map is keyed by leg IDENTITY
-	// now, so the DOTTED arm — which selected a window with a qualifier sliced out of
-	// a column name — had no key it could honestly use and was removed; its LEAF
-	// FieldIndex went with it. The BARE arm.s lookup went the same way: what remains
-	// is the QOV-shaped arm, whose FieldIndex resolves a column WITHIN the window its
-	// own correlation selected, which is a name resolved inside a domain the identity
-	// already fixed rather than a name choosing the domain.
+	// exists_gathered_cluster_wrap.go had TWO entries here. Both named the DOTTED
+	// and BARE arms, and both arms are GONE by deletion rather than migration: the
+	// wrap.s window map is keyed by leg IDENTITY now, so an arm that selected a
+	// window with a qualifier sliced out of a column name had no key it could
+	// honestly use. Their LEAF FieldIndex lookups went with them.
 	//
 	// Both arms were measured unreachable before removal (a panic in each is hit by
 	// nothing across ./pkg/relational/... or ./pkg/recordlayer/query/...), and what
 	// replaces them is a DECLINE, so a shape that ever reaches them falls back to the
 	// name model instead of shipping a lazy read into a context with no name channel.
+	//
+	// The retirement was recorded on a WRONG DESCRIPTION, which is why the entry is
+	// back below rather than simply deleted. One of the two entries described the
+	// BARE arm and pointed at the line holding the QOV-shaped arm.s lookup — so
+	// deleting it retired an arm that had not gone anywhere, and a live
+	// FieldIndex(name) left this inventory while still being made on every rebased
+	// reference. It is re-pointed at :142 with what that call actually does.
 
 	// DIAGNOSTICS ONLY, and labelled so rather than quietly filed with the
 	// engine sites. This lookup decides nothing a plan can observe: it splits a
@@ -123,6 +127,35 @@ var fieldIndexBlindSpotDebt = map[string]string{
 	// diagnostic that survived its deleted sibling is how the move gets
 	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
 	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go:517": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
+
+	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
+	// deleted entries described, and calling it genuine debt rather than the
+	// fixed-domain-safe class is a MEASURED classification, not a hedge.
+	//
+	// What is safe about it: the identity chose the domain. The window comes from
+	// `windows[qov.Correlation]`, so the name is resolved INSIDE a row the
+	// reference's own correlation already selected — not across the merged concat,
+	// which is where a name genuinely cannot answer. That is the half the two
+	// deleted arms got wrong and this one gets right.
+	//
+	// What is NOT safe about it: the selected window is not guaranteed
+	// duplicate-free. A CLUSTERED BOX run window (the pristine gated-join seed's
+	// `X$BOX` producer, whose box run is filed BESIDE its buried leaves rather
+	// than replaced by them) carries every buried leaf's columns concatenated, so
+	// two leaves' same-named columns sit in one window and FieldIndex first-matches
+	// between them. Its sibling reader knows this and defends against it: the
+	// leg-relative arm in left_outer_existential.go carries the reference's already
+	// BAKED ordinal specifically so an opaque box leg's duplicate buried names
+	// cannot remap it. This site has no such arm — it always resolves by name.
+	//
+	// MEASURED before writing: a panic wired here on "the selected window holds
+	// more than one field named fv.Field" is hit by NOTHING over the real-FDB
+	// sqldriver corpus or ./pkg/relational/core/... . So the ambiguous case does
+	// not occur today; it is unreached, not impossible, and nothing structural
+	// forbids it. Pinned by TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches,
+	// which holds the shape so the entry is about a real hazard rather than a
+	// hypothetical one — and which says to retire this entry if a guard appears.
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:142": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
 }
 
 type fieldDecisionSite struct {
@@ -335,7 +368,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// What remains here is genuinely dotted: readers of the merged-row `leg.col`
 	// channel, whose producers are executor-side (CQ-53), plus the group-key
 	// qualification probe.
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:136":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:139":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2702": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
@@ -379,11 +412,11 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
 	"pkg/relational/core/embedded/cascades_generator.go:3182": {1, "translator: parsed column ref matched against declared inner columns"},
-	"pkg/relational/core/query/cascades_translator.go:5768":   {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5763, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5774; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5774":   {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5936, reached through a local leaf"},
-	"pkg/relational/core/query/cascades_translator.go:5817":   {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5809, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5965":   {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5930, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 5954; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5989":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
+	"pkg/relational/core/query/cascades_translator.go:5769":   {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5763, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5796; retired upstream by CQ-52"},
+	"pkg/relational/core/query/cascades_translator.go:5796":   {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5982, reached through a local leaf"},
+	"pkg/relational/core/query/cascades_translator.go:5839":   {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5809, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
+	"pkg/relational/core/query/cascades_translator.go:5998":   {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5976, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 6028; retired upstream by CQ-52"},
+	"pkg/relational/core/query/cascades_translator.go:6028":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
 	"pkg/relational/core/embedded/cascades_generator.go:3202": {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3196": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6767":  {1, "translator: join-side name set during translation (laundered map key)"},
@@ -391,7 +424,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:2074":   {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},
 	"pkg/relational/core/query/cascades_translator.go:3855":   {1, "translator: element slot lookup during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:5048":   {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at 5046, so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4731, NOT on values.go:1510: this site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends, each named by sortKeyFieldRef's strings.ToUpper(fv.Field) at 4741 -- a contract-bucket entry. Converting ProjectionColumnName leaves this one red"},
-	"pkg/relational/core/query/cascades_translator.go:5949":   {1, "translator: column list membership during resolution"},
+	"pkg/relational/core/query/cascades_translator.go:5982":   {1, "translator: column list membership during resolution"},
 
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go:241": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
