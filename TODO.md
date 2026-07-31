@@ -10982,7 +10982,9 @@ None is speculative: each was re-verified against the tree before booking.
   (re-measured this run: `flatColumnBake` 102 attempts / 98 matches,
   `legQOVBake` 4 / 3 + 1 via table name — CQ-52 is still its successor step);
   `mergedReAnchor` is still 0 of 174, so the redundancy exclusion is still
-  vacuous and the wrong-window mutation is still GREEN; and `RecordTypeLeg.Name`
+  vacuous and the wrong-window mutation is still GREEN — that mutation is no
+  longer somebody's by-hand edit, it STANDS as
+  `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable`; and `RecordTypeLeg.Name`
   does NOT retire — its contract at `values/type.go:372` is unchanged, because
   the reader the phase-3 plan expected to kill was never fed by the mint it
   deleted.
@@ -10993,6 +10995,9 @@ None is speculative: each was re-verified against the tree before booking.
   leg-local bakeability: total 174 (baked 174, mergedReAnchor 0, declined 0);
     legs: flowed 960, underivable 0; identityInLegDomain 174, otherDomain 0, lazyNameOnly 0
   merged-leg binding: 15677 windows bound over 299 shapes; 6 READ (all excused as proven-redundant)
+    [now 15689 / 303 / 12 — the wrong-window instrument runs the reader shape
+     twice more and binds one execution's windows rotated, so +6 reads and
+     +4 bind shapes are ITS doing, not a corpus change]
   leg-column provenance: calls 52 (flatHit 40, notDotted 8); dotted HITS available 4, unstated 0, diverged 0
   translator dotted leg qualifier: flatColumnBake 102 (98 match), legQOVBake 4 (3 match, 1 via table name)
   seed-window readers: existentialRebase 962 (461/501), boxLegRef 92 (62/30),
@@ -11037,21 +11042,45 @@ None is speculative: each was re-verified against the tree before booking.
   to return zero times over the whole corpus. If a future change makes ARM 1
   fire, that change owns its own stress run.
 
-  **STILL OPEN after phase 3, stated so neither is mistaken for done:**
+  **Left open by phase 3. The first is now CLOSED and its entry is kept as the
+  record of what was built; the second is still open and is stated so it is not
+  mistaken for done:**
 
-  1. **The standing WRONG-WINDOW instrument is NOT built.** The claim "the
-     merged-leg bindings are not load-bearing" rests on a mutation somebody runs
-     by hand — bind every leg to the wrong window, watch the suite stay green.
-     Nothing in CI performs it. `TestFDB_MergedLegBinding_ReaderShapeIsRedundant`
-     proves the two RESOLUTION ROUTES agree; it never binds a wrong window, so it
-     cannot go red on the day a binding starts to matter — which is exactly the
-     day this item has been waiting for. The shape of the fix is known: extend
-     that test (or add an FDB sibling) with a wrong-window arm asserting rows
-     still agree, so it REDS on activation, with a failure message naming the
-     procedure (exclusion comes out; activation has arrived). It needs its own
-     mutation check — make the binder correct-window-only and confirm the arm
-     still exercises the bypass — and that is why it was not squeezed in beside
-     the other folds.
+  1. **CLOSED — the standing WRONG-WINDOW instrument is
+     `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable`**
+     (`pkg/relational/sqldriver/merged_leg_wrong_window_fdb_test.go`). What it
+     gates: the claim "the merged-leg bindings are not load-bearing on any
+     covered shape", which until now rested half on a mutation somebody ran by
+     hand and nothing in CI performed. It runs the corpus's one merged-row reader
+     shape twice in one process — correct windows, then every window rotated onto
+     a SIBLING leg's span via `EvaluationContext.WithMergedLegWrongWindows` — and
+     asserts the rows agree and are Java's. It reds the day a read starts
+     depending on which slots its window covers, and its message names the
+     procedure (exclusion out of the census criterion, binder correctness becomes
+     a real invariant, DIVERGENCES.md's shadowing/first-claim-wins semantics need
+     re-justifying).
+
+     Rotation, not the by-hand "every window at offset 0": leg 0 already starts at
+     0, so the constant left `ST` — the leg the corpus's reader actually reads —
+     aimed CORRECTLY. The by-hand mutation was weaker than its own description.
+
+     Two floors stop it passing vacuously — the shape still reads a binder window
+     (one shape, >0 reads), and the read RESOLVED THROUGH a misaimed window (>0
+     under the hook, exactly 0 without it). Windows-bound-wrong was rejected as
+     the floor: a merged row nothing looks up can be misaimed all day.
+
+     Mutation-checked in three directions, each red on its own: hook neutered →
+     `THE WRONG-WINDOW ARM NEVER ENGAGED … reads through a MISAIMED window: map[]`
+     with the reads floor still satisfied at 3 (this is the discrimination
+     check — the reads are not a side effect of the hook); the misaimed FLAG set
+     without moving the span → the executor-side pin
+     `TestMisaimMergedLegWindows_ServesTheSiblingsSlots` reds with
+     `leg A ordinal 0 read 10, want 22`; the binder binding nothing → floor 1 reds
+     with `reads this execution made: map[]`.
+
+     `RegisterRedundantMergedLegReader` now holds a SET of proof names per shape,
+     because this shape has two live proofs perturbing it differently (decline vs
+     misaim) and last-wins would have dropped whichever finished second.
   2. **The MINT arm was NOT widened to `.Name` selectors** (resolution (b), not
      (a)). The bound is stated at the arm and in the table above instead. The
      reason is a real cost, not a shrug: `.Name` is one of the most common field

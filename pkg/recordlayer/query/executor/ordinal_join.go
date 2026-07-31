@@ -585,6 +585,16 @@ type legWindowRow struct {
 	// something the per-outer-row path should pay for in production.
 	shadowsExisting bool
 	shadowed        any
+	// misaimed marks a window whose span was deliberately moved off its own leg by
+	// misaimMergedLegWindows, so a read that resolves to it is reading the WRONG
+	// slots. Set only under EvaluationContext.WithMergedLegWrongWindows, which is
+	// itself honoured only while the leg-identity census gate is on.
+	//
+	// It travels on the window rather than being inferred at the read site because
+	// the reader holds one window and no leg table: it cannot tell a window aimed at
+	// its own leg from one aimed at its sibling's, and that distinction is the whole
+	// content of the wrong-window instrument's engagement floor.
+	misaimed bool
 }
 
 // Get reads the leg-relative ordinal: merged slot offset+ord. Out-of-range leg

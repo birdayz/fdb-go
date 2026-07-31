@@ -33,6 +33,10 @@ type EvaluationContext struct {
 	// silently includes a concurrent test's reads. The pin that has to count its
 	// OWN reads cannot be built on that.
 	mergedLegReadSink *MergedLegReadSink
+	// mergedLegWrongWindows makes bindMergedOuterLegs aim every leg window of a
+	// merged row at its SIBLING's span instead of its own — the standing form of
+	// the by-hand "bind every leg WRONG" mutation. See WithMergedLegWrongWindows.
+	mergedLegWrongWindows bool
 }
 
 // WithMergedLegReadBypass returns a copy in which lookups of the named aliases
@@ -52,6 +56,38 @@ func (ec *EvaluationContext) WithMergedLegReadBypass(aliases ...string) *Evaluat
 	for _, a := range aliases {
 		cp.mergedLegReadBypass[a] = true
 	}
+	return &cp
+}
+
+// WithMergedLegWrongWindows returns a copy in which bindMergedOuterLegs aims each
+// leg window of a merged row at its SIBLING's span rather than its own, so every
+// binding a reader can resolve through is DELIBERATELY WRONG.
+//
+// It exists so the mutation that licenses "the merged-leg bindings are not
+// load-bearing" can STAND rather than be re-run by hand. That claim rested on
+// someone editing the binder to misaim it and watching the suite stay green;
+// nothing performed it in CI, so the day a read starts depending on which slots
+// its window covers, no test went red and a green census read as "the bindings
+// are correct" when it only ever meant "nobody looked".
+//
+// It rides EvaluationContext for the same two reasons WithMergedLegReadBypass
+// does: the suite is parallel and several tests share these table names, so a
+// process-wide switch would misaim a concurrently running test's execution; and
+// an edited-out or build-tagged misaim cannot run the correct and the wrong
+// window in ONE process, which is the entire comparison.
+//
+// The perturbation is a ROTATION onto the sibling's span, not a constant offset,
+// because a constant is not reliably wrong: the first leg of a merged row already
+// starts at 0, so "point everything at slot 0" leaves it aimed correctly. Rotation
+// moves every window of a multi-leg row whose legs are not all identically shaped,
+// and the windows it did move are the ones counted — an instrument that cannot
+// state it perturbed anything proves nothing.
+//
+// Honoured only while the leg-identity census gate is on, like the rest of this
+// instrumentation, so production never misaims.
+func (ec *EvaluationContext) WithMergedLegWrongWindows() *EvaluationContext {
+	cp := *ec
+	cp.mergedLegWrongWindows = true
 	return &cp
 }
 
@@ -262,7 +298,12 @@ func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifi
 			// the window already carries — it is what the read gets keyed by, so
 			// one query's shape is not attributed to another query's alias.
 			recordMergedLegRead(id.Name(), w.siblingLegs, w.shadowsExisting, w.parentType)
-			ec.mergedLegReadSink.recordRead(id.Name(), w.siblingLegs, w.parentType)
+			// misaimed is stamped by the binder too, and it is recorded HERE rather
+			// than at the bind site on purpose: the claim the wrong-window instrument
+			// has to make is that a misaimed window was READ, not merely that one was
+			// produced. A row whose legs nothing ever looks up can be misaimed all day
+			// and prove nothing.
+			ec.mergedLegReadSink.recordRead(id.Name(), w.siblingLegs, w.misaimed, w.parentType)
 		}
 	}
 	return v, ok

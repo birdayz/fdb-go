@@ -87,6 +87,7 @@ go_test(
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
         "merged_leg_binding_census_test.go",
+        "merged_leg_wrong_window_test.go",
         "merged_outer_leg_binding_bench_test.go",
         "merged_outer_leg_binding_test.go",
         "name_oracle_test.go",
@@ -204,6 +205,7 @@ go_test(
         "leg_column_provenance_census.go",
         "leg_column_provenance_census_test.go",
         "leg_column_dotted_containment_test.go",
+        "merged_leg_wrong_window_test.go",
     ],
     deps = [
         "//gen",
