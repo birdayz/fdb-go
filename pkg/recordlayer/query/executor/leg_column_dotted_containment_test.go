@@ -125,3 +125,99 @@ func TestRowSlotForLegColumn_ARenderedLabelPresentInTheRowStillWins(t *testing.T
 			"declares must resolve to its own column", slot, ok)
 	}
 }
+
+// TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs is the hazard the dotted
+// arm's RETIREMENT has to clear, pinned before the retirement rather than after.
+//
+// The obvious way to delete this arm is to make the seed emit BARE column names
+// and let FieldIndex find them. That does not work, and the reason is a property
+// of the merged row rather than of any producer: legs contribute their columns to
+// one flat namespace, so two legs that both declare `ID` put `ID` at two slots.
+// FieldIndex is first-match, so a bare lookup silently answers with the FIRST
+// leg's column for BOTH — a wrong-leg read that returns a plausible value and
+// nothing detects.
+//
+// The witness is the real corpus shape (TestFDB_CorrelatedScalarJoinInner):
+// rtFields [ID CUSTOMER_ID ID ORDER_ID QTY], leg O = [0,2), leg I = [2,5). `ID`
+// is at slot 0 in O and slot 2 in I.
+//
+// So the retirement needs the OTHER half — resolution by leg IDENTITY plus a
+// leg-local ordinal — and this test states the arithmetic that half must
+// reproduce on all three corpus witnesses. It is the acceptance harness for that
+// conversion: it passes today on the dotted arm, and it must still pass when the
+// arm is gone and the identity path answers instead.
+func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
+	t.Parallel()
+	// The merged row of the corpus witness, with its leg windows.
+	merged := &values.RecordType{
+		Fields: []values.Field{
+			{Name: "ID", Ordinal: 0},
+			{Name: "CUSTOMER_ID", Ordinal: 1},
+			{Name: "ID", Ordinal: 2},
+			{Name: "ORDER_ID", Ordinal: 3},
+			{Name: "QTY", Ordinal: 4},
+		},
+		Legs: []values.RecordTypeLeg{
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("O"), "O", 0, 2),
+			values.NewRecordTypeLeg(values.NamedCorrelationIdentifier("I"), "I", 2, 3),
+		},
+	}
+
+	// THE HAZARD. A bare lookup cannot tell the two legs' ID apart: it answers
+	// leg O's slot for a reference that may mean leg I's.
+	bare, found := merged.FieldIndex("ID")
+	if !found {
+		t.Fatal("fixture: the merged row must declare ID at all")
+	}
+	if bare != 0 {
+		t.Fatalf("FieldIndex(\"ID\") = %d, want 0 — the fixture no longer has a duplicate "+
+			"bare name across legs, so it has stopped describing the hazard it exists for",
+			bare)
+	}
+	// Both legs really do declare it — that is what makes slot 0 a WRONG answer
+	// for one of them rather than merely a first-match among equals.
+	if merged.Fields[2].Name != "ID" {
+		t.Fatalf("fixture: leg I must also declare ID (slot 2 is %q)", merged.Fields[2].Name)
+	}
+
+	// THE ARITHMETIC the identity path must reproduce: leg start + leg-local
+	// ordinal, for each corpus witness. Stated as data so the conversion has a
+	// target, not a description.
+	for _, w := range []struct {
+		name       string // the qualified leg-type column name, as it arrives today
+		leg        string
+		start      int
+		legOrdinal int
+		want       int
+	}{
+		{"O.ID", "O", 0, 0, 0},
+		{"I.QTY", "I", 2, 2, 4},
+	} {
+		if got := w.start + w.legOrdinal; got != w.want {
+			t.Fatalf("%s: leg start %d + leg-local ordinal %d = %d, want %d — the "+
+				"witness arithmetic is stated wrong and the conversion would aim at it",
+				w.name, w.start, w.legOrdinal, got, w.want)
+		}
+		got, ok := rowSlotForLegColumn(merged, w.name)
+		if !ok || got != w.want {
+			t.Fatalf("%s resolved to (%d,%v), want (%d,true)", w.name, got, ok, w.want)
+		}
+	}
+
+	// The pair that makes the hazard concrete: O.ID and I.ID are DIFFERENT slots,
+	// and a bare `ID` collapses them onto the first. Any retirement that answers
+	// both with 0 has reintroduced exactly this.
+	oid, _ := rowSlotForLegColumn(merged, "O.ID")
+	iid, ok := rowSlotForLegColumn(merged, "I.ID")
+	if !ok {
+		t.Fatal("I.ID did not resolve — leg I declares ID at slot 2")
+	}
+	if oid == iid {
+		t.Fatalf("O.ID and I.ID both resolved to slot %d — the two legs' ID columns are "+
+			"distinct and a resolution that conflates them reads the wrong leg's row",
+			oid)
+	}
+	if iid != 2 {
+		t.Fatalf("I.ID = %d, want 2 (leg I start 2 + leg-local ordinal 0)", iid)
+	}
+}
