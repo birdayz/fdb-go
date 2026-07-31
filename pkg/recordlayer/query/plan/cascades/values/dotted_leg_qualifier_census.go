@@ -14,7 +14,7 @@ import (
 // Both measure the same reader shape: a qualifier is matched,
 // case-insensitively, against a leg table's Name text. The executor's copy
 // lives beside its one reader (`rowSlotForLegColumn`); this one covers the
-// translator's THREE, which no census reached.
+// translator's TWO, which no census reached.
 //
 // WHERE THE QUALIFIER COMES FROM has changed, and the census deliberately did
 // NOT narrow with it. It was originally "a qualifier SPLIT OUT of a column
@@ -27,15 +27,10 @@ import (
 // splitting callers would have made its two hard zeros hold over a shrinking
 // population while the channel they guard stayed the same size.
 //
-// Three, not two. `bakeDottedRefsToLegQOV` has TWO arms and they were counted as
-// one reader: the MULTI-ForEach arm keys a layout map by qualifier, and the
-// SINGLE-ForEach arm compares the qualifier against its one layout's key
-// directly. Same guard, same shape, same counterparty — a qualifier sliced out
-// of a parsed name — so the second was invisible to a census that named the
-// function rather than the comparison. It differs from its siblings in one way
-// worth recording: it compares ONLY `lay.key`, never the scan TABLE name, so a
-// `PA."ID"` read over `FROM PA AS "s"` misses there while the multi-ForEach arm
-// resolves it.
+// TWO, and it was briefly three. `bakeDottedRefsToLegQOV`'s SINGLE-ForEach arm
+// was a separate reader of the same shape, counted here until the arm itself was
+// deleted as unreached (see below). What remains is the multi-ForEach map read
+// and the flat baker's leg window.
 //
 // The question is the same and so is the reason it is asked per CALL rather than
 // per site. A site's key provenance is static — these readers hold no
@@ -69,7 +64,6 @@ import (
 //
 //	flatColumnBake     calls 106 | matchAliasIsQualifier 98 | noMatch 8
 //	legQOVBake         calls   4 | matchAliasIsQualifier  3 | matchViaTableName 1
-//	singleForEachBake  calls   0
 //
 // The channel is LIVE and the leg table's two spellings agree on every match:
 // no MATCH-ALIAS-DIFFERS, no MATCH-NO-ALIAS. So the table is ready; the READERS
@@ -83,23 +77,22 @@ import (
 // re-split fell from 110 calls to 3, all three in the sort-key and
 // aggregate-operand channels, which still carry their carrier as text.
 //
-// THE THIRD SITE'S ZERO IS A FINDING, not a gap in the measurement, and it is
-// recorded here because a zero is exactly what a census cannot leave in prose.
-// singleForEachBake is UNREACHED: a panic wired into its match point is hit by
-// nothing across ./pkg/relational/core/... nor the explaindiff and plandiff
-// harnesses, and it reports 0 over the real-FDB sqldriver corpus. Note the
-// scope — it is the DOTTED arm of that baker that is dark. The same baker's BARE
-// leaf path is live and is a separate debt entry; only the qualifier comparison
-// has no traffic.
+// THE THIRD SITE IS GONE, and its zero is why. singleForEachBake measured the
+// single-ForEach arm's qualifier comparison, and that arm reported 0 over this
+// corpus while a panic at its match point was reached by nothing across
+// ./pkg/relational/... — the real-FDB sqldriver corpus, explaindiff, plandiff
+// and conformance — nor across ./pkg/recordlayer/query/... That is the full
+// reach the two arms already deleted from the box wrap were held to (a childless
+// dotted splitter and a bare name matcher, both retired after the same probe came
+// back empty), run at that reach rather than inheriting a narrower one.
 //
-// That puts it in the same class as the two arms already deleted from the box
-// wrap (a childless dotted splitter and a bare name matcher, both retired after
-// the same probe came back empty). It is left standing and INSTRUMENTED rather
-// than removed, because removing it is a behaviour change for a shape this
-// census has only just started watching, and both hard zeros now gate it: the
-// day it fires, a leg with two disagreeing spellings or no identity at all reds
-// instead of resolving quietly. It is deliberately UNFLOORED, which is a
-// statement about the corpus and not an omission.
+// The ARM was deleted and this census site went with it, deliberately. An
+// instrument pointed at a channel that no longer exists reports a hard zero
+// forever, and a permanent zero reads exactly like a channel measured clean —
+// which is the failure every floor on this path exists to prevent. A census
+// retires WITH what it measures. Note the scope: it was the DOTTED arm of that
+// baker that was dark; the same baker's BARE leaf path is live, is untouched,
+// and is a separate debt entry.
 //
 // The single matchViaTableName is the finding that keeps this census from being
 // a formality: `FROM PA AS "s"` registers the layout under BOTH `S` and the scan
@@ -128,20 +121,19 @@ const (
 	// held-apart namespace pair the seed windows had.
 	DottedLegSiteLegQOVBake
 
-	// DottedLegSiteSingleForEachBake is the SAME function's SINGLE-ForEach arm,
-	// which bakes FLAT over the one quantifier's row. It holds a single layout
-	// rather than a map, so its "lookup" is one comparison of the qualifier
-	// against that layout's key — which is why it stayed invisible to a census
-	// built around a map read, while being the same decision on the same
-	// counterparty.
+	// There were THREE. DottedLegSiteSingleForEachBake measured the same
+	// function's SINGLE-ForEach arm, which compared the qualifier against its one
+	// layout's key instead of reading a map. The ARM IS DELETED, and this
+	// instrument went with it: a census site measuring a channel that no longer
+	// exists reports a hard zero forever and reads exactly like a channel
+	// measured clean.
 	//
-	// It is NOT a duplicate of its sibling. The multi-ForEach arm registers each
-	// leg under its scan TABLE name as well as its alias; this arm compares
-	// `lay.key` only, so the table-name addressing route does not exist here and a
-	// `PA."ID"` read over `FROM PA AS "s"` falls through unbaked. That asymmetry
-	// is a documented debt entry, and its MATCH-ALIAS-DIFFERS population was
-	// simply unmeasured until this site existed.
-	DottedLegSiteSingleForEachBake
+	// The deletion's warrant was a panic at that arm's match point, hit by
+	// nothing across ./pkg/relational/... (the real-FDB sqldriver corpus,
+	// explaindiff, plandiff, conformance) NOR ./pkg/recordlayer/query/... — the
+	// full reach the earlier arm deletions on this path were held to. A
+	// qualified read in a single-ForEach select now declines and is loud at
+	// evaluation rather than baking flat.
 
 	dottedLegSiteCount
 )
@@ -152,8 +144,6 @@ func (s DottedLegSite) String() string {
 		return "flatColumnBake"
 	case DottedLegSiteLegQOVBake:
 		return "legQOVBake"
-	case DottedLegSiteSingleForEachBake:
-		return "singleForEachBake"
 	default:
 		return "unknown"
 	}

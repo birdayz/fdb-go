@@ -398,3 +398,51 @@ func TestTranslateAggregate_RoutesAQuotedGroupKeyAwayFromTheLegWindow(t *testing
 			"so named", "C.NAME", whole)
 	}
 }
+
+// TestSingleForEachBake_AQualifiedReadDeclines pins the DELETED arm.
+//
+// bakeDottedRefsToLegQOV's single-ForEach branch used to compare a qualifier
+// against its one layout's binding text and bake FLAT on a match. It was the
+// third dotted reader on this path, it reported zero over the real-FDB corpus,
+// and a panic at its match point was reached by nothing across
+// ./pkg/relational/... nor ./pkg/recordlayer/query/... — so it was deleted.
+//
+// A deletion of unreachable code cannot be pinned by a test that goes red when
+// the code returns: nothing reaches it either way. What CAN be pinned is the
+// disposition that replaced it — a qualified read over a single-ForEach select
+// DECLINES — and that is what this asserts. Restoring the arm makes a matching
+// qualifier bake again and turns this red, which is the only handle the
+// deletion has.
+//
+// The bare read beside it must keep baking. The arm removed was the QUALIFIER
+// comparison; the same baker's bare-leaf path is live, is a separate debt
+// entry, and a deletion that took it too would be a silent behaviour change on
+// a busy path.
+func TestSingleForEachBake_AQualifiedReadDeclines(t *testing.T) {
+	t.Parallel()
+	inner := legSelect("ID", "NAME")
+	q := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("T"), expressions.InitialOf(inner))
+	outer := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T")),
+		[]expressions.Quantifier{q}, nil, []string{"T"})
+
+	// The BARE leaf still bakes — the live path, and the guard that says this
+	// fixture reaches the baker at all.
+	bare := bakeDottedRefsToLegQOV(values.NewFlatFieldValue("NAME", values.UnknownType), outer)
+	bfv, isFV := bare.(*values.FieldValue)
+	if !isFV || bfv.Resolved == nil {
+		t.Fatalf("fixture: the bare leaf NAME did not bake (%#v) — this baker's live arm "+
+			"must work, or the decline below means only that nothing got here", bare)
+	}
+
+	// The QUALIFIED read — qualified by the quantifier's OWN alias, the exact
+	// shape the deleted arm matched — must not bake.
+	in := values.NewFlatFieldValue("T.NAME", values.UnknownType)
+	if out := bakeDottedRefsToLegQOV(in, outer); out != values.Value(in) {
+		t.Fatalf("a qualified read over a single-ForEach select baked to %#v — the arm "+
+			"that matched the qualifier against the layout's binding TEXT is deleted, "+
+			"and its replacement disposition is to decline and be loud at evaluation",
+			out)
+	}
+}

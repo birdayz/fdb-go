@@ -5792,32 +5792,25 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 			if !ok || fv.Child != nil || fv.Resolved != nil {
 				return node
 			}
-			qual, leaf, qualified := segmentsOf(fv, node == v)
+			_, leaf, qualified := segmentsOf(fv, node == v)
 			if qualified {
-				matched := qual == lay.key
-				if values.LegIdentityCensusEnabled() {
-					// The THIRD dotted baker, and the same reader shape as its two
-					// siblings: a qualifier sliced out of a parsed name, matched against a
-					// leg's binding TEXT, with the same `Child != nil || Resolved != nil`
-					// bail above guaranteeing no correlation is in hand.
-					//
-					// It compares ONE layout rather than reading a map, which is how it
-					// stayed uncounted while its sibling three lines of control flow away
-					// was measured. Its ambiguity outcome does not exist — a single-ForEach
-					// select has one leg, so a qualifier either names it or does not.
-					lookup := values.DottedLegLookupMiss
-					var matchedAlias values.CorrelationIdentifier
-					var matchedBinding string
-					if matched {
-						lookup = values.DottedLegLookupHit
-						matchedAlias, matchedBinding = lay.alias, lay.key
-					}
-					values.RecordDottedLegQualifier(
-						values.DottedLegSiteSingleForEachBake, qual, matchedAlias, matchedBinding, lookup)
-				}
-				if !matched {
-					return node
-				}
+				// A QUALIFIED read declines here. This arm used to compare the
+				// qualifier against the one layout's binding TEXT and bake flat on
+				// a match — the third dotted reader, and the only one whose
+				// counterparty was a single comparison rather than a map read.
+				//
+				// It was UNREACHED and is now deleted rather than instrumented. A
+				// panic wired into this exact point is hit by nothing across
+				// ./pkg/relational/... — which carries the real-FDB sqldriver
+				// corpus, explaindiff, plandiff and conformance — nor across
+				// ./pkg/recordlayer/query/... That is the full reach the earlier
+				// arm deletions on this path were held to, run at that reach
+				// rather than inheriting a weaker warrant from a narrower one.
+				//
+				// Declining is the conservative disposition for the empty
+				// population: a qualified read that would have baked now stays
+				// lazy and is loud at evaluation, never a silent wrong slot.
+				return node
 			}
 			for i, c := range lay.cols {
 				if strings.EqualFold(c, leaf) {

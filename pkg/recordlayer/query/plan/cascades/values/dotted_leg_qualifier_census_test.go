@@ -118,13 +118,13 @@ func TestDottedLegQualifier_AmbiguousIsNotNoMatch(t *testing.T) {
 func TestDottedLegQualifier_NoAliasTripsTheGate(t *testing.T) {
 	t.Parallel()
 	var counts [dottedLegSiteCount][dottedLegClassCount]int
-	counts[DottedLegSiteSingleForEachBake][DottedLegMatchNoAlias] = 3
+	counts[DottedLegSiteLegQOVBake][DottedLegMatchNoAlias] = 3
 	var b strings.Builder
 	if !assertDottedLegQualifierCounts(&b, counts, nil) {
 		t.Fatal("a leg matched while stating NO identity must fail the gate; it was " +
 			"documented as blocking and checked by nothing")
 	}
-	if !strings.Contains(b.String(), "MATCH-NO-ALIAS") || !strings.Contains(b.String(), "singleForEachBake") {
+	if !strings.Contains(b.String(), "MATCH-NO-ALIAS") || !strings.Contains(b.String(), "legQOVBake") {
 		t.Fatalf("the failure must name the class and the site; got %q", b.String())
 	}
 	// The ambiguous class is NOT a hard zero — it is a fact about the corpus, and
