@@ -1,6 +1,11 @@
 # RFC-198: An explicit transaction's reads belong to that transaction
 
-Status: **proposed**, revision 1 — awaiting joint-review ACK before implementation.
+Status: **ACCEPTED**, revision 1 — joint review complete (#529); implementation not started.
+The line used to read "proposed … awaiting joint-review ACK before implementation" and went stale
+in the same commit that completed the review: the review's one blocker is folded into the body at
+`:256-265` (Java shares one `ExecuteState` across a transaction's statements, so the record and byte
+counters are transaction-scoped alongside the time anchor). A status field that says a reviewed
+design is still awaiting review is the rot RFC-197's header calls out by name.
 Closes: TODO "driver: NO read-your-writes inside an explicit transaction — SELECT
 auto-commits" (TODO.md:6616), the Tier-2 production gate B2.
 

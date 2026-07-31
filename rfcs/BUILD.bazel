@@ -1,0 +1,5 @@
+# The client prod-readiness audit is a status REDIRECT (B6): TestProductionStatusAuthority
+# checks that it names road-to-prod.md as the authority in its first lines, so it has to be
+# in the guard's runfiles. Exported individually rather than as a glob — the guard reads
+# exactly one RFC, and staging all of rfcs/ would make every RFC edit invalidate its cache.
+exports_files(["prod-readiness-go-client.md"])
