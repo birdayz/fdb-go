@@ -2774,13 +2774,28 @@ func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 //  1. the unique leaf descriptor that has the bare field;
 //  2. among several, the leg whose record-type name matches the column's
 //     qualifier (covers unqualified / table-name-qualified references);
-//  3. otherwise the first match — deterministic. The genuinely ambiguous case
-//     (a SQL *alias* qualifying same-named columns of DIFFERENT types across
-//     legs) can't be resolved here: the physical plan's leaves carry record-
-//     type names, not the query aliases, so the alias→type map is gone.
-//     Correctly typing that case needs the value-level type derivation that
-//     today leaves the FieldValue type UNKNOWN (the same gap that forces this
-//     descriptor lookup in the first place). Returns nil when no leg has it.
+//  3. among several the qualifier cannot separate (the physical plan's leaves
+//     carry record-type names, not query aliases, so "B.VAL" matches no
+//     descriptor): the answer is first-match ONLY while every candidate AGREES
+//     on what it would report — same SQL type, same cardinality. Then there is
+//     nothing to guess and the shared answer is the answer.
+//  4. when the candidates DISAGREE, DECLINE (nil). This is the case that
+//     produced wrong client metadata: two legs declaring the same column at
+//     different types made first-match report the far leg's column as the near
+//     leg's type, and because a non-empty answer looks resolved it also
+//     PREEMPTED the caller's type-inheritance chain — which reads the actual
+//     flowed type off the inner plan's own output and answers correctly.
+//
+// Declining on disagreement is what lets the type FLOW instead of being
+// re-derived. Java never searches for a column's type at all: client metadata is
+// positional over the plan's flowed record type (RelationalStructMetaData.getField
+// is List.get(i)), so a name that cannot identify one answer must fall through to
+// the flowed type rather than resolve to a guess. Scoping the decline to genuine
+// DISAGREEMENT keeps every case where the search was never really ambiguous —
+// notably a join whose legs share a NOT-NULL PK name — reporting exactly what it
+// reported before, so the decline cannot silently move nullability.
+//
+// Returns nil when no leg has the field, and when several do and they disagree.
 func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) protoreflect.MessageDescriptor {
 	ref := parseColRef(name)
 	bare := protoreflect.Name(ref.bare())
@@ -2801,6 +2816,20 @@ func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) pr
 			if strings.EqualFold(string(d.Name()), ref.table) {
 				return d
 			}
+		}
+	}
+	// Do the candidates agree on everything this lookup is consulted for?
+	// columnDefFromRef / deriveProjectionColumnDef read exactly two things off
+	// the returned descriptor: the field's SQL type name and its cardinality
+	// (the NOT-NULL bit). If every candidate answers both identically, the
+	// choice among them is not observable and first-match is exact.
+	first := matches[0].Fields().ByName(bare)
+	firstType := protoFieldTypeName(matches[0], string(bare))
+	for _, d := range matches[1:] {
+		fd := d.Fields().ByName(bare)
+		if fd.Cardinality() != first.Cardinality() ||
+			protoFieldTypeName(d, string(bare)) != firstType {
+			return nil // the candidates disagree — refuse to pick one
 		}
 	}
 	return matches[0]
