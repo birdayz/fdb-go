@@ -241,7 +241,7 @@ closing CQ-71 is exactly what arms them.** `UNIQUE` and `WHERE` have no corpus
 carrier on the reachable path at all, which is why they went unnoticed until the
 hotfix probed for them directly.
 
-**The hotfix has landed** as `c058d48ee` on `fix/ddl-fail-closed-ordering-attrs`
+**The hotfix has landed** as PR #551 (squash of `c058d48ee` plus a comment note recording the explicit-ASC sweep as a decision)
 — one commit off this RFC's own base `ef2b5911a`, rejecting all four shapes (and
 the vector arm's copy of the order-clause drop) with
 `ErrCodeUnsupportedOperation` on the `INCLUDE`-rejection precedent, with sixteen
@@ -920,7 +920,7 @@ the **stored** bytes match, which is the property a shared cluster depends on.
 
 Each step ends green and is committed on its own.
 
-- **S0 — DONE, `c058d48ee` on `fix/ddl-fail-closed-ordering-attrs`** (one commit
+- **S0 — DONE, PR #551, merged** (landed
   off this RFC's base `ef2b5911a`). The §1.4 hotfixes: `WITH ATTRIBUTES` /
   `OPTIONS(LEGACY_EXTREMUM_EVER)`, the per-column `orderClause` (plus the vector
   arm's copy of it), and AS-SELECT `UNIQUE` / `WHERE` all reject fail-closed
@@ -1141,7 +1141,7 @@ statements blocked behind an already-booked gap.
 stands.
 
 **Land the generator before the §1.4 hotfixes.** Rejected, and the hotfix
-landed first (`c058d48ee`). The generator is what makes `index-ddl.yamsql` reach
+landed first (PR #551). The generator is what makes `index-ddl.yamsql` reach
 line 82; landing it first would have armed a silent wrong-index-type build in
 the same commit that claims to fix index DDL. The ordering also bought the
 `UNIQUE`/`WHERE` finding: probing for a fail-closed rejection is what showed
