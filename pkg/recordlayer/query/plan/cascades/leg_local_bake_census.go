@@ -287,8 +287,9 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 		legLocalBakeCounts.Baked++
 		// A witness, not a bare increment. Baked is the population the qualified
 		// name channel's retirement rests on, and a count alone cannot say WHICH
-		// reads reached it — which is the fact a reviewer of that retirement needs,
-		// and the fact a shape-level test has to be able to find its own firing by.
+		// reads reached it — which is the fact that retirement has to be decided
+		// on, and the fact a shape-level test has to be able to find its own
+		// firing by.
 		addLegLocalBakeWitness(fmt.Sprintf("LEG-LOCAL %s.%s (kept its own correlation "+
 			"and its own ordinal; leg type %v)", leg.Name(), column, legTyp))
 		return

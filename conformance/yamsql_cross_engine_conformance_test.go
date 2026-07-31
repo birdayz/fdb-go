@@ -150,12 +150,12 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 						it := items[idx]
 						jr := r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
 						gr := r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
-						for attempt := 1; attempt <= maxConflictRetries && (isTxConflict(jr.Err) || isTxConflict(gr.Err)); attempt++ {
+						for attempt := 1; attempt <= maxConflictRetries && (isTransientFDBError(jr.Err) || isTransientFDBError(gr.Err)); attempt++ {
 							time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
-							if isTxConflict(jr.Err) {
+							if isTransientFDBError(jr.Err) {
 								jr = r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
 							}
-							if isTxConflict(gr.Err) {
+							if isTransientFDBError(gr.Err) {
 								gr = r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
 							}
 						}
@@ -214,7 +214,7 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 	// once, so the assertions are deterministic regardless of execution order.
 	// Concurrent ephemeral-schema CREATEs contend on the shared relational catalog
 	// → transient FDB 1020 conflicts, cleared by the SeedRunCorpus conflict-retry
-	// (isTxConflict). Parallel precompute (vs the earlier one-server-per-scenario
+	// (isTransientFDBError). Parallel precompute (vs the earlier one-server-per-scenario
 	// re-use) is what makes A3 fast; the Its stay per-scenario so ContinueOnFailure
 	// still reports the complete failure set. Bazel caches the test result, so it
 	// only re-runs when an input changes.

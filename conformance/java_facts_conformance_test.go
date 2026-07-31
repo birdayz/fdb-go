@@ -116,7 +116,7 @@ var _ = Describe("ANSI Java?-fact verification", Ordered, ContinueOnFailure, fun
 					for idx := range idxCh {
 						it := work[idx]
 						jr := rn.RunWithSetup(ctx, it.SchemaTemplate, it.Setup, it.Query)
-						for attempt := 1; attempt <= maxConflictRetries && isTxConflict(jr.Err); attempt++ {
+						for attempt := 1; attempt <= maxConflictRetries && isTransientFDBError(jr.Err); attempt++ {
 							time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
 							jr = rn.RunWithSetup(ctx, it.SchemaTemplate, it.Setup, it.Query)
 						}
