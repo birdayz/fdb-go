@@ -154,35 +154,50 @@ func TestLegKind_BoxRebaseRefusesWhatItCannotAddress(t *testing.T) {
 	ref := values.NewFieldValue(values.NewQuantifiedObjectValue(legA), "K", values.UnknownType)
 
 	for _, tc := range []struct {
-		name       string
-		kind       values.LegKind
-		wantRebase bool
+		name     string
+		kind     values.LegKind
+		wantOK   bool
+		wantPath []int
 	}{
-		{"flatRun — the control", values.LegKindFlatRun, true},
-		{"UNSET — the invalid zero", values.LegKindUnset, false},
-		{"nested", values.LegKindNested, false},
+		// Leg A's window sits at offset 0 and K is its column 0, so the flat
+		// address is slot 0 and the nested one is "slot 0, then leg-local 0".
+		// Those coincide numerically at the head, which is exactly why the PATH
+		// LENGTH is what this test asserts: a one-step [0] and a two-step [0 0]
+		// read different things and a check on the first ordinal cannot tell them
+		// apart.
+		{"flatRun — one step", values.LegKindFlatRun, true, []int{0}},
+		{"nested — the FUSED two-step address", values.LegKindNested, true, []int{0, 0}},
+		{"UNSET — the invalid zero", values.LegKindUnset, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			out, ok := rebaseLegRefsToBox(ref, kindWindows(tc.kind), boxType, boxQOV)
-			if tc.wantRebase {
-				if !ok {
-					t.Fatalf("the flat control DECLINED — every negative in this test then "+
-						"holds for the uninteresting reason that the rebase is broken (out=%v)", out)
-				}
-				fv, isFV := out.(*values.FieldValue)
-				if !isFV || fv.Resolved == nil {
-					t.Fatalf("a flat leg reference must bake to an ordinal over the box, got %T %v", out, out)
-				}
+			if ok != tc.wantOK {
+				t.Fatalf("kind=%v: rebaseLegRefsToBox ok=%t, want %t. A window this reader "+
+					"cannot address must leave the reference unrewritten so the survivor "+
+					"scan declines the whole wrap; accepting means an unaddressed leg "+
+					"reference shipped, or was baked at an offset that is not its column. "+
+					"(out=%v)", tc.kind, ok, tc.wantOK, out)
+			}
+			if !tc.wantOK {
 				return
 			}
-			// The rebase leaves the leg-correlated reference in place, and the
-			// caller's survivor verification is what turns that into a decline.
-			if ok {
-				t.Fatalf("kind=%v: the wrap ACCEPTED. A window this reader cannot address "+
-					"must leave the reference unrewritten so the survivor scan declines the "+
-					"whole wrap — accepting means an unaddressed leg reference shipped, or "+
-					"was baked at an offset that is not its column.", tc.kind)
+			fv, isFV := out.(*values.FieldValue)
+			if !isFV || fv.Resolved == nil {
+				t.Fatalf("kind=%v must bake to an ordinal path over the box, got %T %v", tc.kind, out, out)
+			}
+			got := make([]int, len(fv.Resolved.Accessors))
+			for i, a := range fv.Resolved.Accessors {
+				got[i] = a.Ordinal
+			}
+			if len(got) != len(tc.wantPath) {
+				t.Fatalf("kind=%v produced a %d-step path %v, want the %d-step %v",
+					tc.kind, len(got), got, len(tc.wantPath), tc.wantPath)
+			}
+			for i := range got {
+				if got[i] != tc.wantPath[i] {
+					t.Fatalf("kind=%v produced path %v, want %v", tc.kind, got, tc.wantPath)
+				}
 			}
 		})
 	}

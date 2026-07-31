@@ -168,14 +168,55 @@ func rebaseOuterLegValueOrdinal(
 		// while producing a perfectly valid merged ordinal — a silent wrong-column
 		// read that NewFieldValueOfOrdinal cannot catch.
 		//
-		// LegKindUnset falls here too and DECLINES rather than defaulting: a window
-		// that reached this rebase without a stated kind is a producer bug, and a
-		// declined optimization is recoverable while a wrong ordinal is not.
-		if w.Kind != values.LegKindFlatRun {
+		// LegKindUnset DECLINES rather than defaulting: a window that reached this
+		// rebase without a stated kind is a producer bug, and a declined
+		// optimization is recoverable while a wrong ordinal is not.
+		var rebased *values.FieldValue
+		var err error
+		switch w.Kind {
+		case values.LegKindFlatRun:
+			rebased, err = values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
+		case values.LegKindNested:
+			// THE FUSED TWO-STEP ADDRESS — Java's
+			// ofOrdinalNumberAndFuseIfPossible, arrived at the same way.
+			//
+			// Java rewrites a reference to a collapsed sibling as
+			// FieldValue.ofOrdinalNumber(QOV(newUpper), index)
+			// (PartitionSelectRule.java:301-302). When translateCorrelations then
+			// rebuilds the enclosing FieldValue(QOV(lower), [f]), the leaf swap
+			// produces FieldValue(FieldValue(QOV(upper),[i]), [f]) and
+			// FieldValue.withNewChild → ofFieldsAndFuseIfPossible merges the two
+			// accessor lists via FieldPath.withSuffix into the single two-step path
+			// FieldValue(QOV(upper), [i, f]). Nothing is materialized and nothing is
+			// re-offset — composition is a path FUSION, never a flattening.
+			//
+			// Go does the same with the same primitives: bake the ONE-step path to
+			// the slot, then WithSuffix the leg-local accessor onto it. The
+			// executor already reads such a path — FieldValue.descendResolvedPath
+			// has an explicit OrdinalRow arm that descends a nested step by ordinal
+			// — and the executor's own span side already resolves the fused
+			// two-step address in resolveSpanLeaf.
+			var slot *values.FieldValue
+			slot, err = values.NewFieldValueOfOrdinal(mergedQOV, w.Offset)
+			if err == nil {
+				var leaf *values.FieldValue
+				leaf, err = values.NewFieldValueOfOrdinal(
+					values.NewQuantifiedObjectValueOfType(qov.Correlation, w.Typ), legOrdinal)
+				if err == nil {
+					fused := *slot
+					fused.Resolved = slot.Resolved.WithSuffix(leaf.Resolved)
+					// The DISPLAY name is the leaf's, matching what a one-step bake
+					// would have rendered. It is rendering only — a baked node's
+					// identity is its ordinal PATH alone (Java's ResolvedAccessor
+					// equality compares getOrdinal() only).
+					fused.Field = leaf.Field
+					rebased = &fused
+				}
+			}
+		default:
 			failed = true
 			return node
 		}
-		rebased, err := values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
 		if err != nil {
 			failed = true
 			return node
@@ -293,6 +334,28 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[values.CorrelationIdentifier]
 		return nil, nil
 	}
 	return ordinalSeedLegWindows(rc)
+}
+
+// ordinalSeedLegWindowsAcceptingNestedOf is ordinalSeedLegWindowsOf over the
+// NESTED-accepting entry (RFC-200).
+//
+// EXACTLY THREE SITES CALL IT, all in rule_implement_nested_loop_join.go and all
+// reading the SAME step1RV: foldStep1Seed's validation of the seed it just
+// built, implementJoinWithExistential's ordinalWindows derivation, and
+// materializedNLJOrdinalLayoutMatches' orientation check.
+//
+// A FOURTH SITE IS A STOP, NOT A WIDENING. Every other consumer's proof rests on
+// the narrow entry's accept set being FROZEN — their answer is unchanged on
+// every input they can see, which is stronger than "their meaning is unchanged"
+// — and admitting a fourth caller here re-opens all of it. A site that genuinely
+// needs the nested windows is a change to RFC-200's design, not an addition to
+// this list: the per-consumer argument has to be re-made before it can be added.
+func ordinalSeedLegWindowsAcceptingNestedOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType) {
+	rc, isRC := rv.(*values.RecordConstructorValue)
+	if !isRC {
+		return nil, nil
+	}
+	return values.OrdinalSeedLegWindowsAcceptingNested(rc)
 }
 
 // rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the lazy

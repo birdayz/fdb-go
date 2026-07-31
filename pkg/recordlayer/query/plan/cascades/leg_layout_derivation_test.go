@@ -107,6 +107,27 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 			"after it reads at the wrong offset. A leg that states a row type must be "+
 			"rejected by the element arm.", len(windows), merged)
 	}
+	// WHAT THIS PIN NOW GUARDS, restated because RFC-200 admits a shape FAMILY
+	// this fixture belongs to and it must stay outside it.
+	//
+	// The nested entry accepts a POSITIONAL MERGE — every field a bare typed QOV
+	// of a distinct quantifier — and gives each slot a nested window. This fixture
+	// is one structural step away from that and must remain DECLINED by BOTH
+	// entries: its fields are named "A"/"B", while values.IsPositionalMergeRC
+	// requires the auto-generated `_i` spelling in position order.
+	//
+	// So the nested branch keys on the FULL structural recognizer, never on the
+	// looser "every field is a bare typed QOV". A NAMED typed-leg RC is still not
+	// a merge row, and that is the whole reason this pin survived the change.
+	if windows, merged := values.OrdinalSeedLegWindowsAcceptingNested(twoTypedLegs); windows != nil || merged != nil {
+		t.Fatalf("the NESTED-accepting entry accepted a NAMED 2-slot RC of bare typed "+
+			"leg objects (%d windows, merged %v). The nested branch has been keyed on "+
+			"something looser than values.IsPositionalMergeRC — most likely \"every "+
+			"field is a bare typed QOV\" — and that predicate admits exactly the "+
+			"constructor this pin exists for: a merge row's slots are named `_i` in "+
+			"position order, a named RC's are not. Re-key the branch on the full "+
+			"structural recognizer.", len(windows), merged)
+	}
 
 	// The residual, stated rather than implied: an UNTYPED quantifier object is
 	// still admitted as a one-column element, because that is what a struct-array

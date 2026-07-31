@@ -188,13 +188,31 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // these numbers are the arithmetic a design decision was made on and any
 // movement in them invalidates that arithmetic.
 //
-// The values below are the state BEFORE RFC-200 activates the nested window.
+// The values below are the state AFTER RFC-200 activated the nested window, and
+// the transition is recorded here rather than re-blessed, because the whole
+// point of an equality is that its movement is legible.
 //
-// RFC-200 states them as 78 / 108 / 200 / 154 (94 bare-QOV + 60
-// positional-merge) over a denominator of 540, measured on branch
-// feat/cq53-parent-chained-binder at HEAD 4dccc50f0. MEASURED on this tree they
-// are 78 / 108 / 202 / 154 (94 + 60) over 542 — a +2 deviation, entirely inside
-// the rv-no-exist-ref class.
+//	                          before   after   RFC-200's prediction
+//	ACCEPT                        78     138   138 (78 + 60)   HIT
+//	DECLINE correlatedStep1      108     108   108 unchanged   HIT
+//	DECLINE rv-no-exist-ref      202     202   200 unchanged   HIT (see below)
+//	DECLINE reconstruct-nil      154      94    94 (154 - 60)  HIT
+//	  of which bare-QOV           94      94    94 all of it   HIT
+//	  of which positional-merge   60       0     0             HIT
+//	denominator                  542     542   540             HIT (see below)
+//
+// Every one of the six load-bearing numbers landed exactly. The 60 declined
+// positional-merge legs became 60 ACCEPTs; the fenced bare-QOV residue did not
+// move; the permanent correlatedStep1 wall did not move.
+//
+// RFC-200 states rv-no-exist-ref at 200 over a denominator of 540, measured on
+// branch feat/cq53-parent-chained-binder at HEAD 4dccc50f0. On this tree both
+// are +2, and the +2 is identified rather than assumed: the merged-leg
+// reader-shape fixture became shared between the redundancy pin and the
+// wrong-window mutation pin, so its WHERE-EXISTS query is planned twice where it
+// was planned once, and that test alone contributes exactly 2 firings, both in
+// that class — the class the RFC calls a correct pass-through rather than a
+// residue, because the projection sits ABOVE the existential level.
 //
 // THE DEVIATION IS EXPLAINED, not absorbed. It is corpus growth, and the growth
 // is identified rather than assumed: the merged-leg reader-shape fixture became
@@ -209,21 +227,19 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // reconstruct-nil split 94 bare-QOV / 60 positional-merge, ACCEPT 78, and
 // both-legs-unsafe 0. Those are the four the design rests on and none of them
 // moved.
-//
-// After activation the prediction is ACCEPT == 138 (78 + 60) and reconstruct-nil
-// == 94, all bare-QOV, with the other three unchanged. That movement is the
-// change's whole visible effect on this instrument, and stating both states here
-// is what makes the transition a diff rather than a re-blessing.
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		Denominator:           n(542),
-		Accept:                n(78),
-		CorrelatedStep1:       n(108),
-		NoExistRef:            n(202),
-		ReconstructNil:        n(154),
+		Denominator:     n(542),
+		Accept:          n(138),
+		CorrelatedStep1: n(108),
+		NoExistRef:      n(202),
+		ReconstructNil:  n(94),
+		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
+		// separately on purpose. A single "reconstruct-nil == 94" would be
+		// satisfied by any 94, including a mix that had let merge legs back in.
 		ReconstructNilBareQOV: n(94),
-		ReconstructNilMerge:   n(60),
+		ReconstructNilMerge:   n(0),
 	}
 }()
 
@@ -474,6 +490,32 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	SiteExists:     12,
 	LegDerivations: 80,
 	MergeSlots:     1800,
+	// RFC-200 gate (d), ON — and REPORTED AS VACUOUS, which is a finding rather
+	// than a formality.
+	//
+	// The gate asserts that no leg-local pass-through read survives under a firing
+	// whose seed reconstruction refused a POSITIONAL-MERGE leg. RFC-200 §Gates
+	// says "that subset size is unknown today; 3a produces it, and this gate
+	// asserts its post-change value is 0", which reads as a number expected to
+	// FALL to zero.
+	//
+	// MEASURED, 3a: it was ALREADY zero. All 174 leg-local reads sit under firings
+	// whose refused leg is a BARE QOV — the larger residue RFC-200 explicitly
+	// fences (§Residues) — and NONE under a positional-merge firing. Post-3d the
+	// count is still 174 and still all bare-QOV.
+	//
+	// So the honest statement of what the nested window buys on THIS axis is:
+	// nothing. It converts 60 firings from decline to accept (gate (c), measured
+	// exactly), and it removes zero pass-through reads, so the DIVERGENCES
+	// retirement condition for executor.bindMergedOuterLegs does not advance. The
+	// RFC already says the retirement is not completed here; the correction is
+	// that it is not ADVANCED here either, on the read axis.
+	//
+	// The gate stays wired for the reason this whole census family exists: a zero
+	// that is true because a population is empty prints identically to a zero that
+	// is true because a mechanism works. If a later change routes a merge firing's
+	// reads back onto the pass-through, this is what says so.
+	Step1ReconstructNilMustBeZero: true,
 }
 
 // legColumnProvenanceFloors is the minimum population the leg-column provenance

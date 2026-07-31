@@ -142,18 +142,39 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 			// DISPATCH ON THE KIND. `w.Offset + idx` addresses a column only under
 			// LegKindFlatRun; under LegKindNested, Offset is the leg's ONE slot and
 			// the sum walks into whatever follows it, producing a valid merged
-			// ordinal that reads the wrong column. LegKindUnset lands here too and
-			// is refused rather than defaulted.
+			// ordinal that reads the wrong column. LegKindUnset is refused rather
+			// than defaulted.
 			//
 			// Leaving the node unrewritten is the correct decline at this site: the
 			// caller's survivor verification sees a leg-correlated reference that
 			// survived the rebase and declines the whole wrap.
-			if w.Kind != values.LegKindFlatRun {
+			if w.Kind != values.LegKindFlatRun && w.Kind != values.LegKindNested {
 				return n
 			}
 			idx, found := w.Typ.FieldIndex(fv.Field)
 			if !found {
 				return n // survives → the caller's verification declines
+			}
+			if w.Kind == values.LegKindNested {
+				// THE FUSED TWO-STEP ADDRESS — Java's
+				// ofOrdinalNumberAndFuseIfPossible. The slot holds the leg's WHOLE
+				// row, so the address is "slot w.Offset, then leg-local idx", composed
+				// into one path by FieldPath.WithSuffix exactly as Java's
+				// ofFieldsAndFuseIfPossible composes it. See the twin at
+				// cascades.rebaseOuterLegValueOrdinal for the full derivation.
+				slot, sErr := values.NewFieldValueOfOrdinal(boxQOV, w.Offset)
+				if sErr != nil {
+					return n
+				}
+				leaf, lErr := values.NewFieldValueOfOrdinal(
+					values.NewQuantifiedObjectValueOfType(qov.Correlation, w.Typ), idx)
+				if lErr != nil {
+					return n
+				}
+				fused := *slot
+				fused.Resolved = slot.Resolved.WithSuffix(leaf.Resolved)
+				fused.Field = leaf.Field
+				return &fused
 			}
 			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
 			if err != nil {

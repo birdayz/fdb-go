@@ -46,48 +46,48 @@ func kindProbeFixture(t *testing.T) (values.Value, *values.QuantifiedObjectValue
 }
 
 // The planner's existential rebase — keyed reader #1, the corpus's heaviest —
-// must refuse a window that states no kind, and must refuse a NESTED one until
-// it learns the fused two-step address.
+// must produce a DIFFERENT ADDRESS per kind, and must refuse a window that
+// states no kind at all.
 //
-// The nested arm matters even while nothing produces a nested window: it is the
-// fail-CLOSED half of the sequencing. RFC-200 is explicit that the reader change
-// is not sequenced after the producer change, because a nested window reaching
-// this reader without the fused path bakes `Offset + legOrdinal` against a row
-// where that is a different column — and `Offset + legOrdinal` is a perfectly
-// valid merged ordinal, so nothing downstream can catch it.
-func TestLegKind_ExistentialRebaseRefusesAnUnstatedKind(t *testing.T) {
+// The two addresses are not two spellings of one thing. A flat window's Offset
+// starts a run of the leg's own columns, so `Offset + legOrdinal` IS the column.
+// A nested window's Offset names ONE slot holding the whole leg row, so the same
+// arithmetic addresses whatever follows that slot — and it produces a perfectly
+// valid merged ordinal, which is why nothing downstream can catch it and why the
+// dispatch has to happen here.
+func TestLegKind_ExistentialRebaseAddressesEachKindDifferently(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name string
-		kind values.LegKind
-		want bool // whether the rebase should succeed
-		why  string
+		name     string
+		kind     values.LegKind
+		wantOK   bool
+		wantPath []int // the resolved accessor ordinals, in order
+		why      string
 	}{
 		{
-			name: "flatRun — the control",
-			kind: values.LegKindFlatRun,
-			want: true,
-			why: "Offset starts a run of the leg's own columns, so Offset+legOrdinal " +
-				"is the leg's column. Without this arm passing, every decline below " +
-				"holds for the uninteresting reason that the reader is broken",
+			name: "flatRun — one step, offset plus the leg-local ordinal",
+			kind: values.LegKindFlatRun, wantOK: true, wantPath: []int{11},
+			why: "the leg's columns ARE slots 10 and 11 of the merged row, so its " +
+				"second column is slot 11",
 		},
 		{
-			name: "UNSET — the invalid zero",
-			kind: values.LegKindUnset,
-			want: false,
+			name: "nested — the FUSED two-step address",
+			kind: values.LegKindNested, wantOK: true, wantPath: []int{10, 1},
+			why: "slot 10 holds the leg's WHOLE row, so the address is 'slot 10, then " +
+				"leg-local 1'. This is Java's ofOrdinalNumberAndFuseIfPossible: " +
+				"PartitionSelectRule rewrites the reference to ofOrdinalNumber over the " +
+				"merge quantifier, and translateCorrelations' leaf swap then fuses the " +
+				"enclosing accessor onto it via FieldPath.withSuffix. Composition is a " +
+				"path FUSION, never a flattening — nothing is materialized and nothing " +
+				"is re-offset",
+		},
+		{
+			name: "UNSET — the invalid zero", kind: values.LegKindUnset, wantOK: false,
 			why: "a window reached the rebase without a stated kind. That is a PRODUCER " +
 				"bug and it must surface as one; defaulting to flatRun would make the " +
 				"discriminator a comment. A declined optimization is recoverable, a wrong " +
 				"ordinal is not",
-		},
-		{
-			name: "nested — fail-closed until the fused path exists",
-			kind: values.LegKindNested,
-			want: false,
-			why: "Offset names ONE slot holding the whole leg row, so Offset+legOrdinal " +
-				"addresses whatever follows that slot — a valid merged ordinal reading the " +
-				"wrong column, which no downstream check can catch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -100,11 +100,11 @@ func TestLegKind_ExistentialRebaseRefusesAnUnstatedKind(t *testing.T) {
 				},
 			}
 			out, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV)
-			if ok != tc.want {
+			if ok != tc.wantOK {
 				t.Fatalf("rebaseOuterLegValueOrdinal(kind=%v) ok=%t, want %t — %s",
-					tc.kind, ok, tc.want, tc.why)
+					tc.kind, ok, tc.wantOK, tc.why)
 			}
-			if !tc.want {
+			if !tc.wantOK {
 				// A decline must hand the tree back UNCHANGED. A half-rebased tree is
 				// the one outcome worse than either answer: some references moved onto
 				// the merged row and some did not, and nothing downstream knows which.
@@ -115,12 +115,21 @@ func TestLegKind_ExistentialRebaseRefusesAnUnstatedKind(t *testing.T) {
 				return
 			}
 			fv, isFV := out.(*values.FieldValue)
-			if !isFV {
-				t.Fatalf("rebase produced %T, want *FieldValue", out)
+			if !isFV || fv.Resolved == nil {
+				t.Fatalf("rebase produced %T (%v), want a baked *FieldValue", out, out)
 			}
-			acc, single := fv.Resolved.Single()
-			if !single || acc.Ordinal != 11 {
-				t.Fatalf("flatRun rebase produced ordinal %+v, want 11 (offset 10 + leg-local 1)", fv.Resolved)
+			got := make([]int, len(fv.Resolved.Accessors))
+			for i, a := range fv.Resolved.Accessors {
+				got[i] = a.Ordinal
+			}
+			if len(got) != len(tc.wantPath) {
+				t.Fatalf("kind=%v produced a %d-step path %v, want the %d-step %v — %s",
+					tc.kind, len(got), got, len(tc.wantPath), tc.wantPath, tc.why)
+			}
+			for i := range got {
+				if got[i] != tc.wantPath[i] {
+					t.Fatalf("kind=%v produced path %v, want %v — %s", tc.kind, got, tc.wantPath, tc.why)
+				}
 			}
 		})
 	}

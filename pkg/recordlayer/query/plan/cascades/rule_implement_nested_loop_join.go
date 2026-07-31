@@ -1998,6 +1998,32 @@ func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 				return false, node
 			}
 			return legOrdinalSafety(pl.GetInner())
+		case *plans.RecordQueryFlatMapPlan:
+			// A FlatMap whose result value is the POSITIONAL MERGE is Java's own
+			// merged row, and it is positionable — one slot per collapsed lower
+			// quantifier, each holding that quantifier's whole record.
+			//
+			// The recognizer is STRUCTURAL (values.IsPositionalMergeRC) and not a
+			// looser "the result value is an RC of bare typed QOVs". That looser
+			// test is what admitted a constructor once before and gave multi-column
+			// legs one-column windows; the pin that caught it is still standing, and
+			// it stays green precisely because a NAMED typed-leg RC is not a merge
+			// row.
+			//
+			// The PLAN WALK is the route rather than a preference:
+			// RecordQueryFlatMapPlan.GetResultType() returns values.UnknownType,
+			// exactly as RecordQueryNestedLoopJoinPlan's does, which is why the
+			// reconstruction's own comment says GetResultType cannot be used for a
+			// join leg.
+			//
+			// NOT ordinal-safe merely because a FlatMap is a FlatMap: an ordinary
+			// FlatMap flows a projection or a bare identity QOV, and neither states
+			// a positionable layout. That population — the 94 bare-QOV legs — is
+			// the LARGER residue and is explicitly out of scope.
+			if !values.IsPositionalMergeRC(pl.GetResultValue()) {
+				return false, pl
+			}
+			return true, nil
 		default:
 			return false, p
 		}
@@ -2072,6 +2098,39 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			legs := make([]values.RecordTypeLeg, 0, len(outerLegs)+len(innerLegs))
 			legs = append(legs, outerLegs...)
 			legs = append(legs, innerLegs...)
+			return fields, legs, true
+		case *plans.RecordQueryFlatMapPlan:
+			// THE LOCKSTEP ARM. legOrdinalSafety and this walk have the same node
+			// census BY CONSTRUCTION — the first decides which legs may seed, the
+			// second describes the row those legs flow — so a node admitted there
+			// and unhandled here is a leg the reconstruction silently refuses,
+			// which reads as "this shape does not ordinalize" rather than as a gap.
+			//
+			// A positional merge's concat is its N MERGE SLOTS, not its legs'
+			// columns. Each field is typed with that sub-leg's own *RecordType (the
+			// whole row lives in the slot), and .Legs records each sub-leg AT ITS
+			// SLOT with Kind nested, Start i, Width 1 — Width being a SLOT count, so
+			// every Start+Width range computation downstream stays in bounds.
+			rc, isMerge := pl.GetResultValue().(*values.RecordConstructorValue)
+			if !isMerge || !values.IsPositionalMergeRC(rc) {
+				return nil, nil, false
+			}
+			fields := make([]values.Field, len(rc.Fields))
+			legs := make([]values.RecordTypeLeg, 0, len(rc.Fields))
+			for i, f := range rc.Fields {
+				qov := f.Value.(*values.QuantifiedObjectValue) // guaranteed by the recognizer
+				fields[i] = values.Field{Name: f.Name, FieldType: qov.Type(), Ordinal: base + i}
+				// A slot whose quantifier states no ROW carries no leg boundary. It
+				// is the unnest ELEMENT case — a scalar the merge holds whole — and
+				// giving it a nested leg would claim a row it does not have.
+				if rt, isRT := qov.Typ.(*values.RecordType); isRT && rt != nil {
+					legs = append(legs, values.NewRecordTypeLeg(
+						values.LegKindNested, qov.Correlation, qov.Correlation.Name(), base+i, 1))
+				}
+			}
+			if len(legs) == 0 {
+				return nil, nil, false // no positionable sub-leg at all
+			}
 			return fields, legs, true
 		default:
 			return nil, nil, false
@@ -2227,7 +2286,7 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 // the ordinals address a structurally valid slot of either physical leg
 // either way, so there is nothing for this check to distinguish.
 func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, innerPlan plans.RecordQueryPlan) bool {
-	windows, _ := ordinalSeedLegWindowsOf(resultValue)
+	windows, _ := ordinalSeedLegWindowsAcceptingNestedOf(resultValue)
 	if len(windows) != 2 {
 		// Not a pristine 2-leg ordinal seed (nil: not an ordinal seed at all;
 		// any count other than 2 is outside a 2-quantifier join's own scope,
@@ -2349,7 +2408,7 @@ func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentif
 	if seed == nil {
 		return rv, false, foldStep1DeclineReconstructNil, decline
 	}
-	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil {
+	if w, _ := ordinalSeedLegWindowsAcceptingNestedOf(seed); w == nil {
 		return rv, false, foldStep1DeclineWindowsNil, foldStep1LegDecline{}
 	}
 	return seed, true, foldStep1Accept, foldStep1LegDecline{}
@@ -3862,7 +3921,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// when an ordinal seed was used (its FrontierPinned panic polices
 	// exactly that). An un-mappable reference DECLINES the yield
 	// (CORRECT-or-LOUD, never a half-rebased tree).
-	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(step1RV)
+	ordinalWindows, mergedRowType := ordinalSeedLegWindowsAcceptingNestedOf(step1RV)
 	var mergedQOV *values.QuantifiedObjectValue
 	if ordinalWindows != nil {
 		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
