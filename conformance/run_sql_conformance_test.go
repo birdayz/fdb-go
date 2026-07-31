@@ -63,15 +63,33 @@ func seedCorpusParallelism() int {
 // maxConflictRetries bounds the backoff-retry below.
 const maxConflictRetries = 16
 
-// isTxConflict reports whether err is an FDB transaction-conflict (1020).
-// Running the corpus in parallel makes many workers create their ephemeral
-// schema at once, and those CREATEs contend on the shared relational catalog
-// keyspace → 1020. A 1020 is transient and retryable BY DESIGN (the embedded Go
-// engine retries internally, which is why only the Java side surfaces it); the
-// fix is to re-run the conflicting side until its schema CREATE truly commits,
-// after which the cross-engine result matches a serial run.
-func isTxConflict(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not committed due to conflict")
+// isTransientFDBError reports whether err is an FDB error that is retryable BY
+// DESIGN and therefore says nothing about SQL semantics. Two codes reach the
+// harness, both only from the Java side (the embedded Go engine retries them
+// internally, which is why one engine surfaces what the other absorbs):
+//
+//   - 1020 "not committed due to conflict". Running the corpus in parallel makes
+//     many workers create their ephemeral schema at once, and those CREATEs
+//     contend on the shared relational catalog keyspace.
+//   - 1007 "transaction is too old". FDB's 5s transaction limit is WALL-CLOCK,
+//     not work: under CI load a corpus entry whose whole dataset is a handful of
+//     rows can still exceed it while descheduled. Treating it as an engine
+//     answer manufactures a phantom "Java errored but Go succeeded" divergence
+//     on a query neither engine actually disagreed about.
+//
+// This is the class Java itself calls retriable — FDBExceptions.isRetriable
+// (FDBExceptions.java:233) delegates to FDBException.isRetryable(), which is
+// true for both codes. The fix is the same for both: re-run that side until it
+// gets a transaction that survives, after which the cross-engine result matches
+// a serial run. An error that persists across every attempt still lands in the
+// divergence report, so a Java side that genuinely cannot finish stays red.
+func isTransientFDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "not committed due to conflict") ||
+		strings.Contains(msg, "Transaction is too old to perform reads or be committed")
 }
 
 // entryConforms reports whether Go's result conforms to Java's for a
@@ -480,18 +498,19 @@ var _ = Describe("RunSql Harness", func() {
 					rq := corpus[idx]
 					jr := r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 					gr := r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-					// Re-run whichever side hit a transient catalog conflict
-					// (FDB 1020) until its CREATE commits — see isTxConflict.
-					// Each RunWithSetup uses a fresh uuid schema, so a retry is a
-					// clean re-attempt. Backoff is rising + per-worker-staggered
-					// (wid*11ms) so two workers that collide on the same attempt
-					// don't retry in lockstep and re-collide (thundering herd).
-					for attempt := 1; attempt <= maxConflictRetries && (isTxConflict(jr.Err) || isTxConflict(gr.Err)); attempt++ {
+					// Re-run whichever side hit a retryable FDB error (a catalog
+					// conflict, or a transaction starved past 5s under load) —
+					// see isTransientFDBError. Each RunWithSetup uses a fresh
+					// uuid schema, so a retry is a clean re-attempt. Backoff is
+					// rising + per-worker-staggered (wid*11ms) so two workers
+					// that collide on the same attempt don't retry in lockstep
+					// and re-collide (thundering herd).
+					for attempt := 1; attempt <= maxConflictRetries && (isTransientFDBError(jr.Err) || isTransientFDBError(gr.Err)); attempt++ {
 						time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
-						if isTxConflict(jr.Err) {
+						if isTransientFDBError(jr.Err) {
 							jr = r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 						}
-						if isTxConflict(gr.Err) {
+						if isTransientFDBError(gr.Err) {
 							gr = r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 						}
 					}

@@ -7735,6 +7735,26 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-31 (CQ-53 phase 2 — leg-correlated reads keep the ordinal they
+arrive with; the qualified-name mint, `legRole` and the text alias half die):**
+baseline worktree at the phase-1 merge `457c18ba8` vs the branch, same box,
+sequential fresh FDB containers, both runs `--nocache_test_results`.
+
+All 23 subtests PASS on both sides, and **every per-query row count is
+identical** — `1` on the three PK lookups, `8` on index equality, `100017`,
+`47271`, `10`, `1000000` on all three million-row scans, `46`, `97`, and the
+rest; diffed line-for-line, empty diff.
+
+Timings within run-to-run noise on a shared machine: full scan 3.51s base vs
+3.38s branch, sparse filter 2.97s base vs 2.92s branch, point lookups
+4.93..5.07ms on both sides. The base run was cold (721 build actions) and the
+branch run warm (9), so total elapsed (220s vs 160s) is a cache artifact and
+not a measurement — the per-query numbers above are.
+
+This is the expected shape: the change is planner/executor identity plumbing
+and the arm it touches produces no winning plan on the corpus (the wrong-leg
+mutation leaves the suite green), so no stress query's plan can move.
+
 **2026-07-29 (RFC-197 item 2 escape bucket — review fold: correlation guards
 made load-bearing, leg comparison unified on case-folding `values.SameLeg`):**
 baseline worktree at `master` = `e5477c9f2`, which IS the branch point
@@ -10574,6 +10594,87 @@ None is speculative: each was re-verified against the tree before booking.
 
   Stress 1M before/after (`bdf70fb2f` vs branch): all 22 measurements
   row-identical; timings within run-to-run noise on a shared machine.
+
+  ---
+
+  **PHASE 2 STATE (measured at branch HEAD, whole real-FDB sqldriver corpus).**
+  Two of the three numbers this entry was written around have moved, and one of
+  them inverted, so the entry's own premises are restated here rather than left
+  to be re-derived from prose above.
+
+  WHAT LANDED:
+
+  - The resolver's correlated quantifier-object mints CARRY the source's
+    declared row, as Java's `Quantifier.java:801-803` always has. The flowed-type
+    decision is ONE authority (`expr.flowedTypeFor`) reached by all three mints —
+    `ResolveIdentifier`'s correlated arm, `ResolveColumnShadowingQualified` and
+    `ResolveQualifiedProjection` — because they are reached by SQL that differs
+    by one FROM item and a per-site decision was made differently at two of them.
+  - `rebaseOuterLegValue`'s NAME-KEYED bake is deleted, permanently. It minted a
+    leg-local ordinal by resolving a display name against the leg's row type,
+    RFC-197's forbidden move. Nothing replaced it because nothing needs to: the
+    reference ARRIVES carrying its ordinal.
+  - The FlatMap leg binding's datum unwrap is keyed on the VALUE's own result
+    type, uniformly on both sides, as `QuantifiedObjectValue.java:82-95` /
+    `RecordQueryFlatMapPlan.java:135,:140` are. The `legRole` side-flag is gone.
+  - `mergedOuterLegAliases` emits leg IDENTITIES only; the parallel source-alias
+    TEXT half is deleted (measured: corpus, embedded suite and rowdiff goldens
+    all green without it).
+
+  THE NUMBERS, and what changed about each:
+
+  These are point measurements over the real-FDB sqldriver corpus, and the
+  corpus population moves whenever a query is added anywhere in that suite —
+  three successive writings of this block were stale within the same change.
+  Re-measure rather than trusting the digits:
+  `go test ./pkg/relational/sqldriver/ -count=1 -v | grep "leg-local bakeability"`.
+  What is durable is the SHAPE — every residue at zero — not the totals.
+
+  - `underivableLegs` **0 of 960** (was 82 of 846). CQ-63's stated gate is
+    CLOSED — every leg states its row.
+  - leg-local bake census: **total 174, baked 174, mergedReAnchor 0, declined 0**;
+    ALL reads by own identity: **identityInLegDomain 174, otherDomain 0,
+    lazyNameOnly 0** (was: 126 reads, all re-anchored, identityInLegDomain **0**).
+    So "92 of 126 leg-correlated reads have no honest alternative to the
+    qualified name", above, is REFUTED: it is 0 of 174. The identity cut is now
+    CROSS-CHECKED against the outcome cut (`IdentityInLegDomain == Baked +
+    MergedReAnchor`, `IdentityOtherDomain + LazyNameOnly == Declined`), because
+    both cuts partition the same denominator and neither constrains the other:
+    filing a constant identity class at one census call site inverted this
+    number end to end with every partition still exact and no gate red.
+  - leg-column provenance: **calls 52, dotted hits 4, all identity-available,
+    0 unstated, 0 diverged.** The executor's last dotted reader answers four
+    times in the whole corpus.
+
+  WHAT REMAINS, and it is NOT what this entry predicted:
+
+  - The blocker is no longer a missing type. It is that Go's two-level
+    NLJ→FlatMap lowering reaches `rebaseOuterLegValue` **without a stated merged
+    layout** on the EXISTS-over-join and RFC-153 buried-leg paths, so there is no
+    merged ordinal to re-anchor to and the pass-through is the honest answer.
+    `mergedReAnchor 0 of 174` measures exactly that. Closing it means giving
+    those two paths a merged layout, which is the "parent-chained per-alias
+    bindings" bullet above — still the right plan, now unblocked.
+  - `RecordTypeLeg.Name` and the seed-window text keys are still live, and their
+    blocker is unchanged and independent: `exists_gathered_cluster_wrap.go` and
+    `unnest_gather.go` SPLIT a dotted reference and look the window up by
+    qualifier TEXT, so identity keying there needs an identifier minted from a
+    name. Producer-first, as stated above.
+  - `bindMergedOuterLegs` now HAS a live planner-side producer (the
+    pass-through, 174 of 174), so DIVERGENCES.md's "a channel whose only producer
+    is absent" framing is retired there. The reader is still not load-bearing,
+    but for a weaker reason than before: the candidate carrying it loses on every
+    covered shape, rather than there being nothing to carry. Measured directly at
+    the winner: making arm 2 panic proves it fires during planning of the
+    `TestLazyLegMintReachesNoWinningPlan` shapes, while RENAMING its output
+    leaves every qualifying read in every winning plan unchanged — so the arm's
+    product is built and then loses, and the positive sentinel there is watching
+    reads that reached the winner by other routes.
+
+  Stress 1M phase-2 before/after (`457c18ba8` base vs branch): 23/23 subtests
+  PASS on both sides, every row count identical (`1`, `8`, `100017`, `47271`,
+  `10`, `1000000`, `46`, `97`, …); timings within run-to-run noise on a shared
+  machine (full scan 3.51s vs 3.38s, sparse filter 2.92s vs 2.97s).
 
 - [ ] **CQ-54 (MED/M, M, query-engine review gate) — one AVG in the query, two
   in the aggregate: extend `logicalAggregateCalls`' dedup past `COUNT(*)`, and

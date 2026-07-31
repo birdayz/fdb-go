@@ -30,11 +30,18 @@ import (
 // reader who notices the zero coverage finds the intended behavior pinned
 // instead of an unexercised branch that looks safe to delete.
 //
-// Its counterpart in the cascades NLJ rule (rebaseOuterLegRefsToMerged) DOES
-// fire during planning — see
-// TestRebaseOuterLegValue_DerivableLegStillMintsTheQualifiedName. The two
-// producers are twins in shape and opposites in coverage; do not generalize
-// one's measurement to the other.
+// ITS COUNTERPART IS NO LONGER A TWIN. The cascades NLJ rule's leg-match arm
+// (rebaseOuterLegValue, under rebaseOuterLegRefsToMerged) used to mint the same
+// dotted `QOV(merged)."LEG.COL"` key that this one does, and the two were
+// genuinely the same shape with opposite coverage. That mint is DELETED: the arm
+// now either re-anchors by ORDINAL against a stated merged layout or hands the
+// reference back on its own leg correlation — see
+// TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead, which is the
+// retarget of the test this comment used to name.
+//
+// So this mint is the LAST producer of the dotted key on the leg-rebase path,
+// and the reasoning above stands on its own rather than by analogy: nothing
+// else's measurement licenses it, and nothing else's retirement retires it.
 func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 	t.Parallel()
 

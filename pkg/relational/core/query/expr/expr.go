@@ -274,9 +274,21 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// reads the same slot a name lookup would have found. Unresolvable
 		// (computed alias, empty derived-table catalog) is LOUD at plan
 		// time (UnresolvableOrdinalError — born-baked, slice 2).
-		if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+		if ord, flowed, domain, ok := sourceColumnOrdinal(src, field); ok {
+			// The quantifier object CARRIES the row it flows, as Java's always
+			// does (Quantifier.java:801-803). It used to be minted untyped, and
+			// the cost was measured rather than theoretical: every consumer that
+			// derives a frontier from this child — `legSlotIdentity` and the
+			// join-rebase machinery through it — got an UNKNOWN domain and
+			// declined the reference, beside the correct ordinal stamped on its
+			// own path one argument later. All 126 leg-correlated reads on the
+			// real-FDB corpus declined that way, which is what left the
+			// qualified-name channel carrying reads that already knew their slot.
+			//
+			// What "the row it flows" IS for this source is sourceColumnOrdinal's
+			// answer, not this call site's — see flowedTypeFor.
 			return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-				values.NewQuantifiedObjectValue(corrID),
+				values.NewQuantifiedObjectValueOfType(corrID, flowed),
 				field,
 				ord,
 				columnCascadesType(col),
@@ -293,7 +305,10 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	// bound slot is the same one a name read would have found. Unresolvable
 	// (computed alias, no source table) is LOUD at plan time
 	// (UnresolvableOrdinalError — born-baked, slice 2).
-	if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+	// The row type is discarded here and only here: this arm emits a CHILDLESS
+	// (source-relative) reference, which has no quantifier object to carry it.
+	// Its domain still states the layout the ordinal indexes.
+	if ord, _, domain, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, columnCascadesType(col), domain), nil
 	}
 	return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
@@ -316,29 +331,101 @@ func (e *UnresolvableOrdinalError) Error() string {
 	return fmt.Sprintf("column %q resolves against source %q, which declares no column order to bind a plan-time ordinal", e.Field, e.Source)
 }
 
+// sourceRowType builds the ROW the resolved source flows: its declared columns,
+// in declared order, each carrying the catalog's own type.
+//
+// This is the layout a source-relative ordinal indexes, stated as a type rather
+// than as a bare signature — which is what lets a reference's quantifier object
+// CARRY it (Java's `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`,
+// Quantifier.java:801-803, where the flowed value is never untyped).
+//
+// Built with a struct literal, not NewRecordType: that constructor PANICS on a
+// duplicate field name, and a catalog is not this function's to validate — a
+// degenerate source should decline downstream, not abort resolution.
+//
+// nil when the source declares no column order, which is exactly the condition
+// sourceColumnOrdinal declines on, so the two answers cannot disagree.
+func sourceRowType(src semantic.ScopeSource) *values.RecordType {
+	if src.Table == nil {
+		return nil
+	}
+	cols := src.Table.Columns()
+	if len(cols) == 0 {
+		return nil
+	}
+	fields := make([]values.Field, len(cols))
+	for i, c := range cols {
+		fields[i] = values.Field{Name: c.Id.Name(), FieldType: columnCascadesType(c), Ordinal: i}
+	}
+	return &values.RecordType{Fields: fields}
+}
+
+// flowedTypeFor is the SINGLE authority on the type a reference's quantifier
+// object may state for a resolved source. Every mint that builds a
+// QuantifiedObjectValue from a ScopeSource goes through it — there is no
+// second opinion, because the three mints that need it
+// (ResolveIdentifier's correlated arm, ResolveQualifiedProjection,
+// ResolveColumnShadowingQualified) are reached by SQL that differs by one
+// FROM item, and a decision made independently at each of them is a decision
+// that will be made differently at one of them.
+//
+// A SHADOWING source is a lateral unnest's AS/AT binding, whose scope entry is
+// a VIRTUAL one-column table (RFC-142). That column list is a RESOLUTION
+// convenience — it is what makes `SELECT "X"` resolve — and it is NOT the row
+// the quantifier flows: an unnest element is ONE array element, a scalar, and
+// Java's own seed calls that the isPrimitive() whole-object case. Stating it as
+// a row is the difference between `_1 UNKNOWN` and `_1 RECORD<X>` in the merged
+// seed, and values.IsMixedSeedElementType discriminates the element from a leg
+// by exactly that record-ness — so a row here makes an element read as a leg,
+// which surfaces as a loud "multi-leg row cannot serve a source-relative
+// ordinal" on some shapes and as SILENTLY MISSING ROWS on others.
+//
+// Written as an explicit UnknownType rather than a nil *RecordType: a nil typed
+// pointer in a Type interface is NOT a nil interface, so it would type-assert
+// as a *RecordType and read as a row anyway — the exact conflation this
+// function exists to avoid, arrived at by the one Go idiom that looks like it
+// avoids it.
+//
+// The DOMAIN is deliberately NOT narrowed the same way: the domain names the
+// layout the resolved ORDINAL indexes, which is the virtual table's column list
+// either way. Only what the quantifier FLOWS is in question here.
+func flowedTypeFor(src semantic.ScopeSource, rowType *values.RecordType) values.Type {
+	if src.Shadowing {
+		return values.UnknownType
+	}
+	return rowType
+}
+
 // sourceColumnOrdinal returns the 0-based position of field within the
 // resolved source's declared column order — the LOGICAL ordinal of the
 // column in the row the source flows. Matching is case-insensitive
 // first-match, mirroring values.RecordType.FieldIndex.
-func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.OrdinalDomain, bool) {
-	if src.Table == nil {
-		return 0, values.OrdinalDomain{}, false
+//
+// It also returns the FLOWED TYPE a reference's quantifier object may state for
+// this source (flowedTypeFor) and the DOMAIN token for the layout the ordinal
+// indexes. All three come from one walk of one column list, and the domain is
+// derived FROM the row type rather than beside it, so a caller that stamps the
+// flowed type on a reference's quantifier object and the domain on its resolved
+// path is guaranteed to have stated ONE layout twice rather than two layouts
+// that agree today. That guarantee is the point: `values.OrdinalIn` compares the
+// path's domain against the frontier a consumer derives from the quantifier
+// object's type, and those two derivations meeting is the whole precondition for
+// a reference being able to state its identity.
+//
+// The flowed type is returned as a values.Type, not a *RecordType, so a caller
+// CANNOT reach past the decision to the raw row: the shadowing narrowing is
+// applied here once, for everyone, by construction.
+func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.Type, values.OrdinalDomain, bool) {
+	rowType := sourceRowType(src)
+	if rowType == nil {
+		return 0, nil, values.OrdinalDomain{}, false
 	}
-	cols := src.Table.Columns()
-	for i, c := range cols {
-		if strings.EqualFold(c.Id.Name(), field) {
-			// The DOMAIN is derived from the same declared column list the
-			// ordinal indexes (RFC-197 step 0), in the same breath, so the two
-			// cannot drift: a caller downstream can check that its own layout
-			// IS this one instead of assuming it by comment.
-			names := make([]string, len(cols))
-			for k, cc := range cols {
-				names[k] = cc.Id.Name()
-			}
-			return i, values.OrdinalDomainOfColumnNames(names), true
+	for i, f := range rowType.Fields {
+		if strings.EqualFold(f.Name, field) {
+			return i, flowedTypeFor(src, rowType), values.OrdinalDomainOfType(rowType), true
 		}
 	}
-	return 0, values.OrdinalDomain{}, false
+	return 0, nil, values.OrdinalDomain{}, false
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
@@ -385,9 +472,14 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 	// flat-name projection mint).
 	// A dup-alias branch under UNION ALL reaches here too and bakes the
 	// same per-binding way — no upstream decline remains.
-	if ord, domain, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
+	if ord, flowed, domain, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
+		// The quantifier object states the flowed type sourceColumnOrdinal
+		// answers — which is NOT the declared row for a shadowing source. A
+		// later-dup leg can also be a lateral unnest's binding, so this mint is
+		// as much a shadowing mint as ResolveColumnShadowingQualified is; it
+		// does not get to decide the question locally (flowedTypeFor).
 		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
+			values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(src.CorrelationName), flowed),
 			col.Id.Name(),
 			ord,
 			columnCascadesType(col),
@@ -447,9 +539,14 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	// Bind the source-relative ordinal at construction when the shadowing
 	// source's declared column order resolves it (see ResolveIdentifier's
 	// correlated arm); unresolvable is LOUD at plan time (born-baked).
-	if ord, domain, ok := sourceColumnOrdinal(src, field); ok {
+	if ord, flowed, domain, ok := sourceColumnOrdinal(src, field); ok {
+		// This helper is reached ONLY for a shadowing source (the guard above),
+		// so the flowed type sourceColumnOrdinal answers here is always
+		// UNKNOWN — the element is a scalar, never the virtual one-column row
+		// that made its name resolve (flowedTypeFor). Stating that row instead
+		// makes values.IsMixedSeedElementType read the element as a join leg.
 		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			values.NewQuantifiedObjectValue(corrID),
+			values.NewQuantifiedObjectValueOfType(corrID, flowed),
 			field,
 			ord,
 			columnCascadesType(col),

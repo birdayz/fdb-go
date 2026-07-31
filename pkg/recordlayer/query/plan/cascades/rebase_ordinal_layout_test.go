@@ -132,9 +132,17 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 	}
 }
 
-// TestRebaseOuterLegValue_OrdinalFirst pins the slice-4 rebase arms: a
-// leg-matching reference bakes to the merged row's global ordinal when the
-// layout answers by IDENTITY, and keeps the lazy qualified mint otherwise.
+// TestRebaseOuterLegValue_OrdinalFirst pins the rebase arms' PRECEDENCE: a
+// leg-matching reference is re-anchored onto the merged row's global ordinal
+// when the layout answers by IDENTITY (Java's own move,
+// PartitionSelectRule.java:296-303), and is handed back UNTOUCHED otherwise.
+//
+// "Otherwise" used to mean a lazy qualified mint — `QOV(merged)."LEG.COL"`,
+// with the merged row's binder left to find it by that string. That mint is
+// deleted, so every non-arm-1 outcome now returns the value itself. Each
+// assertion below therefore compares against the INPUT VALUE rather than
+// against a shape, which is a stronger statement than the one it replaced: it
+// says nothing was invented, not merely that nothing was baked.
 func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	t.Parallel()
 	mergedCorr := values.NamedCorrelationIdentifier("$m")
@@ -169,31 +177,37 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// pass with the correlation dropped entirely.
 	otherLegID, _ := legSlotIdentity(legRead("B", aType, 0))
 	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3}, nil)
-	mfv := miss.(*values.FieldValue)
-	if mfv.Resolved != nil {
-		t.Fatalf("a SELF-JOIN twin leg's identical column answered the lookup: got resolved=%v — "+
-			"ordinal 0 of two quantifiers are different columns, and the correlation is the "+
-			"only element that can say so here", mfv.Resolved)
-	}
-	if mfv.Field != "A.A_ID" {
-		t.Fatalf("lazy field: got %q", mfv.Field)
+	if miss != values.Value(legRef) {
+		t.Fatalf("a SELF-JOIN twin leg's identical column answered the lookup: the read "+
+			"was rewritten to %v — ordinal 0 of two quantifiers are different columns, "+
+			"and the correlation is the only element that can say so here. A miss must "+
+			"hand the read back UNTOUCHED, on its own leg alias and its own ordinal, "+
+			"which the runtime binder (executor.bindMergedOuterLegs) resolves against "+
+			"that leg's own window.", miss)
 	}
 
 	// A LAZY reference states no identity, so it finds nothing rather than
-	// finding whatever its display name spells.
+	// finding whatever its display name spells — and, since the mint is gone,
+	// finding nothing means it is returned as it arrived.
 	lazyRef := values.NewFieldValue(
 		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), aType),
 		"A_ID", values.UnknownType,
 	)
 	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil)
-	if lazyOut.(*values.FieldValue).Resolved != nil {
-		t.Fatal("a lazy reference must not be baked by a layout it cannot key into")
+	if lazyOut != values.Value(lazyRef) {
+		t.Fatalf("a lazy reference was rewritten to %v. It states no identity, so the "+
+			"layout cannot key it and there is nothing left to key it BY except its "+
+			"display name — which is the channel this arm no longer has.", lazyOut)
 	}
 
-	// No layout → lazy qualified mint (pre-slice-4 behavior).
+	// No layout → the PASS-THROUGH. The read already names its leg and already
+	// carries its ordinal in that leg's domain, so re-anchoring it onto the merge
+	// correlation would trade a stated identity for a name.
 	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil, nil)
-	if lazy2.(*values.FieldValue).Resolved != nil {
-		t.Fatal("nil layout must stay lazy")
+	if lazy2 != values.Value(legRef) {
+		t.Fatalf("a nil layout rewrote the read to %v. With no merged layout to state "+
+			"an ordinal in, the reference's OWN leg-local ordinal is the only honest "+
+			"answer and it is already on the value.", lazy2)
 	}
 
 	// Non-matching leg → untouched.
@@ -203,55 +217,80 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 }
 
-// TestMergedOuterLegAliasesCarriesBothNamespaces pins that the alias set the
-// dotted rebase matches against contains the leg IDENTITIES, not only the
-// source-alias text.
+// TestMergedOuterLegAliasesIsIdentitiesOnly pins the alias set the dotted rebase
+// matches against: the leg IDENTITIES, and only those.
 //
 // rebaseOuterLegValue compares each entry against a reference's own QOV
 // CORRELATION name, and those references are correlated to the select's
-// QUANTIFIERS. The set was built from the select's parallel source-alias slice
-// alone, upper-folded, which broke on two axes — and the verification set beside
-// it (existLegCorrs) had already worked around one of them by adding the
-// quantifier aliases explicitly, which is what makes the omission in the REBASE
-// set an oversight rather than a design:
+// QUANTIFIERS — so an identity is the only spelling that can match one. The set
+// was built from the select's parallel source-alias slice, upper-folded, which
+// broke on two axes; the verification set beside it (existLegCorrs) had already
+// worked around one of them by adding the quantifier aliases explicitly, which is
+// what made the omission in the REBASE set an oversight rather than a design:
 //
 //   - the two channels can name different things. Measured over the FDB corpus,
 //     the source-alias slice carries a re-minted identifier while the quantifier
-//     keeps the user alias on 12 of ~80k firings (census witnesses "q$N vs E");
+//     keeps the user alias on 12 of ~81872 firings (leg-identity census witnesses
+//     "q$N vs E" at LegSiteNLJPlanAlias). Only the identity half rescues those;
 //   - the fold ran one way only. Entries were upper-folded while a reference's
 //     correlation is verbatim, so a lowercase MINTED alias could not match its own
 //     entry even when the two channels agreed.
 //
-// Neither miss is loud: the reference keeps pointing at a leg alias that is not
-// bound inside the FlatMap, evaluates to NULL, and an EXISTS correlation that
-// never matches drops rows.
-func TestMergedOuterLegAliasesCarriesBothNamespaces(t *testing.T) {
+// THE TEXT HALF IS GONE, and this test is the identity-only contract that
+// replaced "it carries both namespaces". The text spelling survived past the
+// deletion of its only consumer (the dotted "LEG.COL" key mint) on the grounds
+// that its cost was unmeasured; measured, deleting it leaves the real-FDB
+// sqldriver corpus, the embedded suite and the rowdiff goldens green, with the
+// sole red being the subtest that pinned the text half. That is the standard the
+// mint itself was deleted on.
+//
+// A MISS IS NOT LOUD. Arm 2 returns a matched read unchanged and an unmatched
+// read unchanged, so at this function's boundary the two are indistinguishable —
+// which is exactly why the set's contents need a test of their own. Each case
+// below therefore hands the rebase a LAYOUT keyed by the read's own identity, so
+// the MERGED RE-ANCHOR arm fires on a match and the two outcomes separate: a
+// matched alias bakes the merged ordinal, an unmatched one leaves the read alone.
+func TestMergedOuterLegAliasesIsIdentitiesOnly(t *testing.T) {
 	t.Parallel()
 	mergedCorr := values.NamedCorrelationIdentifier("$m")
 	rt := legRowType("K")
 
-	// AXIS 1 — the two channels disagree. The plan's leg identity is the user
-	// alias "E"; the select's source-alias slice carries a re-minted "q$7".
-	t.Run("stale source alias", func(t *testing.T) {
-		t.Parallel()
-		set := mergedOuterLegAliases("q$7", "D",
-			values.NamedCorrelationIdentifier("E"), values.NamedCorrelationIdentifier("D"))
-		ref := legRead("E", rt, 0)
-		out := rebaseOuterLegValue(ref, set, mergedCorr, nil, nil)
+	// assertRebasedByAliasSet drives the rebase with a layout the read's own
+	// identity keys, so a MATCHED alias re-anchors onto the merged ordinal and an
+	// unmatched one returns the read untouched.
+	assertRebasedByAliasSet := func(t *testing.T, set []string, ref *values.FieldValue, because string) {
+		t.Helper()
+		id, ok := legSlotIdentity(ref)
+		if !ok {
+			t.Fatal("test setup: a bare leg read must state an identity")
+		}
+		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil)
 		fv, isFV := out.(*values.FieldValue)
 		if !isFV {
 			t.Fatalf("rebase returned %T", out)
 		}
-		if fv.Field != "E.K" {
-			t.Errorf("reference to leg E was NOT rebased (field %q, want E.K).\n"+
-				"  The alias set carried only the stale source-alias text, so nothing in it\n"+
-				"  matched the reference's own correlation. An un-rebased leg reference is\n"+
-				"  unbound inside the FlatMap: it evaluates to NULL and the EXISTS drops rows.",
-				fv.Field)
+		if fv == ref || fv.Resolved == nil || fv.Resolved.Root().Ordinal != 4 {
+			t.Errorf("reference to leg %s was NOT re-anchored (alias set %v).\n  %s\n"+
+				"  An un-rebased leg reference is unbound inside the FlatMap: it evaluates\n"+
+				"  to NULL and the EXISTS drops rows.", ref.Child, set, because)
+			return
 		}
 		if qov, isQ := fv.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != mergedCorr {
-			t.Errorf("rebased child = %T, want QOV($m)", fv.Child)
+			t.Errorf("re-anchored child = %T, want QOV($m)", fv.Child)
 		}
+	}
+
+	// AXIS 1 — the two channels disagree. The plan's leg identity is the user
+	// alias "E"; the select's source-alias slice carries a re-minted "q$7". This
+	// is the corpus's 12 witnesses in miniature, and with the text half deleted
+	// the identity is the ONLY thing that can carry them.
+	t.Run("stale source alias", func(t *testing.T) {
+		t.Parallel()
+		set := mergedOuterLegAliases(
+			values.NamedCorrelationIdentifier("E"), values.NamedCorrelationIdentifier("D"))
+		assertRebasedByAliasSet(t, set, legRead("E", rt, 0),
+			"The alias set carried only the stale source-alias text, so nothing in it "+
+				"matched the reference's own correlation.")
 	})
 
 	// AXIS 2 — the channels AGREE on a lowercase machine mint, and the fold alone
@@ -259,26 +298,39 @@ func TestMergedOuterLegAliasesCarriesBothNamespaces(t *testing.T) {
 	t.Run("minted lowercase alias", func(t *testing.T) {
 		t.Parallel()
 		minted := values.NamedCorrelationIdentifier("q$9")
-		set := mergedOuterLegAliases("q$9", "D", minted, values.NamedCorrelationIdentifier("D"))
-		ref := legRead("q$9", rt, 0)
-		out := rebaseOuterLegValue(ref, set, mergedCorr, nil, nil)
-		fv := out.(*values.FieldValue)
-		if fv.Field != "q$9.K" {
-			t.Errorf("reference to minted leg q$9 was NOT rebased (field %q, want q$9.K).\n"+
-				"  Every entry used to be upper-folded while the reference's correlation is\n"+
-				"  verbatim, so a minted leg could not match its own entry.", fv.Field)
+		set := mergedOuterLegAliases(minted, values.NamedCorrelationIdentifier("D"))
+		assertRebasedByAliasSet(t, set, legRead("q$9", rt, 0),
+			"Every entry used to be upper-folded while the reference's correlation is "+
+				"verbatim, so a minted leg could not match its own entry.")
+	})
+
+	// The NEGATIVE control the two above need: an alias set that does NOT name
+	// the read's leg must leave it alone. Without it both cases above would pass
+	// against a rebase that re-anchored unconditionally, which is exactly the
+	// failure a set-vs-comparison mismatch produces in the other direction.
+	t.Run("unmatched alias is left alone", func(t *testing.T) {
+		t.Parallel()
+		ref := legRead("E", rt, 0)
+		id, _ := legSlotIdentity(ref)
+		set := mergedOuterLegAliases(values.NamedCorrelationIdentifier("Z"))
+		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil)
+		if out != values.Value(ref) {
+			t.Fatalf("a read whose leg the alias set does not name was rewritten to %v "+
+				"(set %v). The set is what decides which correlations this arm may touch; "+
+				"an arm that re-anchors regardless would move references belonging to "+
+				"enclosing scopes onto a merged row that does not carry them.", out, set)
 		}
 	})
 
-	// The fold must not be applied to the IDENTITY half: a quoted "Q$9" is a
-	// different leg from a minted q$9, and folding the set would make one match
-	// the other — the forgery the exact comparison exists to exclude.
-	t.Run("identity half is not folded", func(t *testing.T) {
+	// The set is NEVER folded: a quoted "Q$9" is a different leg from a minted
+	// q$9, and folding would make one match the other — the forgery the exact
+	// comparison exists to exclude.
+	t.Run("the set is not folded", func(t *testing.T) {
 		t.Parallel()
-		set := mergedOuterLegAliases("", "", values.NamedCorrelationIdentifier("q$9"))
+		set := mergedOuterLegAliases(values.NamedCorrelationIdentifier("q$9"))
 		for _, e := range set {
 			if e == "Q$9" {
-				t.Fatalf("alias set = %v — the identity half was upper-folded, so a quoted "+
+				t.Fatalf("alias set = %v — an entry was upper-folded, so a quoted "+
 					"\"Q$9\" leg would match a minted q$9's entry", set)
 			}
 		}
@@ -287,18 +339,29 @@ func TestMergedOuterLegAliasesCarriesBothNamespaces(t *testing.T) {
 		}
 	})
 
-	// And the TEXT half is still there and still folded — the dotted key namespace
-	// depends on it, so removing the fold would be its own regression.
-	t.Run("text half stays folded", func(t *testing.T) {
+	// THE DELETION, asserted rather than left to the signature. A set built from
+	// identities alone contains no upper fold of anything, and this is the case
+	// that reds if the text half is reintroduced — including by the plausible
+	// route of "add the alias text back, it can only match MORE references".
+	// It cannot: an entry that is not some quantifier's correlation is an entry no
+	// reference can carry, and the one it would match by coincidence is a
+	// same-spelled leg of a DIFFERENT quantifier.
+	t.Run("no text spelling is emitted", func(t *testing.T) {
 		t.Parallel()
-		set := mergedOuterLegAliases("e", "d")
-		want := map[string]bool{"E": true, "D": true}
+		set := mergedOuterLegAliases(
+			values.NamedCorrelationIdentifier("e"), values.NamedCorrelationIdentifier("d"))
+		want := map[string]bool{"e": true, "d": true}
 		if len(set) != 2 {
-			t.Fatalf("alias set = %v, want two upper-folded text entries", set)
+			t.Fatalf("alias set = %v, want exactly the two verbatim identities", set)
 		}
-		for _, e := range set {
-			if !want[e] {
-				t.Errorf("alias set entry %q is not the upper fold of its source alias", e)
+		for _, entry := range set {
+			if !want[entry] {
+				t.Errorf("alias set entry %q is not one of the leg identities — the "+
+					"source-alias TEXT channel is back. It is a parallel channel that can "+
+					"be stale (12 of ~81872 firings on the corpus), its only consumer (the "+
+					"dotted \"LEG.COL\" mint) is deleted, and its cost was measured before "+
+					"it was removed: the corpus, the embedded suite and the rowdiff "+
+					"goldens all stay green without it.", entry)
 			}
 		}
 	})

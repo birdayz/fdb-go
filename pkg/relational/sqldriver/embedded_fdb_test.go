@@ -115,7 +115,15 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// binder is what a leg-correlated read resolves THROUGH at runtime, and its
 	// read count is how much of that channel is load-bearing.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatMergedLegBindingCensus())
+	// The leg-column PROVENANCE census: the executor's last live reader of a
+	// dotted leg-qualified column name, cut by whether the leg it matched by TEXT
+	// also states an IDENTITY. That is the fact the reader's retirement rests on,
+	// and it is a different fact from how often the reader fires.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatLegColumnProvenanceCensus())
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertLegColumnProvenanceCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	// The bakeability census is ASSERTED, not merely printed. It was printed
@@ -238,10 +246,12 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 				"binder-produced window on a MULTI-LEG merged row (%s) while the "+
 				"leg-local bake produced NOTHING (Baked=0), and no proof in this run "+
 				"showed them redundant.\n\n"+
-				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's only\n"+
-				"  planner-side producer, the leg-local bake, is deleted on this branch\n"+
-				"  and returns with CQ-63, so a read appearing while Baked is still 0\n"+
-				"  means a consumer arrived by some OTHER route.\n\n"+
+				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's\n"+
+				"  planner-side producer is rebaseOuterLegValue's PASS-THROUGH — the arm\n"+
+				"  that hands a leg-correlated read back on its own leg correlation —\n"+
+				"  and it is measured at 162 of 162 firings on this corpus. Baked = 0\n"+
+				"  therefore means that arm stopped producing, so a read appearing\n"+
+				"  anyway arrived by some OTHER route.\n\n"+
 				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
 				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
 				"      agree, the way TestFDB_MergedLegBinding_ReaderShapeIsRedundant\n"+
@@ -356,6 +366,43 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 	Total:          12,
 	LegDerivations: 80,
 	MergeSlots:     1800,
+}
+
+// legColumnProvenanceFloors is the minimum population the leg-column provenance
+// census must report over the whole suite.
+//
+// MEASURED over this corpus: calls 52 (flatHit 40, notDotted 8, noLegs 0,
+// dottedMiss 0), dotted hits available 4, unstated 0, diverged 0. The
+// retirement decision this census feeds rests on the SMALL number — four dotted
+// hits, all four with a stated identity naming the same leg — and a small number
+// is exactly the kind that reads the same whether it is measured or absent.
+//
+// Both floors are 1, not an order of magnitude below the measurement, because
+// there is no order of magnitude below 4. What is being detected here is
+// DISAPPEARANCE: the shapes that drive the dotted arm ceasing to be planned, or
+// the reader ceasing to be reached. DottedHitIdentityAvailable is floored
+// separately from Calls because the flat arm carries 40 of the 52 calls, so the
+// denominator can look healthy while the arm the census exists for goes silent.
+var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
+	Calls:                      1,
+	DottedHitIdentityAvailable: 1,
+}
+
+// assertLegColumnProvenanceCensus checks the provenance census, dropping the
+// population floors when -test.run narrows the corpus — the same split its two
+// siblings make, for the same reason.
+func assertLegColumnProvenanceCensus(w io.Writer) bool {
+	floors := &legColumnProvenanceFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		c, _ := executor.LegColumnProvenanceCensus()
+		fmt.Fprintf(w, "leg-column provenance census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The partition and the divergence zero "+
+			"still run, over the population this filter actually reached: calls %d, "+
+			"dotted hits with an identity available %d. At zero they hold VACUOUSLY.\n",
+			f.Value.String(), c.Calls, c.DottedHitIdentityAvailable)
+		floors = nil
+	}
+	return executor.AssertLegColumnProvenanceCensus(w, floors)
 }
 
 // assertLegLocalBakeCensus checks the bakeability census, dropping the

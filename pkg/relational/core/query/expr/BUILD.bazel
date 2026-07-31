@@ -32,6 +32,7 @@ go_test(
         "predicatevalue_equals_test.go",
         "predrow_test.go",
         "resolve_identifier_ordinal_bind_test.go",
+        "shadowing_flowed_type_test.go",
         "walk_test.go",
         "where_exists_position_test.go",
         "window_walk_test.go",

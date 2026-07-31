@@ -122,6 +122,7 @@ go_test(
         "testdata_test.go",
         "text_index_conformance_test.go",
         "time_window_leaderboard_conformance_test.go",
+        "transient_fdb_error_test.go",
         "tuple_ordering_conformance_test.go",
         "typed_record_conformance_test.go",
         "unique_violation_conformance_test.go",

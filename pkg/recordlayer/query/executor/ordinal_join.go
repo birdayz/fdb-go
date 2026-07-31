@@ -816,15 +816,23 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 // `LEG.COL` while the physical leg emits the merged row those names address.
 // First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
 func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
+	census := values.LegIdentityCensusEnabled()
 	if i, ok := rt.FieldIndex(name); ok {
+		if census {
+			recordLegColumnProvenance(rt, name, true, nil, "")
+		}
 		return i, true
 	}
 	di := strings.IndexByte(name, '.')
 	if di <= 0 || len(rt.Legs) == 0 {
+		if census {
+			recordLegColumnProvenance(rt, name, false, nil, "")
+		}
 		return 0, false
 	}
 	qual, col := name[:di], name[di+1:]
-	for _, leg := range rt.Legs {
+	for i := range rt.Legs {
+		leg := rt.Legs[i]
 		if !strings.EqualFold(leg.Name, qual) {
 			continue
 		}
@@ -834,10 +842,19 @@ func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
 		}
 		for k := leg.Start; k < end; k++ {
 			if strings.EqualFold(rt.Fields[k].Name, col) {
+				// The census is told WHICH leg answered, so it can ask whether
+				// that leg also states an identity — the fact that decides
+				// whether this reader can be re-keyed off the name.
+				if census {
+					recordLegColumnProvenance(rt, name, false, &leg, qual)
+				}
 				return k, true
 			}
 		}
 		break
+	}
+	if census {
+		recordLegColumnProvenance(rt, name, false, nil, qual)
 	}
 	return 0, false
 }
@@ -1512,6 +1529,34 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	}
 	if qr == nil {
 		legs[id] = nil // the deliberately-NULL leg: present, bound to nil
+		return nil
+	}
+	// A leg whose flowed value is NOT A RECORD binds its DATUM, not the one-slot
+	// carrier around it — on EITHER side of the FlatMap.
+	//
+	// Java decides this from the VALUE's own static result type, never from
+	// which side of the join the binding came from:
+	// QuantifiedObjectValue.eval (QuantifiedObjectValue.java:82-95) is
+	// `isRelation() -> obj`, `isRecord() -> getMessage()`, else
+	// `binding.getDatum()`. The two FlatMap bindings are the IDENTICAL call
+	// (RecordQueryFlatMapPlan.java:135 and :140 — `withBinding(CORRELATION,
+	// quantifier.getAlias(), result)`), so there is no side for a rule to key on.
+	//
+	// isBareScalarRow is exactly Go's "not a record" test here: it matches the
+	// 1-slot `_0` carrier scalarPositionalRow builds around a computed scalar,
+	// and a genuine one-column leg carries the COLUMN's name, not `_0`. So a
+	// row-shaped leg — one column or many, outer or inner — cannot reach this.
+	//
+	// The consequence when the carrier is bound instead: the quantifier object
+	// is non-null whatever it holds, so ExistsValue.eval
+	// (ExistsValue.java:98-100, `getChild().eval() != null`) can no longer see
+	// an empty subplan. Measured before the unwrap existed: `SELECT a.id, EXISTS
+	// (SELECT 1 FROM e WHERE e.c = b.c) FROM a JOIN b ON … JOIN q ON …` over an
+	// EMPTY `e` answered TRUE for every row, while the same query correlated to
+	// the FIRST leg (which lands on the sibling non-build path, which already
+	// unwrapped) answered FALSE.
+	if isBareScalarRow(qr.Positional) {
+		raw[id] = qr.Positional.Slots[0]
 		return nil
 	}
 	row, err := adaptLegPositional(*qr, b.legType(id))
