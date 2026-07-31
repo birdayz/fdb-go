@@ -1,0 +1,95 @@
+package factory
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// Sweep runs whole seeds: it materializes each seed's case once and evaluates
+// every candidate derived from it against that one schema.
+//
+// One schema per SEED, not per candidate. A seed's candidates share a table,
+// a row set and an index set — they differ only in the query — so a schema per
+// candidate would pay the CREATE SCHEMA TEMPLATE / CREATE SCHEMA / INSERT cost
+// several times over for identical state, and that cost dominates a factory
+// run (the queries themselves are milliseconds against a warm container).
+type Sweep struct {
+	// SetupDB executes the schema DDL; it must already point at an existing
+	// database path.
+	SetupDB *sql.DB
+	DBPath  string
+	// ClusterFile is the path the per-schema query connections open.
+	ClusterFile string
+	// Java, when non-nil, adds the cross-engine oracle.
+	Java CrossEngine
+	// Date is stamped into every header.
+	Date string
+}
+
+// RunSeed evaluates every candidate of one seed and offers each outcome to the
+// batch. A seed with no TLP-eligible candidate is not an error — the generator
+// emits aggregates, unions and LIMIT queries the partition oracle declines by
+// construction — so it returns cleanly with nothing offered.
+func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
+	cands := Candidates(seed)
+	if len(cands) == 0 {
+		return nil, nil
+	}
+	for range cands {
+		batch.CountCandidate()
+	}
+
+	schema := fmt.Sprintf("fc%d", seed)
+	tmpl := schema + "t"
+	ddl := cands[0].Case.DDL()
+	for _, stmt := range []string{
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmpl, ddl),
+		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", s.DBPath, schema, tmpl),
+	} {
+		if _, err := s.SetupDB.ExecContext(ctx, stmt); err != nil {
+			return nil, fmt.Errorf("setup %q: %w", stmt, err)
+		}
+	}
+	defer func() {
+		_, _ = s.SetupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s/%s", s.DBPath, schema))
+		_, _ = s.SetupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))
+	}()
+
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", s.DBPath, s.ClusterFile, schema))
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	defer db.Close()
+
+	defaultConn, err := PinConn(ctx, db, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pin default conn: %w", err)
+	}
+	defer defaultConn.Close() //nolint:errcheck
+	secondConn, err := PinConn(ctx, db, SecondPlanRules())
+	if err != nil {
+		return nil, fmt.Errorf("pin second-plan conn: %w", err)
+	}
+	defer secondConn.Close() //nolint:errcheck
+
+	if _, err := defaultConn.ExecContext(ctx, cands[0].Case.InsertSQL()); err != nil {
+		return nil, fmt.Errorf("insert: %w", err)
+	}
+
+	runner := &Runner{
+		DefaultConn:    defaultConn,
+		SecondPlanConn: secondConn,
+		Java:           s.Java,
+		Date:           s.Date,
+	}
+	outcomes := make([]Outcome, 0, len(cands))
+	for _, cand := range cands {
+		o := runner.Run(ctx, cand)
+		if _, err := batch.Offer(o); err != nil {
+			return outcomes, err
+		}
+		outcomes = append(outcomes, o)
+	}
+	return outcomes, nil
+}

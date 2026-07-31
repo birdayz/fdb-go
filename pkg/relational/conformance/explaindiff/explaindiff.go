@@ -279,8 +279,8 @@ func planOne(file string, idx int, sql, errorPin, schemaTemplate string, reach *
 		// an empty line and diff as "no change".
 		e.Plan = "<PLAN-ERROR: planner returned a nil plan with no error>"
 	default:
-		e.Plan = normalizeAliases(collapse(physPlan.Explain()))
-		e.Shape = shapeOf(physPlan)
+		e.Plan = NormalizeAliases(collapse(physPlan.Explain()))
+		e.Shape = ShapeOf(physPlan)
 	}
 	return e
 }
@@ -293,14 +293,20 @@ func planOne(file string, idx int, sql, errorPin, schemaTemplate string, reach *
 // reproduce itself when run twice in one process).
 var generatedAlias = regexp.MustCompile(`([A-Za-z_]*)\$([0-9]+)`)
 
-// normalizeAliases renumbers generated correlation identifiers densely from
+// NormalizeAliases renumbers generated correlation identifiers densely from
 // 0, in order of first appearance WITHIN this plan. Distinctness is
 // preserved — two different correlations stay different, and the same
 // correlation referenced twice stays the same — so the rendering still
 // carries the plan's aliasing structure; only the global counter's value is
 // erased. The prefix's case is preserved because `q$` and `Q$` come from
 // different rendering paths and a swap between them is a real change.
-func normalizeAliases(s string) string {
+//
+// It is exported because any comparison of two EXPLAIN texts needs it, not
+// just this package's baseline dump: the factory's second-plan oracle decides
+// whether the disabled rule produced a DIFFERENT plan by comparing two EXPLAIN
+// strings, and raw counter values would make two identical plans look
+// different and count a tautological row comparison as a real one.
+func NormalizeAliases(s string) string {
 	seen := map[string]int{}
 	return generatedAlias.ReplaceAllStringFunc(s, func(m string) string {
 		parts := generatedAlias.FindStringSubmatch(m)
@@ -337,11 +343,20 @@ func planGuarded(sql, schemaTemplate string, reach *cascades.ReachabilityCollect
 	return plan(sql, schemaTemplate, reach)
 }
 
-// shapeOf renders the plan's structural skeleton: the Go type of each node,
+// ShapeOf renders the plan's structural skeleton: the Go type of each node,
 // indented two spaces per level, in GetChildren() order (documented stable).
 // A nil child renders as `<nil>` — RFC-183's shells are exactly that state,
 // so the baseline must be able to say it out loud.
-func shapeOf(p plans.RecordQueryPlan) []string {
+//
+// Exported because it is the repo's one STABLE-BY-CONSTRUCTION plan
+// fingerprint: it carries no aliases, no counters and no version-dependent
+// cost numbers, so the same plan renders identically across runs and across
+// releases. plans.PlanHash is explicitly NOT that (plan_hash.go documents its
+// value as free to change across releases), which is why the RFC-201 factory
+// dedups on this rendering instead. Type identity alone is COARSE — two plans
+// differing only in which index or predicate they use collapse together — so a
+// dedup key must pair it with a description of the query, never use it alone.
+func ShapeOf(p plans.RecordQueryPlan) []string {
 	var out []string
 	var walk func(n plans.RecordQueryPlan, depth int)
 	walk = func(n plans.RecordQueryPlan, depth int) {

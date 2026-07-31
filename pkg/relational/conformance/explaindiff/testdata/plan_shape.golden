@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=342 queries=2485 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=342 queries=2485 dml=158 non_query=97 plan_errors=258 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2022,9 +2022,13 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
-=== case_exists_combo.yaml#1 expect-error=0AF00
+=== case_exists_combo.yaml#1
 sql:   SELECT e.name FROM employees e WHERE CASE WHEN e.dept = 'eng' THEN e.salary > 90 ELSE e.salary > 100 END ORDER BY e.name
-plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
+plan:  Project([NAME#1], InMemorySort([NAME ASC], PredicatesFilter(Scan(EMPLOYEES), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === case_insensitive_keywords.yaml#0
 sql:   SelECT id FROM t WHERE id = 1
 plan:  Project([ID#0], Scan(T, [=]))
@@ -2143,9 +2147,12 @@ sql:   SELECT id, CASE WHEN category = 10 THEN 'A' WHEN category = 20 THEN 'B' E
 plan:  Project([ID#0, CASE(WHEN(predicate, predicate), ['A', 'B'])], Scan(PRODUCTS))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== case_when_in_java.yaml#2 expect-error=0AF00
+=== case_when_in_java.yaml#2
 sql:   SELECT id FROM products WHERE CASE WHEN category = 10 THEN price > 150 ELSE price > 400 END ORDER BY id
-plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
+plan:  Project([ID#0], PredicatesFilter(Scan(PRODUCTS), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === case_when_in_java.yaml#3
 sql:   SELECT CASE WHEN category <= 20 THEN 'low' ELSE 'high' END AS tier, COUNT(*) FROM products GROUP BY tier ORDER BY tier
 plan:  Project([CASE(WHEN(PREDICATE, TRUE), ['LOW', 'HIGH'])#0, COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(PRODUCTS))))

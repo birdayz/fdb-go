@@ -27,12 +27,14 @@ exports_files([
 # gazelle:proto disable
 # Build tags gazelle treats as satisfied so it keeps the corresponding `srcs` on
 # regen. These mirror the tags set repo-wide in `.bazelrc`
-# (--@rules_go//go/config:tags=...): both gate bazel-only test suites that a plain
-# `go test ./...` must skip — `bazelrunfiles` (conformance/bindingtester) and
-# `stress` (heavy benchmarks under pkg/relational/sqldriver/stress). Caveat of
-# enabling a tag globally: a `//go:build !stress` / `!bazelrunfiles` file would be
-# silently dropped from every Bazel build — don't introduce one.
-# gazelle:build_tags bazelrunfiles,stress
+# (--@rules_go//go/config:tags=...): each gates a bazel-only test suite that a plain
+# `go test ./...` must skip — `bazelrunfiles` (conformance/bindingtester), `stress`
+# (heavy benchmarks under pkg/relational/sqldriver/stress), and `factorycorpus` (the
+# full RFC-201 committed corpus under
+# pkg/relational/conformance/factorycorpus/full). Caveat of enabling a tag globally:
+# a `//go:build !stress` / `!bazelrunfiles` / `!factorycorpus` file would be silently
+# dropped from every Bazel build — don't introduce one.
+# gazelle:build_tags bazelrunfiles,stress,factorycorpus
 gazelle(name = "gazelle")
 
 nogo(
