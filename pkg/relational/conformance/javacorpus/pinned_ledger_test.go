@@ -22,9 +22,11 @@ package javacorpus_test
 //   - `engine-gap:*` and `conformance:*` — divergences this run FOUND, each
 //     pinned to its exact rejection in gaps.go and each booked.
 //
-// The `queries` count is the number of result-consuming configs actually
-// asserted against the engine. It is the honest denominator behind `pass`.
-const pinnedLedger = "pass=33 fail=0 skip=205 queries=518 " +
+// `queries` counts result-consuming configs actually asserted against the
+// engine. It is the honest denominator behind `pass`, and it deliberately
+// EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
+// them would let a file whose only query is config-less report a pass.
+const pinnedLedger = "pass=32 fail=0 skip=206 queries=512 " +
 	"file_skips{conformance:go-accepts-what-java-rejects=1," +
 	"engine-gap:array-literal-values=5,engine-gap:cast-array-literal=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:correlated-exists-setop=1," +
@@ -32,7 +34,7 @@ const pinnedLedger = "pass=33 fail=0 skip=205 queries=518 " +
 	"engine-gap:inline-values-table=1,engine-gap:nested-recursive-with=1," +
 	"engine-gap:planner-declines=1,engine-gap:returning-dry-run=1," +
 	"engine-gap:row-version-pseudocolumn=1,engine-gap:table-valued-function=1," +
-	"engine-gap:typed-integer-literal=1,fragment=2,plan-assertion=7," +
+	"engine-gap:typed-integer-literal=1,fragment=2,no-checks=1,plan-assertion=7," +
 	"polarity:fixed-version-meta=9,polarity:negative-execution=20," +
 	"polarity:negative-parse=25,unsupported-DDL:other=6,unsupported-DDL:struct=39," +
 	"unsupported-DDL:value-index-as-select=42,unsupported:continuation=1," +
@@ -48,9 +50,9 @@ const pinnedLedger = "pass=33 fail=0 skip=205 queries=518 " +
 	"engine-gap:row-version-pseudocolumn=1,engine-gap:table-valued-function=1," +
 	"engine-gap:typed-integer-literal=1,no-checks=8,plan-assertion=212," +
 	"unsupported-DDL:other=6,unsupported-DDL:struct=39," +
-	"unsupported-DDL:value-index-as-select=42,unsupported:check-cache=86," +
+	"unsupported-DDL:value-index-as-select=42,unsupported:check-cache=94," +
 	"unsupported:continuation=16,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=115," +
+	"unsupported:multi-cluster=2,unsupported:prepared=124," +
 	"unsupported:result-metadata=65,unsupported:schema-command=16," +
 	"unsupported:temporary-function=191}"
 
@@ -58,3 +60,12 @@ const pinnedLedger = "pass=33 fail=0 skip=205 queries=518 " +
 // pass / fail / skip. Asserting the sum separately means a file that vanished
 // from the run fails with an obvious message instead of a 2,000-column diff.
 const pinnedFileTotal = 238
+
+// pinnedAssignmentDigest is sha256 over the sorted `path status class` lines.
+//
+// It exists because the counts above are blind to a SWAP: two files trading
+// classes leaves every total identical, so the census stays green while the
+// corpus's meaning changes underneath it. The digest is deliberately opaque —
+// on mismatch the test dumps the full assignment, which is the artefact worth
+// diffing.
+const pinnedAssignmentDigest = "4c6f5dc175faacb138165a0a0ae8bde15d98e5f81ab7d8137ec683578f9cd3eb"

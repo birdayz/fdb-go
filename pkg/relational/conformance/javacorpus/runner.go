@@ -74,10 +74,6 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		res.Status = StatusSkip
 		res.SkipClass = SkipFragment
 		return res
-	case javayamsql.FixedVersionMeta:
-		res.Status = StatusSkip
-		res.SkipClass = SkipFixedVersionMeta
-		return res
 	}
 
 	file, err := corpus.ParseFile(path)
@@ -126,6 +122,27 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 		return res
 	}
 
+	// A fixed-version meta-test has no Java stream on the current version, so
+	// upstream states no expectation for it. That is a reason to MEASURE it,
+	// not to wave it through: Go can run what Java declines to, and the one
+	// outcome that would be a real finding is a file asserting something and
+	// getting it right — that would mean the gate under test resolves the same
+	// way on current as on the pinned version, and the file was never
+	// version-specific at all. Anything else (it fails, or it reaches no
+	// assertion) is the expected "cannot be evaluated here".
+	if javayamsql.PolarityOf(path) == javayamsql.FixedVersionMeta {
+		res.Status = StatusSkip
+		res.SkipClass = SkipFixedVersionMeta
+		if runErr == nil && res.QueriesRun > 0 {
+			res.Status = StatusFail
+			res.Err = fmt.Errorf("file is classified fixed-version-meta (%s) — Java runs it only against a pinned "+
+				"version — but on the current version it asserted %d queries and passed. It is not version-specific; "+
+				"reclassify it as Positive",
+				javayamsql.Manifest[path].Reason, res.QueriesRun)
+		}
+		return res
+	}
+
 	// Execution-level negatives are the corpus's own meta-tests: upstream
 	// asserts they FAIL. Their pin is therefore inverted — a clean run is the
 	// bug, not the success.
@@ -171,13 +188,15 @@ func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config
 	return res
 }
 
-// suppressesAssertion reports whether a skip class removed a result assertion
+// SuppressesAssertion reports whether a skip class removed a result assertion
 // rather than merely declining an extra dimension of the same one.
 //
 // The distinction decides whether a file that ran clean actually proved
 // anything: skipping the prepared arm still leaves the simple arm asserting the
-// rows, whereas skipping the only `result:` leaves nothing behind it.
-func (c SkipClass) suppressesAssertion() bool {
+// rows, whereas skipping the only `result:` leaves nothing behind it. It is
+// exported so the negative-execution accounting can be COUNTED against it
+// rather than restated in prose.
+func (c SkipClass) SuppressesAssertion() bool {
 	switch c {
 	case SkipPlanAssertion, SkipResultMetadata, SkipContinuation,
 		SkipTemporaryFunction, SkipRandomInjection, SkipVersionGate,
@@ -191,7 +210,7 @@ func (c SkipClass) suppressesAssertion() bool {
 // suppressedBy returns the first skip that removed an assertion.
 func suppressedBy(skips []Skip) (SkipClass, bool) {
 	for _, s := range skips {
-		if s.Class.suppressesAssertion() {
+		if s.Class.SuppressesAssertion() {
 			return s.Class, true
 		}
 	}

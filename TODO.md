@@ -12468,24 +12468,45 @@ None is speculative: each was re-verified against the tree before booking.
     commits here, so confirm it on merge.
 
     **Polarity discrepancy vs RFC-201 §3 ruling 3: RESOLVED, and the RFC was
-    the loser.** The RFC's scoping study said "33 files under `shouldFail/`" and
-    "10 include-only fragments"; the manifest measured 25 parse-level negatives,
-    35 execution-level ones, and 2 fragments. The implementation is right: it
-    read each file's polarity off the Java test class that asserts it, and
-    "negative" only split into parse-level and execution-level once a parser
-    existed to draw the line. §3 has been corrected to the measured figures.
+    the loser — but so was the branch's own commit message.** The RFC's scoping
+    study said "33 files under `shouldFail/`" and "10 include-only fragments";
+    `a076ba66c`'s message said "25 parse-level, 35 execution-level, 2
+    fragments". COUNTED off master, the manifest it shipped actually held **25
+    parse-level, 46 execution-level, 2 fragments** — so the "35" was a third
+    unverified figure, and this entry repeated it until the counts were pinned.
+    The implementation's METHOD is right (each file's polarity read off the
+    Java test class that asserts it, and "negative" only splits into
+    parse-level and execution-level once a parser exists to draw the line); it
+    was only the reported total that was wrong. `TestManifestComposition` now
+    pins the composition so no figure here has to be trusted again. §3 has been
+    corrected to the measured numbers.
 
-    **69.1 then re-measured the EXECUTION-level half by running it, and moved 13
-    more files.** Of the 35 execution-level negatives, 20 fail as classified. The
-    other 15 were classified by reading test classes that pin an OLD version, and
-    a Go run is a current-version run: `InitialVersionTest` carries separate
-    `shouldPassOnCurrent` / `shouldFailOnCurrent` streams, and 4 `wrong-*-less-than`
-    files are POSITIVE on current (their less-than branch is never selected, so
-    the wrong expectation is never checked). A further 9 files — 8 under
-    `supported-version/` plus `initial-version/less-than-version-tests` — have no
-    current-version stream at all and are now `FixedVersionMeta`: a
-    single-current-version runner cannot evaluate them in either direction. The
-    manifest carries the corrected entries with the Java stream cited per file.
+    **69.1 then re-measured the EXECUTION-level half by RUNNING it, and
+    reclassified 13 files.** Master's manifest carried 46 execution-level
+    entries; it now carries 42, and the manifest totals are pinned by
+    `TestManifestComposition` (84 entries: 25 parse / 42 execution / 9
+    fixed-version / 2 fragment / 6 explicit-positive) so no prose has to quote
+    them from memory. The 13 moves:
+
+    - **4 → Positive.** `initial-version/wrong-{result,count,unordered,error}-less-than`.
+      A Go run is a current-version run, and `InitialVersionTest` carries
+      separate `shouldPassOnCurrent` / `shouldFailOnCurrent` streams; all four
+      are in `shouldPassOnCurrent` (:164-167) because their less-than branch is
+      never selected, so the wrong expectation they carry is never checked.
+    - **9 → FixedVersionMeta** (a new polarity). 8 under `supported-version/`
+      plus `initial-version/less-than-version-tests`: no current-version stream
+      runs them at all, so a single-current-version runner cannot evaluate them
+      in either direction. They are still EXECUTED and asserted not to
+      quietly pass — Go can measure what Java has no stream for.
+
+    Of the 42 remaining execution-level entries the ledger books **20** as
+    `polarity:negative-execution` — they run and fail, as upstream requires.
+    The other 22 measured as 15 whose expected failure is unreachable because
+    the directive carrying it is itself a counted skip, plus 7 claimed first by
+    a DDL or engine gap. That 20/15/7 split is asserted by the corpus-run test,
+    not asserted here: a manifest ENTRY count and a ledger OUTCOME count are
+    different denominators and fusing them is how a corrected figure becomes a
+    wrong one.
   - [x] **69.1 — Phase 1: runner core, plan assertions suppressed.** Built as
     `pkg/relational/conformance/javacorpus`, executing all 238 vendored files
     against real FDB. Multi-document blocks with `include:` splicing, the
@@ -12500,18 +12521,26 @@ None is speculative: each was re-verified against the tree before booking.
     !not_null !sc !uuid !pos !randomStr`).
 
     **MEASURED LEDGER (pinned; `pkg/relational/conformance/javacorpus/pinned_ledger_test.go`):
-    pass=33, fail=0, skip=205, 518 asserted queries.** Largest classes:
+    pass=32, fail=0, skip=206, 512 asserted queries.** Largest classes:
     `unsupported-DDL:value-index-as-select` 42, `unsupported-DDL:struct` 39,
-    parse/execution/fixed-version polarity 54, `unsupported:temporary-function`
-    17, `plan-assertion` 7 files / 212 configs.
+    polarity/meta 56, `unsupported:temporary-function` 17, `plan-assertion` 7
+    files / 212 configs. `queries` excludes `noChecks` queries: they execute but
+    assert nothing, and counting them let a file whose ONLY query is
+    config-less (`scenario-tests.yamsql`, "# TODO: add data" upstream) report a
+    pass — the vacuous-pass guard was defeated by the very branch that books
+    the skip. A per-file `path status class` digest is pinned beside the counts,
+    because totals alone are blind to two files SWAPPING classes.
 
     **§3's "~95 files green" target is SUPERSEDED by this measurement**, and the
-    reason is not that the runner fell short — it is that the target was formed
-    before anyone had run the corpus. 42 files are blocked by a single DDL gap
-    nobody had measured (CQ-71, now the largest blocker in the corpus, bigger
-    than struct types), 39 by struct types, and 54 are meta-tests that measure
-    the runner rather than the engine. The reachable ceiling for Phase 1 as
-    scoped is ~87 files, and 33 of them pass today. §3 has been corrected.
+    reason is not that the runner fell short — the target was formed before
+    anyone had run the corpus. The real decomposition: **100 files are outside
+    Phase 1 by construction** (56 meta-tests, 7 plan-assertion-only, 35 needing
+    a later phase's capability, 2 asserting nothing), leaving **138 in scope —
+    32 passing and 106 blocked by an engine or DDL gap** (87 DDL: 42
+    value-index-as-select + 39 struct + 6 other; 19 engine divergences). So the
+    denominator is 138, and the gap to it is one DDL feature (CQ-71, bigger than
+    struct types and unmeasured before this run) plus struct types. §3 has been
+    corrected with the same arithmetic.
 
     Skip policy is the product and it holds: every non-executed file, block,
     query and config is counted with a reason class, `explain:` /
@@ -12725,6 +12754,18 @@ None is speculative: each was re-verified against the tree before booking.
     widening is precisely the silent divergence the cross-engine harness exists
     to find. Decide deliberately whether this is a sanctioned read-side
     extension or a missing rejection — do not leave it undecided.
+
+  - **the enum matcher arm is not ported (0 files today, but unbooked until
+    now).** Java's `Matchers.matchField` has an arm comparing a String
+    expectation to a protobuf `EnumValueDescriptor` by NAME. Go omits it,
+    because whether it is needed depends on what the driver returns for an enum
+    column — if that is already the name as a string the existing String arm
+    covers it; if it is an ordinal or a typed value, the omission is a silent
+    mismatch. Unanswerable today: every corpus file with an enum column is
+    skipped before a row is compared. Answer it when `enum.yamsql` /
+    `insert-enum.yamsql` unblock, and delete the comment at the site or write
+    the arm. Stated rather than guessed — an untested arm written on a hunch is
+    worse than a named omission.
 
   Order these by ledger count, not by list order: the array-literal five are
   worth more than the nine singletons combined, and the error-class one is

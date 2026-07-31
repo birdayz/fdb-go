@@ -215,12 +215,17 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 
 	// A query with no configs of its own gets Java's synthetic noChecks: it
 	// runs, its rows are drained, and nothing is asserted.
+	//
+	// It must NOT count towards QueriesRun. QueriesRun is the denominator the
+	// vacuous-pass guard tests, so counting a noChecks query here would let a
+	// file whose ONLY query asserts nothing report a pass — which is precisely
+	// the shape of green the guard exists to catch. scenario-tests.yamsql is
+	// exactly that file upstream ("# TODO: add data", one config-less query).
 	if cmd.ImplicitNoChecks() {
 		r.skip(SkipNoChecks, at, "query declares no configs")
 		if _, err := execAny(ctx, conn, query); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
 		}
-		r.result.QueriesRun++
 		return nil
 	}
 

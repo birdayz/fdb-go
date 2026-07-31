@@ -169,6 +169,14 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 		return fmt.Errorf("cell mismatch at row %d, cell %s: %s", rowNum, cellRef, fmt.Sprintf(format, args...))
 	}
 
+	// Every Matchable tag routes its null rejection through
+	// Matchable.shouldNotBeNull, which emits one generic sentence rather than a
+	// per-tag one. Sharing the wording here keeps a failure diagnosable against
+	// the Java message it corresponds to.
+	notNull := func() error {
+		return fmt.Errorf("unexpected NULL at row: %d, cell: %s", rowNum, cellRef)
+	}
+
 	switch exp.TagName() {
 	case javayamsql.TagIgnore:
 		return nil
@@ -176,33 +184,33 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 		if actual == nil {
 			return nil
 		}
-		return fail("expected NULL, got %v instead", actual)
+		return fail("expected NULL, got '%v' instead", actual)
 	case javayamsql.TagNotNull:
 		if actual == nil {
-			return fail("unexpected NULL")
+			return notNull()
 		}
 		return nil
 	case javayamsql.TagStringContains:
 		want, _ := exp.AsString()
 		if actual == nil {
-			return fail("unexpected NULL")
+			return notNull()
 		}
 		s, ok := actualString(actual)
 		if !ok {
 			return fail("expected to match against a String value, however we got %v of type %T", actual, actual)
 		}
 		if !strings.Contains(s, want) {
-			return fail("expected string containing %q instead got %q", want, s)
+			return fail("expected string containing '%s' instead got '%s'", want, s)
 		}
 		return nil
 	case javayamsql.TagUUID:
 		want, _ := exp.AsString()
 		if actual == nil {
-			return fail("unexpected NULL")
+			return notNull()
 		}
 		s, ok := actualString(actual)
 		if !ok || !strings.EqualFold(s, want) {
-			return fail("expected UUID: %q got %v", want, actual)
+			return fail("expected UUID: '%s' got %v", want, actual)
 		}
 		return nil
 	case javayamsql.TagRandomStr:
@@ -212,7 +220,7 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 			return fail("%v", err)
 		}
 		if actual == nil {
-			return fail("unexpected NULL")
+			return notNull()
 		}
 		s, ok := actualString(actual)
 		if !ok || s != want {
@@ -259,6 +267,18 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 		return nil
 	}
 
+	// Java has one more arm here, between the tags and the scalar comparisons:
+	// a String expectation against a protobuf EnumValueDescriptor actual
+	// succeeds when the string equals the descriptor's NAME. It is not ported,
+	// because whether it is needed depends on what the Go driver hands back for
+	// an enum column — if that is already the name as a string, matchString
+	// below covers it and the arm is dead weight; if it is an ordinal or a
+	// typed value, the arm is required and its absence is a silent mismatch.
+	// That question is unanswerable today: every corpus file with an enum
+	// column is skipped before a row is compared, so nothing exercises it
+	// either way. Booked under CQ-72 rather than guessed at — an untested arm
+	// written on a hunch is worse than a stated omission.
+
 	u := exp.Untag()
 	switch u.Kind {
 	case javayamsql.KindMap:
@@ -292,6 +312,19 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 
 // matchArray mirrors the nested-array branch: element i of the expectation is
 // matched against element i of the actual array.
+//
+// A SURPLUS actual element is deliberately not an error, and the asymmetry is
+// Java's, not an oversight here. Matchers' array loop is bounded by
+// `expectedArray.size()` and returns success without ever asking whether the
+// actual array had more — so an expectation of [1, 2] matches an actual of
+// [1, 2, 3]. Its ROW loop does the opposite: after consuming the expected rows
+// it drains the rest and fails with "too many rows in actual result set", which
+// this file matches in matchOrdered.
+//
+// Being stricter than Java here would be the costliest direction to diverge in:
+// the corpus's expectations are Java-blessed, so a Go-only rejection turns a
+// file Java passes into a spurious red — and it would surface as a wave of
+// false failures exactly when struct and array columns start working.
 func matchArray(exp *javayamsql.Value, actual any, rowNum int, cellRef string, fail func(string, ...any) error) error {
 	got, ok := actual.([]any)
 	if !ok {
@@ -300,15 +333,11 @@ func matchArray(exp *javayamsql.Value, actual any, rowNum int, cellRef string, f
 	for i, e := range exp.Seq {
 		if i >= len(got) {
 			return fail("expected (containing %d array items) does not match actual (containing %d array items)",
-				len(exp.Seq), len(got))
+				len(exp.Seq), i)
 		}
 		if err := matchField(e, got[i], "", rowNum, fmt.Sprintf("%s[%d]", cellRef, i)); err != nil {
 			return err
 		}
-	}
-	if len(got) > len(exp.Seq) {
-		return fail("expected (containing %d array items) does not match actual (containing %d array items)",
-			len(exp.Seq), len(got))
 	}
 	return nil
 }

@@ -97,9 +97,19 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
 
    *Measured (Phase 0 parser, Phase 1 execution; supersedes this ruling's
    original "33 negatives / 10 fragments", which was a coarse pre-implementation
-   count):* **25 parse-level negatives, 20 execution-level negatives, 9
-   fixed-version meta-tests, 2 include-only fragments.** The parse/execution
-   split only became drawable once a parser existed. The 9 fixed-version
+   count):* the manifest holds **84 entries — 25 parse-level negatives, 42
+   execution-level negatives, 9 fixed-version meta-tests, 2 include-only
+   fragments, and 6 files recorded Positive because the reason is worth
+   keeping.** Pinned by `TestManifestComposition`.
+
+   Do not confuse that with the runner's ledger, which books **20** files as
+   `polarity:negative-execution`: those are different denominators. The
+   manifest counts what upstream ASSERTS about a file; the ledger counts what
+   HAPPENED when it ran. The 42 split, measured, as 20 booked + 15 whose
+   expected failure could not be reached because the directive carrying it was
+   itself a counted skip + 7 claimed first by a DDL or engine gap.
+
+   The parse/execution split only became drawable once a parser existed. The 9 fixed-version
    meta-tests are the subtler correction: their polarity is defined solely
    against a version the Java test class pins (`SupportedVersionTest` and
    `InitialVersionTest` both pin 3.0.18.0), and no current-version stream runs
@@ -124,16 +134,28 @@ root file with `.metrics.binpb`/`.metrics.yaml` companions. Measured by the
   tags, version gates collapsed to the single Go version, `include:`.
 
   *This phase's original target of "~95 files green" is SUPERSEDED by
-  measurement: **33 pass, 0 fail, 205 counted skips, 518 asserted queries.***
+  measurement: **32 pass, 0 fail, 206 counted skips, 512 asserted queries.***
   The target was not missed so much as never grounded — it was formed before
-  anyone had executed the corpus. Running it showed 42 files blocked by a single
-  unmeasured DDL gap (a value index written as `CREATE INDEX … AS SELECT`,
-  which turns out to be a bigger blocker than struct types at 39), and 54 files
-  that are meta-tests of the runner rather than tests of the engine. The
-  reachable ceiling for Phase 1 as scoped is ~87 files. The lesson generalises
-  to the later phases' `+35` / `+16` / `41` / `44` figures: those are file
-  counts derived from directive census, not from execution, and each should be
-  re-stated as a measurement when its phase lands.
+  anyone had executed the corpus.
+
+  The 238 files decompose, from the pinned ledger:
+
+  - **100 are outside Phase 1 by construction** — 56 meta-tests that measure the
+    runner rather than the engine (25 parse-negative, 20 execution-negative, 9
+    fixed-version, 2 fragment), 7 files whose only assertions are the plan
+    directives ruling 2 declines permanently, 35 needing a later phase's
+    capability (17 temporary function, 8 schema command, 7 resultMetadata, 2
+    multi-cluster, 1 continuation), and 2 that assert nothing at all.
+  - **138 are in scope**, and of those **32 pass** while **106 are blocked by an
+    engine or DDL gap**: 87 DDL (42 value-index-as-select, 39 struct, 6 other)
+    and 19 measured engine divergences.
+
+  So the in-scope denominator is 138, not 95, and the gap to it is one DDL
+  feature plus struct types. Closing the value-index gap alone puts up to 42
+  files in reach. The lesson generalises to the later phases' `+35` / `+16` /
+  `41` / `44` figures: those are file counts derived from directive census, not
+  from execution, and each should be re-stated as a measurement when its phase
+  lands.
 - **Phase 2 — `resultMetadata:` (+35 files) and per-page continuations /
   `EXECUTE CONTINUATION` (+16).** Runner- and driver-side; no planner risk. The
   continuation work is also the prerequisite for the ForceContinuations oracle

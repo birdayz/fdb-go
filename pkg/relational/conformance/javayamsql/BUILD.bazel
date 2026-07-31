@@ -24,6 +24,7 @@ go_test(
     name = "javayamsql_test",
     srcs = [
         "corpus_test.go",
+        "manifest_test.go",
         "parse_test.go",
     ],
     # keep: TestCorpusParses walks the vendored .yamsql tree, so it has to be in

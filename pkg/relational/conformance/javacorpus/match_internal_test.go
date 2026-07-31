@@ -432,6 +432,43 @@ func TestVersionGatesCollapseToCurrent(t *testing.T) {
 	}
 }
 
+// TestMatchArrayIgnoresSurplusActualElements pins a LENIENCY, which is the
+// harder kind of behaviour to keep: nothing in a passing corpus notices a
+// matcher that is too strict until a file that Java blesses turns red.
+//
+// Matchers' array loop is bounded by the EXPECTED element count and returns
+// success without inspecting the rest, so [1, 2] matches an actual [1, 2, 3].
+// Being stricter here would be a Go-only rejection of a Java-blessed
+// expectation — latent while array columns are DDL-blocked, and a wave of
+// false failures the moment Phase 3 unblocks them.
+func TestMatchArrayIgnoresSurplusActualElements(t *testing.T) {
+	t.Parallel()
+
+	surplus := rs([]string{"A"}, []string{""}, []any{[]any{int64(1), int64(2), int64(3)}})
+	if err := matchResultSet(configFrom(t, `result: [{A: [!l 1, !l 2]}]`), surplus, true); err != nil {
+		t.Errorf("Java's array loop ignores surplus actual elements; Go must not reject them: %v", err)
+	}
+	// A MISSING element is still an error — the loop runs out of actual data
+	// before it runs out of expectations, which Java does report.
+	short := rs([]string{"A"}, []string{""}, []any{[]any{int64(1)}})
+	if err := matchResultSet(configFrom(t, `result: [{A: [!l 1, !l 2]}]`), short, true); err == nil {
+		t.Error("a missing array element must still be rejected")
+	}
+	// And a wrong element within the compared prefix is still an error.
+	wrong := rs([]string{"A"}, []string{""}, []any{[]any{int64(1), int64(9), int64(3)}})
+	if err := matchResultSet(configFrom(t, `result: [{A: [!l 1, !l 2]}]`), wrong, true); err == nil {
+		t.Error("a wrong element inside the compared prefix must be rejected")
+	}
+	// The row-level counterpart is the OPPOSITE, and deliberately so: Java
+	// drains the result set after the expectations run out and fails on
+	// surplus ROWS. Pinning both sides together is what stops someone
+	// "harmonising" them later.
+	extraRow := rs([]string{"A"}, []string{"BIGINT"}, []any{int64(1)}, []any{int64(2)})
+	if err := matchResultSet(configFrom(t, `result: [{A: !l 1}]`), extraRow, true); err == nil {
+		t.Error("surplus ROWS must be rejected even though surplus array ELEMENTS are not")
+	}
+}
+
 // TestGapSignaturesAreSpecific keeps the engine-gap table from becoming a mute
 // allowlist: an entry with an empty or generic signature would absorb any
 // future failure at that path.

@@ -30,11 +30,16 @@ var engineGaps = []EngineGap{
 	// Minimal reproducer: check-result-metadata/shouldPass/array-column.yamsql,
 	// eight lines — `create table t1(pk integer, x integer array, …)` then
 	// `INSERT INTO t1 VALUES (1, [10, 20, 30])`.
-	{"check-result-metadata/shouldPass/array-column.yamsql", SkipGapArrayValues, "cannot be assigned to a variable", "CQ-72"},
-	{"cast-tests.yamsql", SkipGapArrayValues, "cannot be assigned to a variable", "CQ-72"},
-	{"arrays-operators.yamsql", SkipGapArrayValues, "cannot be assigned to a variable", "CQ-72"},
-	{"right-deep-plan-tests.yamsql", SkipGapArrayValues, "cannot be assigned to a variable", "CQ-72"},
-	{"prepared.yamsql", SkipGapArrayValues, "cannot be assigned to a variable", "CQ-72"},
+	//
+	// The signatures carry the offending statement's own text, not just the
+	// 22000 sentence: that message is emitted for every INSERT type mismatch,
+	// so a bare match would let an unrelated conversion bug in one of these
+	// five files be absorbed as "the known array gap".
+	{"check-result-metadata/shouldPass/array-column.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, [10, 20, 30])", "CQ-72"},
+	{"cast-tests.yamsql", SkipGapArrayValues, "insert into test_cast_arrays values(1, [1, 2, 3])", "CQ-72"},
+	{"arrays-operators.yamsql", SkipGapArrayValues, `INSERT INTO T1 (\"pk\", \"arr\", \"arr_nn\")`, "CQ-72"},
+	{"right-deep-plan-tests.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, 'A1', [1000, 2000])", "CQ-72"},
+	{"prepared.yamsql", SkipGapArrayValues, "INSERT INTO TA VALUES (1, 2.01, true, 151, [3, 4, 5]", "CQ-72"},
 
 	// Querying the catalog's own tables (TEMPLATES, SCHEMAS) from a user
 	// connection finds no schema metadata to plan against.
@@ -83,7 +88,7 @@ var engineGaps = []EngineGap{
 	// declines. It is booked all the same, because the conformance principle
 	// governs the SHARED surface and an unreviewed widening of it is exactly
 	// the silent divergence the cross-engine harness exists to catch.
-	{"maxRows.yamsql", SkipConformanceGoAccepts, "however it succeeded", "CQ-72"},
+	{"maxRows.yamsql", SkipConformanceGoAccepts, `"select * from ta limit 5": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
 	// A `create schema template` issued as a SETUP STEP rather than as a
 	// schema_template block, declaring struct types. Same Phase-3 gap as the

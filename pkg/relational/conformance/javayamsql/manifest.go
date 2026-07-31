@@ -98,6 +98,26 @@ func PolarityOf(path string) Polarity {
 	return Positive
 }
 
+// Composition counts the manifest's entries by polarity.
+//
+// It exists because the manifest's totals get quoted in prose, and prose
+// denominators drift: "42 execution-level negatives" (an entry count) and "20
+// booked as polarity:negative-execution" (a ledger outcome) are different
+// numbers about different things, and fusing them is how a corrected figure
+// becomes a wrong one. Anything quoting a manifest total should read it from
+// here.
+//
+// Positive entries are the ones recorded EXPLICITLY — files carrying a reason
+// worth keeping even though they pass. The overwhelming majority of positives
+// are absent from the manifest entirely and are not counted here.
+func Composition() map[Polarity]int {
+	out := map[Polarity]int{}
+	for _, e := range Manifest {
+		out[e.Polarity]++
+	}
+	return out
+}
+
 // ParseLevelNegatives returns the files the parser is required to reject.
 func ParseLevelNegatives() []string {
 	var out []string
