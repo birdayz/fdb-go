@@ -192,11 +192,14 @@ Run a specific Ginkgo test: `bazelisk test //pkg/recordlayer:recordlayer_test --
 
 **Stress comparison workflow:** When changing the planner, cost model, or executor, run the 1M stress test before AND after to detect regressions. Use a git worktree for the baseline:
 ```sh
-# Baseline (master):
-git worktree add /tmp/fdb-master master
-cd /tmp/fdb-master && bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+# Both sides MUST live on the same filesystem — a baseline in /tmp or on another
+# disk measures the DISKS, not the change. Check free space first: ext4 point-lookup
+# latency degrades sharply above ~95% utilisation and reports as a planner regression.
+df -h .
+git worktree add ../fdb-baseline master     # sibling path, same fs as this tree
+cd ../fdb-baseline && bazelisk test //pkg/relational/sqldriver/stress:stress_test \
   --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
-git worktree remove /tmp/fdb-master --force
+git worktree remove ../fdb-baseline --force
 
 # Current branch:
 bazelisk test //pkg/relational/sqldriver/stress:stress_test \
