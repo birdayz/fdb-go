@@ -1389,3 +1389,170 @@ func f(fv *values.FieldValue) map[string]row {
 			"reporting there is the deliberate side to err on")
 	}
 }
+
+// --- call-boundary taint ------------------------------------------------------
+//
+// The name handed to a helper as a plain string PARAMETER was invisible until
+// the taint followed it across the call, and the invisibility had a direction:
+// EXTRACTING a helper turned a reported `.Field` decision into an unreported
+// one, so the ratchet's count could be walked down by refactoring alone. It
+// happened — three sites left the ledger while their decisions stayed exactly
+// where they were.
+//
+// Both directions are pinned, because a taint that crosses call boundaries is
+// the easiest place in this detector to buy recall with noise.
+
+// TestCallBoundaryTaint_ReportsTheExtractionShape is the shape that motivated
+// the pass, written as the refactor actually performed: a caller slices a
+// qualifier and a leaf out of fv.Field and hands both to a helper, which does
+// the comparing. Neither comparison mentions a FieldValue.
+func TestCallBoundaryTaint_ReportsTheExtractionShape(t *testing.T) {
+	t.Parallel()
+	forms := scanSnippet(t, `
+type FieldValue struct{ Field string }
+
+func legWindowSlot(qual, leaf string, cols []string, legs []struct{ Name string }) (int, bool) {
+	for _, leg := range legs {
+		if strings.EqualFold(leg.Name, qual) {
+			for k, c := range cols {
+				if strings.EqualFold(c, leaf) {
+					return k, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func bake(fv *FieldValue, cols []string, legs []struct{ Name string }) int {
+	if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+		if k, ok := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs); ok {
+			return k
+		}
+	}
+	return -1
+}
+`)
+	if len(forms) != 2 {
+		t.Fatalf("extraction shape reported %d decisions %v, want 2 — the qualifier and "+
+			"the leaf comparison both live behind a plain string parameter, and a gate "+
+			"blind to them can be satisfied by extracting a helper", len(forms), forms)
+	}
+}
+
+// TestCallBoundaryTaint_IsTransitive pins the fixed point. A tainted parameter
+// passed on again must taint the next callee's parameter too; stopping at one
+// hop would be an arbitrary depth limit on the same laundering the
+// intra-function taint already refused to bound.
+func TestCallBoundaryTaint_IsTransitive(t *testing.T) {
+	t.Parallel()
+	forms := scanSnippet(t, `
+type FieldValue struct{ Field string }
+
+func inner(n string, cols []string) bool {
+	for _, c := range cols {
+		if c == n {
+			return true
+		}
+	}
+	return false
+}
+
+func middle(n string, cols []string) bool { return inner(n, cols) }
+
+func outer(fv *FieldValue, cols []string) bool { return middle(fv.Field, cols) }
+`)
+	if len(forms) != 1 {
+		t.Fatalf("two-hop taint reported %d decisions %v, want 1 (inner's `c == n`) — "+
+			"the taint stopped short of the fixed point", len(forms), forms)
+	}
+}
+
+// TestCallBoundaryTaint_PropagatesBackwards pins that the pass does not depend
+// on source order. A helper is routinely declared BELOW the caller that feeds
+// it, so a single forward walk would see half the call graph and report a count
+// that changes when a function is moved.
+func TestCallBoundaryTaint_PropagatesBackwards(t *testing.T) {
+	t.Parallel()
+	forms := scanSnippet(t, `
+type FieldValue struct{ Field string }
+
+func caller(fv *FieldValue, cols []string) bool { return callee(fv.Field, cols) }
+
+func callee(n string, cols []string) bool {
+	for _, c := range cols {
+		if c == n {
+			return true
+		}
+	}
+	return false
+}
+`)
+	if len(forms) != 1 {
+		t.Fatalf("callee-declared-after-caller reported %d decisions %v, want 1 — the "+
+			"propagation is order-dependent, so moving a function changes the ratchet",
+			len(forms), forms)
+	}
+}
+
+// TestCallBoundaryTaint_UntaintedParameterStaysSilent is the PRECISION half and
+// the one that decides whether this pass is usable. A helper whose parameter is
+// only ever fed something that is NOT a display name must stay silent — the
+// converted path passes parse-tree SEGMENTS, and if that tainted the parameter
+// too, the gate would report the migrated channel as debt and the conversion
+// could never be shown to have worked.
+func TestCallBoundaryTaint_UntaintedParameterStaysSilent(t *testing.T) {
+	t.Parallel()
+	forms := scanSnippet(t, `
+type ColumnRef struct{ Bare, Qualifier string }
+
+func lookup(qual, leaf string, cols []string) bool {
+	for _, c := range cols {
+		if strings.EqualFold(c, leaf) || strings.EqualFold(c, qual) {
+			return true
+		}
+	}
+	return false
+}
+
+func segmented(ref ColumnRef, cols []string) bool { return lookup(ref.Qualifier, ref.Bare, cols) }
+`)
+	if len(forms) != 0 {
+		t.Fatalf("a helper fed only parse-tree SEGMENTS reported %v, want silence — the "+
+			"segments are what a reference is supposed to be resolved by, and a gate that "+
+			"cannot tell them from a display name reports every migration as debt",
+			forms)
+	}
+}
+
+// TestCallBoundaryTaint_OnlyTheFedParameterIsTainted pins that the taint lands
+// on the argument's OWN position. A helper taking a display name and an
+// unrelated string must not have the unrelated one tainted, or the entry the
+// ratchet grows points at a decision that was never about a name.
+func TestCallBoundaryTaint_OnlyTheFedParameterIsTainted(t *testing.T) {
+	t.Parallel()
+	// The two parameters reach DIFFERENT sink kinds, so the reported form names
+	// which one fired. A line number would say the same thing far more
+	// brittlely — it moves whenever the fixture's preamble does.
+	forms := scanSnippet(t, `
+type FieldValue struct{ Field string }
+
+func two(name, kind string, seen map[string]bool) bool {
+	if seen[kind] {
+		return false
+	}
+	return name == "ID"
+}
+
+func feed(fv *FieldValue, seen map[string]bool) bool { return two(fv.Field, "scan", seen) }
+`)
+	if len(forms) != 1 {
+		t.Fatalf("reported %d decisions %v, want exactly 1 — only the parameter actually "+
+			"fed the name is a display name", len(forms), forms)
+	}
+	if strings.Contains(forms[0], "map key") {
+		t.Fatalf("reported %q — that is `seen[kind]`, and kind is never fed a name. The "+
+			"taint landed on the whole signature instead of the argument's own position",
+			forms[0])
+	}
+}
