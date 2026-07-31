@@ -119,6 +119,40 @@ func (s legRebaseSite) String() string {
 	return "UNKNOWN-SITE"
 }
 
+// legRebaseOrigin is everything the leg-match arm needs to know about the firing
+// that reached it, threaded from the entry point for the same reason the site
+// alone was: the arm has no way to ask which of its callers it has.
+//
+// It carries a SECOND dimension beside the site, and that dimension is the one
+// RFC-200 gate (d) is denominated in. The two instruments in play count
+// different events at different sites — the bakeability census counts READS
+// (once per leg-correlated FieldValue the walk matches), the foldStep1Seed
+// outcome census counts RULE FIRINGS — so `60 + 94 + 108 = 262 ≠ 174` and
+// neither can be apportioned into the other by arithmetic. The only thing that
+// maps one onto the other is carrying the firing's class down to the read, which
+// is what Step1 does.
+type legRebaseOrigin struct {
+	// Site is WHICH lowering reached the arm.
+	Site legRebaseSite
+	// Step1 is the enclosing firing's foldStep1Seed outcome, or
+	// foldStep1ClassNone at the BURIED site, which makes no step-1 seed decision
+	// at all. The zero value is that honest "none" rather than a misfiled class.
+	Step1 foldStep1Class
+
+	// Step1LegShape is the SHAPE of the leg that firing's seed reconstruction
+	// refused, meaningful only when Step1 is foldStep1DeclineReconstructNil.
+	//
+	// The class alone is not enough for RFC-200 gate (d), and the measurement
+	// that showed why is worth stating: over the real-FDB corpus ALL 174
+	// leg-local reads occur under a reconstruct-nil firing — but that class
+	// splits 94 bare-QOV / 60 positional-merge at the FIRING level, and only the
+	// positional-merge half is in RFC-200's scope. Denominating the gate in the
+	// class would demand that the fenced bare-QOV residue (§Residues, explicitly
+	// out of scope and LARGER) also reach zero, which this change cannot and does
+	// not claim to do.
+	Step1LegShape foldStep1LegShape
+}
+
 type legLocalBakeCounters struct {
 	// Total is every firing of the leg-match arm.
 	Total int
@@ -130,6 +164,24 @@ type legLocalBakeCounters struct {
 	// asserted zero with its re-arm condition named at the assertion.
 	SiteExists int
 	SiteBuried int
+	// Step1 cuts Total a THIRD way, orthogonally to site and outcome: by the
+	// foldStep1Seed class of the firing the read happened under.
+	//
+	// This is the read→firing MAPPING, and it exists because the two censuses on
+	// this path count different events with different denominators and their
+	// numbers do not sum. Before it, "this change moves 60 of the 174 reads" was
+	// arithmetic over a category error. Step1[foldStep1DeclineReconstructNil] is
+	// the population that can move at all; the sub-classification by refused-leg
+	// shape lives in the outcome census, which is the instrument that can see it.
+	//
+	// Reads at the BURIED site file under foldStep1ClassNone, which is correct
+	// rather than a gap: that lowering makes no step-1 seed decision.
+	Step1 [foldStep1ClassCount]int
+	// Step1ReconstructNilShape cuts the reconstruct-nil reads by the SHAPE of the
+	// leg their firing refused. This is the number RFC-200 gate (d) is stated
+	// against, and it is a strictly finer cut than Step1 above: the class holds
+	// the whole 174 while only its positional-merge share is in scope.
+	Step1ReconstructNilShape [foldStep1LegShapeCount]int
 	// Baked: reads that KEPT their own leg alias and their own leg-local ordinal
 	// — the pass-through. The arm's live population.
 	Baked int
@@ -333,10 +385,10 @@ var (
 // — rather than being inferred from anything the classification already did.
 // The two cuts partition the same denominator and neither constrains the other,
 // which is the property the partition assertion checks.
-func recordLegRebaseSite(site legRebaseSite) {
+func recordLegRebaseSite(origin legRebaseOrigin) {
 	legLocalBakeMu.Lock()
 	defer legLocalBakeMu.Unlock()
-	switch site {
+	switch origin.Site {
 	case legRebaseSiteExists:
 		legLocalBakeCounts.SiteExists++
 	case legRebaseSiteBuried:
@@ -344,6 +396,13 @@ func recordLegRebaseSite(site legRebaseSite) {
 	}
 	// legRebaseSiteUnknown (the zero value) is deliberately counted into
 	// neither: the partition assertion turns it red rather than misfiling it.
+	if origin.Step1 >= 0 && origin.Step1 < foldStep1ClassCount {
+		legLocalBakeCounts.Step1[origin.Step1]++
+	}
+	if origin.Step1 == foldStep1DeclineReconstructNil &&
+		origin.Step1LegShape >= 0 && origin.Step1LegShape < foldStep1LegShapeCount {
+		legLocalBakeCounts.Step1ReconstructNilShape[origin.Step1LegShape]++
+	}
 }
 
 func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.CorrelationIdentifier, legTyp values.Type, column string, available ...string) {
@@ -417,12 +476,12 @@ func recordRebaseOuterLegArm(
 	qov *values.QuantifiedObjectValue,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
 	identity legReadIdentity,
-	site legRebaseSite,
+	origin legRebaseOrigin,
 ) {
 	if !values.LegIdentityCensusEnabled() {
 		return
 	}
-	recordLegRebaseSite(site)
+	recordLegRebaseSite(origin)
 	legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
 	column := strings.ToUpper(fv.Field)
 	recordLegLocalBakeability(outcome, qov.Correlation,
@@ -822,6 +881,17 @@ func FormatLegLocalBakeCensus() string {
 		c.UntypedLeg, c.ColumnAbsent, c.LayoutAvailable,
 		c.FlowedLegs, c.UnderivableLegs, c.DisagreeingLegs)
 	fmt.Fprintf(&b, "; by CALL SITE: exists %d, buried %d", c.SiteExists, c.SiteBuried)
+	// The read→FIRING mapping. This is the ONLY thing that relates this census's
+	// READ count to the foldStep1Seed outcome census's FIRING count; the two
+	// denominators do not sum and never could.
+	b.WriteString("; by STEP-1 CLASS of the firing:")
+	for cl := foldStep1Class(0); cl < foldStep1ClassCount; cl++ {
+		fmt.Fprintf(&b, " [%s %d]", cl, c.Step1[cl])
+	}
+	b.WriteString("; reconstruct-nil reads by REFUSED LEG SHAPE:")
+	for s := foldStep1LegShape(0); s < foldStep1LegShapeCount; s++ {
+		fmt.Fprintf(&b, " [%s %d]", s, c.Step1ReconstructNilShape[s])
+	}
 	fmt.Fprintf(&b, "; ALL reads by OWN identity: identityInLegDomain %d, "+
 		"identityOtherDomain %d, lazyNameOnly %d",
 		c.IdentityInLegDomain, c.IdentityOtherDomain, c.LazyNameOnly)
@@ -866,6 +936,14 @@ type LegLocalBakeFloors struct {
 	// MergeSlotsUntyped is a SHARE of it, and a share of a collapsed denominator
 	// reads as progress while measuring nothing.
 	MergeSlots int
+	// Step1ReconstructNilMustBeZero turns RFC-200 gate (d) on: no leg-local read
+	// may occur under a firing whose seed reconstruction returned nil.
+	//
+	// It is a flag rather than an always-on zero because the gate is only true
+	// AFTER the nested window is activated. Before that it is the MEASUREMENT the
+	// gate is denominated in, and asserting it early would red on the very number
+	// the sequencing step exists to produce.
+	Step1ReconstructNilMustBeZero bool
 }
 
 // AssertLegLocalBakeCensus checks the bakeability census's invariants and
@@ -946,6 +1024,75 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 			"  which is worth finding, because the split below is asserted as a fact in\n"+
 			"  DIVERGENCES.md and in TODO.md's CQ-53 phase-3 block.\n",
 			c.SiteExists, c.SiteBuried, got, c.Total)
+	}
+	// THE READ→FIRING CUT. A fourth partition of Total, and the one RFC-200 gate
+	// (d) is denominated in.
+	//
+	// It is a partition and not a floor because the mapping it carries is the
+	// whole point: the two censuses on this path count different events (reads
+	// here, rule firings there) and their totals do not sum, so "this change
+	// moves N of the 174 reads" is only answerable by carrying the firing's class
+	// down to the read. A gap here means a read arrived under a firing whose
+	// class was not threaded, and every apportionment of this census's population
+	// is then arithmetic over an unknown remainder — which is exactly the
+	// category error revision 1 of RFC-200 was NAK'd for.
+	step1Sum := 0
+	for cl := foldStep1Class(0); cl < foldStep1ClassCount; cl++ {
+		step1Sum += c.Step1[cl]
+	}
+	if step1Sum != c.Total {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: the STEP-1 CLASS cut sums to %d, but "+
+			"Total = %d.\n"+
+			"  Every firing arrives under exactly one foldStep1Seed class (or under NONE,\n"+
+			"  which is what the BURIED lowering honestly threads), so these must\n"+
+			"  partition Total. A gap means a read reached the arm carrying a class value\n"+
+			"  outside the enum — a new entry point that forgot to thread one.\n",
+			step1Sum, c.Total)
+	}
+	if c.SiteExists != 0 && c.Step1[foldStep1ClassNone] > c.SiteBuried {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: %d read(s) arrived with NO step-1 class "+
+			"while only %d came from the BURIED site.\n"+
+			"  The EXISTS lowering ALWAYS has a foldStep1Seed class in hand — it computes\n"+
+			"  one immediately before the rebase — so an EXISTS-site read filed under\n"+
+			"  NONE is a call site that dropped the class on the way down. The read→firing\n"+
+			"  mapping RFC-200 gate (d) is denominated in is wrong by exactly that many\n"+
+			"  reads, and it fails SILENTLY: the class simply reads as \"not a\n"+
+			"  reconstruct-nil firing\".\n",
+			c.Step1[foldStep1ClassNone], c.SiteBuried)
+	}
+	shapeSum := 0
+	for s := foldStep1LegShape(0); s < foldStep1LegShapeCount; s++ {
+		shapeSum += c.Step1ReconstructNilShape[s]
+	}
+	if shapeSum != c.Step1[foldStep1DeclineReconstructNil] {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: the reconstruct-nil reads cut by REFUSED\n"+
+			"  LEG SHAPE sum to %d, but the reconstruct-nil class counted %d reads.\n"+
+			"  The shape rides down with the class from the same origin struct, so a gap is\n"+
+			"  a call site threading one and not the other — and the finer cut is the one\n"+
+			"  RFC-200 gate (d) is stated against.\n",
+			shapeSum, c.Step1[foldStep1DeclineReconstructNil])
+	}
+	if floors != nil && floors.Step1ReconstructNilMustBeZero &&
+		c.Step1ReconstructNilShape[foldStep1LegShapePositionalMerge] != 0 {
+		failed = true
+		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: %d leg-local read(s) still occur under a "+
+			"reconstruct-nil firing whose refused leg was a POSITIONAL MERGE, want 0.\n"+
+			"  This is RFC-200 gate (d). The retirement condition for the runtime\n"+
+			"  binding-namespace widening (executor.bindMergedOuterLegs) is that a\n"+
+			"  leg-correlated read be rewritten to ofOrdinalNumber against the merged\n"+
+			"  quantifier BEFORE execution, so no sibling alias need be resolvable at\n"+
+			"  runtime. A read arriving here under a firing whose seed reconstruction\n"+
+			"  returned nil is a read that took the pass-through because no merged layout\n"+
+			"  existed — precisely the population the nested window was built to remove.\n"+
+			"  Read the foldStep1Seed outcome census beside this one: its refused-leg\n"+
+			"  sub-partition says WHICH shape is still being refused, and only the\n"+
+			"  positional-merge bucket is in RFC-200's scope. A residue in the bare-QOV\n"+
+			"  bucket is the LARGER, explicitly fenced population (RFC-200 §Residues) and\n"+
+			"  this gate must be re-stated, not relaxed, if that is what it is seeing.\n",
+			c.Step1[foldStep1DeclineReconstructNil])
 	}
 	if c.SiteBuried != 0 {
 		failed = true

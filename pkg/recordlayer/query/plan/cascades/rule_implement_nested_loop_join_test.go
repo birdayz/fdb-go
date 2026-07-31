@@ -510,7 +510,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 
 	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
 	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
-	seed := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	seed, _ := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if seed == nil {
 		t.Fatal("setup: expected reconstructFoldStep1Seed to build a seed for two scan legs")
 	}
@@ -552,7 +552,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 		// check never looks at a name.
 		q1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
 		q2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
-		adversarialSeed := reconstructFoldStep1Seed(q1, q2, values.NamedCorrelationIdentifier("Q$1"), values.NamedCorrelationIdentifier("Q$2"))
+		adversarialSeed, _ := reconstructFoldStep1Seed(q1, q2, values.NamedCorrelationIdentifier("Q$1"), values.NamedCorrelationIdentifier("Q$2"))
 		if adversarialSeed == nil {
 			t.Fatal("setup: expected a seed for the adversarially-named legs")
 		}
@@ -579,7 +579,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 		t.Parallel()
 		s1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
 		s2 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
-		selfSeed := reconstructFoldStep1Seed(s1, s2, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
+		selfSeed, _ := reconstructFoldStep1Seed(s1, s2, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
 		if selfSeed == nil {
 			t.Fatal("setup: expected a seed for two same-shaped legs")
 		}
@@ -1228,10 +1228,10 @@ func TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName(t *testing.T) {
 	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier(leg), "ADDRESS", "ID")
 	mergedCorr := values.NamedCorrelationIdentifier("MERGED")
 
-	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil, nil, legRebaseSiteExists)
+	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	gotFV, ok := got.(*values.FieldValue)
 	if !ok || gotFV != fused {
-		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID, nil, legRebaseSiteExists) = %#v, want the ORIGINAL unrewritten node — "+
+		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID, nil, legRebaseOrigin{Site: legRebaseSiteExists}) = %#v, want the ORIGINAL unrewritten node — "+
 			"a nested reference must never be re-anchored onto a colliding leaf-name qualified key", got)
 	}
 }

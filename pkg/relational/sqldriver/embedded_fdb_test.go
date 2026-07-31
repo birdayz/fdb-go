@@ -102,6 +102,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
+	cascades.ResetFoldStep1SeedCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -136,6 +137,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// than in a test for the reason every census on this path is: the population
 	// is only complete after m.Run().
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
+	// The foldStep1Seed OUTCOME census: whether step 1 got an ordinal seed, and
+	// why not when it did not. It replaces a call-site probe that was added for
+	// one question and removed after, leaving RFC-200's population numbers as a
+	// dated point measurement with nothing keeping them true.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFoldStep1SeedCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -165,7 +171,80 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	if failed := assertMergedLegBindingCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	if failed := assertFoldStep1SeedCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	return code
+}
+
+// foldStep1SeedGates is RFC-200's acceptance gate (c): EXACT equalities, not
+// floors.
+//
+// They are PREDICTIONS. A measured deviation is a reportable finding and must be
+// reported rather than absorbed by relaxing the assertion — which is why these
+// are equalities while every other census on this path is floored an order of
+// magnitude below its measurement. The two disciplines are answering different
+// questions: a floor detects a site going DARK over a corpus that churns, while
+// these numbers are the arithmetic a design decision was made on and any
+// movement in them invalidates that arithmetic.
+//
+// The values below are the state BEFORE RFC-200 activates the nested window.
+//
+// RFC-200 states them as 78 / 108 / 200 / 154 (94 bare-QOV + 60
+// positional-merge) over a denominator of 540, measured on branch
+// feat/cq53-parent-chained-binder at HEAD 4dccc50f0. MEASURED on this tree they
+// are 78 / 108 / 202 / 154 (94 + 60) over 542 — a +2 deviation, entirely inside
+// the rv-no-exist-ref class.
+//
+// THE DEVIATION IS EXPLAINED, not absorbed. It is corpus growth, and the growth
+// is identified rather than assumed: the merged-leg reader-shape fixture became
+// shared between TestFDB_MergedLegBinding_ReaderShapeIsRedundant and the
+// wrong-window mutation pin, so its `SELECT OT."K" FROM ST, OT WHERE EXISTS (…)`
+// is now planned twice where it was planned once. Isolated, that one test
+// contributes exactly 2 firings, both rv-no-exist-ref — the class the RFC calls
+// a correct pass-through rather than a residue, because the projection sits
+// ABOVE the existential level and there is nothing to fold.
+//
+// EVERY load-bearing number is EXACT on this head: correlatedStep1 108, the
+// reconstruct-nil split 94 bare-QOV / 60 positional-merge, ACCEPT 78, and
+// both-legs-unsafe 0. Those are the four the design rests on and none of them
+// moved.
+//
+// After activation the prediction is ACCEPT == 138 (78 + 60) and reconstruct-nil
+// == 94, all bare-QOV, with the other three unchanged. That movement is the
+// change's whole visible effect on this instrument, and stating both states here
+// is what makes the transition a diff rather than a re-blessing.
+var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
+	n := func(v int) *int { return &v }
+	return cascades.FoldStep1SeedGates{
+		Denominator:           n(542),
+		Accept:                n(78),
+		CorrelatedStep1:       n(108),
+		NoExistRef:            n(202),
+		ReconstructNil:        n(154),
+		ReconstructNilBareQOV: n(94),
+		ReconstructNilMerge:   n(60),
+	}
+}()
+
+// assertFoldStep1SeedCensus checks the outcome census, dropping the population
+// EQUALITIES when -test.run narrows the corpus — the same split its siblings
+// make for their floors, and for the same reason: a filtered run measures a
+// subset, and a subset cannot satisfy an equality stated over the whole.
+//
+// The structural checks — the independent-denominator partition, the
+// shape-sub-partition, and the both-legs-unsafe zero — still run, because those
+// hold over ANY population.
+func assertFoldStep1SeedCensus(w io.Writer) bool {
+	gates := &foldStep1SeedGates
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "foldStep1Seed outcome census: population EQUALITIES not checked "+
+			"(-test.run=%q narrowed the corpus). The independent-denominator partition, the "+
+			"refused-leg sub-partition and the both-legs-unsafe zero still run over whatever "+
+			"population this filter reached.\n", f.Value.String())
+		gates = nil
+	}
+	return cascades.AssertFoldStep1SeedCensus(w, gates)
 }
 
 // mergedLegReadFloor is the merged-leg binding census's whole-suite READ floor.

@@ -1204,9 +1204,9 @@ func buildCorrelatedFlatMapPlan(
 	if innerNullOnEmpty && len(buriedLegAliases) > 0 {
 		legLayout := buriedLegOrdinalLayout(outerPlan)
 		origInnerPlan := innerPlan
-		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, legLayout, nil, legRebaseSiteBuried)
+		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
 		for i, p := range joinPreds {
-			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, legLayout, nil, legRebaseSiteBuried)
+			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false
@@ -1954,10 +1954,27 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 // ordinalEligible (correct-or-conservative). A NON-INNER NLJ is declined (the
 // INNER-first scope carries no null-extension; the LEFT follow-on widens it).
 func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
+	safe, _ := legOrdinalSafety(p)
+	return safe
+}
+
+// legOrdinalSafety is legIsOrdinalSafe's decision plus the NODE it stopped at.
+//
+// The node exists for the foldStep1Seed outcome census, whose whole value is the
+// sub-classification of a refused leg by its result-value shape. It is handed
+// back from the walk rather than recovered by a second walk for the reason §5 of
+// RFC-200 states about the element predicate: two copies of a rule agree until
+// one of them is edited, and here the two copies would decide which leg a
+// population is attributed to.
+//
+// On a safe leg the node is nil. On a refused NESTED-LOOP JOIN the node is the
+// deepest refusing descendant, not the join — the join is a container and the
+// leg that cannot be positioned is the fact worth counting.
+func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 	for p != nil {
 		switch pl := p.(type) {
 		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
-			return true
+			return true, nil
 		case *plans.RecordQueryPredicatesFilterPlan:
 			p = pl.GetInner()
 		case *plans.RecordQueryFilterPlan:
@@ -1970,19 +1987,22 @@ func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 			p = pl.GetInner()
 		case *plans.RecordQueryNestedLoopJoinPlan:
 			if pl.GetJoinType() != plans.JoinInner {
-				return false
+				return false, pl
 			}
 			// Only an ORDINAL box (a positional concat row) can be read by
 			// ordinal — every RC box qualifies.
 			if _, ok := pl.GetResultValue().(*values.RecordConstructorValue); !ok {
-				return false
+				return false, pl
 			}
-			return legIsOrdinalSafe(pl.GetOuter()) && legIsOrdinalSafe(pl.GetInner())
+			if safe, node := legOrdinalSafety(pl.GetOuter()); !safe {
+				return false, node
+			}
+			return legOrdinalSafety(pl.GetInner())
 		default:
-			return false
+			return false, p
 		}
 	}
-	return false
+	return false, nil
 }
 
 // planBuriedLegConcat walks an ordinal-safe leg PLAN accumulating its buried
@@ -2073,9 +2093,24 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 // for a single-source scan the flowed types coincide, which the cross-agreement
 // fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
 // a record (the caller keeps the original RV unchanged).
-func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) values.Value {
-	if !legIsOrdinalSafe(leftPlan) || !legIsOrdinalSafe(rightPlan) {
-		return nil
+func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, foldStep1LegDecline) {
+	// BOTH legs are walked, never short-circuited, because the census's
+	// both-legs-unsafe check is what keeps its per-firing sub-partition honest —
+	// a short circuit would make "at most one refused leg per firing" true by
+	// construction at the one instrument that is supposed to be testing it.
+	leftSafe, leftNode := legOrdinalSafety(leftPlan)
+	rightSafe, rightNode := legOrdinalSafety(rightPlan)
+	if !leftSafe || !rightSafe {
+		node := leftNode
+		if leftSafe {
+			node = rightNode
+		}
+		shape, witness := classifyDeclinedLeg(node)
+		return nil, foldStep1LegDecline{
+			Shape:          shape,
+			BothLegsUnsafe: !leftSafe && !rightSafe,
+			Witness:        witness,
+		}
 	}
 	var fields []values.RecordConstructorField
 	for _, leg := range []struct {
@@ -2089,7 +2124,13 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 		// (UnknownType); the walk reconstructs the concat from the scan leaves.
 		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.plan, leg.alias, 0)
 		if !ok || len(concatFields) == 0 {
-			return nil
+			// Both legs were ordinal-SAFE and the concat still failed: a residue
+			// below legIsOrdinalSafe, with its own fix. foldStep1LegShapeNone is
+			// what keeps it from being counted as a refused leg shape it is not.
+			return nil, foldStep1LegDecline{
+				Shape:   foldStep1LegShapeNone,
+				Witness: fmt.Sprintf("planBuriedLegConcat refused %T (ok=%t, fields=%d)", leg.plan, ok, len(concatFields)),
+			}
 		}
 		// A BURIED box (>1 leaf) carries its buried sources' [Start,Width) windows
 		// in .Legs so the layout authority (OrdinalSeedLegWindows →
@@ -2112,12 +2153,15 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 		for i := range concatFields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {
-				return nil
+				return nil, foldStep1LegDecline{
+					Shape:   foldStep1LegShapeNone,
+					Witness: fmt.Sprintf("ofOrdinal(%T#%d) failed: %v", leg.plan, i, err),
+				}
 			}
 			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
 		}
 	}
-	return values.NewRawRecordConstructorValue(fields...)
+	return values.NewRawRecordConstructorValue(fields...), foldStep1LegDecline{}
 }
 
 // materializedNLJOrdinalLayoutMatches reports whether resultValue is SAFE to
@@ -2266,18 +2310,49 @@ func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
 // seed BOTH layout twins accept (full coverage). Extracted so the exact
 // decision is white-box pinned: a functional test is BLIND to a silent
 // revert of this decision.
-func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool) {
-	if correlatedStep1 || !resultValueReferencesAlias(rv, existAlias) {
-		return rv, false
+//
+// The third return is the firing's census CLASS. It is returned rather than
+// re-derived at the caller because it is also THREADED to the leg rebase sites
+// below: RFC-200 gate (d) is denominated in "how many leg-local bake reads occur
+// under a firing this function classified reconstruct-nil / positional-merge",
+// and that mapping cannot be recovered downstream — the rebase arm has no way to
+// ask which of its callers it has (the same argument legRebaseSite records about
+// itself).
+func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool, legRebaseOrigin) {
+	seedRV, gated, class, decline := foldStep1SeedDecision(rv, existAlias, correlatedStep1, leftPlan, rightPlan, leftAlias, rightAlias)
+	if values.LegIdentityCensusEnabled() {
+		recordFoldStep1Outcome(class, decline)
 	}
-	seed := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias)
+	return seedRV, gated, legRebaseOrigin{
+		Site:          legRebaseSiteExists,
+		Step1:         class,
+		Step1LegShape: decline.Shape,
+	}
+}
+
+// foldStep1SeedDecision is foldStep1Seed's decision, split from the recording so
+// the classification is exercisable without process-global census state — the
+// same split every census on this path makes for the same reason.
+func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool, foldStep1Class, foldStep1LegDecline) {
+	// Conditions (1) and (2) are separate CLASSES even though the code tests them
+	// in one expression: they are different populations with different
+	// dispositions — (1) is the permanent correlated-semijoin wall, (2) is a
+	// correct pass-through — and a census that merged them could not tell a wall
+	// that moved from a pass-through that did.
+	if correlatedStep1 {
+		return rv, false, foldStep1DeclineCorrelatedStep1, foldStep1LegDecline{}
+	}
+	if !resultValueReferencesAlias(rv, existAlias) {
+		return rv, false, foldStep1DeclineNoExistRef, foldStep1LegDecline{}
+	}
+	seed, decline := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias)
 	if seed == nil {
-		return rv, false
+		return rv, false, foldStep1DeclineReconstructNil, decline
 	}
 	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil {
-		return rv, false
+		return rv, false, foldStep1DeclineWindowsNil, foldStep1LegDecline{}
 	}
-	return seed, true
+	return seed, true, foldStep1Accept, foldStep1LegDecline{}
 }
 
 // rebaseOuterLegRefsToMerged walks a predicate's values so that references to the
@@ -2642,7 +2717,7 @@ func rebaseOuterLegRefsToMerged(
 	mergedCorr values.CorrelationIdentifier,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
-	site legRebaseSite,
+	site legRebaseOrigin,
 ) predicates.QueryPredicate {
 	if p == nil {
 		return p
@@ -2731,7 +2806,7 @@ func rebaseOuterLegValue(
 	mergedCorr values.CorrelationIdentifier,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
-	site legRebaseSite,
+	site legRebaseOrigin,
 ) values.Value {
 	if v == nil {
 		return v
@@ -2971,7 +3046,7 @@ func rebaseOuterLegValue(
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
-func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) plans.RecordQueryPlan {
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) plans.RecordQueryPlan {
 	if p == nil || len(legAliases) == 0 {
 		return p
 	}
@@ -3079,7 +3154,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 
 // rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
 // comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
-func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) ([]*predicates.ComparisonRange, bool) {
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) ([]*predicates.ComparisonRange, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
@@ -3096,7 +3171,7 @@ func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []st
 // equality/inequality comparison operands. Returns the (possibly rebuilt) range and
 // whether it changed. A range whose rebuilt comparison cannot be re-merged is
 // returned unchanged (the verification then declines the probe).
-func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) (*predicates.ComparisonRange, bool) {
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (*predicates.ComparisonRange, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false
 	}
@@ -3128,7 +3203,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 // rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
 // copying the comparison so every non-operand field (Type, Escape, ParameterName,
 // the Text*/vector fields) is preserved verbatim.
-func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseSite) *predicates.Comparison {
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) *predicates.Comparison {
 	if c == nil || c.Operand == nil {
 		return c
 	}
@@ -3665,7 +3740,16 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// earlier, simpler version of this seed had to be reverted twice over
 	// exactly this trap). Only reached when both legs are ordinal-safe
 	// single sources (scan-family).
-	step1RV, gatedSeedStep1 := foldStep1Seed(
+	//
+	// The DENOMINATOR of the foldStep1Seed outcome census is counted HERE, not by
+	// summing the classes foldStep1Seed records. Summing four counters
+	// incremented inside the function they partition is true by construction and
+	// gates nothing; an independent counter catches a class arm added without a
+	// counter, and an early return that skips recording.
+	if values.LegIdentityCensusEnabled() {
+		recordFoldStep1Denominator()
+	}
+	step1RV, gatedSeedStep1, step1Origin := foldStep1Seed(
 		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
 		leftPlan, rightPlan, leftCorr, rightCorr)
 	// Step 1: build the inner join (left × right). Its merged row is the
@@ -3815,7 +3899,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			// The layouts come from the legs' physical plans; a read the layouts
 			// cannot place still falls through to the qualified-name mint, and
 			// the census records which.
-			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
+			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
 		}
 		existPreds = rebased
 	}
@@ -3866,7 +3950,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			}
 			existPlan = np
 		} else {
-			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
+			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
 		}
 		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
 			return
@@ -3928,7 +4012,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 				return
 			}
 		} else {
-			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, legRebaseSiteExists)
+			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
 		}
 		// Existential quantifier alias → the FlatMap inner binding (existCorr).
 		if quants[2].GetAlias() != existCorr {
