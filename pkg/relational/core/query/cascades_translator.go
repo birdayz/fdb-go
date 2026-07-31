@@ -5692,8 +5692,37 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 // layout, or a leaf missing from the leg leaves the reference untouched
 // (loud at eval, never a wrong slot).
 func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpression) values.Value {
+	return bakeDottedRefsToLegQOVWithRef(v, logical.ColumnRef{}, input)
+}
+
+// bakeDottedRefsToLegQOVWithRef is the same bake with the ROOT carrier's
+// parse-tree segments supplied. Where ref is Present it REPLACES the dot slice
+// for that node — the parser's segment count decides qualification, so a quoted
+// `"A.B"` is one leaf name here instead of a reference to leg A.
+//
+// This baker is the site where that distinction bites hardest: unlike the flat
+// bake it has no exact-name precedence to resolve the quoted spelling first, so
+// a split is the FIRST thing it does and a misread is the only outcome.
+// ref applies to the root only; nodes below it are parts of a resolved tree
+// whose names this LogicalProject never rendered.
+func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input expressions.RelationalExpression) values.Value {
 	if v == nil {
 		return v
+	}
+	// segmentsOf yields the (qualifier, leaf) a node should be resolved by, and
+	// whether it is qualified at all.
+	segmentsOf := func(fv *values.FieldValue, isRoot bool) (qual, leaf string, qualified bool) {
+		if isRoot && ref.Present {
+			if !ref.Qualified {
+				return "", ref.Bare, false
+			}
+			return strings.ToUpper(ref.Qualifier), ref.Bare, true
+		}
+		dot := strings.IndexByte(fv.Field, '.')
+		if dot <= 0 {
+			return "", fv.Field, false
+		}
+		return strings.ToUpper(fv.Field[:dot]), fv.Field[dot+1:], true
 	}
 	sel := peelToSelectExpression(input)
 	if sel == nil {
@@ -5763,9 +5792,8 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 			if !ok || fv.Child != nil || fv.Resolved != nil {
 				return node
 			}
-			leaf := fv.Field
-			if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
-				qual := strings.ToUpper(fv.Field[:dot])
+			qual, leaf, qualified := segmentsOf(fv, node == v)
+			if qualified {
 				matched := qual == lay.key
 				if values.LegIdentityCensusEnabled() {
 					// The THIRD dotted baker, and the same reader shape as its two
@@ -5790,7 +5818,6 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 				if !matched {
 					return node
 				}
-				leaf = fv.Field[dot+1:]
 			}
 			for i, c := range lay.cols {
 				if strings.EqualFold(c, leaf) {
@@ -5831,17 +5858,17 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 		if !ok || fv.Child != nil || fv.Resolved != nil {
 			return node
 		}
-		dot := strings.IndexByte(fv.Field, '.')
-		if dot <= 0 {
+		qual, leaf, qualified := segmentsOf(fv, node == v)
+		if !qualified {
 			return node
 		}
-		qual := strings.ToUpper(fv.Field[:dot])
 		lay, registered := layouts[qual]
 		if values.LegIdentityCensusEnabled() {
-			// The counterparty is a qualifier SLICED OUT of a parsed name — the guard
-			// above bails on `Child != nil || Resolved != nil`, so no correlation can
-			// be in hand here. What is measurable is whether the layout this text
-			// selected states the identity the text would mint.
+			// The counterparty is a qualifier the parser SEGMENTED, or — where no
+			// segments reached this carrier — one SLICED OUT of a parsed name. The
+			// guard above bails on `Child != nil || Resolved != nil`, so no
+			// correlation is in hand either way. What is measurable is whether the
+			// layout this text selected states the identity the text would mint.
 			//
 			// The map read's THREE outcomes are threaded through, not collapsed to a
 			// bool. A qualifier with no entry and one whose entry was POISONED for
@@ -5863,7 +5890,7 @@ func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpressi
 		if lay == nil || lay.cols == nil {
 			return node
 		}
-		if baked := legBake(lay, fv.Field[dot+1:], fv.Typ); baked != nil {
+		if baked := legBake(lay, leaf, fv.Typ); baked != nil {
 			return baked
 		}
 		return node
@@ -5958,6 +5985,115 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	}
 }
 
+// projectionRefAt is the parse-tree segment triple for one projection slot, or
+// the zero (uncaptured) triple. A short or absent ProjectionRefs reads as
+// uncaptured for every slot it does not cover — a producer that has not been
+// taught to carry segments must keep the behaviour it had.
+func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
+	if p == nil || i < 0 || i >= len(p.ProjectionRefs) {
+		return logical.ColumnRef{}
+	}
+	return p.ProjectionRefs[i]
+}
+
+// bakeSegmentedColumnRef resolves ONE lazy carrier whose parse-tree SEGMENTS
+// are in hand, instead of recovering them by slicing the rendered name.
+//
+// This is the same resolution the dotted arm of bakeFlatRefsAgainstColumns
+// performs, with the input it should always have had. The difference is not
+// cosmetic: `A.B` written as a qualified reference and `"A.B"` written as one
+// quoted identifier render to the same bytes, so a slice at the first dot
+// cannot tell them apart and reads the quoted column as a reference to source
+// A. Qualification here is the parser's segment COUNT, so the two cases
+// diverge before any name is compared — an UNQUALIFIED reference resolves
+// against the flat columns ONLY and can never reach a leg window.
+//
+// Returns the value unchanged when the segments resolve to nothing, exactly as
+// the name-splitting path does: a miss stays lazy and is loud at eval.
+func bakeSegmentedColumnRef(fv *values.FieldValue, ref logical.ColumnRef, cols []string, legs []values.RecordTypeLeg) values.Value {
+	if fv == nil || !ref.Present || len(cols) == 0 {
+		return fv
+	}
+	// Exact first-match on the flat names comes first for BOTH shapes — it is
+	// the output layout's own precedence, and a qualified reference whose
+	// rendered spelling IS an output column (the qualified dedup key "A.K")
+	// must keep resolving to that column.
+	for i, c := range cols {
+		if strings.EqualFold(c, fv.Field) {
+			return values.NewFieldValueWithResolvedOrdinalInDomain(
+				fv.Field, i, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
+		}
+	}
+	// Qualified — the parser's segment COUNT — is the authority on whether there
+	// is a qualifier to select a leg with. Not the emptiness of Qualifier: that
+	// happens to be "" for every unqualified triple this file's producers build
+	// today, and resting the rule on it would make the discrimination an
+	// accident of one producer rather than a property of the representation.
+	if !ref.Qualified {
+		return fv
+	}
+	if k, found := legWindowSlot(ref.Qualifier, ref.Bare, cols, legs,
+		values.DottedLegSiteFlatColumnBake); found {
+		return values.NewFieldValueWithResolvedOrdinalInDomain(
+			fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
+	}
+	return fv
+}
+
+// legWindowSlot resolves a qualifier/leaf pair to a slot of the FLAT row: the
+// qualifier selects a leg window (first-match, mirroring FieldIndex's own rule)
+// and the leaf selects a column within it. The returned ordinal indexes the
+// WHOLE flat row, since a leg window is a range within it.
+//
+// Factored out so the segment-carrying caller and the name-splitting one run
+// the identical lookup — two copies of a leg walk is two decisions with nothing
+// keeping them in step, which is the defect this file already records at the
+// census sites.
+func legWindowSlot(qual, leaf string, cols []string, legs []values.RecordTypeLeg, site values.DottedLegSite) (int, bool) {
+	if len(legs) == 0 {
+		return 0, false
+	}
+	matched := -1
+	for i, leg := range legs {
+		if strings.EqualFold(leg.Name, qual) {
+			matched = i
+			break
+		}
+	}
+	if values.LegIdentityCensusEnabled() {
+		// The census's question is unchanged by WHERE the qualifier came from:
+		// whether the leg this text selected states an identity naming the same
+		// thing. Recording it here rather than at each caller keeps the two
+		// callers reporting one population instead of two half-populations.
+		//
+		// No AMBIGUOUS outcome: this reader walks a leg SLICE and takes the
+		// first match, so a qualifier carried by two legs is a first-match, not
+		// a poisoned key.
+		var matchedAlias values.CorrelationIdentifier
+		var matchedBinding string
+		lookup := values.DottedLegLookupMiss
+		if matched >= 0 {
+			lookup = values.DottedLegLookupHit
+			matchedAlias, matchedBinding = legs[matched].Alias, legs[matched].Name
+		}
+		values.RecordDottedLegQualifier(site, qual, matchedAlias, matchedBinding, lookup)
+	}
+	if matched < 0 {
+		return 0, false
+	}
+	leg := legs[matched]
+	end := leg.Start + leg.Width
+	if leg.Start < 0 || end > len(cols) {
+		return 0, false
+	}
+	for k := leg.Start; k < end; k++ {
+		if strings.EqualFold(cols[k], leaf) {
+			return k, true
+		}
+	}
+	return 0, false
+}
+
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no
 // Resolved) whose Field matches an output column — exact first-match,
 // case-insensitive — into a baked-ordinal
@@ -5985,55 +6121,18 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 					fv.Field, i, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 			}
 		}
-		// Dotted qualifier → leg window → leaf within the window.
-		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 && len(legs) > 0 {
-			qual, leaf := fv.Field[:dot], fv.Field[dot+1:]
-			// The leg the qualifier selects is found ONCE and then acted on, rather
-			// than selected inside the acting loop. The loop used to do both, which
-			// left no point at which the choice existed as a value — so the census
-			// below had to re-scan, and a duplicated name comparison beside the real
-			// one is a second decision site with nothing keeping the two in step.
-			matched := -1
-			for i, leg := range legs {
-				if strings.EqualFold(leg.Name, qual) {
-					matched = i
-					break
-				}
-			}
-			if values.LegIdentityCensusEnabled() {
-				// Same reader shape as the executor's rowSlotForLegColumn, measured for
-				// the same reason: this site holds no correlation (the guard above bails
-				// on `Child != nil || Resolved != nil`), so the only question it can
-				// answer is whether the leg its text selected states an identity naming
-				// the same thing.
-				var matchedAlias values.CorrelationIdentifier
-				var matchedBinding string
-				lookup := values.DottedLegLookupMiss
-				if matched >= 0 {
-					lookup = values.DottedLegLookupHit
-					matchedAlias, matchedBinding = legs[matched].Alias, legs[matched].Name
-				}
-				// No AMBIGUOUS outcome here: this reader walks a leg SLICE and takes the
-				// first match, so a qualifier carried by two legs is a first-match, not a
-				// poisoned key. That is a real difference from the map-based sibling and
-				// is why the class is not recorded rather than recorded as zero.
-				values.RecordDottedLegQualifier(
-					values.DottedLegSiteFlatColumnBake, qual, matchedAlias, matchedBinding, lookup)
-			}
-			if matched >= 0 {
-				leg := legs[matched]
-				end := leg.Start + leg.Width
-				if leg.Start >= 0 && end <= len(cols) {
-					for k := leg.Start; k < end; k++ {
-						if strings.EqualFold(cols[k], leaf) {
-							// k indexes the WHOLE flat row (the leg window is a
-							// range within it), so the domain is cols — not the
-							// leg's slice of it.
-							return values.NewFieldValueWithResolvedOrdinalInDomain(
-								fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
-						}
-					}
-				}
+		// Dotted qualifier → leg window → leaf within the window. This is the
+		// RE-SPLIT arm: it recovers a qualifier by slicing a rendered name, and
+		// therefore cannot tell a qualified `A.B` from a quoted `"A.B"`. It
+		// serves the callers whose carrier still arrives as text; the callers
+		// that hold the parser's segments go through bakeSegmentedColumnRef.
+		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+			if k, found := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs,
+				values.DottedLegSiteFlatColumnBake); found {
+				// k indexes the WHOLE flat row (the leg window is a range
+				// within it), so the domain is cols — not the leg's slice of it.
+				return values.NewFieldValueWithResolvedOrdinalInDomain(
+					fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 			}
 		}
 		return node
@@ -6480,6 +6579,12 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		return nil
 	}
 	projected := make([]values.Value, len(p.Projections))
+	// minted records, per slot, the lazy carrier THIS function created from the
+	// projection's rendered name — the one value whose parse-tree segments the
+	// LogicalProject still carries. A slot filled from ProjectedValues, or later
+	// rewritten by a bake pass, is not it, and pointer identity is what says so:
+	// the segments describe the name that was rendered here, and nothing else.
+	minted := make([]*values.FieldValue, len(p.Projections))
 	for i, col := range p.Projections {
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
 			projected[i] = p.ProjectedValues[i]
@@ -6490,7 +6595,9 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return nil
 		}
-		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		projected[i] = fv
+		minted[i] = fv
 	}
 	if exactAggregateLayout {
 		nativeWidth := len(exactAggregate.GroupKeys) + len(exactAggregate.Calls)
@@ -6559,6 +6666,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			inputLegs = wholeRowLegFor(sourceAlias(p.Input), inputCols)
 		}
 		for i, v := range projected {
+			// A slot still holding the carrier minted above resolves from the
+			// PARSER's segments; only a slot whose segments were never captured
+			// falls back to recovering a qualifier out of the rendered name.
+			if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted[i] {
+				if ref := projectionRefAt(p, i); ref.Present {
+					projected[i] = bakeSegmentedColumnRef(fv, ref, inputCols, inputLegs)
+					continue
+				}
+			}
 			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
 		}
 	}
@@ -6568,7 +6684,16 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// serve these: a non-RC select has no derivable flat layout, and a flat
 	// concat ordinal would break under physical join reorder.
 	for i, v := range projected {
-		projected[i] = bakeDottedRefsToLegQOV(v, innerRef.Get())
+		// A slot still holding the carrier minted above is resolved by the
+		// PARSER's segments. That matters most here: this baker splits before it
+		// does anything else, with no exact-name precedence to rescue a quoted
+		// spelling first, so a one-segment `"A.B"` is read as leg A's column B
+		// and silently bound to the wrong row.
+		ref := logical.ColumnRef{}
+		if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted[i] {
+			ref = projectionRefAt(p, i)
+		}
+		projected[i] = bakeDottedRefsToLegQOVWithRef(v, ref, innerRef.Get())
 	}
 	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
 		projected,

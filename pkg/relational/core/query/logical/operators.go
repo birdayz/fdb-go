@@ -260,6 +260,35 @@ type LogicalProject struct {
 	AggregateSlots             []bool
 	ScalarSubqueries           []ScalarSubquery           // uncorrelated scalar subquery plans (pre-evaluated)
 	CorrelatedScalarSubqueries []CorrelatedScalarSubquery // correlated scalar subquery plans (re-evaluated per outer row via FlatMap)
+	// ProjectionRefs is parallel to Projections and carries the parse-tree
+	// SEGMENTS of a plain column item — the same triple SortKey and GroupKey
+	// already carry, for the same reason (RFC-197: qualification is FullId
+	// SEGMENT COUNT, never a scan of the rendered name).
+	//
+	// Projections is a RENDERING. `A.B` written as a qualified reference and
+	// `"A.B"` written as one quoted identifier are the same bytes, so a consumer
+	// that recovers the qualifier by slicing at the first dot cannot tell a
+	// reference to source A from a column literally so named — it manufactures a
+	// qualifier out of a name and resolves against the wrong row. The segments
+	// are what the parser actually saw, so they decide it.
+	//
+	// A zero entry means "no segments": a computed item, a sentinel slot, or a
+	// producer that has not been taught to capture them. Consumers must treat
+	// that as "unknown", never as "not qualified" — the ONLY safe reading of an
+	// absent segment triple is to fall back to whatever the rendered name
+	// supported before.
+	ProjectionRefs []ColumnRef
+}
+
+// ColumnRef is the parse-tree segment triple of a plain column reference.
+// Present mirrors SortKey/GroupKey's convention of a populated Bare, made
+// explicit because an unqualified reference and an uncaptured one are otherwise
+// the same zero value and mean opposite things.
+type ColumnRef struct {
+	Present   bool
+	Bare      string // last segment
+	Qualifier string // leading segment(s); "" when unqualified
+	Qualified bool   // parse-tree segment count > 1
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {

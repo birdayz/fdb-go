@@ -707,11 +707,14 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
+		refs := make([]logical.ColumnRef, len(sq.projCols))
 		for i, col := range sq.projCols {
 			projs[i] = strip(col.name)
+			refs[i] = projColRef(col, projs[i])
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 				computed[i] = true
+				refs[i] = logical.ColumnRef{}
 			}
 			if sq.projAliases != nil && i < len(sq.projAliases) {
 				aliases[i] = sq.projAliases[i]
@@ -719,6 +722,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		}
 		proj := logical.NewProject(op, projs, aliases)
 		proj.IsComputed = computed
+		proj.ProjectionRefs = refs
 		op = proj
 	}
 

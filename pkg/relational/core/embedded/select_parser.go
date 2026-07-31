@@ -630,6 +630,34 @@ type projCol struct {
 	selectOrdinal int
 }
 
+// projColRef is the parse-tree segment triple for one projected column, stated
+// against the name the builder actually emitted.
+//
+// The reconciliation is the point rather than a formality. The emitted name is
+// not always projCol.name — the derived-table shell strips a `X.` qualifier
+// prefix off the rendering — and a segment triple that describes a DIFFERENT
+// string than the one downstream carries is worse than no triple at all: it
+// would authorize a qualified reading of a name whose qualifier is gone. So the
+// triple is only claimed Present when it demonstrably spells the emitted name;
+// anything else reads as "not captured", which every consumer must already
+// handle.
+func projColRef(col projCol, rendered string) logical.ColumnRef {
+	if col.bare == "" || rendered == "" {
+		return logical.ColumnRef{}
+	}
+	if strings.EqualFold(rendered, col.bare) {
+		// Either the item was never qualified, or the shell's prefix strip
+		// removed the qualifier — in both cases what survives is one segment.
+		return logical.ColumnRef{Present: true, Bare: col.bare}
+	}
+	if col.qualified && strings.EqualFold(rendered, col.qualifier+"."+col.bare) {
+		return logical.ColumnRef{
+			Present: true, Bare: col.bare, Qualifier: col.qualifier, Qualified: true,
+		}
+	}
+	return logical.ColumnRef{}
+}
+
 // projColNames renders the name list for name-only consumers.
 func projColNames(cols []projCol) []string {
 	if cols == nil {

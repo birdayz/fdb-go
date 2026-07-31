@@ -379,7 +379,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":   {1, "name-keyed: projection merge composes an outer LAZY read by unique output-name match against the inner projection's slot names. Probed: the arm is HEAVILY LIVE -- a panic at its match point reds dozens of FDB tests (derived tables, CTEs, RFC-128 limits, cross-table predicates), so it cannot be failed closed where it stands. The outer read has no ordinal to select a slot with, and the conversion is therefore upstream: the resolver must bake a projection-output reference to its output ordinal, the way it already bakes a source-column reference (expr.go:296-297). That is translator/resolver work, not a rewrite of this site"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354": {1, "name-keyed: EqualsWithoutChildren's LAZY-vs-LAZY arm. Probed: it returns TRUE constantly in production (a panic on the true branch reds the sqldriver FDB suite and the explaindiff corpus immediately), so it is load-bearing for memo dedup of lazy carriers. It is also the one site in this bucket with NO Java counterpart to port: Java's FieldValue is resolved at construction (FieldValue.java:273-299), a lazy name carrier is a shape it cannot express, and for such a carrier the pending name IS the whole identity. Failing it closed makes two lazy references to one column unequal, which un-interns memo members rather than fixing a conflation. This closes when lazy FieldValues stop being minted, not before"},
 
-	// translator (14)
+	// translator (12)
 	//
 	// Two entries left by DELETION, not by migration: cascades_translator.go's
 	// :6078 and :6086 (the BareRef / rendered-item name-match loops that resolved
@@ -412,11 +412,26 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
 	"pkg/relational/core/embedded/cascades_generator.go:3182": {1, "translator: parsed column ref matched against declared inner columns"},
-	"pkg/relational/core/query/cascades_translator.go:5769":   {1, "translator: QUALIFIER segment of a parsed identifier, single-ForEach flat baker -- guarded by `Child != nil || Resolved != nil → bail` at 5763, so the only value reaching the slice is a lazy carrier minted from parsed text, and a match emits NewFieldValueWithResolvedOrdinalInDomain (born-baked). The LEAF segment of the same identifier is the entry at 5796; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5796":   {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5982, reached through a local leaf"},
-	"pkg/relational/core/query/cascades_translator.go:5839":   {1, "translator: QUALIFIER segment of a parsed identifier, multi-ForEach leg baker (bakeDottedRefsToLegQOV) -- same `Child != nil || Resolved != nil → bail` guard at 5831, so it sees only lazy carriers from parsed text, and the leg it selects bakes through legBake into NewCorrelatedFieldValueWithResolvedOrdinalInDomain. Its leaf segment is invisible to this gate -- see the plain-string-parameter blind spot in the header above, which is why only the qualifier half was ever recorded; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:5998":   {1, "translator: QUALIFIER segment of a parsed identifier, bakeFlatRefsAgainstColumns leg-window arm -- same bail guard at 5976, born-baked on match via NewFieldValueWithResolvedOrdinalInDomain. The LEAF segment of the same identifier is the entry at 6028; retired upstream by CQ-52"},
-	"pkg/relational/core/query/cascades_translator.go:6028":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
+	// CQ-52 converted the PROJECTION channel: LogicalProject now carries the
+	// parser's segment triple beside Projections, so a projected reference
+	// arrives at these bakers already segmented and nothing slices its name.
+	// Measured over the real-FDB sqldriver corpus, the dotted re-split fell from
+	// 110 calls to 3 — the survivors are the sort-key and aggregate-operand
+	// channels, whose carriers are still minted as joined text.
+	//
+	// The FIVE entries this replaces (:5769/:5796/:5839/:5998/:6028) are NOT all
+	// retirements, and the difference is recorded because a shrinking ratchet is
+	// exactly the thing nobody re-checks. Two of the three qualifier slices
+	// CONSOLIDATED into one (`segmentsOf` serves both arms of the leg baker, and
+	// takes the segments when they are present). The other three moved BEHIND A
+	// PLAIN STRING PARAMETER — bakeFlatRefsAgainstColumns' leg walk is now
+	// `legWindowSlot(qual, leaf, ...)`, and the header's plain-string blind spot
+	// means this gate can no longer see the comparisons inside it. That is a loss
+	// of gate reach, not a fix, and it is stated here rather than banked as
+	// progress.
+	"pkg/relational/core/query/cascades_translator.go:5723":   {1, "translator: LEAF segment of a parsed identifier escaping as a bare string, leg baker's segmentsOf fallback -- reached only when the carrier arrived with NO parse-tree segments (ref.Present false), so it is the un-migrated producers' path; guarded by `Child != nil || Resolved != nil → bail` at the caller, and every match downstream emits a born-baked ordinal. Retires when the remaining LogicalProject producers carry ProjectionRefs"},
+	"pkg/relational/core/query/cascades_translator.go:5725":   {1, "translator: QUALIFIER segment of the same fallback slice as 5723 -- one site now serves BOTH the single-ForEach and multi-ForEach arms, which previously sliced separately at :5769 and :5839. The leg-window comparisons it feeds are invisible to this gate (plain-string parameters into legWindowSlot / legBake)"},
+	"pkg/relational/core/query/cascades_translator.go:6022":   {1, "translator: bakeSegmentedColumnRef's exact first-match of the SEGMENTED carrier's rendered name against the output column list -- the name is still what selects the slot, so it is still debt, but it is no longer the name that decides QUALIFICATION: that comes from the parser's segment count. Same resolve-then-bake shape as 6118, on the converted path"},
 	"pkg/relational/core/embedded/cascades_generator.go:3202": {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3196": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6767":  {1, "translator: join-side name set during translation (laundered map key)"},
@@ -424,7 +439,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:2074":   {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},
 	"pkg/relational/core/query/cascades_translator.go:3855":   {1, "translator: element slot lookup during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:5048":   {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at 5046, so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4731, NOT on values.go:1510: this site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends, each named by sortKeyFieldRef's strings.ToUpper(fv.Field) at 4741 -- a contract-bucket entry. Converting ProjectionColumnName leaves this one red"},
-	"pkg/relational/core/query/cascades_translator.go:5982":   {1, "translator: column list membership during resolution"},
+	"pkg/relational/core/query/cascades_translator.go:6118":   {1, "translator: column list membership during resolution (bakeFlatRefsAgainstColumns' exact first-match; was :5982 before CQ-52 moved the leg walk into legWindowSlot)"},
 
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go:241": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},

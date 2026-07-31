@@ -1906,6 +1906,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 	var projs []string
 	var aliases []string
 	var computed []bool
+	var refs []logical.ColumnRef
 
 	for _, elem := range elems {
 		switch e := elem.(type) {
@@ -1919,6 +1920,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 			projs = append(projs, "")
 			aliases = append(aliases, "")
 			computed = append(computed, false)
+			refs = append(refs, logical.ColumnRef{})
 		case *antlrgen.SelectExpressionElementContext:
 			alias := ""
 			if e.Uid() != nil {
@@ -1932,10 +1934,24 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 				projs = append(projs, exprText)
 				aliases = append(aliases, alias)
 				computed = append(computed, true)
+				refs = append(refs, logical.ColumnRef{})
 			} else {
-				projs = append(projs, strip(colName))
+				rendered := strip(colName)
+				projs = append(projs, rendered)
 				aliases = append(aliases, alias)
 				computed = append(computed, false)
+				// The SEGMENTS behind the rendering this visitor just joined.
+				// columnNameFromExpr and splitColumnRef read the same FullId
+				// with the same per-segment quote stripping, so the triple
+				// spells colName exactly — reconciled against the emitted name
+				// because the derived-table shell may have stripped a
+				// qualifier prefix off it. An aggregate item (`SUM(v)`) is not
+				// a FullColumnName, so it captures nothing and its rendered
+				// name is never read as qualified.
+				bare, qual, qualified := splitColumnRef(e.Expression())
+				refs = append(refs, projColRef(
+					projCol{name: colName, bare: bare, qualifier: qual, qualified: qualified},
+					rendered))
 			}
 		}
 	}
@@ -1946,6 +1962,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 
 	proj := logical.NewProject(op, projs, aliases)
 	proj.IsComputed = computed
+	proj.ProjectionRefs = refs
 	return proj
 }
 

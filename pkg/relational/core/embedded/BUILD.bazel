@@ -118,6 +118,7 @@ go_test(
         "planner_cancellation_test.go",
         "planner_error_test.go",
         "planner_options_test.go",
+        "proj_col_ref_test.go",
         "push_filter_covered_columns_test.go",
         "query_hash_test.go",
         "resource_limits_test.go",
@@ -232,6 +233,7 @@ go_test(
         "lazy_leg_mint_winner_test.go",
         "unnest_element_stays_untyped_test.go",
         "unnest_element_later_from_item_test.go",
+        "proj_col_ref_test.go",
     ],
     deps = [
         "//gen",

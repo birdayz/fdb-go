@@ -11,10 +11,21 @@ import (
 // The DOTTED LEG QUALIFIER census — the TRANSLATOR-side twin of the executor's
 // leg-column provenance census.
 //
-// Both measure the same reader shape: a qualifier SPLIT OUT of a column name is
-// matched, case-insensitively, against a leg table's Name text. The executor's
-// copy lives beside its one reader (`rowSlotForLegColumn`); this one covers the
+// Both measure the same reader shape: a qualifier is matched,
+// case-insensitively, against a leg table's Name text. The executor's copy
+// lives beside its one reader (`rowSlotForLegColumn`); this one covers the
 // translator's THREE, which no census reached.
+//
+// WHERE THE QUALIFIER COMES FROM has changed, and the census deliberately did
+// NOT narrow with it. It was originally "a qualifier SPLIT OUT of a column
+// name", because that was the only way one arrived. The projection channel now
+// carries the parser's segment triple end-to-end (CQ-52), so most qualifiers
+// reaching these readers were SEGMENTED rather than sliced — and the census
+// counts both, because its question is not how the qualifier was obtained but
+// whether the leg its TEXT selects states an identity naming the same thing.
+// That question survives the conversion unchanged; narrowing the census to the
+// splitting callers would have made its two hard zeros hold over a shrinking
+// population while the channel they guard stayed the same size.
 //
 // Three, not two. `bakeDottedRefsToLegQOV` has TWO arms and they were counted as
 // one reader: the MULTI-ForEach arm keys a layout map by qualifier, and the
@@ -62,9 +73,15 @@ import (
 //
 // The channel is LIVE and the leg table's two spellings agree on every match:
 // no MATCH-ALIAS-DIFFERS, no MATCH-NO-ALIAS. So the table is ready; the READERS
-// are not, and cannot be made so from this side. Their retirement is CQ-52's,
-// which gives their counterparty the parser's qualifier/leaf segments instead of
-// a joined string these sites then split back apart.
+// are not, and cannot be made so from this side — they hold no
+// CorrelationIdentifier to key with, whatever the qualifier's provenance.
+//
+// The counterparty conversion has HAPPENED for the projection channel: the
+// qualifier arrives segmented, so the two spellings no longer have to survive a
+// join and a re-split to reach each other. The measured effect is on the SPLIT
+// population, not on these totals — over the sqldriver corpus the dotted
+// re-split fell from 110 calls to 3, all three in the sort-key and
+// aggregate-operand channels, which still carry their carrier as text.
 //
 // THE THIRD SITE'S ZERO IS A FINDING, not a gap in the measurement, and it is
 // recorded here because a zero is exactly what a census cannot leave in prose.
