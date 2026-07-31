@@ -10592,6 +10592,16 @@ None is speculative: each was re-verified against the tree before booking.
   names, a different channel from the NLJ mint, and they retire on their own
   producer-first path.
 
+  **THAT SECOND BLOCKER IS REFUTED, and it was never live.** Both sites were
+  instrumented per lookup and the whole real-FDB corpus driven through them:
+  each is reached ZERO times. Not quiet — UNREACHABLE, confirmed by a panic
+  wired into each and hit by nothing in `./pkg/relational/...` (the sqldriver
+  FDB corpus plus the explaindiff, plandiff, rowdiff, memoinvariant and yamsql
+  harnesses) nor `./pkg/recordlayer/query/...`. The arms above them carry every
+  reference that reaches those walks, because they are the ones with a leg to
+  key on. The seed-window namespace had no text-only reader to serve, and the
+  measurement is what said so; the argument above could not have.
+
   Stress 1M before/after (`bdf70fb2f` vs branch): all 22 measurements
   row-identical; timings within run-to-run noise on a shared machine.
 
@@ -10655,11 +10665,49 @@ None is speculative: each was re-verified against the tree before booking.
     `mergedReAnchor 0 of 174` measures exactly that. Closing it means giving
     those two paths a merged layout, which is the "parent-chained per-alias
     bindings" bullet above — still the right plan, now unblocked.
-  - `RecordTypeLeg.Name` and the seed-window text keys are still live, and their
-    blocker is unchanged and independent: `exists_gathered_cluster_wrap.go` and
-    `unnest_gather.go` SPLIT a dotted reference and look the window up by
-    qualifier TEXT, so identity keying there needs an identifier minted from a
-    name. Producer-first, as stated above.
+  - **The seed-window text keys are GONE** (phase 2c). `OrdinalSeedLegWindows`
+    returns `map[CorrelationIdentifier]OrdinalSeedLegWindow`; the upper-folded
+    namespace does not exist. Measured first, per lookup, over the whole
+    real-FDB corpus at every keyed reader of that map:
+
+    ```
+    existentialRebase        calls 962 | identityAgreesHit 461 | identityAgreesMiss 501
+    existentialDeclineProbe  calls 0
+    boxLegRef                calls  92 | identityAgreesHit  62 | identityAgreesMiss  30
+    boxDottedSplit           calls 0
+    boxSurvivorQOV           calls 184 | identityAgreesMiss 184
+    boxSurvivorCorrelation   calls   2 | identityAgreesMiss   2
+    gatheredGroupSlot        calls 160 | identityAgreesHit 160
+    ```
+
+    1400 lookups; every blocking class EMPTY (no TEXT-ONLY-HIT, no
+    IDENTITY-ONLY-HIT, no DIVERGED). The two text-only sites are the zeros, and
+    the panic probe above says they are unreachable rather than quiet — so the
+    box wrap's dotted arm was DELETED (a childless read now DECLINES the wrap to
+    the name model, which is stricter than the pass-through it replaces: the
+    predicate path had nothing downstream looking for a surviving lazy read),
+    and the decline probe's `NamedCorrelationIdentifier(key)` mint died with the
+    key. What the conversion buys beyond tidiness is measured by
+    `TestOrdinalSeedLegWindows_CaseDisjointLegsAreTwoWindows`: an upper-folded
+    key namespace collapses a machine-minted `q$5` and a quoted `Q$5` into one
+    key, and the seed then DECLINES entirely — a two-leg join losing its ordinal
+    layout because two unrelated quantifiers were spelled alike.
+  - **`RecordTypeLeg.Name` does NOT retire, and the surviving consumer is
+    named and measured.** Its two families are down to one: the DOTTED-TEXT
+    consumers, which are live. `executor.ordinal_join`'s dotted arm answers 4
+    times over the corpus (`C.CV`, `I.QTY`, `O.ID`, all over legs that also
+    state an identity), and the translator's two dotted bakers take 110 match
+    attempts with 101 matches — measured by a new census, the translator twin of
+    the executor's leg-column provenance census. Neither reader can be re-keyed
+    and the reason is structural, not a shortfall: each is guarded on
+    `Child != nil || Resolved != nil → bail`, so it only ever sees a lazy
+    carrier minted from parsed text. One of them is worse than that — its layout
+    map registers each leg under the scan TABLE name as well as the alias
+    (`FROM PA AS "s"` answering `PA."ID"`, measured: 1 such match), and a table
+    is not any quantifier's identity, so that map cannot be re-keyed even in
+    principle. The successor step is **CQ-52**, which gives the counterparty the
+    parser's qualifier/leaf segments instead of a joined string. Not a new item:
+    CQ-52 is already booked and already names these sites.
   - `bindMergedOuterLegs` now HAS a live planner-side producer (the
     pass-through, 174 of 174), so DIVERGENCES.md's "a channel whose only producer
     is absent" framing is retired there. The reader is still not load-bearing,

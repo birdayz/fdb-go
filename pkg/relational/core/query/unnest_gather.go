@@ -351,7 +351,7 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 // reference the seed doesn't carry passes through unchanged (name-model, resolved
 // elsewhere). This is the group-by twin of bakeGatedJoinPredicates — the
 // qualifier-honoring positional read that replaces the wrap's name key.
-func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
+func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		fv, isFV := node.(*values.FieldValue)
 		// A source-relative baked ref names a seed slot like its lazy twin —
@@ -359,21 +359,25 @@ func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSee
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return node
 		}
-		alias, col := "", strings.ToUpper(fv.Field)
+		qualified, col := false, strings.ToUpper(fv.Field)
 		// corr is the reference's OWN correlation where it has one, and the zero
-		// identifier where the qualifier was sliced out of the name instead. This
-		// site is the only seed-window reader whose key provenance is not static —
-		// the two arms below produce the same kind of string from opposite sources —
-		// so the identity is threaded down rather than re-derived at the lookup,
-		// where the distinction would already be gone.
+		// identifier where the qualifier was sliced out of the NAME instead. Both
+		// arms used to produce a string and hand it to one lookup, which made them
+		// indistinguishable at the point of use; the leg window is now selected by
+		// the correlation, so only the arm that has one can select a leg.
+		//
+		// `qualified` still tracks BOTH, because it gates the bare-column fallback
+		// below and a dotted reference is not a bare one whether or not its
+		// qualifier resolves. Measured over the real-FDB corpus before the split:
+		// 160 qualified lookups, every one of them carrying a correlation, none from
+		// the dotted arm.
 		var corr values.CorrelationIdentifier
 		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			alias = strings.ToUpper(qov.Correlation.Name())
-			corr = qov.Correlation
+			qualified, corr = true, qov.Correlation
 		} else if dot := strings.IndexByte(col, '.'); dot >= 0 {
-			alias, col = col[:dot], col[dot+1:]
+			qualified, col = true, col[dot+1:]
 		}
-		if slot, ok := slotInGatheredSeed(windows, elementSlots, alias, col, corr); ok {
+		if slot, ok := slotInGatheredSeed(windows, elementSlots, corr, col, qualified); ok {
 			if baked, err := values.NewFieldValueOfOrdinal(seedQOV, slot); err == nil {
 				// The positional read (Resolved ordinal) is authoritative; Field is
 				// display-only. Preserve the ORIGINAL reference's display name so the
@@ -394,16 +398,13 @@ func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSee
 // substrate, no drift). A qualified LEG column routes through its leg's
 // [Offset,Width) window from the SHARED authority OrdinalSeedLegWindows (agreeing
 // bit-for-bit with the executor spans by the cross-agreement fixture).
-func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, alias, col string, corr values.CorrelationIdentifier) (int, bool) {
-	// A QUALIFIED read whose alias names a LEG window resolves to THAT leg's column —
-	// the qualifier wins (`U.V` is U's V, never the element, even when the element AS
-	// alias is also `V`). This precedes element-first so an explicit leg qualifier is
-	// never shadowed by a same-named element.
-	if alias != "" {
-		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowKeyLookup(values.SeedWindowSiteGatheredGroupSlot, windows, alias, corr)
-		}
-		if w, ok := windows[alias]; ok {
+func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, corr values.CorrelationIdentifier, col string, qualified bool) (int, bool) {
+	// A QUALIFIED read whose CORRELATION names a LEG window resolves to THAT leg's
+	// column — the qualifier wins (`U.V` is U's V, never the element, even when the
+	// element AS alias is also `V`). This precedes element-first so an explicit leg
+	// qualifier is never shadowed by a same-named element.
+	if !corr.IsZero() {
+		if w, ok := windows[corr]; ok {
 			if idx, found := w.Typ.FieldIndex(col); found {
 				return w.Offset + idx, true
 			}
@@ -421,7 +422,7 @@ func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementS
 	// carries it (unambiguous). An ambiguous bare column (a dup-named `K` present in two
 	// legs) declines here → name-model, exactly as an unqualified dup would be ambiguous
 	// in SQL. Map order is irrelevant: a unique hit is order-independent; >1 declines.
-	if alias == "" {
+	if !qualified {
 		slot, hits := 0, 0
 		for _, w := range windows {
 			if idx, found := w.Typ.FieldIndex(col); found {

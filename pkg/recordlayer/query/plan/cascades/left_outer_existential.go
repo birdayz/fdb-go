@@ -32,7 +32,7 @@ import (
 // and layout drift is wrong-offset wrong-rows).
 type ordinalLegWindow = values.OrdinalSeedLegWindow
 
-func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[string]ordinalLegWindow, *values.RecordType) {
+func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType) {
 	return values.OrdinalSeedLegWindows(rc)
 }
 
@@ -42,7 +42,7 @@ func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[string]ordina
 // caller must DECLINE rather than ship a half-rebased tree.
 func rebaseOuterLegValueOrdinal(
 	v values.Value,
-	windows map[string]ordinalLegWindow,
+	windows map[values.CorrelationIdentifier]ordinalLegWindow,
 	mergedQOV *values.QuantifiedObjectValue,
 ) (values.Value, bool) {
 	if v == nil {
@@ -72,17 +72,11 @@ func rebaseOuterLegValueOrdinal(
 		if fv.Resolved != nil && fv.Resolved.FrontierPinned && qov.Correlation == mergedQOV.Correlation {
 			return node
 		}
-		alias := strings.ToUpper(qov.Correlation.Name())
-		if values.LegIdentityCensusEnabled() {
-			// The reference's own correlation is IN HAND here and the key is its
-			// upper fold, so both keys can be tried against the same map and
-			// compared. That comparison is what decides whether this lookup can be
-			// re-keyed by identity or whether the fold is carrying something the
-			// identity does not.
-			values.RecordSeedWindowKeyLookup(
-				values.SeedWindowSiteExistentialRebase, windows, alias, qov.Correlation)
-		}
-		w, isLeg := windows[alias]
+		// The reference's own correlation selects its window. It used to be the
+		// UPPER FOLD of that correlation, against a text-keyed map — a round trip
+		// through a namespace that merges the two the rest of this package keeps
+		// disjoint.
+		w, isLeg := windows[qov.Correlation]
 		if !isLeg {
 			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
 			// leg is a window, so !isLeg means a genuinely non-outer ref (the FlatMap
@@ -98,13 +92,14 @@ func rebaseOuterLegValueOrdinal(
 					// planning artifact; only its zero fold-only population is a fact
 					// about the corpus.
 					if values.LegIdentityCensusEnabled() {
-						// RETIRED PREDICATE: `leg.Name == alias`, where alias is the UPPER
-						// fold of this correlation — one of the two sites that folded a side
-						// before comparing. A fold-only count cannot see what such a
-						// predicate did differently, so the census records the verdict.
+						// RETIRED PREDICATE: `leg.Name == strings.ToUpper(corr.Name())` —
+						// one of the two sites that folded a side before comparing. A
+						// fold-only count cannot see what such a predicate did differently,
+						// so the census records the verdict. The fold is spelled out here
+						// because the local that used to hold it is gone with the text key.
 						values.RecordLegIdentityConversion(
 							values.LegSiteLeftOuterExistential, leg.Alias, qov.Correlation,
-							leg.Name == alias)
+							leg.Name == strings.ToUpper(qov.Correlation.Name()))
 						values.RecordLegIdentityLeg(leg)
 					}
 					// The drift check asks an IDENTITY question — "is this correlation a
@@ -183,7 +178,7 @@ func rebaseOuterLegValueOrdinal(
 // rebaseOuterLegRefsToMerged — same predicate shapes).
 func rebaseOuterLegRefsOrdinal(
 	p predicates.QueryPredicate,
-	windows map[string]ordinalLegWindow,
+	windows map[values.CorrelationIdentifier]ordinalLegWindow,
 	mergedQOV *values.QuantifiedObjectValue,
 ) (predicates.QueryPredicate, bool) {
 	if p == nil {
@@ -257,19 +252,15 @@ func rebaseOuterLegRefsOrdinal(
 	default:
 		// A shape the lazy twin also passes through untouched: safe
 		// only if it carries NO leg references — probe and decline if it does.
+		//
+		// The window's own identity IS the probe key now. This loop used to MINT a
+		// CorrelationIdentifier out of the map key's text — `NamedCorrelationIdentifier(alias)`
+		// — while the window it came from already stated the identifier being
+		// manufactured, and the correlation set it was asking is keyed by identity.
+		// So a case-variant window key produced a probe that could never match, and
+		// the decline it exists to trigger would not have fired.
 		for alias := range windows {
-			if values.LegIdentityCensusEnabled() {
-				// A MINT from the map key, not a lookup by it: this probe
-				// manufactures a CorrelationIdentifier out of each window's key text
-				// and asks the predicate's correlation set about it, while the window
-				// it came from already states the identifier being manufactured. The
-				// census asks whether the mint reproduces that stated identifier
-				// EXACTLY — a round trip — or forges a different one. No correlation
-				// is held at this site, which is what the zero identifier records.
-				values.RecordSeedWindowKeyLookup(
-					values.SeedWindowSiteExistentialDeclineProbe, windows, alias, values.CorrelationIdentifier{})
-			}
-			if _, refs := predicates.GetCorrelatedToOfPredicate(p)[values.NamedCorrelationIdentifier(alias)]; refs {
+			if _, refs := predicates.GetCorrelatedToOfPredicate(p)[alias]; refs {
 				return p, false
 			}
 		}
@@ -279,7 +270,7 @@ func rebaseOuterLegRefsOrdinal(
 
 // ordinalSeedLegWindowsOf is the Value-typed entry: nil windows for anything
 // that is not a pristine ordinal seed RC.
-func ordinalSeedLegWindowsOf(rv values.Value) (map[string]ordinalLegWindow, *values.RecordType) {
+func ordinalSeedLegWindowsOf(rv values.Value) (map[values.CorrelationIdentifier]ordinalLegWindow, *values.RecordType) {
 	rc, isRC := rv.(*values.RecordConstructorValue)
 	if !isRC {
 		return nil, nil
@@ -306,7 +297,7 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[string]ordinalLegWindow, *val
 // two-step translation is fail-closed end to end.
 func rebasePlanOuterRefsOrdinal(
 	p plans.RecordQueryPlan,
-	windows map[string]ordinalLegWindow,
+	windows map[values.CorrelationIdentifier]ordinalLegWindow,
 	mergedQOV *values.QuantifiedObjectValue,
 ) (plans.RecordQueryPlan, bool) {
 	if p == nil || len(windows) == 0 {
@@ -466,7 +457,7 @@ func rebasePlanOuterRefsOrdinal(
 // ok=false when a leg reference cannot be mapped.
 func rebaseComparisonRangesOrdinal(
 	comps []*predicates.ComparisonRange,
-	windows map[string]ordinalLegWindow,
+	windows map[values.CorrelationIdentifier]ordinalLegWindow,
 	mergedQOV *values.QuantifiedObjectValue,
 ) ([]*predicates.ComparisonRange, bool, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
@@ -489,7 +480,7 @@ func rebaseComparisonRangesOrdinal(
 // re-merged fails closed (ok=false) — never a half-rebased SARG.
 func rebaseComparisonRangeOrdinal(
 	cr *predicates.ComparisonRange,
-	windows map[string]ordinalLegWindow,
+	windows map[values.CorrelationIdentifier]ordinalLegWindow,
 	mergedQOV *values.QuantifiedObjectValue,
 ) (*predicates.ComparisonRange, bool, bool) {
 	if cr == nil || cr.IsEmpty() {

@@ -94,10 +94,11 @@ func (t *cascadesTranslator) existsFoldableGatheredCluster(f *logical.LogicalFil
 // than ship an unbound reference (silent NULL). Result-value callers must apply
 // the STRICTER wrapRVFullyBaked check on top (no lazy read of ANY shape may
 // survive in the RV; predicates legitimately keep existential-QOV refs).
-func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (values.Value, bool) {
+func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (values.Value, bool) {
 	if v == nil {
 		return nil, true
 	}
+	childlessRead := false
 	out := values.Replace(v, func(n values.Value) values.Value {
 		fv, isFV := n.(*values.FieldValue)
 		// A source-relative baked ref (the resolver's construction-time bind)
@@ -107,19 +108,15 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n
 		}
-		// QOV-shaped leg reference.
-		if key, isRef := legRef(n); isRef {
-			if values.LegIdentityCensusEnabled() {
-				// legRef's key is the upper fold of the reference's own QOV
-				// correlation, and that correlation is still in hand on the node — so
-				// this lookup can be tried both ways and the two verdicts compared.
-				var corr values.CorrelationIdentifier
-				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-					corr = qov.Correlation
-				}
-				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxLegRef, windows, key, corr)
+		// QOV-shaped leg reference. Keyed by the reference's OWN correlation: legRef
+		// still answers "is this the leg-reference shape?", and the identity it is
+		// about is read off the node rather than recovered from legRef's upper fold.
+		if _, isRef := legRef(n); isRef {
+			qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+			if !isQOV {
+				return n
 			}
-			w, isLeg := windows[key]
+			w, isLeg := windows[qov.Correlation]
 			if !isLeg || w.Typ == nil {
 				return n
 			}
@@ -136,54 +133,43 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 		if fv.Child != nil {
 			return n // a non-QOV composed read — leave; verification decides
 		}
-		// DOTTED frontier read ("LEG.COL").
-		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
-			if values.LegIdentityCensusEnabled() {
-				// The key is SLICED OUT of a column name. The arm above bails on
-				// `fv.Child != nil`, so there is structurally no correlation here to
-				// key by — the zero identifier is the measurement, not a gap in it.
-				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxDottedSplit,
-					windows, strings.ToUpper(fv.Field[:dot]), values.CorrelationIdentifier{})
-			}
-			w, isLeg := windows[strings.ToUpper(fv.Field[:dot])]
-			if !isLeg || w.Typ == nil {
-				return n
-			}
-			idx, found := w.Typ.FieldIndex(fv.Field[dot+1:])
-			if !found {
-				return n
-			}
-			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
-			if err != nil {
-				return n
-			}
-			return baked
-		}
-		// BARE frontier read ("COL"). A bare read carries no leg, so nothing
-		// says which of the merged row's columns it means — this arm used to
-		// match its DISPLAY name against the merged row's field names and bake
-		// on a unique hit, with the `matches != 1` guard as the mitigation. The
-		// guard is the admission: where the merged row has two same-named
-		// columns the name cannot answer, and where it has one the ordinal
-		// answers identically. Both are gone (RFC-197 item 3), and the read is
-		// left for the caller's post-walk verification to decline.
+		// A CHILDLESS read — DOTTED ("LEG.COL") or BARE ("COL"). Neither is baked
+		// here any more, and neither can be: this walk selects a window by the
+		// reference's own correlation, and a childless read has none. The two arms
+		// that used to bake them selected by TEXT — the bare one by matching the
+		// display name across the merged concat (removed with RFC-197 item 3), the
+		// dotted one by slicing a qualifier out at the first dot and keying the
+		// window namespace with it.
 		//
-		// Measured before removing: a panic wired into the unique-match point is
-		// reached by nothing — not the explaindiff corpus, not the
-		// //pkg/relational/sqldriver FDB suite, not any conformance harness. The
-		// dotted and QOV-shaped arms above carry every reference that reaches
-		// here in practice, because they have a leg to key on.
+		// The dotted arm is removed rather than re-keyed because re-keying it means
+		// minting a CorrelationIdentifier out of a column name, which is the forgery
+		// this whole conversion exists to remove, and because it is REACHED BY
+		// NOTHING: a panic wired into it is hit by no test in ./pkg/relational/...
+		// (the sqldriver FDB corpus plus the explaindiff, plandiff, rowdiff,
+		// memoinvariant and yamsql harnesses) nor in ./pkg/recordlayer/query/... —
+		// the same evidence that retired the bare arm three lines above it. The
+		// QOV-shaped arm carries every reference that reaches this walk, because it
+		// is the only one with a leg to key on.
+		//
+		// What replaces the bake is a DECLINE, not a pass-through, and that is
+		// deliberately stricter than what it replaces. A surviving lazy read is only
+		// caught downstream on the RESULT-VALUE path (wrapRVFullyBaked's default-deny
+		// whitelist); on the PREDICATE path nothing looks for it, because the
+		// post-walk below only hunts QuantifiedObjectValues. So an unreachable arm
+		// was standing between a childless dotted read and a context with no name
+		// channel. Declining sends the whole wrap back to the name model — the path
+		// this shape took before the wrap existed — instead.
+		if fv.Resolved == nil {
+			childlessRead = true
+		}
 		return n
 	})
-	// Post-walk: no leg-correlated QOV may survive.
-	ok := true
+	// Post-walk: no leg-correlated QOV may survive, and no childless lazy read may
+	// either (see the decline above).
+	ok := !childlessRead
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := n.(*values.QuantifiedObjectValue); isQOV {
-			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxSurvivorQOV,
-					windows, strings.ToUpper(qov.Correlation.Name()), qov.Correlation)
-			}
-			if _, isLeg := windows[strings.ToUpper(qov.Correlation.Name())]; isLeg {
+			if _, isLeg := windows[qov.Correlation]; isLeg {
 				ok = false
 				return false
 			}
@@ -283,7 +269,7 @@ func (t *cascadesTranslator) registeredScalarAliases() map[values.CorrelationIde
 // surviving-leg-ref check declines it (correct-or-decline). Non-leg references
 // (the inner sources, a nested scalar subquery) pass through untouched. Returns
 // (plan, false) only when a leg-correlated QOV survives the top-level rebase.
-func rebaseBuriedExistsPlanLegRefs(plan logical.LogicalOperator, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (logical.LogicalOperator, bool) {
+func rebaseBuriedExistsPlanLegRefs(plan logical.LogicalOperator, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (logical.LogicalOperator, bool) {
 	lf, isLF := plan.(*logical.LogicalFilter)
 	if !isLF || lf.Predicate == nil {
 		return plan, true
@@ -298,7 +284,7 @@ func rebaseBuriedExistsPlanLegRefs(plan logical.LogicalOperator, windows map[str
 }
 
 // rebaseLegRefsToBoxPred is rebaseLegRefsToBox over a predicate's value trees.
-func rebaseLegRefsToBoxPred(p predicates.QueryPredicate, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (predicates.QueryPredicate, bool) {
+func rebaseLegRefsToBoxPred(p predicates.QueryPredicate, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (predicates.QueryPredicate, bool) {
 	ok := true
 	out := predicates.ReplaceValues(p, func(v values.Value) values.Value {
 		rebased, vOK := rebaseLegRefsToBox(v, windows, mergedType, boxQOV)
@@ -465,11 +451,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// ordinal resolution over the wrap's positional output, so decline to the
 		// name model rather than ship an unbound reference.
 		for corr := range subRef.GetCorrelatedTo() {
-			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowKeyLookup(values.SeedWindowSiteBoxSurvivorCorrelation,
-					windows, strings.ToUpper(corr.Name()), corr)
-			}
-			if _, isLeg := windows[strings.ToUpper(corr.Name())]; isLeg {
+			if _, isLeg := windows[corr]; isLeg {
 				return nil
 			}
 		}

@@ -111,10 +111,10 @@ func TestSeedKeyedByBinding(t *testing.T) {
 	if len(windows) != 2 {
 		t.Fatalf("windows = %v, want 2 distinct binding-keyed windows", windows)
 	}
-	if _, ok := windows["S"]; !ok {
+	if _, ok := windows[values.NamedCorrelationIdentifier("S")]; !ok {
 		t.Fatalf("missing window for S; windows=%v", windows)
 	}
-	if _, ok := windows[strings.ToUpper("Q$DUP1")]; !ok {
+	if _, ok := windows[values.NamedCorrelationIdentifier("Q$DUP1")]; !ok {
 		t.Fatalf("missing window for Q$DUP1; windows=%v", windows)
 	}
 }

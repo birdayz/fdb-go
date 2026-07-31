@@ -36,8 +36,10 @@ func TestRebaseOuterLegValueOrdinal_LegLocalFrontierPinned_UsesBakedOrdinal(t *t
 
 	// The leg window: leg "L" starts at merged offset 10.
 	const legOffset = 10
-	windows := map[string]ordinalLegWindow{
-		"L": {Offset: legOffset, Typ: dupLeg},
+	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
+		values.NamedCorrelationIdentifier("L"): {
+			Offset: legOffset, Typ: dupLeg, Alias: values.NamedCorrelationIdentifier("L"),
+		},
 	}
 
 	// A leg-local baked ref pointing at the SECOND "K" (leg-local ordinal 1), whose
@@ -94,7 +96,11 @@ func TestRebaseOuterLegValueOrdinal_LegLocalOrdinalPastWindow_Declines(t *testin
 	}
 	mergedType := &values.RecordType{Fields: mergedFields}
 	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
-	windows := map[string]ordinalLegWindow{"L": {Offset: 10, Typ: narrowLeg}}
+	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
+		values.NamedCorrelationIdentifier("L"): {
+			Offset: 10, Typ: narrowLeg, Alias: values.NamedCorrelationIdentifier("L"),
+		},
+	}
 
 	ref := &values.FieldValue{
 		Field:    "Q",
@@ -118,7 +124,11 @@ func TestRebaseOuterLegValueOrdinal_MergedRefPassesThrough(t *testing.T) {
 	}
 	mergedType := &values.RecordType{Fields: mergedFields}
 	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
-	windows := map[string]ordinalLegWindow{"L": {Offset: 10, Typ: mergedType}}
+	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
+		values.NamedCorrelationIdentifier("L"): {
+			Offset: 10, Typ: mergedType, Alias: values.NamedCorrelationIdentifier("L"),
+		},
+	}
 
 	// An already-merged baked ref: child IS the merged QOV, ordinal 12 (final).
 	baked, err := values.NewFieldValueOfOrdinal(mergedQOV, 12)
@@ -177,8 +187,10 @@ func TestRebaseOuterLegValueOrdinal_DriftBetweenWindowsAndMergedLegs_Declines(t 
 
 	// ...and the OTHER half does not. The windows map carries an unrelated leg, so
 	// a reference over D misses it. That mismatch is the drift.
-	windows := map[string]ordinalLegWindow{
-		"L": {Offset: 4, Typ: legType},
+	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
+		values.NamedCorrelationIdentifier("L"): {
+			Offset: 4, Typ: legType, Alias: values.NamedCorrelationIdentifier("L"),
+		},
 	}
 
 	ref := &values.FieldValue{

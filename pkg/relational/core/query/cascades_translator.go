@@ -5260,7 +5260,7 @@ func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions
 // when the input is NOT a genuine ordinal seed (a name-model FALLBACK RC is ANCHORED
 // and excluded); the caller then keeps the plain named quantifier and skips baking.
 type gatheredSeedBake struct {
-	windows      map[string]values.OrdinalSeedLegWindow
+	windows      map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow
 	elementSlots map[string]int
 	seedQOV      values.Value
 	quant        expressions.Quantifier

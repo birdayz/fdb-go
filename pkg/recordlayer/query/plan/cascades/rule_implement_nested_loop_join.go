@@ -3764,18 +3764,30 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// before, so a decline is strictly no worse). Window keys usually repeat
 	// the leg aliases — duplicates and map order are irrelevant (every
 	// consumer builds a set).
-	verifyAliases := append([]string{}, outerLegAliases...)
-	for alias := range ordinalWindows {
-		verifyAliases = append(verifyAliases, alias)
-	}
 	existLegCorrs := map[values.CorrelationIdentifier]struct{}{
 		q0.GetAlias(): {},
 		q1.GetAlias(): {},
 	}
-	for _, a := range verifyAliases {
+	// The seed windows are filed under the leg IDENTITIES, so they join the
+	// verification set as themselves. They used to be filed under an upper fold of
+	// those identities and were re-minted here — a round trip that turned a minted
+	// lowercase leg into a leg the set could not match, i.e. exactly the reference
+	// this fail-closed check exists to catch, waved through.
+	for legCorr := range ordinalWindows {
+		existLegCorrs[legCorr] = struct{}{}
+	}
+	for _, a := range outerLegAliases {
 		if a != "" {
 			existLegCorrs[values.NamedCorrelationIdentifier(a)] = struct{}{}
 		}
+	}
+	// planReferencesAnyBuriedAlias below is a NAME-channel checker — it folds
+	// whatever it is given and matches dotted merged-row keys — so the window legs
+	// reach it as their own names. That direction (identity to text) is safe; the
+	// one this conversion removed was text to identity.
+	verifyAliases := append([]string{}, outerLegAliases...)
+	for legCorr := range ordinalWindows {
+		verifyAliases = append(verifyAliases, legCorr.Name())
 	}
 	if legReferencesAny(existRef, existLegCorrs) {
 		if ordinalWindows != nil {
