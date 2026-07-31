@@ -12640,7 +12640,7 @@ None is speculative: each was re-verified against the tree before booking.
       that a class nothing emits is worse than no label.
 
     Mutation-checked in seven independent directions, each RED alone: matcher
-    always-matches (4 files run clean → negatives that wrongly passed); type
+    always-matches (5 files run clean → negatives that wrongly passed); type
     names unchecked (only `wrong-column-type` reds); the descend gate disabled;
     the `isArray` distinction removed; the struct-type-name check removed; the
     live array sentinel's type-name arm; its scan-type arm.

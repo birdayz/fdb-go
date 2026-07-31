@@ -234,19 +234,22 @@ func TestJavaCorpusRuns(t *testing.T) {
 	}
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
-	// 24 / 10 / 8, from 20 / 15 / 7. Four of the five scalar
-	// `check-result-metadata/shouldFail/*` files moved from suppressed to
-	// booked: their only failing assertion IS the metadata one, so while the
-	// directive was a counted skip they ran clean and had to be booked against
-	// the skip that removed it. That split, not the class counts, is the
-	// measurement showing the directive is really checked.
+	// 24 / 10 / 8, from 20 / 15 / 7 — a net of +5 booked and -1. ALL FIVE
+	// scalar `check-result-metadata/shouldFail/*` files moved from suppressed
+	// to booked (suppressed 15→10 is exactly those five leaving): their only
+	// failing assertion IS the metadata one, so while the directive was a
+	// counted skip they ran clean and had to be booked against the skip that
+	// removed it. That split, not the class counts, is the measurement showing
+	// the directive is really checked.
 	//
-	// The fifth moved to claimed-earlier instead, and finding out WHY is what
-	// this split is for. `wrong-array-element-type.yamsql` was being credited
-	// as a passing negative while dying on its setup INSERT — the same
-	// array-literal gap its shouldPass sibling books — so the credit was for a
-	// failure upstream never asked for. Booked in gaps.go now, which is why
-	// `engine-gap:array-literal-values` is 6 rather than 5.
+	// The -1 moved booked→claimed-earlier, and finding out WHY is what this
+	// split is for. `wrong-array-element-type.yamsql` (non-scalar — its
+	// expectation descends — and already booked in the parent) was being
+	// credited as a passing negative while dying on its setup INSERT — the
+	// same array-literal gap its shouldPass sibling books — so the credit was
+	// for a failure upstream never asked for. Booked in gaps.go now, which is
+	// why `engine-gap:array-literal-values` is 6 rather than 5, and
+	// claimed-earlier 7→8 is exactly that one file arriving.
 	if booked != 24 || suppressed != 10 || claimedEarlier != 8 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
 			"pinned baseline is 24 / 10 / 8 (42 manifest entries)", booked, suppressed, claimedEarlier)
