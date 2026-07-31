@@ -720,6 +720,68 @@ Note also that binding the catalog does **not** make DDL transactional: `runDDL`
 auto-commits regardless (8f). The two questions are independent and revision 1
 was right about that much.
 
+**The policy is not complete until the CACHE obeys it too — and routing the read
+alone does not achieve that.** `cachedLoadSchema` consults
+`c.sess.SchemaCache` **first**, at `connection.go:214-216`:
+
+```go
+key := session.SchemaCacheKey(dbPath, schemaName)
+if s, ok := c.sess.SchemaCache[key]; ok {
+    return s, nil
+}
+```
+
+That return happens **before** any transaction is considered — the
+`if c.activeTx != nil` branch is at `:218`, below it. So on a cache hit there is
+no FDB read, no conflict range, and no read version: the metadata handed back was
+populated by an **earlier transaction on the same pooled connection** and may
+predate the current one entirely. Moving the *miss* path into the transaction
+therefore fixes the miss and leaves 8b's own failure shape — plan built at
+snapshot A, rows read at snapshot B, silent zero rows — alive one layer up. A fix
+that only re-routes the read would ship the bug it was written to remove, and
+would look green because the miss path is what every straightforward test
+exercises.
+
+Two things bound the reachable window, and neither closes it. `ResetSession`
+calls `c.sess.ResetSchemaCache()` (`:545`), so a stale entry cannot survive a
+pool checkout; and local DDL invalidates through `invalidateSchemaCache`
+(`:239-241`). What remains is **cross-connection DDL** landing inside one
+connection's `BEGIN; … COMMIT; BEGIN; …` sequence: connection A caches the schema
+in its first transaction, connection B commits a DDL, and A's second transaction
+serves the pre-DDL entry from cache with no read and no conflict.
+
+**So the policy reads: catalog reads join the transaction, *and the cache does
+not serve a hit across a transaction boundary*.**
+
+**Implementation — the entry binds to the transaction, and dies with it on the
+one flag.** The schema-cache entry is populated *within* the transaction that
+read it and is **dropped when Decision 3's terminal flag fires** — the same flag,
+on the same `*embeddedTx`, that already invalidates Decision 10's store cache. A
+subsequent transaction on that connection finds no entry, re-reads inside itself,
+and so restores both the read version and the conflict range. This is
+deliberately *not* a third mechanism: a "does the populating pointer still match"
+check would be a second discipline that has to be kept consistent with the flag
+by hand, and the two would drift. **One lifecycle — the transaction ends, and
+everything scoped to it (store, schema entry, continuation token) goes at
+once.**
+
+That is also precisely Java's shape, already cited above: `RecordLayerSchema`
+caches per transaction and registers `conn.addCloseListener(() -> currentStore =
+null)` (`:106`) so the binding dies with the transaction rather than being
+re-validated on each use. Go gets the same structure with the terminal flag
+playing the close listener's role.
+
+An auto-commit statement (no `activeTx`) keeps today's behaviour: there is no
+transaction to bind to and no serializable promise to keep.
+
+**Do not conflate this with Open Question 4's store-state cache — a different
+object with a different verdict.** That one is genuinely safe: it is validated
+against the transaction's own read version, so a stale entry is detected rather
+than served. The **schema** cache has no such validation — it is a plain map hit
+— which is exactly why it needs the scoping and the store-state cache does not.
+A reviewer who checks one and generalises to the other will reach the wrong
+answer in whichever direction they started.
+
 #### 8c. Statistics stay out, and the reason is sharper than "not part of the read set"
 
 `fetchTableStatistics` reads per-type record counts via `DB.RunRead` with
@@ -973,10 +1035,21 @@ correct — it is the FDB wall — but it is a behaviour change for the
 three-statement transaction, and the bulk loader in
 `pkg/relational/sqldriver/stress/stress_test.go` is one (see criterion 10).
 
-**Auto-commit behaviour is unchanged.** With no explicit transaction, `runInTx`
-still falls through to `DB.Run`, every page is its own transaction, and RFC-203's
+**Auto-commit routing is unchanged — but its 1021 error *surface* changes, and
+"unchanged" was an overclaim.** With no explicit transaction, `runInTx` still
+falls through to `DB.Run`, every page is its own transaction, and RFC-203's
 rollover preservation applies unmodified. The two 1021 auto-commit hazards
 (Decision 7a) are unchanged in both directions.
+
+The exception is Decision 7(b): `translateFDBCode` is **shared**, so the new
+`1021` lane is not confined to the explicit-transaction path. When `DB.Run`'s
+retry loop **exhausts** on 1021, an auto-commit caller sees the raw error today
+and will see `40003` after. That is an improvement — the caller learns the
+outcome is indeterminate instead of getting an untranslated code — and it is
+stated here rather than filed under "unchanged", because a reader checking the
+blast radius against the auto-commit suite would otherwise be surprised by a
+changed error string. It does not change *whether* the hazard occurs, only how it
+is reported.
 
 **A caller deadline still does not reach the FDB read futures on this path.** The
 cursor loop honours the statement context (`ExecutePlan(r.ctx, ...)`), so
@@ -1145,11 +1218,41 @@ through `NewScanLimiterStateIn(env)`**, never `NewScanLimiterState()`, and the
     problem statement moved and this document is wrong, which is what their own
     failure messages (`:121`, `:131`, `:168`) already instruct a reader to
     conclude.
-12. **Auto-commit is untouched.** The existing auto-commit SELECT suite
-    (including pagination and `resource_limits_test.go`) stays green with no
-    expectation edits, and RFC-203's **G12** (rollover transparent in
-    auto-commit) stays green.
-13. **1M stress before and after — with the control corrected.** Revision 1 said
+12. **The catalog binds to the transaction — including the CACHE** (Decision 8b).
+    Three cases, because the read path and the cache path fail differently and a
+    test of one is not a test of the other:
+    - **(a) The skew itself.** An explicit transaction plans a statement, a
+      *separate connection* commits DDL that changes the schema, and the first
+      transaction then reads: it must not return **zero rows with no error**.
+      *Mutation direction:* revert 8b's routing — sites (b) and (c) back to
+      `DB.Run` — and this test must redden. That is what proves the routing is
+      load-bearing rather than cosmetic.
+    - **(b) The cache hit across a transaction boundary.** The shape the routing
+      fix alone does not reach: on ONE connection, `BEGIN`, read the schema
+      (populating `c.sess.SchemaCache`), `COMMIT`; a second connection commits
+      DDL; then `BEGIN` again on the first connection and read. It must re-read
+      inside the new transaction, not serve the pre-DDL entry. *Mutation
+      direction:* keep 8b's routing but let the entry survive the terminal flag
+      — (a) stays **green** while this reddens. That asymmetry is the whole point
+      of having two tests: a single test that only exercises the miss path
+      certifies a fix that still ships the bug. The `ResetSession` path
+      (`connection.go:545`) must **not** be what saves it, so the test must not
+      return the connection to the pool between the two transactions.
+    - **(c) The accepted cost is actually paid.** A concurrent DDL conflicts an
+      explicit transaction with **40001** — the price Decision 8b explicitly
+      accepts. If this test cannot be made to fail with 40001, the catalog reads
+      are not adding conflict ranges and 8b is not implemented, however green (a)
+      looks. *Mutation direction:* make the catalog read snapshot-isolated → no
+      conflict range, no 40001, and this reddens while (a) and (b) stay green.
+13. **Auto-commit is untouched — with one stated exception.** The existing
+    auto-commit SELECT suite (including pagination and `resource_limits_test.go`)
+    stays green with no expectation edits, and RFC-203's **G12** (rollover
+    transparent in auto-commit) stays green. The exception is the shared `1021`
+    lane (Decision 7b): an auto-commit caller whose `DB.Run` retries **exhaust**
+    on 1021 now sees `40003` where it saw a raw error. That is an expectation
+    edit and it is the *only* sanctioned one; it gets its own assertion rather
+    than being absorbed into a suite-wide "still green".
+14. **1M stress before and after — with the control corrected.** Revision 1 said
     "the auto-commit path should be unmoved; a difference there means the routing
     split leaked." **That control is wrong.** The loader is
     `stress_test.go`'s `bulkInsert` (`:162`), and it is an **explicit-transaction
@@ -1195,12 +1298,38 @@ right things. (Revision 1 numbered these 1, 3, 4 — there was no 2. Fixed.)
    right moment — but that field is metrics-owned and unexported, and there is
    **no accessor for it or for anything equivalent**; the exported time-ish
    surface is `GetReadVersion`, `SetReadVersion`, `SetTimeout`,
-   `GetCommittedVersion` and nothing else. So the change is one field plus one
-   accessor, stamped under the same mutex, with the env clock rather than
-   `time.Now()`. It is small; it is a **client/wire-tree change and takes its own
-   review lap** under the client gate (FDB C++ developer + Torvalds), not this
-   RFC's. It is a hard dependency of Decision 5: without it the transaction-scoped
-   time budget has no correct instant to anchor on.
+   `GetCommittedVersion` and nothing else. So the change is one **new** field
+   plus one accessor, stamped under the same mutex, with the env clock rather
+   than `time.Now()`.
+
+   **It must be a NEW field, never an accessor onto `metricStart` — the two need
+   opposite reset disciplines, and this is the condition the client lap rules
+   on.** `metricStart`'s own comment (`transaction.go:693-695`) states it:
+
+   > Cleared on commit-reuse (postCommitReset), **NOT on OnError, so it spans
+   > retries** but excludes the idle gap before a reused handle's next
+   > transaction begins.
+
+   That is deliberate — it is RFC-114's total-latency anchor, the documented
+   divergence is restated at `:1872-1875`, and it is pinned by revert-proof tests
+   (`clientmetrics_test.go:594`, `:654`). Spanning retries is exactly wrong for
+   this anchor: **`OnError` gives the transaction a NEW read version, so FDB's
+   5-second window restarts**, and a budget anchored on a span-retries field would
+   charge a fresh window for time spent in a previous attempt and fail queries FDB
+   would have served. The new field is therefore **stamped at each GRV and cleared
+   on `OnError`** — the opposite discipline. Reusing `metricStart` would either
+   corrupt RFC-114's metric or break the budget, and would redden those tests.
+
+   RFC-198's own path is unaffected by the reset half — explicit transactions do
+   not retry (Decision 1, Decision 7a), so `OnError` never fires on them — but the
+   auto-commit `TransactCtx` retry loop lives in the same file and shares the
+   field, so the discipline is not academic and the client gate rules on it
+   deliberately rather than inheriting it.
+
+   It is small; it is a **client/wire-tree change and takes its own review lap**
+   under the client gate (FDB C++ developer + Torvalds), not this RFC's. It is a
+   hard dependency of Decision 5: without it the transaction-scoped time budget
+   has no correct instant to anchor on.
 
 2. **Whether any in-tx read path bypasses `ExecuteProperties.IsolationLevel`.**
    The `isSnapshot()` sites cover the leaf cursors, but an unconditional
@@ -1228,7 +1357,24 @@ right things. (Revision 1 numbered these 1, 3, 4 — there was no 2. Fixed.)
    built once and reused across statements in a transaction is a lifetime change,
    and the store-state cache interaction with a long-lived transaction is the
    place a stale read would hide. Measured at implementation, with the terminal
-   flag's invalidation as the thing under test.
+   flag's invalidation as the thing under test. (Note the store-**state** cache
+   is validated at the transaction's own read version and is therefore safe —
+   unlike the *schema* cache, whose plain-map hit is the gap 8b closes. The two
+   are different objects with different verdicts and must not be reasoned about
+   together.)
+
+   **One concrete collision is already visible and is named rather than left to
+   be discovered.** `runDDL` auto-commits in its own transaction even inside
+   `BeginTx` (8f) and invalidates the schema cache when it does — but Decision
+   10's store is pinned on the `*embeddedTx` and was built with
+   `SetMetaDataProvider(c.cachedMetaData())`. So a DDL issued *inside* an
+   explicit transaction commits, invalidates the cache, and leaves that
+   transaction's cached store holding **stale metadata for the remainder of the
+   transaction**. Decision 10's cache is what makes this reachable; it is
+   in-scope for Decision 10's implementation, and the resolution is that the DDL
+   invalidation must drop the transaction-scoped store too, not only the schema
+   entry — the same one-lifecycle rule 8b states, applied to an invalidation that
+   originates outside the transaction rather than at its end.
 
 ## Citations re-verified
 
