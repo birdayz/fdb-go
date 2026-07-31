@@ -158,7 +158,7 @@ func TestNightlyWindowGatesAreReconciled(t *testing.T) {
 	// passes vacuously — a green gate guarding nothing, which is the exact
 	// disease this file treats. The count is a floor, not an equality: adding a
 	// nightly must not fail here, only failing to reconcile one must.
-	const knownWindowedJobs = 9
+	const knownWindowedJobs = 11
 	if len(windowed) < knownWindowedJobs {
 		t.Fatalf("found only %d window-gated nightly jobs, expected at least %d — the workflow parse is broken and every check below would pass vacuously; found: %v",
 			len(windowed), knownWindowedJobs, windowed)

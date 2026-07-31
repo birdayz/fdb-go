@@ -1,7 +1,11 @@
 # Road to production
 
-**Revision 2026-08-01.** Measured against `f5c2c7f0e` (= `origin/master`). Supersedes the
+**Revision 2026-08-01.** Measured against `a1d281a63` (= `origin/master`). Supersedes the
 2026-07-29 revision.
+
+Every count below carries the SHA it was measured at. This revision was drafted against `f5c2c7f0e`
+and two merges (#555, #556) landed mid-pass and invalidated three of its findings — so the SHA is
+not decoration, it is the difference between a measurement and a rumour.
 
 Status page for the question "what stands between this codebase and production use", tiered by
 deployment mode. **This page is the authority.** `PRODUCTION_READINESS.md` is the launch-gate
@@ -13,37 +17,58 @@ tests, the generated docs, and the CI run history. **Nothing was carried forward
 pass refuted a substantial part of the previous revision; the refutations are recorded inline rather
 than quietly corrected, because a status page whose errors vanish teaches nobody how it went wrong.
 
-The one-line answer: the code is closer to prod than any older document claims, but **less close
-than the 2026-07-29 revision claimed**. Two corrections dominate this revision:
+The one-line answer: the code is closer to prod than any older document claims. Three corrections
+dominate this revision:
 
-1. **The safety nets are still not trustworthy.** B1's mechanism landed and works exactly as
-   designed — and what it now reports is that three of nine nightly nets have *never* recorded a
-   genuine run. The previous revision said "red until tonight proves the nets"; it has been red for
-   three consecutive nights (2026-07-29, -30, -31). Detection was the deliverable and detection
-   works; the nets themselves are still dead.
-2. **Several things the previous revision described as "in flight" or "in review" do not exist on
-   any ref.** Measured: no open PR in this repo other than #486. Work that lives only in an
-   unpushed local branch is not in review, and this page will not describe it as such again — see
-   "Unlanded work" below.
+1. **The safety nets are not yet PROVEN, but the mechanism is now honest twice over.** B1's
+   detection (#523) worked exactly as designed and reported that three of nine nightly nets had
+   never recorded a genuine run. #556 then found the reconciler's *diagnosis* wrong — the lanes were
+   fine, the window band was the wrong shape — fixed it across all five nets, and published the
+   number nobody wanted: **107 of 177 scheduled runs over these lanes' whole life were fake-green**.
+   Five validation dispatches are in flight. Tier 1 confirms on the first genuinely green reconcile.
+2. **The read-side safety net roughly doubled.** The generation factory (#555) landed 2000 blessed
+   scenarios, and it paid for itself on its first sweep by finding a resolver defect that broke six
+   boolean operand shapes — including one, boolean-CASE in WHERE, that this page had listed as a
+   deliberate parity gap for months. It was not deliberate; it was unmeasured.
+3. **Documentation authority was itself a defect (B6), and this pass is its fix.** Three status docs
+   contradicted each other; the corrections are recorded inline below rather than applied silently.
 
 Explicit-transaction isolation (B2) remains the single most dangerous defect for a real
-application.
+application, and is now the top item outright.
 
 ## Deployment tiers
 
 ### Tier 1 — record-layer data plane + auto-commit SQL, bounded contexts
 **Distance: gated on the nightly nets becoming genuinely green.** Two items:
 
-- **The nightly nets are red, correctly.** The reconciler
-  (`.github/workflows/nightly-reconcile.yml`) fails when a net has not genuinely executed inside its
-  limit. Measured on run `30627489161` (2026-07-31): `3 of 9 nightly nets have not genuinely
-  executed inside their limit` — `fuzz-diff`, `fuzz-binding` and `fuzz-engine` have **never**
-  recorded a genuine run; the other six are current. Root cause measured from run history: all five
-  nightly-fuzz jobs contend for one `hetzner-fdb` runner slot and are serialized, so the losers land
-  outside the 00:00–10:00 window and self-skip (run `30612113572`: all five finished in 5–7s with
-  "this runner became available at 10:00 UTC, outside the 00:00-10:00 nightly window"). **#523
-  widened the windows; it did not address 5 jobs contending for 1 slot.** That is the open work, and
-  it is not started (see "Unlanded work").
+- **The nightly nets: the window fix is MERGED (#556), awaiting its first genuine green.** The
+  reconciler fails when a net has not genuinely executed inside its limit, and it was right that
+  `fuzz-diff`, `fuzz-binding` and `fuzz-engine` had no heartbeat of any age. **Its diagnosis was
+  wrong, and that matters more than the fix.** The suspicion was mis-wired lanes; measurement found
+  all five nightly-fuzz lanes byte-identical in their heartbeat steps, with the two healthy ones in
+  the same file as the three dead ones. Nothing was wrong with any lane. **The band was the wrong
+  SHAPE**: a non-wrapping 00:00–10:00 comparison calls 18:00–24:00 "daytime", so on 2026-07-30 the
+  queue handed out runners at 20:22, 21:12, 23:32, 00:05 and 01:24 UTC and the three jobs landing
+  BEFORE midnight were discarded to "protect daytime CI capacity" — at ten at night. On 07-31 all
+  five landed at 10:22–10:42 and all five were thrown away for being twenty-two minutes late. Bands
+  now WRAP and are sized from every allocation hour each job has actually been given, measured over
+  39 nightly-fuzz, 47 stress, 12 rowdiff, 109 coverage and 4 oracle scheduled runs. **The same
+  defect was live in all four other nets** (stress rejected hour 10 four times, rowdiff hour 20,
+  coverage hour 22, oracles hour 22) and was fixed with them rather than left to surface one net at
+  a time.
+  The honest history the fix published — fake-green scheduled runs over each lane's whole life,
+  **107 of 177**: binding-stress 24/39 (8 genuine), client-fuzz 23/33 (9), engine-fuzz 21/33 (12),
+  diff-fuzz 20/39 (12), race-detector 19/33 (13). So the lanes were not dead their entire life, only
+  most of it; diff-fuzz last did real work on 07-25. Since heartbeats began there have been exactly
+  two scheduled runs and three lanes lost both, which is why they read as never having run.
+  **Status: five validation dispatches are in flight; Tier 1 confirms on the first genuinely green
+  reconcile, not before.** A merged window fix is not a proven net.
+  *Corrected from earlier in this revision:* an earlier draft blamed runner contention alone and
+  called the residual "not started". Contention is real, but the band's shape was the defect, and
+  `TestNightlyWindowAdmitsMeasuredLandings` (replaying every allocation hour each job has really
+  been given against the band it declares) is the axis the old gate could not see.
+  *Found and fixed while verifying this paragraph:* `nightly-factory.yml`'s two jobs still carried
+  the old inlined band and made master red against #556's new gate — see "Landed since the audit".
 - **Index candidacy is opt-OUT in Go where Java is opt-IN (CQ-46, `TODO.md:10404`, open).** The
   07-17 nightly-stress failure was root-caused: `tryExistsFlatMap` matched candidates by
   first-column NAME with no index-type check, so a SUM aggregate index was built into a
@@ -59,16 +84,17 @@ application.
   (two tests) is committed as of #524. CQ-45, whose DONE condition was exactly that file landing, is
   therefore satisfied and is marked done in `TODO.md` in this pass.
 
-**What this tier rests on** — all counts MEASURED at `f5c2c7f0e`, with drift-guard status stated,
+**What this tier rests on** — all counts MEASURED at `a1d281a63`, with drift-guard status stated,
 because an unguarded count in a status doc is a claim with a shelf life:
 
 | Net | Measured now | Drift-guarded? |
 |---|---|---|
 | Byte-identity differential vs `libfdb_c`, `pkg/fdbgo/bench/` | **80** (75 `TestDifferential_*` + 5 `FuzzDifferential*`) | **No** |
 | Chaos with model verification, `pkg/recordlayer/chaos/` | **228** test funcs | **No** |
-| Java conformance vs a real 4.12.11.0 server | **1362** Ginkgo specs | **No** |
-| SQL corpus coverage | **342 scenarios · 2740 cases · 2399 supported (87.6%)**, 111 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
+| Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
+| SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
+| Generation factory corpus (NEW, #555) | **2000** scenarios · **8000** tests; blessings **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenarios, tests, per-feature-vector and per-blessing (`factorycorpus/census_baseline.json`) |
 | `.Field`-decides ratchet (RFC-197) | **52** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition` |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
@@ -81,10 +107,12 @@ as open; its header now says otherwise.
 gets quoted:* the previous revision's "78 differential tests / 227 chaos tests" were exactly right
 **on audit day** and have since drifted to 80 / 228 — neither is drift-guarded, so both will drift
 again. "1,361 Java conformance specs" was never a spec count: it is the **Skipped** line from a
-focused run (`Ran 1 of 1362 Specs … 1361 Skipped`); the total is 1362. `README.md:258` carries a
-third, older number (434). And "87.5% (2,395/2,736 across 341 scenarios)" was stale against its own
-generated, drift-guarded source, which reads 87.6% / 2399 / 2740 / 342. The lesson this table
-encodes: quote a generated number or guard it, never both hand-copy and hand-maintain it.
+focused run (`Ran 1 of 1362 Specs … 1361 Skipped`). `README.md:258` carries a third, older number
+(434). And "87.5% (2,395/2,736 across 341 scenarios)" was stale against its own generated,
+drift-guarded source. The lesson this table encodes: quote a generated number or guard it, never
+both hand-copy and hand-maintain it — and this revision proved it again on itself, because the
+conformance total moved 1362→1363 and SQL coverage 2399→2401 between two SHAs of the SAME pass. The
+coverage move is not noise: it is the two CASE shapes flipping from unsupported-pin to supported.
 
 ### Tier 2 — full SQL surface incl. explicit transactions
 **Distance: weeks at the current grind pace.** Dominated by B2, which is the Tier-2 gate outright:
@@ -117,14 +145,14 @@ entries mean the same query returns different rows or different errors on the tw
 
 | # | Item | Impact | Size | State |
 |---|---|---|---|---|
-| B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **Mechanism FIXED and merged (#523); the nets are STILL RED.** Windows resized from measured dispatch landings, per-job heartbeats on all 9 windowed jobs, reconciler fails when any net has not genuinely run in N days — enforced three ways by `TestNightlyWindowGatesAreReconciled`. Measured 2026-07-31: `fuzz-diff`, `fuzz-binding`, `fuzz-engine` have never recorded a genuine run; five fuzz jobs contend for one runner slot. **Residual is unstarted, not in flight.** Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 still open (CQ-47) |
+| B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **Detection merged (#523); the WINDOW SHAPE fixed and merged (#556); awaiting first genuine green.** #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Five validation dispatches in flight. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 still open (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **The Tier-2 gate.** RFC-198 review-complete (#529); implementation not started. Pinned by the probe test |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 (`TODO.md:10046`, open)** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 52 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
 
-### B4 residual, per bucket — MEASURED at `f5c2c7f0e`
+### B4 residual, per bucket — MEASURED at `a1d281a63` (unchanged by #555/#556)
 
 These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
 `TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
@@ -165,9 +193,11 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
-  path. Its NLJ twin was deleted; this one "dies with the same work", which is now booked under
-  nothing. **This is a real gap between a closed checkbox and the gate**, and it is booked in this
-  pass rather than left to be rediscovered.
+  path. Its NLJ twin was deleted; this one "dies with the same work", and that work was owned by
+  nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
+  and deliberately NOT folded into CQ-68 — CQ-68 is a different axis (94 bare untyped QOVs, not a
+  display name manufactured into a row key), and folding them would let either close while the
+  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim.
 
 RFC-197 itself is **IN IMPLEMENTATION** (`rfcs/197-column-identity-is-an-ordinal.md:3`): step 0 and
 items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated. **CQ-68**
@@ -225,16 +255,26 @@ Different answer / different error:
 
 Cleanly rejected (0AF00/0A000) where Java answers: derived tables with JOIN bodies; EXISTS inside
 OR; correlated scalar subquery inside EXISTS; projected EXISTS; scalar subquery over FROM-less
-SELECT; boolean-CASE in WHERE; grouped correlated EXISTS. Several were once silent wrong rows and
-are now flip-sentinels — the correct posture.
+SELECT; grouped correlated EXISTS. Several were once silent wrong rows and are now flip-sentinels —
+the correct posture.
 
-**Boolean-CASE in WHERE, stated precisely because the tree contradicts itself about it.** The line
-above is CORRECT: Java answers, Go rejects 0AF00. That is what the committed pins assert
-(`yamsql/testdata/case_when_in_java.yaml:56`, `case_exists_combo.yaml:24`, both citing Java's
-`Expression.java:371-400` `ValuePredicate(= TRUE)` wrap) and it is booked as RFC-180 Y4
-(`TODO.md:9314`). **What is inverted is the folklore inside the code**: `walk.go:53` and
-`embedded_fdb_test.go:6620` both assert in comments that *Java rejects* it and "Go follows", which
-is false and is the reason the gap has looked intentional. Those two comments are a booked defect.
+**RESOLVED and removed from that list: boolean-CASE in WHERE** (#555, `491e02a7c`). Go now ACCEPTS
+it and returns the same rows Java does. Java plans a boolean-typed CASE as a WHERE predicate; Go
+declined only because its CASE consequent resolved in a predicate context, so a comparison arm never
+became a value. Resolving the consequent as a value closed it, as part of the same three-valued
+`walkPos` that closed the other six operand shapes. The rows are **measured on both engines** —
+`conformance/boolean_expression_position_java_probe_test.go` runs **18 shapes** through the live
+Java conformance server and the Go engine and compares which are ACCEPTED, with a control shape that
+reds the harness rather than the engines if it disagrees; `yamsql/testdata/case_when_in_java.yaml`
+and `case_exists_combo.yaml` now assert rows instead of a rejection.
+
+**Booked as RFC-180 Y4 and now unneeded — the parity gap was a phantom.** Four pins asserted a gap
+that measurement inverted: the tree's folklore held that *Java rejects* a comparison consequent and
+"Go follows". Java accepts it. `walk.go` is gone, dissolved into the unified walk, and the surviving
+comment at `embedded_fdb_test.go` now states the corrected fact and cites the probe. Nothing remains
+of this item except the lesson: **two code comments and four test pins agreed with each other and
+all five were wrong**, because none of them had ever asked the Java server. Agreement among
+unmeasured claims is not evidence.
 
 **NEW since the audit — four DDL clauses that now fail closed** (#551), belonging in this section
 and absent from the previous revision. Each was being **silently dropped**, producing an index that
@@ -255,29 +295,71 @@ Client-side operational: watches register at read version, not commit-gated; no 
 limit; no RYW pending-write immediate-fire; special-key space absent; `BYPASS_UNREADABLE` span-wipe
 is the one known committed-byte divergence (deliberate, reviewed).
 
-## Unlanded work — named here so it stops being cited as progress
+## Landed since the audit — the two safety nets this page now rests on
 
-Measured 2026-08-01: **the only open PR in this repository is #486** (a graph-DB RFC). Anything
-described as "in review" that is not #486 is not in review. Two bodies of real, measured work sit on
-an **unpushed local branch** (`feat/generation-factory-v1`, no remote ref, no PR):
+Both merged while this revision was being written, and both are re-verified at `a1d281a63`.
 
-- **The generation factory corpus.** 900 scenarios at `8a84a95bb`, 2000 scenarios / 8000 tests /
-  1985 feature vectors at branch HEAD `e59333c33` (cited from `factorycorpus/census_baseline.json`).
-  Master has **zero** — `pkg/relational/conformance/factorycorpus` does not exist on `origin/master`.
-- **The resolver boolean-operand family fix.** `8a84a95bb` fixes `(a > 3) IS NULL` failing 0AF00
-  where Java accepts (found by the factory's first TLP sweep: 64 of 413 `(p) IS NULL` renderings
-  failed to plan); `e59333c33` generalizes it to a three-valued `walkPos`, closing six shapes at
-  once, and inverts the CASE folklore by measurement against the Java conformance server. Its
-  regression tests (`is_null_over_comparison_fdb_test.go`,
-  `conformance/boolean_expression_position_java_probe_test.go`) **do not exist at HEAD**.
+**The generation factory (#555, `491e02a7c`).** `pkg/relational/conformance/factorycorpus` exists
+with **2000 committed scenarios / 8000 tests** (`census_baseline.json`), generated
+→executed→blessed→deduped→committed, with a componentwise census ratchet over scenarios, tests,
+per-feature-vector AND per-blessing. First batch: 1200 seeds → 2268 candidates → 965 blessed → 900
+committed; 1599 TLP partitions and 3226 second-plan pairs, zero disagreements, every oracle
+mutation-proven armed. Blessings are **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in
+every header — the Java leg is environmentally unreachable here, so the corpus does not claim a
+cross-engine authority it does not have. **This is the tier's ceiling and should be read as one:**
+metamorphic blessing proves a query agrees with its own transformations, not that it agrees with
+Java. The headers are promotable without regeneration, so the corpus becomes a cross-engine net the
+day the Java leg is reachable — until then it catches self-inconsistency, which is how it caught the
+resolver defect, and not cross-engine divergence. The full corpus is tagged out of the default suite; a stratified
+100-scenario sample rides `just test`. TLP's inherent blindness to branch misassignment is pinned as
+a negative result that re-arms if the checker gains the ability.
 
-Also unlanded and, unlike the above, **not started anywhere**: the three dead fuzz lanes (B1's
-residual). The branch named for it, `fix/nightly-fuzz-heartbeats`, is an empty pointer at master
-with zero commits.
+**The resolver boolean-operand family (#555, same merge).** Found by the factory's FIRST TLP sweep —
+64 of 413 `(p) IS NULL` renderings failed to plan. `walkRecordConstructor` hardcoded the position
+away on every paren-unwrap; a three-valued `walkPos` (predicate/projection/operand) now threads
+through and closes **six shapes at once**: `(cmp)=(cmp)`, `=TRUE`, `IS DISTINCT FROM`, `IN`,
+`BETWEEN`, `SELECT (cmp)`. This is the factory paying for itself on its first run, which is the
+strongest argument for the tier it belongs to.
 
-This section exists because the previous revision described all three as in-flight or in-review.
-The distinction is not pedantry: unpushed work is unreviewed, unmerged, and one `rm -rf` from gone,
-and counting it as progress is how a status page becomes a wish list.
+**The nightly window fix (#556, `a1d281a63`).** See B1 — and note it *refuted the reconciler's own
+diagnosis*, which is the healthiest thing on this page.
+
+**The two collided, and `origin/master` was RED — fixed in this pass.** #555 added
+`nightly-factory.yml` with two window gates in the OLD inlined `-ge 0 -lt 10` form; #556 landed the
+gate requiring every band to be declared as machine-readable `WINDOW_START`/`WINDOW_END`. Neither PR
+saw the other, so `TestNightlyWindowAdmitsMeasuredLandings` and
+`TestNightlyWindowGateShellMatchesDeclaredBand` failed on master. This was not cosmetic: the
+brand-new factory nets had inherited **exactly the fake-green band shape** the older nets had just
+been cured of — the newest safety net wired with the defect that had hidden a reproducible planner
+fault for twelve days. Both gates converted to the wrapping 18:00–12:00 band, with `measuredLandings`
+entries pooled from the shared `hetzner-fdb` queue and **labeled as pooled** rather than passed off
+as this job's own history (all eleven windowed jobs share one slot, so the allocation hour is a
+property of the queue). The two no-op guards were tightened 9 → 11, since at 9 they would have
+tolerated silently losing the two new jobs.
+
+This is the generalizable finding: **the merge queue does not run the gate a PR adds against the
+files a concurrent PR adds.** Two green PRs produced a red master, and nothing in CI covers that
+axis today. Recorded as CQ-81, with the residual (replace the pooled landing hours with each job's
+own once it has scheduled runs) stated in place rather than left implicit.
+
+*Refuted from earlier in this same revision, and left visible rather than silently edited:* an
+earlier draft of this section described all three as unlanded, on the strength of a snapshot taken
+before the merges. That was accurate at `f5c2c7f0e` and wrong within hours. The lesson is the one
+this page keeps re-learning: **a status claim needs its measurement SHA attached, or it is a claim
+about a tree that has moved on.** Every count here now carries `a1d281a63`.
+
+Still not landed: nothing from the previous revision's in-flight list remains outstanding.
+
+**One unexplained red, recorded rather than dismissed (CQ-82).**
+`//conformance:conformance_test` failed once in a fresh full-suite run at `98d79a2ef` and has not
+reproduced — not alone (passes in 196s), and not under a forced fresh run of all 73 targets at the
+same concurrency (73/73 pass). The failing run took 524s, ~2.7x its isolated time, which points at
+resource starvation rather than a logic defect: the conformance suite holds a pool of 8 JVMs at
+250-400MB each and its own source documents ">30s per-request Java-side hangs" as a failure mode.
+That is a hypothesis, not a finding. **The failure message and the identity of a second failing
+target were lost because that run's output was piped through `tail`** — a self-inflicted gap, stated
+because a status page that hides its own measurement errors is the thing this revision exists to
+stop. Three green runs are on record and they do not settle it.
 
 ## Newly booked from the audit
 
@@ -296,26 +378,35 @@ and counting it as progress is how a status page becomes a wish list.
 
 Booked by THIS revision, from defects the verification pass found:
 
-- Watch-list entries 2, 4, 8 and 12 are not pinned to the contract this section states. Entry 2's
-  test cannot go red; entry 4 has no test; entry 8 pins only the Go half; entry 12 has no test and
-  its lowercase half was fixed without the entry being narrowed. **Each needs a real pin.** This is
-  a code/test lap, deliberately not done in a docs-only pass.
-- `walk.go:53` and `embedded_fdb_test.go:6620` assert that Java rejects boolean-CASE in WHERE. It
-  does not. Two wrong comments that made a real gap look intentional.
-- CQ-53's surviving producer mint (`cascades_translator.go:3598`) is owned by no open item.
+- **CQ-80** — watch-list entries 2, 4, 8 and 12 do not meet the contract this section states.
+  Entry 2's test cannot go red; **entry 4 has no test at all** and is the worst of the four (a
+  wrong-data divergence resting on prose); entry 8 pins only the Go half; entry 12 has no test and
+  its lowercase half was fixed without the entry being narrowed. This is a code/test lap,
+  deliberately not done in a docs-only pass, and booked in full so the next fixer does not re-derive
+  which four and why.
+- **CQ-79** — CQ-53's surviving producer mint (`cascades_translator.go:3598`) is owned by no open
+  item: CQ-53 is marked `[x]` as carrying no remainder while the ratchet pins the mint as "CQ-53's
+  surviving producer". Checked and NOT owned by CQ-68, which is a different axis (untyped QOV, not a
+  manufactured row key). Re-verified at `a1d281a63`: the pin stands verbatim.
+- The boolean-CASE folklore comments are **GONE** (#555). `walk.go` dissolved into the unified walk;
+  the surviving comment states the corrected fact and cites the probe. Recorded because the shape of
+  the error is worth keeping: two code comments and four test pins agreed with each other and all
+  five were wrong, none having asked the Java server.
 
 ## Sequence
 
-1. **B1's residual:** de-serialize the five nightly-fuzz jobs so `fuzz-diff`, `fuzz-binding` and
-   `fuzz-engine` can record a genuine run. Until then the reconciler is correctly red and Tier 1 is
-   not confirmable. Not started.
-2. **B2 explicit-tx isolation.** The Tier-2 gate. RFC-198 is review-complete; implement it. L.
-3. **Land the factory branch.** 2000 measured scenarios and a resolver fix for six broken boolean
-   shapes are sitting unpushed; the longer they sit the worse the merge.
+1. **Confirm B1.** The window fix is merged and five validation dispatches are in flight; Tier 1
+   turns on the first genuinely green reconcile. Watch it, do not assume it. Nothing to build.
+2. **B2 explicit-tx isolation.** The Tier-2 gate and the top item outright. RFC-198 is
+   review-complete; implement it. L, plus its SimFDB acceptance harness.
+3. **CQ-80** — pin the four watch-list entries that claim a test they do not have. Small, and it is
+   what makes the list handable to an adopter.
 4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
-   then CQ-51 and the CQ-53 mint, then CQ-68 (the largest block). All review-gated.
+   then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
-6. **CQ-30**, B3's residual: criterion 2's data-access maxima are still forked.
-7. **B5** typed metadata flow. L, after the migration proves the identity machinery everywhere.
-8. Watch-list handed to any prod adopter, with the four unpinned entries pinned first.
+6. **CQ-75** — `v IN (-0.0, 0.0)` silently loses a row, order-dependently. Wrong rows, and now that
+   the factory exists it is the kind of shape the factory should be generating.
+7. **CQ-30**, B3's residual: criterion 2's data-access maxima are still forked.
+8. **B5** typed metadata flow. L, after the migration proves the identity machinery everywhere.
+9. Watch-list handed to any prod adopter, once CQ-80 has pinned it.

@@ -87,6 +87,26 @@ var measuredLandings = map[string][]int{
 	"nightly-rowdiff.yml/rowdiff":     {3, 4, 20},
 	"nightly-coverage.yml/coverage":   {4, 5, 6, 7, 8, 22},
 	"nightly-oracles.yml/oracles":     {15, 22},
+
+	// The two factory jobs are NEW (they arrived with the generation factory) and
+	// have no scheduled history of their own yet. Their hours are POOLED from every
+	// other entry above rather than observed on them, and that substitution is
+	// legitimate for exactly one reason, stated so nobody has to guess: all eleven
+	// window-gated jobs run on `hetzner-fdb`, a SINGLE self-hosted slot. The
+	// allocation hour is a property of that one queue — of when it frees up — not of
+	// what a job does once it has the runner. Pooling the queue's observed hours is
+	// therefore a measurement of the thing that actually decides the landing.
+	//
+	// The oracles' 15 is deliberately EXCLUDED: that net keeps a distinct afternoon
+	// slot, so its hour is evidence about a different band, not about this queue's
+	// nightly drain.
+	//
+	// These entries are weaker evidence than the rest of this map and are marked so.
+	// Replace each with the job's OWN started_at hours once it has scheduled runs;
+	// until then a pooled prior is what honestly exists, and the alternative — an
+	// unmeasured band, or a fabricated one — is what this map exists to forbid.
+	"nightly-factory.yml/corpus": {0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 20, 21, 22, 23},
+	"nightly-factory.yml/batch":  {0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 20, 21, 22, 23},
 }
 
 // gateScript is one window gate's shell, kept alongside the band it declares so
@@ -172,7 +192,7 @@ func TestNightlyWindowAdmitsMeasuredLandings(t *testing.T) {
 	// NO-OP GUARD, the same discipline the reconciler and the wiring gate carry: a
 	// parse that silently found nothing would pass this test having replayed no
 	// measurement at all. The count is the nine window-gated nightly jobs.
-	const knownWindowedJobs = 9
+	const knownWindowedJobs = 11
 	if len(bands) < knownWindowedJobs {
 		t.Fatalf("parsed only %d window bands, expected at least %d — the workflow parse is broken and every assertion below would pass vacuously; parsed: %v",
 			len(bands), knownWindowedJobs, bands)
@@ -242,7 +262,7 @@ func TestNightlyWindowGateShellMatchesDeclaredBand(t *testing.T) {
 	root := sourceTreeRoot(t)
 
 	gates := collectGates(t, root)
-	const knownWindowedJobs = 9
+	const knownWindowedJobs = 11
 	if len(gates) < knownWindowedJobs {
 		t.Fatalf("collected only %d window gates, expected at least %d — the parse is broken and this test would prove nothing", len(gates), knownWindowedJobs)
 	}
