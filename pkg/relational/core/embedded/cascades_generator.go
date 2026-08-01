@@ -2819,10 +2819,33 @@ func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) pr
 		}
 	}
 	// Do the candidates agree on everything this lookup is consulted for?
-	// columnDefFromRef / deriveProjectionColumnDef read exactly two things off
-	// the returned descriptor: the field's SQL type name and its cardinality
-	// (the NOT-NULL bit). If every candidate answers both identically, the
-	// choice among them is not observable and first-match is exact.
+	// descriptorForColumn has FOUR consumers. Three read only the field's SQL
+	// type name and its cardinality (the NOT-NULL bit) off the returned
+	// descriptor — deriveProjectionColumnDef, columnDefFromRef, and the
+	// GROUP-BY key derivation in buildAggColumns — and for those,
+	// when every candidate answers both identically, the choice among them is
+	// not observable and first-match is exact.
+	//
+	// The fourth consumer reads the descriptor's IDENTITY, which this
+	// agreement gate does NOT cover: the null-born upgrade in
+	// deriveColumnsFromProjection tests nullBorn[d.FullName()] — whether the
+	// returned LEAF is an outer join's null-supplying leg. Two legs can agree
+	// on type+cardinality and still differ on null-born membership:
+	// LEFTT(VAL BIGINT NOT NULL) LEFT JOIN RIGHTT(VAL BIGINT NOT NULL) agrees
+	// on (BIGINT, required) for VAL, first-match answers LEFTT, and RIGHTT's
+	// null-born upgrade never fires — B.VAL reports NoNulls where Java (#4274)
+	// reports the null-supplying column nullable. No choice function here can
+	// repair that: BOTH result slots receive the SAME candidate list while the
+	// correct answer differs per slot — (NoNulls, Nullable) — so only
+	// positional metadata flowed from the plan's own result type (the D3
+	// deliverable) can be right. TestFDB_CrossLegAgreementGate_NullBornNotCovered
+	// pins the known-wrong answer until then.
+	//
+	// STRUCT nested-field disagreement is likewise uncovered by this gate —
+	// two candidates agreeing on ("STRUCT", cardinality) can nest entirely
+	// different shapes — and is currently unobservable only because ColumnDef
+	// carries no nested metadata; it becomes live the moment
+	// getStructMetaData-style nested metadata is threaded through ColumnDef.
 	first := matches[0].Fields().ByName(bare)
 	firstType := protoFieldTypeName(matches[0], string(bare))
 	for _, d := range matches[1:] {

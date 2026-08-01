@@ -640,18 +640,31 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 			row(ojStr("Dave"), ojNull()), // dept.id is NOT NULL at source, NULL-padded here
 		})
 
-	// (2) Result-metadata nullability (ColumnTypeNullable) is a DOCUMENTED benign
-	// divergence (RFC-144 §3c): Go reports the null-supplying column with its
-	// SOURCE cardinality (dept.id is a NOT-NULL PK → not-nullable metadata), while
-	// Java 4.12 (#4274) re-types it nullable. This flag is NON-LOAD-BEARING — query
-	// rows and INSERT…SELECT correctness both use RUNTIME values (the NULL-padded
-	// d.id is a genuine SQL NULL at runtime, proven in (1) and by the INSERT…SELECT
-	// test below), not this metadata flag. The descriptor path derives nullability
-	// from the underlying record type's field cardinality, a separate path from the
-	// join result value; re-typing it would thread outer-join leg-nullability
-	// through every join's column-descriptor computation for a cosmetic flag with
-	// no observable effect. We pin the CURRENT behavior so a future intentional
-	// change is a conscious decision, not a silent drift.
+	// (2) Result-metadata nullability (ColumnTypeNullable): Go reports d.id — a
+	// null-supplying-leg column — as NOT nullable, while Java 4.12 (#4274)
+	// re-types every null-supplying flowed value nullable. This divergence is a
+	// SIDE EFFECT of a known metadata defect, not a cost/benefit decision: the
+	// null-born upgrade in deriveColumnsFromProjection exists precisely to
+	// produce Java's answer (it flips a null-supplying leaf's columns to
+	// nullable), but the descriptor lookup feeding it first-matches across join
+	// legs whenever the candidates agree on type+cardinality — emp.id and
+	// dept.id are both (BIGINT, required) — so the lookup for d.id answers with
+	// emp's descriptor and the upgrade never tests dept's null-born membership.
+	// See descriptorForColumn's agreement-gate comment and
+	// TestFDB_CrossLegAgreementGate_NullBornNotCovered for the isolated
+	// counterexample.
+	//
+	// Declining the ambiguous lookup unconditionally is NOT the fix — it
+	// over-corrects: the descriptor is then dropped for PRESERVED-leg columns
+	// too, so e.id would also report nullable, wrong in the other direction.
+	// The real fix is positional metadata derived from the plan's own flowed
+	// result type (the D3 deliverable), where each slot carries its own leg's
+	// nullability. Until then this pin asserts the CURRENT (wrong-vs-Java)
+	// answer so the flip to Java's #4274 answer lands as a conscious change
+	// that updates this assertion, not as silent drift. The flag is
+	// non-load-bearing meanwhile: query rows and INSERT…SELECT correctness use
+	// RUNTIME values (the NULL-padded d.id is a genuine SQL NULL, proven in (1)
+	// and by the INSERT…SELECT test below), not this metadata flag.
 	ctx := context.Background()
 	rows, err := db.QueryContext(ctx, "SELECT e.fname, d.id FROM emp e LEFT JOIN dept d ON e.dept_id = d.id")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -661,7 +674,9 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	if nullable, ok := cts[1].Nullable(); ok {
 		// Current Go behavior: source cardinality (NOT-NULL PK → not nullable).
 		g.Expect(nullable).To(gomega.BeFalse(),
-			"documented divergence: d.id reports source (NOT-NULL) cardinality; runtime value is still genuinely NULL")
+			"d.id reports source (NOT-NULL) cardinality — the known-wrong first-match answer "+
+				"this pin holds until positional (D3) metadata flips it to Java's #4274 "+
+				"nullable; see the comment above before touching this assertion")
 	}
 	rows.Close()
 }
