@@ -289,13 +289,18 @@ sleep 0.2`)
 		return err == nil && strings.HasPrefix(string(b), "jit-blob-for-bazelscaleset-s1-")
 	})
 
-	// The session recorded its own pid.
+	// The session recorded its own pid AND the runner's name (the second line is
+	// what makes the session adoptable by a later incarnation).
 	pidData, err := os.ReadFile(filepath.Join(rwork, "slot-0", runnerPIDFile))
 	if err != nil {
 		t.Fatalf("remote pidfile missing: %v", err)
 	}
-	if pid, err := strconv.Atoi(strings.TrimSpace(string(pidData))); err != nil || pid <= 1 {
+	pid, name := parseRunnerPIDFile(pidData)
+	if pid <= 1 {
 		t.Fatalf("remote pidfile content %q", pidData)
+	}
+	if !strings.HasPrefix(name, "bazelscaleset-s1-") {
+		t.Fatalf("remote pidfile name line = %q, want the runner name", name)
 	}
 
 	// Runner exits on its own; the liveness poll frees the slot.
@@ -343,7 +348,7 @@ echo done > completed.txt`)
 	if err != nil {
 		t.Fatalf("remote pidfile missing: %v", err)
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	pid, _ := parseRunnerPIDFile(pidData)
 	if !alive(pid) {
 		t.Fatal("runner died with the launch ssh — not detached into its own session")
 	}
@@ -426,7 +431,7 @@ wait`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	pid, _ := parseRunnerPIDFile(pidData)
 
 	s.shutdown()
 
@@ -491,11 +496,12 @@ func TestRemoteLaunchFailureBenchesSlot(t *testing.T) {
 	})
 }
 
-// TestReconcileRemoteStraysKillsRecordedRunner pins the remote analogue of
-// startup reconciliation: a pidfile a crashed supervisor left on the pool box
-// marks a stray runner session; reconcile kills its whole group and clears the
-// pidfile, before the slot advertises capacity.
-func TestReconcileRemoteStraysKillsRecordedRunner(t *testing.T) {
+// TestAdoptRemoteLiveRunner pins the remote restart-adopts-live-runner
+// contract: a runner session recorded (pid + name) on a pool box and still
+// alive across a supervisor restart is ADOPTED — left running, tracked under
+// its recorded name, its slot occupied — and its exit frees the slot through
+// the normal remote liveness poll.
+func TestAdoptRemoteLiveRunner(t *testing.T) {
 	t.Parallel()
 
 	sshBin, _ := fakeSSH(t)
@@ -504,7 +510,64 @@ func TestReconcileRemoteStraysKillsRecordedRunner(t *testing.T) {
 	pool := remotePool(t, "runner@10.0.0.2", rdir, rwork)
 	s := newRemoteScaler(t, &fakeScalerClient{runnerExists: true}, pool, sshBin)
 
-	// A stray runner-looking process group, recorded in the remote pidfile.
+	stray := startStrayRunner(t, rdir)
+	pid := stray.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
+	slotDir := filepath.Join(rwork, "slot-0")
+	if err := os.MkdirAll(slotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pidfile := filepath.Join(slotDir, runnerPIDFile)
+	const name = "bazelscaleset-s1-99-6"
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\n"+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s.adoptRemoteStrays()
+
+	if !alive(pid) {
+		t.Fatal("remote adoption killed the live runner — the restart-kills-jobs bug")
+	}
+	s.mu.Lock()
+	_, tracked := s.running[name]
+	s.mu.Unlock()
+	if !tracked {
+		t.Fatalf("adopted remote runner not tracked under its recorded name %q", name)
+	}
+	if got := pool.takeIndex(1); got != nil {
+		t.Fatal("remote slot handed out while its adopted runner is alive")
+	}
+	// The pidfile survives adoption (it is the session's own record).
+	if _, err := os.Stat(pidfile); err != nil {
+		t.Fatal("remote pidfile removed by adoption")
+	}
+	// The runner exits; the liveness poll frees the slot.
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_, _ = stray.Process.Wait()
+	waitFor(t, 10*time.Second, func() bool {
+		got := pool.takeIndex(1)
+		if got == nil {
+			return false
+		}
+		pool.give(got)
+		return true
+	})
+}
+
+// TestAdoptRemoteKillsLegacyNamelessPidfile pins the remote transition path: a
+// pidfile in the pre-adoption single-line format has no runner name, so the
+// session cannot be tracked; it gets the old kill-reconcile and the record is
+// cleared, before the slot advertises capacity.
+func TestAdoptRemoteKillsLegacyNamelessPidfile(t *testing.T) {
+	t.Parallel()
+
+	sshBin, _ := fakeSSH(t)
+	rdir := remoteRunnerDir(t, `while true; do sleep 1; done`)
+	rwork := filepath.Join(t.TempDir(), "rwork")
+	pool := remotePool(t, "runner@10.0.0.2", rdir, rwork)
+	s := newRemoteScaler(t, &fakeScalerClient{runnerExists: true}, pool, sshBin)
+
+	// A stray runner-looking process group, recorded in the legacy format.
 	stray := startStrayRunner(t, rdir)
 	pid := stray.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
@@ -517,8 +580,7 @@ func TestReconcileRemoteStraysKillsRecordedRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conns := map[int]sshConn{1: s.conn(pool.all[1])}
-	reconcileRemoteStrays(discardLogger(), conns, pool, 5*time.Second)
+	s.adoptRemoteStrays()
 
 	// The stray is a direct child of this test: it stays a zombie (which still
 	// answers kill(pid, 0)) until reaped, so death is observed via Wait.
@@ -527,17 +589,20 @@ func TestReconcileRemoteStraysKillsRecordedRunner(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("remote reconcile did not kill the recorded stray runner")
+		t.Fatal("legacy nameless remote stray was not killed")
 	}
 	if _, err := os.Stat(pidfile); !os.IsNotExist(err) {
-		t.Fatal("remote reconcile did not clear the pidfile")
+		t.Fatal("legacy remote pidfile was not cleared")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (nameless session cannot be adopted)", s.count())
 	}
 }
 
-// TestReconcileRemoteStraysSparesNonRunnerPID pins the pid-reuse guard: a
-// recorded pid now worn by a non-runner process is left alive (only the stale
-// pidfile is cleared).
-func TestReconcileRemoteStraysSparesNonRunnerPID(t *testing.T) {
+// TestAdoptRemoteSparesNonRunnerPID pins the pid-reuse guard: a recorded pid
+// now worn by a non-runner process is left alive and not adopted (only the
+// stale pidfile is cleared, by the inspect script itself).
+func TestAdoptRemoteSparesNonRunnerPID(t *testing.T) {
 	t.Parallel()
 
 	sshBin, _ := fakeSSH(t)
@@ -551,16 +616,19 @@ func TestReconcileRemoteStraysSparesNonRunnerPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	pidfile := filepath.Join(slotDir, runnerPIDFile)
-	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(sleeper)), 0o644); err != nil {
+	if err := os.WriteFile(pidfile, []byte(strconv.Itoa(sleeper)+"\nbazelscaleset-s1-99-7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	reconcileRemoteStrays(discardLogger(), map[int]sshConn{1: s.conn(pool.all[1])}, pool, 5*time.Second)
+	s.adoptRemoteStrays()
 
 	if _, err := os.Stat(pidfile); !os.IsNotExist(err) {
-		t.Fatal("remote reconcile did not clear the stale pidfile")
+		t.Fatal("startup did not clear the stale remote pidfile")
 	}
 	if !alive(sleeper) {
-		t.Fatal("remote reconcile killed a non-runner process — cmdline guard failed")
+		t.Fatal("startup killed a non-runner process — cmdline guard failed")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (a reused non-runner pid must not be adopted)", s.count())
 	}
 }

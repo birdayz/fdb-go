@@ -84,8 +84,10 @@ Failure modes:
 - **Host lost mid-job**: sustained probe failures (~5 min) reclaim the slot; the JIT
   config is single-use, so a partitioned-but-alive runner finishing later cannot
   double-run anything.
-- **Supervisor crash**: on restart, remote pidfiles are reconciled per host (kill the
-  recorded session's process group, cmdline-guarded) exactly like local slots.
+- **Supervisor restart/crash**: on startup, each remote pidfile (pid + runner name)
+  is probed per host; a still-live session is **adopted** — left running, tracked
+  under its recorded name, its slot occupied — exactly like local slots. A dead
+  record is cleared; a legacy nameless record is killed (cmdline-guarded).
 
 ## Zombie-job watchdog (`--job-terminal-grace`)
 
@@ -111,15 +113,28 @@ scaleset long-poll), so the same failure mode is handled head-on:
   systemd watchdog (see `infra/`), **retargeted** from the old classic-runner watchdog (not
   retired), restarts the service if that stamp goes stale — catching a wholesale hang the
   in-process timeout can't.
+- **Restart exits never kill runners**: a self-exit for restart (poll timeout, listener or
+  JIT-mint error) **detaches** — every runner, busy or idle, is left running with its pidfile
+  in place; runners are independent processes and a JIT runner finishes its one job and
+  deregisters on its own. Killing them here was a measured incident: two consecutive race-lane
+  jobs died mid-run with "The runner has received a shutdown signal" across supervisor
+  restarts. Only a genuine stop (SIGTERM/SIGINT — `systemctl stop`) runs the TERM → grace →
+  KILL escalation. This requires `KillMode=process` (and `OOMPolicy=continue`) in the unit,
+  or systemd kills the local runner's cgroup itself the moment the main process exits.
 - **Slot-leak guard** (`--job-start-timeout`): a runner launched for a job that gets cancelled
   before it connects (the churn case that triggered this) is killed and its slot reclaimed, so a
   cancelled run can't pin the only slot.
-- **Restart reconciliation**: each runner records its PGID in a per-slot pid file; on startup the
-  supervisor SIGKILLs the whole **process group** of any slot whose pid file survived a crash
-  (run.sh + Runner.Listener + Runner.Worker + the job's bazel client), so a stray job can't keep
-  writing a slot the pool treats as free. It is scoped to **our** slot pid files (never touches a
-  classic/other runner on the host) and leaves warm bazel servers running (a fresh runner
-  reconnects; killing the bazel client already frees the `output_base` lock).
+- **Startup adoption**: each runner records its PGID **and name** in a per-slot pid file. On
+  startup the supervisor probes every recorded runner: a still-live one (a detach exit, or a
+  crash it survived) is **adopted** — tracked under its recorded name so JobStarted/JobCompleted
+  messages re-attach and the zombie watchdog covers it, with its slot occupied so no new runner
+  is launched into a checkout the live job is still writing. Dead records are reaped; a live
+  group recorded in the legacy nameless pidfile format is untrackable and is killed as before.
+  All decisions are member-based on the process group (run.sh + Runner.Listener + Runner.Worker
+  + the job's bazel client), cmdline-guarded against PGID reuse, scoped to **our** slot pid
+  files (never touches a classic/other runner on the host), and leave warm bazel servers
+  running (a fresh runner reconnects; killing the bazel client already frees the
+  `output_base` lock).
 - **Idempotent, non-destructive registration**: a scale set is a durable resource, looked up by
   name and reused by ID on every start (crash, clean shutdown, or watchdog restart alike); a
   config drift (e.g. `--labels` changed across a redeploy) is patched in place via

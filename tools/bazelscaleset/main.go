@@ -89,15 +89,6 @@ func run() error {
 	}
 	defer session.Close(context.WithoutCancel(ctx))
 
-	// A previous incarnation that crashed (rather than shutting down cleanly) may have
-	// left a runner still executing from its per-slot clone. Reap it BEFORE building the
-	// pool: newSlotPool re-copies into the clones, and truncating a still-running runner
-	// binary would fail with ETXTBSY and crash startup before the stray is ever
-	// reaped. Reconcile is filesystem-based (scans workBase/slot-*), so it needs no pool.
-	// Scoped to our own slot pid files (never touches a classic/other runner) and leaves
-	// warm bazel servers alone — a new runner reconnects to them.
-	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)
-
 	pool, err := newSlotPool(cfg.workBase, cfg.runnerDir, cfg.maxRunners, remoteSlotConfig{
 		hosts:     cfg.remoteHosts,
 		runnerDir: cfg.remoteRunnerDir,
@@ -115,18 +106,20 @@ func run() error {
 	writeHeartbeat(cfg.heartbeatFile)
 
 	scaler := newScaler(logger.WithGroup("scaler"), client, ss.ID, cfg, pool)
-	defer scaler.shutdown()
+	defer finishRunners(ctx, scaler)
 
-	// Remote analogue of reconcileStrayRunners: reap runner sessions a crashed
-	// incarnation left on the pool boxes before advertising their capacity.
+	// A previous incarnation may have left runners behind — deliberately (a
+	// detach exit for restart) or by crashing. Adopt the live ones and reap the
+	// dead records BEFORE advertising capacity: a new runner launched into a
+	// slot a live job is still writing would corrupt that job's checkout, and a
+	// live runner adopted mid-job must never be killed for a supervisor
+	// restart. This runs after newSlotPool on purpose: the clone re-sync is
+	// safe over a live adopted runner (copyFile unlinks before writing, so an
+	// executing binary keeps its old inode — no ETXTBSY — and runtime-state
+	// dirs are excluded from the copy).
+	scaler.adoptOrReapStrayRunners()
 	if len(cfg.remoteHosts) > 0 {
-		conns := make(map[int]sshConn)
-		for _, sl := range pool.all {
-			if sl.host != "" {
-				conns[sl.index] = scaler.conn(sl)
-			}
-		}
-		reconcileRemoteStrays(logger, conns, pool, scaler.remoteCfg.probeTimeout)
+		scaler.adoptRemoteStrays()
 	}
 
 	// Bound each long-poll: the scaleset session is now the only long-lived loop in
@@ -152,6 +145,25 @@ func run() error {
 	}
 	logger.Info("shutting down")
 	return nil
+}
+
+// finishRunners decides what a supervisor exit does to its runners. A canceled
+// ctx means SIGTERM/SIGINT — systemctl stop, the operator wants the box quiet —
+// so runners get the TERM/grace/KILL escalation. Any other exit (poll timeout,
+// listener error, JIT-mint error) is a self-exit so systemd restarts us with a
+// fresh session: the runners are independent processes mid-job or
+// warm-listening, and they are left running for the next incarnation to adopt.
+// Killing them on that path canceled in-flight CI jobs on every quiet-poll
+// timeout. NOTE: the systemd unit must run with KillMode=process (and
+// OOMPolicy=continue) for this to hold — with the default control-group kill
+// mode, systemd itself would kill the local runner the moment the main process
+// exits, no matter what this function does.
+func finishRunners(ctx context.Context, s *Scaler) {
+	if ctx.Err() != nil {
+		s.shutdown()
+	} else {
+		s.detach()
+	}
 }
 
 func systemInfo(scaleSetID int) scaleset.SystemInfo {

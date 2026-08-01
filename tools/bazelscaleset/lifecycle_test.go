@@ -238,7 +238,32 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	t.Fatal("condition not met within timeout")
 }
 
-func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
+// newAdoptScaler builds a local-only scaler pointed at the given work base and
+// runner template, with a fast adoption liveness poll.
+func newAdoptScaler(t *testing.T, client scalerClient, pool *slotPool, workBase, runnerBase string) *Scaler {
+	t.Helper()
+	cfg := &config{
+		maxRunners:       pool.size(),
+		minRunners:       0,
+		grace:            2 * time.Second,
+		jobStartTimeout:  time.Minute,
+		jobTerminalGrace: time.Minute,
+		workBase:         workBase,
+		runnerDir:        runnerBase,
+	}
+	s := newScaler(discardLogger(), client, 1, cfg, pool)
+	s.adoptPoll = 30 * time.Millisecond
+	return s
+}
+
+// TestAdoptLocalLiveRunner pins the restart-adopts-live-runner contract: a
+// runner the previous incarnation recorded (pid + name) and left running must
+// be ADOPTED at startup — still alive, tracked under its recorded name, its
+// slot occupied — and job messages must re-attach to it by name. When it exits,
+// the normal lifecycle frees the slot and removes the pidfile. Before adoption
+// existed, this exact scenario was a kill: every supervisor restart canceled
+// the in-flight CI job.
+func TestAdoptLocalLiveRunner(t *testing.T) {
 	t.Parallel()
 
 	wb, base := t.TempDir(), templateRunner(t)
@@ -246,26 +271,116 @@ func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Stray runner running from THIS slot's own runner dir (so its cmdline contains
-	// sl.runnerDir, which is what reconcile's per-slot guard matches).
+	stray := startStrayRunner(t, pool.all[0].runnerDir)
+	pid := stray.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
+	const name = "bazelscaleset-s0-99-1"
+	writeRunnerPID(discardLogger(), pool.all[0].path, pid, name)
+
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool, wb, base)
+	s.adoptOrReapStrayRunners()
+
+	if !alive(pid) {
+		t.Fatal("adoption killed the live runner — the restart-kills-jobs bug")
+	}
+	if s.count() != 1 {
+		t.Fatalf("running = %d, want 1 adopted runner", s.count())
+	}
+	if got := pool.take(); got != nil {
+		t.Fatalf("slot %d handed out while its adopted runner is alive", got.index)
+	}
+	// Job messages re-attach by the recorded name.
+	if err := s.HandleJobStarted(context.Background(), &scaleset.JobStarted{
+		RunnerName:     name,
+		JobMessageBase: scaleset.JobMessageBase{JobID: "job-adopted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	busy := s.running[name] != nil && s.running[name].busy
+	s.mu.Unlock()
+	if !busy {
+		t.Fatal("JobStarted did not re-attach to the adopted runner by name")
+	}
+	// The runner exits; the adopted lifecycle frees the slot and removes the pidfile.
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_, _ = stray.Process.Wait()
+	waitFor(t, 10*time.Second, slotFree(pool))
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile))
+		return os.IsNotExist(err)
+	})
+}
+
+// TestAdoptedRunnerWatchdogReclaims pins that adoption arms the terminal
+// watchdog: an adopted runner whose job is terminal on the GitHub side (its
+// JIT record is gone) must still be killed after the grace and its slot
+// reclaimed — a restart must not turn a zombie into an untouchable squatter.
+func TestAdoptedRunnerWatchdogReclaims(t *testing.T) {
+	t.Parallel()
+
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := startStrayRunner(t, pool.all[0].runnerDir)
+	pid := stray.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
+	writeRunnerPID(discardLogger(), pool.all[0].path, pid, "bazelscaleset-s0-99-2")
+
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: false}, pool, wb, base) // record gone
+	s.jobTerminalGrace = 150 * time.Millisecond
+	s.terminalPoll = 40 * time.Millisecond
+	s.adoptOrReapStrayRunners()
+
+	// The stray is a direct child of this test: it stays a zombie (which still
+	// answers kill(pid, 0)) until reaped, so death is observed via Wait.
+	done := make(chan struct{})
+	go func() { _, _ = stray.Process.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("terminal watchdog did not reclaim the adopted zombie runner")
+	}
+	waitFor(t, 10*time.Second, slotFree(pool))
+}
+
+// TestAdoptKillsLegacyNamelessPidfile pins the transition path: a pidfile in
+// the pre-adoption bare-pid format has no runner name, so the runner cannot be
+// tracked, watched, or matched to job messages — it gets the old
+// kill-reconcile, and the record is cleared.
+func TestAdoptKillsLegacyNamelessPidfile(t *testing.T) {
+	t.Parallel()
+
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmd := startStrayRunner(t, pool.all[0].runnerDir)
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
-	// Record the stray runner against the slot, as a live supervisor would.
-	writeRunnerPID(discardLogger(), pool.all[0].path, pid)
+	// Legacy format: bare pid, no name line.
+	if err := os.WriteFile(filepath.Join(pool.all[0].path, runnerPIDFile), []byte(strconv.Itoa(pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	reconcileStrayRunners(discardLogger(), wb, base)
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool, wb, base)
+	s.adoptOrReapStrayRunners()
 
-	// Process group must be dead, and the pid file removed.
 	done := make(chan struct{})
 	go func() { _, _ = cmd.Process.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stray runner was not killed by reconcile")
+		t.Fatal("legacy nameless stray runner was not killed")
 	}
 	if _, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile)); !os.IsNotExist(err) {
-		t.Fatal("reconcile did not remove the pid file")
+		t.Fatal("legacy pid file was not removed")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (nameless runner cannot be adopted)", s.count())
 	}
 }
 
@@ -274,19 +389,24 @@ func TestReconcileScopedToOurPidFiles(t *testing.T) {
 
 	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
 	// A runner-looking process that is NOT recorded in any slot pid file — e.g. the
-	// classic runner during side-by-side migration. Reconcile must not touch it.
+	// classic runner during side-by-side migration. Startup must not touch it.
 	other := startStrayRunner(t, runnerDir)
 	otherPID := other.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-otherPID, syscall.SIGKILL); _, _ = other.Process.Wait() })
 
 	wb, base := t.TempDir(), templateRunner(t)
-	if _, err := newSlotPool(wb, base, 1, remoteSlotConfig{}); err != nil { // slot dirs, no pid files written
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{}) // slot dirs, no pid files written
+	if err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), wb, base)
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool, wb, base)
+	s.adoptOrReapStrayRunners()
 
 	if !alive(otherPID) {
-		t.Fatal("reconcile killed an unrecorded process (not scoped to our pid files)")
+		t.Fatal("startup killed an unrecorded process (not scoped to our pid files)")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (nothing recorded, nothing adopted)", s.count())
 	}
 }
 
@@ -294,8 +414,8 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	t.Parallel()
 
 	// A live process that does NOT look like a runner (cmdline "sleep …") models a PID
-	// that was reused by something unrelated since the crash. reconcile must clear the
-	// stale pid file but must NOT kill it (the cmdline guard).
+	// that was reused by something unrelated since the previous incarnation. Startup
+	// must clear the stale pid file but must NOT kill or adopt it (the cmdline guard).
 	cmd := exec.Command("sleep", "300")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -309,24 +429,27 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(pool.all[0].path, runnerPIDFile), []byte(strconv.Itoa(pid)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reconcileStrayRunners(discardLogger(), wb, base)
+	writeRunnerPID(discardLogger(), pool.all[0].path, pid, "bazelscaleset-s0-99-3")
+
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool, wb, base)
+	s.adoptOrReapStrayRunners()
 
 	if _, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile)); !os.IsNotExist(err) {
-		t.Fatal("reconcile did not clear the stale pid file")
+		t.Fatal("startup did not clear the stale pid file")
 	}
 	if !alive(pid) {
-		t.Fatal("reconcile killed a non-runner process — cmdline guard failed")
+		t.Fatal("startup killed a non-runner process — cmdline guard failed")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (a reused non-runner pid must not be adopted)", s.count())
 	}
 }
 
-// TestReconcileKillsGroupAfterLeaderExit pins review's finding: a process group
-// outlives its leader, so if run.sh exited but a Runner.Worker child still occupies
-// the slot, reconcile must still reap the group (checking group members, not just the
-// leader's cmdline).
-func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
+// TestAdoptGroupAfterLeaderExit pins member-based liveness for adoption: a
+// process group outlives its leader, so if run.sh exited but a Runner.Worker
+// child still occupies the slot, the group counts as ALIVE and is adopted —
+// the worker keeps running and the slot stays occupied until the group is gone.
+func TestAdoptGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
 	wb, base := t.TempDir(), templateRunner(t)
@@ -359,18 +482,32 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	// Worker is now an orphan whose process group is still the (dead) leader's pid.
 	waitFor(t, 3*time.Second, func() bool { return groupHasRunnerMember(pgid, runnerDir) })
 
-	writeRunnerPID(discardLogger(), pool.all[0].path, pgid)
+	writeRunnerPID(discardLogger(), pool.all[0].path, pgid, "bazelscaleset-s0-99-4")
 
-	reconcileStrayRunners(discardLogger(), wb, base)
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool, wb, base)
+	s.adoptOrReapStrayRunners()
 
-	// The whole group (the orphaned worker) must be gone.
-	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
+	// The surviving worker was adopted, not killed.
+	if !groupHasRunnerMember(pgid, runnerDir) {
+		t.Fatal("adoption killed the orphaned worker instead of adopting its group")
+	}
+	if s.count() != 1 {
+		t.Fatalf("running = %d, want 1", s.count())
+	}
+	if got := pool.take(); got != nil {
+		t.Fatalf("slot %d handed out while the adopted worker is alive", got.index)
+	}
+	// Once the group is gone, the slot frees.
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	waitFor(t, 10*time.Second, slotFree(pool))
 }
 
-// TestReconcileCoversPriorHigherMaxSlots pins review P2: a restart with a LOWER
-// --max-runners than a prior run must still reap a stray runner left in a now-out-of-pool
-// higher slot. reconcile scans all slot dirs on disk, not just the current pool.
-func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
+// TestAdoptLeavesOutOfPoolRunnerRunning pins the downgrade path: a restart with
+// a LOWER --max-runners must not kill a live runner recorded in a now-out-of-
+// pool higher slot. It cannot occupy a pool slot, so it is left to finish its
+// one job untracked (it deregisters on its own), and its pidfile is kept so a
+// later restart reaps the record once the runner is gone.
+func TestAdoptLeavesOutOfPoolRunnerRunning(t *testing.T) {
 	t.Parallel()
 
 	wb, base := t.TempDir(), templateRunner(t)
@@ -379,25 +516,169 @@ func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A stray runner left in slot-1, running from slot-1's own runner dir.
 	stray := startStrayRunner(t, pool2.all[1].runnerDir)
 	pid := stray.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
-	writeRunnerPID(discardLogger(), pool2.all[1].path, pid)
+	writeRunnerPID(discardLogger(), pool2.all[1].path, pid, "bazelscaleset-s1-99-5")
 
-	// Supervisor restarts with maxRunners=1 (downgrade): the new pool has only slot-0,
-	// but reconcile must still find + kill the slot-1 stray by scanning every slot dir.
-	if _, err := newSlotPool(wb, base, 1, remoteSlotConfig{}); err != nil {
+	// Supervisor restarts with maxRunners=1 (downgrade): the new pool has only slot-0.
+	pool1, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), wb, base)
+	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: true}, pool1, wb, base)
+	s.adoptOrReapStrayRunners()
 
-	done := make(chan struct{})
-	go func() { _, _ = stray.Process.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("reconcile did not reap the stray in a prior-higher-max (out-of-pool) slot")
+	if !alive(pid) {
+		t.Fatal("out-of-pool live runner was killed — its in-flight job would have been canceled")
+	}
+	if s.count() != 0 {
+		t.Fatalf("running = %d, want 0 (out-of-pool runner is untracked)", s.count())
+	}
+	if _, err := os.Stat(filepath.Join(pool2.all[1].path, runnerPIDFile)); err != nil {
+		t.Fatal("out-of-pool runner's pidfile must be kept for a later restart to reap")
+	}
+	// slot-0 stays free: the out-of-pool runner occupies no pool capacity.
+	if got := pool1.take(); got == nil || got.index != 0 {
+		t.Fatalf("slot 0 should be free, take = %v", got)
+	}
+}
+
+// TestPollTimeoutExitLeavesRunners pins the incident fix: a supervisor exit NOT
+// driven by SIGTERM/SIGINT (poll timeout, listener error — the exit-for-restart
+// paths) must leave every runner running, busy or idle, with its pidfile in
+// place for the next incarnation to adopt. The measured incident: a quiet-poll
+// timeout exit killed the in-flight race-lane job with "The runner has received
+// a shutdown signal".
+func TestPollTimeoutExitLeavesRunners(t *testing.T) {
+	t.Parallel()
+
+	pool, err := newSlotPool(t.TempDir(), hangingTemplateRunner(t), 2, remoteSlotConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newWatchdogScaler(t, &fakeScalerClient{runnerExists: true}, pool)
+	s.maxRunners = 2
+
+	busyR := launchOne(t, s, pool)
+	if err := s.HandleJobStarted(context.Background(), &scaleset.JobStarted{
+		RunnerName:     busyR.name,
+		JobMessageBase: scaleset.JobMessageBase{JobID: "job-inflight"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Second runner: launched, no job yet. launchOne returns an arbitrary
+	// tracked runner, so pick the one that is not busyR explicitly.
+	launchOne(t, s, pool)
+	var idleR *runner
+	s.mu.Lock()
+	for _, r := range s.running {
+		if r.name != busyR.name {
+			idleR = r
+		}
+	}
+	s.mu.Unlock()
+	if idleR == nil {
+		t.Fatal("second (idle) runner not tracked")
+	}
+
+	finishRunners(context.Background(), s) // ctx not canceled: exit-for-restart
+
+	if !alive(busyR.proc.pid()) {
+		t.Fatal("exit-for-restart killed the BUSY runner — the in-flight job died")
+	}
+	if !alive(idleR.proc.pid()) {
+		t.Fatal("exit-for-restart killed the idle runner — warm capacity lost, not adoptable")
+	}
+	for _, r := range []*runner{busyR, idleR} {
+		if _, err := os.Stat(filepath.Join(r.slot.path, runnerPIDFile)); err != nil {
+			t.Fatalf("runner %s pidfile missing after detach: adoption impossible", r.name)
+		}
+	}
+}
+
+// TestGenuineStopStillKillsRunners pins the other side: SIGTERM/SIGINT (a
+// canceled run context — systemctl stop) still gets the full TERM/grace/KILL
+// escalation; the operator asked for a quiet box.
+func TestGenuineStopStillKillsRunners(t *testing.T) {
+	t.Parallel()
+
+	pool, err := newSlotPool(t.TempDir(), hangingTemplateRunner(t), 1, remoteSlotConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newWatchdogScaler(t, &fakeScalerClient{runnerExists: true}, pool)
+	r := launchOne(t, s, pool)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the signal arrived
+	finishRunners(ctx, s)
+
+	if alive(r.proc.pid()) {
+		t.Fatal("genuine stop left the runner running")
+	}
+}
+
+// TestStartLocalRetriesETXTBSY pins the fork/exec race cure: a write fd held
+// open on run.sh at exec time (in production: another goroutine's fork
+// duplicating clone-resync's write fd for the microseconds before its exec)
+// makes Start fail with "text file busy". startLocal must retry past a
+// transient hold instead of failing the launch — before the retry, this exact
+// shape flaked the suite under -count=8.
+func TestStartLocalRetriesETXTBSY(t *testing.T) {
+	t.Parallel()
+
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1, remoteSlotConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newWatchdogScaler(t, &fakeScalerClient{runnerExists: true}, pool)
+	sl := pool.take()
+	if sl == nil {
+		t.Fatal("no free slot")
+	}
+
+	// Hold run.sh open for writing: any live write fd makes exec ETXTBSY.
+	f, err := os.OpenFile(filepath.Join(sl.runnerDir, "run.sh"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond) // well inside the 2s retry budget
+		_ = f.Close()
+		close(released)
+	}()
+
+	proc, err := s.startLocal(sl, "jit-test")
+	if err != nil {
+		t.Fatalf("startLocal did not retry past a transient ETXTBSY: %v", err)
+	}
+	<-released
+	proc.signal(syscall.SIGKILL)
+	_ = proc.wait()
+}
+
+func TestParseRunnerPIDFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in       string
+		wantPID  int
+		wantName string
+	}{
+		{"1234\nbazelscaleset-s0-1-2\n", 1234, "bazelscaleset-s0-1-2"},
+		{"1234", 1234, ""},   // legacy bare pid
+		{"1234\n", 1234, ""}, // legacy with newline
+		{"garbage", 0, ""},
+		{"1\nname\n", 0, ""}, // pid <= 1 rejected
+		{"", 0, ""},
+	}
+	for _, tt := range tests {
+		pid, name := parseRunnerPIDFile([]byte(tt.in))
+		if pid != tt.wantPID || name != tt.wantName {
+			t.Fatalf("parseRunnerPIDFile(%q) = (%d, %q), want (%d, %q)", tt.in, pid, name, tt.wantPID, tt.wantName)
+		}
 	}
 }
 
