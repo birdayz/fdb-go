@@ -1367,18 +1367,59 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// LogicalOperator.java:454 — and a grouping value containing the same
 	// expression twice maps it to TWO output columns, failing
 	// Expressions.pullUp's one-column assertion with AMBIGUOUS_COLUMN,
-	// Expressions.java:112). The identity is the RESOLVED value, which is
+	// Expressions.java:112). The identity is the RESOLVED VALUE, which is
 	// why `GROUP BY category, T_G1.category` rejects too — the strip()
-	// above has already folded a single-source qualifier away, so the
-	// same post-strip key identity the slot-matching loop uses
-	// (buildAggregateOutputSlots) is the right equality here: two keys
-	// this comparison cannot tell apart would make every later rebind of
-	// that key ambiguous. Measured live (DuplicateGroupByJavaProbe):
-	// Java 42702s every duplicate shape BEFORE planning; the check
-	// therefore sits at aggregate BUILD time, not in the planner.
+	// above has already folded a single-source qualifier away, so column
+	// keys compare by the same post-strip identity the slot-matching loop
+	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve through
+	// the semantic scope and compare by VALUE equality — key.Display is
+	// the RAW SOURCE SLICE (canonicalTextOf keeps original whitespace),
+	// so a text comparison let `GROUP BY amount+1, amount + 1` through
+	// while catching only the byte-identical spelling (measured live:
+	// Java 42702s both). When no resolver exists or a walk declines, the
+	// fallback identity is the token-concatenated GetText — token-stream
+	// equality, whitespace-invariant. Measured live
+	// (DuplicateGroupByJavaProbe): Java 42702s every duplicate shape
+	// BEFORE planning; the check therefore sits at aggregate BUILD time,
+	// not in the planner.
+	exprKeyVals := make([]values.Value, len(cls.groupBy))
+	if exprKeyCount := func() (n int) {
+		for _, k := range cls.groupBy {
+			if k.bare == "" && k.expr != nil {
+				n++
+			}
+		}
+		return n
+	}(); exprKeyCount > 1 {
+		if resolver := buildSelectScope(selectQueryFromClassification(cls, fs), v.md, v.schemaName, v.cteScopes); resolver != nil {
+			for i, k := range cls.groupBy {
+				if k.bare != "" || k.expr == nil {
+					continue
+				}
+				if val, walkErr := resolver.WalkExpression(k.expr); walkErr == nil {
+					exprKeyVals[i] = val
+				}
+			}
+		}
+	}
 	for i := range keys {
 		for j := i + 1; j < len(keys); j++ {
-			if groupKeysEquivalent(keys[i], keys[j]) {
+			same := false
+			switch {
+			case exprKeyVals[i] != nil && exprKeyVals[j] != nil:
+				// Both walks resolved in the SAME scope, so leaf
+				// correlations already agree — the identity alias map.
+				same = values.SemanticEqualsUnderAliasMap(exprKeyVals[i], exprKeyVals[j], nil)
+			case i < len(cls.groupBy) && j < len(cls.groupBy) &&
+				cls.groupBy[i].bare == "" && cls.groupBy[i].expr != nil &&
+				cls.groupBy[j].bare == "" && cls.groupBy[j].expr != nil:
+				// Resolver unavailable/declined: token-stream identity
+				// (GetText concatenates tokens, dropping whitespace).
+				same = strings.EqualFold(cls.groupBy[i].expr.GetText(), cls.groupBy[j].expr.GetText())
+			default:
+				same = groupKeysEquivalent(keys[i], keys[j])
+			}
+			if same {
 				return nil, "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
 					"Ambiguous columns for %s", keys[j].Display)
 			}
@@ -1411,22 +1452,23 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	return op, stripPrefix, nil
 }
 
-// groupKeysEquivalent reports whether two group keys are the SAME grouping
-// expression under the identity buildAggregateOutputSlots matches with:
-// column keys compare (qualified, qualifier, bare) case-insensitively,
-// expression-redirected keys compare by canonical Display rendering. Two
-// equivalent keys duplicate a grouping value column, which Java rejects
-// 42702 (Expressions.pullUp's ambiguity assertion). A bare key and a
+// groupKeysEquivalent reports whether two COLUMN group keys are the same
+// grouping column under the identity buildAggregateOutputSlots matches
+// with: (qualified, qualifier, bare) case-insensitively. Two equivalent
+// keys duplicate a grouping value column, which Java rejects 42702
+// (Expressions.pullUp's ambiguity assertion). A bare key and a
 // differently-QUALIFIED key of another source are NOT equivalent — Java's
-// value identity keeps `a.k, b.k` legal.
+// value identity keeps `a.k, b.k` legal. EXPRESSION keys never decide
+// here: their identity is the resolved VALUE (or the token stream when no
+// resolver exists) at the caller — Display is the raw source slice, and
+// comparing it treats `amount+1` and `amount + 1` as different
+// expressions. An expression pair that somehow reaches this comparison
+// fails OPEN (no 42702) rather than guessing from text.
 func groupKeysEquivalent(a, b logical.GroupKey) bool {
 	if a.Bare != "" && b.Bare != "" {
 		return a.Qualified == b.Qualified &&
 			strings.EqualFold(a.Bare, b.Bare) &&
 			(!a.Qualified || strings.EqualFold(a.Qualifier, b.Qualifier))
-	}
-	if a.Bare == "" && b.Bare == "" {
-		return strings.EqualFold(strings.TrimSpace(a.Display), strings.TrimSpace(b.Display))
 	}
 	return false
 }

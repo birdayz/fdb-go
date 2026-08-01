@@ -77,6 +77,13 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			{"dup_triple", "SELECT category, COUNT(*) FROM T_G1 GROUP BY category, category, category", "both_42702"},
 			{"dup_qualified_vs_bare", "SELECT category, COUNT(*) FROM T_G1 GROUP BY category, T_G1.category", "both_42702"},
 			{"dup_separated", "SELECT category, amount, COUNT(*) FROM T_G1 GROUP BY category, amount, category", "both_42702"},
+			// EXPRESSION keys: Java's identity is the resolved value, so
+			// the duplicate rejects regardless of source spelling — the
+			// whitespace-variant spelling is the load-bearing shape (a
+			// raw-text identity catches only the byte-identical twin).
+			{"rev_expr_same_text", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY amount+1, amount+1", "both_42702"},
+			{"rev_expr_diff_space", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY amount+1, amount + 1", "both_42702"},
+			{"distinct_exprs_ok", "SELECT COUNT(*) FROM T_G1 GROUP BY amount+1, amount+2", "go_extends"},
 			{"distinct_keys_ok", "SELECT category, amount, COUNT(*) FROM T_G1 GROUP BY category, amount", "go_extends"},
 			{"single_key_ok", "SELECT category, COUNT(*) FROM T_G1 GROUP BY category", "go_extends"},
 		}

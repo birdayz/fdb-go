@@ -63,6 +63,12 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 			`SELECT category, COUNT(*) FROM t1 GROUP BY category, t1.category`,
 			// Non-adjacent duplicate.
 			`SELECT category, amount, COUNT(*) FROM t1 GROUP BY category, amount, category`,
+			// EXPRESSION keys compare by RESOLVED VALUE, not source text —
+			// the whitespace-variant spelling is the load-bearing shape: a
+			// raw-text identity catches only the byte-identical twin
+			// (measured live: Java 42702s both spellings).
+			`SELECT amount+1, COUNT(*) FROM t1 GROUP BY amount+1, amount+1`,
+			`SELECT amount+1, COUNT(*) FROM t1 GROUP BY amount+1, amount + 1`,
 		} {
 			_, err := db.QueryContext(ctx, q)
 			if err == nil {
@@ -73,6 +79,26 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
 				t.Errorf("%s: expected 42702 AMBIGUOUS_COLUMN, got %v", q, err)
 			}
+		}
+	})
+
+	t.Run("distinct expressions still group", func(t *testing.T) {
+		t.Parallel()
+		rows, err := db.QueryContext(ctx,
+			`SELECT COUNT(*) FROM t1 GROUP BY amount+1, amount+2`)
+		if err != nil {
+			t.Fatalf("distinct expressions: %v", err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("distinct expressions: got %d groups, want 3", n)
 		}
 	})
 
