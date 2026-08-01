@@ -98,6 +98,7 @@ go_test(
         "explain_no_silent_degrade_test.go",
         "having_pushdown_decider_test.go",
         "in_over_intersection_relink_test.go",
+        "index_ddl_order_by_shape_test.go",
         "inner_source_aliases_test.go",
         "intersection_residual_plan_test.go",
         "lazy_leg_mint_winner_test.go",
@@ -238,6 +239,7 @@ go_test(
         "proj_col_ref_test.go",
         "cardinality_clamp_reachable_test.go",
         "ddl_fail_closed_test.go",
+        "index_ddl_order_by_shape_test.go",
     ],
     deps = [
         "//gen",

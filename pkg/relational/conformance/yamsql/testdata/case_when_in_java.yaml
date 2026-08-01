@@ -58,12 +58,17 @@ tests:
       WHERE CASE WHEN category = 10 THEN price > 150
                  ELSE price > 400 END
       ORDER BY id
-    # TRACKED PARITY GAP (RFC-180): Java plans a boolean-typed CASE as a WHERE
-    # predicate by wrapping the non-BooleanValue as ValuePredicate(= TRUE)
-    # (Expression.java:371-400) and filtering residually; Go's predicate walk
-    # has no such wrap and the planner declines. Restore the rows pin when the
-    # ValuePredicate(=TRUE) wrap port lands.
-    error_code: "0AF00"
+    # RFC-180's tracked parity gap, now CLOSED. Java plans a boolean-typed CASE
+    # as a WHERE predicate; Go declined because its CASE consequent resolved in
+    # a predicate context, so a comparison arm never became a value. Resolving
+    # the consequent as a value closed it. These rows are MEASURED on both
+    # engines (conformance's boolean-operand probe runs this exact query and
+    # data through the Java conformance server and compares).
+    rows:
+      - [2]
+      - [3]
+      - [6]
+      - [7]
 
   # CASE with GROUP BY
   - query: |

@@ -89,3 +89,6 @@ scratchpad/
 # Add a line here for any new cmd/ binary whose name could land at the root.
 /fuzzrun
 /fdb-wire-emit
+
+# compiled binaries (stray go build outputs)
+/factory-run

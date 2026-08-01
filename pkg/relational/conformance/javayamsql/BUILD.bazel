@@ -24,6 +24,7 @@ go_test(
     name = "javayamsql_test",
     srcs = [
         "corpus_test.go",
+        "index_ddl_shape_census_test.go",
         "manifest_test.go",
         "parse_test.go",
     ],
@@ -31,5 +32,10 @@ go_test(
     # runfiles. Without this the gate does not fail under `bazel test` — it
     # cannot find the corpus at all, which is a far worse outcome than a diff.
     data = ["//third_party/apple/fdb-record-layer:yamsql_corpus"],
-    deps = [":javayamsql"],
+    deps = [
+        ":javayamsql",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
 )

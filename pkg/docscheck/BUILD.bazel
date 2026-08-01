@@ -21,6 +21,7 @@ go_test(
         "leg_identity_construction_test.go",
         "mixed_seed_element_authority_test.go",
         "nightly_window_gate_test.go",
+        "nightly_window_landing_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",
         "source_hygiene_test.go",
@@ -36,6 +37,10 @@ go_test(
         "//:RELEASE.md",
         "//:TODO.md",
         "//:go.mod",
+        # keep: the production-status authority and the redirect that points at it
+        # (B6, TestProductionStatusAuthority).
+        "//:road-to-prod.md",
+        "//rfcs:prod-readiness-go-client.md",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",
         # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles

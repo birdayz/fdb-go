@@ -82,7 +82,93 @@ func javaTarget(t *testing.T, root string) string {
 // livingDocs are the docs that must always reflect current truth.
 var livingDocs = []string{
 	"README.md", "PRODUCTION_READINESS.md", "TODO.md", "DIVERGENCES.md",
-	"CHANGELOG.md", "RELEASE.md",
+	"CHANGELOG.md", "RELEASE.md", productionStatusAuthority,
+}
+
+// productionStatusAuthority is the ONE page that answers "what stands between this codebase and
+// production use". Everything else with a status claim redirects to it.
+//
+// It is in livingDocs deliberately: the reason the client prod-readiness RFC sat on a two-patch-stale
+// `libfdb_c` pin is that the version anchors only ever scanned livingDocs, and the status docs were
+// not on the list. An authority page exempt from the drift guards is the same bug one level up.
+const productionStatusAuthority = "road-to-prod.md"
+
+// statusRedirects are the docs that USED to carry current-status claims and now defer. Each must
+// name the authority, so a reader who opens the wrong file is sent to the right one in the first
+// paragraph rather than believing a snapshot.
+//
+// Both are kept rather than deleted — one is the launch-gate bar, the other a point-in-time client
+// audit, and both are worth reading for what they are. What they are not is current.
+var statusRedirects = []string{
+	"PRODUCTION_READINESS.md",
+	"rfcs/prod-readiness-go-client.md",
+}
+
+// authorityClaim is the phrasing a doc uses to declare itself the current-status page. Exactly one
+// file may make it. `PRODUCTION_READINESS.md` carried it while being months out of date, which is
+// how three documents came to contradict each other with no way to tell which one to believe.
+const authorityClaim = "single authoritative current-status page"
+
+// TestProductionStatusAuthority pins the authority relation itself, so the reconciliation cannot
+// rot the way the docs it reconciles did.
+//
+// Three properties, each of which failed at least once in the tree this test was written against:
+//
+//  1. the authority page exists and is DATED, so "current" is checkable rather than asserted;
+//  2. every redirect names it, near the top where a reader actually looks;
+//  3. NO other doc claims to be the authoritative status page.
+//
+// Deliberately NOT checked: whether the authority page's contents are true. No test can do that —
+// which is exactly why the page carries its measurement citations inline and why the counts it
+// quotes say, per row, whether they are drift-guarded.
+func TestProductionStatusAuthority(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+
+	authority := readDoc(t, root, productionStatusAuthority)
+	if !regexp.MustCompile(`(?m)^\*\*Revision \d{4}-\d{2}-\d{2}\.\*\*`).MatchString(authority) {
+		t.Errorf("%s must open with a `**Revision YYYY-MM-DD.**` line — an undated status page cannot be "+
+			"told from a stale one, and every doc this page replaced went stale without saying so",
+			productionStatusAuthority)
+	}
+
+	// The redirect must land in the first 40 lines. A pointer buried on page three is a pointer
+	// nobody follows, and the failure mode being prevented is a reader trusting paragraph one.
+	const redirectWindow = 40
+	wantRef := "`" + productionStatusAuthority + "`"
+	for _, doc := range statusRedirects {
+		body := readDoc(t, root, doc)
+		head := body
+		if lines := strings.SplitN(body, "\n", redirectWindow+1); len(lines) > redirectWindow {
+			head = strings.Join(lines[:redirectWindow], "\n")
+		}
+		if !strings.Contains(head, wantRef) {
+			t.Errorf("%s does not name %s in its first %d lines — a doc that keeps status claims "+
+				"must send the reader to the authority before they read them", doc, wantRef, redirectWindow)
+		}
+		if !strings.Contains(head, "AUTHORITY:") {
+			t.Errorf("%s is missing its `AUTHORITY:` header — the marker is what makes the redirect "+
+				"greppable rather than a sentence someone rewrites away", doc)
+		}
+	}
+
+	// Exactly one authority. Scanned over every living doc plus the redirects, so a future status
+	// page cannot quietly crown itself alongside this one.
+	scanned := append(append([]string{}, livingDocs...), statusRedirects...)
+	seen := map[string]bool{}
+	for _, doc := range scanned {
+		if seen[doc] {
+			continue
+		}
+		seen[doc] = true
+		if doc == productionStatusAuthority {
+			continue
+		}
+		if strings.Contains(readDoc(t, root, doc), authorityClaim) {
+			t.Errorf("%s claims to be the %q, but %s is the authority — two documents making that "+
+				"claim is the exact condition B6 existed to end", doc, authorityClaim, productionStatusAuthority)
+		}
+	}
 }
 
 func pin(t *testing.T, root string, re *regexp.Regexp, src, what string) string {

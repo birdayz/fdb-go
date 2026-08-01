@@ -6616,16 +6616,30 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Java alignment (TODO #41b): WHERE on a CASE expression is
-	// rejected at planning time. Go follows.
+	// A boolean-valued CASE IS a legal WHERE predicate. This asserted the
+	// opposite on the strength of a claim that Java rejects it; measured
+	// against the live Java conformance server, Java ACCEPTS the shape and
+	// returns the same rows Go now returns (see conformance's boolean-operand
+	// probe, which runs this shape on both engines). Go rejected only because
+	// its CASE consequent resolved in a predicate context, so a comparison arm
+	// never became a value.
+	//
+	// 'open' rows take the THEN arm (priority < 3): id 1 has 5, excluded; id 3
+	// has 1, kept. The 'closed' row takes ELSE (priority > 50): id 2 has 100,
+	// kept.
 	rows, err := db.QueryContext(ctx, `
 		SELECT id FROM T WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	if err == nil {
-		_ = rows.Close()
-		t.Fatal("expected rejection of CASE in WHERE; got success")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		got = append(got, id)
 	}
-	expectRejectionOrCascadesError(t, err, "expected BooleanValue but got PickValue")
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]int64{2, 3}))
 }
 
 // TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
@@ -7051,17 +7065,25 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Java alignment (TODO #41b): the WHERE-on-CASE rejection fires at
-	// every WHERE entry point including the CTE-routed map path.
+	// The CTE-routed map path reaches the same CASE through a different scope
+	// resolution, and it now accepts it for the same reason the plain form
+	// does. Measured on both engines (conformance's boolean-operand probe runs
+	// the CTE form too, without ORDER BY — Java's server rejects `order by` in
+	// a subquery, a CTE limitation unrelated to CASE).
 	rows, err := db.QueryContext(ctx, `
 		WITH c AS (SELECT id, status, priority FROM T)
 		SELECT id FROM c WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	if err == nil {
-		_ = rows.Close()
-		t.Fatal("expected rejection of CASE in WHERE; got success")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		got = append(got, id)
 	}
-	expectRejectionOrCascadesError(t, err, "expected BooleanValue but got PickValue")
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]int64{2, 3}))
 }
 
 func TestFDB_NullPropagationInFunctions(t *testing.T) {

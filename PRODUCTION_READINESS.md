@@ -1,6 +1,14 @@
 # Production Readiness Checklist
 
-> **This is the single authoritative current-status page.** Target versions: Java
+> **AUTHORITY: `road-to-prod.md`.** That page — not this one — answers "what stands between this
+> codebase and production use", and where the two disagree it wins. This document is the **launch-gate
+> checklist**: the bar a public release has to clear and the P0/P1 work that was defined against it.
+> It is kept because the bar is still the bar, not because its status claims are current; it was
+> written before the 2026-07-29 audit and reads pessimistic. Two of its claims were flatly false at
+> the time of the reconciliation pass and are corrected in place (marked **CORRECTED**); the rest of
+> its prose is left as the record of what was decided when.
+>
+> Target versions: Java
 > `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
 > `MODULE.bazel` are the source of truth). The executable truth is the test suites
 > (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
@@ -60,8 +68,11 @@ earlier Java target than the README's current 4.12.11.0 — is fixed by **RFC-13
   record-layer version other than the `MODULE.bazel` pin, or reintroduces the README
   escape-hatch contradiction, or leaves a stale report under `reports/`.
 
-Remaining (deferred, **not** a launch blocker): a generated/maintained `FEATURE_MATRIX.md`
-— the dated README + `DIVERGENCES.md` pointer is the interim source of truth.
+**CORRECTED.** This paragraph read "Remaining (deferred, **not** a launch blocker): a generated
+/maintained `FEATURE_MATRIX.md` — the dated README + `DIVERGENCES.md` pointer is the interim source
+of truth." That is false: `FEATURE_MATRIX.md` exists, is generated from the yamsql conformance
+corpus by `cmd/gen-feature-matrix` (`just feature-matrix`), and is drift-guarded by
+`TestFeatureMatrixUpToDate`. The deferral is closed.
 
 ### Publish Reproducible Compatibility Evidence
 

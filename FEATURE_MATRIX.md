@@ -23,18 +23,18 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**342 scenarios · 2740 query/assertion cases** across 18 feature areas — 2399 supported, 111 unsupported-feature pins, 230 error-path pins.
+**342 scenarios · 2740 query/assertion cases** across 18 feature areas — 2401 supported, 109 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 50 | 322 | 289 | 19 | 14 |
 | Joins | 62 | 273 | 264 | 3 | 6 |
-| Subqueries (EXISTS / IN / scalar) | 44 | 301 | 245 | 36 | 20 |
+| Subqueries (EXISTS / IN / scalar) | 44 | 301 | 246 | 35 | 20 |
 | CTEs | 12 | 105 | 73 | 9 | 23 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 191 | 1 | 18 |
 | Ordering & pagination | 15 | 119 | 115 | 0 | 4 |
-| Scalar functions & expressions | 33 | 377 | 323 | 22 | 32 |
+| Scalar functions & expressions | 33 | 377 | 324 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 26 | 22 | 0 | 4 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **342** | **2740** | **2399** | **111** | **230** |
+| **Total** | **342** | **2740** | **2401** | **109** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -173,7 +173,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 
 | Scenario | Cases | Supported | Unsupported | Error-path | What it pins |
 |---|--:|--:|--:|--:|---|
-| `case_exists_combo` | 2 | 1 | 1 | 0 | CASE WHEN + EXISTS combinations |
+| `case_exists_combo` | 2 | 2 | 0 | 0 | CASE WHEN + EXISTS combinations |
 | `correlated_exists_advanced` | 2 | 2 | 0 | 0 | Advanced correlated EXISTS edge cases — regression guards for the fix |
 | `correlated_subquery_probes` | 22 | 18 | 3 | 1 | Correlated subqueries reference outer-row columns. |
 | `cte_exists` | 1 | 1 | 0 | 0 | CTE combined with EXISTS |
@@ -309,7 +309,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `bitwise` | 7 | 5 | 2 | 0 | Bitwise operators: &, \|, ^, <<, >>. |
 | `case_insensitive_keywords` | 9 | 8 | 0 | 1 | SQL standard says keywords are case-insensitive. |
 | `case_when` | 11 | 11 | 0 | 0 | CASE WHEN ... |
-| `case_when_in_java` | 5 | 4 | 1 | 0 | CASE WHEN with IN predicate from Java's |
+| `case_when_in_java` | 5 | 5 | 0 | 0 | CASE WHEN with IN predicate from Java's |
 | `cast` | 19 | 11 | 0 | 8 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
 | `cast_scalar_java` | 12 | 10 | 0 | 2 | Scalar CAST patterns from Java's cast-tests.yamsql. |
 | `coalesce_nullif` | 3 | 2 | 1 | 0 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |

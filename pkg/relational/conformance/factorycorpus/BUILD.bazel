@@ -1,0 +1,63 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# keep: the committed RFC-201 factory corpus, exported so the FULL corpus
+# target (//pkg/relational/conformance/factorycorpus/full) and the producer's
+# determinism gate (//pkg/relational/conformance/factory) can stage it into
+# runfiles. It is deliberately NOT under the hand-authored yamsql testdata:
+# that directory feeds FEATURE_MATRIX.md, SQL_COVERAGE.md and
+# SQL_ANSI_CONFORMANCE.md, and machine volume there would bury the
+# hand-authored evidence those ledgers exist to report.
+filegroup(
+    name = "testdata",
+    srcs = glob(["testdata/**"]),
+    visibility = ["//visibility:public"],
+)
+
+# keep: the census ratchet's committed baseline. Exported for the same reason.
+filegroup(
+    name = "census_baseline",
+    srcs = ["census_baseline.json"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "factorycorpus",
+    srcs = [
+        "census.go",
+        "doc.go",
+        "header.go",
+        "load.go",
+        "run.go",
+        "sample.go",
+        "writer.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/conformance/factorycorpus",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/conformance/yamsql",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+# The per-PR tier: the loader/writer/census gates (no FDB) plus a stratified
+# sample of the committed corpus (one container). NOT tagged out of the default
+# suite — a corpus no fast lane touches goes stale between nightlies. The FULL
+# corpus is the sibling `full` target, which is `manual`.
+go_test(
+    name = "factorycorpus_test",
+    timeout = "long",  # keep: spins an FDB container and runs ~100 scenarios
+    srcs = [
+        "blessing_ratchet_test.go",
+        "census_test.go",
+        "header_duplicate_test.go",
+        "sample_fdb_test.go",
+        "writer_test.go",
+    ],
+    data = glob(["testdata/**"]) + ["census_baseline.json"],
+    deps = [
+        ":factorycorpus",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

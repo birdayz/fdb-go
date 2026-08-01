@@ -1,0 +1,286 @@
+name: Nightly Factory
+
+# RFC-201 §5's generation factory. Two jobs with different purposes, and the
+# distinction matters:
+#
+#   * `corpus` RE-RUNS the tests the factory already committed. It is the
+#     regression net — the reason RFC-201 commits generated tests instead of
+#     regenerating them. It must pass, and a failure is an engine change that
+#     moved a frozen expectation.
+#   * `batch` GENERATES new ones. It is the growth lane, and it opens a PR
+#     rather than pushing: a batch is reviewable content, and §5.2's per-run
+#     quota exists so that review is possible.
+#
+# The per-PR tier is NOT this workflow: a feature-vector-stratified sample of
+# the same corpus runs in `just test` on every PR, so a broken batch cannot
+# land and sit until morning.
+
+on:
+  schedule:
+    # 02:41 UTC — an off-minute between the rowdiff sweep (00:17) and the
+    # stress job (04:23). See nightly-rowdiff.yml for why the runner-side
+    # window check below is load-bearing rather than belt-and-braces: GitHub
+    # dispatches the JOB when the single self-hosted slot frees up, which a
+    # backlog delays by hours.
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Seed count for the batch (default 4000)'
+        required: false
+        default: '4000'
+      quota:
+        description: 'Maximum scenarios committed by the batch (default 1000)'
+        required: false
+        default: '1000'
+      seed_start:
+        description: 'First seed (default: rotated by day-of-year)'
+        required: false
+
+jobs:
+  corpus:
+    name: Full committed corpus (the regression net)
+    runs-on: hetzner-fdb
+    timeout-minutes: 180
+    steps:
+      - name: Check nightly window
+        # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
+        # JOB whenever hetzner-fdb (the single self-hosted slot) frees up,
+        # which a backlog delays by hours — landing a multi-hour run in the
+        # middle of the workday. The check MUST run here, as the first step on
+        # the runner actually allocated: a pre-queue gate passes at dispatch
+        # time and is stale by the time this runner is free. See
+        # nightly-rowdiff.yml for the measured dispatch delays that set the
+        # window's width. `workflow_dispatch` always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The permitted band, declared as two explicit hours so it is
+          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
+          # parses these and replays every allocation hour this net has been given.
+          # WINDOW_START > WINDOW_END means the band WRAPS midnight.
+          #
+          # This job landed with an inlined `-ge 0 -lt 10` bound, written before the
+          # wrapping band existed. That bound is the one measured to discard evening
+          # landings as "daytime" and to throw away a 10:22 allocation for being 22
+          # minutes late. It is the same defect on a brand-new net, which is how a
+          # freshly-built safety net inherits the fake-green shape the older ones
+          # were just cured of.
+          WINDOW_START=18
+          WINDOW_END=12
+          HOUR=$(date -u +%-H)
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.window.outputs.ok == 'true'
+        uses: actions/checkout@v5
+
+      - name: Check Docker (mandatory — else the gate silently no-ops)
+        if: steps.window.outputs.ok == 'true'
+        # The corpus target takes the allowed `FDB not available (no Docker)`
+        # skip when there is no container, so without Docker this job reports
+        # SUCCESS having executed ZERO scenarios. Fail loudly here instead.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the factory corpus would skip (exit 0) and the gate would pass with no coverage"; exit 1; }
+
+      - name: Run the full committed corpus
+        if: steps.window.outputs.ok == 'true'
+        id: corpus
+        # `manual` on the target means a wildcard never reaches it; the label
+        # is named explicitly, exactly as the stress lane names its own.
+        run: |
+          set -o pipefail
+          bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
+            --test_timeout=3600 --test_output=streamed --nocache_test_results 2>&1 | tee corpus.log
+
+      - name: Record genuine-run heartbeat
+        # A windowed job that skips is indistinguishable from one that ran and
+        # passed — which is how ten consecutive rowdiff nights went green having
+        # compared zero rows. This file is written ONLY when the corpus actually
+        # executed. The condition deliberately does NOT require success: a red
+        # corpus is the net WORKING. The heartbeat answers "did it run", the job
+        # conclusion answers "did it pass".
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.corpus.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=factory-corpus"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "corpus_outcome=${{ steps.corpus.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.corpus.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        # if-no-files-found: error, NOT ignore — a heartbeat that silently fails
+        # to upload reproduces the very silence this mechanism exists to break.
+        with:
+          name: nightly-heartbeat-factory-corpus
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
+
+  batch:
+    name: Generate a batch (the growth lane)
+    runs-on: hetzner-fdb
+    timeout-minutes: 300
+    needs: corpus
+    steps:
+      - name: Check nightly window
+        # Its own gate, not inherited from `corpus`. `needs:` only orders the
+        # jobs — a corpus job that SKIPS its work still succeeds, so without
+        # this the batch would run alone at 2pm and take the shared runner for
+        # hours.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Same wrapping band as the corpus job above and as every other
+          # hetzner-fdb net — the allocation hour is a property of the single
+          # shared runner queue, not of what the job does once it has it.
+          WINDOW_START=18
+          WINDOW_END=12
+          HOUR=$(date -u +%-H)
+          if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+            if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          else
+            if [ "$HOUR" -ge "$WINDOW_START" ] || [ "$HOUR" -lt "$WINDOW_END" ]; then IN=1; else IN=0; fi
+          fi
+          if [ "$IN" -eq 1 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window (the self-hosted queue delayed dispatch) — skipping to protect the workday CI slot. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.window.outputs.ok == 'true'
+        uses: actions/checkout@v5
+
+      - name: Check Docker
+        if: steps.window.outputs.ok == 'true'
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the factory cannot generate a batch"; exit 1; }
+
+      - name: Resolve seed range and date
+        if: steps.window.outputs.ok == 'true'
+        id: params
+        # ROTATE the start seed. Re-walking last night's window re-proves what
+        # last night proved and every candidate deduplicates against the corpus
+        # it already produced; the generator's space is effectively unbounded,
+        # so fresh ranges are free coverage.
+        #
+        # The date is passed EXPLICITLY. Generation never reads the clock
+        # (RFC-201 §5.4) — that is what lets a committed file be regenerated
+        # byte-identically — so the workflow supplies it as an input and the
+        # emitted headers record it.
+        run: |
+          SEEDS="${{ github.event.inputs.seeds }}"; SEEDS="${SEEDS:-4000}"
+          QUOTA="${{ github.event.inputs.quota }}"; QUOTA="${QUOTA:-1000}"
+          START="${{ github.event.inputs.seed_start }}"
+          if [ -z "$START" ]; then
+            DOY=$(date -u +%-j)
+            START=$(( 1000000 + DOY * SEEDS ))
+          fi
+          echo "seeds=$SEEDS" >> "$GITHUB_OUTPUT"
+          echo "quota=$QUOTA" >> "$GITHUB_OUTPUT"
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the batch
+        if: steps.window.outputs.ok == 'true'
+        id: run
+        # Typed exit codes: 1 = oracle disagreement (a potential engine bug,
+        # persisted under factory-findings/), 2 = infra, 3 = the batch
+        # committed nothing. 3 is a FAILURE on purpose — a factory run that
+        # writes no test is a broken pipeline, not a quiet success, and the
+        # thing that would otherwise hide it is that an empty batch looks
+        # exactly like a flattened frontier.
+        run: |
+          set -o pipefail
+          go run ./cmd/factory-run \
+            -seeds ${{ steps.params.outputs.seeds }} \
+            -seed-start ${{ steps.params.outputs.start }} \
+            -quota ${{ steps.params.outputs.quota }} \
+            -date ${{ steps.params.outputs.date }} \
+            2>&1 | tee batch.log
+
+      - name: Record genuine-run heartbeat
+        # Written ONLY when the batch actually ran, and deliberately NOT
+        # conditioned on success: a batch that found an oracle disagreement
+        # exits non-zero, and that is the factory WORKING. The heartbeat
+        # answers "did it run", the job conclusion answers "did it pass".
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.run.outcome != 'skipped' }}
+        run: |
+          {
+            echo "net=factory-batch"
+            echo "ran_at=$(date -u +%FT%TZ)"
+            echo "run_id=${{ github.run_id }}"
+            echo "sha=${{ github.sha }}"
+            echo "seeds=${{ steps.params.outputs.start }}..$(( ${{ steps.params.outputs.start }} + ${{ steps.params.outputs.seeds }} - 1 ))"
+            echo "batch_outcome=${{ steps.run.outcome }}"
+          } | tee nightly-heartbeat.txt
+
+      - name: Upload genuine-run heartbeat
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.run.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-heartbeat-factory-batch
+          path: nightly-heartbeat.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload findings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: factory-findings
+          path: |
+            factory-findings/
+            factory-manifest.json
+            batch.log
+          if-no-files-found: ignore
+
+      - name: Open the batch PR
+        if: ${{ success() && steps.window.outputs.ok == 'true' }}
+        # One PR per run, carrying the manifest (seeds, counts, dedup stats,
+        # oracle stats) in the description — §5.1's materialize stage. The
+        # branch is named by date so a re-run replaces rather than accumulates.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="factory/batch-${{ steps.params.outputs.date }}"
+          git config user.name "factory-run"
+          git config user.email "factory-run@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add pkg/relational/conformance/factorycorpus/
+          if git diff --cached --quiet; then
+            echo "no new scenarios — the feature-vector frontier has flattened for this seed range"
+            exit 0
+          fi
+          {
+            echo "RFC-201 §5 factory batch ${{ steps.params.outputs.date }}."
+            echo
+            echo '```json'
+            cat factory-manifest.json
+            echo '```'
+          } > pr-body.md
+          git commit -F pr-body.md
+          git push -u origin "$BRANCH"
+          gh pr create --title "factory: batch ${{ steps.params.outputs.date }}" --body-file pr-body.md
