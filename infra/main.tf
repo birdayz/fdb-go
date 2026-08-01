@@ -207,12 +207,11 @@ resource "hcloud_server" "runner" {
 
 # --- Runner pool (count-parameterized, classic mode) ---
 #
-# Additional runners beyond the grandfathered scaleset box. Classic register-and-listen
-# mode with the `hetzner-fdb` label: GitHub routes scale-set-labeled jobs to classic
-# runners by label match (measured 2026-08-01 — the drain fleet picked up queued
-# scale-set jobs immediately). Classic (not scaleset) because bazelscaleset is a
-# single-box supervisor: one scale set name = one listener, and workflows target the
-# one name — a second supervisor with the same name would fight over the message queue.
+# Additional boxes beyond the grandfathered supervisor box. Worker mode: no runner
+# registration — the bazelscaleset supervisor on the main box launches JIT-ephemeral
+# runners here over SSH (remote slots, tools/bazelscaleset README). One scale set,
+# one listener, slots across the fleet. Classic mode remains the break-glass path
+# (set runner_mode=classic + a registration token) if the supervisor is down.
 #
 # Scale up: raise runner_count and apply with a fresh registration token:
 #   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)
@@ -271,7 +270,7 @@ resource "hcloud_server" "runner_pool" {
     mc_release          = local.versions.mc_release
     mc_sha256           = local.versions.mc_sha256
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
-    runner_mode                       = "classic"
+    runner_mode                       = "worker"
     bazelscaleset_version             = local.versions.bazelscaleset_version
     bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
     bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
