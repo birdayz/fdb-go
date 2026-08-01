@@ -82,8 +82,10 @@ func TestIsTransientFDBError(t *testing.T) {
 				ExceptionClass: "RelationalException",
 			},
 		}, {
-			// A transport failure is infra, but it is entryConforms' INFRA arm
-			// that must claim it — retrying it here would mask a sick server.
+			// A transport failure is not an FDB code, so it does not belong to
+			// THIS predicate. It is retried and labelled by the lifecycle
+			// classifier instead (isLifecycleError), on a smaller budget,
+			// because each of its attempts can cost a whole HTTP timeout.
 			name: "transport failure",
 			err:  fmt.Errorf("plandiff: HTTP POST: context deadline exceeded"),
 		}} {

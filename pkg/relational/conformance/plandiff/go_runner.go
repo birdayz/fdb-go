@@ -89,6 +89,37 @@ func (r *goSQLRunner) RunWithSetup(ctx context.Context, schemaTemplate string, s
 	return RunResult{Engine: "go", Rows: rows}
 }
 
+// FixtureError marks a failure in the ephemeral-FIXTURE lifecycle — the DDL and
+// setup DML that build the throwaway schema a corpus entry runs against — as
+// distinct from a failure of the query under test.
+//
+// The distinction is load-bearing for the cross-engine harnesses. A fixture that
+// never got built produced no engine answer to compare against Java's, so it
+// cannot be a cross-engine divergence; reporting it as one manufactures a
+// phantom semantic disagreement out of a CI-load artifact. A failure on the
+// QUERY (or on a DML statement under test) is deliberately NOT a FixtureError:
+// that IS the engine's answer and must stay comparable, so a real Go defect can
+// never hide behind this type.
+//
+// Phase is the human-readable step name and rides the rendered message, so the
+// text a harness logs is unchanged from the plain fmt.Errorf wrapping it
+// replaces. Wrap chains through it, so callers can reach the underlying cause
+// with errors.Is / errors.As.
+type FixtureError struct {
+	Phase string
+	Err   error
+}
+
+func (e *FixtureError) Error() string { return "plandiff/go: " + e.Phase + ": " + e.Err.Error() }
+
+func (e *FixtureError) Unwrap() error { return e.Err }
+
+// fixtureErrf builds a FixtureError whose Phase is formatted from args, so call
+// sites keep reading like the fmt.Errorf they replaced.
+func fixtureErrf(err error, format string, args ...any) error {
+	return &FixtureError{Phase: fmt.Sprintf(format, args...), Err: err}
+}
+
 // runEphemeral mirrors Java's runWithEphemeralSchema flow:
 // CREATE SCHEMA TEMPLATE → CREATE DATABASE → CREATE SCHEMA →
 // open connection on the ephemeral schema → run setup DMLs → run
@@ -106,7 +137,7 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 	// `__SYS?schema=CATALOG` flow.
 	sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", r.clusterFilePath))
 	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff/go: open __SYS: %w", err)
+		return RowSet{}, fixtureErrf(err, "open __SYS")
 	}
 	defer sysDB.Close()
 
@@ -127,17 +158,17 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 	if schemaTemplate != "" {
 		stmt := fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", templateName, schemaTemplate)
 		if _, err := sysDB.ExecContext(ctx, stmt); err != nil {
-			return RowSet{}, fmt.Errorf("plandiff/go: CREATE SCHEMA TEMPLATE: %w", err)
+			return RowSet{}, fixtureErrf(err, "CREATE SCHEMA TEMPLATE")
 		}
 		templateCreated = true
 
 		if _, err := sysDB.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
-			return RowSet{}, fmt.Errorf("plandiff/go: CREATE DATABASE: %w", err)
+			return RowSet{}, fixtureErrf(err, "CREATE DATABASE")
 		}
 		dbCreated = true
 
 		if _, err := sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schemaName, templateName)); err != nil {
-			return RowSet{}, fmt.Errorf("plandiff/go: CREATE SCHEMA: %w", err)
+			return RowSet{}, fixtureErrf(err, "CREATE SCHEMA")
 		}
 	}
 
@@ -151,14 +182,14 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 			fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", r.clusterFilePath))
 	}
 	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff/go: open ephemeral schema: %w", err)
+		return RowSet{}, fixtureErrf(err, "open ephemeral schema")
 	}
 	defer schemaDB.Close()
 
 	// Run setup DMLs.
 	for _, setup := range setupSqls {
 		if _, err := schemaDB.ExecContext(ctx, setup); err != nil {
-			return RowSet{}, fmt.Errorf("plandiff/go: setup %q: %w", setup, err)
+			return RowSet{}, fixtureErrf(err, "setup %q", setup)
 		}
 	}
 

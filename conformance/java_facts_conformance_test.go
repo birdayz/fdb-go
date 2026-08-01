@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
 	. "github.com/onsi/ginkgo/v2"
@@ -116,10 +115,13 @@ var _ = Describe("ANSI Java?-fact verification", Ordered, ContinueOnFailure, fun
 					for idx := range idxCh {
 						it := work[idx]
 						jr := rn.RunWithSetup(ctx, it.SchemaTemplate, it.Setup, it.Query)
-						for attempt := 1; attempt <= maxConflictRetries && isTransientFDBError(jr.Err); attempt++ {
-							time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
-							jr = rn.RunWithSetup(ctx, it.SchemaTemplate, it.Setup, it.Query)
-						}
+						// Java-only probe, so the Go arm of rerunWhileRetryable is
+						// a no-op; the retry budgets are the shared ones.
+						jr, _ = rerunWhileRetryable(jr, plandiff.RunResult{}, wid,
+							func() plandiff.RunResult {
+								return rn.RunWithSetup(ctx, it.SchemaTemplate, it.Setup, it.Query)
+							},
+							func() plandiff.RunResult { return plandiff.RunResult{} })
 						out[idx] = jr
 					}
 				}(runners[w], w)
