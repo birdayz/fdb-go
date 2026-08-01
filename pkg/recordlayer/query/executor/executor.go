@@ -66,7 +66,12 @@ func (e *NumericRangeOverflowError) Error() string {
 	return fmt.Sprintf("value %v out of range for %s column %q", e.Value, e.TypeName, e.Column)
 }
 
-type SumOverflowError struct{}
+// SumOverflowError reports a SUM/AVG accumulation leaving its operator's
+// integer domain. Int32 selects the SUM_I/AVG_I lane's message: Java's
+// Math.addExact(int, int) throws ArithmeticException("integer overflow")
+// where the long overload throws "long overflow", and the messages surface
+// verbatim through the driver (both under SQLSTATE 22003).
+type SumOverflowError struct{ Int32 bool }
 
 // UnsupportedContinuationError reports a resume attempt on a cursor shape
 // that has no continuation support yet (RFC-180 WS-A follow-ups). The driver
@@ -81,7 +86,12 @@ func (e *UnsupportedContinuationError) Error() string {
 	return "unsupported continuation: " + e.Shape + " cannot resume from a continuation"
 }
 
-func (*SumOverflowError) Error() string { return "long overflow" }
+func (e *SumOverflowError) Error() string {
+	if e.Int32 {
+		return "integer overflow"
+	}
+	return "long overflow"
+}
 
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are

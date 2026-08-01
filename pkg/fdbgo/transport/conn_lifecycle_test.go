@@ -114,6 +114,15 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 // Draining the dummy then lets the NEXT attempt enqueue a real PING — which appears
 // only if the monitor is still cycling the outer loop (the fix); with the bug it is
 // wedged in the inner loop and no further PING is ever enqueued.
+//
+// The liveness margin is deliberately WIDE (1ms traffic ticks vs a 60ms
+// monitorTimeout window): the traffic goroutine must advance bytesReceived at
+// least once inside EVERY inner-loop window, or the monitor takes the
+// frozen-bytes kill path — which on this socket-less Conn panics in
+// failConnection and reads as "monitor never re-pinged". At a 5ms window that
+// race was lost under full-suite CPU contention (a starved ticker goroutine
+// missing one window); 60 tick chances per window puts it beyond scheduler
+// jitter while keeping the whole test under a second.
 func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -123,7 +132,7 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 		writeCh:             make(chan writeReq, 1),
 		pending:             make(map[UID]chan Response),
 		monitorLoopInterval: 5 * time.Millisecond,
-		monitorTimeout:      5 * time.Millisecond,
+		monitorTimeout:      60 * time.Millisecond,
 	}
 	// Pending work so the monitor actually pings (C++ outstandingReplies > 0).
 	c.pending[UID{First: 99}] = make(chan Response, 1)
@@ -155,8 +164,10 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 		close(stop)     // stop traffic
 	})
 
-	// Let several ping cycles elapse — each drops because the dummy holds the slot.
-	time.Sleep(100 * time.Millisecond)
+	// Let several ping cycles elapse — each drops because the dummy holds the
+	// slot. A dropped-ping cycle is one loop interval plus one inner-loop
+	// window (~65ms), so 200ms covers about three.
+	time.Sleep(200 * time.Millisecond)
 
 	// Free the slot. With the fix the monitor is still cycling the outer loop and
 	// the next attempt enqueues a real PING here; with the bug it is wedged in the
@@ -177,7 +188,8 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("monitor never re-pinged after a dropped ping + observed traffic: " +
-				"inner loop wedged with no success path (codex P2 on #14)")
+				"a nil replyCh gives the inner loop no success path, so it must break " +
+				"to the outer loop on observed traffic instead of wedging")
 		}
 	}
 }

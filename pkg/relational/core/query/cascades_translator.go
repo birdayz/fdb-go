@@ -7463,12 +7463,13 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		// (wholeRowLegFor — `MAX("V"."X") FROM "V"` reads the V row itself).
 		aggInputLegs = wholeRowLegFor(sourceAlias(a.Input), aggInputCols)
 	}
-	// Proto-FAITHFUL typed columns of the aggregate input (a SQL INTEGER stays
-	// TypeCodeInt here, unlike the resolver's widened LONG). Sources each SUM/AVG
-	// operand's static integer width for the int32-vs-int64 overflow decision
-	// (Java NumericAggregationValue picks SUM_I vs SUM_L from the operand's static
-	// TypeCode). nil for a non-scan / derived input — those operands keep the
-	// int64 (SUM_L) domain.
+	// Proto-FAITHFUL typed columns of the aggregate input. FALLBACK source for
+	// a SUM/AVG operand's static integer width (int32 vs int64 overflow) when
+	// the operand itself carries no static type — an unresolved minted carrier.
+	// A RESOLVED operand states its own width (Java NumericAggregationValue
+	// picks SUM_I vs SUM_L from the operand's static TypeCode) and never
+	// consults this list. nil for a non-scan / derived input — untyped operands
+	// over those keep the int64 (SUM_L) domain.
 	aggInputFields := t.legColumns(a.Input)
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
@@ -7603,9 +7604,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				}
 			}
 		}
-		// Static integer WIDTH of the operand (SUM_I vs SUM_L): sourced from the
-		// proto-faithful input columns because the resolver widened the operand's
-		// own Type() to LONG. INTEGER (TYPE_INT32) → int32 overflow in the executor.
+		// Static integer WIDTH of the operand (SUM_I vs SUM_L): the operand's
+		// own static type first (Java's encapsulate rule), the proto-faithful
+		// input columns as the untyped-carrier fallback. INTEGER (TYPE_INT32)
+		// → int32 overflow in the executor.
 		spec.OperandIntType = aggregateOperandIntType(spec.Operand, aggInputFields)
 		aggSpecs = append(aggSpecs, spec)
 	}
@@ -7664,47 +7666,45 @@ func aggregateRejectsNonNumericOperand(fn expressions.AggregateFunction) bool {
 }
 
 // aggregateOperandIntType returns the operand's STATIC integer width for the
-// int32-vs-int64 SUM/AVG overflow decision, keyed off the proto-faithful input
-// record type (Go's resolver widens INTEGER column references to LONG, so the
-// operand's own Type() cannot carry the INT32/INT64 split — the retired
-// `TypeInt` alias WAS NullableLong, so nothing named INT ever meant 32-bit).
-// Returns values.TypeCodeInt only when the operand is a single column of the
-// aggregate input's own row whose backing proto field is TYPE_INT32 (SQL
-// INTEGER); values.TypeCodeUnknown otherwise — never a narrower, wrong
-// overflow width, because the width is the difference between SUM raising
-// 22003 and returning a BIGINT-range answer.
+// int32-vs-int64 SUM/AVG overflow decision.
 //
-// The operand is identified by its ORDINAL in inputFields' layout, never by
-// its display name (RFC-197). Two lists meet here and they are derived
-// SEPARATELY — the operand was baked against the translated expression's
-// output columns, while inputFields comes from the logical input's leg columns
-// — so the ordinal is only usable if the two describe the same layout. That is
-// not assumed: OrdinalIn is given inputFields' own ordinal domain and answers
-// only when the operand's baked domain IS that layout. A reference from some
-// other layout (a join operand carries its LEG's 4-column domain while
-// inputFields is the 6-column qualified merge) declines and keeps the int64
-// SUM_L domain, which is the direction that cannot manufacture a wrong
-// overflow.
+// The AUTHORITY is the operand's own static result type — Java's exact rule:
+// NumericAggregationValue.encapsulate keys the operator map on
+// `Pair.of(logicalOperator, type0.getTypeCode())` where type0 is
+// `arguments.get(0).getResultType()` (NumericAggregationValue.java:196-209),
+// so SUM over an INT-typed operand is SUM_I (Math.addExact on int, 22003 at
+// the int32 boundary) no matter what expression tree the operand sits in — a
+// join-leg reference carries its column's own INT in Java exactly like a
+// single-table one. Go's resolver states the same width on the reference since
+// the width-faithful typing of RFC-181 P0.5 (sqlTypeToCascadesType: INTEGER →
+// TypeCodeInt), and it survives a join because the correlated resolution arm
+// stamps columnCascadesType on the reference itself. Trusting the static type
+// here is the same trust the plan-time numeric-operand gate above already
+// extends to it.
 //
-// A non-zero CORRELATION declines for the same reason: inputFields describes
-// the aggregate input's OWN row, so only a reference that reads that row —
-// rather than a named quantifier's — is indexable in it. That is the
-// correlation element of identity doing the job the old `fv.Child != nil`
-// bail-out did by shape.
-//
-// Measured before converting: over the relational suite (unit, FDB and the
-// conformance corpora) this answered identically to the retired leaf-name
-// match on all 8358 aggregate operands it saw, 3878 of them a known width and
-// 72 of them the INT that changes overflow semantics.
-//
-// Also measured: on today's shapes EITHER of the two checks alone excludes
-// every foreign-layout operand the suite produces, so deleting one leaves a
-// green suite and the other check carrying the whole proof by coincidence.
-// They are not redundant — they check different elements of the reference's
-// identity — and dropping BOTH is red
-// (TestFDB_AggregateOperandWidthDeclinesForeignLayout, where a BIGINT sum
-// comes back as 22003).
+// The ORDINAL fallback below serves the one population without a static type:
+// a minted bare-column carrier (Typ Unknown — the catalog pass did not run, or
+// resolution declined). It is keyed off the proto-faithful input record type,
+// identified by ORDINAL in inputFields' layout, never by display name
+// (RFC-197). Two lists meet there and they are derived SEPARATELY — the
+// operand was baked against the translated expression's output columns, while
+// inputFields comes from the logical input's leg columns — so the ordinal is
+// only usable if the two describe the same layout. That is not assumed:
+// OrdinalIn is given inputFields' own ordinal domain and answers only when the
+// operand's baked domain IS that layout; a reference from some other layout,
+// or with a non-zero correlation (inputFields describes the aggregate input's
+// OWN row), declines and keeps the int64 SUM_L domain — the direction that
+// cannot manufacture a wrong overflow
+// (TestFDB_AggregateOperandWidthDeclinesForeignLayout pins a BIGINT join sum
+// answering, not 22003).
 func aggregateOperandIntType(operand values.Value, inputFields []values.Field) values.TypeCode {
+	if operand != nil {
+		if ot := operand.Type(); ot != nil {
+			if code := ot.Code(); code != values.TypeCodeUnknown {
+				return code
+			}
+		}
+	}
 	fv, isFieldValue := operand.(*values.FieldValue)
 	if !isFieldValue || len(inputFields) == 0 {
 		return values.TypeCodeUnknown
