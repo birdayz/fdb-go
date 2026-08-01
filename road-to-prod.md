@@ -245,9 +245,14 @@ Wrong rows / wrong data:
    rests on a prose record of a live probe (`DIVERGENCES.md:978`), not a committed cross-engine pin.
 
 Different answer / different error:
-9. `SUM(int_col)` overflows silently from a join leg but raises 22003 outside one. Pinned —
-   `aggregate_operand_width_fdb_test.go:176`, red-means-gap-closed. Closing it flips answering
-   queries into errors — needs its own gated lap.
+9. **CLOSED.** `SUM(int_col)` now raises 22003 "integer overflow" identically with and without a
+   join around the operand's table, matching Java (measured live: `SumOverflowJoinLegJavaProbe`
+   in `conformance/` — Java rejects all four overflow shapes with the same verbatim messages Go
+   now emits). Root cause: the width machinery predated RFC-181 P0.5's width-faithful typing and
+   only consulted the merged-row ordinal a join-leg reference cannot index; the operand's own
+   static type (Java's `NumericAggregationValue.encapsulate` rule) now decides. Pinned —
+   `aggregate_operand_width_fdb_test.go` (`TestFDB_AggregateOperandWidthJoinLegRaises` plus
+   negative-direction, exact-boundary, BIGINT-lane and AVG/COUNT controls).
 10. `DELETE/UPDATE … RETURNING` via Exec silently drops the returned values; via Query → 0A000. Java
     supports it. Pinned — `returning_clause_probe_test.go:51,62`.
 11. `DROP SCHEMA IF EXISTS` ignores IF EXISTS (deliberate Java-bug replication). Pinned —

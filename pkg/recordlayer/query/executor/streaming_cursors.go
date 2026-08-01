@@ -559,7 +559,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 					// the SAME overflow Java raises — check it here, not only at the
 					// int64 boundary below.
 					if s > math.MaxInt32 || s < math.MinInt32 {
-						return &SumOverflowError{}
+						return &SumOverflowError{Int32: true}
 					}
 				} else if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
 					// LONG operand (SUM_L / AVG_L): Math.addExact on long — int64

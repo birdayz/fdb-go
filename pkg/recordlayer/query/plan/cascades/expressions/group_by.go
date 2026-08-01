@@ -47,13 +47,13 @@ type AggregateSpec struct {
 	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
 	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,
 	// result INT) vs SUM_L (int64 overflow, result LONG) from the operand's static
-	// TypeCode. values.TypeCodeInt means the operand is a SQL INTEGER column
+	// TypeCode. values.TypeCodeInt means the operand is statically a SQL INTEGER
 	// (proto TYPE_INT32) → int32 overflow; any other value (including the zero
 	// TypeCodeUnknown) keeps the int64 (SUM_L) domain. This is a SEPARATE field
-	// because Go's resolver widens every integer column reference to LONG
-	// (the retired `TypeInt` alias WAS NullableLong), so Operand.Type() cannot carry the
-	// INT32/INT64 distinction — the translator sources it from the proto-faithful
-	// record type instead.
+	// rather than a read of Operand.Type() at execution time because a minted
+	// bare-column operand carries no static type — the translator answers from
+	// the operand's own resolved type when it states one (Java's encapsulate
+	// rule) and from the proto-faithful input record type otherwise.
 	OperandIntType values.TypeCode
 }
 

@@ -122,6 +122,7 @@ go_test(
         "store_helpers_test.go",
         "store_lifecycle_conformance_test.go",
         "sum_index_conformance_test.go",
+        "sum_overflow_join_leg_java_probe_test.go",
         "testdata_test.go",
         "text_index_conformance_test.go",
         "time_window_leaderboard_conformance_test.go",
