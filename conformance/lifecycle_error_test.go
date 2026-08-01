@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 )
@@ -76,6 +78,35 @@ func goFixtureConnClosed(phase string) error {
 	}
 }
 
+// goFixtureConnClosedPostFacade is the SAME teardown after it crossed the fdb
+// facade: convertError (fdb/transaction.go) rebuilds the coded transport
+// teardown as the VALUE type fdb.Error{Code: 1030}, and the wrap chain — with
+// its errors.Is identity to transport.ErrConnClosed — does NOT survive.
+// TestConvertError_ConnTeardownShape (pkg/fdbgo/fdb) pins that this is exactly
+// the shape the facade emits, so this constructor builds the error the way it
+// actually arrives in a real run (every record-layer read crosses the facade),
+// not a synthetic pre-facade stand-in that still carries sentinel identity.
+func goFixtureConnClosedPostFacade(phase string) error {
+	return &plandiff.FixtureError{
+		Phase: phase,
+		Err: api.WrapErrorf(
+			fmt.Errorf("failed to load index states: %w", gofdb.Error{Code: 1030}),
+			api.ErrCodeInternalError, "open catalog store"),
+	}
+}
+
+// goFixtureConnClosedWireCoded is the teardown one layer below the facade: the
+// transport's coded error still in the chain as *wire.FDBError{1030} (the
+// client layer sees this shape before convertError flattens it).
+func goFixtureConnClosedWireCoded(phase string) error {
+	return &plandiff.FixtureError{
+		Phase: phase,
+		Err: api.WrapErrorf(
+			fmt.Errorf("failed to load index states: %w", &wire.FDBError{Code: 1030}),
+			api.ErrCodeInternalError, "open catalog store"),
+	}
+}
+
 // TestIsLifecycleError_ObservedSignatures pins that each verbatim signature is
 // recognised as lifecycle, and — the load-bearing half — that the class cannot
 // stretch to cover an engine answer.
@@ -95,6 +126,8 @@ func TestIsLifecycleError_ObservedSignatures(t *testing.T) {
 			{"go fixture CREATE DATABASE, connection closed", goFixtureConnClosed("CREATE DATABASE")},
 			{"go fixture setup DML, connection closed", goFixtureConnClosed(`setup "INSERT INTO T_S12 VALUES (2, 'banana')"`)},
 			{"go fixture CREATE SCHEMA TEMPLATE, connection closed", goFixtureConnClosed("CREATE SCHEMA TEMPLATE")},
+			{"go fixture teardown POST-FACADE (fdb.Error 1030, no sentinel identity)", goFixtureConnClosedPostFacade("CREATE DATABASE")},
+			{"go fixture teardown wire-coded (*wire.FDBError 1030)", goFixtureConnClosedWireCoded("CREATE DATABASE")},
 		} {
 			if !isLifecycleError(tc.err) {
 				t.Errorf("%s must classify as lifecycle — it is a harness failure, not an "+
@@ -158,6 +191,25 @@ func TestIsLifecycleError_ObservedSignatures(t *testing.T) {
 			name: "connection teardown on the query under test, not the fixture",
 			err: fmt.Errorf("plandiff/go: query: %w",
 				api.WrapErrorf(fmt.Errorf("scan: %w", transport.ErrConnClosed),
+					api.ErrCodeInternalError, "execute")),
+		}, {
+			// The code conjunct for the post-facade arm: a fixture failure whose
+			// cause is an fdb.Error with any NON-teardown code is an engine (or
+			// at least non-infra) answer. Matching fdb.Error by type alone would
+			// swallow every FDB-surfaced fixture failure.
+			name: "go fixture failure with a non-teardown fdb.Error code",
+			err: &plandiff.FixtureError{
+				Phase: "CREATE SCHEMA TEMPLATE",
+				Err: api.WrapErrorf(fmt.Errorf("commit: %w", gofdb.Error{Code: 2103}),
+					api.ErrCodeInternalError, "value too large"),
+			},
+		}, {
+			// The converse conjunct, post-facade shape: a teardown code on the
+			// QUERY under test (not a FixtureError) stays a visible divergence,
+			// exactly like the pre-facade sentinel case above.
+			name: "post-facade teardown on the query under test, not the fixture",
+			err: fmt.Errorf("plandiff/go: query: %w",
+				api.WrapErrorf(fmt.Errorf("scan: %w", gofdb.Error{Code: 1030}),
 					api.ErrCodeInternalError, "execute")),
 		}, {
 			name: "plain row disagreement",

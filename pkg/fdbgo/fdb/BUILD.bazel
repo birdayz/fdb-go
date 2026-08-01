@@ -37,6 +37,7 @@ go_test(
     srcs = [
         "approxsize_deferred_test.go",
         "conflictrange_workload_test.go",
+        "convert_teardown_test.go",
         "database_bootstrap_test.go",
         "directory_test.go",
         "error_benchmark_test.go",
@@ -69,6 +70,7 @@ go_test(
         "//pkg/fdbgo/fdb/directory",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",

@@ -55,13 +55,21 @@ func TestConnClosedError_CarriesRequestMaybeDelivered(t *testing.T) {
 	}
 }
 
-// TestConn_AbruptServerCloseDeliversCodedError proves the DELIVERY path: when
-// the peer closes mid-RPC, the readLoop's raw I/O error is coded by
-// failConnection before fan-out, so the in-flight caller observes the
-// request_maybe_delivered teardown — not a bare "EOF"/"use of closed network
-// connection" the retry machinery cannot classify. Revert-proof: fan out the
-// raw readLoop error (or a bare errors.New sentinel) and the errors.As check
-// goes red.
+// TestConn_AbruptServerCloseDeliversCodedError proves the DELIVERY (fan-out)
+// path deterministically: when the peer closes mid-RPC, the readLoop's raw I/O
+// error is coded by failConnection before failAllPending fans it out, so the
+// in-flight reply channel observes the request_maybe_delivered teardown — not
+// a bare "EOF"/"use of closed network connection" the retry machinery cannot
+// classify.
+//
+// The test reads the REPLY CHANNEL directly (PrepareReply + SendFrame) rather
+// than going through SendAndWait: SendAndWait races its replyCh arm against
+// its conn-ctx.Done arm, and the ctx.Done arm returns the shared (always
+// coded) errConnClosed — so via SendAndWait a fan-out regression hides behind
+// whichever arm wins the race. The reply channel has exactly one writer for
+// this token (failAllPending), so what arrives here IS the fan-out value.
+// Revert-proof: fan out the raw readLoop error (failAllPending(err) without
+// codedConnClosed) and the errors.As check goes red every run.
 func TestConn_AbruptServerCloseDeliversCodedError(t *testing.T) {
 	t.Parallel()
 	s := newSimServer(t)
@@ -83,17 +91,40 @@ func TestConn_AbruptServerCloseDeliversCodedError(t *testing.T) {
 	}
 	defer c.Close()
 
-	_, rerr := c.SendAndWait(ctx, UID{First: 3}, []byte("req"))
-	if rerr == nil {
-		t.Fatal("SendAndWait should fail when the server closes mid-RPC")
+	_, replyCh, replyHandle := c.PrepareReply()
+	// Not-received outcomes must Cancel() before Release() (see ReplyHandle);
+	// on the received path failAllPending already removed the pending token.
+	received := false
+	defer func() {
+		if !received {
+			replyHandle.Cancel()
+		}
+		replyHandle.Release()
+	}()
+	// SendFrame may itself lose a race against the teardown (its errCh arm vs
+	// the conn-ctx.Done arm) and report the teardown instead of nil — both are
+	// fine here: the reply token is already pending, so failAllPending fans out
+	// to replyCh either way, and replyCh is the assertion target.
+	if err := c.SendFrame(UID{First: 3}, []byte("req")); err != nil && !errors.Is(err, ErrConnClosed) {
+		t.Fatalf("SendFrame: %v", err)
 	}
-	if !errors.Is(rerr, ErrConnClosed) {
-		t.Fatalf("mid-RPC teardown must match ErrConnClosed via errors.Is; got %v", rerr)
-	}
-	var fe *wire.FDBError
-	if !errors.As(rerr, &fe) || fe.Code != codeRequestMaybeDelivered {
-		t.Fatalf("DIVERGENCE from C++ (fdbrpc.h:794-799, waitValueOrSignal on disconnect): "+
-			"a mid-RPC teardown must surface FDB code 1030 request_maybe_delivered, "+
-			"not an uncoded transport error; got %v", rerr)
+
+	select {
+	case resp := <-replyCh:
+		received = true
+		if resp.Err == nil {
+			t.Fatalf("got a reply body %q; expected a teardown error", resp.Body)
+		}
+		if !errors.Is(resp.Err, ErrConnClosed) {
+			t.Fatalf("fan-out teardown must match ErrConnClosed via errors.Is; got %v", resp.Err)
+		}
+		var fe *wire.FDBError
+		if !errors.As(resp.Err, &fe) || fe.Code != codeRequestMaybeDelivered {
+			t.Fatalf("DIVERGENCE from C++ (fdbrpc.h:794-799, waitValueOrSignal on disconnect): "+
+				"the fan-out must deliver FDB code 1030 request_maybe_delivered, "+
+				"not an uncoded transport error; got %v", resp.Err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight reply was not failed after abrupt server close")
 	}
 }
