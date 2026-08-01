@@ -608,8 +608,8 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 // label is empty), upper-cased. This lets the planner harness assert the result
 // COLUMN SET — distinct from the per-row datum map (which carries extra
 // resolution-convenience keys) — for shapes that cannot be seeded through the SQL
-// driver (e.g. non-empty array columns for a lateral unnest, which have no SQL
-// array-literal form). RFC-142.
+// driver (historically non-empty array columns, before SQL INSERT gained
+// array literals). RFC-142.
 func ResultColumnLabelsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
 	cols := deriveColumnsFromPlan(plan, md)
 	labels := make([]string, len(cols))
@@ -628,8 +628,8 @@ func ResultColumnLabelsForPlan(plan plans.RecordQueryPlan, md *recordlayer.Recor
 // driver's column-type metadata. It runs the SAME production column derivation
 // (deriveColumnsFromPlan → ColumnDef.TypeName) the live Execute() path uses, so
 // the harness can assert column types for shapes that cannot be seeded through
-// the SQL driver (e.g. a lateral unnest over a non-empty array column, which has
-// no SQL array-literal form). The element column of a non-ordinal unnest over a
+// the SQL driver (historically a lateral unnest over a non-empty array column,
+// before SQL INSERT gained array literals). The element column of a non-ordinal unnest over a
 // STRING array must report STRING here, not the UnknownType→BIGINT fallback.
 // RFC-142.
 func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
@@ -646,8 +646,8 @@ func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.Record
 // the driver's ResultSetMetaData.isNullable. It runs the SAME production column
 // derivation (deriveColumnsFromPlan → ColumnDef.Nullable) the live Execute()
 // path uses, so the harness can assert column nullability for shapes that cannot
-// be seeded through the SQL driver (e.g. a lateral unnest over a non-empty array
-// column, which has no SQL array-literal form). The WITH-ORDINALITY ordinal
+// be seeded through the SQL driver (historically a lateral unnest over a non-empty
+// array column, before SQL INSERT gained array literals). The WITH-ORDINALITY ordinal
 // column must report api.ColumnNoNulls here (Java's INT NOT NULL ordinal), even
 // though it has no backing proto descriptor field. RFC-142.
 func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []int {
@@ -663,7 +663,7 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 // — the same deriveColumnsFromPlan output the live Execute() path hands to
 // NewRecordLayerResultSet — so an FDB test can drive the REAL result-set read
 // path (including the positional-aligned column read) for shapes
-// that cannot be seeded through the SQL driver (no SQL array-literal form).
+// not seeded through the SQL driver.
 func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	return deriveColumnsFromPlan(plan, md)
 }

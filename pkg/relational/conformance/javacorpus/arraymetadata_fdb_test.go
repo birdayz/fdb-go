@@ -24,9 +24,7 @@ import (
 //
 // No INSERT is needed and none is used: `integer array` is accepted by the DDL,
 // and column metadata is derived from the PLAN, so an empty table exercises the
-// derivation exactly. That matters because inserting an array literal fails on
-// an unrelated gap (CQ-72), which would have made this probe untestable if the
-// rows were required.
+// derivation exactly.
 //
 // WHEN THIS TEST FAILS, THAT IS THE HAND-OVER: the driver has started carrying
 // the array type, so delete this test, delete the runner's `{array: …}`

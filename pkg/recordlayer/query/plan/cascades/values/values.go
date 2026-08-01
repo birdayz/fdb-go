@@ -3828,6 +3828,38 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		return nil, nil
 	}
 	switch c.Target.Code() {
+	case TypeCodeArray:
+		// Java CastValue.castArrayToArray: cast element-wise, keeping NULL
+		// elements as NULL and an empty array empty. Each element goes
+		// through the same scalar cast machinery (Java re-injects a cast on
+		// a per-element LiteralValue).
+		at, ok := c.Target.(*ArrayType)
+		if !ok || at.ElementType == nil {
+			return nil, &InvalidCastError{Message: "Target array element type cannot be null"}
+		}
+		list, ok := v.([]any)
+		if !ok {
+			// A non-list carrier under an ARRAY target — degrade to
+			// UNKNOWN rather than corrupt (the plan-time pair gate rejects
+			// non-array sources; this arm only sees array-typed children).
+			return nil, nil
+		}
+		out := make([]any, 0, len(list))
+		for _, e := range list {
+			if e == nil {
+				out = append(out, nil)
+				continue
+			}
+			ev, eerr := (&CastValue{
+				Child:  &ConstantValue{Value: e, Typ: UnknownType},
+				Target: at.ElementType,
+			}).Evaluate(evalCtx)
+			if eerr != nil {
+				return nil, eerr
+			}
+			out = append(out, ev)
+		}
+		return out, nil
 	case TypeCodeInt:
 		switch val := v.(type) {
 		case int64:

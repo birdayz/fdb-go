@@ -32,34 +32,39 @@ package javacorpus_test
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=32 fail=0 skip=206 queries=487 " +
+const pinnedLedger = "pass=34 fail=0 skip=204 queries=531 " +
 	"file_skips{conformance:go-accepts-what-java-rejects=1," +
-	"engine-gap:array-literal-values=6,engine-gap:cast-array-literal=1," +
-	"engine-gap:catalog-system-tables=2,engine-gap:correlated-exists-setop=1," +
-	"engine-gap:derived-table-join-on=1,engine-gap:error-class=1," +
+	"engine-gap:array-comparison=1," +
+	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
+	"engine-gap:correlated-exists-setop=1," +
+	"engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:error-class=1," +
 	"engine-gap:inline-values-table=1,engine-gap:nested-recursive-with=1," +
-	"engine-gap:planner-declines=1,engine-gap:returning-dry-run=1," +
+	"engine-gap:planner-declines=2,engine-gap:returning-dry-run=1," +
 	"engine-gap:row-version-pseudocolumn=1,engine-gap:table-valued-function=1," +
 	"engine-gap:typed-integer-literal=1,fragment=2,no-checks=1,plan-assertion=7," +
 	"polarity:fixed-version-meta=9,polarity:negative-execution=24," +
 	"polarity:negative-parse=25,unsupported-DDL:other=6,unsupported-DDL:struct=39," +
 	"unsupported-DDL:value-index-as-select=42,unsupported:continuation=3," +
-	"unsupported:multi-cluster=2," +
+	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=1," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
 	"vacuous:all-assertions-skipped=1} " +
 	"inner_skips{conformance:go-accepts-what-java-rejects=1," +
-	"engine-gap:array-literal-values=6,engine-gap:cast-array-literal=1," +
-	"engine-gap:catalog-system-tables=2,engine-gap:correlated-exists-setop=1," +
-	"engine-gap:derived-table-join-on=1,engine-gap:error-class=1," +
+	"engine-gap:array-comparison=1," +
+	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
+	"engine-gap:correlated-exists-setop=1," +
+	"engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:error-class=1," +
 	"engine-gap:inline-values-table=1,engine-gap:nested-recursive-with=1," +
-	"engine-gap:planner-declines=1,engine-gap:returning-dry-run=1," +
+	"engine-gap:planner-declines=2,engine-gap:returning-dry-run=1," +
 	"engine-gap:row-version-pseudocolumn=1,engine-gap:table-valued-function=1," +
-	"engine-gap:typed-integer-literal=1,no-checks=8,plan-assertion=212," +
+	"engine-gap:typed-integer-literal=1,no-checks=8,plan-assertion=213," +
 	"polarity:negative-execution=24," +
 	"unsupported-DDL:other=6,unsupported-DDL:struct=39," +
-	"unsupported-DDL:value-index-as-select=42,unsupported:check-cache=94," +
-	"unsupported:continuation=16,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=124," +
+	"unsupported-DDL:value-index-as-select=42,unsupported:check-cache=99," +
+	"unsupported:continuation=26,unsupported:debugger=3," +
+	"unsupported:multi-cluster=2,unsupported:prepared=133," +
+	"unsupported:random-injection=25,unsupported:result-metadata-nested=10," +
 	"unsupported:schema-command=16," +
 	"unsupported:temporary-function=191}"
 
@@ -75,4 +80,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "bc1a3dac0c7672925dc3f2e9383a9d733dc75fa0a593f9717217bddffa5b8137"
+const pinnedAssignmentDigest = "00e5d57ab7fae80d5496ff73f562dd7de2d090e48e209fa8fef10888cf87252b"

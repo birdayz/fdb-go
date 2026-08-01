@@ -136,7 +136,50 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 // behaviour (LONG_TO_INT / DOUBLE_TO_LONG / DOUBLE_TO_FLOAT etc.);
 // NaN/Inf in float columns are rejected as silent-data-corruption
 // vectors.
+//
+// A repeated field (an ARRAY column) takes the evaluated array
+// literal — the []any an ArrayConstructorValue produces (Java's
+// LightArrayConstructorValue evals to a List) — and converts each
+// element through the same scalar lanes, mirroring Java's
+// MessageHelpers.coerceArray element-wise coercion. An empty []any
+// sets an empty (present) list; on Go's plain-repeated wire shape
+// (RFC-143 §3a — Java wraps a NULLABLE array in a `values` wrapper
+// message) an empty array serializes to no bytes and is therefore
+// indistinguishable from NULL on read, unlike Java where the wrapper
+// keeps [] ≠ NULL.
 func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
+	if fd.IsList() {
+		elems, ok := val.([]any)
+		if !ok {
+			// A scalar (or anything that is not an evaluated array
+			// literal) into an ARRAY column: same verbatim 22000 the
+			// scalar lanes end in.
+			return protoreflect.Value{}, cannotConvertTypeError()
+		}
+		parent := dynamicpb.NewMessage(fd.ContainingMessage())
+		lv := parent.NewField(fd)
+		list := lv.List()
+		for _, e := range elems {
+			if e == nil {
+				// Java forbids NULL elements in collections
+				// (MessageHelpers.coerceArray, SemanticException
+				// UNSUPPORTED — surfaces as an internal error;
+				// tracked upstream as fdb-record-layer#3646).
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
+					"NULL as elements of a collection are currently not supported")
+			}
+			pv, err := convertScalarProtoValue(fd, e)
+			if err != nil {
+				return protoreflect.Value{}, err
+			}
+			list.Append(pv)
+		}
+		return lv, nil
+	}
+	return convertScalarProtoValue(fd, val)
+}
+
+func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		switch v := val.(type) {
@@ -254,11 +297,15 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			}
 		}
 	}
-	// Java verbatim: 'A value cannot be assigned to a variable because
-	// the type of the value does not match the type of the variable
-	// and cannot be promoted to the type of the variable.' — same
-	// SemanticException Java emits at INSERT / UPDATE type mismatch.
-	//
-	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+	return protoreflect.Value{}, cannotConvertTypeError()
+}
+
+// cannotConvertTypeError is the Java-verbatim 22000: 'A value cannot
+// be assigned to a variable because the type of the value does not
+// match the type of the variable and cannot be promoted to the type
+// of the variable.' — the same SemanticException Java emits at
+// INSERT / UPDATE type mismatch.
+func cannotConvertTypeError() *api.Error {
+	return api.NewErrorf(api.ErrCodeCannotConvertType,
 		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 }

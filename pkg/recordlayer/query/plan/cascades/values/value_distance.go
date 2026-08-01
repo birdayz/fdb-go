@@ -131,12 +131,24 @@ func (v *DistanceValue) Evaluate(evalCtx any) (any, error) {
 }
 
 // asFloat64Slice converts the supported runtime vector
-// representations into []float64 — accepts []float64 directly and
-// []float32 (lifted via element-wise float64 conversion).
+// representations into []float64 — accepts []float64 directly,
+// []float32 (lifted via element-wise float64 conversion), and the
+// []any an ArrayConstructorValue literal evaluates to (each element
+// must be numeric; a non-numeric element degrades to nil / UNKNOWN).
 func asFloat64Slice(v any) []float64 {
 	switch s := v.(type) {
 	case []float64:
 		return s
+	case []any:
+		out := make([]float64, len(s))
+		for i, e := range s {
+			f, _, ok := ToFloat64(e)
+			if !ok {
+				return nil
+			}
+			out[i] = f
+		}
+		return out
 	case []float32:
 		out := make([]float64, len(s))
 		for i, f := range s {

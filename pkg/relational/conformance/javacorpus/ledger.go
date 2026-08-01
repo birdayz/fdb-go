@@ -147,8 +147,17 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapArrayValues is an array literal in INSERT … VALUES.
-	SkipGapArrayValues SkipClass = "engine-gap:array-literal-values"
+	// SkipGapArrayComparison is an equality / IS DISTINCT comparison whose
+	// operands are arrays — the comparison evaluates to NULL instead of a
+	// boolean.
+	SkipGapArrayComparison SkipClass = "engine-gap:array-comparison"
+	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
+	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
+	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
+	// SkipGapDMLReturning is a DML statement's RETURNING clause: the engine
+	// executes the mutation but produces no result set (the same surface
+	// SkipGapReturningDryRun covers for the DRY RUN variant).
+	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 	// SkipGapTypedIntLiteral is a width-suffixed integer literal (`1I`, `2L`).
@@ -166,8 +175,6 @@ const (
 	// SkipGapDerivedJoinOn is a JOIN-bodied derived table whose ON clause the
 	// FROM resolver cannot bind back to its sources.
 	SkipGapDerivedJoinOn SkipClass = "engine-gap:derived-table-join-on"
-	// SkipGapCastArray is CAST of an array literal to an array type.
-	SkipGapCastArray SkipClass = "engine-gap:cast-array-literal"
 	// SkipGapReturningDryRun is UPDATE … RETURNING … OPTIONS(DRY RUN).
 	SkipGapReturningDryRun SkipClass = "engine-gap:returning-dry-run"
 	// SkipGapPlannerDeclines is a query Cascades declines to plan.
@@ -207,7 +214,9 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLValueIndexAsSelect,
 		SkipDDLOther,
-		SkipGapArrayValues,
+		SkipGapArrayComparison,
+		SkipGapCommaJoinFrom,
+		SkipGapDMLReturning,
 		SkipGapCatalogTables,
 		SkipGapTypedIntLiteral,
 		SkipGapRowVersion,
@@ -216,7 +225,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapCorrelatedExistsSetOp,
 		SkipGapNestedRecursiveWith,
 		SkipGapDerivedJoinOn,
-		SkipGapCastArray,
 		SkipGapReturningDryRun,
 		SkipGapPlannerDeclines,
 		SkipGapErrorClass,

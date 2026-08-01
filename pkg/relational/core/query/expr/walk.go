@@ -439,6 +439,14 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 			Shape: fmt.Sprintf("CAST target type not expressible by the walker; got %q", pt.GetText()),
 		}
 	}
+	// `CAST(x AS <type> ARRAY)` — the grammar's convertedDataType takes an
+	// optional ARRAY suffix (Java RelationalParser.g4 `convertedDataType :
+	// typeName=primitiveType ARRAY?`). The target is then ARRAY(<type>);
+	// dropping the suffix here used to cast the ARRAY operand to the bare
+	// element type and die "No cast defined from ARRAY to STRING".
+	if dtc.ARRAY() != nil {
+		target = values.NewArrayType(true, target)
+	}
 	return r.ResolveCast(inner, target)
 }
 
@@ -1304,9 +1312,28 @@ func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (valu
 	return values.NewScalarFunctionValue(name, typ, left, right), nil
 }
 
-// walkArrayConstructor builds a numeric array / vector literal `[a, b, c]`
-// into a []float64 LiteralValue — the query-vector operand of a K-NN distance
-// function. Elements must be numeric literals (the common vector-search shape).
+// walkArrayConstructor builds an array literal `[a, b, c]` into an
+// ArrayConstructorValue — the Go port of Java's
+// LightArrayConstructorValue built by ExpressionVisitor.handleArray
+// (fdb-relational ExpressionVisitor.visitArrayConstructor):
+//
+//   - The element type is the MaximumType fold over the element result
+//     types (Java AbstractArrayConstructorValue.resolveElementType); an
+//     unfoldable pair — `[1, 'a']` — is Java's SemanticException
+//     INCOMPATIBLE_TYPE, surfaced by the relational layer as the 22000
+//     CANNOT_CONVERT_TYPE class.
+//   - Each element whose type differs from the resolved element type
+//     (nullability normalized away) gets a machine-inserted promotion
+//     (Java injectPromotions → PromoteValue.inject), so `[1, 2.5]`
+//     evaluates as [1.0, 2.5] with element type DOUBLE.
+//   - `[]` with no elements is the untyped empty array (Java
+//     emptyArrayOfNone, result type NONE) — it evaluates to an empty
+//     slice and takes a concrete element type only from its consumer
+//     (an INSERT target column, a CAST).
+//
+// Evaluation yields []any (Java evals to a List) — the K-NN
+// query-vector consumers (evalFloat64Slice, DistanceValue) lift the
+// numeric elements to []float64 themselves.
 func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (values.Value, error) {
 	acc, ok := ac.(*antlrgen.ArrayConstructorContext)
 	if !ok || acc == nil {
@@ -1314,58 +1341,54 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 	}
 	exprsCtx := acc.Expressions()
 	if exprsCtx == nil {
-		return values.LiteralValue([]float64{}), nil
+		return values.NewArrayConstructorValue(values.NoneType, nil), nil
 	}
 	ec, ok := exprsCtx.(*antlrgen.ExpressionsContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: "malformed array elements"}
 	}
 	elems := ec.AllExpression()
-	vec := make([]float64, 0, len(elems))
+	children := make([]values.Value, 0, len(elems))
+	var elemType values.Type
 	for _, e := range elems {
-		// Walk each element through the resolver instead of string-parsing
-		// GetText(): this resolves negative literals (NegativeDecimalConstant)
-		// and integer literals (promoted to float64) via the typed parse tree,
-		// and rejects non-constant expressions cleanly. (GetText() is used only
-		// for the human-readable error message, never to read the value.)
 		v, err := r.WalkExpression(e)
 		if err != nil {
 			return nil, err
 		}
-		f, ok := numericConstantToFloat64(v)
-		if !ok {
-			return nil, &UnsupportedExpressionShapeError{
-				Shape: fmt.Sprintf("array literal element %q is not a numeric constant", e.GetText()),
+		// A NULL literal walks as NullValue with the Unknown type tag;
+		// Java types it Type.nullType, which MaximumType folds as "the
+		// other side, made nullable" — use NullType for the fold so
+		// `[10, NULL, 30]` resolves to a nullable INT element type
+		// instead of dying on Unknown.
+		vt := v.Type()
+		if _, isNull := v.(*values.NullValue); isNull && (vt == nil || vt.Code() == values.TypeCodeUnknown) {
+			vt = values.NullType
+		}
+		if elemType == nil {
+			elemType = vt
+		} else if elemType = values.MaximumType(elemType, vt); elemType == nil {
+			// Java: SemanticException.check(resolvedType != null,
+			// INCOMPATIBLE_TYPE) → relational CANNOT_CONVERT_TYPE.
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"could not resolve a common element type for the array literal")
+		}
+		children = append(children, v)
+	}
+	// injectPromotions: compare with nullability normalized away, as
+	// Java compares child.getResultType().nullable() against
+	// elementType.nullable(). PromoteValue rejects an Unknown target,
+	// so an unresolved element type skips injection (the consumer's
+	// per-element coercion still applies).
+	if elemType != nil && elemType.Code() != values.TypeCodeUnknown {
+		nullableElem := values.WithNullability(elemType, true)
+		for i, c := range children {
+			ct := c.Type()
+			if ct == nil || !values.WithNullability(ct, true).Equals(nullableElem) {
+				children[i] = values.NewPromoteValue(c, elemType)
 			}
 		}
-		vec = append(vec, f)
 	}
-	return values.LiteralValue(vec), nil
-}
-
-// numericConstantToFloat64 extracts a float64 from a resolved constant Value.
-// Returns ok=false for non-constant or non-numeric Values (a column reference,
-// a string literal, an arithmetic expression). int/float widths are promoted to
-// float64 so integer-literal vector elements (`[1, 0, 0]`) are accepted.
-func numericConstantToFloat64(v values.Value) (float64, bool) {
-	cv, ok := v.(*values.ConstantValue)
-	if !ok {
-		return 0, false
-	}
-	switch n := cv.Value.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case int32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	default:
-		return 0, false
-	}
+	return values.NewArrayConstructorValue(elemType, children), nil
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,
