@@ -466,7 +466,10 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 
 // BeginTx implements driver.ConnBeginTx. Opens an FDB transaction that spans
 // all subsequent statements until Commit or Rollback is called.
-// Isolation levels other than the default and ReadCommitted return an error.
+// The accepted levels are LevelDefault and LevelSerializable; every other level
+// returns an error. ReadCommitted is NOT among them — naming it here was a stale
+// comment that advertised a weaker level this driver has never accepted, which is
+// the opposite of the direction a reader needs to be wrong in.
 // Read-only transactions are not separately enforced at the FDB level.
 //
 // KNOWN GAP (database/sql ctx not honored): the caller's ctx is dropped here, and

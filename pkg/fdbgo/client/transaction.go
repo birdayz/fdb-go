@@ -319,6 +319,37 @@ type Transaction struct {
 	userSetReadVersion bool // SetReadVersion was called → validateVersion applies
 	metricStart        time.Time
 
+	// readVersionInstant is when THIS read version was obtained from the cluster —
+	// the instant FDB's 5-second MVCC window opened for it.
+	//
+	// It rides with hasReadVersion STRUCTURALLY rather than by hand: the accessor
+	// reports not-ok whenever no read version is held, so every path that drops the
+	// version (reset on OnError, postCommitReset on commit-reuse) retires the
+	// instant with it and cannot forget to. Explicit clears at those sites were
+	// tried and removed — they were redundant with the gate, and redundancy there
+	// is actively harmful: with two mechanisms covering one rule, neither is
+	// individually detectable by a mutation, so a test can go on passing while
+	// either is broken.
+	//
+	// SetReadVersion is the one path the gate cannot cover, because it leaves
+	// hasReadVersion true; it clears this field explicitly, and that clear IS
+	// mutation-detectable on its own.
+	//
+	// It is a SEPARATE field from metricStart and must stay one, because the two
+	// need OPPOSITE reset disciplines. metricStart deliberately survives OnError so
+	// RFC-114's total latency spans retries. This must NOT: OnError takes a NEW read
+	// version, so the 5-second window RESTARTS, and a budget anchored on a
+	// spans-retries field would charge a fresh window for a previous attempt's time
+	// and fail work the cluster would have served. Per-attempt is also what C++ does
+	// (trState->startTime is re-stamped at cloneAndReset); metricStart's spanning is
+	// the documented RFC-114 divergence, not the model.
+	//
+	// Zero means "no instant known", which is the honest answer for a user-supplied
+	// read version (SetReadVersion): that version's window opened on the cluster at
+	// a time this client never saw. Consumers must handle the not-ok case rather
+	// than treat zero as an anchor.
+	readVersionInstant time.Time
+
 	// Commit results — written by the commit path, consumed by
 	// GetCommittedVersion/GetVersionstamp after a commit; preserved by
 	// postCommitReset so a reused handle can still query them.
@@ -721,6 +752,9 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
+		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
+		// clears it and the retry's GRV opens a new 5-second window.
+		tx.readVersionInstant = time.Now()
 	}
 	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
 	// version below the smallest-seen floor (genuinely ancient) or an absurd
@@ -2454,7 +2488,42 @@ func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
+	// A caller-supplied version's MVCC window opened on the cluster at an instant
+	// this client never observed, so there is no anchor to report. Zeroing (rather
+	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
+	// version" true — a stale anchor would read as a window that is still open.
+	// This is the ONE clear the accessor's hasReadVersion gate cannot stand in for,
+	// because SetReadVersion leaves that flag true.
+	tx.readVersionInstant = time.Time{}
 	tx.readVersionMu.Unlock()
+}
+
+// ReadVersionInstant reports when this transaction's current read version was
+// obtained from the cluster, i.e. when FDB's 5-second MVCC window opened for it.
+// ok is false when no read version is held, or when the version was supplied by
+// SetReadVersion (whose window opened at an instant this client never observed).
+//
+// It exists so a layer above can budget against the window that actually applies.
+// Anchoring such a budget on "when I started working" is wrong in both directions:
+// a transaction that idles before its first read has not yet opened a window, and
+// a retried transaction opened a fresh one. Only the GRV instant tracks it.
+//
+// Callers MUST honour ok rather than treating a zero time as an anchor.
+//
+// The hasReadVersion term is the whole reset discipline, deliberately. Every path
+// that drops the read version (reset on the OnError retry, postCommitReset on
+// commit-reuse) retires the instant through this one gate, so a new reset path
+// cannot forget to clear it. Explicit clears were tried at those sites and removed:
+// they were redundant with the gate, and two mechanisms covering one rule means
+// neither is individually detectable by a mutation — the tests kept passing with
+// either one broken, which is worse than having only one.
+func (tx *Transaction) ReadVersionInstant() (time.Time, bool) {
+	tx.readVersionMu.Lock()
+	defer tx.readVersionMu.Unlock()
+	if !tx.hasReadVersion || tx.readVersionInstant.IsZero() {
+		return time.Time{}, false
+	}
+	return tx.readVersionInstant, true
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
