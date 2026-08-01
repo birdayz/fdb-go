@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"reflect"
 	"strconv"
@@ -37,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
@@ -92,6 +94,145 @@ func isTransientFDBError(err error) bool {
 		strings.Contains(msg, "Transaction is too old to perform reads or be committed")
 }
 
+// maxLifecycleRetries bounds re-runs for the LIFECYCLE class. It is far lower
+// than maxConflictRetries because a lifecycle re-run can cost a whole HTTP
+// client timeout (30s) per attempt: sixteen of those would blow the suite's own
+// deadline, and a conformance server still unreachable after three spaced
+// attempts is sick rather than momentarily busy.
+const maxLifecycleRetries = 3
+
+// isLifecycleError reports whether err is a HARNESS-LIFECYCLE failure — a
+// wall-clock deadline blown, a connection torn down, or a transaction context
+// closed underneath the statement — rather than either engine's answer about
+// SQL semantics. Under a loaded machine (eight pooled JVMs, a shared FDB
+// container and the in-process Go engine all competing) these fire on queries
+// that neither engine disagrees about, and the harness used to publish them as
+// "NEW cross-engine divergence", sending readers after a phantom regression.
+//
+// Every arm is an EXACT signature, and narrowness is the whole safety property:
+// this class must be unable to express a row or plan disagreement. An unknown
+// error is never lifecycle, so a genuine engine defect cannot hide here.
+//
+// The arms, each observed verbatim in a red conformance run:
+//
+//   - Transport (net.Error): "plandiff: HTTP POST: … context deadline exceeded".
+//     The conformance server was unreachable or too slow to answer at all, so
+//     Java never rendered a verdict. Same class the rowdiff harness already
+//     calls INFRA (rowdiff/run.go isInfraError). This arm is not scoped to one
+//     side: a net.Error is a socket that failed, and a socket cannot express a
+//     row or plan disagreement, so it is infra wherever it surfaces.
+//   - java DeadlineExceededException "deadline exceeded". Java's
+//     MoreAsyncUtil.getWithDeadline fired the AsyncLoadingCache deadline —
+//     DEFAULT_DEADLINE_TIME_MILLIS is 5000 (AsyncLoadingCache.java:45), a
+//     WALL-CLOCK bound on the resolver-state load, not on the query's work.
+//     Exactly the 1007 rationale one layer up.
+//   - java RecordContextNotActiveException "Transaction is no longer active."
+//     FDBRecordContext.ensureActive (FDBRecordContext.java:548) found a closed
+//     context. Java's own relational layer classifies this as a lifecycle
+//     outcome, not a semantic one: ExceptionUtil maps it to
+//     ErrorCode.TRANSACTION_INACTIVE (ExceptionUtil.java:66), alongside
+//     TRANSACTION_TIMEOUT and away from every semantic code.
+//   - java FDBException "Transaction may or may not have committed" — FDB 1021
+//     commit_unknown_result, retryable by FDB's own definition and, like 1020
+//     and 1007 above, carrying no information about SQL semantics. Safe to
+//     re-run only because each attempt builds a FRESH uuid-suffixed ephemeral
+//     schema, so a re-attempt is clean rather than a double-apply.
+//   - Go *plandiff.FixtureError whose cause is transport.ErrConnClosed. BOTH
+//     conditions are required. The FixtureError half means the failure hit the
+//     ephemeral DDL/setup that BUILDS the fixture, so the Go engine never
+//     answered the query and there is nothing to compare; a Go error on the
+//     query itself is not a FixtureError and stays a divergence. The
+//     ErrConnClosed half means the pure-Go client's connection was torn down
+//     underneath it (transport/conn.go), not that Go rejected the DDL — without
+//     it, a Go-only DDL gap during setup would be swallowed as infra.
+//
+// A lifecycle error is RETRIED, not suppressed. One that survives every attempt
+// still reaches the report — labelled INFRA so nobody chases an engine bug, but
+// red, because a harness that cannot run is not a harness that passed.
+func isLifecycleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var fe *plandiff.FixtureError
+	if errors.As(err, &fe) && errors.Is(err, transport.ErrConnClosed) {
+		return true
+	}
+	var je *plandiff.JavaError
+	if !errors.As(err, &je) {
+		return false
+	}
+	switch je.ExceptionClass {
+	case "DeadlineExceededException":
+		return je.Message == "deadline exceeded"
+	case "RecordContextNotActiveException":
+		return je.Message == "Transaction is no longer active."
+	case "FDBException":
+		return je.Message == "Transaction may or may not have committed"
+	}
+	return false
+}
+
+// lifecycleDetail returns the INFRA report line for whichever side hit a
+// lifecycle failure, naming the side so a reader knows where to look. Shared by
+// entryConforms and divergenceHolds: both used to translate a dead harness into
+// a claim about the ENGINES — one as "Java errored but Go succeeded", the other
+// as a stale RFC-082 annotation — and neither claim was evidence-backed.
+func lifecycleDetail(javaErr, goErr error) (string, bool) {
+	if isLifecycleError(javaErr) {
+		return "Java-side harness lifecycle failure (INFRA, not engine behaviour): " + javaErr.Error(), true
+	}
+	if isLifecycleError(goErr) {
+		return "Go-side harness lifecycle failure (INFRA, not engine behaviour): " + goErr.Error(), true
+	}
+	return "", false
+}
+
+// retryBudget returns how many times the harness may re-run the side that
+// produced err. Zero means "this is an engine answer — report it".
+func retryBudget(err error) int {
+	switch {
+	case isTransientFDBError(err):
+		return maxConflictRetries
+	case isLifecycleError(err):
+		return maxLifecycleRetries
+	default:
+		return 0
+	}
+}
+
+// rerunWhileRetryable re-runs whichever side hit a retryable HARNESS error (a
+// retryable FDB code, or a lifecycle failure) until it produces an engine answer
+// or its budget runs out. Each side is re-run independently and only while its
+// OWN budget allows, so a cheap FDB conflict still gets its sixteen attempts
+// while an expensive transport timeout gets three.
+//
+// Backoff rises with the attempt and is staggered per worker (wid), so two
+// workers that collided on one attempt do not retry in lockstep and collide
+// again. Every RunWithSetup builds a fresh uuid-suffixed ephemeral schema, so a
+// re-run is a clean re-attempt rather than a replay onto dirty state.
+func rerunWhileRetryable(jr, gr plandiff.RunResult, wid int,
+	runJava, runGo func() plandiff.RunResult,
+) (plandiff.RunResult, plandiff.RunResult) {
+	for attempt := 1; attempt <= maxConflictRetries; attempt++ {
+		javaBudget, goBudget := retryBudget(jr.Err), retryBudget(gr.Err)
+		if attempt > javaBudget && attempt > goBudget {
+			break
+		}
+		time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
+		if attempt <= javaBudget {
+			jr = runJava()
+		}
+		if attempt <= goBudget {
+			gr = runGo()
+		}
+	}
+	return jr, gr
+}
+
 // entryConforms reports whether Go's result conforms to Java's for a
 // non-annotated corpus entry: a matching server-side root error message when
 // Java errors, or conforming column metadata (plandiff.ConformColumns) plus
@@ -99,6 +240,16 @@ func isTransientFDBError(err error) bool {
 // non-conformance. This is the predicate the RFC-082 regression lock reconciles
 // against rfc082KnownRed.
 func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
+	// Lifecycle first, on BOTH sides and before any engine comparison: a side
+	// that was killed by a blown deadline, a torn-down connection or a closed
+	// transaction context never rendered a verdict, so there is no verdict to
+	// disagree with. These have already been re-run to their budget by
+	// rerunWhileRetryable, so reaching here means the condition PERSISTED —
+	// still red, never silently passed, but named as infra so the response is
+	// decidable from the CI log alone.
+	if detail, ok := lifecycleDetail(javaResult.Err, goResult.Err); ok {
+		return false, detail
+	}
 	if javaResult.Err != nil {
 		// An error that is NOT a *plandiff.JavaError never came from Java's
 		// SQL engine — the transport paths (HTTP POST failure, non-200,
@@ -170,6 +321,15 @@ func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 // the annotation's Java premise AND Go's pinned behaviour. A drift on either side
 // returns false so the lock reports it rather than letting a stale annotation rot.
 func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.RunResult) (bool, string) {
+	// Same gate as entryConforms, for the same reason. An annotation's premise
+	// ("Java errors here", "Java succeeds with wrong rows") can only be
+	// confirmed or refuted by a side that actually ran; a Java server that timed
+	// out is not Java disagreeing with the annotation. Without this, a loaded CI
+	// run reported live annotations as STALE and invited someone to delete a
+	// correct pin.
+	if detail, ok := lifecycleDetail(javaResult.Err, goResult.Err); ok {
+		return false, detail
+	}
 	switch div.Direction {
 	case plandiff.DivergenceJavaErrorsGoCorrect:
 		// Java must (deterministically) error; Go must succeed with pinned rows.
@@ -498,22 +658,17 @@ var _ = Describe("RunSql Harness", func() {
 					rq := corpus[idx]
 					jr := r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 					gr := r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-					// Re-run whichever side hit a retryable FDB error (a catalog
-					// conflict, or a transaction starved past 5s under load) —
-					// see isTransientFDBError. Each RunWithSetup uses a fresh
-					// uuid schema, so a retry is a clean re-attempt. Backoff is
-					// rising + per-worker-staggered (wid*11ms) so two workers
-					// that collide on the same attempt don't retry in lockstep
-					// and re-collide (thundering herd).
-					for attempt := 1; attempt <= maxConflictRetries && (isTransientFDBError(jr.Err) || isTransientFDBError(gr.Err)); attempt++ {
-						time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
-						if isTransientFDBError(jr.Err) {
-							jr = r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-						}
-						if isTransientFDBError(gr.Err) {
-							gr = r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-						}
-					}
+					// Re-run whichever side hit a retryable HARNESS error — a
+					// retryable FDB code (catalog conflict, transaction starved
+					// past 5s) or a lifecycle failure (blown deadline, torn-down
+					// connection, closed context). See rerunWhileRetryable.
+					jr, gr = rerunWhileRetryable(jr, gr, wid,
+						func() plandiff.RunResult {
+							return r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+						},
+						func() plandiff.RunResult {
+							return r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+						})
 					results[idx] = enginePair{java: jr, golang: gr}
 				}
 			}(runners[w], w)

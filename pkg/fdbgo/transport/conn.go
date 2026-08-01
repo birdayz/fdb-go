@@ -156,11 +156,18 @@ func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, dialFn DialFu
 	return dialWith(ctx, addr, dialFn, tlsConfig)
 }
 
-// errConnClosed is delivered to in-flight requests and queued senders when the
+// ErrConnClosed is delivered to in-flight requests and queued senders when the
 // connection is torn down (by Close, the monitor, or a read error). The client
 // treats any non-nil transport error as a connection failure → retry, so the
 // concrete value only needs to be non-nil and stable.
-var errConnClosed = errors.New("connection closed")
+//
+// Exported so a caller can tell a TRANSPORT teardown apart from an answer the
+// cluster actually gave. It carries no FDB error code, so convertError
+// (fdb/transaction.go) passes it through unchanged and it reaches the caller
+// verbatim at the end of a wrap chain — an `errors.Is` against this value is
+// therefore the only structural way to recognise it downstream, and the
+// alternative (matching the rendered message) is not one.
+var ErrConnClosed = errors.New("connection closed")
 
 // connOption tweaks a Conn before its loop goroutines start. Test-only knobs
 // (e.g. monitor cadence) ride this so the public Dial signature stays clean.
@@ -439,7 +446,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return errConnClosed
+		return ErrConnClosed
 	}
 	// Wait for writeLoop to write+flush, OR bail if the connection is torn down
 	// (Close/monitor/read-error cancels ctx). Without the ctx.Done arm a sender
@@ -452,7 +459,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 		errChanPool.Put(errCh)
 		return err
 	case <-c.ctx.Done():
-		return errConnClosed
+		return ErrConnClosed
 	}
 }
 
@@ -466,7 +473,7 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body}:
 		return nil
 	case <-c.ctx.Done():
-		return errConnClosed
+		return ErrConnClosed
 	}
 }
 
@@ -482,7 +489,7 @@ func (c *Conn) Flush() error {
 	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return errConnClosed
+		return ErrConnClosed
 	}
 	// Bail on connection teardown rather than block forever on errCh (see SendFrame).
 	// errCh is not pooled on the ctx.Done path (stale-value hazard).
@@ -492,7 +499,7 @@ func (c *Conn) Flush() error {
 		errChanPool.Put(errCh)
 		return err
 	case <-c.ctx.Done():
-		return errConnClosed
+		return ErrConnClosed
 	}
 }
 
@@ -580,7 +587,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 	case <-c.ctx.Done():
 		// Connection teardown: failAllPending owns the pending entry and may be
 		// delivering an error to replyCh concurrently — leave the channel to GC.
-		return nil, errConnClosed
+		return nil, ErrConnClosed
 	}
 }
 
@@ -595,7 +602,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 // 4. readLoop exits, signals WaitGroup
 // 5. Close returns
 func (c *Conn) Close() error {
-	c.failConnection(errConnClosed)
+	c.failConnection(ErrConnClosed)
 	c.loopWG.Wait()
 	// Always nil: the socket close happens inside failConnection, whose error is
 	// not actionable (closing an already-dead/closed conn yields a spurious
@@ -696,7 +703,7 @@ func (c *Conn) readLoop() {
 	// socket + fail all pending; C++ disconnect-promise equivalent) is idempotent,
 	// so if Close/monitor already fired this is a no-op and the first caller's error
 	// wins. exitErr carries the real read error, or the panic, when there is one.
-	exitErr := errConnClosed
+	exitErr := ErrConnClosed
 	defer c.loopWG.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -916,7 +923,7 @@ func (c *Conn) connectionMonitor() {
 					// single teardown path: cancel + CLOSE THE SOCKET (so readLoop's
 					// blocking Read unblocks — the old bare cancel() leaked the fd +
 					// goroutine until TCP keepalive) + fail all pending.
-					c.failConnection(errConnClosed)
+					c.failConnection(ErrConnClosed)
 					return
 				}
 				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
