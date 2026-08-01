@@ -11,7 +11,7 @@ require (
 	// Local dev still builds the working tree via the repo-root go.work; the frl
 	// pin-bump bot advances this nightly, and the GOWORK=off release build fails
 	// loudly on a stale pin, so it can never ship broken.
-	fdb.dev v0.0.0-20260702072201-c8be85cd86f3
+	fdb.dev v0.0.0-20260731235229-723c2ea2f9d5
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/chzyer/readline v1.5.1
@@ -101,11 +101,11 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20241215155358-4a5509556b9e // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.80.0 // indirect

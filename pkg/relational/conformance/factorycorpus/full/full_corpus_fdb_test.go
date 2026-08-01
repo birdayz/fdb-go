@@ -1,18 +1,16 @@
-//go:build factorycorpus
-
-// Package full runs the ENTIRE committed factory corpus.
+// Package full runs the ENTIRE committed factory corpus as ordinary suite
+// content — it is in every `just test` and every CI run (owner ruling
+// 2026-08-01, recorded in rfcs/201-layered-test-corpus.md §7).
 //
-// It is a separate package for one reason: it must be excluded from the
-// default suite, and Bazel's exclusion works per target. The corpus grows
-// toward six figures of committed tests, each paying a schema create/drop
-// against a real container, so it belongs in the nightly tier — while the
-// stratified sample in the parent package keeps a slice of it in every PR run
-// so a broken batch cannot land and sit until morning.
+// It is a separate package from the corpus's loader/census gates so that
+// those stay a pure no-FDB target; this target is the one that pays for a
+// container and executes every committed scenario. The nightly corpus job
+// re-runs the same target on master as the scheduled heartbeat.
 //
-// Run it:
+// Run it alone:
 //
 //	bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
-//	  --test_timeout=3600 --test_output=streamed --nocache_test_results
+//	  --test_output=streamed --nocache_test_results
 package full_test
 
 import (

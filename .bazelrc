@@ -49,11 +49,4 @@ test --local_test_jobs=4
 #   The target is `manual` (runs only when invoked, e.g. by nightly), so setting the tag
 #   globally is inert for `bazel test //...`; it just lets that one target compile when
 #   invoked. Plain `go test ./...` doesn't set the tag, so it skips the stress package.
-# `factorycorpus`: the FULL RFC-201 committed factory corpus under
-#   //pkg/relational/conformance/factorycorpus/full. Same shape as `stress` — the target
-#   is `manual`, so the tag is inert for `bazel test //...`; it exists so the target
-#   compiles when the nightly names it, and so a plain `go test ./...` skips the package.
-#   The per-PR tier still runs a stratified sample of the same corpus from the parent
-#   package, which is NOT tagged: a corpus no fast lane touches goes stale between
-#   nightlies.
-build --@rules_go//go/config:tags=bazelrunfiles,stress,factorycorpus
+build --@rules_go//go/config:tags=bazelrunfiles,stress

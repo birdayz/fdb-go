@@ -4709,6 +4709,30 @@ piece if revived.
 > 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
 >        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
 >        Full agent handoff: shifts/handoff-ws-n-phase-d-typed-metadata.md.
+>        GUESSER DISPOSITIONS (measured, not assumed — the RFC's N-F4 list is
+>        partly stale): (i) descriptorForColumn was the ONLY one producing wrong
+>        client metadata. Its first-match arm is GONE: it now declines when the
+>        candidate descriptors DISAGREE (SQL type or cardinality) and keeps
+>        first-match only where every candidate answers identically, so the
+>        choice is unobservable. Scoping the decline to disagreement is what
+>        keeps a join whose legs share a NOT-NULL PK name reporting what it
+>        reported before — an unconditional decline moved nullability and turned
+>        TestFDB_OuterParity_NullSupplyingNullability red. (ii) legPlanFor is NOT
+>        a guesser: it is already UNIQUE-match-or-decline on the correlation and
+>        then reads types POSITIONALLY by ordinal from the resolved leg — already
+>        the Java discipline. (iii) qualifyAndMergeColumns derives no types; it
+>        merges per-leg ColumnDefs positionally in leg order and qualifies the
+>        datum-key Name so same-named legs stay distinct. That is a deliberate
+>        divergence and it is SAFER than Java, which keeps duplicate names and
+>        resolves getXxx(label) by first-match (RowStruct.java:328-339).
+>        (iv) innerByName SURVIVES — the handoff's func-level grep missed it
+>        because it is a LOCAL map in deriveColumnsFromProjection, not a func.
+>        It is a last-wins name map, still in scope for the phase.
+>        STALE BOOKING: the arrayElementTypeNameFromDescs first-match nit booked
+>        above no longer exists — that function is gone.
+>        REMAINING (unstarted, review-gated): colref.go still has 28 production
+>        consumers; deleting it and flipping ResultColumn*ForPlan to positional
+>        is the D3 core and needs the query-engine gate.
 >        D1 OPENED: plan_visitor mints 0 (carve-out retirement removed the last);
 >        logical_predicate down to 11 (mostly justified error-arm unknowns +
 >        3 lazy-strip arms); pullUpToOutputField slots now carry the projected

@@ -376,11 +376,16 @@ runcmd:
     rm "$RUNNER_DIR/runner.tar.gz"
     chown -R runner:runner "$RUNNER_DIR"
     systemctl daemon-reload
+    # Runner-owned bazel caches. BOTH modes need these: /etc/bazel.bazelrc points
+    # disk_cache/repository_cache at them unconditionally, so a classic runner without
+    # them dies with "ERROR: [unix_jni.cc] /mnt/ci-data/bazel-disk-cache (Permission
+    # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
+    install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
     RUNNER_MODE="${runner_mode}"
     if [ "$RUNNER_MODE" = "classic" ]; then
       # Break-glass: the classic register-and-listen runner (the wedge-prone path RFC-155
       # replaces). --disableupdate (codex) keeps it on the reviewed runner_version/SHA.
-      su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
+      su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
       ( cd "$RUNNER_DIR" && ./svc.sh install runner && ./svc.sh start )
       systemctl enable --now runner-watchdog.timer
     else
@@ -390,7 +395,6 @@ runcmd:
         --exclude=.service --exclude='bin.*' --exclude='externals.*' \
         "$RUNNER_DIR/" /home/runner/actions-runner-ss/
       chown -R runner:runner /home/runner/actions-runner-ss
-      install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
       install -d -m 0755 /etc/bazelscaleset
       printf '%s' "${base64encode(bazelscaleset_app_private_key)}" | base64 -d > /etc/bazelscaleset/app.pem
       chmod 0600 /etc/bazelscaleset/app.pem && chown runner:runner /etc/bazelscaleset/app.pem

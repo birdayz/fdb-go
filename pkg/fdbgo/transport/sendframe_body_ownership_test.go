@@ -47,8 +47,8 @@ func TestSendFrame_PostEnqueueCtxDone_TransportStillOwnsBody(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != errConnClosed {
-			t.Fatalf("post-enqueue ctx.Done must return errConnClosed, got %v", err)
+		if err != ErrConnClosed {
+			t.Fatalf("post-enqueue ctx.Done must return ErrConnClosed, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("SendFrame did not return after ctx cancel")

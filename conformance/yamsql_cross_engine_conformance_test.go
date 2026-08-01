@@ -35,7 +35,6 @@ import (
 	"math"
 	"os"
 	"sync"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -150,15 +149,13 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 						it := items[idx]
 						jr := r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
 						gr := r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
-						for attempt := 1; attempt <= maxConflictRetries && (isTransientFDBError(jr.Err) || isTransientFDBError(gr.Err)); attempt++ {
-							time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
-							if isTransientFDBError(jr.Err) {
-								jr = r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
-							}
-							if isTransientFDBError(gr.Err) {
-								gr = r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
-							}
-						}
+						jr, gr = rerunWhileRetryable(jr, gr, wid,
+							func() plandiff.RunResult {
+								return r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
+							},
+							func() plandiff.RunResult {
+								return r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
+							})
 						results[idx] = crossEngineResult{java: jr, golang: gr}
 					}
 				}(runners[w], w)
@@ -248,6 +245,17 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 					res, ok := precomputed[a3Key{s.Name, i}]
 					Expect(ok).To(BeTrue(), "%s: precomputed result missing (harness bug)", prefix)
 					javaRes, goRes := res.java, res.golang
+
+					// A side killed by a blown deadline / torn-down connection /
+					// closed context never rendered a verdict, so neither the
+					// "Go executor errored" nor the "Java errored, so it is a
+					// Go-only extension or a regression" reading below is
+					// evidence-backed. The precompute has already re-run it to
+					// its budget, so reaching here means it PERSISTED: fail —
+					// a sick harness must never pass — but name it infra.
+					if detail, ok := lifecycleDetail(javaRes.Err, goRes.Err); ok {
+						Fail(prefix + ": " + detail)
+					}
 
 					// Go is ALWAYS pinned to the scenario-declared expected rows.
 					Expect(goRes.Err).NotTo(HaveOccurred(), "%s: Go executor errored", prefix)

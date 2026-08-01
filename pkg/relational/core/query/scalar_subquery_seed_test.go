@@ -22,7 +22,7 @@ func TestScalarSeed_Shape(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
 
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize, got nil (declined)")
 	}
@@ -90,7 +90,7 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 	tr := newGateTranslator(t)
 
 	innerCorr := values.UniqueCorrelationIdentifier()
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), innerCorr, "SQ", "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), innerCorr, "SQ", "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize")
 	}
@@ -109,7 +109,7 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 
 	// Two seeds must never share an inner correlation (uniqueness is the whole
 	// decouple).
-	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
+	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
 	qov2 := seed2.(*values.RecordConstructorValue).Fields[len(rc.Fields)-1].Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
 	if qov2.Correlation == qov.Correlation {
 		t.Error("two seeds share an inner correlation id")
@@ -123,3 +123,56 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 // ordinalizes like any other scalar. End-to-end coverage: sqldriver's
 // computed-scalar FDB test (UPPER + arithmetic computed scalars return
 // correct rows, not NULL).
+
+// TestScalarSeed_InnerScalarTypeFlowsFromInner pins that the seed's inner
+// scalar leg carries the INNER subquery's OWN column type rather than a
+// placeholder. The type is known at the catalog, so discarding it here is what
+// forced the metadata surface to re-derive the column's type by NAME — and a
+// bare-name search across a join's leaf descriptors first-matches, so a scalar
+// selecting one leg's column got typed from the OTHER leg's descriptor.
+//
+// Order.PRICE is int32 (INTEGER), deliberately NOT the int64/BIGINT an
+// unresolved column falls back to downstream: an Unknown leg type is
+// indistinguishable from a correct BIGINT answer at the metadata surface, so a
+// BIGINT column could not express this defect.
+func TestScalarSeed_InnerScalarTypeFlowsFromInner(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	innerOp := scan("Order", "sq")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), innerOp,
+		values.UniqueCorrelationIdentifier(), "SQ", "PRICE")
+	if seed == nil {
+		t.Fatal("single-source outer must ordinalize")
+	}
+	rc := seed.(*values.RecordConstructorValue)
+	last := rc.Fields[len(rc.Fields)-1]
+	ifv := last.Value.(*values.FieldValue)
+
+	if ifv.Typ == nil || ifv.Typ.Code() == values.TypeCodeUnknown {
+		t.Fatalf("inner scalar leg typed %v — the catalog knows Order.PRICE, so an "+
+			"Unknown here throws away a known type and forces a name-keyed "+
+			"re-derivation downstream (the cross-leg same-name-different-type "+
+			"wrong-metadata bug)", ifv.Typ)
+	}
+	// It must be the INNER's type, not merely "some type": compare against the
+	// inner leg's own derived column.
+	var want values.Type
+	for _, c := range tr.legColumns(innerOp) {
+		if c.Name == "PRICE" {
+			want = c.FieldType
+		}
+	}
+	if want == nil {
+		t.Fatal("fixture drift: Order has no PRICE column to flow")
+	}
+	if ifv.Typ.Code() != want.Code() {
+		t.Errorf("inner scalar leg type code = %v, want %v (Order.PRICE's own type)",
+			ifv.Typ.Code(), want.Code())
+	}
+	// Nullability is independent of the flowed type and is always true here:
+	// the join is LEFT-OUTER, so an unmatched outer row NULL-fills this slot.
+	if !ifv.Typ.IsNullable() {
+		t.Errorf("inner scalar ordinal must stay NULLABLE-wrapped after typing, got %s", ifv.Typ)
+	}
+}
