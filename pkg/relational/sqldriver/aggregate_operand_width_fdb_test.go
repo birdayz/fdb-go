@@ -431,3 +431,79 @@ func TestFDB_AggregateOperandWidthAvgCountControls(t *testing.T) {
 		t.Fatalf("%s = %s, want ok:2 — COUNT never takes the width-checked lane", countQ, got)
 	}
 }
+
+// TestFDB_AggregateOperandWidthDerivedAndUnionInputs pins the SUM_I width
+// through the two aggregate-input wrappers that do not read a base table
+// directly, both directions each:
+//
+//   - a DERIVED TABLE flows its projected column's own type
+//     (buildDerivedTableSourceFromTerm copies the inner column's type), so
+//     SUM(D.x) over an INTEGER column raises at int32 exactly as the bare
+//     table does, and answers at the exact boundary;
+//   - a UNION ALL body types its output row by folding the branch types under
+//     Java's Type.maximumType (SemanticAnalyzer.java:802-818;
+//     buildDerivedTableSourceFromUnion) — INTEGER ∪ INTEGER stays INTEGER
+//     (SUM_I raises, in-range answers), while INTEGER ∪ BIGINT PROMOTES to
+//     BIGINT, so a sum past int32 but inside int64 must ANSWER. That last
+//     case is the direction that catches a "first branch names the width"
+//     shortcut: taking the INT branch's width would manufacture a 22003 out
+//     of a query Java answers.
+//
+// Java raises "integer overflow" on the union shape (measured live:
+// SumOverflowJoinLegJavaProbe, sum_int_union_all_overflow) — before the union
+// typing landed, Go silently answered 8000000000 there.
+func TestFDB_AggregateOperandWidthDerivedAndUnionInputs(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := aggWidthDB(t, ctx, "derivedunion", ""+
+		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE je (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE jb (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))")
+
+	for i := 1; i <= 2; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO j1 VALUES (%d, CAST(2000000000 AS INTEGER))", i)); err != nil {
+			t.Fatalf("INSERT j1 %d: %v", i, err)
+		}
+	}
+	for i, v := range []int64{2000000000, 147483647} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO je VALUES (%d, CAST(%d AS INTEGER))", i+1, v)); err != nil {
+			t.Fatalf("INSERT je %d: %v", i+1, err)
+		}
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO jb VALUES (%d, 2000000000)", i)); err != nil {
+			t.Fatalf("INSERT jb %d: %v", i, err)
+		}
+	}
+
+	for _, tc := range []struct{ q, wantMsg, wantOK string }{
+		// Derived table, both directions.
+		{`SELECT SUM(d.x) FROM (SELECT x FROM j1) AS d`, "integer overflow", ""},
+		{`SELECT SUM(d.x) FROM (SELECT x FROM je) AS d`, "", "ok:2147483647"},
+		// UNION ALL of two INTEGER branches, both directions.
+		{`SELECT SUM(u.x) FROM (SELECT x FROM j1 UNION ALL SELECT x FROM j1) AS u`, "integer overflow", ""},
+		{`SELECT SUM(u.x) FROM (SELECT x FROM je UNION ALL SELECT x FROM je WHERE id > 2) AS u`, "", "ok:2147483647"},
+		// INTEGER ∪ BIGINT promotes to BIGINT: 8000000000 is past int32 and
+		// must ANSWER through the SUM_L lane.
+		{`SELECT SUM(u.x) FROM (SELECT x FROM j1 UNION ALL SELECT x FROM jb) AS u`, "", "ok:8000000000"},
+	} {
+		got := sumErrText(t, ctx, db, tc.q)
+		if tc.wantMsg != "" {
+			if !strings.Contains(got, "22003") || !strings.Contains(got, tc.wantMsg) {
+				t.Fatalf("%s = %q, want 22003 %q — the wrapper dropped the operand's INTEGER width and the int32 lane never fired",
+					tc.q, got, tc.wantMsg)
+			}
+			continue
+		}
+		if got != tc.wantOK {
+			t.Fatalf("%s = %q, want %q — a 22003 here means the width fold narrowed a column it must not (promotion or boundary broken)",
+				tc.q, got, tc.wantOK)
+		}
+	}
+}

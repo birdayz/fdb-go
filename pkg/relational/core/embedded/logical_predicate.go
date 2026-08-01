@@ -253,10 +253,166 @@ func buildDerivedTableSource(
 	if md == nil || alias == "" || inner == nil {
 		return semantic.ScopeSource{}, false
 	}
-	body, ok := inner.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
+	switch body := inner.QueryExpressionBody().(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		return buildDerivedTableSourceFromTerm(md, alias, body)
+	case *antlrgen.SetQueryContext:
+		return buildDerivedTableSourceFromUnion(md, alias, body)
+	}
+	return semantic.ScopeSource{}, false
+}
+
+// buildDerivedTableSourceFromUnion types a UNION-ALL-bodied derived table so a
+// reference to its columns carries a real type instead of falling to the
+// untyped text path. SQL exposes the FIRST branch's output names; each
+// column's type is the fold of the branch types at that position under Java's
+// Type.maximumType (SemanticAnalyzer resolves the union row type exactly so,
+// SemanticAnalyzer.java:802-818, over PromoteValue's numeric promotion
+// lattice INT→LONG→FLOAT→DOUBLE, PromoteValue.java:76-81; equal TypeCodes
+// keep the type, nullability ORs).
+//
+// The width is not cosmetic: SUM over a union of INTEGER branches must keep
+// the INT TypeCode so the SUM_I int32-overflow lane fires exactly as it does
+// over the base table — an untyped union column silently rode the int64 SUM_L
+// lane where Java raises "integer overflow".
+//
+// A pair with no defined maximum degrades that COLUMN to UNKNOWN rather than
+// declining the whole source: Java rejects such a union outright
+// (UNION_INCOMPATIBLE_COLUMNS), and that rejection belongs to the union
+// type-checking path, not to this scope derivation — an UNKNOWN column keeps
+// today's lazy-loud behavior. UNION DISTINCT declines exactly as the logical
+// builder does (buildLogicalPlanForUnion requires ALL).
+func buildDerivedTableSourceFromUnion(
+	md *recordlayer.RecordMetaData,
+	alias string,
+	setQ *antlrgen.SetQueryContext,
+) (semantic.ScopeSource, bool) {
+	if setQ.ALL() == nil {
 		return semantic.ScopeSource{}, false
 	}
+	branches, ok := collectUnionBranchTerms(setQ)
+	if !ok || len(branches) == 0 {
+		return semantic.ScopeSource{}, false
+	}
+	var cols []semantic.Column
+	for i, br := range branches {
+		src, brOK := buildDerivedTableSourceFromTerm(md, alias, br)
+		if !brOK || src.Table == nil {
+			return semantic.ScopeSource{}, false
+		}
+		bc := src.Table.Columns()
+		if i == 0 {
+			cols = append([]semantic.Column(nil), bc...)
+			continue
+		}
+		if len(bc) != len(cols) {
+			return semantic.ScopeSource{}, false
+		}
+		for j := range cols {
+			cols[j] = unionMaximumColumn(cols[j], bc[j])
+		}
+	}
+	aliasID := semantic.FromNormalized(alias)
+	return semantic.ScopeSource{
+		Table: &semantic.StaticTable{
+			TableName:    semantic.FromSegments([]string{alias}, false),
+			TableColumns: cols,
+		},
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+	}, true
+}
+
+// collectUnionBranchTerms flattens a SetQuery's branch terms left-to-right,
+// mirroring buildLogicalPlanForUnion's association (the grammar nests
+// SetQuery(SetQuery(A, B), C) for A UNION B UNION C). Any non-ALL level or
+// non-term branch declines.
+func collectUnionBranchTerms(setQ *antlrgen.SetQueryContext) ([]*antlrgen.QueryTermDefaultContext, bool) {
+	var out []*antlrgen.QueryTermDefaultContext
+	switch l := setQ.GetLeft().(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		out = append(out, l)
+	case *antlrgen.SetQueryContext:
+		if l.ALL() == nil {
+			return nil, false
+		}
+		inner, ok := collectUnionBranchTerms(l)
+		if !ok {
+			return nil, false
+		}
+		out = inner
+	default:
+		return nil, false
+	}
+	r, ok := setQ.GetRight().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, false
+	}
+	return append(out, r), true
+}
+
+// unionMaximumColumn folds one later-branch column into the accumulated union
+// output column: the FIRST branch names the output; the type is Java's
+// Type.maximumType over the two SQL types; nullability ORs (Type.java:608
+// isResultNullable). An unfoldable pair degrades to UNKNOWN — see
+// buildDerivedTableSourceFromUnion.
+func unionMaximumColumn(acc, br semantic.Column) semantic.Column {
+	t, ok := sqlMaximumType(baseSQLType(acc.Type), baseSQLType(br.Type))
+	if !ok {
+		t = "UNKNOWN"
+	}
+	return semantic.Column{Id: acc.Id, Type: t, Nullable: acc.Nullable || br.Nullable}
+}
+
+// baseSQLType strips the catalog's embedded " NOT NULL" suffix — the folded
+// column's nullability is carried by Column.Nullable alone
+// (columnCascadesType re-applies it to the cascades type).
+func baseSQLType(t string) string {
+	return strings.TrimSuffix(t, " NOT NULL")
+}
+
+// sqlMaximumType is Java Type.maximumType restricted to the primitive SQL
+// type strings this catalog carries: an equal pair keeps its type
+// (Type.java:621-623); a numeric pair takes the promotion-lattice maximum
+// (INT→LONG→FLOAT→DOUBLE, PromoteValue.java:76-81); any other pair has no
+// defined maximum.
+func sqlMaximumType(a, b string) (string, bool) {
+	if a == b {
+		return a, true
+	}
+	ra, aNum := sqlNumericPromotionRank(a)
+	rb, bNum := sqlNumericPromotionRank(b)
+	if !aNum || !bNum {
+		return "", false
+	}
+	if ra >= rb {
+		return a, true
+	}
+	return b, true
+}
+
+// sqlNumericPromotionRank orders the numeric SQL types by Java's promotion
+// lattice (PromoteValue.java:76-81: INT→LONG, INT→FLOAT, INT→DOUBLE,
+// LONG→FLOAT, LONG→DOUBLE, FLOAT→DOUBLE — a total order).
+func sqlNumericPromotionRank(t string) (int, bool) {
+	switch t {
+	case "INT", "INTEGER":
+		return 1, true
+	case "BIGINT":
+		return 2, true
+	case "FLOAT":
+		return 3, true
+	case "DOUBLE":
+		return 4, true
+	}
+	return 0, false
+}
+
+func buildDerivedTableSourceFromTerm(
+	md *recordlayer.RecordMetaData,
+	alias string,
+	body *antlrgen.QueryTermDefaultContext,
+) (semantic.ScopeSource, bool) {
 	innerSQ, err := extractFromQueryTerm(body)
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false

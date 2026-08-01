@@ -252,7 +252,14 @@ Different answer / different error:
    only consulted the merged-row ordinal a join-leg reference cannot index; the operand's own
    static type (Java's `NumericAggregationValue.encapsulate` rule) now decides. Pinned —
    `aggregate_operand_width_fdb_test.go` (`TestFDB_AggregateOperandWidthJoinLegRaises` plus
-   negative-direction, exact-boundary, BIGINT-lane and AVG/COUNT controls).
+   negative-direction, exact-boundary, BIGINT-lane and AVG/COUNT controls). The same-family
+   residual over DERIVED-TABLE and UNION-ALL aggregate inputs is closed too: derived sources
+   already flowed the column's type; union-bodied derived tables now type their output row by
+   Java's `Type.maximumType` fold over the branches (`buildDerivedTableSourceFromUnion`), which
+   also un-gapped two RFC-082 "Go rejects" union entries (outer WHERE over a union-derived
+   table now plans and matches Java's rows). Pinned —
+   `TestFDB_AggregateOperandWidthDerivedAndUnionInputs`, including the INTEGER∪BIGINT
+   promotion direction.
 10. `DELETE/UPDATE … RETURNING` via Exec silently drops the returned values; via Query → 0A000. Java
     supports it. Pinned — `returning_clause_probe_test.go:51,62`.
 11. `DROP SCHEMA IF EXISTS` ignores IF EXISTS (deliberate Java-bug replication). Pinned —

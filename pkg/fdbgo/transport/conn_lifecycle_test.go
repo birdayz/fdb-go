@@ -188,7 +188,8 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("monitor never re-pinged after a dropped ping + observed traffic: " +
-				"inner loop wedged with no success path (codex P2 on #14)")
+				"a nil replyCh gives the inner loop no success path, so it must break " +
+				"to the outer loop on observed traffic instead of wedging")
 		}
 	}
 }
