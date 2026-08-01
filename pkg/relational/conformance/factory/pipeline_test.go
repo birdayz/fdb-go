@@ -15,10 +15,12 @@ func blessedOutcome(t *testing.T, name, featureVector, planShape string) factory
 	return factory.Outcome{
 		Blessed: true,
 		Header: factorycorpus.Header{
-			Name:          name,
-			FormatVersion: factorycorpus.FormatVersion,
-			Generator:     factory.GeneratorVersion,
-			Seed:          7,
+			Name:      name,
+			Generator: factory.GeneratorVersion,
+			// The seed is derived from the name so two outcomes in one test do
+			// not collide on the (seed, query, projection) sort key the family
+			// writer orders scenarios by.
+			Seed:          seedFromName(name),
 			QueryIndex:    0,
 			Projection:    0,
 			Date:          "2026-07-31",
@@ -32,9 +34,23 @@ func blessedOutcome(t *testing.T, name, featureVector, planShape string) factory
 			Name:           name,
 			SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
 			Setup:          []string{"INSERT INTO t VALUES (1, 2)"},
-			Tests:          []yamsql.Test{{Query: "SELECT id FROM t WHERE a = 2", Unordered: true, Rows: [][]any{{int64(1)}}}},
+			Tests: []yamsql.Test{{
+				Query:     "SELECT id FROM t WHERE a = 2",
+				Unordered: true,
+				Columns:   []string{"ID"},
+				Rows:      [][]any{{int64(1)}},
+			}},
 		},
 	}
+}
+
+// seedFromName folds a scenario name into a stable small seed.
+func seedFromName(name string) uint64 {
+	var s uint64
+	for _, r := range name {
+		s = s*31 + uint64(r)
+	}
+	return s % 100000
 }
 
 // TestDedupRejectsARepeatedPoint is the dedup rule's detector.
@@ -150,9 +166,15 @@ func TestQuotaIsEnforcedAndCounted(t *testing.T) {
 	if m.SkipsByReason["quota-reached"] != 1 {
 		t.Errorf("quota-reached counted %d, want 1", m.SkipsByReason["quota-reached"])
 	}
-	entries, _ := filepath.Glob(filepath.Join(dir, "*.yaml"))
-	if len(entries) != 2 {
-		t.Errorf("%d files on disk, want 2", len(entries))
+	// All three candidates share one feature family, so the two committed
+	// scenarios land in ONE family file; the census, not the file count, is
+	// what says two scenarios reached disk.
+	entries, _ := filepath.Glob(filepath.Join(dir, "*.yamsql"))
+	if len(entries) != 1 {
+		t.Errorf("%d family files on disk, want 1", len(entries))
+	}
+	if m.Census.Scenarios != 2 {
+		t.Errorf("census counted %d scenarios on disk, want 2", m.Census.Scenarios)
 	}
 }
 

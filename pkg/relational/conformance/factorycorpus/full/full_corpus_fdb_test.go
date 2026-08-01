@@ -15,7 +15,6 @@ package full_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"testing"
@@ -24,6 +23,8 @@ import (
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
+	// The corpus runner opens database/sql connections against the "fdbsql"
+	// driver; the import registers it in this test binary.
 	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
@@ -87,28 +88,14 @@ func TestFDB_FactoryCorpusFull(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), factorycorpus.ScenarioTimeout)
 			defer cancel()
-			db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s",
-				factorycorpus.DBPathFor(f), clusterFilePath, factorycorpus.SchemaName))
-			if err != nil {
-				t.Fatalf("open: %v", err)
-			}
-			defer db.Close()
-			res, err := factorycorpus.RunFile(ctx, db, f)
-			if err != nil {
-				t.Fatalf("run: %v", err)
-			}
-			if res.SetupError != nil || res.TestsFail > 0 {
-				t.Fatalf("committed expectation no longer holds:\n%s", factorycorpus.Describe(f, res))
-			}
-			// A scenario that ran NOTHING passes every assertion above, because
-			// zero failures out of zero tests is zero failures. The nightly
-			// would then report the whole corpus green while executing none of
-			// it — the loudest possible instrument failure wearing the quietest
-			// possible output. The per-PR sample tier already floors this; the
-			// full tier is the one that must not be able to go vacuous.
-			if res.TestsRun == 0 {
-				t.Fatalf("%s ran zero tests: a scenario with no executed test cannot fail, "+
-					"so this file has been reporting green without exercising the engine", f.Path)
+			res := factorycorpus.RunScenario(ctx, clusterFilePath, f)
+			// CheckResult owns the vacuous-pass floor too: a scenario that ran
+			// NOTHING passes every row assertion, because zero failures out of
+			// zero tests is zero failures — the loudest possible instrument
+			// failure wearing the quietest possible output. It demands every
+			// committed stanza actually asserted.
+			if err := factorycorpus.CheckResult(f, res); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

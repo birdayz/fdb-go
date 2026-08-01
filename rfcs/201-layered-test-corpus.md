@@ -306,7 +306,54 @@ the same minimize-pin-fix path; its non-failing output is NOT committed — the
 factory is the committing path precisely because it deduplicates and blesses,
 which raw fuzz volume does not.
 
-## 6. Execution substrates: real FDB, SimFDB, chaos-shadow
+### 5.7 Amendment (owner ruling 2026-08-01): yamsql is the single corpus format
+
+**Ruling, verbatim intent:** converge the factory corpus on the `.yamsql`
+format — "it's kinda nice because we can also group many tests that belong
+together logically, e.g their cte.yamsql has all CTE stuff together."
+
+This supersedes §5.1 stage 5's "Go yamsql scenario format, one file per
+scenario". The committed corpus is now:
+
+1. **One format.** The factory emits genuine `.yamsql` — parseable by the
+   in-repo javayamsql parser AND inside the subset Java's own yaml-tests
+   runner accepts. That makes cross-engine blessing *literal*: the Java engine
+   can execute the exact committed file, not a translation of it. Provenance
+   (generator version, seed, blessing, oracles, feature vector, plan shape,
+   dedup key, frozen-rows warning, reproduce command) lives in the comment
+   header — comments are the one extension yamsql tolerates freely. The
+   frozen-rows discipline (§5.3) is unchanged.
+2. **Logical grouping.** One file per feature FAMILY, mirroring Java's
+   cte.yamsql convention: the family key is the query shape crossed with the
+   WHERE connective's sorted child-class set and the subquery class
+   (`join2.left-outer|and(cmp+colcol)|exists` →
+   `join2_left-outer__and_cmp-colcol__exists.yamsql`). Chosen because it is
+   the stratifier's own axes refined one step: the plain connective key left a
+   quarter of the corpus in one `and` file (238 scenarios / ~950 stanzas),
+   while the refined key's largest family holds 123 scenarios (~490 stanzas)
+   across 182 families — measured on the 2000-scenario corpus at migration.
+   The full feature vector is deliberately NOT the key: it is nearly unique
+   per scenario and would recreate one-file-per-scenario. Each scenario is a
+   (schema_template, setup, test_block) document triple with `connect:`
+   indices naming its own schema registration, its provenance block
+   immediately above; scenarios sort by (seed, query, projection), so nightly
+   appends land deterministically and re-emission reproduces files byte for
+   byte.
+3. **One runner.** The factory corpus executes through the SAME machinery as
+   the vendored Java corpus: javayamsql.Parse for structure (the strict-parse
+   gate of §3 ruling 4 now also gates every generated file — format drift
+   breaks the build), javacorpus.RunParsed for execution (schema lifecycle,
+   option layering, sticky metadata, result matching — shared, never forked).
+   The old factory-format parser and runner are deleted. The blessing ratchet
+   and dedup stay keyed by dedup key — content-derived, not filename — so the
+   a-test-can-only-get-stronger property survives grouping unchanged.
+4. **Migration by re-emission.** The 2000 committed v1 scenarios were
+   regenerated from their recorded seeds through the full oracle pipeline
+   (cmd/factory-migrate) and verified value-by-value against the v1 rows —
+   byte-identical modulo the format's typed-cell spelling (v1 widened FLOAT
+   cells to float64 text; v2 freezes them under `!f` at float32 width, the
+   spelling Java's Float matcher requires) — before the v1 files were deleted.
+   Any mismatch is a bug to root-cause, never to accept.
 
 | What | Substrate | Why |
 |---|---|---|

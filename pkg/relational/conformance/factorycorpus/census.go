@@ -13,7 +13,8 @@ import (
 // design exists to kill — so the per-feature-vector map is a first-class field
 // and the ratchet gates it dimension by dimension.
 type Census struct {
-	// Scenarios is the number of committed files.
+	// Scenarios is the number of committed scenarios (test_block triples)
+	// across all family files.
 	Scenarios int `json:"scenarios"`
 	// Tests is the number of committed test stanzas across all files.
 	Tests int `json:"tests"`
@@ -43,18 +44,18 @@ type Census struct {
 // factory also wrote. A census derived from the producer's own bookkeeping
 // agrees with the producer by construction and would stay green through a
 // batch that wrote nothing to disk.
-func ComputeCensus(files []*File) Census {
+func ComputeCensus(scenarios []*Scenario) Census {
 	c := Census{
 		ByFeature:     map[string]int{},
 		ByBlessing:    map[string]int{},
 		ByKeyBlessing: map[string]string{},
 	}
-	for _, f := range files {
+	for _, s := range scenarios {
 		c.Scenarios++
-		c.Tests += len(f.Scenario.Tests)
-		c.ByFeature[f.Header.FeatureVector]++
-		c.ByBlessing[string(f.Header.Blessing)]++
-		c.ByKeyBlessing[f.Header.DedupKey] = string(f.Header.Blessing)
+		c.Tests += len(s.Doc.Tests)
+		c.ByFeature[s.Header.FeatureVector]++
+		c.ByBlessing[string(s.Header.Blessing)]++
+		c.ByKeyBlessing[s.Header.DedupKey] = string(s.Header.Blessing)
 	}
 	return c
 }

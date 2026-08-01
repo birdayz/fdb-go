@@ -19,12 +19,12 @@ func TestCorpusLoads(t *testing.T) {
 	}
 	tests := 0
 	for _, f := range files {
-		if len(f.Scenario.Setup) == 0 {
-			t.Errorf("%s: no setup statements; the expectations would be frozen over an empty table", f.Path)
+		if len(f.Doc.Setup) == 0 {
+			t.Errorf("%s: %s has no setup statements; the expectations would be frozen over an empty table", f.Path, f.Header.Name)
 		}
-		for i, tc := range f.Scenario.Tests {
+		for i, tc := range f.Doc.Tests {
 			if tc.Query == "" {
-				t.Errorf("%s: tests[%d] has no query", f.Path, i)
+				t.Errorf("%s: %s tests[%d] has no query", f.Path, f.Header.Name, i)
 			}
 			tests++
 		}

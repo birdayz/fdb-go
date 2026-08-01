@@ -87,8 +87,8 @@ func TestOfferRefusesToClobberACommittedScenario(t *testing.T) {
 	if m.Committed != 0 {
 		t.Errorf("committed = %d, want 0: nothing new reached disk", m.Committed)
 	}
-	if n, _ := filepath.Glob(filepath.Join(dir, "*.yaml")); len(n) != 1 {
-		t.Errorf("%d files on disk, want 1", len(n))
+	if n, _ := filepath.Glob(filepath.Join(dir, "*.yamsql")); len(n) != 1 {
+		t.Errorf("%d family files on disk, want 1", len(n))
 	}
 }
 

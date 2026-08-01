@@ -25,6 +25,7 @@ go_library(
     srcs = [
         "census.go",
         "doc.go",
+        "family.go",
         "header.go",
         "load.go",
         "run.go",
@@ -33,28 +34,35 @@ go_library(
     importpath = "fdb.dev/pkg/relational/conformance/factorycorpus",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/relational/conformance/javacorpus",
+        "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
 
-# The loader/writer/census/ratchet gates — pure computation, no FDB. The
-# corpus's EXECUTION lives in the sibling `full` target, which runs every
-# committed scenario as ordinary suite content in every `just test`; the
-# per-PR stratified-sample tier this package once carried is gone because a
-# full run in the same suite makes a sample of the same corpus redundant.
+# The container-free gates: loader, writer round-trip, family mapping, census
+# ratchet, and the emitted-format gate (every committed family file must parse
+# as clean yamsql). The corpus's EXECUTION lives in the sibling `full` target,
+# which runs every committed scenario as ordinary suite content in every
+# `just test`; the per-PR stratified-sample tier this package once carried is
+# gone because a full run in the same suite makes a sample of the same corpus
+# redundant.
 go_test(
     name = "factorycorpus_test",
     timeout = "moderate",
     srcs = [
         "blessing_ratchet_test.go",
         "census_test.go",
+        "family_test.go",
+        "format_gate_test.go",
         "header_duplicate_test.go",
         "writer_test.go",
     ],
     data = glob(["testdata/**"]) + ["census_baseline.json"],
     deps = [
         ":factorycorpus",
+        "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
     ],
 )

@@ -160,7 +160,7 @@ func TestTLPEligibilityRejectsOffset(t *testing.T) {
 // removes it.
 func TestNoCommittedScenarioCarriesAnOffset(t *testing.T) {
 	t.Parallel()
-	matches, err := filepath.Glob(filepath.Join(corpusDir, "*.yaml"))
+	matches, err := filepath.Glob(filepath.Join(corpusDir, "*.yamsql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestCommittedOrderednessMatchesTheCandidate(t *testing.T) {
 		if cand == nil {
 			continue // TestFactoryDeterminism owns this failure
 		}
-		for i, test := range f.Scenario.Tests {
+		for i, test := range f.Doc.Tests {
 			if test.Unordered == cand.Ordered() {
 				t.Errorf("%s tests[%d]: candidate.Ordered()=%v but the frozen expectation says unordered=%v. "+
 					"The same value decides how the second-plan oracle compared these rows, so the file "+
@@ -233,7 +233,7 @@ func TestCommittedOrderednessMatchesTheCandidate(t *testing.T) {
 	// Both classes must be present, or the gate only ever exercises one arm.
 	var ordered, unordered int
 	for _, f := range files {
-		if len(f.Scenario.Tests) > 0 && f.Scenario.Tests[0].Unordered {
+		if len(f.Doc.Tests) > 0 && f.Doc.Tests[0].Unordered {
 			unordered++
 		} else {
 			ordered++

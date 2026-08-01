@@ -75,22 +75,22 @@ func TestFactoryDeterminism(t *testing.T) {
 		}
 
 		queries := cand.TLPQueries()
-		if len(queries) != len(f.Scenario.Tests) {
+		if len(queries) != len(f.Doc.Tests) {
 			t.Errorf("%s: %d committed tests, generator now yields %d renderings",
-				f.Path, len(f.Scenario.Tests), len(queries))
+				f.Path, len(f.Doc.Tests), len(queries))
 			continue
 		}
 		for i, q := range queries {
 			want := cand.Case.SQL(q, cand.Projection)
-			if got := f.Scenario.Tests[i].Query; got != want {
+			if got := f.Doc.Tests[i].Query; got != want {
 				t.Errorf("%s: tests[%d] (%s) SQL drifted\n  committed:   %s\n  regenerated: %s",
 					f.Path, i, factory.TLPLabels[i], got, want)
 			}
 		}
-		if got, want := f.Scenario.SchemaTemplate, cand.Case.DDL(); got != want {
+		if got, want := f.Doc.SchemaTemplate, cand.Case.DDL(); got != want {
 			t.Errorf("%s: schema_template drifted\n  committed:   %s\n  regenerated: %s", f.Path, got, want)
 		}
-		if len(f.Scenario.Setup) != 1 || f.Scenario.Setup[0] != cand.Case.InsertSQL() {
+		if len(f.Doc.Setup) != 1 || f.Doc.Setup[0] != cand.Case.InsertSQL() {
 			t.Errorf("%s: setup drifted; the frozen rows were computed over different data", f.Path)
 		}
 
@@ -123,23 +123,27 @@ func TestFactoryDeterminism(t *testing.T) {
 // reformatting.
 func TestCommittedFilesAreCanonical(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(corpusDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
+	matches, err := filepath.Glob(filepath.Join(corpusDir, "*.yamsql"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("glob: %v (%d matches)", err, len(matches))
 	}
-	for _, f := range files {
-		onDisk, err := os.ReadFile(f.Path)
+	for _, path := range matches {
+		onDisk, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		canonical, err := factorycorpus.Marshal(f.Header, f.Scenario)
+		f, err := factorycorpus.Load(path)
 		if err != nil {
-			t.Errorf("%s: re-marshal: %v", f.Path, err)
+			t.Fatalf("%s: %v", path, err)
+		}
+		canonical, err := factorycorpus.MarshalFamily(f.Scenarios)
+		if err != nil {
+			t.Errorf("%s: re-marshal: %v", path, err)
 			continue
 		}
 		if string(onDisk) != string(canonical) {
 			t.Errorf("%s is not in canonical form; a re-bless would diff on formatting rather than on expectations",
-				filepath.Base(f.Path))
+				filepath.Base(path))
 		}
 	}
 }

@@ -71,13 +71,19 @@ type Manifest struct {
 
 // Batch accumulates a run's committed output and enforces the dedup rule.
 type Batch struct {
-	// Dir is the corpus testdata directory files are written into.
+	// Dir is the corpus testdata directory family files are written into.
 	Dir string
 	// Quota caps committed scenarios per run. §5.2: per-run quotas keep PRs
 	// reviewable; the steady state is months of batches, not one dump.
 	Quota int
 
-	seen     map[string]string // dedup key -> the path that claimed it
+	seen map[string]string // dedup key -> the scenario that claimed it
+	// names maps every committed scenario name to its dedup key, for the
+	// clobber guard: the two keys are independent, so each needs its own map.
+	names map[string]string
+	// families holds every committed scenario grouped by family file, the
+	// unit the writer re-emits when a batch appends a scenario.
+	families map[string][]*factorycorpus.Scenario
 	manifest Manifest
 }
 
@@ -88,13 +94,18 @@ type Batch struct {
 // shapes the last run already covered, and a year of nightlies would produce
 // one night's coverage a hundred times over.
 func NewBatch(dir string, quota int) (*Batch, error) {
-	b := &Batch{Dir: dir, Quota: quota, seen: map[string]string{}}
+	b := &Batch{
+		Dir: dir, Quota: quota,
+		seen:     map[string]string{},
+		names:    map[string]string{},
+		families: map[string][]*factorycorpus.Scenario{},
+	}
 	b.manifest.SkipsByReason = map[string]int{}
 	b.manifest.SkipSamples = map[string][]string{}
 	b.manifest.Blessings = map[string]int{}
 	b.manifest.BlessedByFamily = map[string]int{}
 	b.manifest.Exemptions = InapplicabilityLedger()
-	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
+	matches, err := filepath.Glob(filepath.Join(dir, "*.yamsql"))
 	if err != nil {
 		return nil, err
 	}
@@ -103,10 +114,18 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 		if err != nil {
 			return nil, fmt.Errorf("existing corpus file %s: %w", m, err)
 		}
-		if prev, dup := b.seen[f.Header.DedupKey]; dup {
-			return nil, fmt.Errorf("existing corpus already holds two files at dedup key %s (%s, %s)", f.Header.DedupKey, prev, m)
+		for _, sc := range f.Scenarios {
+			id := m + "#" + sc.Header.Name
+			if prev, dup := b.seen[sc.Header.DedupKey]; dup {
+				return nil, fmt.Errorf("existing corpus already holds two scenarios at dedup key %s (%s, %s)", sc.Header.DedupKey, prev, id)
+			}
+			b.seen[sc.Header.DedupKey] = id
+			if prev, dup := b.names[sc.Header.Name]; dup {
+				return nil, fmt.Errorf("existing corpus already holds scenario %s twice (dedup keys %s, %s)", sc.Header.Name, prev, sc.Header.DedupKey)
+			}
+			b.names[sc.Header.Name] = sc.Header.DedupKey
+			b.families[f.Family] = append(b.families[f.Family], sc)
 		}
-		b.seen[f.Header.DedupKey] = m
 	}
 	return b, nil
 }
@@ -144,53 +163,61 @@ func (b *Batch) Offer(o Outcome) (string, error) {
 		b.manifest.SkipsByReason["quota-reached"]++
 		return "", nil
 	}
-	data, err := factorycorpus.Marshal(o.Header, o.Scenario)
-	if err != nil {
-		return "", fmt.Errorf("marshal %s: %w", o.Header.Name, err)
-	}
-	path := filepath.Join(b.Dir, o.Header.Name+".yaml")
 
 	// A batch must never overwrite a committed scenario, and dedup is not what
-	// stops it: the two keys are INDEPENDENT. The file name comes from (seed,
-	// query index, projection); the dedup key comes from (feature vector, plan
-	// shape). Change the planner and a seed's plan shape moves, so the dedup key
-	// moves, so the dedup lookup MISSES — while the name is byte-identical to
-	// the file already on disk. The write would then silently replace a
-	// committed expectation with a freshly blessed one, the census would be
-	// recomputed from the overwritten directory, and the ratchet, which measures
-	// that same directory, would see nothing. Every instrument would agree that
-	// nothing happened.
+	// stops it: the two keys are INDEPENDENT. The scenario name comes from
+	// (seed, query index, projection); the dedup key comes from (feature
+	// vector, plan shape). Change the planner and a seed's plan shape moves, so
+	// the dedup key moves, so the dedup lookup MISSES — while the name is
+	// identical to a scenario already committed. Re-emitting the family file
+	// would then silently replace a committed expectation with a freshly
+	// blessed one, the census would be recomputed from the overwritten
+	// corpus, and the ratchet, which measures that same corpus, would see
+	// nothing. Every instrument would agree that nothing happened.
 	//
-	// So the collision is refused and NAMED. There is no benign version of it to
-	// carve out: a re-run against an unchanged engine re-derives the same dedup
-	// key, and the dedup check above rejects it before the writer is reached.
-	// Getting here at all means the key moved while the name did not, and the
-	// only content that could be under this name is content this batch was
-	// about to replace.
-	if _, err := os.Lstat(path); err == nil {
+	// So the collision is refused and NAMED. There is no benign version of it
+	// to carve out: a re-run against an unchanged engine re-derives the same
+	// dedup key, and the dedup check above rejects it before the writer is
+	// reached. Getting here at all means the key moved while the name did not,
+	// and the only content that could be under this name is content this batch
+	// was about to replace.
+	if prevKey, exists := b.names[o.Header.Name]; exists {
 		b.manifest.NameCollisions++
 		b.manifest.SkipsByReason["name-collision"]++
 		if len(b.manifest.SkipSamples["name-collision"]) < maxSkipSamples {
 			b.manifest.SkipSamples["name-collision"] = append(b.manifest.SkipSamples["name-collision"],
-				fmt.Sprintf("%s already exists at a DIFFERENT dedup key (%s); refusing to overwrite a committed scenario",
-					path, o.Header.DedupKey))
+				fmt.Sprintf("scenario %s is already committed at a DIFFERENT dedup key (%s, this batch derived %s); refusing to overwrite a committed scenario",
+					o.Header.Name, prevKey, o.Header.DedupKey))
 		}
 		return "", nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("stat %s: %w", path, err)
 	}
 
+	family := factorycorpus.FamilyOf(o.Header.FeatureVector)
+	path := filepath.Join(b.Dir, factorycorpus.FamilyFileName(family))
+	entry := &factorycorpus.Scenario{Path: path, Header: o.Header, Doc: o.Scenario}
+	entries := append(append([]*factorycorpus.Scenario{}, b.families[family]...), entry)
+	data, err := factorycorpus.MarshalFamily(entries)
+	if err != nil {
+		return "", fmt.Errorf("marshal family %s: %w", family, err)
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	// Read it straight back through the loader that CI will use. A file the
 	// corpus cannot load is worse than no file: the batch reports a win and
 	// the next `just test` goes red on a gate that has nothing to do with the
-	// engine.
-	if _, err := factorycorpus.Load(path); err != nil {
-		return "", fmt.Errorf("just-written file does not load: %w", err)
+	// engine. The reloaded scenarios also become the family's in-memory state,
+	// so the next append marshals exactly what is on disk.
+	reloaded, err := factorycorpus.Load(path)
+	if err != nil {
+		return "", fmt.Errorf("just-written family file does not load: %w", err)
 	}
-	b.seen[o.Header.DedupKey] = path
+	if len(reloaded.Scenarios) != len(entries) {
+		return "", fmt.Errorf("%s reloaded with %d scenarios, wrote %d", path, len(reloaded.Scenarios), len(entries))
+	}
+	b.families[family] = reloaded.Scenarios
+	b.seen[o.Header.DedupKey] = path + "#" + o.Header.Name
+	b.names[o.Header.Name] = o.Header.DedupKey
 	b.manifest.Committed++
 	b.manifest.Blessings[string(o.Header.Blessing)]++
 	if o.InapplicableFamily != "" {
