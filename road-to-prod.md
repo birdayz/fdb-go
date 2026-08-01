@@ -212,7 +212,7 @@ marked, not removed — an unpinned divergence is more dangerous than a pinned o
 would make the list read cleaner than the code is.
 
 Wrong rows / wrong data:
-1. No read-your-writes in `BeginTx` (= B2). Pinned —
+1. No read-your-writes in `BeginTx` (= B2). IMPLEMENTATION IN FLIGHT (feat/rfc198-explicit-tx-isolation). Pinned —
    `sqldriver/tx_select_isolation_probe_test.go:62`.
 2. INSERT of NULL into a PRIMARY KEY column silently stores 0. **⚠ NOT PINNED.**
    `sqldriver/embedded_fdb_errors_test.go:125` logs and returns on both fix paths and its own final
@@ -288,8 +288,64 @@ SPARSE one). *Refuted while verifying:* these were never watch-list entries that
 they were never listed at all, and they are still live rejections. RFC-202 (#553) landed the RFC and
 its census tests, not the generator, so nothing was retired.
 
+**Added 2026-08-01 — pinned by the day's merges (#560, #565, #559), same red-means-fixed contract:**
+13. Cross-leg metadata: `ResultSetMetaData.isNullable` reports NOT NULL for a column on the
+    null-supplying leg of a LEFT JOIN when both legs agree on type+cardinality — the agreement
+    gate cannot see null-born identity, and no choice function can (both result slots receive the
+    same candidate list; the correct answer differs per slot). Pinned —
+    `sqldriver/cross_leg_null_born_fdb_test.go` (`TestFDB_CrossLegAgreementGate_NullBornNotCovered`),
+    which asserts the metadata self-contradiction (NoNulls declared, SQL NULL delivered in the same
+    test). Fix is positional/flowed metadata (D3, RFC-204 P4 neighborhood), not a better picker.
+14. Nullable-array wire (RFC-143 §3a): Go writes a plain repeated field where Java wraps nullable
+    arrays in a `{repeated T values = 1}` message — `[]` and NULL collapse on the Go wire, and
+    nullable-array column bytes are NOT Java-interoperable until §3a closes. Pinned —
+    `sqldriver/array_literal_insert_fdb_test.go` (`TestFDB_ArrayLiteralInsertWireBytes` +
+    `empty_array` subtest with move-don't-delete re-arm instructions). This is the one OPEN
+    wire-compat divergence on the hard line; closing it is a schema-generation effort of its own.
+15. Struct descriptor emission (latent, wire-critical): Go's dormant struct path emits nested
+    `.Table.Struct` descriptors with `LABEL_REQUIRED` where Java emits top-level
+    `LABEL_OPTIONAL` messages — persisted-catalog bytes the moment structs become reachable.
+    Unreachable today (`parseColumnType` rejects structs); RFC-204 Phase 1 reworks emission
+    BEFORE making it reachable, with Java-server byte-goldens as the acceptance instrument.
+16. Error-class divergences measured by the corpus grind, each pinned at its exact rejection in
+    `javacorpus/gaps.go`: `[1] = [1]` evaluates NULL (array comparison semantics); duplicate
+    GROUP BY expression in an index → Go 0AF00 where Java answers 42702; `SELECT *` after
+    JOIN USING shows the right-side USING columns Java hides; typed float literal `1.0f`
+    unsupported. Wrong error/wrong shape, not wrong rows.
+17. `LIKE` newline semantics now match Java's measured behavior (no DOTALL; `$` before one final
+    line terminator): `WHERE name LIKE 'abc'` matches `"abc\n"`. Deliberate Java-parity
+    (verified against a live JDK over 1.2M cases), pinned in the LIKE test tables — listed here
+    because it will read as a bug to anyone who hasn't seen the derivation.
+
 Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
 `NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
+
+### Correctness-elimination order (2026-08-01)
+
+The path to zero KNOWN correctness errors, in execution order. "Done" for each = the watch-list
+entry's pin goes red and the entry is retired with the fix cited.
+
+1. **B2 / RFC-198** (entry 1) — in flight: OQ-1 + Phase 1 done and mutation-verified on
+   `feat/rfc198-explicit-tx-isolation`; Phases 2+ (SQLSTATE lanes, catalog binding, SimFDB
+   criteria 9-12) remain, then the joint completion lap.
+2. **The unpinned-or-unowned batch** (entries 2, 4, 3, 9) — INSERT-NULL-into-PK
+   (measurement REFUTED the entry: Java allows NULL PKs and Go matches — real pins landed,
+   fake pin deleted, on `fix/watchlist-insert-null-pk-timestamp`), CURRENT_TIMESTAMP drift
+   (fixed statement-scoped on the same branch; cross-page fold in review),
+   correlated-float signed-zero composite (RFC-196 — FIXED via execution-time probe fork,
+   Graefe-ACK'd, PR #571), SUM overflow inconsistency (in flight — Java-behavior measurement
+   first, then its own gated lap since it flips answers into errors).
+3. **RFC-202 S7** — covering/DESC plan shapes over generated indexes (KeyWithValue split
+   discarded at the planner seam); in the S5-S9 agent's queue.
+4. **D3 positional metadata** (entry 13) — retires the cross-leg nullability class and the
+   #4274 divergence together; sequenced with RFC-204 P4.
+5. **RFC-143 §3a** (entry 14) — the open wire divergence; own design effort, after RFC-204 P1
+   settles the descriptor-emission ground it shares.
+6. **Error-class divergences** (entry 16) — batch of small Java-parity fixes, each already
+   pinned at its rejection.
+
+Everything in "deliberate, documented" (entries 5-8, 11, 17 + the client-side operational list)
+stays: those are Java-parity or standard-vs-Java calls with the reasoning recorded, not defects.
 
 Client-side operational: watches register at read version, not commit-gated; no `too_many_watches`
 limit; no RYW pending-write immediate-fire; special-key space absent; `BYPASS_UNREADABLE` span-wipe
