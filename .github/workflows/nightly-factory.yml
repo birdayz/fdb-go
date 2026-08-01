@@ -11,9 +11,12 @@ name: Nightly Factory
 #     rather than pushing: a batch is reviewable content, and §5.2's per-run
 #     quota exists so that review is possible.
 #
-# The per-PR tier is NOT this workflow: a feature-vector-stratified sample of
-# the same corpus runs in `just test` on every PR, so a broken batch cannot
-# land and sit until morning.
+# The FULL corpus also runs in every `just test` and every PR CI run (owner
+# ruling 2026-08-01: the committed corpus is ordinary suite content). The
+# `corpus` job here is therefore redundant as coverage, but it is KEPT: it is
+# the scheduled master-branch net, and its genuine-run heartbeat is what
+# nightly-reconcile.yml checks — removing the job would turn the reconciler
+# red with nothing broken.
 
 on:
   schedule:
@@ -99,8 +102,9 @@ jobs:
       - name: Run the full committed corpus
         if: steps.window.outputs.ok == 'true'
         id: corpus
-        # `manual` on the target means a wildcard never reaches it; the label
-        # is named explicitly, exactly as the stress lane names its own.
+        # The same target every `just test` runs; named explicitly and
+        # uncached because this job's product is the scheduled master-branch
+        # heartbeat, not incremental coverage.
         run: |
           set -o pipefail
           bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \

@@ -105,19 +105,19 @@ build:
     bazelisk build //...
 
 # Test all targets (includes Go↔Java conformance via the RFC-082 regression
-# lock; excludes the heavy 1M stress tier and the FULL RFC-201 factory corpus.
-# Both excluded targets are also `manual`, which is what actually drops them
-# from the wildcard — the filter is the explicit, greppable statement of intent.
-# The factory corpus is still exercised here: its stratified per-feature-vector
-# sample is a normal target in the parent package and runs every time.
+# lock AND the FULL RFC-201 factory corpus — the committed corpus is ordinary
+# suite content, owner ruling 2026-08-01; excludes only the heavy 1M stress
+# tier, whose target is also `manual`, which is what actually drops it from
+# the wildcard — the filter is the explicit, greppable statement of intent).
 test:
-    bazelisk test //... --test_tag_filters=-stress,-factorycorpus
+    bazelisk test //... --test_tag_filters=-stress
 
-# Run the FULL committed RFC-201 factory corpus (nightly tier). `manual`, so it
-# must be named explicitly; the sample runs in `just test`.
+# Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
+# It is part of `just test` too; this recipe exists for a forced standalone
+# re-run (e.g. reproducing the nightly heartbeat job locally).
 factory-corpus:
     bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
-        --test_timeout=3600 --test_output=streamed --nocache_test_results
+        --test_output=streamed --nocache_test_results
 
 # Generate and commit a factory batch (RFC-201 §5). Writes scenarios into the
 # corpus, a manifest for the PR description, and any oracle disagreements into

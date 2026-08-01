@@ -323,16 +323,29 @@ is 1–3 hours on one box and parallelizes by seed range.
 
 ## 7. CI topology
 
+> **Owner ruling 2026-08-01 — the committed corpus is ordinary suite content.**
+> The per-PR/nightly split this section originally drew for the committed
+> corpus (a stratified sample per PR, the full corpus nightly) is overridden:
+> the FULL committed corpus runs in every `just test` and therefore in every
+> PR CI run. Measured basis: 2000 committed scenarios execute in ~40s on one
+> container (one target, a `t.Parallel()` subtest per scenario), which is
+> ordinary-target cost, not a nightly-tier cost. The stratified-sample
+> mechanism is removed as redundant — a sample of a corpus that runs in full
+> in the same suite guards nothing. The nightly `corpus` job is RETAINED
+> running the same target: it is the scheduled master-branch net and the
+> genuine-run heartbeat nightly-reconcile.yml checks. If corpus growth ever
+> pushes the full run out of ordinary-suite cost, that is a new ruling to
+> seek, not a license to quietly reintroduce the split.
+
 Three tiers, mapped to the real capacity constraints (the CI runner is a
 single-slot box; heavy lanes are already nightly there):
 
 - **Per-PR (must stay fast):** build + parse/census gates + every pinned
-  regression + a stratified sample of the committed corpus (stratified by
-  feature vector, so every dimension appears in every PR run) + the Go-authored
-  scenario suite.
-- **Nightly:** the full committed corpus under all Layer-2 modes; the factory
-  run (generate → bless → open the batch PR); the transient fuzz lane; SimFDB
-  fault replays; cross-engine differential sweep.
+  regression + the FULL committed corpus (per the ruling above) + the
+  Go-authored scenario suite.
+- **Nightly:** the full committed corpus re-run on master (the heartbeat);
+  the factory run (generate → bless → open the batch PR); the transient fuzz
+  lane; SimFDB fault replays; cross-engine differential sweep.
 - **Weekly / on-demand:** the 1M stress family; full plan-diversity enumeration
   at maximum bound; corpus re-vendor check against the pinned Java tag.
 
