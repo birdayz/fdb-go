@@ -808,3 +808,177 @@ test_block:
           SELECT id, a, c, f, e FROM t_rd WHERE (((NOT (e >= 4.0)) AND (s IS NOT NULL)) OR (b IN (5, 5))) IS NULL AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c < t_rd.c AND r.c <= 4)
       - unorderedResult:
           - {ID: 14, A: 2, C: 8, F: false, E: !null ''}
+#
+# scenario: fc_0000001145_q0_p0
+# generator: rowdiff-gen/1
+# seed: 1145
+# query-index: 0
+# projection: 0
+# date: 2026-08-01
+# blessing: metamorphic-tlp-only
+# oracles: tlp
+# feature-vector: shape=single;idx=D,S;proj=star;where=or(in.in,and(cmp.notnull,in.in,!strfn.ne,numfn.eq));exists=not-eq.filtered;order=asc
+# plan-shape: 351931285541676e
+# dedup-key: ed81fc686c2ba6e7
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1145 -seeds 1 -date 2026-08-01 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+---
+setup:
+  connect: 13
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 7, 7, 'gamma', NULL, 3.0, 2.0), (2, 8, 5, 5, 'epsilon', TRUE, 0.0, -0.0), (3, 5, 3, NULL, 'beta', FALSE, 9007199254740992.0, 4.0), (4, 2, 9, 6, 'gamma', TRUE, 0.1, 9.0), (5, 3, 1, NULL, ' a', TRUE, 1.0, 2.0), (6, NULL, 2, 7, 'alpha', NULL, 4.0, 2.0), (7, 7, 4, 4, 'gamma', FALSE, 3.0, NULL), (8, 7, 0, 4611686018427387904, 'b ', FALSE, 4.0, 6.0), (9, 0, 7, 2, 'b ', TRUE, 0.0, 1.0), (10, 4, 1, 2, NULL, NULL, NULL, 8.0), (11, 9, 0, 4, '', TRUE, 7.0, 6.0), (12, 0, 6, NULL, '', TRUE, NULL, 16777216.0), (13, -1, -1, 6, 'epsilon', TRUE, 6.0, 6.0), (14, NULL, 8, NULL, 'alpha', FALSE, 8.0, 8.0), (15, -1, 5, NULL, 'beta', FALSE, 6.0, 16777216.0), (16, NULL, 6, 1, ' c ', FALSE, NULL, NULL), (17, NULL, 4, 9, NULL, NULL, 7.0, 4.0), (18, 2, 2, 6, ' a', FALSE, 9.0, 6.0), (19, 6, 3, 9, 'epsilon', FALSE, 0.1, NULL), (20, NULL, 1, 5, 'alpha', FALSE, 7.0, 3.0), (21, 8, 8, 2, 'beta', NULL, 6.0, 1.0), (22, 2, 7, NULL, NULL, FALSE, 3.0, 0.10000000149011612), (23, 4, 0, NULL, 'gamma', TRUE, 3.0, 3.0), (24, 0, 5, NULL, 'gamma', FALSE, -9007199254740992.0, 5.0)
+---
+test_block:
+  name: "fc_0000001145_q0_p0"
+  preset: single_repetition_ordered
+  connect: 13
+  tests:
+    - - query: |-
+          SELECT * FROM t_rd WHERE NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3, A: 5, B: 3, C: !null '', S: "beta", F: false, D: 9.007199254740992e+15, E: !f 4.0}
+          - {ID: 7, A: 7, B: 4, C: 4, S: "gamma", F: false, D: 3.0, E: !null ''}
+          - {ID: 8, A: 7, B: 0, C: 4611686018427387904, S: "b ", F: false, D: 4.0, E: !f 6.0}
+          - {ID: 11, A: 9, B: 0, C: 4, S: "", F: true, D: 7.0, E: !f 6.0}
+          - {ID: 14, A: !null '', B: 8, C: !null '', S: "alpha", F: false, D: 8.0, E: !f 8.0}
+          - {ID: 17, A: !null '', B: 4, C: 9, S: !null '', F: !null '', D: 7.0, E: !f 4.0}
+          - {ID: 19, A: 6, B: 3, C: 9, S: "epsilon", F: false, D: 0.1, E: !null ''}
+          - {ID: 21, A: 8, B: 8, C: 2, S: "beta", F: !null '', D: 6.0, E: !f 1.0}
+          - {ID: 23, A: 4, B: 0, C: !null '', S: "gamma", F: true, D: 3.0, E: !f 3.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3, A: 5, B: 3, C: !null '', S: "beta", F: false, D: 9.007199254740992e+15, E: !f 4.0}
+          - {ID: 14, A: !null '', B: 8, C: !null '', S: "alpha", F: false, D: 8.0, E: !f 8.0}
+          - {ID: 21, A: 8, B: 8, C: 2, S: "beta", F: !null '', D: 6.0, E: !f 1.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE NOT ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 7, A: 7, B: 4, C: 4, S: "gamma", F: false, D: 3.0, E: !null ''}
+          - {ID: 8, A: 7, B: 0, C: 4611686018427387904, S: "b ", F: false, D: 4.0, E: !f 6.0}
+          - {ID: 11, A: 9, B: 0, C: 4, S: "", F: true, D: 7.0, E: !f 6.0}
+          - {ID: 19, A: 6, B: 3, C: 9, S: "epsilon", F: false, D: 0.1, E: !null ''}
+          - {ID: 23, A: 4, B: 0, C: !null '', S: "gamma", F: true, D: 3.0, E: !f 3.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) IS NULL AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 17, A: !null '', B: 4, C: 9, S: !null '', F: !null '', D: 7.0, E: !f 4.0}
+#
+# scenario: fc_0000001145_q0_p1
+# generator: rowdiff-gen/1
+# seed: 1145
+# query-index: 0
+# projection: 1
+# date: 2026-08-01
+# blessing: metamorphic-tlp-only
+# oracles: tlp
+# feature-vector: shape=single;idx=D,S;proj=n1;where=or(in.in,and(cmp.notnull,in.in,!strfn.ne,numfn.eq));exists=not-eq.filtered;order=asc
+# plan-shape: 95905a1e996eed96
+# dedup-key: 9430e584af04e7e1
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1145 -seeds 1 -date 2026-08-01 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+---
+setup:
+  connect: 14
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 7, 7, 'gamma', NULL, 3.0, 2.0), (2, 8, 5, 5, 'epsilon', TRUE, 0.0, -0.0), (3, 5, 3, NULL, 'beta', FALSE, 9007199254740992.0, 4.0), (4, 2, 9, 6, 'gamma', TRUE, 0.1, 9.0), (5, 3, 1, NULL, ' a', TRUE, 1.0, 2.0), (6, NULL, 2, 7, 'alpha', NULL, 4.0, 2.0), (7, 7, 4, 4, 'gamma', FALSE, 3.0, NULL), (8, 7, 0, 4611686018427387904, 'b ', FALSE, 4.0, 6.0), (9, 0, 7, 2, 'b ', TRUE, 0.0, 1.0), (10, 4, 1, 2, NULL, NULL, NULL, 8.0), (11, 9, 0, 4, '', TRUE, 7.0, 6.0), (12, 0, 6, NULL, '', TRUE, NULL, 16777216.0), (13, -1, -1, 6, 'epsilon', TRUE, 6.0, 6.0), (14, NULL, 8, NULL, 'alpha', FALSE, 8.0, 8.0), (15, -1, 5, NULL, 'beta', FALSE, 6.0, 16777216.0), (16, NULL, 6, 1, ' c ', FALSE, NULL, NULL), (17, NULL, 4, 9, NULL, NULL, 7.0, 4.0), (18, 2, 2, 6, ' a', FALSE, 9.0, 6.0), (19, 6, 3, 9, 'epsilon', FALSE, 0.1, NULL), (20, NULL, 1, 5, 'alpha', FALSE, 7.0, 3.0), (21, 8, 8, 2, 'beta', NULL, 6.0, 1.0), (22, 2, 7, NULL, NULL, FALSE, 3.0, 0.10000000149011612), (23, 4, 0, NULL, 'gamma', TRUE, 3.0, 3.0), (24, 0, 5, NULL, 'gamma', FALSE, -9007199254740992.0, 5.0)
+---
+test_block:
+  name: "fc_0000001145_q0_p1"
+  preset: single_repetition_ordered
+  connect: 14
+  tests:
+    - - query: |-
+          SELECT id FROM t_rd WHERE NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3}
+          - {ID: 7}
+          - {ID: 8}
+          - {ID: 11}
+          - {ID: 14}
+          - {ID: 17}
+          - {ID: 19}
+          - {ID: 21}
+          - {ID: 23}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3}
+          - {ID: 14}
+          - {ID: 21}
+    - - query: |-
+          SELECT id FROM t_rd WHERE NOT ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 7}
+          - {ID: 8}
+          - {ID: 11}
+          - {ID: 19}
+          - {ID: 23}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) IS NULL AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 17}
+#
+# scenario: fc_0000001145_q0_p2
+# generator: rowdiff-gen/1
+# seed: 1145
+# query-index: 0
+# projection: 2
+# date: 2026-08-01
+# blessing: metamorphic-tlp-only
+# oracles: tlp
+# feature-vector: shape=single;idx=D,S;proj=n5;where=or(in.in,and(cmp.notnull,in.in,!strfn.ne,numfn.eq));exists=not-eq.filtered;order=asc
+# plan-shape: 95905a1e996eed96
+# dedup-key: 00758bab4d7889e6
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1145 -seeds 1 -date 2026-08-01 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+---
+setup:
+  connect: 15
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 7, 7, 'gamma', NULL, 3.0, 2.0), (2, 8, 5, 5, 'epsilon', TRUE, 0.0, -0.0), (3, 5, 3, NULL, 'beta', FALSE, 9007199254740992.0, 4.0), (4, 2, 9, 6, 'gamma', TRUE, 0.1, 9.0), (5, 3, 1, NULL, ' a', TRUE, 1.0, 2.0), (6, NULL, 2, 7, 'alpha', NULL, 4.0, 2.0), (7, 7, 4, 4, 'gamma', FALSE, 3.0, NULL), (8, 7, 0, 4611686018427387904, 'b ', FALSE, 4.0, 6.0), (9, 0, 7, 2, 'b ', TRUE, 0.0, 1.0), (10, 4, 1, 2, NULL, NULL, NULL, 8.0), (11, 9, 0, 4, '', TRUE, 7.0, 6.0), (12, 0, 6, NULL, '', TRUE, NULL, 16777216.0), (13, -1, -1, 6, 'epsilon', TRUE, 6.0, 6.0), (14, NULL, 8, NULL, 'alpha', FALSE, 8.0, 8.0), (15, -1, 5, NULL, 'beta', FALSE, 6.0, 16777216.0), (16, NULL, 6, 1, ' c ', FALSE, NULL, NULL), (17, NULL, 4, 9, NULL, NULL, 7.0, 4.0), (18, 2, 2, 6, ' a', FALSE, 9.0, 6.0), (19, 6, 3, 9, 'epsilon', FALSE, 0.1, NULL), (20, NULL, 1, 5, 'alpha', FALSE, 7.0, 3.0), (21, 8, 8, 2, 'beta', NULL, 6.0, 1.0), (22, 2, 7, NULL, NULL, FALSE, 3.0, 0.10000000149011612), (23, 4, 0, NULL, 'gamma', TRUE, 3.0, 3.0), (24, 0, 5, NULL, 'gamma', FALSE, -9007199254740992.0, 5.0)
+---
+test_block:
+  name: "fc_0000001145_q0_p2"
+  preset: single_repetition_ordered
+  connect: 15
+  tests:
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3, A: 5, C: !null '', F: false, E: !f 4.0}
+          - {ID: 7, A: 7, C: 4, F: false, E: !null ''}
+          - {ID: 8, A: 7, C: 4611686018427387904, F: false, E: !f 6.0}
+          - {ID: 11, A: 9, C: 4, F: true, E: !f 6.0}
+          - {ID: 14, A: !null '', C: !null '', F: false, E: !f 8.0}
+          - {ID: 17, A: !null '', C: 9, F: !null '', E: !f 4.0}
+          - {ID: 19, A: 6, C: 9, F: false, E: !null ''}
+          - {ID: 21, A: 8, C: 2, F: !null '', E: !f 1.0}
+          - {ID: 23, A: 4, C: !null '', F: true, E: !f 3.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 3, A: 5, C: !null '', F: false, E: !f 4.0}
+          - {ID: 14, A: !null '', C: !null '', F: false, E: !f 8.0}
+          - {ID: 21, A: 8, C: 2, F: !null '', E: !f 1.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE NOT ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 7, A: 7, C: 4, F: false, E: !null ''}
+          - {ID: 8, A: 7, C: 4611686018427387904, F: false, E: !f 6.0}
+          - {ID: 11, A: 9, C: 4, F: true, E: !f 6.0}
+          - {ID: 19, A: 6, C: 9, F: false, E: !null ''}
+          - {ID: 23, A: 4, C: !null '', F: true, E: !f 3.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((s IN ('beta', 'alpha')) OR ((d IS NOT NULL) AND (e IN (9007199254740992.0, 9007199254740992.0)) AND (NOT (CONCAT(s, 'q') <> ' aq')) AND (COALESCE(a, 8) = 7))) IS NULL AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.b = t_rd.b AND r.a < 4) ORDER BY id
+      - result:
+          - {ID: 17, A: !null '', C: 9, F: !null '', E: !f 4.0}
