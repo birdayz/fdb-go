@@ -1112,6 +1112,9 @@ func newNLJCursor(
 	if err != nil {
 		return nil, err
 	}
+	if build != nil {
+		build.Clock = evalCtx
+	}
 	c := &nljCursor{
 		outerInner: outer,
 		innerRows:  innerRows,

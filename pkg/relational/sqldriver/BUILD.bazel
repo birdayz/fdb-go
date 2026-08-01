@@ -131,6 +131,8 @@ go_test(
         "crosstype_const_sarg_fdb_test.go",
         "cte_alias_propagation_probe_test.go",
         "cte_box_unnest_on_resolution_probe_fdb_test.go",
+        "current_timestamp_crosspage_test.go",
+        "current_timestamp_join_shapes_test.go",
         "current_timestamp_stability_test.go",
         "datetime_functions_probe_test.go",
         "ddl_errors_probe_test.go",

@@ -213,7 +213,7 @@ would make the list read cleaner than the code is. Entries 2 and 4 have since be
 refuted by measurement, entry 4 fixed and pinned — see the entries); 8 and 12 remain marked.
 
 Wrong rows / wrong data:
-1. No read-your-writes in `BeginTx` (= B2). Pinned —
+1. No read-your-writes in `BeginTx` (= B2). IMPLEMENTATION IN FLIGHT (feat/rfc198-explicit-tx-isolation). Pinned —
    `sqldriver/tx_select_isolation_probe_test.go:62`.
 2. **REFUTED and retired: "INSERT of NULL into a PRIMARY KEY column silently stores 0."**
    Measurement inverted the claim: Go stores the same REAL tuple null (0x00) Java does — Java raises
@@ -224,18 +224,29 @@ Wrong rows / wrong data:
    `sqldriver/null_pk_java_parity_test.go` (explicit NULL, composite partial-NULL, omitted PK
    column; each asserts the null key exists — duplicate-NULL collides 23505 — and that `id=0` does
    NOT collide, i.e. nothing was stored as 0). No divergence remains.
-3. Correlated float `=` misses `-0.0`/`+0.0` on a non-terminal composite index column — silently
-   missing rows, rare shape. Pinned — `correlated_zero_composite_sentinel_test.go` (RFC-196),
-   "fails loudly the day it is fixed".
-4. **RESOLVED: `CURRENT_TIMESTAMP` drifted across rows within one statement (SELECT path).**
-   The executor's EvaluationContext now carries the session's statement instant
-   (`WithStatementTime`, stamped once per execution in `cascades_generator.go`) and every frontier
-   row context exposes it as the `values.StatementClock`; operators wrap the bare frontier row
-   exactly when their values reference the CURRENT_TIMESTAMP family
-   (`values.DependsOnStatementClock`). Pinned red→green by
-   `sqldriver/current_timestamp_stability_test.go` (10k-row scans looped across second boundaries:
-   one distinct timestamp per statement on the projection AND the predicates-filter shape, plus the
-   cross-statement control that the clock is not frozen beyond statement scope).
+3. **RESOLVED 2026-08-01 (CQ-83, `fix/rfc196-correlated-zero-composite`, awaiting the Graefe
+   lap).** Correlated float `=` no longer misses `-0.0`/`+0.0` on a non-terminal composite index
+   column. The sentinel fired on its own terms and was flipped:
+   `correlated_zero_composite_sentinel_test.go` now asserts the CORRECT rows (both correlation
+   directions, no duplicates, in-between guard rows, residual-path agreement, EXPLAIN pin that the
+   composite probe survives). Mechanism: execution-time probe split — one index range per signed
+   zero, scanned as an ordered concatenation (`zeroFork` in the executor; RFC-196's known gap,
+   closed the way its own analysis prescribed: widening decided at execution time, where the
+   correlated comparand's value is finally known — but as an exact two-range union, not a
+   contract-changing internal filter).
+4. **RESOLVED: `CURRENT_TIMESTAMP` drifted across rows within one statement (SELECT path),
+   including across PAGE boundaries.** The statement instant is captured ONCE per execution on the
+   result set (`paginatingRows.statementTime` in `cascades_generator.go`) while the driver call's
+   session-clock stamp is live — lazy pages fetched from `rows.Next()` after the driver call
+   returned reuse it, never re-reading the (already restored) session clock. Every frontier row
+   context exposes it as the `values.StatementClock`; operators wrap the bare frontier row exactly
+   when their values reference the CURRENT_TIMESTAMP family (`values.DependsOnStatementClock`),
+   and the ordinal join's baked result-value build carries it too (`ordinalJoinBuild.Clock`).
+   Pinned red→green by `sqldriver/current_timestamp_stability_test.go` (single-page projection and
+   predicates-filter shapes + cross-statement control),
+   `sqldriver/current_timestamp_crosspage_test.go` (~20-page statements looped across second
+   boundaries), `sqldriver/current_timestamp_join_shapes_test.go` (join/EXISTS/scalar-subquery
+   battery), and `executor/ordinal_join_clock_test.go` (baked-build clock threading).
 5. NaN comparisons follow Java's total order, not IEEE — `(v/z)=(v/z)` returns ALL rows. Pinned —
    `nan_comparison_semantics_test.go`. Matches Java; both diverge from the standard/PG/CRDB.
 6. Signed zero: Go is IEEE, Java is bit-identity — `WHERE d = 0.0` returns a stored `-0.0` row in
@@ -249,9 +260,21 @@ Wrong rows / wrong data:
    rests on a prose record of a live probe (`DIVERGENCES.md:978`), not a committed cross-engine pin.
 
 Different answer / different error:
-9. `SUM(int_col)` overflows silently from a join leg but raises 22003 outside one. Pinned —
-   `aggregate_operand_width_fdb_test.go:176`, red-means-gap-closed. Closing it flips answering
-   queries into errors — needs its own gated lap.
+9. **CLOSED.** `SUM(int_col)` now raises 22003 "integer overflow" identically with and without a
+   join around the operand's table, matching Java (measured live: `SumOverflowJoinLegJavaProbe`
+   in `conformance/` — Java rejects all four overflow shapes with the same verbatim messages Go
+   now emits). Root cause: the width machinery predated RFC-181 P0.5's width-faithful typing and
+   only consulted the merged-row ordinal a join-leg reference cannot index; the operand's own
+   static type (Java's `NumericAggregationValue.encapsulate` rule) now decides. Pinned —
+   `aggregate_operand_width_fdb_test.go` (`TestFDB_AggregateOperandWidthJoinLegRaises` plus
+   negative-direction, exact-boundary, BIGINT-lane and AVG/COUNT controls). The same-family
+   residual over DERIVED-TABLE and UNION-ALL aggregate inputs is closed too: derived sources
+   already flowed the column's type; union-bodied derived tables now type their output row by
+   Java's `Type.maximumType` fold over the branches (`buildDerivedTableSourceFromUnion`), which
+   also un-gapped two RFC-082 "Go rejects" union entries (outer WHERE over a union-derived
+   table now plans and matches Java's rows). Pinned —
+   `TestFDB_AggregateOperandWidthDerivedAndUnionInputs`, including the INTEGER∪BIGINT
+   promotion direction.
 10. `DELETE/UPDATE … RETURNING` via Exec silently drops the returned values; via Query → 0A000. Java
     supports it. Pinned — `returning_clause_probe_test.go:51,62`.
 11. `DROP SCHEMA IF EXISTS` ignores IF EXISTS (deliberate Java-bug replication). Pinned —
@@ -299,8 +322,64 @@ SPARSE one). *Refuted while verifying:* these were never watch-list entries that
 they were never listed at all, and they are still live rejections. RFC-202 (#553) landed the RFC and
 its census tests, not the generator, so nothing was retired.
 
+**Added 2026-08-01 — pinned by the day's merges (#560, #565, #559), same red-means-fixed contract:**
+13. Cross-leg metadata: `ResultSetMetaData.isNullable` reports NOT NULL for a column on the
+    null-supplying leg of a LEFT JOIN when both legs agree on type+cardinality — the agreement
+    gate cannot see null-born identity, and no choice function can (both result slots receive the
+    same candidate list; the correct answer differs per slot). Pinned —
+    `sqldriver/cross_leg_null_born_fdb_test.go` (`TestFDB_CrossLegAgreementGate_NullBornNotCovered`),
+    which asserts the metadata self-contradiction (NoNulls declared, SQL NULL delivered in the same
+    test). Fix is positional/flowed metadata (D3, RFC-204 P4 neighborhood), not a better picker.
+14. Nullable-array wire (RFC-143 §3a): Go writes a plain repeated field where Java wraps nullable
+    arrays in a `{repeated T values = 1}` message — `[]` and NULL collapse on the Go wire, and
+    nullable-array column bytes are NOT Java-interoperable until §3a closes. Pinned —
+    `sqldriver/array_literal_insert_fdb_test.go` (`TestFDB_ArrayLiteralInsertWireBytes` +
+    `empty_array` subtest with move-don't-delete re-arm instructions). This is the one OPEN
+    wire-compat divergence on the hard line; closing it is a schema-generation effort of its own.
+15. Struct descriptor emission (latent, wire-critical): Go's dormant struct path emits nested
+    `.Table.Struct` descriptors with `LABEL_REQUIRED` where Java emits top-level
+    `LABEL_OPTIONAL` messages — persisted-catalog bytes the moment structs become reachable.
+    Unreachable today (`parseColumnType` rejects structs); RFC-204 Phase 1 reworks emission
+    BEFORE making it reachable, with Java-server byte-goldens as the acceptance instrument.
+16. Error-class divergences measured by the corpus grind, each pinned at its exact rejection in
+    `javacorpus/gaps.go`: `[1] = [1]` evaluates NULL (array comparison semantics); duplicate
+    GROUP BY expression in an index → Go 0AF00 where Java answers 42702; `SELECT *` after
+    JOIN USING shows the right-side USING columns Java hides; typed float literal `1.0f`
+    unsupported. Wrong error/wrong shape, not wrong rows.
+17. `LIKE` newline semantics now match Java's measured behavior (no DOTALL; `$` before one final
+    line terminator): `WHERE name LIKE 'abc'` matches `"abc\n"`. Deliberate Java-parity
+    (verified against a live JDK over 1.2M cases), pinned in the LIKE test tables — listed here
+    because it will read as a bug to anyone who hasn't seen the derivation.
+
 Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
 `NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
+
+### Correctness-elimination order (2026-08-01)
+
+The path to zero KNOWN correctness errors, in execution order. "Done" for each = the watch-list
+entry's pin goes red and the entry is retired with the fix cited.
+
+1. **B2 / RFC-198** (entry 1) — in flight: OQ-1 + Phase 1 done and mutation-verified on
+   `feat/rfc198-explicit-tx-isolation`; Phases 2+ (SQLSTATE lanes, catalog binding, SimFDB
+   criteria 9-12) remain, then the joint completion lap.
+2. **The unpinned-or-unowned batch** (entries 2, 4, 3, 9) — INSERT-NULL-into-PK
+   (measurement REFUTED the entry: Java allows NULL PKs and Go matches — real pins landed,
+   fake pin deleted, on `fix/watchlist-insert-null-pk-timestamp`), CURRENT_TIMESTAMP drift
+   (fixed statement-scoped on the same branch; cross-page fold delta-ACK'd, PR #572),
+   correlated-float signed-zero composite (RFC-196 — FIXED via execution-time probe fork,
+   Graefe-ACK'd, PR #571), SUM overflow inconsistency (in flight — Java-behavior measurement
+   first, then its own gated lap since it flips answers into errors).
+3. **RFC-202 S7** — covering/DESC plan shapes over generated indexes (KeyWithValue split
+   discarded at the planner seam); in the S5-S9 agent's queue.
+4. **D3 positional metadata** (entry 13) — retires the cross-leg nullability class and the
+   #4274 divergence together; sequenced with RFC-204 P4.
+5. **RFC-143 §3a** (entry 14) — the open wire divergence; own design effort, after RFC-204 P1
+   settles the descriptor-emission ground it shares.
+6. **Error-class divergences** (entry 16) — batch of small Java-parity fixes, each already
+   pinned at its rejection.
+
+Everything in "deliberate, documented" (entries 5-8, 11, 17 + the client-side operational list)
+stays: those are Java-parity or standard-vs-Java calls with the reasoning recorded, not defects.
 
 Client-side operational: watches register at read version, not commit-gated; no `too_many_watches`
 limit; no RYW pending-write immediate-fire; special-key space absent; `BYPASS_UNREADABLE` span-wipe
