@@ -1,9 +1,10 @@
 # bazelscaleset
 
-A small supervisor for a **GitHub Actions runner scale set** on a single self-hosted box.
-It replaces the wedge-prone classic register-and-listen runner with **JIT-ephemeral**
-runners (one job per process, then exit) that are pinned to **warm bazel work-slots**, so
-there is no long-lived listener to wedge and bazel stays warm across jobs.
+A small supervisor for a **GitHub Actions runner scale set** spanning a self-hosted main
+box and, optionally, remote pool boxes reached over SSH. It replaces the wedge-prone
+classic register-and-listen runner with **JIT-ephemeral** runners (one job per process,
+then exit) that are pinned to **warm bazel work-slots**, so there is no long-lived
+listener to wedge and bazel stays warm across jobs.
 
 Design and rationale: [`rfcs/155-bazelscaleset.md`](../../rfcs/155-bazelscaleset.md).
 
@@ -46,6 +47,56 @@ go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o bazelscales
 At `--max-runners=1` (the default for a 7.6 GiB box) the backlog is serialized through one
 always-warm slot. Raise it (and add RAM) to run more slots concurrently; each stays
 independently warm.
+
+## Multi-host topology (`--remote-hosts`)
+
+A scale set allows **one message session**, so there is exactly ONE listener: this
+supervisor, on the main box. `--remote-hosts user@h1,user@h2,...` fans slots out to pool
+boxes:
+
+- **Slot 0 is always local** and unchanged (cloned runner dir, warm work slot).
+- **Slot i>0 executes on host i-1 over SSH.** The JIT config is minted exactly as for a
+  local slot (with the host's `--remote-work-base`/slot-0 as WorkFolder) and delivered on
+  **stdin** into a remote wrapper — never argv, which is world-readable in the remote
+  process table. The wrapper starts the box's stock runner (`--remote-runner-dir`, the
+  cloud-init-extracted install) under `setsid` in a **detached session** whose own
+  `echo $$` writes a pidfile; the runner therefore **survives the supervisor's ssh
+  connection dropping** and finishes its one job unattended.
+- **Liveness is polled** (a small ssh probe against the pidfile, cmdline-guarded against
+  pid reuse); when the runner exits the slot frees, and the **orphan-FDB sweep runs on
+  that host** (Docker state is per-box, so the sweep is per-box too, gated on no runner
+  being active there). Kill/shutdown escalation (TERM → grace → KILL) goes over ssh as a
+  process-group kill of the detached session.
+- SSH is the **system ssh binary** (`BatchMode=yes`, `ConnectTimeout`,
+  `StrictHostKeyChecking=accept-new`, identity from `--remote-ssh-key`) — auditable, and
+  host-key/agent policy stays in ssh_config. Host entries must be plain `user@host`
+  (whitespace or a leading `-` is rejected, so a host can never smuggle an ssh option).
+- With remote hosts set, `--max-runners` defaults to **1 + len(hosts)** and may not
+  exceed it.
+
+Failure modes:
+
+- **Host down at launch**: the slot is marked unhealthy for a cooldown (1 min) and does
+  not count toward capacity; the acquisition falls through to the remaining slots and the
+  job otherwise stays acquired for the next poll cycle. The never-connected JIT
+  registration is removed server-side. A dead pool box never crashes the supervisor
+  (an error out of the scaler would exit `listener.Run`).
+- **Host lost mid-job**: sustained probe failures (~5 min) reclaim the slot; the JIT
+  config is single-use, so a partitioned-but-alive runner finishing later cannot
+  double-run anything.
+- **Supervisor crash**: on restart, remote pidfiles are reconciled per host (kill the
+  recorded session's process group, cmdline-guarded) exactly like local slots.
+
+## Zombie-job watchdog (`--job-terminal-grace`)
+
+GitHub can mark a job terminal (failed/cancelled) server-side while the local
+Runner.Worker keeps running — measured live: a run marked failed at 05:54Z whose worker
+squatted the only slot until it was manually killed ~4.5 h later. Two signals mark a
+runner's job terminal: the session's `JobCompleted` message, and (for the case where that
+message never arrives) a periodic probe of the JIT runner's server-side record, which
+GitHub deletes once the job is terminal. Once terminal for longer than
+`--job-terminal-grace` (default 10 m) with the runner process still alive, the runner's
+process group is killed, the job id logged, and the slot reclaimed. `0` disables.
 
 ## Reliability
 
@@ -93,7 +144,7 @@ flags, so they never reach the process table):
 | `--name` | `BAZELSCALESET_NAME` | — | **required**, scale set name (also the default label) |
 | `--labels` | `BAZELSCALESET_LABELS` | `--name` | comma-separated `runs-on` labels |
 | `--runner-group` | `BAZELSCALESET_RUNNER_GROUP` | `default` | runner group name |
-| `--max-runners` | `BAZELSCALESET_MAX_RUNNERS` | `1` | concurrent runners = warm slots. **>1 is rejected** — it needs per-slot runner roots (shared `--runner-dir` corrupts `.runner`/`.credentials`) plus more RAM; see RFC-155 §3 |
+| `--max-runners` | `BAZELSCALESET_MAX_RUNNERS` | `1` (or `1+len(remote-hosts)`) | concurrent runners = slots; slots get per-slot runner roots. With `--remote-hosts` it may not exceed 1 local + one per host |
 | `--min-runners` | `BAZELSCALESET_MIN_RUNNERS` | `0` | pre-warmed idle runners |
 | `--runner-dir` | `BAZELSCALESET_RUNNER_DIR` | `/home/runner/actions-runner` | dir with `run.sh` |
 | `--work-base` | `BAZELSCALESET_WORK_BASE` | `/mnt/ci-data/bazelwork` | base dir for warm slots — keep on the CI data volume, same filesystem as bazel's `output_base`, **not** the root disk |
@@ -101,6 +152,11 @@ flags, so they never reach the process table):
 | `--grace-period` | `BAZELSCALESET_GRACE_PERIOD` | `60s` | shutdown grace before SIGKILL |
 | `--poll-timeout` | `BAZELSCALESET_POLL_TIMEOUT` | `2m` | hard ceiling on a single long-poll; on timeout the supervisor exits for systemd to restart with a fresh session (must be ≥ 60s) |
 | `--job-start-timeout` | `BAZELSCALESET_JOB_START_TIMEOUT` | `5m` | kill a launched runner that never starts a job and reclaim its slot (on-demand only; `0` disables) |
+| `--job-terminal-grace` | `BAZELSCALESET_JOB_TERMINAL_GRACE` | `10m` | kill a runner whose job has been terminal on the GitHub side this long while its process is still alive, and reclaim the slot (`0` disables) |
+| `--remote-hosts` | `BAZELSCALESET_REMOTE_HOSTS` | _(unset)_ | comma-separated `user@host` pool boxes; slot 0 stays local, slot i runs on host i-1 over SSH |
+| `--remote-ssh-key` | `BAZELSCALESET_REMOTE_SSH_KEY` | `/etc/bazelscaleset/remote_id` | SSH identity file for `--remote-hosts` |
+| `--remote-runner-dir` | `BAZELSCALESET_REMOTE_RUNNER_DIR` | `/home/runner/actions-runner` | extracted actions/runner dir on every pool box |
+| `--remote-work-base` | `BAZELSCALESET_REMOTE_WORK_BASE` | `/mnt/ci-data/bazelwork` | warm work base on every pool box (one slot per host at `<base>/slot-0`) |
 | `--heartbeat-file` | `BAZELSCALESET_HEARTBEAT_FILE` | _(unset)_ | if set, stamp a unix timestamp on each successful poll for an external watchdog to check (e.g. `/run/bazelscaleset/heartbeat`) |
 | `--app-client-id` | `BAZELSCALESET_APP_CLIENT_ID` | — | GitHub App client/app id |
 | `--app-installation-id` | `BAZELSCALESET_APP_INSTALLATION_ID` | — | GitHub App installation id |

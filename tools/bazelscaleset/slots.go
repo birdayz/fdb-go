@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // slot is a stable per-runner work directory plus its own actions/runner dir. Because
@@ -19,23 +20,43 @@ import (
 // runnerDir is a per-slot clone of the base actions/runner: at maxRunners>1, concurrent
 // runners must NOT share one runner dir, because the stock runner writes/removes
 // .runner/.credentials there per ephemeral runner and would corrupt each other.
+//
+// A slot with a non-empty host is REMOTE: its runner executes on that pool box over
+// SSH, and both path (the JIT WorkFolder) and runnerDir are paths ON THAT HOST. A
+// remote host runs at most one slot, so it uses the box's extracted actions/runner
+// directly — no clone (cloud-init owns that install). Remote slots have no local
+// directories at all, which keeps reconcileStrayRunners's workBase/slot-* scan
+// local-only by construction.
 type slot struct {
 	index     int
-	path      string // work dir (the JIT runner's WorkFolder)
-	runnerDir string // per-slot actions/runner dir (own run.sh + .runner/.credentials)
+	path      string // work dir (the JIT runner's WorkFolder); on host for remote slots
+	runnerDir string // actions/runner dir (own run.sh); on host for remote slots
+	host      string // "" = local; else user@host executed over SSH
+}
+
+// remoteSlotConfig maps slots 1..len(hosts) onto pool boxes.
+type remoteSlotConfig struct {
+	hosts     []string // user@host, in slot order (slot i>0 -> hosts[i-1])
+	runnerDir string   // extracted actions/runner dir on every pool box
+	workBase  string   // warm work base on every pool box (each gets <workBase>/slot-0)
 }
 
 // slotPool hands out a fixed pool of warm work-slots, one per concurrent runner.
-// At maxRunners=1 there is a single, always-warm slot.
+// At maxRunners=1 there is a single, always-warm slot. A slot marked unhealthy
+// (its host failed at launch) is skipped by take until its cooldown expires, so
+// a dead pool box shrinks capacity instead of black-holing every acquisition.
 type slotPool struct {
-	mu   sync.Mutex
-	free []*slot
-	all  []*slot
+	mu             sync.Mutex
+	free           []*slot
+	all            []*slot
+	unhealthyUntil map[int]time.Time // slot index -> earliest revival time
 }
 
-// newSlotPool creates n slots under baseDir, each with its own actions/runner dir cloned
-// from runnerBase (a clean template runner). Idempotent. Returns a pool with all free.
-func newSlotPool(baseDir, runnerBase string, n int) (*slotPool, error) {
+// newSlotPool creates n slots under baseDir. Slot 0 (and any further slot beyond the
+// remote host list) is local, with its own actions/runner dir cloned from runnerBase
+// (a clean template runner). Slots 1..len(remote.hosts) are remote and get no local
+// dirs. Idempotent. Returns a pool with all slots free.
+func newSlotPool(baseDir, runnerBase string, n int, remote remoteSlotConfig) (*slotPool, error) {
 	if n < 1 {
 		return nil, fmt.Errorf("slot pool needs at least 1 slot, got %d", n)
 	}
@@ -43,17 +64,27 @@ func newSlotPool(baseDir, runnerBase string, n int) (*slotPool, error) {
 	// template (".../actions-runner/-slot0") — which would also make the clone recurse
 	// into the source. We want a sibling (".../actions-runner-slot0").
 	runnerBase = filepath.Clean(runnerBase)
-	p := &slotPool{}
+	p := &slotPool{unhealthyUntil: make(map[int]time.Time)}
 	for i := range n {
-		path := filepath.Join(baseDir, fmt.Sprintf("slot-%d", i))
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return nil, fmt.Errorf("creating slot dir %q: %w", path, err)
+		var s *slot
+		if i > 0 && i-1 < len(remote.hosts) {
+			s = &slot{
+				index:     i,
+				host:      remote.hosts[i-1],
+				path:      remote.workBase + "/slot-0", // one slot per host; remote path, not filepath.Join'd with local rules
+				runnerDir: remote.runnerDir,
+			}
+		} else {
+			path := filepath.Join(baseDir, fmt.Sprintf("slot-%d", i))
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return nil, fmt.Errorf("creating slot dir %q: %w", path, err)
+			}
+			runnerDir := fmt.Sprintf("%s-slot%d", runnerBase, i)
+			if err := cloneRunnerDir(runnerBase, runnerDir); err != nil {
+				return nil, fmt.Errorf("cloning runner dir for slot %d: %w", i, err)
+			}
+			s = &slot{index: i, path: path, runnerDir: runnerDir}
 		}
-		runnerDir := fmt.Sprintf("%s-slot%d", runnerBase, i)
-		if err := cloneRunnerDir(runnerBase, runnerDir); err != nil {
-			return nil, fmt.Errorf("cloning runner dir for slot %d: %w", i, err)
-		}
-		s := &slot{index: i, path: path, runnerDir: runnerDir}
 		p.all = append(p.all, s)
 		p.free = append(p.free, s)
 	}
@@ -154,22 +185,42 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	return out.Close()
 }
 
-// take removes and returns a free slot, or nil if none are available.
+// take removes and returns a free healthy slot, or nil if none are available.
+// A slot whose unhealthy cooldown has expired is revived (its host gets another
+// chance; the next launch failure marks it unhealthy again).
 func (p *slotPool) take() *slot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.free) == 0 {
-		return nil
+	now := time.Now()
+	for i := len(p.free) - 1; i >= 0; i-- {
+		s := p.free[i]
+		if until, ok := p.unhealthyUntil[s.index]; ok {
+			if now.Before(until) {
+				continue
+			}
+			delete(p.unhealthyUntil, s.index)
+		}
+		p.free = append(p.free[:i], p.free[i+1:]...)
+		return s
 	}
-	s := p.free[len(p.free)-1]
-	p.free = p.free[:len(p.free)-1]
-	return s
+	return nil
 }
 
 // give returns a slot to the pool.
 func (p *slotPool) give(s *slot) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.free = append(p.free, s)
+}
+
+// markUnhealthy returns a slot to the pool but bars take from handing it out
+// until the cooldown passes — used when its host failed at launch, so the
+// acquisition falls through to other slots (or stays queued for the next poll)
+// instead of retrying a dead box in a tight loop.
+func (p *slotPool) markUnhealthy(s *slot, until time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.unhealthyUntil[s.index] = until
 	p.free = append(p.free, s)
 }
 
