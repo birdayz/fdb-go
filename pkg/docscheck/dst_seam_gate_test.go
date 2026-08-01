@@ -82,6 +82,8 @@ var seamAllowlist = map[string]string{
 	"pkg/recordlayer/indexing_mutual.go:mutualFragmentSeed: rand.Int63":            "nil-env arm of the mutual fragment-order seed; the sim arm draws from env.Read. Same math/rand-preserving reason as the SPFresh builder token",
 	"pkg/recordlayer/spfresh_rebalancer.go:newSPFreshProcessNonce: time.Now":       "error-path fallback only; the normal path is env.Read",
 	"pkg/recordlayer/query/plan/cascades/values/values.go:statementTime: time.Now": "nil-clock arm; a StatementClock supplies the value when one is installed",
+	"pkg/recordlayer/query/plan/cascades/values/values.go:StatementNow: time.Now":  "nil-Clock arm of RowEvalContext.StatementNow; the SQL layer stamps the session clock (WithStatementTime) so the seeded path never reaches this fallback",
+	"pkg/recordlayer/query/executor/evaluation_context.go:StatementNow: time.Now":  "unstamped-context arm of EvaluationContext.StatementNow; the SQL layer stamps the session clock (WithStatementTime) so the seeded path never reaches this fallback",
 	"pkg/relational/core/session/session.go:now: time.Now":                         "nil-clock arm; s.Clock supplies the value when one is installed",
 	"pkg/relational/core/embedded/scalar_functions.go:statementNow: time.Now":      "nil-session arm; Session.StatementNow supplies the value when a session is in flight",
 

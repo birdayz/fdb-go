@@ -2134,6 +2134,7 @@ func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []l
 	if ec != nil {
 		rc.Binder = ec
 		rc.ScalarSubqueries = ec.scalarSubqueries
+		rc.Clock = ec
 	}
 	return rc
 }

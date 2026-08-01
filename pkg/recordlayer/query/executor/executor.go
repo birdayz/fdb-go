@@ -1528,7 +1528,9 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	needsRowCtx := hasBindingContext(evalCtx)
+	// A CURRENT_TIMESTAMP-family reference needs the statement clock a
+	// RowEvalContext carries — a bare frontier row would drift per row.
+	needsRowCtx := hasBindingContext(evalCtx) || predicatesDependOnStatementClock(preds)
 	// When the input flows a 2-way ordinal join's merged
 	// positional row, filter predicates evaluate under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
@@ -2181,7 +2183,9 @@ func executeProjection(
 	aliases := p.GetAliases()
 	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
-	posNeedsCtx := hasBindingContext(evalCtx)
+	// A CURRENT_TIMESTAMP-family projection needs the statement clock a
+	// RowEvalContext carries — a bare frontier row would drift per row.
+	posNeedsCtx := hasBindingContext(evalCtx) || valuesDependOnStatementClock(projections)
 	// The projection's output schema is row-invariant — compute it ONCE.
 	// posNames names the EMITTED positional
 	// row's slots by OUTPUT name — alias-preferring, via the shared
@@ -3015,6 +3019,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 		if evalCtx != nil {
 			rc.Binder = evalCtx
 			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+			rc.Clock = evalCtx
 		}
 		rowCtx = rc
 	case combined.Positional != nil && combined.Positional.Type != nil && len(combined.Positional.Type.Legs) > 0:
@@ -3025,6 +3030,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 			rc.Correlations = evalCtx
 			rc.Binder = evalCtx
 			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+			rc.Clock = evalCtx
 		}
 		rowCtx = rc
 	}

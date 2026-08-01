@@ -136,6 +136,7 @@ go_test(
         "seed_window_reader_census_test.go",
         "simplifier_value_test.go",
         "source_relative_baked_test.go",
+        "statement_clock_dependency_test.go",
         "swallow_axis_test.go",
         "translation_map_merge_test.go",
         "type_test.go",

@@ -765,8 +765,10 @@ func executePredicatesFilter(
 	// On the positional frontier a QOV(innerAlias).col resolves
 	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
-	// param/subquery/outer-binding is. When none is present, flow the bare row.
-	posNeedsCtx := hasBindingContext(evalCtx)
+	// param/subquery/outer-binding is, or a CURRENT_TIMESTAMP-family
+	// reference that needs the statement clock a RowEvalContext carries.
+	// When neither is present, flow the bare row.
+	posNeedsCtx := hasBindingContext(evalCtx) || predicatesDependOnStatementClock(preds)
 	// When the input flows a 2-way ordinal join's merged
 	// positional row, predicates evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
@@ -836,7 +838,9 @@ func executeMap(
 	resultValue := p.GetResultValue()
 	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
-	posNeedsCtx := hasBindingContext(evalCtx)
+	// A CURRENT_TIMESTAMP-family result value needs the statement clock a
+	// RowEvalContext carries — a bare frontier row would drift per row.
+	posNeedsCtx := hasBindingContext(evalCtx) || values.DependsOnStatementClock(resultValue)
 	// The Map output schema is row-invariant — derive the emitted
 	// positional row's OUTPUT names once from the result value's record type. When
 	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into

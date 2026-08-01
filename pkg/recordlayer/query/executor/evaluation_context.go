@@ -2,8 +2,11 @@ package executor
 
 import (
 	"sync"
+	"time"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -37,6 +40,35 @@ type EvaluationContext struct {
 	// merged row at its SIBLING's span instead of its own — the standing form of
 	// the by-hand "bind every leg WRONG" mutation. See WithMergedLegWrongWindows.
 	mergedLegWrongWindows bool
+	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
+	// instant, stamped ONCE at statement execution start (the SQL layer
+	// stamps its session clock via WithStatementTime before running the
+	// plan). SQL fixes CURRENT_TIMESTAMP / CURRENT_DATE per STATEMENT;
+	// every row context derived from this context carries the stamp, so
+	// per-row evaluation cannot drift. Zero means "not stamped" —
+	// StatementNow then degrades to the wall clock.
+	statementTime time.Time
+}
+
+// WithStatementTime returns a copy stamped with the statement-stable
+// CURRENT_TIMESTAMP-family instant. Like every other With* copy, the
+// stamp rides all derived contexts (WithParams, WithBinding, …).
+func (ec *EvaluationContext) WithStatementTime(t time.Time) *EvaluationContext {
+	cp := *ec
+	cp.statementTime = t
+	return &cp
+}
+
+// StatementNow implements values.StatementClock: the one instant every
+// CURRENT_TIMESTAMP-family reference in this statement observes. An
+// unstamped context degrades to the wall clock — that is the per-row
+// drift the stamp exists to prevent, so statement entry points must
+// stamp via WithStatementTime.
+func (ec *EvaluationContext) StatementNow() time.Time {
+	if ec == nil || ec.statementTime.IsZero() {
+		return time.Now().UTC()
+	}
+	return ec.statementTime
 }
 
 // WithMergedLegReadBypass returns a copy in which lookups of the named aliases
@@ -144,6 +176,7 @@ func (ec *EvaluationContext) RowContext() *values.RowEvalContext {
 		Binder:           ec,
 		Correlations:     ec,
 		ScalarSubqueries: ec.scalarSubqueries,
+		Clock:            ec,
 	}
 }
 
@@ -160,6 +193,7 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 		Binder:           ec,
 		Correlations:     ec,
 		ScalarSubqueries: ec.scalarSubqueries,
+		Clock:            ec,
 	}
 }
 
@@ -187,6 +221,7 @@ func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBinding
 		if ec != nil {
 			rc.Binder = ec
 			rc.ScalarSubqueries = ec.scalarSubqueries
+			rc.Clock = ec
 		}
 		return rc
 	}
@@ -194,6 +229,43 @@ func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBinding
 		return ec.RowContextPositional(pos)
 	}
 	return pos
+}
+
+// valuesDependOnStatementClock reports whether ANY of the value trees
+// contains a CURRENT_TIMESTAMP-family function (values.DependsOnStatementClock).
+// Operators compute this ONCE alongside hasBindingContext: a clock-needing
+// value makes the frontier wrap the bare row so the statement-stable
+// instant is in reach.
+func valuesDependOnStatementClock(vs []values.Value) bool {
+	for _, v := range vs {
+		if values.DependsOnStatementClock(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// predicatesDependOnStatementClock is valuesDependOnStatementClock over
+// the value trees embedded in predicates (the shared rewrite spine —
+// predicates.DependsOnStatementClock).
+func predicatesDependOnStatementClock(ps []predicates.QueryPredicate) bool {
+	for _, p := range ps {
+		if predicates.DependsOnStatementClock(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// aggregateOperandsDependOnStatementClock is valuesDependOnStatementClock
+// over the operand value trees of aggregate specs.
+func aggregateOperandsDependOnStatementClock(specs []expressions.AggregateSpec) bool {
+	for _, s := range specs {
+		if values.DependsOnStatementClock(s.Operand) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasBindingContext reports whether an eval context carries any resolvable

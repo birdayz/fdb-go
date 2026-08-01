@@ -1774,7 +1774,12 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, storeErr
 		}
 
-		evalCtx := executor.EmptyEvaluationContext()
+		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(c.statementNow())
+		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
+		// ONCE, from the session clock (Session.BeginStatement /
+		// StatementNow — the same authority the INSERT…VALUES fold reads),
+		// BEFORE scalar subqueries evaluate: every row of the main plan AND
+		// of every subquery observes the same instant, per SQL.
 		// Compute the statement's execution props BEFORE evaluating scalar
 		// subqueries so the configured scan limits apply to them too
 		// (RFC-106a): an uncorrelated subquery must not scan past the statement

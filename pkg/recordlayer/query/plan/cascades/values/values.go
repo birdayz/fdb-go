@@ -2066,6 +2066,22 @@ type RowEvalContext struct {
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
+	// Clock supplies the statement-stable CURRENT_TIMESTAMP-family instant
+	// (StatementClock). Set from the executor's EvaluationContext so every
+	// row of one statement observes the same time; nil falls back to
+	// time.Now() per evaluation (the pre-statement-clock behavior).
+	Clock StatementClock
+}
+
+// StatementNow implements StatementClock by delegating to the carried
+// Clock; without one it degrades to the wall clock, which is the
+// per-evaluation drift the statement clock exists to prevent — callers
+// that need statement stability must set Clock.
+func (r *RowEvalContext) StatementNow() time.Time {
+	if r.Clock != nil {
+		return r.Clock.StatementNow()
+	}
+	return time.Now().UTC()
 }
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
@@ -2287,6 +2303,33 @@ func scalarIfBranch(cond any) (int, bool) {
 // fold) implement this; without it the arms fall back to time.Now().
 type StatementClock interface {
 	StatementNow() time.Time
+}
+
+// DependsOnStatementClock reports whether the value tree contains a
+// CURRENT_TIMESTAMP-family function — one whose result is defined by
+// the statement clock rather than by its (zero) arguments. The executor
+// computes this ONCE per operator to decide whether a bare frontier row
+// must be wrapped in a clock-bearing RowEvalContext: evaluating such a
+// value against a bare OrdinalRow falls back to per-row time.Now() and
+// drifts across the rows of one statement, which SQL forbids.
+func DependsOnStatementClock(v Value) bool {
+	if v == nil {
+		return false
+	}
+	if s, ok := v.(*ScalarFunctionValue); ok {
+		if def, known := scalarFunctionDefinitionFor(s.FuncName); known {
+			switch def.operator {
+			case scalarFunctionStatementTimestamp, scalarFunctionStatementDate:
+				return true
+			}
+		}
+	}
+	for _, c := range v.Children() {
+		if DependsOnStatementClock(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // evalScalarFunction dispatches catalogued scalar operators, including the
