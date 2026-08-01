@@ -63,9 +63,12 @@ var engineGaps = []EngineGap{
 	{"create-drop.yamsql", SkipGapCatalogTables, "no schema metadata available", "CQ-72"},
 	{"catalog.yamsql", SkipGapCatalogTables, "no schema metadata available", "CQ-72"},
 
-	// `1I` / `3i` / `2L` / `4l` — the width-suffixed integer literals. The
-	// constant folder hands the whole token to strconv.ParseInt.
-	{"literal-tests.yamsql", SkipGapTypedIntLiteral, `integer parse "1I"`, "CQ-72"},
+	// The width-suffixed numeric literals (`1I`/`2L`/`1.0f`) are CLOSED:
+	// resolveDecimalText ports ParseHelpers.parseDecimal, and
+	// literal-tests.yamsql passes outright (TestFDB_TypedNumericLiterals +
+	// the walker suffix pins). union.yamsql's float-suffix sibling is
+	// still DDL-blocked here (AS-SELECT value indexes) and re-arms on PR
+	// #577's branch.
 
 	// The `__ROW_VERSION` pseudo-column is not exposed to name resolution.
 	{"join-tests-row-version.yamsql", SkipGapRowVersion, `column "__ROW_VERSION" does not exist`, "CQ-72"},

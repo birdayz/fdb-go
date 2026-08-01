@@ -167,8 +167,6 @@ const (
 	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
-	// SkipGapTypedIntLiteral is a width-suffixed integer literal (`1I`, `2L`).
-	SkipGapTypedIntLiteral SkipClass = "engine-gap:typed-integer-literal"
 	// SkipGapRowVersion is the `__ROW_VERSION` pseudo-column.
 	SkipGapRowVersion SkipClass = "engine-gap:row-version-pseudocolumn"
 	// SkipGapTableValuedFunction is a table-valued function in FROM.
@@ -225,7 +223,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
-		SkipGapTypedIntLiteral,
 		SkipGapRowVersion,
 		SkipGapTableValuedFunction,
 		SkipGapInlineValues,
