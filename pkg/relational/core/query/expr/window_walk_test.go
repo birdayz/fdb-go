@@ -1,9 +1,11 @@
 package expr_test
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -78,10 +80,14 @@ func TestWalk_RowNumberOverDistance(t *testing.T) {
 	}
 }
 
-// TestWalk_ArrayConstructorNumeric pins walkArrayConstructor's switch from
-// GetText()+ParseFloat to the resolver: negative literals (NegativeDecimalConstant)
-// and integer literals (promoted to float64) must both resolve to a
-// []float64 LiteralValue — the query-vector operand shape of a K-NN distance.
+// TestWalk_ArrayConstructorNumeric pins walkArrayConstructor's
+// Java-aligned shape (LightArrayConstructorValue built by
+// ExpressionVisitor.handleArray): a mixed int/double literal resolves
+// to an ArrayConstructorValue whose element type is the MaximumType
+// fold (here DOUBLE), with promotions injected so evaluation yields
+// homogeneous []any elements. Negative literals
+// (NegativeDecimalConstant) resolve via the typed parse tree, not
+// GetText()+ParseFloat.
 func TestWalk_ArrayConstructorNumeric(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -92,34 +98,72 @@ func TestWalk_ArrayConstructorNumeric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv, ok := v.(*values.ConstantValue)
+	av, ok := v.(*values.ArrayConstructorValue)
 	if !ok {
-		t.Fatalf("got %T, want *ConstantValue", v)
+		t.Fatalf("got %T, want *ArrayConstructorValue", v)
 	}
-	got, ok := cv.Value.([]float64)
+	if av.ElementType.Code() != values.TypeCodeDouble {
+		t.Fatalf("element type = %v, want DOUBLE (MaximumType of DOUBLE and INT)", av.ElementType.Code())
+	}
+	ev, err := av.Evaluate(nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	got, ok := ev.([]any)
 	if !ok {
-		t.Fatalf("constant value is %T, want []float64", cv.Value)
+		t.Fatalf("evaluated to %T, want []any", ev)
 	}
 	want := []float64{1.5, -2.5, 3, 0}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("elem[%d] = %v, want %v", i, got[i], want[i])
+		f, ok := got[i].(float64)
+		if !ok || f != want[i] {
+			t.Errorf("elem[%d] = %v (%T), want %v (float64) — the INT elements must be promoted to the DOUBLE element type", i, got[i], got[i], want[i])
 		}
 	}
 }
 
-// TestWalk_ArrayConstructorRejectsNonConstant pins that a non-constant array
-// element (a column reference) is rejected cleanly, not silently mis-parsed.
-func TestWalk_ArrayConstructorRejectsNonConstant(t *testing.T) {
+// TestWalk_ArrayConstructorColumnElement pins that a non-constant
+// array element (a column reference) walks cleanly — Java's
+// LightArrayConstructorValue takes arbitrary child Values, so
+// `[1.0, id, 3.0]` is a per-row array whose middle element is a
+// FieldValue promoted to the folded element type.
+func TestWalk_ArrayConstructorColumnElement(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 	ctx := parseFirstSelectExpr(t, "SELECT [1.0, id, 3.0] FROM users")
-	if _, err := r.WalkExpression(ctx); err == nil {
-		t.Fatal("expected error for non-constant array element, got nil")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	av, ok := v.(*values.ArrayConstructorValue)
+	if !ok {
+		t.Fatalf("got %T, want *ArrayConstructorValue", v)
+	}
+	if len(av.Elements) != 3 {
+		t.Fatalf("len(Elements) = %d, want 3", len(av.Elements))
+	}
+}
+
+// TestWalk_ArrayConstructorIncompatibleElements pins Java's
+// SemanticException INCOMPATIBLE_TYPE (surfaced as the relational
+// 22000 CANNOT_CONVERT_TYPE class) for an element pair with no
+// common maximum type, e.g. an int next to a string.
+func TestWalk_ArrayConstructorIncompatibleElements(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstSelectExpr(t, "SELECT [1, 'a'] FROM users")
+	_, err := r.WalkExpression(ctx)
+	if err == nil {
+		t.Fatal("expected CANNOT_CONVERT_TYPE for [1, 'a'], got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("got %v, want api.ErrCodeCannotConvertType", err)
 	}
 }
 

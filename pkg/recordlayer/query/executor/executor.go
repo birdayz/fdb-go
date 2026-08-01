@@ -3373,6 +3373,43 @@ func executeUpdate(
 }
 
 func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
+	// A repeated field (an ARRAY column) takes the []any an evaluated
+	// array literal produces (UPDATE … SET arr = [..] / INSERT … SELECT
+	// of a computed array) and converts each element through the same
+	// scalar lanes — the executor-side mirror of the relational
+	// ConvertToProtoValue repeated arm, so an array written via UPDATE
+	// is byte-identical to one written via INSERT … VALUES.
+	if fd.IsList() {
+		elems, ok := v.([]any)
+		if !ok {
+			// Fall to the scalar lanes' verbatim 22000 below.
+			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+		parent := dynamicpb.NewMessage(fd.ContainingMessage())
+		lv := parent.NewField(fd)
+		list := lv.List()
+		for _, e := range elems {
+			if e == nil {
+				// Java forbids NULL elements in collections
+				// (MessageHelpers.coerceArray, SemanticException
+				// UNSUPPORTED — surfaces as an internal error;
+				// tracked upstream as fdb-record-layer#3646).
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
+					"NULL as elements of a collection are currently not supported")
+			}
+			pv, err := goToProtoScalarValue(fd, e)
+			if err != nil {
+				return protoreflect.Value{}, err
+			}
+			list.Append(pv)
+		}
+		return lv, nil
+	}
+	return goToProtoScalarValue(fd, v)
+}
+
+func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		switch b := v.(type) {

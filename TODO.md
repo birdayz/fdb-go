@@ -13023,18 +13023,25 @@ None is speculative: each was re-verified against the tree before booking.
   (the file starting to pass fails the gap-reachability check; a DIFFERENT
   failure at the same path stays a hard failure). Counts are file counts.
 
-  - **array literal in `INSERT … VALUES` (5 files).** Highest value and the
-    best-understood: `insert_cascades.go:161` hands the evaluated cell to
-    `functions.ConvertToProtoValue`, whose switch is over the column's proto
-    `Kind` with no repeated-field arm, so a Go slice falls through to the
-    verbatim 22000. Minimal reproducer is eight lines —
-    `check-result-metadata/shouldPass/array-column.yamsql`: `create table
-    t1(pk integer, x integer array, primary key(pk))` then `INSERT INTO t1
-    VALUES (1, [10, 20, 30])`. Note it reproduces for a `bigint array` column
-    too (`right-deep-plan-tests.yamsql`), so it is NOT element-width promotion —
-    the repeated arm is simply absent. The fix needs the executor's
-    `buildInsertRecord` to accept a converted list, so it is a plan+executor
-    change, not a converter one-liner.
+  - [x] **array literal in `INSERT … VALUES` (was 6 files) — CLOSED.**
+    `ConvertToProtoValue` (and the executor's `goToProtoValue`, for UPDATE)
+    convert repeated fields element-wise; `walkArrayConstructor` builds
+    Java's `LightArrayConstructorValue` shape (MaximumType fold +
+    per-element PromoteValue injection) instead of the K-NN-only
+    `[]float64`; `CAST(x AS <type> ARRAY)` keeps its ARRAY suffix and
+    `CastValue` gained Java's ARRAY_TO_ARRAY element-wise arm — which
+    closed `engine-gap:cast-array-literal` too. Pinned by
+    `TestFDB_ArrayLiteralInsertValues` / `TestFDB_ArrayLiteralInsertWireBytes`
+    (sqldriver) and the corpus (pass 32→34: `array-column.yamsql`,
+    `cast-documentation-queries.yamsql`). The four other files progressed to
+    DISTINCT next gaps, re-booked at their measured rejections in gaps.go:
+    array comparison (`SELECT [1] = [1]` → NULL, arrays-operators), array
+    subscript under CAST (0AF00, cast-tests), JOIN mixed into
+    comma-separated FROM (right-deep-plan-tests), DML RETURNING result set
+    (prepared). NOTE: Go stores a nullable array as a PLAIN repeated field
+    (RFC-143 §3a divergence) where Java wraps it in a `values` wrapper
+    message — so `[]` and NULL collapse on the Go wire, and the stored bytes
+    for an array column are NOT Java-interoperable until §3a closes.
   - **catalog system tables (2)** — `select … from "TEMPLATES"` / `schemas`
     from a user connection: `0AF00: no schema metadata available`.
   - **width-suffixed integer literals `1I` / `2L` (1)** — the constant folder
@@ -13045,7 +13052,10 @@ None is speculative: each was re-verified against the tree before booking.
   - **correlated `EXISTS` over a set operation (1)**, **`WITH` nested inside a
     recursive CTE body (1)**, **JOIN-bodied derived table whose ON clause the
     FROM resolver cannot bind (1)**, **a query Cascades declines (1)**.
-  - **`CAST([1,2,3] AS STRING ARRAY)` returns NULL (1)**.
+  - [x] **`CAST([1,2,3] AS STRING ARRAY)` returns NULL (1)** — CLOSED with
+    the array-literal item above (walker keeps the ARRAY suffix; CastValue
+    casts element-wise per Java's ARRAY_TO_ARRAY);
+    `cast-documentation-queries.yamsql` passes wholly.
   - **`UPDATE … RETURNING … OPTIONS(DRY RUN)` produces no result set (1)**.
   - **an oversized record surfaces a raw executor error with no SQLSTATE (1)** —
     the corpus's `error:` assertion has nothing to compare against. This one is
@@ -13160,8 +13170,8 @@ None is speculative: each was re-verified against the tree before booking.
   **The live sentinel is `TestFDB_ArrayColumnMetadataIsTruncated`**
   (`pkg/relational/conformance/javacorpus/arraymetadata_fdb_test.go`), which
   runs `SELECT pk, x FROM t1` over an EMPTY table with `x integer array` and
-  reads `database/sql`'s answer directly — no INSERT, because column metadata
-  comes from the plan and inserting an array literal fails on CQ-72. It fails
+  reads `database/sql`'s answer directly — no INSERT needed, because column
+  metadata comes from the plan. It fails
   the moment the driver starts spelling the type Java's way, and its failure
   message is the hand-over instruction. It replaced a first attempt that
   compared two compile-time constants and could never have fired, which would

@@ -37,9 +37,10 @@ import (
 //   - result-set column TYPE = INTEGER (Java's Type.primitiveType(INT))
 //   - EXPLAIN renders cardinality(...) (the Cascades path, not text fallback)
 //
-// SQL INSERT does not support array literals in this engine, so the rows
-// with array columns are written via the record-store API (dynamicpb
-// repeated fields). Phase 1 has NO index support (that's Phase 2); every
+// The rows with array columns are written via the record-store API
+// (dynamicpb repeated fields) so this test's fixtures are independent of
+// the SQL INSERT path (which supports array literals — see
+// TestFDB_ArrayLiteralInsertValues). Phase 1 has NO index support (that's Phase 2); every
 // CARDINALITY query plans to a full SCAN here.
 //
 // Nested-struct arrays (CARDINALITY(struct.int_arr)) — a yamsql case — are

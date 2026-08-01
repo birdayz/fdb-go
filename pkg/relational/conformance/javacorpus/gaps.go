@@ -24,27 +24,28 @@ type EngineGap struct {
 // engineGaps is the measured Phase-1 ledger of Go-engine divergences the
 // vendored corpus surfaces. Each was found by running the file, not predicted.
 var engineGaps = []EngineGap{
-	// An array literal in INSERT … VALUES is handed to the scalar
-	// ConvertToProtoValue, whose switch is over the column's proto Kind and has
-	// no repeated-field arm, so a slice falls through to the verbatim 22000.
-	// Minimal reproducer: check-result-metadata/shouldPass/array-column.yamsql,
-	// eight lines — `create table t1(pk integer, x integer array, …)` then
-	// `INSERT INTO t1 VALUES (1, [10, 20, 30])`.
+	// The array-literal INSERT gap (engine-gap:array-literal-values) is
+	// CLOSED: ConvertToProtoValue converts a repeated field element-wise and
+	// walkArrayConstructor builds Java's LightArrayConstructorValue shape
+	// (TestFDB_ArrayLiteralInsertValues pins it). Four of its six files
+	// progressed to DISTINCT next gaps, each re-measured below at its exact
+	// new rejection; array-column.yamsql passes outright and
+	// wrong-array-element-type.yamsql now reaches its resultMetadata
+	// assertion, where the CQ-74 metadata truncation declines the comparison
+	// (unsupported:result-metadata-nested).
 	//
-	// The signatures carry the offending statement's own text, not just the
-	// 22000 sentence: that message is emitted for every INSERT type mismatch,
-	// so a bare match would let an unrelated conversion bug in one of these
-	// five files be absorbed as "the known array gap".
-	{"check-result-metadata/shouldPass/array-column.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, [10, 20, 30])", "CQ-72"},
-	// The shouldFail sibling of the line above, with the SAME setup insert. It
-	// was credited as a passing negative until the polarity accounting started
-	// asking WHERE the failure happened: upstream asserts a descriptor
-	// mismatch in its test block, and the file never got there.
-	{"check-result-metadata/shouldFail/wrong-array-element-type.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, [10, 20, 30])", "CQ-72"},
-	{"cast-tests.yamsql", SkipGapArrayValues, "insert into test_cast_arrays values(1, [1, 2, 3])", "CQ-72"},
-	{"arrays-operators.yamsql", SkipGapArrayValues, `INSERT INTO T1 (\"pk\", \"arr\", \"arr_nn\")`, "CQ-72"},
-	{"right-deep-plan-tests.yamsql", SkipGapArrayValues, "INSERT INTO t1 VALUES (1, 'A1', [1000, 2000])", "CQ-72"},
-	{"prepared.yamsql", SkipGapArrayValues, "INSERT INTO TA VALUES (1, 2.01, true, 151, [3, 4, 5]", "CQ-72"},
+	// cast-tests progresses past its array inserts and dies planning the
+	// FIRST test: an array subscript (`arr[1]`) inside an array constructor
+	// under CAST … AS STRING ARRAY — Cascades declines with 0AF00.
+	{"cast-tests.yamsql", SkipGapPlannerDeclines, "select cast([ arr[1] + arr[2], arr[2] + arr[3] ] as string array)", "CQ-72"},
+	// Array comparison: `SELECT [1] = [1]` evaluates NULL instead of TRUE.
+	{"arrays-operators.yamsql", SkipGapArrayComparison, `SELECT [1] = [1]`, "CQ-72"},
+	// A JOIN mixed into a comma-separated FROM list.
+	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
+	// UPDATE … RETURNING executes the mutation (the array SET now converts)
+	// but yields no result set — the driver's DML surface returns a row
+	// count only (dml_returning_probes.yaml pins the driver behaviour).
+	{"prepared.yamsql", SkipGapDMLReturning, `update ta set e = [10, 100, 1000] where a = 1 returning`, "CQ-72"},
 
 	// Querying the catalog's own tables (TEMPLATES, SCHEMAS) from a user
 	// connection finds no schema metadata to plan against.
@@ -74,9 +75,6 @@ var engineGaps = []EngineGap{
 	// its sources. The engine declines rather than silently returning the
 	// cross product, which is the right failure mode — but Java plans it.
 	{"documentation-queries/joins-documentation-queries.yamsql", SkipGapDerivedJoinOn, "unsupported FROM shape", "CQ-72"},
-
-	// `CAST([1, 2, 3] AS STRING ARRAY)` yields NULL instead of the cast array.
-	{"documentation-queries/cast-documentation-queries.yamsql", SkipGapCastArray, "actual result set is NULL", "CQ-72"},
 
 	// `UPDATE … RETURNING … OPTIONS(DRY RUN)` produces no result set.
 	{"update-delete-returning.yamsql", SkipGapReturningDryRun, "actual result set is NULL", "CQ-72"},
