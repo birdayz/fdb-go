@@ -55,7 +55,18 @@ func (*ArrayConstructorValue) Name() string { return "array" }
 // array constructor produces a non-nullable empty array — NULL
 // arrays come from elsewhere (a column value of NULL, etc.), not
 // from the constructor.
+//
+// The UNTYPED empty literal `[]` (element type NONE) is special: its
+// result type is the bare NONE type, not Array(NONE) — matching
+// Java's emptyArrayOfNone (AbstractArrayConstructorValue.java:305-310,
+// getResultType() returns Type.noneType()). NONE is what the
+// promotion lattice keys on (NONE_TO_ARRAY; Type.maximumType's NONE
+// arms), so `arr = []` promotes the literal to the column's ARRAY
+// type instead of failing an Array(NONE)-vs-Array(T) recursion.
 func (v *ArrayConstructorValue) Type() Type {
+	if v.ElementType != nil && v.ElementType.Code() == TypeCodeNone {
+		return NoneType
+	}
 	return &ArrayType{Nullable: false, ElementType: v.ElementType}
 }
 

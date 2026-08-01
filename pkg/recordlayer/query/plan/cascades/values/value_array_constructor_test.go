@@ -25,6 +25,28 @@ func TestArrayConstructorValue_Type(t *testing.T) {
 	}
 }
 
+// The UNTYPED empty literal `[]` (element type NONE) types as the bare
+// NONE type, not Array(NONE) — Java's emptyArrayOfNone
+// (AbstractArrayConstructorValue.java:305-310). NONE is what the
+// promotion lattice keys on (NONE_TO_ARRAY, MaximumType's NONE arms),
+// so `arr = []` promotes instead of failing an Array(NONE) recursion.
+func TestArrayConstructorValue_EmptyUntypedIsNoneType(t *testing.T) {
+	t.Parallel()
+	v := NewArrayConstructorValue(NoneType, nil)
+	if got := v.Type(); got != NoneType {
+		t.Fatalf("Type = %v, want NoneType", got)
+	}
+	// Evaluation is still the empty slice, NOT nil — NONE is the TYPE of
+	// `[]`, while its VALUE is an empty array.
+	res, err := v.Evaluate(nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if s, ok := res.([]any); !ok || len(s) != 0 {
+		t.Fatalf("Evaluate = %#v, want empty []any", res)
+	}
+}
+
 func TestArrayConstructorValue_NilElementTypeFallsBackToUnknown(t *testing.T) {
 	t.Parallel()
 	v := NewArrayConstructorValue(nil, nil)

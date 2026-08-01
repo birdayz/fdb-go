@@ -1350,12 +1350,11 @@ func IsPromotable(from, to Type) bool {
 //
 // NONE handling: NONE is the type of the untyped empty array `[]`;
 // it identity-promotes to any ARRAY type without changing
-// nullability. (NOT implemented for arrays — primitives only;
-// structured-type recursion is future work.)
+// nullability (Java Type.java:596-602 — the maximum of NONE and a
+// promotable other side is simply the other side).
 //
-// This is the primitive-only version. RECORD / ARRAY recursion is
-// future work — caller should fall back to nil for compound types
-// and let the caller decide how to handle the gap.
+// ARRAY × ARRAY and RECORD × RECORD recurse structurally into their
+// element / field types; ENUM and RELATION have their own arms below.
 //
 // Mirrors Java's `Type.maximumType(t1, t2)`.
 func MaximumType(t1, t2 Type) Type {
@@ -1375,6 +1374,13 @@ func MaximumType(t1, t2 Type) Type {
 	if c2 == TypeCodeNull && IsPromotable(t2, t1) {
 		return WithNullability(t1, true)
 	}
+
+	// NONE (Java Type.maximumType, Type.java:596-602): the untyped empty
+	// array `[]` identity-promotes to any ARRAY type, so the maximum is
+	// simply the other side. Java needs dedicated arms; Go's promotion
+	// lattice below reaches the identical result through the
+	// {NONE → ARRAY} promotionMap edge (NONE is non-nullable, so the
+	// nullability OR is a no-op) — TestMaximumType pins the NONE cases.
 
 	// Identity — same code → result is the more permissive nullability.
 	if c1 == c2 {

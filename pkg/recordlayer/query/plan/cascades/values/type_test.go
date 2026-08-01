@@ -933,6 +933,23 @@ func TestMaximumType(t *testing.T) {
 		{"INT × STRING → nil", NotNullInt, NotNullString, nil},
 		{"BOOLEAN × INT → nil", NotNullBoolean, NotNullInt, nil},
 		{"STRING × INT → nil", NotNullString, NotNullInt, nil},
+
+		// NONE × T (Java Type.java:596-602): the untyped empty array `[]`
+		// identity-promotes to any ARRAY type — the maximum is simply the
+		// other side, with NO nullability change (NONE is non-nullable).
+		{
+			"NONE × ARRAY → the ARRAY", NoneType,
+			&ArrayType{Nullable: false, ElementType: NotNullInt},
+			&ArrayType{Nullable: false, ElementType: NotNullInt},
+		},
+		{
+			"ARRAY NULL × NONE → the ARRAY (nullability kept)",
+			&ArrayType{Nullable: true, ElementType: NotNullInt}, NoneType,
+			&ArrayType{Nullable: true, ElementType: NotNullInt},
+		},
+		{"NONE × NONE → NONE", NoneType, NoneType, NoneType},
+		// NONE promotes to ARRAY only — a scalar counterpart is undefined.
+		{"NONE × INT → nil", NoneType, NotNullInt, nil},
 	}
 	for _, tc := range cases {
 		tc := tc

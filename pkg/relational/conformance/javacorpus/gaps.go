@@ -38,8 +38,19 @@ var engineGaps = []EngineGap{
 	// FIRST test: an array subscript (`arr[1]`) inside an array constructor
 	// under CAST … AS STRING ARRAY — Cascades declines with 0AF00.
 	{"cast-tests.yamsql", SkipGapPlannerDeclines, "select cast([ arr[1] + arr[2], arr[2] + arr[3] ] as string array)", "CQ-72"},
-	// Array comparison: `SELECT [1] = [1]` evaluates NULL instead of TRUE.
-	{"arrays-operators.yamsql", SkipGapArrayComparison, `SELECT [1] = [1]`, "CQ-72"},
+	// Array COMPARISON semantics are closed (`[1] = [1]` is TRUE, the
+	// NULL/NONE matrix and the 42804 rejections match Java — pinned by
+	// TestFDB_ArrayComparison and the live-Java ArrayComparisonJavaProbe).
+	// The file progressed 36 queries to its stored-row block, where the
+	// RFC-143 §3a wire divergence surfaces: Go writes a nullable array as
+	// a PLAIN repeated field (no `values` wrapper message), so the stored
+	// `[]` at pk 0 is byte-identical to NULL and reads back NULL — the
+	// row's IS_NULL/IS_EMPTY answers invert. Closes with the §3a
+	// nullable-array-wrapper WRITE follow-up (TODO R6).
+	{
+		"arrays-operators.yamsql", SkipGapNullableArrayWrapper,
+		"actual: {ARR: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}", "RFC-143 §3a",
+	},
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
 	// UPDATE … RETURNING executes the mutation (the array SET now converts)

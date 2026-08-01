@@ -62,6 +62,7 @@ go_test(
     size = "large",
     srcs = [
         "aggregate_conformance_test.go",
+        "array_comparison_java_probe_test.go",
         "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "boolean_expression_position_java_probe_test.go",

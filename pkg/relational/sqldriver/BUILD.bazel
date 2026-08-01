@@ -56,6 +56,7 @@ go_test(
         "arithmetic_edge_probe_test.go",
         "array_cardinality_fdb_test.go",
         "array_cardinality_index_fdb_test.go",
+        "array_comparison_fdb_test.go",
         "array_literal_insert_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
         "array_unnest_struct_fdb_test.go",

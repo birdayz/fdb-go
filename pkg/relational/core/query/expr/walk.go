@@ -445,6 +445,15 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	// dropping the suffix here used to cast the ARRAY operand to the bare
 	// element type and die "No cast defined from ARRAY to STRING".
 	if dtc.ARRAY() != nil {
+		// The ELEMENT type is always NOT NULL (Java SemanticAnalyzer.
+		// lookupType: `ArrayType.from(type.withNullable(false), …)`,
+		// SemanticAnalyzer.java:739) — element nullability is part of the
+		// array-comparison type match, so a nullable element here made
+		// `arr = CAST([] AS INTEGER ARRAY)` reject 42804 against a column
+		// whose element type is NOT NULL by the same Java rule.
+		if target.Code() != values.TypeCodeUnknown && target.IsNullable() {
+			target = values.WithNullability(target, false)
+		}
 		target = values.NewArrayType(true, target)
 	}
 	return r.ResolveCast(inner, target)

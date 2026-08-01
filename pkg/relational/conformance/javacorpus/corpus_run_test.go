@@ -147,11 +147,17 @@ func TestJavaCorpusRuns(t *testing.T) {
 	// A gap entry whose file stopped failing is a CLOSED gap nobody deleted,
 	// and it would keep a working file booked as broken. Assert each entry
 	// still matched something.
+	// A matched gap's skip detail is "<booking>: <error>" — key on each
+	// entry's OWN booking rather than a hardcoded "CQ-" prefix, so a gap
+	// booked to an RFC follow-up (e.g. "RFC-143 §3a") is checked the same
+	// way as a CQ-numbered one.
 	matched := map[string]bool{}
 	for _, f := range ledger.Files() {
 		for _, s := range f.Skips {
-			if strings.HasPrefix(s.Detail, "CQ-") {
-				matched[f.Path] = true
+			for _, g := range javacorpus.EngineGaps() {
+				if f.Path == g.Path && strings.HasPrefix(s.Detail, g.Booking+": ") {
+					matched[f.Path] = true
+				}
 			}
 		}
 	}
