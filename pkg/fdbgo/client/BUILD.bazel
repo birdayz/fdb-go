@@ -71,6 +71,7 @@ go_test(
         "conflict_range_validation_test.go",
         "connmon_ping_test.go",
         "connmon_test.go",
+        "connteardown_fault_test.go",
         "coordinator_forward_test.go",
         "coordinator_test.go",
         "correctness_test.go",

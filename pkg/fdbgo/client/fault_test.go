@@ -172,6 +172,17 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	if err == nil {
 		t.Fatal("commit should have failed (connection killed)")
 	}
+	// A mid-commit connection teardown MUST surface commit_unknown_result (1021,
+	// MAYBE_COMMITTED): C++ commits with AtMostOnce::True, so a teardown becomes
+	// request_maybe_delivered (LoadBalance.actor.h:369-370), which tryCommit maps
+	// to commit_unknown_result handling (NativeAPI.actor.cpp:6937). It must NEVER
+	// be the read-path teardown code (1030, retried by the read loops) nor an
+	// uncoded transport error — either would let a retry double-apply a commit
+	// whose fate is unknown without the self-conflict barrier.
+	var commitFDBErr *wire.FDBError
+	if !errors.As(err, &commitFDBErr) || commitFDBErr.Code != ErrCommitUnknownResult {
+		t.Fatalf("DIVERGENCE: mid-commit teardown must surface commit_unknown_result (1021), got %v", err)
+	}
 
 	// Disarm and clear connection pool to force reconnect.
 	fd.disarm()
@@ -304,6 +315,17 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 		// DefaultRPCTimeout (5s) — so a regression to "wait for the timeout" goes red.
 		if elapsed >= 2*time.Second {
 			t.Fatalf("in-flight reply failed only after %v; peer disconnect was not detected immediately", elapsed)
+		}
+		// The teardown must be CODED: sentinel identity plus FDB code 1030
+		// request_maybe_delivered — what C++'s waitValueOrSignal delivers on peer
+		// disconnect (fdbrpc.h:794-799) — never a bare I/O error the retry
+		// machinery cannot classify.
+		if !errors.Is(resp.Err, transport.ErrConnClosed) {
+			t.Fatalf("teardown error must match transport.ErrConnClosed via errors.Is; got %v", resp.Err)
+		}
+		var teardownFDBErr *wire.FDBError
+		if !errors.As(resp.Err, &teardownFDBErr) || teardownFDBErr.Code != ErrRequestMaybeDelivered {
+			t.Fatalf("DIVERGENCE: teardown error must carry FDB code 1030 request_maybe_delivered; got %v", resp.Err)
 		}
 		t.Logf("peer disconnect failed the in-flight reply in %v: %v", elapsed, resp.Err)
 	case <-time.After(2 * time.Second):

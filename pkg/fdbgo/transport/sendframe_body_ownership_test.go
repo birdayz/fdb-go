@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 	"unsafe"
@@ -47,8 +48,11 @@ func TestSendFrame_PostEnqueueCtxDone_TransportStillOwnsBody(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != ErrConnClosed {
-			t.Fatalf("post-enqueue ctx.Done must return ErrConnClosed, got %v", err)
+		// errors.Is, not identity: the returned value is the coded teardown
+		// (ConnClosedError, carrying request_maybe_delivered 1030), which wraps
+		// the ErrConnClosed sentinel.
+		if !errors.Is(err, ErrConnClosed) {
+			t.Fatalf("post-enqueue ctx.Done must return the ErrConnClosed teardown, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("SendFrame did not return after ctx cancel")

@@ -25,6 +25,7 @@ go_test(
         "conn_lifecycle_test.go",
         "conn_recover_test.go",
         "conn_unit_test.go",
+        "connclosed_error_test.go",
         "ping_test.go",
         "reply_pool_test.go",
         "sendframe_body_ownership_test.go",
@@ -33,5 +34,8 @@ go_test(
         "wirelog_test.go",
     ],
     embed = [":transport"],
-    deps = ["@com_github_onsi_gomega//:gomega"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "@com_github_onsi_gomega//:gomega",
+    ],
 )
