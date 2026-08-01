@@ -6869,7 +6869,7 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	var innerLegCorr values.CorrelationIdentifier
 	if t.clusterArity(outerPlan) == 1 {
 		ordinalInnerCorr := values.UniqueCorrelationIdentifier()
-		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, outerPlan, ordinalInnerCorr, csq.InnerAlias, scalarCol)
+		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, outerPlan, innerPlan, ordinalInnerCorr, csq.InnerAlias, scalarCol)
 		if resultValue != nil {
 			innerLegCorr = ordinalInnerCorr
 		}

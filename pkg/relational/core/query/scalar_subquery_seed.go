@@ -47,7 +47,7 @@ import (
 // correlations are distinct and JOIN-inners ordinalize. The RC field NAME
 // stays <innerAlias>.<scalarCol> — the name-compat plumbing the projection
 // reads (replaceScalarSubqueryRef) — only the correlation key is decoupled.
-func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
+func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		return nil // decline → caller loud-declines
@@ -66,13 +66,28 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	}
 
 	// INNER scalar leg: ONE nullable ordinal-0 field named <inner>.<scalarCol>.
-	// The scalar's concrete type is untyped at translation (Go quantifier flowed
-	// types are untyped here), so the leg field is UnknownType;
-	// nullability is the only type property that matters (LEFT-OUTER null-fill).
-	// The reported result-set column TYPE is recovered from the inner plan later
-	// by deriveColumnsFromFlatMap (Go quantifier flowed types are untyped here).
+	// The field's TYPE is the inner subquery's OWN flowed output type, read off
+	// the inner logical operator — the same catalog-backed derivation every other
+	// leg uses. Java never re-derives a column's type downstream: client metadata
+	// is positional over the plan's flowed record type, so the type must be
+	// present on the value here (QueryPlan.getResultType →
+	// RelationalStructMetaData.of).
+	//
+	// Minting UnknownType here instead left the type to be re-guessed by NAME at
+	// the metadata surface, where a bare-name descriptor search across the join's
+	// leaf descriptors first-matches: with two legs declaring the same column
+	// name at different types, the scalar's column was reported as the OTHER
+	// leg's type (a STRING column served to the client as BIGINT).
+	//
+	// The inner exposes exactly ONE value (buildCorrelatedScalar materializes a
+	// computed scalar as a single projected output), so a derivable inner type
+	// has exactly one field. Anything else contradicts that premise — keep the
+	// nullable-unknown leg rather than guess which field is the scalar.
+	scalarType := values.WithNullability(scalarColumnType(t.legColumns(innerOp), scalarCol), true)
+	// Nullability is independent of the concrete type and always true: the join
+	// is LEFT-OUTER, so an outer row with no inner match yields NULL in this slot.
 	innerType := &values.RecordType{Fields: []values.Field{
-		{Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
+		{Name: scalarCol, FieldType: scalarType, Ordinal: 0},
 	}}
 	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
@@ -87,6 +102,41 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	rc := values.NewRawRecordConstructorValue(fields...)
 	values.AssertOrdinalJoinSeed(rc) // output-contract tripwire (code-bug only)
 	return rc
+}
+
+// scalarColumnType resolves the correlated scalar's column type within the
+// INNER subquery's OWN output columns. This is not a cross-leg name search: the
+// inner is a single subquery and scalarCol is the column ITS select list
+// exposes, so the resolution is the same one Java's SemanticAnalyzer performs
+// against a single operator's output (SemanticAnalyzer.java:417-437, which
+// likewise rejects rather than guesses when a name is ambiguous).
+//
+// Returns UnknownType — leaving the type to be recovered from the physical
+// inner plan downstream — in exactly the cases where a type cannot be resolved
+// without guessing:
+//   - the column is absent (a COMPUTED scalar or aggregate, materialized as a
+//     positional output that the inner leg's stored columns do not carry);
+//   - the name is AMBIGUOUS within the leg. First-match here would reintroduce
+//     the defect this function exists to remove, one level down.
+func scalarColumnType(innerCols []values.Field, scalarCol string) values.Type {
+	bare := scalarCol
+	if i := strings.LastIndex(bare, "."); i >= 0 {
+		bare = bare[i+1:]
+	}
+	var found values.Type
+	for _, c := range innerCols {
+		if !strings.EqualFold(c.Name, bare) {
+			continue
+		}
+		if found != nil {
+			return values.UnknownType // ambiguous within the leg — never first-match
+		}
+		found = c.FieldType
+	}
+	if found == nil {
+		return values.UnknownType
+	}
+	return found
 }
 
 // (Shape 2) The former innerContainsJoin gate is GONE with its

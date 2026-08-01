@@ -120,6 +120,8 @@ go_test(
         "correlated_zero_ordering_test.go",
         "covering_index_test.go",
         "cross_leg_duplicate_column_box_unnest_fdb_test.go",
+        "cross_leg_null_born_fdb_test.go",
+        "cross_leg_same_name_metadata_test.go",
         "cross_table_predicate_probe_test.go",
         "cross_type_join_probe_test.go",
         "cross_width_float_sarg_probe_test.go",
