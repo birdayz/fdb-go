@@ -1227,7 +1227,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
 		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
-		respectActiveTx:  p.IsUpdate(),
+		tx:               c.activeTx,
+		isUpdate:         p.IsUpdate(),
 		dryRun:           p.dryRun,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
@@ -1356,12 +1357,30 @@ type paginatingRows struct {
 	closed       bool
 	fetchErr     error
 
-	// respectActiveTx routes page execution through the connection's
-	// open explicit transaction (runInTx) instead of a fresh auto-commit
-	// transaction (DB.Run). Set for DML so INSERT/UPDATE/DELETE inside a
-	// BeginTx block join that transaction and commit only on COMMIT —
-	// matching the naive path. SELECT keeps the auto-commit snapshot.
-	respectActiveTx bool
+	// tx is the explicit transaction that was open when Execute ran, or nil in
+	// auto-commit mode. EVERY page of EVERY statement kind executes on it —
+	// SELECT included, which is what gives an explicit transaction
+	// read-your-writes and read conflict ranges (RFC-198 Decision 1; Java
+	// reads through conn.getTransaction() at BackingRecordStore.java:235).
+	// Captured HERE, at Execute time, rather than resolved per page: pages are
+	// fetched after QueryContext returned, so resolving c.activeTx at fetch
+	// time would let a result set whose transaction ended resume in a fresh
+	// auto-commit transaction, silently (Decision 3). A dead captured
+	// transaction is a loud 25F01 in runInCapturedTx.
+	//
+	// Routing through the transaction REMOVES automatic retry: DB.Run's retry
+	// loop is not in this path, so a conflict reaches the application, which
+	// re-runs the transaction — the driver cannot, because it does not hold
+	// the statements the application has not issued yet.
+	tx *embeddedTx
+
+	// isUpdate is the statement-kind fact that used to share a field with the
+	// routing decision above (`respectActiveTx`), conflating two independent
+	// questions. It answers exactly one: is this a DML plan whose page scan
+	// must never be bounded by the returned-row cap (pageRowBudget)? Keying
+	// that off the routing field would silently unbound the page scan of every
+	// in-transaction SELECT that sets MAX_ROWS (RFC-198 Decision 4).
+	isUpdate bool
 }
 
 func (r *paginatingRows) Columns() []string {
@@ -1597,7 +1616,7 @@ func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
 // offset+limit (executor.go executeLimit). DML plans report an affected-row
 // count, not a result set, so the cap must NOT bound their scan.
 func (r *paginatingRows) pageRowBudget() int {
-	if r.respectActiveTx { // DML (INSERT/UPDATE/DELETE): never bound the scan
+	if r.isUpdate { // DML (INSERT/UPDATE/DELETE): never bound the scan
 		return 0
 	}
 	rowCap := int64(math.MaxInt64)
@@ -1772,16 +1791,14 @@ func materializeDriverValue(v any) any {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
-	// DML joins an open explicit transaction (runInTx); SELECT runs in a
-	// fresh auto-commit transaction (DB.Run). runInTx falls back to DB.Run
-	// when no explicit transaction is active, so auto-commit DML behaves
-	// identically to before.
-	runTx := c.sess.DB.Run
-	if r.respectActiveTx {
-		runTx = c.runInTx
-	}
-
-	_, txErr := runTx(r.ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// Every statement kind joins the explicit transaction captured at Execute
+	// time (r.tx) — SELECT included, which is what gives an explicit
+	// transaction read-your-writes and read conflict ranges (RFC-198
+	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
+	// in its own auto-commit transaction via DB.Run, unchanged. A captured
+	// transaction that has since ended is a loud 25F01, never a silent fresh
+	// transaction (Decision 3).
+	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 

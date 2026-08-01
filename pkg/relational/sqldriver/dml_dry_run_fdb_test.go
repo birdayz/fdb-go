@@ -192,8 +192,8 @@ func TestFDB_DmlDryRun(t *testing.T) {
 	})
 
 	// DRY RUN inside an explicit BeginTx/COMMIT stages nothing across COMMIT:
-	// the dry-run primitives write nothing even when the DML joins the user's transaction
-	// (respectActiveTx).
+	// the dry-run primitives write nothing even when the DML joins the user's
+	// transaction (paginatingRows.tx routing).
 	t.Run("in_explicit_tx_stages_nothing_across_commit", func(t *testing.T) {
 		db := newDB(t, "s_tx")
 		t.Parallel()

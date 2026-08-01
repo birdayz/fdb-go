@@ -175,18 +175,47 @@ func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 type embeddedTx struct {
 	conn *EmbeddedConnection
 	rctx *recordlayer.FDBRecordContext
+
+	// terminated records that this transaction has ENDED — through any of the
+	// four doors: Commit, Rollback, EmbeddedConnection.Close, ResetSession
+	// (the last two cancel the context without going through Rollback, which
+	// is why the flag cannot live inside Rollback alone). It exists because a
+	// result set (paginatingRows) outlives the Execute that made it: pages are
+	// fetched from Next after QueryContext returned, so a SELECT whose
+	// transaction ended mid-iteration would otherwise resume reading in a
+	// fresh auto-commit transaction — silently, at a different read version,
+	// right after its reads were made transactional. An asserted boundary,
+	// never a silent fallback (RFC-198 Decision 3).
+	//
+	// The flag lives on the transaction, not the connection: the connection
+	// outlives the transaction and is reused from the pool, so a
+	// connection-level flag would be cleared by the next BeginTx and a stale
+	// paginatingRows would see it cleared and resume. The flag has to live on
+	// the object whose death it records. It is the ONE lifecycle every
+	// transaction-scoped object dies on (result sets here; the schema-cache
+	// binding and the per-transaction store follow the same flag).
+	terminated atomic.Bool
 }
+
+// terminate marks the transaction ended. Idempotent; called at all four doors.
+func (tx *embeddedTx) terminate() { tx.terminated.Store(true) }
 
 // Commit runs pre-commit hooks, flushes version mutations, commits the FDB
 // transaction, runs post-commit hooks, and clears the connection's activeTx.
+// The transaction is terminal whether or not the commit succeeded: an
+// explicit transaction never retries (there is no OnError loop on this path —
+// the driver does not hold the statements it would have to replay), so a
+// failed commit leaves a dead handle, not a resumable one.
 func (tx *embeddedTx) Commit() error {
 	err := tx.rctx.CommitWithHooks()
+	tx.terminate()
 	tx.conn.activeTx = nil
-	return err
+	return translateFDBError(err)
 }
 
 // Rollback cancels the FDB transaction and clears the connection's activeTx.
 func (tx *embeddedTx) Rollback() error {
+	tx.terminate()
 	tx.conn.activeTx = nil
 	tx.rctx.Cancel()
 	return nil
@@ -196,8 +225,29 @@ func (tx *embeddedTx) Rollback() error {
 // exists) or inside a new auto-commit transaction via fdbDB.Run.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
-	if c.activeTx != nil {
-		return fn(c.activeTx.rctx)
+	return c.runInCapturedTx(ctx, c.activeTx, fn)
+}
+
+// runInCapturedTx executes fn inside tx when one was captured, or inside a new
+// auto-commit transaction via fdbDB.Run when tx is nil (auto-commit is the
+// intended mode — no transaction was ever open). A captured transaction that
+// has since ended is an ERROR (25F01), never a silent fallback to a fresh
+// transaction: the caller captured the transaction precisely because its reads
+// belong to it, and resuming them at a different read version would splice one
+// logical result set across two snapshots with no error (RFC-198 Decision 3).
+// One policy for every route — the paginating SELECT/DML page loop and the
+// system-table reads all come through here.
+//
+// In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
+// would have to re-run the whole transaction, and the driver does not hold the
+// statements the application has not issued yet.
+func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	if tx != nil {
+		if tx.terminated.Load() {
+			return nil, api.NewError(api.ErrCodeTransactionInactive,
+				"transaction has ended: the result set was created inside an explicit transaction that has since committed, rolled back, or been closed")
+		}
+		return fn(tx.rctx)
 	}
 	return c.sess.DB.Run(ctx, fn)
 }
@@ -454,6 +504,11 @@ func (c *EmbeddedConnection) Close() error {
 	if c.activeTx != nil {
 		tx := c.activeTx
 		c.activeTx = nil
+		// This door bypasses Rollback, so it must set the terminal flag
+		// itself — a flag set only in Commit/Rollback would leave a result
+		// set from this transaction free to resume in a fresh auto-commit
+		// transaction (RFC-198 Decision 3).
+		tx.terminate()
 		tx.rctx.Cancel()
 	}
 	return nil
@@ -550,9 +605,12 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	c.sess.Schema = c.sess.DefaultSchema
 	if c.activeTx != nil {
 		// Best-effort rollback; we're about to release the connection
-		// back to the pool and must not leak the open FDB tx.
+		// back to the pool and must not leak the open FDB tx. Like Close,
+		// this door bypasses Rollback and must set the terminal flag itself
+		// (RFC-198 Decision 3).
 		tx := c.activeTx
 		c.activeTx = nil
+		tx.terminate()
 		tx.rctx.Cancel()
 	}
 	c.sess.ResetSchemaCache()

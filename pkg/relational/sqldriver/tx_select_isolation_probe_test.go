@@ -1,20 +1,16 @@
 package sqldriver_test
 
-// Pins the explicit-transaction read/write isolation model and documents a known
-// divergence from Java / the SQL standard:
+// Pins the explicit-transaction read/write isolation model (RFC-198):
 //
 //   - DML (INSERT/UPDATE/DELETE) inside BeginTx joins the explicit FDB transaction
-//     (runInTx) and is atomic on Commit / undone on Rollback. (Correct.)
-//   - SELECT inside BeginTx runs in a FRESH auto-commit transaction (DB.Run), NOT
-//     the explicit tx — see cascades_generator.go ("DML joins ... SELECT runs in a
-//     fresh auto-commit transaction"). Consequences (DIVERGENCE, see TODO.md
-//     "explicit-transaction read isolation"):
-//       * NO read-your-writes: a SELECT does not see the same tx's uncommitted DML.
-//       * Reads add no read-conflict range, so a read-modify-write across two
-//         explicit txns does NOT raise a serialization conflict (last-writer-wins).
+//     and is atomic on Commit / undone on Rollback.
+//   - SELECT inside BeginTx reads through the SAME transaction (read-your-writes,
+//     and the reads add read-conflict ranges) — Java's shape: setAutoCommit(false)
+//     reads through conn.getTransaction() (BackingRecordStore.java:235).
 //
-// Java (setAutoCommit(false)) reads through the same FDB tx and so DOES provide
-// read-your-writes. Flip these assertions if Go adopts in-tx reads.
+// The serialization half (a read-modify-write across two explicit transactions
+// conflicts with 40001 instead of losing a write) is pinned separately in
+// tx_isolation_rfc198_fdb_test.go.
 
 import (
 	"context"
@@ -43,7 +39,7 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
-	t.Run("no_read_your_writes_in_explicit_tx", func(t *testing.T) {
+	t.Run("read_your_writes_in_explicit_tx", func(t *testing.T) {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -56,11 +52,10 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 		if err := tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
 			t.Fatalf("select in tx: %v", err)
 		}
-		// DIVERGENCE: SELECT runs in a fresh tx → sees the pre-update value, not 777.
-		if v != 100 {
-			t.Errorf("in-tx SELECT after UPDATE v=%d; current driver semantics expect 100 "+
-				"(no read-your-writes — SELECT auto-commits). If this is now 777, read-your-"+
-				"writes was implemented: update this test and TODO.md/DIVERGENCES.md.", v)
+		if v != 777 {
+			t.Errorf("in-tx SELECT after UPDATE v=%d, want 777: a SELECT inside an explicit "+
+				"transaction must read through that transaction (read-your-writes, RFC-198 "+
+				"Decision 1). 100 means it ran in a fresh auto-commit transaction again.", v)
 		}
 	})
 

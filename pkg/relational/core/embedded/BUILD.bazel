@@ -157,6 +157,7 @@ go_test(
         "struct_ddl_test.go",
         "system_rows_test.go",
         "tri_bool_test.go",
+        "tx_page_row_budget_test.go",
         "unnest_element_later_from_item_test.go",
         "unnest_element_stays_untyped_test.go",
         "utilities_test.go",
@@ -284,6 +285,7 @@ go_test(
         "float_order_by_sort_retention_test.go",
         "key_component_types.go",
         "key_component_types_test.go",
+        "tx_page_row_budget_test.go",
     ],
     deps = [
         "//gen",
