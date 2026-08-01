@@ -1,9 +1,15 @@
 # RFC-204 — Struct types in the relational layer
 
-Status: **PROPOSED**, revision 1. RFC-201 Phase 3 prerequisite; query-engine
-review gate applies (RFC-201 §"Engine-gap phases that touch the query engine
-(struct types above all) carry the standing Graefe RFC + review gate
-individually", rfcs/201-layered-test-corpus.md:392).
+Status: **ACCEPTED**, revision 2 — dual joint-review ACK; implementation may
+start. Revision 1 received a Graefe ACK with two conditions (the §4.3 CQ-72
+merge-order contract and the §4.2 nullable array-of-struct byte-golden) and a
+Torvalds ACK conditional on text corrections (an over-claimed index census
+row, an over-counted array row, three stale citations) — all folded here and
+each re-verified against the sources before folding. RFC-201 Phase 3
+prerequisite; query-engine review gate applies (RFC-201 §"Engine-gap phases
+that touch the query engine (struct types above all) carry the standing
+Graefe RFC + review gate individually", rfcs/201-layered-test-corpus.md:392);
+the implementation lap at each phase completion remains owed.
 
 Java reference: `fdb-record-layer/` at tag 4.12.11.0. All Java citations are
 relative to that tree; all Go citations to the repo root.
@@ -71,9 +77,9 @@ variant has no struct; the file dies later on
 |---|---|---|
 | `CREATE TYPE AS STRUCT` declaration | 39/39 | `CREATE TYPE AS STRUCT s1(a bigint, b bigint)` |
 | Nested field access (`a.b.c`, up to 7 segments) | 38/39 | `q.est.dst.cst.bst.ast.a` (orderby.yamsql:41) |
-| Array-of-struct column (`name ARRAY`) | 23/39 | `pts point array` (…/array-of-struct-column.yamsql) |
+| ARRAY column (`name ARRAY`; array-of-struct is the wire-relevant subset) | 22/39 | `pts point array` (…/array-of-struct-column.yamsql) — count re-measured over DDL lines excluding comments; field-named-array.yamsql has NO array column (its `"array"` is a struct FIELD name) and functions.yamsql's is a primitive `integer array` |
 | `resultMetadata:` descent into struct/array | 17/39 | `PT: [point, {X: BIGINT}, {Y: BIGINT}]` |
-| `CREATE INDEX … AS SELECT` over nested fields | 16/39 | `create index i7 as select q.est.….a from t4 order by …` — **every index in the 39 files is AS-SELECT form; zero classic `ON t(col)` indexes** (grep-verified) |
+| `CREATE INDEX … AS SELECT` over nested fields | 16/39 | `create index i7 as select q.est.….a from t4 order by …` — every index over a NESTED path is AS-SELECT form; the one classic `ON` index in the 39 (`CREATE INDEX "T2_view_index" ON "T2_view" ("item")`, arrays-unnesting.yamsql:44) is a flat single column over a `CREATE VIEW` (:43), which the classic form's grammar is limited to (bare `uid`, §2.1) |
 | Struct literal in INSERT (nested parens) | ≥9/39 | `VALUES (1, 2, ((3, 4), (5, 6)))`, nested `null` |
 | Struct star expansion (`structcol.*` / qualified `.*`) | 7/39 | select-a-star, star-expression-metadata |
 | ORDER BY nested field | 5/39 | orderby, in-predicate, groupby-tests |
@@ -87,10 +93,11 @@ variant has no struct; the file dies later on
 Also present and load-bearing: struct-of-struct declarations (nested-tests
 declares `s3(e s1, f s2)`), `NULL`-able nested structs (`b s1 NULL` inside a
 struct declaration, nested-with-nulls.yamsql:25-26), UPDATE SET with a struct
-literal (`update B set b3 = (100, 100)`, inserts-updates-deletes.yamsql:58),
+literal (`update B set b2 = 30, b3 = (100, 100) where b1 < 10;`,
+inserts-updates-deletes.yamsql:68; :58 is the INSERT-SELECT),
 INSERT-SELECT of struct columns, unnest-defined indexes over struct arrays
 (`create index ir_f as select sq.f from r, (select f from r.nr) sq`,
-subquery-tests.yamsql:26).
+subquery-tests.yamsql:29).
 
 ### 1.3 Residual blockers (what the 39 hit AFTER struct lands)
 
@@ -105,7 +112,11 @@ Grep-measured per file; the hard (file-killing) residuals:
   (`showcasing-tests`) uses `!r` random injection.
 - Array-literal INSERT (`engine-gap:array-literal-values`, CQ-72, 6 files
   today) shares the exact converter seam this RFC's Phase 2 rebuilds; the
-  class closes as a side effect (§6 Phase 2).
+  class closes as a side effect (§6 Phase 2, merge-order contract in §4.3).
+- `arrays-unnesting.yamsql` additionally declares a `CREATE VIEW` (:43) with
+  a classic `ON` index over it (:44) — views are a §8 non-goal, so the file
+  carries a view residual that outlives every phase of this RFC and must
+  stay visible in the accounting rather than read as a struct straggler.
 
 This interplay is already on record from the other side: RFC-202 §1.2 notes
 that struct columns reject the whole template before any index is examined,
@@ -324,7 +335,7 @@ each phase cites.)
    (`values/values.go:233-260`), `AccessorNamePath`
    (`values/accessor_name_path.go:34`), fusion (`values/replace.go:412`).
 6. **Result metadata truncates to one string.** `executor.ColumnDef`
-   (`pkg/recordlayer/query/executor/resultset.go:58-65`) carries `TypeName
+   (`pkg/recordlayer/query/executor/resultset.go:62-69`) carries `TypeName
    string`; a struct column arrives as `"STRUCT"` with no fields
    (`valueTypeName`, `pkg/relational/core/embedded/cascades_generator.go:4319-4325`)
    and a struct-array element's `values.Type` is Unknown because the type
@@ -389,7 +400,11 @@ reworked to Java's shape before it becomes reachable.
   generated from the Java conformance server (`conformance/`) for a
   representative template set — every §1.2 construct: struct-of-struct,
   array-of-struct, nullable variants, nested PK, deep nesting, struct with
-  VECTOR/UUID fields, name escaping (`"x$$"`). Plus a record round-trip:
+  VECTOR/UUID fields, name escaping (`"x$$"`), and explicitly a **nullable
+  array-of-struct column**, so the NullableArrayWrapper emission shape (the
+  RFC-143 §3a divergence the builder comment at builder.go:540-542 already
+  tracks) is pinned by bytes rather than left to the scalar-array goldens.
+  Plus a record round-trip:
   Java writes / Go reads and Go writes / Java reads the nested-tests rows.
 
 ### 4.3 DML (mirrors parseRecordField target-type push-down)
@@ -407,6 +422,17 @@ reworked to Java's shape before it becomes reachable.
   ledger class closes in the same phase — array-of-struct literals cannot
   work without it, and shipping a struct-only list arm would be the
   simplified-for-now split CLAUDE.md forbids.
+
+  **CQ-72 merge-order contract**: a concurrent branch
+  (`fix/array-literal-insert-values`) is landing the plain-array
+  `ConvertToProtoValue` list arm now. Whichever of that branch and this
+  RFC's Phase 2 lands second rebases onto the other's converter arm and
+  extends it in place — never a second list arm beside the first, and never
+  a rewrite that discards CQ-72's pinned regression tests. Phase 2's
+  array-literal acceptance line is therefore re-measured at landing time:
+  `engine-gap:array-literal-values` may already be empty, in which case
+  Phase 2 inherits and extends the arm (struct elements, arrays nested in
+  structs) rather than claiming the class.
 - UPDATE SET with struct literals and nested-path targets goes through the
   same typed-constructor machinery, keyed by `FieldPath` as Java keys its
   transform map. INSERT-SELECT needs no new machinery once the planner
@@ -460,8 +486,11 @@ reworked to Java's shape before it becomes reachable.
 
 ### 4.6 Index expressions over nested fields (joint with RFC-202)
 
-Every index in the 39 files is AS-SELECT form (§1.2), so this RFC adds no
-index syntax. The requirement laid on RFC-202's generator: consume
+This RFC adds no index syntax: every nested-path index in the 39 files is
+AS-SELECT form, and the classic `ON` form CANNOT express a nested path — its
+`indexColumnSpec` is a bare `uid` (RelationalParser.g4:182-184). The single
+classic index in the 39 (arrays-unnesting.yamsql:44) is a flat column over a
+`CREATE VIEW`, a §8 non-goal booked as that file's residual in §1.3. The requirement laid on RFC-202's generator: consume
 multi-accessor resolved chains and emit `field(storage).nest(…)` per
 MaterializedViewIndexGenerator.java:778-827, storage names throughout,
 fan-out for unnest-defined index quantifiers, reject direct array-field
@@ -526,7 +555,9 @@ tests; the resolver + descriptor rework + goldens dominate).
 **Phase 2 — DML + values.** §4.3. Typed row constructors, MessageKind + list
 converter arms, UPDATE SET structs, `api.Struct` read-back, corpus matcher.
 Acceptance: `engine-gap:struct-dml` empties; `engine-gap:array-literal-values`
-(6 files) empties; first struct files go green (predicted: nested-tests,
+(6 files today) is re-measured under the §4.3 merge-order contract — it
+empties here unless `fix/array-literal-insert-values` already emptied it, in
+which case Phase 2 extends that arm in place; first struct files go green (predicted: nested-tests,
 arrays, nested-with-nulls-class files whose only residual is plan-assertion
 suppression). Estimate: **L** (~2-3k LOC).
 
