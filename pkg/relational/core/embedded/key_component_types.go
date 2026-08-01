@@ -60,11 +60,17 @@ func keyExpressionTypes(
 	case expression.Field != nil:
 		field := expression.Field
 		if descriptor == nil || field.FieldName == nil {
-			return []values.Type{values.UnknownType}
+			// Without both a descriptor and a field name there is no physical
+			// carrier to infer. Decline this component instead of guessing from
+			// another record type that may encode it at a different width.
+			return unknownPhysicalTypes(1)
 		}
 		fieldDescriptor := descriptor.Fields().ByName(protoreflect.Name(field.GetFieldName()))
 		if fieldDescriptor == nil || field.GetFanType() == gen.Field_CONCATENATE {
-			return []values.Type{values.UnknownType}
+			// A missing field and a concatenating repeated field both make the
+			// scalar carrier underivable at this topology node. Fail closed for
+			// range binding. FAN_OUT still contributes its scalar element type.
+			return unknownPhysicalTypes(1)
 		}
 		return []values.Type{physicalTypeForField(fieldDescriptor)}
 
@@ -111,7 +117,9 @@ func keyExpressionTypes(
 		if strings.EqualFold(expression.Function.GetName(), "cardinality") {
 			return []values.Type{values.NullableInt}
 		}
-		return []values.Type{values.UnknownType}
+		// Function result types are not encoded in KeyExpression metadata.
+		// Preserve cardinality while declining physical coercion.
+		return unknownPhysicalTypes(1)
 
 	case expression.Value != nil:
 		literal := expression.Value
@@ -131,7 +139,8 @@ func keyExpressionTypes(
 		case literal.BytesValue != nil:
 			return []values.Type{values.NullableBytes}
 		default:
-			return []values.Type{values.UnknownType}
+			// An unset or future literal variant has no known tuple carrier.
+			return unknownPhysicalTypes(1)
 		}
 
 	case expression.RecordTypeKey != nil:

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +142,171 @@ func TestPersistVerifiesTheCommittedBaselineByDefault(t *testing.T) {
 				"baseline passes everything", code, exitInfra)
 		}
 	})
+}
+
+func TestPersistAllowsOnlyTheExactLedgeredRetirement(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	corpus := seededCorpus(t, dir)
+	files, err := factorycorpus.LoadDir(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add a second, distinct point, then retire exactly that point. Keeping the
+	// first scenario makes the post-transaction corpus non-empty while the
+	// scenario/test/feature census genuinely shrinks.
+	retiredHeader := files[0].Header
+	retiredHeader.Name = "fc_0000000002_q0_p0"
+	retiredHeader.Seed = 2
+	retiredHeader.PlanShape = "fedcba9876543210"
+	retiredHeader.DedupKey = factorycorpus.DedupKeyOf(retiredHeader.FeatureVector+";retired=1", retiredHeader.PlanShape)
+	retiredHeader.FeatureVector += ";retired=1"
+	retiredScenario := *files[0].Scenario
+	retiredScenario.Name = retiredHeader.Name
+	oldBytes, err := factorycorpus.Marshal(retiredHeader, &retiredScenario)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredPath := filepath.Join(corpus, retiredHeader.Name+".yaml")
+	if err := os.WriteFile(retiredPath, oldBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err = factorycorpus.LoadDir(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := factorycorpus.ComputeCensus(files)
+	beforeTreeDigest, err := factorycorpus.CorpusTreeSHA256(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeData, err := factorycorpus.RenderCensus(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(censusPath(corpus), beforeData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(retiredPath); err != nil {
+		t.Fatal(err)
+	}
+	afterFiles, err := factorycorpus.LoadDir(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := factorycorpus.ComputeCensus(afterFiles)
+	afterTreeDigest, err := factorycorpus.CorpusTreeSHA256(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeDigest, _ := factorycorpus.CensusSHA256(before)
+	afterDigest, _ := factorycorpus.CensusSHA256(after)
+	sha := func(data []byte) string {
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:])
+	}
+	ledgerPath := filepath.Join(dir, "retirement.json")
+	ledger := factorycorpus.RetirementLedger{
+		FormatVersion: 1, RFC: "RFC-test", Date: "2026-08-01", Reason: "measured retirement",
+		BeforeCensusSHA256: beforeDigest, AfterCensusSHA256: afterDigest,
+		BeforeTreeSHA256: beforeTreeDigest, AfterTreeSHA256: afterTreeDigest,
+		Changes: []factorycorpus.RetirementChange{
+			{Name: filepath.Base(retiredPath), Disposition: factorycorpus.DispositionRetired, OldSHA256: sha(oldBytes)},
+		},
+	}
+	ledgerData, err := json.Marshal(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledgerPath, ledgerData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := factory.NewBatch(corpus, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{
+		seedStart: 1, seeds: 1, quota: 10, date: "2026-08-01",
+		out: corpus, manifest: filepath.Join(dir, "manifest.json"), findings: filepath.Join(dir, "findings"),
+		updateCensus: true, retirementLedger: ledgerPath,
+	}
+	if _, code := persist(cfg, batch, nil, "metamorphic", nil); code != exitOK {
+		t.Fatalf("exact ledgered retirement exited %d, want %d", code, exitOK)
+	}
+
+	ledger.AfterCensusSHA256 = strings.Repeat("0", 64)
+	badData, _ := json.Marshal(ledger)
+	if err := os.WriteFile(ledgerPath, badData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the old baseline so the second call still observes a shrink.
+	if err := os.WriteFile(censusPath(corpus), beforeData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = factory.NewBatch(corpus, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, code := persist(cfg, batch, nil, "metamorphic", nil); code != exitInfra {
+		t.Fatalf("mismatched ledger exited %d, want %d", code, exitInfra)
+	}
+
+	ledger.AfterCensusSHA256 = afterDigest
+	ledger.Date = "2026-08-02"
+	badData, _ = json.Marshal(ledger)
+	if err := os.WriteFile(ledgerPath, badData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = factory.NewBatch(corpus, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, code := persist(cfg, batch, nil, "metamorphic", nil); code != exitInfra {
+		t.Fatalf("wrong-date ledger exited %d, want %d", code, exitInfra)
+	}
+}
+
+func TestPersistRejectsUnusedOrMispairedRetirementLedger(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		update bool
+	}{
+		{name: "ledger without update-census", update: false},
+		{name: "ledger with no measured shrink", update: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			corpus := seededCorpus(t, dir)
+			files, err := factorycorpus.LoadDir(corpus)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := factorycorpus.RenderCensus(factorycorpus.ComputeCensus(files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(censusPath(corpus), baseline, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := factory.NewBatch(corpus, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config{
+				seedStart: 1, seeds: 1, quota: 10, date: "2026-08-01",
+				out: corpus, manifest: filepath.Join(dir, "manifest.json"), findings: filepath.Join(dir, "findings"),
+				updateCensus: tc.update, retirementLedger: filepath.Join(dir, "unused-ledger.json"),
+			}
+			if _, code := persist(cfg, batch, nil, "metamorphic", nil); code != exitInfra {
+				t.Fatalf("unused or mispaired ledger exited %d, want %d", code, exitInfra)
+			}
+		})
+	}
 }
 
 // TestCensusPathSitsBesideTheCorpus pins that the baseline is not inside the

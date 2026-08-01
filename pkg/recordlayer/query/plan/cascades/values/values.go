@@ -3975,20 +3975,24 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.castEvaluated(v)
+	return c.castEvaluated(v, c.Child.Type())
 }
 
 // castEvaluated applies the cast to an already-evaluated runtime value. The
-// array arm re-enters it per element: an element is ALREADY the evaluated
-// value, so wrapping it in a throwaway untyped ConstantValue just to re-run
-// child evaluation would discard a type for nothing — the element cast needs
-// neither a Child nor an eval context.
-func (c *CastValue) castEvaluated(v any) (any, error) {
+// array arm re-enters it per element with the declared source element type: an
+// element is ALREADY the evaluated value, so it needs neither a throwaway Value
+// node nor an eval context, but its Go carrier alone cannot distinguish
+// FLOAT/DOUBLE or INT/LONG.
+func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
 	if c.Target == nil {
 		return nil, nil
+	}
+	sourceCode := TypeCodeUnknown
+	if source != nil {
+		sourceCode = source.Code()
 	}
 	switch c.Target.Code() {
 	case TypeCodeArray:
@@ -3999,6 +4003,10 @@ func (c *CastValue) castEvaluated(v any) (any, error) {
 		at, ok := c.Target.(*ArrayType)
 		if !ok || at.ElementType == nil {
 			return nil, &InvalidCastError{Message: "Target array element type cannot be null"}
+		}
+		sourceArray, ok := source.(*ArrayType)
+		if !ok || sourceArray.ElementType == nil {
+			return nil, &InvalidCastError{Message: "Source array element type cannot be null"}
 		}
 		list, ok := v.([]any)
 		if !ok {
@@ -4013,7 +4021,7 @@ func (c *CastValue) castEvaluated(v any) (any, error) {
 				out = append(out, nil)
 				continue
 			}
-			ev, eerr := (&CastValue{Target: at.ElementType}).castEvaluated(e)
+			ev, eerr := (&CastValue{Target: at.ElementType}).castEvaluated(e, sourceArray.ElementType)
 			if eerr != nil {
 				return nil, eerr
 			}
@@ -4091,14 +4099,13 @@ func (c *CastValue) castEvaluated(v any) (any, error) {
 			// UNKNOWN-typed child keeps the conversion — the static
 			// widths now flow from the catalog, so unknown means an
 			// internal untyped expression, not a BIGINT column.
-			if code := arithOperandCode(c.Child); code == TypeCodeLong {
+			if sourceCode == TypeCodeLong {
 				return nil, &InvalidCastError{Message: "No cast defined from LONG to BOOLEAN"}
 			}
 			return val != 0, nil
 		case float64:
-			code := arithOperandCode(c.Child)
-			if code == TypeCodeDouble || code == TypeCodeFloat {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to BOOLEAN", code)}
+			if sourceCode == TypeCodeDouble || sourceCode == TypeCodeFloat {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to BOOLEAN", sourceCode)}
 			}
 			return val != 0, nil
 		case string:
@@ -4126,7 +4133,7 @@ func (c *CastValue) castEvaluated(v any) (any, error) {
 			// FLOAT_TO_STRING vs DOUBLE_TO_STRING operator rows:
 			// FLOAT renders through the Float.toString contract
 			// (32-bit shortest-repr), DOUBLE through Double.toString.
-			if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+			if sourceCode == TypeCodeFloat {
 				return javaFloatString(float64(float32(f)), 32), nil
 			}
 			return javaFloatString(f, 64), nil
@@ -4206,7 +4213,7 @@ func (c *CastValue) castEvaluated(v any) (any, error) {
 		// accepts) would otherwise be rejected by casting it to its own type.
 		// Dispatch on the child's STATIC type, since every FLOAT value is
 		// carried as a float64 and the runtime type cannot tell the two apart.
-		if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+		if sourceCode == TypeCodeFloat {
 			return v, nil
 		}
 		switch val := v.(type) {

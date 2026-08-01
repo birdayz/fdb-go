@@ -1,6 +1,6 @@
 # RFC-205 — Runtime signed-zero equality is an ordered physical range set
 
-Status: **DRAFT — implementation and verification in progress.**
+Status: **ACCEPTED AND IMPLEMENTED — 2026-08-01.**
 
 Target: close the measured correlated/parameterized signed-zero gap deliberately
 left by RFC-196 and watch-list entry 3 in road-to-prod.md.
@@ -671,6 +671,62 @@ failure. One flat odometer is exact with linear live state.
 prefixes; adding a constrained suffix makes the wanted set non-contiguous.
 Without an explicit residual layer, two broad ranges return false rows.
 
+## Measured corpus reconciliation
+
+The implementation was replayed through the RFC-201 factory against real FDB,
+not re-blessed from planner output alone. This was a replacement transaction,
+not a clean-checkout append: in an isolated copy of the parent corpus, the 51
+old-side paths enumerated by the ledger (27 replacements plus 24 retirements)
+were first hash-verified and removed. That preparation is required because the
+factory correctly refuses to overwrite an existing scenario name with changed
+content. The generation step was:
+
+~~~text
+go run ./cmd/factory-run -seed-start 19 -seeds 443 -quota 200 \
+  -date 2026-08-01 \
+  -out pkg/relational/conformance/factorycorpus/testdata \
+  -manifest /tmp/rfc205-final-factory-manifest.json \
+  -findings /tmp/rfc205-final-factory-findings
+~~~
+
+As designed, that step wrote the candidate files and then refused to lower the
+old census. The manifest and zero-file findings directory were reviewed first;
+only then were the content-exact retirement ledger and matching census update
+added. The permanent gate exercises the paired
+`-update-census -retirement-ledger` path, including wrong endpoint, wrong date,
+unlisted edit, stale old hash, trailing JSON, and unused/mispaired flag cases.
+
+The run generated and executed 4,337 candidates. It blessed 2,072, rejected
+2,042 as already-covered deduplicates, wrote 30 files (27 exact replacements
+and 3 additions), recorded 2,265 counted skips, and found zero oracle
+violations, zero findings, and zero name collisions. The 27 replaced scenarios
+retain the same schema, setup, four queries, flags, and row semantics; only the
+planner-dependent provenance/expectations changed.
+
+Eight old query points — seeds/query slots 19/0, 39/1, 137/5, 176/3, 202/4,
+256/2, 307/2, and 388/2 — no longer admit a distinct MatchLeaf-disabled
+physical plan after this RFC rejects unsafe ordered FLOAT/DOUBLE range access
+and stops treating zero equality as one physically fixed probe. Their three
+projection variants account for 24 retired files. Keeping their old recipes
+would falsely claim a second physical plan still exists.
+The signed-zero behavior they once happened to exercise is covered directly by
+the hand-authored range, planner, continuation, and real-FDB proofs below.
+
+The reconciled corpus contains 1,979 scenarios, 7,916 tests, and 1,961 feature
+vectors: 1,763 metamorphic and 216 explicitly TLP-only. The same commit carries
+`retirements/2026-08-01-rfc205.json`, which authorizes exactly 24 retirements,
+27 replacements, and 3 additions. Its census hashes bind logical coverage, and
+its complete before/after corpus-tree hashes plus every old/new file hash make
+the transaction content-exact; an unlisted byte change invalidates the ledger.
+
+Java 4.12.11.0 was also exercised as a prospective second-engine oracle rather
+than assumed authoritative. It could not plan the representative
+`ORDER BY E NULLS FIRST, ID` shape; in the seed-19 probe it rejected 8 of 11
+plans and the remaining 3 exposed genuine row-semantic divergences. Those
+results reinforce the source-level finding above: Java provides neither this
+multi-range implementation nor one stable signed-zero contract. No Java result
+was therefore mislabeled as a cross-engine blessing in this reconciliation.
+
 ## Verification gates
 
 Every new Go test calls t.Parallel where isolation permits. Storage behavior is
@@ -796,20 +852,48 @@ the repository's full just test, and the required 1M-row before/after stress
 comparison for the planner/executor change. Record exact commands, timings,
 disk conditions, and results in the PR; no flake is waived.
 
-## Review questions
+## Implementation verification
 
-Graefe should explicitly rule on:
+The final rebased tree passed all of the following on 2026-08-01:
 
-1. the scoped non-NaN equivalence theorem and loud dynamic-NaN boundary;
-2. full suffix SARGability plus explicit physical fixedness;
-3. finite constant-only row proofs and seek cost on every plural leaf;
-4. primary, value, aggregate, permuted, and vector consumer coverage.
+- deterministic generation, Gazelle, gofumpt/nogo lint, docscheck, and an
+  all-target Bazel build;
+- the complete non-stress repository suite: 75/75 Bazel test targets in
+  469.732s, including real FDB, full RFC-201 corpus, row differential, Java
+  conformance, SimFDB, and factory canonicality;
+- race instrumentation over executor, plans, cascades, and embedded;
+- four 60-second continuation/range-set fuzzers with 1,250,688 aggregate
+  executions: 262,945 branch advances, 235,640 malformed-token parses, 385,882
+  continuation round trips, and 366,221 paged sweeps;
+- the factory determinism/canonical audit over all 1,979 committed scenarios,
+  plus the content-exact retirement-ledger Go and Bazel runfiles gates; and
+- the 1M-row FDB stress scale. The pre-change run took 224.48s (100k customer
+  ingest 12.398s; 1M three-index order ingest 191.297s). The final run took
+  165.21s (9.294s; 138.105s respectively), and every point/range/aggregate/
+  join/full-scan/IN/update/delete assertion passed. The observed improvement is
+  not treated as a benchmark guarantee; it proves there is no measured
+  regression on the required scale.
 
-Torvalds should explicitly rule on:
+The host was already under unrelated multi-worktree Bazel load. One
+unconstrained build server was killed with Bazel exit 37 and no compiler/test
+diagnostic. The gate was rerun from start with four jobs and passed, followed by
+the complete four-job test suite. This is recorded as an infrastructure retry,
+not waived as a test flake.
 
-1. flat O(k) evaluated state and range-set continuation framing, with total
-   token size O(k + |inner|);
-2. one whole-range resource gate and normalized ScanState;
-3. continuation validation, forward/reverse order, and SourceExhausted-only
-   advancement;
-4. empty, error, close, overflow, and unopened-factory behavior.
+## Review disposition
+
+The independent post-rebase Graefe review returned **ACK**: the scoped non-NaN
+equivalence/loud-NaN boundary, suffix SARGability, physical fixedness,
+constant-only finite row proofs, seek multiplicity, full-key UNIQUE/PK proof,
+PK topology, aggregate ordering, and primary/value/aggregate/permuted/vector
+consumer coverage all agree.
+
+The independent post-rebase Torvalds review returned **ACK**: evaluated and
+serialized state are O(k) and O(k + |inner|), one normalized ScanState owns the
+whole range set, continuations validate before storage, only SourceExhausted
+advances a branch, forward/reverse scans agree, and empty/error/close/overflow/
+unopened-factory behavior is pinned.
+
+The independent corpus review also returned **ACK**: both census hashes, both
+complete corpus-tree hashes, all 54 changed-file entries, and all 27 replacement
+semantics match; no unlisted corpus byte changed.

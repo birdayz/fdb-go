@@ -20,7 +20,7 @@
 // execute a committed file verbatim; that is what makes cross-engine blessing
 // literal rather than aspirational.
 //
-// The package therefore holds five things and no more:
+// The package therefore holds six things and no more:
 //
 //   - the FAMILY mapping (family.go): feature vector → family key → file
 //     name, the grouping convention the loader cross-checks per scenario;
@@ -39,7 +39,12 @@
 //   - the CENSUS and RATCHET (census.go), the governance instrument of
 //     RFC-201 §8: scenario count, test count, per-feature-vector counts and
 //     the per-dedup-key blessing, computed from the files and gated so they
-//     can only go up.
+//     can only go up; and
+//   - the RETIREMENT LEDGER (retirement.go and retirements/), the sole explicit
+//     exception for a planner change that makes an old physical plan point
+//     cease to exist. It binds the reason, date, RFC, logical census, and full
+//     filename-plus-content tree before and after, so no unrelated corpus edit
+//     can hitchhike on a reviewed decrease.
 //
 // The producer lives in the sibling `factory` package and in
 // `cmd/factory-run`; the split is what lets the corpus run with no dependency
