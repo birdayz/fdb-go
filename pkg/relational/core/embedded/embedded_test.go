@@ -235,6 +235,14 @@ func TestTranslateFDBError(t *testing.T) {
 		{"fdb_conflict_typed", &wire.FDBError{Code: 1020}, api.ErrCodeSerializationFailure, false},
 		{"fdb_too_old_typed", &wire.FDBError{Code: 1007}, api.ErrCodeSerializationFailure, false},
 		{"fdb_during_commit_typed", &wire.FDBError{Code: 2017}, api.ErrCodeTransactionInactive, false},
+		// RFC-198 Decision 7: 1021 is 40003 (STATEMENT COMPLETION UNKNOWN),
+		// deliberately DISTINCT from 40001 — "may or may not have committed"
+		// is not "definitely did not commit"; a blind retry double-applies on
+		// the applied branch. 1025 is a cancelled transaction, 25F01.
+		{"fdb_commit_unknown_typed", &wire.FDBError{Code: 1021}, api.ErrCodeStatementCompletionUnknown, false},
+		{"fdb_cancelled_typed", &wire.FDBError{Code: 1025}, api.ErrCodeTransactionInactive, false},
+		{"fdb_commit_unknown_fdb_error_value", fdb.Error{Code: 1021}, api.ErrCodeStatementCompletionUnknown, false},
+		{"fdb_cancelled_fdb_error_value", fdb.Error{Code: 1025}, api.ErrCodeTransactionInactive, false},
 		{"fdb_timeout_fdb_error_value", fdb.Error{Code: 1031}, api.ErrCodeTransactionTimeout, false},
 		{"fdb_timeout_wrapped", fmt.Errorf("outer: %w", &wire.FDBError{Code: 1031}), api.ErrCodeTransactionTimeout, false},
 		// RFC-180 F-4: rendered-text matching is GONE. An error whose typed

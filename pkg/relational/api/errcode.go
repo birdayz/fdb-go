@@ -76,6 +76,15 @@ const (
 
 	// Class 40 — Transaction Rollback
 	ErrCodeSerializationFailure ErrorCode = "40001"
+	// ErrCodeStatementCompletionUnknown is the SQL standard's 40003
+	// (STATEMENT COMPLETION UNKNOWN), surfaced when FDB reports
+	// commit_unknown_result (1021): the transaction may or may not have
+	// committed, and the client cannot tell. It is deliberately DISTINCT from
+	// 40001 — 40001 means "definitely did not commit, re-run it"; 40003 means
+	// the application must determine the outcome before retrying, because a
+	// blind retry double-applies any non-idempotent statement on the
+	// applied branch. Go-only — see goOnlyErrorCodes.
+	ErrCodeStatementCompletionUnknown ErrorCode = "40003"
 
 	// Class 42 — Syntax Error or Access Rule Violation
 	ErrCodeSyntaxOrAccessViolation           ErrorCode = "42000"
@@ -198,6 +207,12 @@ var goOnlyErrorCodes = map[ErrorCode]string{
 	ErrCodePlanComplexityLimitReached: "Go bounds Cascades planning at 100,000 tasks; Java's SQL layer " +
 		"never enables its three planner caps, so the condition cannot arise " +
 		"there and no Java code names it. See DIVERGENCES.md.",
+	ErrCodeStatementCompletionUnknown: "SQL-standard 40003 for FDB commit_unknown_result (1021) on a " +
+		"non-retrying explicit transaction (RFC-198 Decision 7). Java's enum has " +
+		"no member for it: 1021 has no case in FDBExceptions, falls to the " +
+		"isRetryable default, and ExceptionUtil has no lane for the resulting " +
+		"FDBStoreRetriableException, so Java reports ErrorCode.UNKNOWN. A " +
+		"read-side error-surface extension with no wire implication.",
 }
 
 // allErrorCodes is the fast-lookup set for ErrorCodeFromString.
@@ -217,7 +232,7 @@ func init() {
 		ErrCodeNotNullViolation, ErrCodeUniqueConstraintViolation,
 		ErrCodeInvalidCursorState, ErrCodeInvalidContinuation,
 		ErrCodeInvalidTransactionState, ErrCodeTransactionInactive,
-		ErrCodeSerializationFailure,
+		ErrCodeSerializationFailure, ErrCodeStatementCompletionUnknown,
 		ErrCodeSyntaxOrAccessViolation, ErrCodeInsufficientPrivilege, ErrCodeSyntaxError, ErrCodeInvalidName,
 		ErrCodeColumnAlreadyExists, ErrCodeAmbiguousColumn, ErrCodeUndefinedColumn, ErrCodeDuplicateAlias,
 		ErrCodeDuplicateFunction, ErrCodeGroupingError, ErrCodeDatatypeMismatch, ErrCodeWrongObjectType,

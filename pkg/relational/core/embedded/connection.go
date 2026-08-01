@@ -747,6 +747,15 @@ func translateFDBCode(code int, err error) error {
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
 	case 1007: // transaction_too_old
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case 1021: // commit_unknown_result
+		// 40003, NOT 40001: the transaction may or may not have committed and
+		// the client cannot tell. The application must determine the outcome
+		// before retrying — a blind retry double-applies any non-idempotent
+		// statement on the applied branch (RFC-198 Decision 7).
+		return api.WrapError(api.ErrCodeStatementCompletionUnknown,
+			"FDB commit outcome unknown: the transaction may or may not have committed; determine the outcome before retrying", err)
+	case 1025: // transaction_cancelled
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction cancelled", err)
 	case 2017: // used_during_commit
 		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
 	}

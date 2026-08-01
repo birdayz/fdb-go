@@ -2021,7 +2021,13 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
-	return err
+	// FDB tail: page ≥ 2 errors reach the application through THIS function,
+	// not through the QueryContext/ExecContext translateFDBError wrap (which
+	// only sees the eagerly-fetched first page). An in-transaction page fetch
+	// has no DB.Run retry loop to absorb FDB codes, so 1020/1007/1025/1021
+	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
+	// idempotent on *api.Error, so double translation is harmless.
+	return translateFDBError(err)
 }
 
 // fetchTableStatistics reads per-record-type row counts from FDB using a
