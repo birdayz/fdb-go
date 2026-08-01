@@ -152,7 +152,10 @@ resource "hcloud_ssh_key" "runner" {
 resource "hcloud_server" "runner" {
   name        = "gh-runner-fdb"
   server_type = var.server_type
-  location    = var.location
+  # The live grandfathered box is in nbg1, NOT var.location (fsn1) — discovered
+  # 2026-08-01 when a plan wanted to replace it over the drift. Hard-pinned to
+  # reality; var.location remains the default for everything else.
+  location    = "nbg1"
   # Rolling Hetzner system-image label (RFC-108 §3): Hetzner refreshes the 24.04 image
   # over time, so the base OS point-release can drift between provisions. Every TOOL the
   # tests use (runner, bazelisk, just, mc, FDB client) is pinned + checksummed on top of
@@ -165,6 +168,7 @@ resource "hcloud_server" "runner" {
     fdb_version         = local.versions.fdb_version
     github_repo         = var.github_repo
     github_runner_token = var.github_runner_token
+    runner_name         = "gh-runner-fdb"
     runner_labels       = var.runner_labels
     runner_ephemeral    = var.runner_ephemeral
     runner_version      = local.versions.runner_version
@@ -193,7 +197,109 @@ resource "hcloud_server" "runner" {
     # direct reference to this resource safe: a stray token change can't silently take the
     # box (and its attached volume) down.
     prevent_destroy = true
+    # user_data is immutable-by-policy on this box: it was configured out-of-band
+    # (bazelscaleset deploy, RFC-155) and any template change would otherwise plan a
+    # ForceNew that prevent_destroy turns into a hard apply error. Template evolution
+    # applies to the runner_pool below; this box only changes via intentional re-provision.
+    ignore_changes = [user_data]
   }
+}
+
+# --- Runner pool (count-parameterized, classic mode) ---
+#
+# Additional runners beyond the grandfathered scaleset box. Classic register-and-listen
+# mode with the `hetzner-fdb` label: GitHub routes scale-set-labeled jobs to classic
+# runners by label match (measured 2026-08-01 — the drain fleet picked up queued
+# scale-set jobs immediately). Classic (not scaleset) because bazelscaleset is a
+# single-box supervisor: one scale set name = one listener, and workflows target the
+# one name — a second supervisor with the same name would fight over the message queue.
+#
+# Scale up: raise runner_count and apply with a fresh registration token:
+#   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)
+#   tofu apply -var "runner_registration_token=$TOKEN" -var "runner_count=N"
+# Scale down: lower runner_count (destroys highest indices first); deregister the
+# removed runners in GitHub afterwards (gh api -X DELETE .../actions/runners/{id}).
+# ignore_changes[user_data] keeps token rotation and template evolution from
+# replacing live pool boxes; a template fix reaches a pool box via taint/replace.
+
+variable "runner_count" {
+  description = "Number of pool runners (in addition to the grandfathered scaleset box)"
+  type        = number
+  default     = 4
+}
+
+variable "runner_registration_token" {
+  description = "GitHub Actions registration token for pool runners (expires ~1h; only needed when creating/replacing pool boxes)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "runner_pool_types" {
+  description = "Per-index server type for pool runners (falls back to the last entry when runner_count exceeds the list; mixed because Hetzner pools go out of stock — cx33 was unavailable at first provision)"
+  type        = list(string)
+  default     = ["cx33", "cx33", "cx33", "ccx23"]
+}
+
+variable "runner_pool_locations" {
+  description = "Per-index location for pool runners (same fallback rule as runner_pool_types)"
+  type        = list(string)
+  default     = ["fsn1", "fsn1", "fsn1", "nbg1"]
+}
+
+resource "hcloud_server" "runner_pool" {
+  count       = var.runner_count
+  name        = "gh-runner-drain-${count.index}"
+  server_type = element(var.runner_pool_types, min(count.index, length(var.runner_pool_types) - 1))
+  location    = element(var.runner_pool_locations, min(count.index, length(var.runner_pool_locations) - 1))
+  image       = "ubuntu-24.04"
+  ssh_keys    = [hcloud_ssh_key.runner.id]
+
+  user_data = templatefile("${path.module}/cloud-init.yaml", {
+    fdb_version         = local.versions.fdb_version
+    github_repo         = var.github_repo
+    github_runner_token = var.runner_registration_token
+    runner_name         = "gh-runner-drain-${count.index}"
+    runner_labels       = "hetzner-fdb"
+    runner_ephemeral    = false
+    runner_version      = local.versions.runner_version
+    runner_sha256       = local.versions.runner_sha256
+    bazelisk_version    = local.versions.bazelisk_version
+    bazelisk_sha256     = local.versions.bazelisk_sha256
+    just_version        = local.versions.just_version
+    just_sha256         = local.versions.just_sha256
+    mc_release          = local.versions.mc_release
+    mc_sha256           = local.versions.mc_sha256
+    fdb_clients_sha256  = local.versions.fdb_clients_sha256
+    runner_mode                       = "classic"
+    bazelscaleset_version             = local.versions.bazelscaleset_version
+    bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
+    bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
+    bazelscaleset_app_installation_id = var.bazelscaleset_app_installation_id
+    bazelscaleset_app_private_key     = ""
+  })
+
+  lifecycle {
+    # Registration tokens expire and rotate per apply; without this every re-apply
+    # would ForceNew the whole live pool.
+    ignore_changes = [user_data]
+  }
+}
+
+# Each pool runner needs its own ci-data volume: cloud-init fails loud (by design)
+# when /mnt/HC_Volume_* never mounts, and Docker's data-root + the bazel caches
+# live on it.
+resource "hcloud_volume" "runner_pool_data" {
+  count     = var.runner_count
+  name      = "gh-runner-drain-data-${count.index}"
+  size      = 100
+  server_id = hcloud_server.runner_pool[count.index].id
+  format    = "ext4"
+  automount = true
+}
+
+output "runner_pool_ips" {
+  value = hcloud_server.runner_pool[*].ipv4_address
 }
 
 # --- Persistent build/cache data volume (RFC-115 §7 / RFC-108 CI hardening) ---
