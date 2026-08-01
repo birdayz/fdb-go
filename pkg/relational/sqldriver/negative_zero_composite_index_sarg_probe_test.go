@@ -28,11 +28,11 @@ package sqldriver_test
 // many rows share a zero in the leading column, and it is the price of a
 // correct answer.
 //
-// KNOWN GAP, deliberately not covered: only a compile-time-constant zero is
-// detectable at match time. A correlated comparand that happens to be zero at
-// runtime keeps the full prefix and can still miss the row. De-sargging every
-// correlated composite join to cover it would trade a rare wrong row for a
-// broad performance cliff.
+// The correlated sibling gap — a comparand that is only known to be zero at
+// EXECUTION time — is covered separately: the executor splits such a probe
+// into one range per signed zero (zeroFork,
+// pkg/recordlayer/query/executor) instead of de-sargging the join. See
+// correlated_zero_composite_sentinel_test.go.
 
 import (
 	"context"

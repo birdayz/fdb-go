@@ -494,17 +494,16 @@ func composeCombos(rng *rand.Rand, n int, atomsA, atomsB, atomsC []sargCase) []s
 // inserted (never guessed).
 func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB, idxC intColModel, uniqU intColModel, idxS strColModel, idxD, idxF floatColModel) {
 	t.Helper()
-	// SAFETY INVARIANT (do not violate without reading TODO.md CQ-28 first):
-	// the ONLY composite index below, composite_idx_ab, is BIGINT-only —
-	// dbl_col/flt_col each carry a single-column index. dbl_col/flt_col's
-	// row generation now seeds -0.0 (CQ-27 closed the single-column
-	// signed-zero SARG gap), which is safe ONLY because no composite index
-	// puts a FLOAT/DOUBLE column in a NON-TERMINAL position: CQ-28 is the
-	// narrower, still-open sibling gap for exactly that shape
-	// (negative_zero_composite_index_sarg_probe_test.go has the
-	// reproducer). Adding a DOUBLE/FLOAT column to composite_idx_ab (or a
-	// new composite index) before CQ-28 closes would reopen a
-	// deterministic, ALWAYS-RUN red for an already-known reason.
+	// SAFETY INVARIANT (read TODO.md CQ-28/CQ-83 before lifting): the ONLY
+	// composite index below, composite_idx_ab, is BIGINT-only —
+	// dbl_col/flt_col each carry a single-column index, and their row
+	// generation seeds -0.0. The Go-side non-terminal signed-zero gaps this
+	// once guarded are CLOSED (CQ-28 constant, CQ-83 correlated — zeroFork
+	// in the executor), so a leading-float composite index would no longer
+	// trip a Go bug here; the restriction is kept in step with the rowdiff
+	// generator's (see rowdiff/gen.go), whose cross-engine corpus diverges
+	// by design against Java's bit-identity `=` on that shape. Extend both
+	// deliberately, together, or neither.
 	const dbPath = "/testdb_sargoracle"
 	setup := openTestDB(t, dbPath)
 	ctx := context.Background()

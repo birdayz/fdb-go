@@ -984,16 +984,16 @@ func genTable(rng *rand.Rand) TableDef {
 		{Name: "IDX_D", Cols: []string{"D"}},
 		{Name: "IDX_E", Cols: []string{"E"}},
 	}
-	// SAFETY INVARIANT (do not violate without reading TODO.md CQ-28 first):
-	// D and E (DOUBLE/FLOAT) are ONLY ever single-column indexes here — the
-	// one composite index, IDX_AB, is BIGINT-only. genRows now seeds -0.0
-	// into the D/E domains (CQ-27 closed the single-column signed-zero SARG
-	// gap), which is safe ONLY because no composite index puts a
-	// FLOAT/DOUBLE column in a NON-TERMINAL position: CQ-28 is the narrower,
-	// still-open sibling gap for exactly that shape
-	// (negative_zero_composite_index_sarg_probe_test.go has the reproducer).
-	// Adding a composite index with D or E as a leading column here before
-	// CQ-28 closes would reopen a mystery, hard-to-bisect nightly red.
+	// SAFETY INVARIANT (read TODO.md CQ-28/CQ-83 before lifting): D and E
+	// (DOUBLE/FLOAT) are ONLY ever single-column indexes here — the one
+	// composite index, IDX_AB, is BIGINT-only. genRows seeds -0.0 into the
+	// D/E domains. The Go-side non-terminal signed-zero gaps this once
+	// guarded are CLOSED (CQ-28 constant, CQ-83 correlated — zeroFork in the
+	// executor), so the restriction no longer hides a Go bug. It stays
+	// because this is a CROSS-ENGINE corpus: Java's `=` is bit identity, so
+	// a leading-float composite index makes Java and Go diverge by design on
+	// every zero probe, and lifting the restriction means classifying those
+	// divergences deliberately, not inheriting them as mystery nightly reds.
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	// ≥2 indexes with high probability: that is where intersections and
 	// cost ties live. 0-1 indexes still occur so full scans stay covered.

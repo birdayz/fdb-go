@@ -229,7 +229,7 @@ func executeScan(
 	// scan only that range. Mirrors Java's RecordQueryScanPlan.executePlan()
 	// which calls comparisons.toTupleRange() → store.scanRecords(range).
 	if comps := p.GetScanComparisons(); len(comps) > 0 {
-		tupleRange, err := scanComparisonsToTupleRange(comps, scanBindContext(evalCtx))
+		scanRanges, err := scanComparisonsToTupleRanges(comps, scanBindContext(evalCtx))
 		if err != nil {
 			return nil, fmt.Errorf("executor: building scan range for PK comparisons: %w", err)
 		}
@@ -250,35 +250,40 @@ func executeScan(
 			rt := md.GetRecordType(types[0])
 			if rt != nil && rt.PrimaryKey != nil && recordlayer.KeyExpressionHasRecordTypePrefix(rt.PrimaryKey) {
 				rtk := rt.GetRecordTypeKey()
-				tupleRange = tupleRange.Prepend(tuple.Tuple{rtk})
-				// Clamp unbounded endpoints to the record-type prefix so
-				// the scan stays within this type's key range.
-				if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
-					tupleRange.High = tuple.Tuple{rtk}
-					tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-				}
-				if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
-					tupleRange.Low = tuple.Tuple{rtk}
-					tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+				for ri, tupleRange := range scanRanges {
+					tupleRange = tupleRange.Prepend(tuple.Tuple{rtk})
+					// Clamp unbounded endpoints to the record-type prefix so
+					// the scan stays within this type's key range.
+					if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
+						tupleRange.High = tuple.Tuple{rtk}
+						tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
+					}
+					if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
+						tupleRange.Low = tuple.Tuple{rtk}
+						tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+					}
+					scanRanges[ri] = tupleRange
 				}
 			}
 		}
 
-		lowEP := tupleRange.LowEndpoint
-		highEP := tupleRange.HighEndpoint
-		if continuation != nil {
-			if scanProps.Reverse {
-				highEP = recordlayer.EndpointTypeContinuation
-			} else {
-				lowEP = recordlayer.EndpointTypeContinuation
-			}
-		}
-
-		inner := store.ScanRecordsInRange(
-			tupleRange.Low, tupleRange.High,
-			lowEP, highEP,
-			continuation, scanProps,
-		)
+		inner := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
+			func(tupleRange recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+				lowEP := tupleRange.LowEndpoint
+				highEP := tupleRange.HighEndpoint
+				if len(cont) > 0 {
+					if scanProps.Reverse {
+						highEP = recordlayer.EndpointTypeContinuation
+					} else {
+						lowEP = recordlayer.EndpointTypeContinuation
+					}
+				}
+				return store.ScanRecordsInRange(
+					tupleRange.Low, tupleRange.High,
+					lowEP, highEP,
+					cont, scanProps,
+				)
+			})
 		return recordlayer.MapCursor(inner, FromStoredRecord), nil
 	}
 
@@ -310,7 +315,7 @@ func executeIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons(), scanBindContext(evalCtx))
+	scanRanges, err := scanComparisonsToTupleRanges(p.GetScanComparisons(), scanBindContext(evalCtx))
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan range for %q: %w", p.GetIndexName(), err)
 	}
@@ -321,7 +326,10 @@ func executeIndexScan(
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
-	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+	indexCursor := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
+		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
+			return maintainer.Scan(r, cont, scanProps)
+		})
 
 	if p.IsCovering() {
 		var pkCols []string
@@ -844,12 +852,159 @@ func anyLaterComparisonConstrains(comparisons []*predicates.ComparisonRange, i i
 	return false
 }
 
+// zeroFork records a zero-valued FLOAT/DOUBLE equality at a NON-terminal
+// position of the equality prefix (a later comparison constrains the key).
+// pos is the element's index within the built prefix; val is the coerced
+// comparand, kept so the sign variants reuse its Go runtime type (float32
+// for FLOAT, float64 for DOUBLE — the tuple packer dispatches on it).
+//
+// Why a fork and not widening: -0.0 and +0.0 are adjacent index KEYS
+// (isZeroFloatBound), so a terminal zero widens to the contiguous
+// [prefix+(-0.0) .. prefix+(+0.0)] subtree. A NON-terminal zero cannot: the
+// interval [(-0.0,x) .. (+0.0,y)] also admits every (-0.0, >x) and
+// (+0.0, <y) between the two zero groups — wrong rows rather than missing
+// ones. The exact key set is the UNION of two disjoint ranges, one per
+// sign, identical in every other element. expandZeroForks materializes that
+// union; the executor scans the ranges as an ordered concatenation
+// (ConcatCursors). Disjointness makes the concatenation duplicate-free by
+// construction — no dedup layer, nothing for one to get wrong — and
+// ascending range order keeps the index's key order intact.
+//
+// This is execution-time machinery on purpose: only here is a CORRELATED or
+// parameterised comparand's value known (the planner sees an opaque operand
+// at match time — see match_candidate_index.go, which can terminate the
+// prefix only for a compile-time-constant zero). Java needs none of this:
+// its `=` is bit identity (Comparisons.java compareEquals →
+// toClassWithRealEquals → Double.equals → doubleToLongBits), so a Java
+// probe matches exactly one signed key and its single-range
+// ScanComparisons.toTupleRange is self-consistent. Go's `=` is ruled IEEE
+// (DIVERGENCES.md "Java's float `=` is bit identity"), so a Go probe must
+// return BOTH zeros' rows.
+type zeroFork struct {
+	pos int
+	val any
+}
+
+// scanComparisonsToTupleRanges converts scan comparisons to the ORDERED,
+// DISJOINT list of tuple ranges the scan must cover — one range in the
+// overwhelmingly common case, 2^k for k non-terminal zero-float equalities
+// (zeroFork). Ranges come back in ascending index-key order.
+func scanComparisonsToTupleRanges(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) ([]recordlayer.TupleRange, error) {
+	r, forks, err := scanComparisonsToTupleRangeAndForks(comparisons, binder)
+	if err != nil {
+		return nil, err
+	}
+	return expandZeroForks(r, forks)
+}
+
+// scanComparisonsToTupleRange is the single-range projection of
+// scanComparisonsToTupleRanges, for callers (tests) that assert on one
+// range. It fails LOUDLY when the comparisons fork — silently dropping a
+// fork would reintroduce the missing-row bug the fork exists to fix.
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
+	ranges, err := scanComparisonsToTupleRanges(comparisons, binder)
+	if err != nil {
+		return recordlayer.TupleRange{}, err
+	}
+	if len(ranges) != 1 {
+		return recordlayer.TupleRange{}, fmt.Errorf(
+			"scanComparisonsToTupleRange: comparisons require %d disjoint ranges (non-terminal signed-zero fork); use scanComparisonsToTupleRanges", len(ranges))
+	}
+	return ranges[0], nil
+}
+
+// expandZeroForks turns the base range plus its recorded forks into the
+// full ordered list of disjoint ranges: each fork doubles every range into
+// a -0.0 and a +0.0 variant at the fork's prefix position. Processing forks
+// in recording order (ascending position) with the negative variant first
+// yields ascending index-key order — earlier positions are more significant
+// and vary slowest, and -0.0's key sorts immediately below +0.0's.
+func expandZeroForks(r recordlayer.TupleRange, forks []zeroFork) ([]recordlayer.TupleRange, error) {
+	ranges := []recordlayer.TupleRange{r}
+	for _, f := range forks {
+		next := make([]recordlayer.TupleRange, 0, 2*len(ranges))
+		for _, cur := range ranges {
+			// Every range produced with forks recorded carries the full equality
+			// prefix in BOTH bounds, so the fork position must be addressable in
+			// each. A miss means the invariant broke; substituting nothing would
+			// emit two IDENTICAL ranges and every matching row twice — fail loud.
+			if f.pos >= len(cur.Low) || f.pos >= len(cur.High) {
+				return nil, fmt.Errorf(
+					"expandZeroForks: fork position %d outside range bounds (low %d, high %d elements)",
+					f.pos, len(cur.Low), len(cur.High))
+			}
+			neg := cur
+			neg.Low = cloneTupleWithElement(cur.Low, f.pos, negativeZeroLike(f.val))
+			neg.High = cloneTupleWithElement(cur.High, f.pos, negativeZeroLike(f.val))
+			pos := cur
+			pos.Low = cloneTupleWithElement(cur.Low, f.pos, positiveZeroLike(f.val))
+			pos.High = cloneTupleWithElement(cur.High, f.pos, positiveZeroLike(f.val))
+			next = append(next, neg, pos)
+		}
+		ranges = next
+	}
+	return ranges, nil
+}
+
+// cloneTupleWithElement copies t with the element at pos replaced. Always a
+// fresh copy: a range's Low and High may alias the same backing tuple (both
+// are often the bare equality prefix).
+func cloneTupleWithElement(t tuple.Tuple, pos int, v any) tuple.Tuple {
+	out := append(tuple.Tuple{}, t...)
+	out[pos] = v
+	return out
+}
+
+// multiRangeScanCursor scans the given disjoint, ascending-ordered ranges as
+// one cursor: a plain scan for one range, an ordered ConcatCursors chain
+// (Java-wire-compatible continuations) for several. Reverse scans consume
+// the ranges highest-first so the concatenation preserves descending key
+// order. scan opens one range's cursor from an optional continuation.
+func multiRangeScanCursor[T any](
+	ranges []recordlayer.TupleRange,
+	reverse bool,
+	continuation []byte,
+	scan func(recordlayer.TupleRange, []byte) recordlayer.RecordCursor[T],
+) recordlayer.RecordCursor[T] {
+	if reverse && len(ranges) > 1 {
+		ranges = slices.Clone(ranges)
+		slices.Reverse(ranges)
+	}
+	factories := make([]recordlayer.CursorFactory[T], len(ranges))
+	for i, r := range ranges {
+		factories[i] = func(cont []byte) recordlayer.RecordCursor[T] {
+			return scan(r, cont)
+		}
+	}
+	return concatCursorFactories(factories, continuation)
+}
+
+// concatCursorFactories folds N cursor factories into a right-nested
+// ConcatCursors chain. Resume rebuilds the identical nesting (the range
+// list is deterministic for a given plan and bindings), so each
+// ConcatContinuation layer finds the same shape it was minted against.
+func concatCursorFactories[T any](factories []recordlayer.CursorFactory[T], continuation []byte) recordlayer.RecordCursor[T] {
+	if len(factories) == 1 {
+		return factories[0](continuation)
+	}
+	rest := factories[1:]
+	return recordlayer.ConcatCursors(factories[0], func(cont []byte) recordlayer.RecordCursor[T] {
+		return concatCursorFactories(rest, cont)
+	}, continuation)
+}
+
+// scanComparisonsToTupleRangeAndForks builds the base scan range and
+// records a zeroFork for every non-terminal zero-float equality it had to
+// pin to a single sign along the way; expandZeroForks then splits the base
+// range per fork. Forks are nil on empty-range returns (nothing to split —
+// an empty range stays empty under any sign substitution).
+func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, []zeroFork, error) {
 	if len(comparisons) == 0 {
-		return recordlayer.TupleRangeAllOf(nil), nil
+		return recordlayer.TupleRangeAllOf(nil), nil, nil
 	}
 
 	var prefix tuple.Tuple
+	var forks []zeroFork
 	for i, cr := range comparisons {
 		if !cr.IsEquality() {
 			break
@@ -865,7 +1020,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		}
 		val, err := comp.Operand.Evaluate(binder)
 		if err != nil {
-			return recordlayer.TupleRange{}, err
+			return recordlayer.TupleRange{}, nil, err
 		}
 		val = coerceTupleElement(val, comp.Operand.Type())
 		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
@@ -889,7 +1044,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				High:         prefix,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil
+			}, nil, nil
 		}
 		// A zero-valued FLOAT/DOUBLE equality that terminates the prefix (the
 		// whole comparisons list is equality — nothing follows this column) widens
@@ -915,12 +1070,16 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		// through a composite one.
 		//
 		// A trailing CONSTRAINING comparison is different and still correctly
-		// excluded: with `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is
-		// not a contiguous interval — the span between them also admits
-		// (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot express it
-		// and widening here would return WRONG rows rather than missing ones.
-		// That case needs a genuine two-probe union (TODO CQ-28) and is left
-		// alone deliberately.
+		// excluded from widening: with `v = 0 AND w = 5` the union of (-0.0,5)
+		// and (+0.0,5) is not a contiguous interval — the span between them also
+		// admits (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot
+		// express it and widening here would return WRONG rows rather than
+		// missing ones. That case records a zeroFork below instead: the probe is
+		// split into one range per sign (see zeroFork / expandZeroForks). It
+		// arises only for a comparand whose value is unknown at plan time — a
+		// correlated or parameterised operand — because a compile-time-constant
+		// zero already TERMINATES the match prefix (match_candidate_index.go)
+		// and takes the widened branch above.
 		if isZeroFloatBound(val) && !anyLaterComparisonConstrains(comparisons, i) {
 			low := append(append(tuple.Tuple{}, prefix...), negativeZeroLike(val))
 			high := append(append(tuple.Tuple{}, prefix...), positiveZeroLike(val))
@@ -929,23 +1088,26 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				High:         high,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
-			}, nil
+			}, forks, nil
+		}
+		if isZeroFloatBound(val) {
+			forks = append(forks, zeroFork{pos: len(prefix), val: val})
 		}
 		prefix = append(prefix, val)
 	}
 
 	eqCount := len(prefix)
 	if eqCount >= len(comparisons) {
-		return recordlayer.TupleRangeAllOf(prefix), nil
+		return recordlayer.TupleRangeAllOf(prefix), forks, nil
 	}
 
 	nextRange := comparisons[eqCount]
 	if nextRange.IsEmpty() {
-		return recordlayer.TupleRangeAllOf(prefix), nil
+		return recordlayer.TupleRangeAllOf(prefix), forks, nil
 	}
 
 	if !nextRange.IsInequality() {
-		return recordlayer.TupleRangeAllOf(prefix), nil
+		return recordlayer.TupleRangeAllOf(prefix), forks, nil
 	}
 
 	// STARTS_WITH is a single-comparison PREFIX_STRING range, handled BEFORE the
@@ -964,11 +1126,11 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			// No prefix operand to bound against: fall back to the equality prefix
 			// rather than fabricate a bound (defensive — the planner always binds a
 			// prefix operand for STARTS_WITH).
-			return recordlayer.TupleRangeAllOf(prefix), nil
+			return recordlayer.TupleRangeAllOf(prefix), forks, nil
 		}
 		val, err := startsWith.Operand.Evaluate(binder)
 		if err != nil {
-			return recordlayer.TupleRange{}, err
+			return recordlayer.TupleRange{}, nil, err
 		}
 		// A NULL prefix operand makes `col STARTS_WITH NULL` UNKNOWN for every row
 		// (SQL 3VL) → unsatisfiable → empty result, consistent with the ordered-
@@ -980,7 +1142,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				High:         prefix,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil
+			}, nil, nil
 		}
 		val = uuidToTupleElement(val)
 		startTuple := append(append(tuple.Tuple{}, prefix...), val)
@@ -989,7 +1151,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			High:         startTuple,
 			LowEndpoint:  recordlayer.EndpointTypePrefixString,
 			HighEndpoint: recordlayer.EndpointTypePrefixString,
-		}, nil
+		}, forks, nil
 	}
 
 	var lowEndpoint, highEndpoint recordlayer.EndpointType
@@ -1017,7 +1179,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			var err error
 			comparand, err = ineq.Operand.Evaluate(binder)
 			if err != nil {
-				return recordlayer.TupleRange{}, err
+				return recordlayer.TupleRange{}, nil, err
 			}
 			comparand = coerceTupleElement(comparand, ineq.Operand.Type())
 			comparand = canonicalizeZeroSignedBound(comparand, ineq.Type)
@@ -1038,7 +1200,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 					High:         prefix,
 					LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 					HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-				}, nil
+				}, nil, nil
 			}
 		}
 		switch ineq.Type {
@@ -1094,7 +1256,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			// in Java — residual, never sargable into a scan range — so it does not
 			// reach this combiner; any other type arriving here is likewise an
 			// unexpected-invariant bug to surface, not to paper over.)
-			return recordlayer.TupleRange{}, fmt.Errorf(
+			return recordlayer.TupleRange{}, nil, fmt.Errorf(
 				"scanComparisonsToTupleRange: unexpected inequality comparison %v combined with another inequality on the same column (not a representable single scan range)",
 				ineq.Type)
 		}
@@ -1124,7 +1286,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		High:         high,
 		LowEndpoint:  lowEndpoint,
 		HighEndpoint: highEndpoint,
-	}, nil
+	}, forks, nil
 }
 
 type indexFetchCursor struct {
