@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -50,6 +51,38 @@ func TestConfigValidate(t *testing.T) {
 		{"pollTimeout at floor ok", func(c *config) { c.pollTimeout = 60 * time.Second }, false},
 		{"jobStartTimeout negative", func(c *config) { c.jobStartTimeout = -1 }, true},
 		{"jobStartTimeout zero disables ok", func(c *config) { c.jobStartTimeout = 0 }, false},
+		{"jobTerminalGrace negative", func(c *config) { c.jobTerminalGrace = -1 }, true},
+		{"jobTerminalGrace zero disables ok", func(c *config) { c.jobTerminalGrace = 0 }, false},
+		{"remote hosts within capacity ok", func(c *config) {
+			c.remoteHosts = []string{"runner@10.0.0.2", "runner@10.0.0.3"}
+			c.maxRunners = 3
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "/etc/bazelscaleset/remote_id", "/home/runner/actions-runner", "/mnt/ci-data/bazelwork"
+		}, false},
+		{"maxRunners beyond local+remote slots", func(c *config) {
+			c.remoteHosts = []string{"runner@10.0.0.2"}
+			c.maxRunners = 3 // 1 local + 1 remote = 2 max
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "/k", "/r", "/w"
+		}, true},
+		{"remote host with whitespace", func(c *config) {
+			c.remoteHosts = []string{"runner@10.0.0.2 --evil"}
+			c.maxRunners = 2
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "/k", "/r", "/w"
+		}, true},
+		{"remote host leading dash (option injection)", func(c *config) {
+			c.remoteHosts = []string{"-oProxyCommand=evil"}
+			c.maxRunners = 2
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "/k", "/r", "/w"
+		}, true},
+		{"remote hosts without ssh key", func(c *config) {
+			c.remoteHosts = []string{"runner@10.0.0.2"}
+			c.maxRunners = 2
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "", "/r", "/w"
+		}, true},
+		{"remote hosts without remote dirs", func(c *config) {
+			c.remoteHosts = []string{"runner@10.0.0.2"}
+			c.maxRunners = 2
+			c.remoteSSHKey, c.remoteRunnerDir, c.remoteWorkBase = "/k", "", ""
+		}, true},
 		{"no creds at all", func(c *config) {
 			c.appClientID, c.appInstallationID, c.appPrivateKey, c.token = "", 0, "", ""
 		}, true},
@@ -149,15 +182,59 @@ func TestEnvHelpers(t *testing.T) {
 	}
 }
 
+// TestParseConfigMaxRunnersDefaultsFromRemoteHosts pins the capacity default:
+// with --remote-hosts and no explicit --max-runners (flag or env), max-runners
+// is 1 local + one per remote host; an explicit value still wins.
+func TestParseConfigMaxRunnersDefaultsFromRemoteHosts(t *testing.T) {
+	// Not parallel: parseConfigArgs reads the process environment.
+	t.Setenv("BAZELSCALESET_TOKEN", "ghp_test")
+	os.Unsetenv("BAZELSCALESET_MAX_RUNNERS")
+	os.Unsetenv("BAZELSCALESET_REMOTE_HOSTS")
+
+	base := []string{
+		"--url", "https://github.com/birdayz/fdb-go",
+		"--name", "hetzner-fdb",
+		"--remote-hosts", "runner@10.0.0.2, runner@10.0.0.3,runner@10.0.0.4",
+	}
+	c, err := parseConfigArgs(base)
+	if err != nil {
+		t.Fatalf("parseConfigArgs: %v", err)
+	}
+	if len(c.remoteHosts) != 3 {
+		t.Fatalf("remoteHosts = %v, want 3 entries", c.remoteHosts)
+	}
+	if c.maxRunners != 4 {
+		t.Fatalf("maxRunners = %d, want 4 (1 local + 3 remote)", c.maxRunners)
+	}
+
+	c2, err := parseConfigArgs(append(append([]string{}, base...), "--max-runners", "2"))
+	if err != nil {
+		t.Fatalf("parseConfigArgs explicit: %v", err)
+	}
+	if c2.maxRunners != 2 {
+		t.Fatalf("explicit maxRunners = %d, want 2", c2.maxRunners)
+	}
+
+	// Env counts as explicit too.
+	t.Setenv("BAZELSCALESET_MAX_RUNNERS", "3")
+	c3, err := parseConfigArgs(base)
+	if err != nil {
+		t.Fatalf("parseConfigArgs env: %v", err)
+	}
+	if c3.maxRunners != 3 {
+		t.Fatalf("env maxRunners = %d, want 3", c3.maxRunners)
+	}
+}
+
 func TestSlotPool(t *testing.T) {
 	t.Parallel()
 
-	if _, err := newSlotPool(t.TempDir(), templateRunner(t), 0); err == nil {
+	if _, err := newSlotPool(t.TempDir(), templateRunner(t), 0, remoteSlotConfig{}); err == nil {
 		t.Fatal("newSlotPool(0) should error")
 	}
 
 	dir := t.TempDir()
-	p, err := newSlotPool(dir, templateRunner(t), 3)
+	p, err := newSlotPool(dir, templateRunner(t), 3, remoteSlotConfig{})
 	if err != nil {
 		t.Fatalf("newSlotPool: %v", err)
 	}

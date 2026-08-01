@@ -105,7 +105,7 @@ func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
 	t.Parallel()
 
 	base := templateRunner(t)
-	p, err := newSlotPool(t.TempDir(), base, 2)
+	p, err := newSlotPool(t.TempDir(), base, 2, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestSlotPoolTrailingSlashBase(t *testing.T) {
 	t.Parallel()
 
 	base := templateRunner(t)
-	p, err := newSlotPool(t.TempDir(), base+"/", 1) // trailing slash
+	p, err := newSlotPool(t.TempDir(), base+"/", 1, remoteSlotConfig{}) // trailing slash
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
 
 	base := templateRunner(t)
 	workBase := t.TempDir()
-	p1, err := newSlotPool(workBase, base, 1)
+	p1, err := newSlotPool(workBase, base, 1, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "bin-version"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newSlotPool(workBase, base, 1); err != nil {
+	if _, err := newSlotPool(workBase, base, 1, remoteSlotConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := os.ReadFile(filepath.Join(dst, "bin-version")); err != nil || string(b) != "v2" {
@@ -242,7 +242,7 @@ func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	t.Parallel()
 
 	wb, base := t.TempDir(), templateRunner(t)
-	pool, err := newSlotPool(wb, base, 1)
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestReconcileScopedToOurPidFiles(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(-otherPID, syscall.SIGKILL); _, _ = other.Process.Wait() })
 
 	wb, base := t.TempDir(), templateRunner(t)
-	if _, err := newSlotPool(wb, base, 1); err != nil { // slot dirs, no pid files written
+	if _, err := newSlotPool(wb, base, 1, remoteSlotConfig{}); err != nil { // slot dirs, no pid files written
 		t.Fatal(err)
 	}
 	reconcileStrayRunners(discardLogger(), wb, base)
@@ -305,7 +305,7 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 
 	wb, base := t.TempDir(), templateRunner(t)
-	pool, err := newSlotPool(wb, base, 1)
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
 	wb, base := t.TempDir(), templateRunner(t)
-	pool, err := newSlotPool(wb, base, 1)
+	pool, err := newSlotPool(wb, base, 1, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
 
 	wb, base := t.TempDir(), templateRunner(t)
 	// Prior maxRunners=2 run: slot-0 + slot-1 (+ their runner clones) exist on disk.
-	pool2, err := newSlotPool(wb, base, 2)
+	pool2, err := newSlotPool(wb, base, 2, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
 
 	// Supervisor restarts with maxRunners=1 (downgrade): the new pool has only slot-0,
 	// but reconcile must still find + kill the slot-1 stray by scanning every slot dir.
-	if _, err := newSlotPool(wb, base, 1); err != nil {
+	if _, err := newSlotPool(wb, base, 1, remoteSlotConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	reconcileStrayRunners(discardLogger(), wb, base)
@@ -457,7 +457,7 @@ func TestListenerRunReturnsOnGetMessageError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listener.New: %v", err)
 	}
-	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1, remoteSlotConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
