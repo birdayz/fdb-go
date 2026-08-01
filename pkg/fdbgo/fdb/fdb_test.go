@@ -2193,8 +2193,6 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetSnapshotRywEnable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetUseGrvCache()).NotTo(HaveOccurred())
 	g.Expect(opts.SetAutoThrottleTag("test-tag")).NotTo(HaveOccurred())
-	g.Expect(opts.SetSpecialKeySpaceRelaxed()).NotTo(HaveOccurred())
-	g.Expect(opts.SetSpecialKeySpaceEnableWrites()).NotTo(HaveOccurred())
 	g.Expect(opts.SetBypassUnreadable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetDebugRetryLogging("test")).NotTo(HaveOccurred())
 	g.Expect(opts.SetIncludePortInAddress()).NotTo(HaveOccurred())
@@ -2245,6 +2243,17 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 		{"automatic_idempotency", opts.SetAutomaticIdempotency},
 		{"report_conflicting_keys", opts.SetReportConflictingKeys},
 		{"bypass_storage_quota", opts.SetBypassStorageQuota},
+		// Both configure the special-key-space module, which the pure-Go
+		// backend does not implement at all. Accepting them silently answered
+		// "granted" to a request for an absent capability — and for
+		// enable_writes that is not a permission bit but the switch that arms
+		// libfdb_c's specialKeySpace->commit() translation step, so a silent
+		// nil reported an enabled configuration change that never happens.
+		// report_conflicting_keys above is rejected precisely BECAUSE this
+		// module is missing; the two options that configure the missing module
+		// cannot be the ones that get a pass.
+		{"special_key_space_relaxed", opts.SetSpecialKeySpaceRelaxed},
+		{"special_key_space_enable_writes", opts.SetSpecialKeySpaceEnableWrites},
 	} {
 		err := tc.set()
 		g.Expect(err).To(HaveOccurred(), tc.name+" must reject, not silently no-op")

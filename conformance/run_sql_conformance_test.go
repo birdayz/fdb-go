@@ -94,6 +94,41 @@ func isTransientFDBError(err error) bool {
 		strings.Contains(msg, "Transaction is too old to perform reads or be committed")
 }
 
+// javaInfraFailure reports whether a Java-side error is an INFRASTRUCTURE
+// signal rather than a statement about query semantics, and returns the label
+// to report it under.
+//
+// Two shapes qualify. An error that is not a *plandiff.JavaError never reached
+// Java's SQL engine at all — the transport paths (POST failure, non-200,
+// body/JSON decode) return plain wrapped errors. And a JavaError whose
+// exception class is a DEADLINE/TIMEOUT is the server giving up on the clock:
+// measured on this repo, running the full bazel suite concurrently with another
+// Docker-spinning job starves the conformance server enough to raise
+// DeadlineExceededException on an arbitrary corpus entry (the same target
+// passes in isolation in roughly half the wall time). A deadline is never
+// evidence about rows or plans.
+//
+// This does NOT downgrade the run — a sick server must not silently pass, and
+// both callers still report the entry as failing. It only fixes the LABEL, so a
+// timeout is never announced as "Go's behaviour no longer matches the pinned
+// divergence" and nobody spends a shift hunting a semantic change that did not
+// happen.
+func javaInfraFailure(err error) (bool, string) {
+	if err == nil {
+		return false, ""
+	}
+	var je *plandiff.JavaError
+	if !errors.As(err, &je) {
+		return true, "conformance-server call failed (INFRA, not engine behaviour): " + err.Error()
+	}
+	switch je.ExceptionClass {
+	case "DeadlineExceededException", "TimeoutException", "SocketTimeoutException":
+		return true, "conformance server exceeded its deadline (INFRA, not engine behaviour; " +
+			"check for a concurrent Docker/bazel job starving it): " + err.Error()
+	}
+	return false, ""
+}
+
 // maxLifecycleRetries bounds re-runs for the LIFECYCLE class. It is far lower
 // than maxConflictRetries because a lifecycle re-run can cost a whole HTTP
 // client timeout (30s) per attempt: sixteen of those would blow the suite's own
@@ -259,9 +294,8 @@ func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 		// (a sick server must not silently pass) but never classified as a
 		// cross-engine divergence, so nobody chases a phantom engine
 		// regression off a timeout.
-		var infraProbe *plandiff.JavaError
-		if !errors.As(javaResult.Err, &infraProbe) {
-			return false, "conformance-server call failed (INFRA, not engine behaviour): " + javaResult.Err.Error()
+		if infra, detail := javaInfraFailure(javaResult.Err); infra {
+			return false, detail
 		}
 		if goResult.Err == nil {
 			// Java errored, Go succeeded. With the conformance server's plan
@@ -328,6 +362,15 @@ func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.Run
 	// run reported live annotations as STALE and invited someone to delete a
 	// correct pin.
 	if detail, ok := lifecycleDetail(javaResult.Err, goResult.Err); ok {
+		return false, detail
+	}
+	// And the transport arm entryConforms also carries: an error that is not a
+	// *plandiff.JavaError never reached Java's SQL engine at all, so it can
+	// neither confirm nor refute the pinned divergence. The lifecycle gate above
+	// only matches its observed signature classes; a plain wrapped transport
+	// failure (POST failure, non-200, body decode) needs this arm or it reads
+	// as the annotation going stale.
+	if infra, detail := javaInfraFailure(javaResult.Err); infra {
 		return false, detail
 	}
 	switch div.Direction {

@@ -932,79 +932,6 @@ func TestStripStringLiteralQuotes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LikeMatch
-// ---------------------------------------------------------------------------
-
-func TestLikeMatch(t *testing.T) {
-	t.Parallel()
-
-	const noEscape rune = -1
-
-	tests := []struct {
-		name    string
-		pattern string
-		s       string
-		escape  rune
-		want    bool
-	}{
-		// Exact match.
-		{"exact_match", "hello", "hello", noEscape, true},
-		{"exact_no_match", "hello", "world", noEscape, false},
-
-		// % wildcard.
-		{"percent_any", "%", "anything", noEscape, true},
-		{"percent_empty", "%", "", noEscape, true},
-		{"prefix_percent", "hel%", "hello", noEscape, true},
-		{"suffix_percent", "%llo", "hello", noEscape, true},
-		{"middle_percent", "h%o", "hello", noEscape, true},
-		{"percent_no_match", "h%x", "hello", noEscape, false},
-		{"double_percent", "%%", "abc", noEscape, true},
-
-		// _ single char.
-		{"underscore_single", "h_llo", "hello", noEscape, true},
-		{"underscore_no_match", "h_llo", "hllo", noEscape, false},
-		{"multiple_underscores", "___", "abc", noEscape, true},
-		{"underscore_too_short", "___", "ab", noEscape, false},
-		{"underscore_too_long", "___", "abcd", noEscape, false},
-
-		// Combined.
-		{"combined_pct_under", "%_o", "hello", noEscape, true},
-		{"combined_under_pct", "_ello%", "hello world", noEscape, true},
-		{"prefix_under_suffix_pct", "h_l%", "hello world", noEscape, true},
-
-		// Escape char.
-		{"escape_percent", `\%`, "%", '\\', true},
-		{"escape_percent_literal_nomatch", `\%`, "a", '\\', false},
-		{"escape_underscore", `\_`, "_", '\\', true},
-		{"escape_underscore_nomatch", `\_`, "a", '\\', false},
-		{"escape_escape", `\\`, `\`, '\\', true},
-		{"escape_in_pattern", `a\%b`, "a%b", '\\', true},
-		{"escape_in_pattern_nomatch", `a\%b`, "aXb", '\\', false},
-
-		// Empty strings.
-		{"empty_pattern_empty_string", "", "", noEscape, true},
-		{"empty_pattern_nonempty_string", "", "a", noEscape, false},
-		{"percent_empty_string", "%", "", noEscape, true},
-
-		// Only wildcards.
-		{"all_percent", "%%%", "anything", noEscape, true},
-		{"single_underscore", "_", "x", noEscape, true},
-		{"single_underscore_empty", "_", "", noEscape, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := LikeMatch(tt.pattern, tt.s, tt.escape)
-			if got != tt.want {
-				t.Errorf("LikeMatch(%q, %q, %d) = %v, want %v",
-					tt.pattern, tt.s, tt.escape, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // LiteralMatchesPKKind
 // ---------------------------------------------------------------------------
 
@@ -1174,24 +1101,6 @@ func BenchmarkApplyMathOp_FloatMul(b *testing.B) {
 func BenchmarkApplyMathOp_IntMod(b *testing.B) {
 	for b.Loop() {
 		_, _ = ApplyMathOp(int64(100), int64(7), "%")
-	}
-}
-
-func BenchmarkLikeMatch_Simple(b *testing.B) {
-	for b.Loop() {
-		_ = LikeMatch("hello", "hello", -1)
-	}
-}
-
-func BenchmarkLikeMatch_Percent(b *testing.B) {
-	for b.Loop() {
-		_ = LikeMatch("hel%", "hello world", -1)
-	}
-}
-
-func BenchmarkLikeMatch_Complex(b *testing.B) {
-	for b.Loop() {
-		_ = LikeMatch("%or%", "hello world this is a longer string", -1)
 	}
 }
 

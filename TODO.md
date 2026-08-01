@@ -10315,8 +10315,65 @@ standing rule is that a finding without a booking is a finding that evaporates,
 so each is recorded here with its evidence refs, a size, and what "done" means.
 None is speculative: each was re-verified against the tree before booking.
 
-- [ ] **CQ-40 (MED) — two `LikeMatch` implementations disagree, and the wrong one
-  is on the INFORMATION_SCHEMA `WHERE` path.** · S
+- [x] **CQ-40 — two `LikeMatch` implementations disagreed. THE BOOKING HAD THE
+  DIRECTION BACKWARDS: the "canonical" matcher was the wrong one.** · was S,
+  actually M · **query-engine change — needs a Graefe ACK before merge**
+  Unified onto one matcher AND corrected it against Java. The booking's DONE
+  criterion ("delete `functions.LikeMatch`, adapt the map path to
+  `values.LikeMatch`") would, executed literally, have PROPAGATED a live
+  wrong-rows defect onto INFORMATION_SCHEMA instead of removing one.
+  MEASURED on FDB, `SELECT B1 FROM B WHERE B2 LIKE 'Z' ESCAPE 'Z'`:
+  the engine path returned `[]`; the map path returned the matching row. Java's
+  own corpus settles it — `yaml-tests/.../like.yamsql:92` runs
+  `B2 NOT LIKE 'Z' ESCAPE 'Z'` and excludes both `'Z'` rows, so
+  `'Z' LIKE 'Z' ESCAPE 'Z'` is TRUE there. The SHADOW matcher agreed with Java;
+  the canonical one did not.
+  Root cause: `values.LikeMatch`'s trailing-escape rule ("MALFORMED → no match")
+  was never Java's. `PatternForLikeValue` installs exactly two escape entries
+  (`<esc>_`, `<esc>%`); an escape rune anywhere else falls through to the
+  ordinary per-character rules and is a literal. So Java also has no
+  escaped-escape (`a\\b` is two backslashes) and escape-before-an-ordinary-char
+  escapes nothing — two further divergences the same rule hid. Go's OWN
+  `values.sqlPatternToRegex` already implemented Java's rule correctly, so the
+  package contradicted itself.
+  Why nothing caught it: the doc comment cited `Comparisons.likeMatcher` as the
+  spec — no such symbol exists in 4.12.11.0 — and `FuzzLikeMatchEscape`'s oracle
+  hard-coded `return false // trailing escape — malformed`, i.e. it restated the
+  implementation instead of modelling Java. The oracle is now built the way Java
+  builds it (replacement-table translation to a regex), so it is an independent
+  check; 38.6M execs, 0 mismatches.
+  Landed: `functions.LikeMatch` deleted, `eval_predicate_map.go` routed through
+  `values.LikeMatch` (sentinel changed from `-1` to `0`), the matcher corrected,
+  oracle and truth tables re-pinned with Java citations. Pinned end-to-end by
+  `pkg/relational/sqldriver/like_escape_parity_fdb_test.go` (both paths).
+  NEWLINE AXIS — RESOLVED (measured against a real JDK). Java's path is
+  `PatternForLikeValue.eval` → `^…$` → `Pattern.compile` with NO flags →
+  `.find()` (LikeOperatorValue.java:93-99). Measured table (Go was wrong on
+  all five before the fix; now pinned by
+  `TestLikeMatch_JavaNewlineSemantics`):
+
+  | expr | Java | old Go |
+  |---|---|---|
+  | `'a\nb' LIKE 'a_b'` | false | true |
+  | `'a\nb' LIKE 'a%b'` | false | true |
+  | `'\n' LIKE '_'` | false | true |
+  | `'abc\n' LIKE 'abc'` | true | false |
+  | `'a'+U+2028 LIKE 'a'` | true | false |
+  | `'\n' LIKE '%'` | true | true (agreement — the half-fix sentinel) |
+
+  Resolution: `values.LikeMatch` now rejects Java's five line terminators
+  (`\n`, `\r`, U+0085, U+2028, U+2029) in `_`/`%` and accepts one FINAL
+  terminator (`\r\n` as a unit; `$` never matches between its `\r` and `\n`),
+  matching default-mode `Pattern$Dollar`. The fuzz oracle models exactly
+  that (no `(?s)`; explicit terminator class + final-terminator trim) —
+  dropping `(?s)` alone would have broken `'\n' LIKE '%'` since RE2's `$`
+  is end-of-text. `TestLikeMatch_CrossCheckSQLPatternToRegex` binds
+  `values.LikeMatch` to `values.sqlPatternToRegex` over an exhaustive
+  ASCII grid including terminators.
+  Retiring the rest of the shadow-evaluator family (`CompareValues`,
+  `CastValue`, `ApplyMathOp`, `IsTruthy`) remains the follow-on, and the
+  adaptation shape is now established. Original booking below.
+
   MEASURED divergence (probed 2026-07-29 over `escape='\'`):
 
   | pattern | string | `values.LikeMatch` | `functions.LikeMatch` |
@@ -10349,8 +10406,24 @@ None is speculative: each was re-verified against the tree before booking.
   shadow-evaluator family is the follow-on, and should be booked separately once
   this one establishes the adaptation shape.
 
-- [ ] **CQ-41 (MED) — `API_PARITY.md` contradicts `options.go`, and nothing
-  detects it.** · S
+- [x] **CQ-41 — `API_PARITY.md` contradicted `options.go`; now machine-checked.** · S
+  Premise CONFIRMED verbatim. Doc corrected and gated by `pkg/docscheck`'s
+  `TestAPIParityTablesMatchOptionsGo`, which parses every option body in
+  `options.go` with go/ast, classifies it from the STATEMENTS alone (comments
+  cannot vote — a comment disagreeing with its own body is the defect class
+  here), and fails on any disagreement with the page's three tables, in both
+  directions. Anti-vacuity: floors on both parsed sets, a "no rejects found"
+  guard, and a verified mutation showing a renamed receiver fails loudly
+  ("parsed only 0 … the parse is broken, not the doc") rather than passing over
+  an empty set.
+  The gate found MORE than the booking listed: `SpanParent` was filed as a no-op
+  while its body forwards to the transaction; the shorthand rows
+  `ReadPriorityHigh`/`Low`/`Normal` and `ReadServerSideCacheEnable`/`Disable`
+  named no real method, so three options were listed nowhere; and the two
+  DB-level rejects were unnamed on the page. All corrected. Runfiles wired via
+  `exports_files` so the gate is not vacuous under Bazel.
+
+  Original booking text follows.
   `pkg/fdbgo/fdb/API_PARITY.md:56` and `:62` list `ReportConflictingKeys` and
   `BypassStorageQuota` under "**Accepted but ignored — no-op (fails safe)**".
   Both REJECT: `options.go:255` returns `&UnsupportedOptionError{Option:
@@ -10370,8 +10443,33 @@ None is speculative: each was re-verified against the tree before booking.
   as `TestNightlyWindowGatesAreReconciled`. A one-time doc correction without the
   gate re-rots on the next option added.
 
-- [ ] **CQ-42 (LOW) — `SetSpecialKeySpaceRelaxed` / `SetSpecialKeySpaceEnableWrites`
-  are bare `return nil` with no recorded decision.** · S
+- [x] **CQ-42 — `SetSpecialKeySpaceRelaxed` / `SetSpecialKeySpaceEnableWrites`:
+  decision taken — REJECT both.** · S
+  Premise CONFIRMED (both were bare `return nil`, no comment). Decided against
+  the C++ spec rather than by defaulting again.
+  `special_key_space_enable_writes` is not a permission bit: it sets
+  `options.specialKeySpaceChangeConfiguration` (`ReadYourWrites.actor.cpp:2607-2610`),
+  which makes commit run `specialKeySpace->commit(ryw)` (`:1356`) — the step that
+  translates writes to `\xff\xff/management/...` into real configuration
+  mutations. Without it C++ raises `special_keys_write_disabled` (2114). The
+  pure-Go client has neither the module nor that commit step, so a silent nil
+  told a caller their configuration change was enabled while it silently never
+  happened — the fail-open direction, unambiguously.
+  `special_key_space_relaxed` relaxes C++'s one-module-per-read restriction
+  (`special_keys_cross_module_read` 2112 / `special_keys_no_module_found` 2113);
+  with no module there is nothing to relax and the reads it is relaxed FOR
+  cannot succeed either.
+  Decisive internal precedent: `SetReportConflictingKeys` is rejected precisely
+  BECAUSE the special-key read-back module is absent. Rejecting that while
+  silently accepting the two options that configure the same absent module is
+  not a position the file can hold.
+  Recorded in `API_PARITY.md`'s Rejected table with the reasoning, commented at
+  both call sites, enforced by CQ-41's docscheck gate, and pinned by the
+  existing reject table in `fdb_test.go` (which previously asserted the
+  opposite, in the "stubs return nil" list). NOTE: `pkg/simfdb/options.go`
+  no-ops these — it no-ops all five other rejects too, so it is a uniformly
+  permissive test double, not a new inconsistency.
+  Original booking text follows.
   `options.go:258-264`: both are two-line `return nil` with NO comment, while
   every other option in that file carries a fail-safe/fail-unsafe rationale.
   `API_PARITY.md:64-65` lists them as accepted no-ops with the parenthetical "the
@@ -10386,8 +10484,37 @@ None is speculative: each was re-verified against the tree before booking.
   no-op" is the answer, that is a fine answer — but it has to be a decision, not
   an absence. Gate it with CQ-41's docscheck so the classification is enforced.
 
-- [ ] **CQ-43 (LOW) — the bounded-context requirement is documented nowhere the
-  caller will look.** · S
+- [x] **CQ-43 — package doc added, but THE BOOKING'S PREMISE WAS FALSE and two
+  shipped godoc comments were asserting it.** · S
+  The documentation GAP was real (`pkg/fdbgo/doc.go` did not exist); the
+  DIVERGENCE the item asked to document does not.
+  MEASURED against the C++ spec: libfdb_c's per-transaction defaults are
+  `timeoutInSeconds = 0.0` and `maxRetries = -1`
+  (`ReadYourWrites.actor.cpp:2078-2082`), and `resetTimeout()` arms the
+  `timebomb` only when the timeout is non-zero (`:1576-1578`); `fdb.options`
+  says "If set to 0, will disable all timeouts". libfdb_c has NO internal
+  timeout to differ from — the unbounded default is MATCHED, not divergent.
+  Second false claim: `Open` does not block until the caller's ctx cancels —
+  `fdb/database.go:139-153` bounds bootstrap at 60s when no deadline is
+  supplied, so Go is STRICTER than libfdb_c, which waits forever.
+  The RFC contradicted itself: `:161-162` says the unbounded default "matches
+  C++" 50 lines above the P1.5 line that calls it "a real difference from
+  libfdb_c's internal timeouts". A third supporting claim (P0.2, "only the
+  caller's ctx bounds a stuck read") was already retired by RFC-112.
+  This was not merely an absence: `fdb/key.go` and `fdb/database.go` both
+  SHIPPED the false "unlike libfdb_c" framing in godoc. Corrected.
+  Landed: `pkg/fdbgo/doc.go` stating the true contract (unbounded by default as
+  in libfdb_c; pick `SetTimeout`, `SetRetryLimit`, or a deadline ctx via
+  `TransactCtx` — the ctx being Go's EXTRA bound, not a substitute for a missing
+  C++ mechanism), a README section, the two godoc corrections, and
+  `rfcs/prod-readiness-go-client.md` P1.5 marked CLOSED-AS-MISFRAMED with the
+  C++ citations rather than silently rewritten.
+  Pinned by BEHAVIOUR, not prose: `client/unbounded_default_pin_test.go` asserts
+  a default transaction still grants a retry at `retryCount=1_000_000` and that
+  each of the three documented bounds actually terminates the loop. Mutation
+  check: introducing an internal cap turns it RED with a message naming the doc
+  files to update alongside.
+  Original booking text follows.
   This is P1.5 of `rfcs/prod-readiness-go-client.md:210-212`, the one P1 item of
   that punch-list still open: *"Document the bounded-context requirement in
   godoc/README: with no internal max-retry, a `Transact`/`Open` against a down

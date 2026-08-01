@@ -6,6 +6,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestLikeOperatorValue_RejectsPatternForLikeValueChild pins the
+// asserted bridge between Go's and Java's tree shapes: Java's
+// pattern child is a PatternForLikeValue that mints a REGEX string
+// which likeOperation regex-compiles; Go's pattern child is the raw
+// SQL pattern, evaluated by values.LikeMatch. A PatternForLikeValue
+// child here would feed a regex to the SQL-pattern matcher and
+// silently return wrong rows, so Evaluate must reject the shape
+// with an error rather than mis-match.
+func TestLikeOperatorValue_RejectsPatternForLikeValueChild(t *testing.T) {
+	t.Parallel()
+	v := NewLikeOperatorValue(
+		LiteralValue("abc"),
+		NewPatternForLikeValue(LiteralValue("a%"), LiteralValue(nil)))
+	got, err := v.Evaluate(nil)
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.Contains(t, err.Error(), "PatternForLikeValue")
+}
+
 func TestLikeOperatorValue_PercentWildcardPrefix(t *testing.T) {
 	t.Parallel()
 	v := NewLikeOperatorValue(LiteralValue("hello world"), LiteralValue("hello%"))

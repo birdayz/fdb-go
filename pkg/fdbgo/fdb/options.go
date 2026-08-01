@@ -256,11 +256,31 @@ func (o goTransactionOptions) SetReportConflictingKeys() error {
 }
 
 func (o goTransactionOptions) SetSpecialKeySpaceRelaxed() error {
-	return nil
+	// Fails unsafe if ignored. In libfdb_c this relaxes a client-side READ restriction: by
+	// default a special-key range read must intersect exactly one module, and a cross-module
+	// or no-module read raises special_keys_cross_module_read (2112) /
+	// special_keys_no_module_found (2113) (error_definitions.h:251-252); the option sets
+	// options.specialKeySpaceRelaxed (ReadYourWrites.actor.cpp:2602-2605) to permit zero or
+	// more. The pure-Go client implements no special-key-space module at all, so there is no
+	// restriction to relax and the reads the caller is relaxing FOR cannot succeed either. A
+	// silent nil answers "granted" to a request for a capability that is absent — the same
+	// migration trap SetReportConflictingKeys guards against, and for the same reason: that
+	// option is rejected precisely BECAUSE this module is missing, so silently accepting the
+	// options that configure the missing module is not a position this file can hold.
+	return &UnsupportedOptionError{Option: "special_key_space_relaxed"}
 }
 
 func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
-	return nil
+	// Fails unsafe if ignored, and the most consequential of the pair. In libfdb_c this is not
+	// a permission bit but the switch that arms a TRANSLATION step: it sets
+	// options.specialKeySpaceChangeConfiguration (ReadYourWrites.actor.cpp:2607-2610), which
+	// makes commit run specialKeySpace->commit(ryw) (:1356) — the step that turns writes to
+	// \xff\xff/management/... into the real configuration mutations they stand for. Without it
+	// such a write raises special_keys_write_disabled (2114). The pure-Go client has neither
+	// the module nor that commit step, so a silent nil tells a caller their configuration
+	// change is enabled while the write is either dropped or shipped as a literal \xff\xff key
+	// that means nothing — the intended cluster change silently does not happen.
+	return &UnsupportedOptionError{Option: "special_key_space_enable_writes"}
 }
 
 func (o goTransactionOptions) SetRawAccess() error {

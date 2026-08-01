@@ -100,6 +100,39 @@ func TestPatternForLikeValue_MultiCharEscapeReturnsNil(t *testing.T) {
 	}
 }
 
+// TestPatternForLikeValue_EscapeUTF16UnitSemantics pins Java's
+// `escapeChar.length() == 1` precondition
+// (PatternForLikeValue.java:109), which counts UTF-16 code units:
+// a multi-byte BMP rune like 'é' is ONE unit and a legal escape,
+// while an astral rune like '😀' is a surrogate pair (two units)
+// and is rejected exactly like a two-character string. A byte-length
+// check would get both wrong.
+func TestPatternForLikeValue_EscapeUTF16UnitSemantics(t *testing.T) {
+	t.Parallel()
+	// BMP multi-byte escape accepted, and consumed as an escape.
+	v := NewPatternForLikeValue(LiteralValue("é%"), LiteralValue("é"))
+	got, err := v.Evaluate(nil)
+	require.NoError(t, err)
+	if got != "^%$" {
+		t.Fatalf("Evaluate(`é%%`, esc=`é`) = %v, want ^%%$", got)
+	}
+	// BMP escape unused in the pattern still transforms normally.
+	v2 := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue("é"))
+	got2, err := v2.Evaluate(nil)
+	require.NoError(t, err)
+	if got2 != "^a.*$" {
+		t.Fatalf("Evaluate(`a%%`, esc=`é`) = %v, want ^a.*$", got2)
+	}
+	// Astral escape (U+1F600, Java length 2) rejected → nil, like
+	// any multi-unit escape.
+	v3 := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue("😀"))
+	got3, err := v3.Evaluate(nil)
+	require.NoError(t, err)
+	if got3 != nil {
+		t.Fatalf("Evaluate(astral escape) = %v, want nil", got3)
+	}
+}
+
 func TestPatternForLikeValue_EmptyEscapeReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue(""))

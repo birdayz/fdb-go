@@ -155,13 +155,16 @@ func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc)
 // OpenDatabase opens a connection using the specified cluster file path.
 // APIVersion must have been called first. See WithTLSConfig / WithDialFunc.
 //
-// Bootstrap is bounded by an internal default timeout (bootstrapContext). There is
-// NO internal max-retry beyond that for the live database: unlike libfdb_c, once
-// open the client retries cluster reconnection indefinitely until the caller's
-// context cancels. Against a permanently down cluster a subsequent bare Transact
-// (which uses context.Background()) blocks forever — bound it with TransactCtx or a
-// transaction SetTimeout (RFC-111 P1.5; see the package doc). Use
-// OpenDatabaseFromConfig to pass a context for bootstrap itself.
+// Bootstrap is bounded by an internal default timeout (bootstrapContext) — a place
+// this client is STRICTER than libfdb_c, which waits indefinitely for the initial
+// coordinator connection. Past open there is no internal bound, matching libfdb_c's
+// per-transaction defaults (timeoutInSeconds=0.0, maxRetries=-1;
+// ReadYourWrites.actor.cpp:2078-2082): reconnection and the transaction retry loop
+// run until the cluster returns. So against a permanently down cluster a subsequent
+// bare Transact (which uses context.Background()) does not return on its own — bound
+// it with TransactCtx, SetTimeout, or SetRetryLimit, as you would have had to in
+// libfdb_c. See the package doc at fdb.dev/pkg/fdbgo. Use OpenDatabaseFromConfig to
+// pass a context for bootstrap itself.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset

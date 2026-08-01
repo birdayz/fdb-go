@@ -1,6 +1,21 @@
 package values
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
+
+// isSingleUTF16Unit reports whether s is exactly one UTF-16 code
+// unit long — Java's `String.length() == 1`. That is one rune, and
+// that rune in the BMP (<= U+FFFF); an astral rune encodes as a
+// surrogate pair and has Java length 2.
+func isSingleUTF16Unit(s string) bool {
+	r, size := utf8.DecodeRuneInString(s)
+	if size == 0 || size != len(s) {
+		return false // empty, or more than one rune
+	}
+	return r <= 0xFFFF // BMP rune = 1 UTF-16 unit; astral = 2
+}
 
 // PatternForLikeValue is the SQL `patternForLike(pattern, escape)`
 // function — converts a SQL LIKE pattern (with `%` / `_`
@@ -32,15 +47,25 @@ import "strings"
 //   - patternChild evaluates to a string. If NULL, eval returns NULL.
 //   - escapeChild evaluates to a string OR NULL.
 //   - NULL → standard transformation (no escape).
-//   - exactly 1 character → escape-aware transformation
-//     (escape+`_` → literal `_`, escape+`%` → literal `%`).
+//   - exactly 1 UTF-16 code unit → escape-aware transformation
+//     (escape+`_` → literal `_`, escape+`%` → literal `%`). Java
+//     checks `escapeChar.length() == 1` (PatternForLikeValue.java:109),
+//     which counts UTF-16 units: any single BMP rune (<= U+FFFF)
+//     passes, an astral rune is TWO units and fails.
 //   - other length → returns nil (Java throws SemanticException;
 //     Go defers to evaluator-side reporting). Documented as
 //     a planner-checked precondition.
 //
-// Java's `LikeOperatorValue.likeOperation` calls
-// `Pattern.compile(rhs)` WITHOUT DOTALL — Go's default regexp
-// behavior (`.` does NOT match `\n`) is already aligned.
+// The produced regex is JAVA-regex-shaped, for Java's evaluation
+// semantics: `LikeOperatorValue.likeOperation`
+// (LikeOperatorValue.java:93-99) compiles it with NO flags and runs
+// `.find()`, so its `.` rejects Java's five line-terminator code
+// points (`\n`, `\r`, U+0085, U+2028, U+2029 — MORE than Go regexp's
+// default, which only excludes `\n`) and its default-mode `$`
+// tolerates one final line terminator. Do NOT feed this string to Go
+// `regexp` and expect Java's answer; `values.LikeMatch` implements
+// the composed Java semantics directly, and
+// TestLikeMatch_CrossCheckSQLPatternToRegex proves the two agree.
 type PatternForLikeValue struct {
 	PatternChild Value
 	EscapeChild  Value
@@ -86,7 +111,13 @@ func (v *PatternForLikeValue) Evaluate(evalCtx any) (any, error) {
 		}
 		if raw != nil {
 			s, ok := raw.(string)
-			if !ok || len(s) != 1 {
+			// Java's precondition is `escapeChar.length() == 1` in
+			// UTF-16 code units (PatternForLikeValue.java:109): one
+			// BMP rune (<= U+FFFF, e.g. 'é') passes, while an astral
+			// rune ('😀') is a surrogate PAIR — two units — and fails
+			// exactly like a two-character string. A byte-length
+			// check would wrongly reject every multi-byte BMP rune.
+			if !ok || !isSingleUTF16Unit(s) {
 				// Java throws SemanticException.ESCAPE_CHAR_OF_LIKE_OPERATOR_IS_NOT_SINGLE_CHAR;
 				// Go surfaces this as nil to the eval contract.
 				return nil, nil
@@ -112,12 +143,15 @@ func sqlPatternToRegex(pat, esc string, hasEscape bool) string {
 	b.Grow(len(pat) + 8)
 	for i := 0; i < len(pat); i++ {
 		c := pat[i]
-		// Escape-aware: <esc>_ → _, <esc>% → %.
-		if hasEscape && i+1 < len(pat) && string(c) == esc {
-			next := pat[i+1]
+		// Escape-aware: <esc>_ → _, <esc>% → %. Prefix-match the
+		// whole escape string: a multi-byte BMP escape rune ('é') is
+		// a legal single-UTF-16-unit escape in Java and spans
+		// several bytes here.
+		if hasEscape && strings.HasPrefix(pat[i:], esc) && i+len(esc) < len(pat) {
+			next := pat[i+len(esc)]
 			if next == '_' || next == '%' {
 				b.WriteByte(next)
-				i++
+				i += len(esc)
 				continue
 			}
 			// Standalone <esc> char: fall through to per-char rules.

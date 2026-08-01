@@ -23,6 +23,56 @@ Working and tested against real FDB 7.3.77:
 - Read-your-writes cache with full atomic op merging (all 14 types mirror C++ `Atomic.h`)
 - `LocalityGetAddressesForKey`, `LocalityGetBoundaryKeys`, `OpenWithConnectionString`, `GetClientStatus`
 
+## Retries and timeouts are UNBOUNDED by default — read this before migrating
+
+A transaction created with no options has **no timeout and no retry limit**. A `Transact` against a down or
+unreachable cluster retries until the cluster returns or the caller stops it. Nothing internal stops it.
+
+**This is not a divergence from `libfdb_c` — it is `libfdb_c`'s behaviour, matched deliberately.** The C++
+client's per-transaction defaults (`ReadYourWrites.actor.cpp:2078-2082`) are:
+
+```cpp
+void ReadYourWritesTransactionOptions::reset(Transaction const& tr) {
+	memset(this, 0, sizeof(*this));
+	timeoutInSeconds = 0.0;
+	maxRetries = -1;
+```
+
+and `resetTimeout()` (`:1576-1578`) arms the `timebomb` actor **only** when `timeoutInSeconds` is non-zero, so
+by default no timer exists at all. `fdb.options` says the same of the timeout option: *"If set to 0, will
+disable all timeouts."* A default-configured `libfdb_c` transaction hangs against a dead cluster exactly as
+long as this one does. Do not read "no internal timeout" as a Go weakness to work around — both clients hand
+the bound to the caller. That is the FoundationDB contract.
+
+### Where this client is *stricter* than `libfdb_c`
+
+**Bootstrap** — the initial coordinator connection — is internally capped at 60s
+(`defaultBootstrapTimeout`, `fdb/database.go:139-153`) whenever the caller supplies no deadline of its own.
+`libfdb_c` has no equivalent bound and waits indefinitely. So `fdb.OpenDatabase` against an unreachable cluster
+**fails fast** where the C client would not. Only the *live* database — post-open reconnection and the
+transaction retry loop — is unbounded.
+
+### What you must do
+
+Pick at least one bound for every transaction. Any of these terminates it:
+
+| Bound | Applies to | Notes |
+|---|---|---|
+| `Transaction.SetTimeout` / `DatabaseOptions.SetTransactionTimeout` | the whole transaction | Direct analog of `libfdb_c`'s timeout option and C++ `timebomb`. Cancels **in-flight** RPC waits, not just the gaps between them (`client/readpath.go:89-100`, RFC-112); surfaces `transaction_timed_out` (1031). |
+| `Transaction.SetRetryLimit` / `DatabaseOptions.SetTransactionRetryLimit` | the retry loop | The most recent error escapes once the cap is hit. |
+| `Database.TransactCtx` / `ReadTransactCtx` with a deadline `ctx` | retry loop, backoff, and reads | Go's **extra** bound (RFC-090) — not a substitute for a `libfdb_c` mechanism that does not exist. |
+
+The no-context `Database.Transact` runs on `context.Background()` to stay drop-in compatible with the Apple Go
+binding, so a `ctx` deadline is not available to it — bound it with a timeout or retry limit, or use
+`TransactCtx`.
+
+Migrating from `libfdb_c`: if you set a transaction timeout there, keep setting it here — it works the same
+way. If you set nothing there, you were already unbounded there, and you are equally unbounded here.
+
+Pinned by `client/unbounded_default_pin_test.go` (default is unbounded; each of the three bounds terminates)
+and `fdb/unbounded_default_pin_test.go` + `fdb/database_bootstrap_test.go` (no internal deadline on the bare
+`Transact` path; the 60s bootstrap cap). Full detail: `go doc fdb.dev/pkg/fdbgo`.
+
 ## Architecture
 
 ```
