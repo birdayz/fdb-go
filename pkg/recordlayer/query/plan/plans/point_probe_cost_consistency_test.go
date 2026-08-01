@@ -32,7 +32,8 @@ func TestPointProbeHintCost_ChargesFetchRateNotScanRate(t *testing.T) {
 		t.Parallel()
 		plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithPrimaryKey(pk).
-			WithScanComparisons([]*predicates.ComparisonRange{eq})
+			WithScanComparisons([]*predicates.ComparisonRange{eq}).
+			WithKeyComponentTypes(testPhysicalLongTypes(1))
 		got := plan.HintCost(nil, stats)
 		if got.Cardinality != 1 {
 			t.Fatalf("cardinality = %v, want 1 (point probe)", got.Cardinality)
@@ -45,6 +46,7 @@ func TestPointProbeHintCost_ChargesFetchRateNotScanRate(t *testing.T) {
 	t.Run("RecordQueryIndexPlan unique full-equality point-probe", func(t *testing.T) {
 		t.Parallel()
 		plan := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"ID"}, []string{"ID"}, true)
 		got := plan.HintCost(nil, stats)
 		if got.Cardinality != 1 {
@@ -69,6 +71,7 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 	t.Run("non-unique index equality stays a bucket", func(t *testing.T) {
 		t.Parallel()
 		plan := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"ID"}, []string{"ID"}, false)
 		got := plan.HintCost(nil, stats)
 		if got.Cardinality <= 1 {
@@ -88,7 +91,8 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 		}
 		plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithPrimaryKey(pk2).
-			WithScanComparisons([]*predicates.ComparisonRange{eq})
+			WithScanComparisons([]*predicates.ComparisonRange{eq}).
+			WithKeyComponentTypes(testPhysicalLongTypes(1))
 		got := plan.HintCost(nil, stats)
 		if got.Cardinality <= 1 {
 			t.Fatalf("cardinality = %v, want a bucket (>1) — only one of two PK columns is bound", got.Cardinality)
@@ -116,7 +120,8 @@ func TestInJoinHintCost_BothTermsAreFetchRate(t *testing.T) {
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
 	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey(pk).
-		WithScanComparisons([]*predicates.ComparisonRange{eq})
+		WithScanComparisons([]*predicates.ComparisonRange{eq}).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 	plan := NewRecordQueryInJoinPlan(inner, "x", false, false)
 	plan.SetInValues([]any{int64(1), int64(2), int64(3)})
 	// The child cost passed here is deliberately NOT what inner.HintCost would

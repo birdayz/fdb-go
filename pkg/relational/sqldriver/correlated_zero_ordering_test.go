@@ -15,11 +15,11 @@ package sqldriver_test
 // conservatively: it might bind to zero, so nothing after it claims an order.
 // That costs a sort and nothing else.
 //
-// Deliberately asymmetric with the SARGABILITY decision for the same shape
-// (see RFC-196): there, treating a correlated float conservatively de-sargs the
-// probe into a scan of the whole leading-column group — a performance cliff on
-// every correlated composite join — so the gap is left open and pinned instead.
-// Here the conservative answer costs one sort. Different price, different call.
+// RFC-205 subsequently fixed SARGABILITY for this shape with a runtime range
+// set that retains the suffix. The ordering decision remains conservative: two
+// individually suffix-ordered signed-zero branches, concatenated in tuple
+// order, do not provide one global suffix order. The explicit sort is still the
+// correct physical property.
 //
 // KNOWN HOLE: an operand that reaches the plan gates UNTYPED is not covered,
 // because treating unknown as "could be float" swallows every untyped IN-join

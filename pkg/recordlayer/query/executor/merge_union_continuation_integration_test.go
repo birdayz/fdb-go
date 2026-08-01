@@ -45,7 +45,7 @@ func priceProbeIndexPlan(t *testing.T, bindingID values.CorrelationIdentifier) p
 		[]string{"Order"},
 		nil,
 		false,
-	)
+	).WithKeyComponentTypes([]values.Type{values.NullableInt})
 }
 
 // renderOrderID renders a fetched Order row by its ORDER_ID slot (ordinal 0).

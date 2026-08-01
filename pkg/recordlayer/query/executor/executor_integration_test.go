@@ -746,7 +746,7 @@ func TestIntegration_IndexScan(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -944,7 +944,7 @@ func TestIntegration_IndexScan_Equality(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1015,7 +1015,7 @@ func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1693,7 +1693,7 @@ func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(50)})
 		cursor, err := ExecutePlan(ctx, indexPlan, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -2272,7 +2272,7 @@ func TestIntegration_IndexScan_Reverse(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			true, // reverse
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3034,7 +3034,7 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, idxScan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3993,7 +3993,7 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 			[]string{"Order"},
 			values.UnknownType,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, idxPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {

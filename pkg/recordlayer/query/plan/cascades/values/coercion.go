@@ -3,12 +3,13 @@ package values
 import "math"
 
 // CompareFloat64 is a total order over float64 faithful to Java's
-// java.lang.Double.compare (used by the Record Layer's
-// Comparisons.compare for ordering predicates) and — at the ==0
-// boundary — to Double.equals / Double.doubleToLongBits (used by
-// Comparisons.compareEquals for `=`/`!=`). Those two are consistent:
-// compare(a,b)==0 iff a.equals(b), so a single total order reproduces
-// both the `=`/`<`/`>` predicate path and sort/merge/dedup ordering.
+// java.lang.Double.compare and Double.doubleToLongBits. Java Record Layer
+// ordered comparisons use that order, and its boxed equality uses
+// Double.equals, so both distinguish the zero signs and canonicalize NaNs.
+// Go predicate comparison intentionally prechecks native IEEE equality in
+// predicates.cmpAny: it makes -0 equal +0 while retaining this total order for
+// non-equal values and NaNs. Sort, merge, and dedup consumers call this helper
+// directly and therefore retain the Java/FDB-compatible zero-sign order.
 //
 // Two edge values differ from Go's native float comparison:
 //   - NaN sorts GREATER than every non-NaN value, and NaN compares
@@ -16,9 +17,12 @@ import "math"
 //   - Negative zero sorts strictly BEFORE positive zero: -0.0 < 0.0
 //     (native `==` treats them as equal).
 //
-// This is exactly the total order FDB tuple encoding imposes on an
-// indexed FLOAT/DOUBLE column, so an in-memory comparator and an
-// ordered index scan agree on both edge values.
+// This matches FDB tuple order for ordinary values and the two zero signs, but
+// deliberately not for arbitrary raw NaN encodings. FDB preserves NaN sign and
+// payload, placing negative and positive NaNs in separate physical regions;
+// this logical comparator canonicalizes them. Planner ordering/SARG proofs must
+// therefore reject an unbounded or range-bound FLOAT/DOUBLE coordinate unless
+// a separate normalization or compensation proof is available.
 func CompareFloat64(a, b float64) int {
 	if a < b {
 		return -1

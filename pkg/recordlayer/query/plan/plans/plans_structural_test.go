@@ -49,7 +49,8 @@ func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
 		[]string{"TAGS"},
 		[]string{"ID"},
 		false,
-	).WithDistinctRecordsSignal(true)
+	).WithDistinctRecordsSignal(true).
+		WithKeyComponentTypes([]values.Type{values.NullableString})
 
 	if ordering := fanOut.HintOrdering(); ordering.IsKnown ||
 		len(ordering.Keys) != 0 {
@@ -75,7 +76,9 @@ func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
 		[]string{"SCORE"},
 		[]string{"ID"},
 		false,
-	).WithDistinctRecordsSignal(false)
+	).WithDistinctRecordsSignal(false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 	if ordering := scalar.HintOrdering(); !ordering.IsKnown ||
 		len(ordering.Keys) != 2 {
 		t.Fatalf(
@@ -788,7 +791,8 @@ func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
 		[]string{"T"},
 		values.UnknownType,
 		true,
-	).WithPrimaryKey([]values.Value{pk})
+	).WithPrimaryKey([]values.Value{pk}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner)
 
 	childCost := properties.Cost{Cardinality: 100, CPU: 7}

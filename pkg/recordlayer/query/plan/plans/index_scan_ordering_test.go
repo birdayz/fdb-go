@@ -13,7 +13,9 @@ import (
 func TestRecordQueryIndexPlan_HintOrdering_Unbound(t *testing.T) {
 	t.Parallel()
 	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
-		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
 
 	got := plan.HintOrdering()
 	if !got.IsKnown || len(got.Keys) != 3 {
@@ -43,7 +45,9 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixDropped(t *testing.T) {
 	t.Parallel()
 	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}).
-		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
 
 	got := plan.HintOrdering()
 	if !got.IsKnown || len(got.Keys) != 2 {
@@ -65,7 +69,9 @@ func TestRecordQueryIndexPlan_HintOrdering_NonEqualityLeadingComparisonKeepsFull
 	t.Parallel()
 	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingGT(t, int64(7))}).
-		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
 
 	got := plan.HintOrdering()
 	if !got.IsKnown || len(got.Keys) != 3 {
@@ -83,7 +89,9 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixThenRangeStopsAtFirstNo
 			pkOrderingEq(t, int64(7)),
 			pkOrderingGT(t, int64(3)),
 		}).
-		WithIndexMetadata([]string{"A", "B", "C"}, []string{"ID"}, false)
+		WithKeyComponentTypes(testPhysicalLongTypes(3)).
+		WithIndexMetadata([]string{"A", "B", "C"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
 
 	got := plan.HintOrdering()
 	if !got.IsKnown || len(got.Keys) != 3 {

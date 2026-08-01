@@ -411,7 +411,7 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 			false,
 			nil,
 			createsDuplicates,
-		)
+		).WithKeyComponentTypes(syntheticIndexKeyTypes(len(columns)))
 	}
 	functionCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"INNER$cardinality_fk",
@@ -463,14 +463,20 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 	}
 
 	var selected []string
+	var selectedTypes []values.Type
 	plans.Walk(flatMap, func(plan plans.RecordQueryPlan) bool {
 		if indexPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
 			selected = append(selected, indexPlan.GetIndexName())
+			selectedTypes = indexPlan.GetKeyComponentTypes()
 		}
 		return true
 	})
 	if len(selected) != 1 || selected[0] != "INNER$fk_status" {
 		t.Fatalf("EXISTS shortcut selected indexes %v, want only the non-fan-out FK index", selected)
+	}
+	if len(selectedTypes) != 2 || selectedTypes[0].Code() != values.TypeCodeLong ||
+		selectedTypes[1].Code() != values.TypeCodeLong {
+		t.Fatalf("EXISTS shortcut lost candidate physical key types: %v", selectedTypes)
 	}
 }
 

@@ -31,6 +31,14 @@ func pkOrderingGT(t *testing.T, v any) *predicates.ComparisonRange {
 	return res.Range
 }
 
+func testPhysicalLongTypes(size int) []values.Type {
+	result := make([]values.Type, size)
+	for i := range result {
+		result[i] = values.NullableLong
+	}
+	return result
+}
+
 // TestPKScanOrdering_NilPlan pins the nil-plan guard.
 func TestPKScanOrdering_NilPlan(t *testing.T) {
 	t.Parallel()
@@ -57,7 +65,8 @@ func TestPKScanOrdering_Unbound(t *testing.T) {
 	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
 	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-		WithPrimaryKey([]values.Value{id, k})
+		WithPrimaryKey([]values.Value{id, k}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	got := PKScanOrdering(plan)
 	if !got.IsKnown || len(got.Keys) != 2 || got.Keys[0] != id || got.Keys[1] != k {
@@ -75,7 +84,8 @@ func TestPKScanOrdering_ReverseUnbound(t *testing.T) {
 	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
 	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true).
-		WithPrimaryKey([]values.Value{id, k})
+		WithPrimaryKey([]values.Value{id, k}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	got := PKScanOrdering(plan)
 	if !got.IsKnown || len(got.Keys) != 2 {
@@ -104,7 +114,8 @@ func TestPKScanOrdering_EqualityPrefixDropped(t *testing.T) {
 	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{id, k}).
-		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	got := PKScanOrdering(plan)
 	if !got.IsKnown || len(got.Keys) != 1 || got.Keys[0] != k {
@@ -127,7 +138,8 @@ func TestPKScanOrdering_FullyEqualityBound(t *testing.T) {
 		WithScanComparisons([]*predicates.ComparisonRange{
 			pkOrderingEq(t, int64(7)),
 			pkOrderingEq(t, int64(9)),
-		})
+		}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	got := PKScanOrdering(plan)
 	if got.IsKnown {
@@ -146,7 +158,8 @@ func TestPKScanOrdering_NonEqualityLeadingComparisonKeepsFullKey(t *testing.T) {
 	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{id, k}).
-		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingGT(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingGT(t, int64(7))}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	got := PKScanOrdering(plan)
 	if !got.IsKnown || len(got.Keys) != 2 || got.Keys[0] != id || got.Keys[1] != k {
@@ -167,7 +180,8 @@ func TestPKScanOrdering_EqualityPrefixThenRangeStopsAtFirstNonEquality(t *testin
 		WithScanComparisons([]*predicates.ComparisonRange{
 			pkOrderingEq(t, int64(7)),
 			pkOrderingGT(t, int64(3)),
-		})
+		}).
+		WithKeyComponentTypes(testPhysicalLongTypes(3))
 
 	got := PKScanOrdering(plan)
 	if !got.IsKnown || len(got.Keys) != 2 || got.Keys[0] != k || got.Keys[1] != m {
@@ -183,7 +197,8 @@ func TestRecordQueryScanPlan_HintOrdering_DelegatesToPKScanOrdering(t *testing.T
 	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{id}).
-		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(1))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(1))}).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	got := plan.HintOrdering()
 	want := PKScanOrdering(plan)

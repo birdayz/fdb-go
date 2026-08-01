@@ -58,6 +58,9 @@ type RecordQueryVectorIndexPlan struct {
 	// distinguishing plan property (fully determined by indexName) — excluded
 	// from Equals/HashCode.
 	partitionColumns []string
+	// partitionKeyComponentTypes is aligned with prefixComparisons and records
+	// the physical partition-key widths used to encode the HNSW graph prefix.
+	partitionKeyComponentTypes []values.Type
 	// orderedStream selects the VBASE distance-ordered mode (RFC-156 Phase B).
 	// When true the scan does NOT self-limit to k: it emits its bounded
 	// re-ranked horizon (the engine's candidate pool / re-rank budget c) in
@@ -105,16 +108,17 @@ func NewRecordQueryVectorIndexPlan(
 	comps := make([]*predicates.ComparisonRange, len(prefixComparisons))
 	copy(comps, prefixComparisons)
 	return &RecordQueryVectorIndexPlan{
-		indexName:          indexName,
-		prefixComparisons:  comps,
-		queryVector:        queryVector,
-		k:                  k,
-		rankType:           rankType,
-		efSearch:           efSearch,
-		isReturningVectors: isReturningVectors,
-		recordTypes:        dedupSortedStrings(recordTypes),
-		flowedType:         flowedType,
-		resultValue:        values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		indexName:                  indexName,
+		prefixComparisons:          comps,
+		partitionKeyComponentTypes: normalizeKeyComponentTypes(nil, len(comps)),
+		queryVector:                queryVector,
+		k:                          k,
+		rankType:                   rankType,
+		efSearch:                   efSearch,
+		isReturningVectors:         isReturningVectors,
+		recordTypes:                dedupSortedStrings(recordTypes),
+		flowedType:                 flowedType,
+		resultValue:                values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
 
@@ -186,6 +190,20 @@ func (p *RecordQueryVectorIndexPlan) WithPartitionColumns(cols []string) *Record
 	return &c
 }
 
+// WithPartitionKeyComponentTypes returns a copy carrying authoritative
+// physical partition-key types aligned with GetPrefixComparisons.
+func (p *RecordQueryVectorIndexPlan) WithPartitionKeyComponentTypes(types []values.Type) *RecordQueryVectorIndexPlan {
+	c := *p
+	c.partitionKeyComponentTypes = normalizeKeyComponentTypes(types, len(p.prefixComparisons))
+	return &c
+}
+
+// GetPartitionKeyComponentTypes returns physical types aligned with the
+// partition equality-prefix comparisons.
+func (p *RecordQueryVectorIndexPlan) GetPartitionKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), p.partitionKeyComponentTypes...)
+}
+
 // GetQueryVector returns the search-vector Value.
 func (p *RecordQueryVectorIndexPlan) GetQueryVector() values.Value { return p.queryVector }
 
@@ -229,6 +247,7 @@ func (p *RecordQueryVectorIndexPlan) structuralKey() *structuralKey {
 		Bool(p.IsReturningVectors()).
 		Strs(p.recordTypes).
 		ScanComps(p.prefixComparisons).
+		Types(p.partitionKeyComponentTypes).
 		StructVal(p.queryVector).
 		StructVal(p.k)
 }

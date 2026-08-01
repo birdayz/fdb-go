@@ -190,6 +190,7 @@ func TestOrderingSatisfactionAndSortCoverageAgreeInOneCorrelationSpace(t *testin
 	// notice.
 	ordering := plans.NewRecordQueryIndexPlan(
 		"IDX_ID", nil, []string{"T"}, layout, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithIndexMetadata([]string{"ID"}, nil, false).
 		WithStrictlySorted().
 		HintRichOrdering()

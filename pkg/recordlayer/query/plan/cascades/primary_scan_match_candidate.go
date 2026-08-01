@@ -63,11 +63,14 @@ type PrimaryScanMatchCandidate struct {
 
 	// primaryKeyColumns are the column names of the primary key.
 	primaryKeyColumns []string
+	// keyComponentTypes is authoritative physical primary-key metadata aligned
+	// with primaryKeyColumns. It is separate from comparison operand types.
+	keyComponentTypes []values.Type
 
 	// hasRecordTypeKeyPrefix reports whether the FULL primary key (the one
-	// backing this candidate, not just primaryKeyColumns — which excludes
-	// the type-key component because RecordTypeKeyExpression.FieldNames()
-	// is empty) starts with a RecordTypeKeyExpression. Mirrors Java's
+	// backing this candidate, not just primaryKeyColumns — whose structural
+	// projection intentionally excludes the separately supplied type-key
+	// coordinate) starts with a RecordTypeKeyExpression. Mirrors Java's
 	// PrimaryScanMatchCandidate.hasAndOrderedByRecordTypeKey(), computed
 	// once by the caller from RecordType.PrimaryKeyHasRecordTypePrefix()
 	// (or RecordMetaData.PrimaryKeyHasRecordTypePrefix() for the
@@ -129,9 +132,23 @@ func NewPrimaryScanMatchCandidate(
 		availableRecordTypes:   avail,
 		queriedRecordTypes:     queried,
 		primaryKeyColumns:      pkCols,
+		keyComponentTypes:      physicalTypesFromFlatRow(baseType, pkCols, nil),
 		hasRecordTypeKeyPrefix: hasRecordTypeKeyPrefix,
 		baseType:               baseType,
 	}
+}
+
+// WithKeyComponentTypes attaches authoritative physical primary-key types to
+// a freshly constructed candidate.
+func (c *PrimaryScanMatchCandidate) WithKeyComponentTypes(types []values.Type) *PrimaryScanMatchCandidate {
+	c.keyComponentTypes = normalizePhysicalKeyTypes(types, len(c.primaryKeyColumns))
+	return c
+}
+
+// GetKeyComponentTypes returns physical types aligned with the candidate's
+// primary-key columns.
+func (c *PrimaryScanMatchCandidate) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.keyComponentTypes...)
 }
 
 // HasAndOrderedByRecordTypeKey reports whether the primary key starts with
@@ -313,9 +330,30 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
 	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
-	for _, alias := range c.parameters {
+	for i, alias := range c.parameters {
 		cr, ok := bindings[alias]
 		if !ok || cr == nil || cr.IsEmpty() {
+			return prefix
+		}
+		if !candidatePhysicalKeyTypeKnown(c.keyComponentTypes, i) {
+			// Without an authoritative tuple-wire domain, the comparison remains
+			// residual. Its declared/runtime type cannot safely stand in for key
+			// metadata shared across record types.
+			return prefix
+		}
+		if candidateRangeHasUnsupportedPhysicalFloatOrdering(cr, c.keyComponentTypes, i) {
+			return prefix
+		}
+		if candidateRangeHasUnsupportedPhysicalStartsWith(cr, c.keyComponentTypes, i) {
+			// STARTS_WITH is a tuple PREFIX_STRING range only for an
+			// authoritative STRING key. Leave every other physical type as a
+			// residual predicate rather than claiming scan compensation.
+			return prefix
+		}
+		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
+			// Leave every visible NaN comparison as residual compensation. A
+			// single FDB tuple payload is neither exact equality nor an exact
+			// ordered endpoint for the comparator's canonical NaN value.
 			return prefix
 		}
 		switch cr.GetRangeType() {
@@ -365,6 +403,11 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	if pkVals := c.GetPrimaryKeyValues(); len(pkVals) > 0 {
 		scanPlan = scanPlan.WithPrimaryKey(pkVals)
 	}
+	// Physical key types govern both bound probes and the ordering of an
+	// entirely unbound primary scan. Stamp them independently of whether a
+	// comparison prefix exists; otherwise an unbound LONG PK degrades to
+	// Unknown and loses its natural ordering.
+	scanPlan = scanPlan.WithKeyComponentTypes(c.keyComponentTypes)
 
 	// Extract scan comparisons from the prefix map in PK column order.
 	// Mirrors Java's toScanComparisons(comparisonRanges).

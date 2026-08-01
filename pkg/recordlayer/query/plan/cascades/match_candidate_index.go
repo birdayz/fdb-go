@@ -31,6 +31,12 @@ type ValueIndexScanMatchCandidate struct {
 	sargableAliases []values.CorrelationIdentifier
 	flowedType      values.Type
 	unique          bool
+	// keyComponentTypes is aligned with columnNames and comes from the
+	// descriptor plus expanded key expression, not from query comparands.
+	keyComponentTypes []values.Type
+	// primaryKeyComponentTypes is aligned with pkColumnNames and controls
+	// whether the appended index-entry PK suffix is a sound ordering source.
+	primaryKeyComponentTypes []values.Type
 
 	// recordTypeRowTypes are the per-record-type row layouts the index serves,
 	// one per entry of recordTypes — the descriptor-shaped positional types
@@ -106,6 +112,30 @@ type ValueIndexScanMatchCandidate struct {
 func (c *ValueIndexScanMatchCandidate) WithRecordTypeRowTypes(rowTypes []values.Type) *ValueIndexScanMatchCandidate {
 	c.recordTypeRowTypes = append([]values.Type(nil), rowTypes...)
 	return c
+}
+
+// WithKeyComponentTypes attaches authoritative physical index-key types to a
+// freshly constructed candidate.
+func (c *ValueIndexScanMatchCandidate) WithKeyComponentTypes(types []values.Type) *ValueIndexScanMatchCandidate {
+	c.keyComponentTypes = normalizePhysicalKeyTypes(types, len(c.columnNames))
+	return c
+}
+
+// GetKeyComponentTypes returns physical types aligned with index columns.
+func (c *ValueIndexScanMatchCandidate) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.keyComponentTypes...)
+}
+
+// WithPrimaryKeyComponentTypes attaches authoritative physical types aligned
+// with GetPKColumnNames to a freshly constructed candidate.
+func (c *ValueIndexScanMatchCandidate) WithPrimaryKeyComponentTypes(types []values.Type) *ValueIndexScanMatchCandidate {
+	c.primaryKeyComponentTypes = normalizePhysicalKeyTypes(types, len(c.pkColumnNames))
+	return c
+}
+
+// GetPrimaryKeyComponentTypes returns types aligned with pkColumnNames.
+func (c *ValueIndexScanMatchCandidate) GetPrimaryKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.primaryKeyComponentTypes...)
 }
 
 // rowLayouts returns every row layout this candidate's records can have: the
@@ -438,16 +468,23 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 		copy(fns, columnFunctions)
 	}
 	return &ValueIndexScanMatchCandidate{
-		indexName:              indexName,
-		recordTypes:            types,
-		columnNames:            cols,
-		columnFunctions:        fns,
-		pkColumnNames:          pkCols,
-		sargableAliases:        aliases,
-		flowedType:             flowedType,
-		unique:                 unique,
-		createsDuplicates:      createsDuplicatesSignal != nil && *createsDuplicatesSignal,
-		createsDuplicatesKnown: createsDuplicatesSignal != nil,
+		indexName:         indexName,
+		recordTypes:       types,
+		columnNames:       cols,
+		columnFunctions:   fns,
+		pkColumnNames:     pkCols,
+		sargableAliases:   aliases,
+		flowedType:        flowedType,
+		unique:            unique,
+		keyComponentTypes: physicalTypesFromFlatRow(flowedType, cols, fns),
+		// A flat row type proves the carrier of a visible field, but it does
+		// not prove that the field is the next physical PK coordinate. The PK
+		// can contain an unrepresented RecordTypeKey, literal, version, nested,
+		// or function component before it. Only the metadata adapter can prove
+		// that topology, through WithPrimaryKeyComponentTypes.
+		primaryKeyComponentTypes: normalizePhysicalKeyTypes(nil, len(pkCols)),
+		createsDuplicates:        createsDuplicatesSignal != nil && *createsDuplicatesSignal,
+		createsDuplicatesKnown:   createsDuplicatesSignal != nil,
 	}
 }
 
@@ -748,40 +785,38 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 		return nil
 	}
 	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
-	for _, alias := range c.sargableAliases {
+	for i, alias := range c.sargableAliases {
 		cr, ok := bindings[alias]
 		if !ok || cr == nil || cr.IsEmpty() {
+			return prefix
+		}
+		// A shared index can report Unknown because its record types encode this
+		// position with different tuple widths. Never guess from the RHS: leave
+		// this and every following predicate as residual compensation.
+		if !candidatePhysicalKeyTypeKnown(c.keyComponentTypes, i) {
+			return prefix
+		}
+		if candidateRangeHasUnsupportedPhysicalFloatOrdering(cr, c.keyComponentTypes, i) {
+			// Raw NaN payloads occupy physical tuple regions that do not agree
+			// with the comparator's canonical-NaN order. Keep every floating
+			// inequality as residual compensation over a non-SARGed scan.
+			return prefix
+		}
+		if candidateRangeHasUnsupportedPhysicalStartsWith(cr, c.keyComponentTypes, i) {
+			// PREFIX_STRING endpoints implement logical STARTS_WITH only for
+			// an authoritative STRING key. Reconciliation will preserve this
+			// comparison as a residual filter.
+			return prefix
+		}
+		// A raw NaN endpoint is incomplete for equality and ordered predicates:
+		// logical comparison canonicalizes every payload, while FDB tuple order
+		// preserves distinct NaN regions. Keep the predicate as compensation.
+		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
 			return prefix
 		}
 		switch cr.GetRangeType() {
 		case predicates.ComparisonRangeEquality:
 			prefix[alias] = cr
-			// A zero-valued FLOAT/DOUBLE equality TERMINATES the prefix, even
-			// though more indexed columns could be consumed.
-			//
-			// IEEE says -0.0 == +0.0 and this engine's `=` follows IEEE, but
-			// FDB tuple encoding preserves the sign bit, so the two zeros are
-			// distinct adjacent index keys and the probe must span BOTH. The
-			// executor widens a zero bound that terminates the scan range.
-			// Consuming a trailing column defeats that: with index (v, w) and
-			// `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is not a
-			// contiguous interval — the span between them also admits
-			// (-0.0, w>5) and (+0.0, w<5) — so no single TupleRange can express
-			// it, and the unwidened probe silently missed the -0.0 row.
-			//
-			// Stopping here makes the zero equality terminal, so the executor
-			// widens it across both keys, and leaves `w = 5` to be applied as a
-			// RESIDUAL filter. The scan is bounded to the two zero groups and
-			// the residual drops the in-between keys, which is exactly the
-			// wanted pair — one scan, no multi-range machinery.
-			//
-			// Only a compile-time-constant zero is detectable here. A
-			// correlated comparand that happens to be zero at runtime keeps the
-			// full prefix; de-sargging every correlated composite join to cover
-			// it would trade a rare wrong row for a broad performance cliff.
-			if isZeroFloatEqualityRange(cr) {
-				return prefix
-			}
 		case predicates.ComparisonRangeInequality:
 			prefix[alias] = cr
 			return prefix
@@ -1230,47 +1265,3 @@ var (
 )
 
 // Interface compliance also checked in match_candidate_interfaces.go.
-
-// isZeroFloatEqualityRange reports whether cr is an equality against a
-// compile-time-constant zero FLOAT/DOUBLE. Such an equality must terminate a
-// scan prefix so the executor can widen it across both signed zeros — see the
-// call site for why consuming a trailing column makes that inexpressible.
-//
-// A non-constant (correlated or parameterised) comparand returns false: its
-// value is unknown at plan time, and de-sargging on the possibility of a
-// runtime zero would cost every correlated composite join.
-func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
-	if cr == nil || !cr.IsEquality() {
-		return false
-	}
-	cmp := cr.GetEqualityComparison()
-	if cmp == nil || cmp.Operand == nil {
-		return false
-	}
-	// Deliberately NOT gated on the declared type. The executor decides to
-	// widen from the runtime VALUE (isZeroFloatBound), so gating here on a
-	// declared FLOAT/DOUBLE would let an untyped literal that evaluates to 0.0
-	// widen at execution while match-time reasoning never noticed -- the
-	// property and the behaviour would disagree, which is the whole defect
-	// class this guards. Match on the value's Go type, exactly as the
-	// executor does.
-	// Constness checked BEFORE evaluating: evaluating an arbitrary operand with
-	// a nil context treats unbound parameters as NULL, so `v = COALESCE(?, 0.0)`
-	// folds to zero and is misreported as a constant zero even when the runtime
-	// binding is nonzero -- which would drop the trailing column from EVERY
-	// composite probe of that shape.
-	if !values.IsConstantValue(cmp.Operand) {
-		return false
-	}
-	v, ok := values.EvaluateConstant(cmp.Operand)
-	if !ok || v == nil {
-		return false
-	}
-	switch n := v.(type) {
-	case float64:
-		return n == 0
-	case float32:
-		return n == 0
-	}
-	return false
-}

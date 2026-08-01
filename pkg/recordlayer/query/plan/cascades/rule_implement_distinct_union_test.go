@@ -55,10 +55,14 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 
 func makeScanWithPK(recordType string, pkCols ...string) (*plans.RecordQueryScanPlan, *expressions.Reference) {
 	pkVals := make([]values.Value, len(pkCols))
+	keyTypes := make([]values.Type, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keyTypes[i] = values.NullableLong
 	}
-	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).
+		WithKeyComponentTypes(keyTypes).
+		WithPrimaryKey(pkVals)
 	ref := expressions.InitialOf(scan)
 	pm := NewPlanPropertiesMap()
 	pm.Add(scan)
@@ -261,14 +265,18 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	// pk-ordered scan, but whose BAKED plan child is a DIFFERENT (stale)
 	// scan object — the estimate/executable divergence.
 	pkVals := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithPrimaryKey(pkVals)
 	orderedSW := orderedScan
 	srcRef := expressions.InitialOf(orderedSW)
 	pmSrc := NewPlanPropertiesMap()
 	pmSrc.Add(orderedSW)
 	srcRef.SetPlanProperties(pmSrc)
 
-	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithPrimaryKey(pkVals)
 	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
 		staleScan,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},

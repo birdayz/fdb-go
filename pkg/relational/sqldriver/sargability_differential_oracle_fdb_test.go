@@ -498,11 +498,12 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// composite index below, composite_idx_ab, is BIGINT-only —
 	// dbl_col/flt_col each carry a single-column index, and their row
 	// generation seeds -0.0. The Go-side non-terminal signed-zero gaps this
-	// once guarded are CLOSED (CQ-28 constant, CQ-83 correlated — zeroFork
-	// in the executor), so a leading-float composite index would no longer
+	// once guarded are CLOSED by RFC-205's typed physical range-set binder,
+	// so a leading-float composite index would no longer
 	// trip a Go bug here; the restriction is kept in step with the rowdiff
 	// generator's (see rowdiff/gen.go), whose cross-engine corpus diverges
-	// by design against Java's bit-identity `=` on that shape. Extend both
+	// by design because Java and Go do not share one signed-zero equality
+	// contract on that shape. Extend both
 	// deliberately, together, or neither.
 	const dbPath = "/testdb_sargoracle"
 	setup := openTestDB(t, dbPath)

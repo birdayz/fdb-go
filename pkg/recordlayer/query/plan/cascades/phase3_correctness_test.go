@@ -317,11 +317,13 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 	}
 	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NullableLong}
 	scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scan1Ref := expressions.InitialOf(scan1)
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 
 	scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scan2Ref := expressions.InitialOf(scan2)
 	q2 := expressions.ForEachQuantifier(scan2Ref)

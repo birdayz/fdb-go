@@ -175,8 +175,10 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 	}
 	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
 	scanA := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scanB := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)

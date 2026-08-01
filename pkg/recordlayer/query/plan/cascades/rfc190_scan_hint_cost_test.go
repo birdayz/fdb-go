@@ -28,7 +28,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		[]string{"TENANT", "ORDER"},
 		false, // genuine shared-primary-key-range multi-type scan: no record-type-key prefix
 		values.UnknownType,
-	)
+	).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 
 	eqTenant := pkGateEq(t, int64(7))
 	partialPlan := candidate.ToScanPlan(
@@ -95,7 +95,8 @@ func TestScanProvableMaxCard_UsesStampedPKArity(t *testing.T) {
 	}
 	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey(pk2).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if card, known := scanProvableMaxCard(prefix); known {
 		t.Fatalf("composite-PK prefix has provable max cardinality %v, want unknown", card)
 	}
@@ -103,7 +104,7 @@ func TestScanProvableMaxCard_UsesStampedPKArity(t *testing.T) {
 	full := prefix.WithScanComparisons([]*predicates.ComparisonRange{
 		pkGateEq(t, int64(7)),
 		pkGateEq(t, int64(9)),
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	if card, known := scanProvableMaxCard(full); !known || card != 1 {
 		t.Fatalf("fully equality-bound stamped scan = (%v,%v), want (1,true)", card, known)
 	}
@@ -124,7 +125,8 @@ func TestLogicalCounts_PrimaryKeyContextFallback(t *testing.T) {
 	}
 
 	partial := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	partialCounts := findExpressionsByType(logicalParent(partial), nil, ctx)
 	if !partialCounts.unboundedDataAccess || partialCounts.maxDataAccessCardinality != -1 {
 		t.Fatalf("ctx-proven composite prefix counts = {unbounded:%v max:%v}, want {true -1}",
@@ -134,7 +136,7 @@ func TestLogicalCounts_PrimaryKeyContextFallback(t *testing.T) {
 	full := partial.WithScanComparisons([]*predicates.ComparisonRange{
 		pkGateEq(t, int64(7)),
 		pkGateEq(t, int64(9)),
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	fullCounts := findExpressionsByType(logicalParent(full), nil, ctx)
 	if fullCounts.unboundedDataAccess || fullCounts.maxDataAccessCardinality != 1 {
 		t.Fatalf("ctx-proven full-PK counts = {unbounded:%v max:%v}, want {false 1}",

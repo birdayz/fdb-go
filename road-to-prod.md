@@ -224,16 +224,11 @@ Wrong rows / wrong data:
    `sqldriver/null_pk_java_parity_test.go` (explicit NULL, composite partial-NULL, omitted PK
    column; each asserts the null key exists — duplicate-NULL collides 23505 — and that `id=0` does
    NOT collide, i.e. nothing was stored as 0). No divergence remains.
-3. **RESOLVED 2026-08-01 (CQ-83, `fix/rfc196-correlated-zero-composite`, awaiting the Graefe
-   lap).** Correlated float `=` no longer misses `-0.0`/`+0.0` on a non-terminal composite index
-   column. The sentinel fired on its own terms and was flipped:
-   `correlated_zero_composite_sentinel_test.go` now asserts the CORRECT rows (both correlation
-   directions, no duplicates, in-between guard rows, residual-path agreement, EXPLAIN pin that the
-   composite probe survives). Mechanism: execution-time probe split — one index range per signed
-   zero, scanned as an ordered concatenation (`zeroFork` in the executor; RFC-196's known gap,
-   closed the way its own analysis prescribed: widening decided at execution time, where the
-   correlated comparand's value is finally known — but as an exact two-range union, not a
-   contract-changing internal filter).
+3. **FIXED by CQ-83 and generalized by RFC-205.** Correlated FLOAT/DOUBLE `=` on a non-terminal composite-index column now
+   binds an exact runtime range set for both zero signs while retaining the suffix. Pinned positive
+   by `correlated_zero_composite_sentinel_test.go` and
+   `runtime_signed_zero_range_set_fdb_test.go`; this is retained in the numbered history but is no
+   longer a production watch.
 4. **RESOLVED: `CURRENT_TIMESTAMP` drifted across rows within one statement (SELECT path),
    including across PAGE boundaries.** The statement instant is captured ONCE per execution on the
    result set (`paginatingRows.statementTime` in `cascades_generator.go`) while the driver call's
@@ -248,7 +243,8 @@ Wrong rows / wrong data:
    boundaries), `sqldriver/current_timestamp_join_shapes_test.go` (join/EXISTS/scalar-subquery
    battery), and `executor/ordinal_join_clock_test.go` (baked-build clock threading).
 5. NaN comparisons follow Java's total order, not IEEE — `(v/z)=(v/z)` returns ALL rows. Pinned —
-   `nan_comparison_semantics_test.go`. Matches Java; both diverge from the standard/PG/CRDB.
+   `nan_comparison_semantics_test.go`. Logical comparison also matches PG/CRDB; the bare standard
+   differs. Raw FDB NaN sign/payload order is a separate indexed-access gap tracked by CQ-84.
 6. Signed zero: Go is IEEE, Java is bit-identity — `WHERE d = 0.0` returns a stored `-0.0` row in
    Go, not in Java. Pinned — `plandiff/corpus.go:4726` (`DivergenceJavaWrongRowsGoCorrect`).
 7. BIGINT vs DOUBLE above 2^53 — Java promotes lossily and wrongly matches; Go rewrites exactly.
@@ -517,8 +513,9 @@ Booked by THIS revision, from defects the verification pass found:
    then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
-6. **CQ-75** — `v IN (-0.0, 0.0)` silently loses a row, order-dependently. Wrong rows, and now that
-   the factory exists it is the kind of shape the factory should be generating.
+6. **CQ-75 — DONE via RFC-205.** `v IN (-0.0, 0.0)` now returns both signs in either element order;
+   the exact plan/result regression is in `composite_index_zero_widen_test.go`. CQ-76's general
+   nonzero `IN` + trailing-equality SARGability gap remains open.
 7. **CQ-30**, B3's residual: criterion 2's data-access maxima are still forked.
 8. **B5** typed metadata flow. L, after the migration proves the identity machinery everywhere.
 9. Watch-list handed to any prod adopter, once CQ-80 has pinned it.

@@ -480,10 +480,16 @@ func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
 		return 0, false
 	}
 	fullBind, provable := pkFullyEqualityBound(plan, nil)
-	if fullBind && provable {
-		return 1, true
+	if !fullBind || !provable {
+		return 0, false
 	}
-	return 0, false
+	shape := properties.PhysicalEqualityShapeForComparisons(
+		plan.GetScanComparisons(), plan.GetKeyComponentTypes(), true,
+	)
+	if shape.UnsupportedKnownNaN || shape.ProvenRowMultiplicity.IsUnknown() {
+		return 0, false
+	}
+	return float64(shape.ProvenRowMultiplicity.Value()), true
 }
 
 // indexProvableMaxCard is the logical-memo walk's plan-local cardinality
@@ -505,14 +511,13 @@ func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
 			}
 		}
 	}
-	// A widening equality (a zero float) binds TWO keys, so this is not a
-	// provable one-row bound. Shared with computeCardinalities and
-	// isProvablePointProbe so the same plan cannot carry contradictory
-	// cardinality claims -- the cost model previously kept ranking on the
-	// false bound after the property was fixed.
-	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) &&
-		!properties.AnyEqualityWidensBeyondOneKey(p.GetScanComparisons()) {
-		return 1, true
+	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) {
+		shape := properties.PhysicalEqualityShapeForComparisons(
+			p.GetScanComparisons(), p.GetKeyComponentTypes(), true,
+		)
+		if !shape.UnsupportedKnownNaN && !shape.ProvenRowMultiplicity.IsUnknown() {
+			return float64(shape.ProvenRowMultiplicity.Value()), true
+		}
 	}
 	return 0, false
 }
@@ -1614,14 +1619,22 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// for older/hand-built plans. Unknown coverage fails closed instead of
 		// treating an all-equality prefix as a point probe.
 		fullBind, provable := pkFullyEqualityBound(pl, ctx)
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && provable)
+		return scanLikeCost(
+			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), pl.GetRecordTypes(),
+			stats, fullBind && provable,
+		)
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
 		// a nil/empty ctx falls back to non-unique (conservative bucket estimate) so
 		// a non-unique equality (`status = ?`) is never mispriced as a point probe.
-		_, unique := indexMetadata(pl, ctx)
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, unique)
+		columns, unique := indexMetadata(pl, ctx)
+		fullBindUnique := unique && len(columns) > 0 &&
+			properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), len(columns))
+		return scanLikeCost(
+			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), pl.GetRecordTypes(),
+			stats, fullBindUnique,
+		)
 	case *plans.RecordQueryFlatMapPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
@@ -1872,15 +1885,38 @@ func warnUnclassifiedPlanType(
 // MANY rows in one call; a point probe streams back exactly one, so there is
 // nothing to amortize over — it is the same isolated round trip a Fetch pays,
 // priced at the same rate.
-func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
+func scanLikeCost(
+	comps []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+	recordTypes []string,
+	stats properties.StatisticsProvider,
+	fullBindUnique bool,
+) properties.Cost {
 	sel, numBound, allEquality := properties.BoundSelectivity(comps)
-	// A widening equality (a zero float) binds TWO keys, so the probe is not
-	// a single-row fetch. Shared with computeCardinalities,
-	// isProvablePointProbe and indexProvableMaxCard -- the fourth and last
-	// independent copy of this proof.
+	shape := properties.PhysicalEqualityShapeForComparisons(comps, physicalTypes, true)
+	if shape.UnsupportedKnownNaN {
+		return properties.Cost{
+			Cardinality: properties.MaxFiniteHeuristic,
+			CPU:         properties.MaxFiniteHeuristic,
+		}
+	}
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) &&
-		!properties.AnyEqualityWidensBeyondOneKey(comps) {
-		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
+		!shape.ProvenRowMultiplicity.IsUnknown() {
+		multiplicity := shape.ProvenRowMultiplicity.Value()
+		if multiplicity == 0 {
+			return properties.Cost{CPU: properties.PhysicalRangeSeekCost}
+		}
+		cardinality := float64(multiplicity)
+		cpu := properties.FetchCPU
+		if multiplicity > 1 {
+			cpu = properties.SaturatingHeuristicAdd(
+				cpu,
+				properties.SaturatingHeuristicMultiply(float64(multiplicity-1), properties.ScanCPU),
+			)
+		}
+		return addRangeSetSeekCost(
+			properties.Cost{Cardinality: cardinality, CPU: cpu}, shape,
+		)
 	}
 	total := 0.0
 	if len(recordTypes) == 0 {
@@ -1891,7 +1927,34 @@ func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, sta
 		}
 	}
 	card := total * sel
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * physicalWrapperCostMultiplier}
+	return addRangeSetSeekCost(properties.Cost{
+		Cardinality: card,
+		CPU: properties.SaturatingHeuristicMultiply(
+			properties.SaturatingHeuristicMultiply(card, properties.ScanCPU),
+			physicalWrapperCostMultiplier,
+		),
+	}, shape)
+}
+
+func addRangeSetSeekCost(
+	base properties.Cost,
+	shape properties.PhysicalEqualityShape,
+) properties.Cost {
+	base.Cardinality = properties.SaturatingHeuristicAdd(base.Cardinality, 0)
+	base.CPU = properties.SaturatingHeuristicAdd(base.CPU, 0)
+	if shape.Unsatisfiable {
+		base.Cardinality = 0
+		base.CPU = properties.PhysicalRangeSeekCost
+		return base
+	}
+	if shape.SuccessfulSeekUpperBound <= 1 {
+		return base
+	}
+	extra := properties.SaturatingHeuristicMultiply(
+		float64(shape.SuccessfulSeekUpperBound-1), properties.PhysicalRangeSeekCost,
+	)
+	base.CPU = properties.SaturatingHeuristicAdd(base.CPU, extra)
+	return base
 }
 
 // planContainsJoin reports whether the concrete plan tree contains a join
@@ -2383,7 +2446,13 @@ func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fl
 	if !fullBind || !provable {
 		return 0, false
 	}
-	return 1, true
+	shape := properties.PhysicalEqualityShapeForComparisons(
+		pl.GetScanComparisons(), pl.GetKeyComponentTypes(), true,
+	)
+	if shape.UnsupportedKnownNaN || shape.ProvenRowMultiplicity.IsUnknown() {
+		return 0, false
+	}
+	return float64(shape.ProvenRowMultiplicity.Value()), true
 }
 
 // pkFullyEqualityBound is RFC-186 §2B's ONE shared full-PK-equality
@@ -2399,17 +2468,11 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 	}
 	comps := pl.GetScanComparisons()
 
-	// Resolve the PK arity first, from either source, WITHOUT returning: the
-	// widening guard below has to see every path out of this function.
-	//
-	// It did not. The guard used to sit after the stamped-PK branch had already
-	// returned, so it covered only the ctx fallback while its own comment
-	// claimed it "covers both scanProvableMaxCard and scanPlanProvableMaxCard".
-	// A stamped-PK scan with a terminal zero-valued FLOAT equality was therefore
-	// PROVEN at-most-one by two of this helper's three callers, while
-	// isProvablePointProbe — consulting the same widening predicate directly —
-	// correctly declined to call it a point probe. One plan, two contradictory
-	// claims, and the prose asserting otherwise is exactly what kept it hidden.
+	// Resolve the PK arity first, from either source. This helper answers only
+	// whether logical equalities cover the key. Physical multiplicity is a
+	// separate question answered by PhysicalEqualityShape in every caller: a
+	// full signed-zero bind still covers the key, but proves a maximum of two
+	// physical rows rather than one.
 	pkLen := len(pl.GetPrimaryKeyValues())
 	if pkLen == 0 {
 		recordTypes := pl.GetRecordTypes()
@@ -2422,13 +2485,6 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 		}
 	}
 
-	// A widening equality (a terminal zero float) binds TWO keys — the executor
-	// widens a zero bound across -0.0 and +0.0, which are IEEE-equal but pack to
-	// distinct adjacent keys — so a fully equality-bound PK is still not a
-	// one-row proof. The arity is known either way, hence provable=true.
-	if properties.AnyEqualityWidensBeyondOneKey(comps) {
-		return false, true
-	}
 	return properties.EqualityBoundsCoverKey(comps, pkLen), true
 }
 
@@ -2449,14 +2505,13 @@ func indexPlanProvableMaxCard(pl *plans.RecordQueryIndexPlan, cols []string, uni
 			}
 		}
 	}
-	// Same widening guard as computeCardinalities, isProvablePointProbe,
-	// indexProvableMaxCard and scanLikeCost. This is the CONCRETE physical
-	// path PlanningCostModelLess actually walks, so leaving it unguarded kept
-	// maxDataAccessCardinality=1 for a zero probe even after the property was
-	// fixed -- criterion #2 ranking on a bound the property had disowned.
-	if numBound > 0 && allEquality && numBound == len(cols) &&
-		!properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
-		return 1, true
+	if numBound > 0 && allEquality && numBound == len(cols) {
+		shape := properties.PhysicalEqualityShapeForComparisons(
+			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), true,
+		)
+		if !shape.UnsupportedKnownNaN && !shape.ProvenRowMultiplicity.IsUnknown() {
+			return float64(shape.ProvenRowMultiplicity.Value()), true
+		}
 	}
 	return 0, false
 }

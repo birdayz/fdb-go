@@ -249,7 +249,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
 	if !fanOutCandidate.CreatesDuplicates() {
 		t.Fatal("structured FAN_OUT must override a stale false duplicate signal")
 	}
@@ -353,6 +353,13 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 	if !ok {
 		t.Fatalf("fan-out fetch child = %T, want IndexPlan", fetch.GetInner())
 	}
+	pkColumns := indexPlan.GetPKColumnNames()
+	if len(pkColumns) != 1 || pkColumns[0] != "ID" {
+		t.Fatalf(
+			"fan-out scan primary-key coverage = %v, want [ID]",
+			pkColumns,
+		)
+	}
 	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
 		len(ordering.Keys) != 0 {
 		t.Fatalf(
@@ -381,7 +388,8 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if _, ok := scalarCandidate.PushValueThroughFetch(
 		field("SCORE"),
 		sourceAlias,
@@ -551,7 +559,7 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
 
 	equality := predicates.NewLiteralComparison(
 		predicates.ComparisonEquals,
@@ -662,7 +670,8 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	scalarParts := scalarCandidate.ComputeMatchedOrderingParts(
 		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
 		[]values.CorrelationIdentifier{scalarAlias},
@@ -671,6 +680,79 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 	if len(scalarParts) != 1 ||
 		scalarParts[0].GetParameterId() != scalarAlias {
 		t.Fatalf("scalar ordering regression: got %#v, want one SCORE part", scalarParts)
+	}
+}
+
+func TestValueIndexScanMatchCandidate_FanOutContinuationRequiresPhysicalFixedness(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		literal   int64
+		wantParts int
+	}{
+		{name: "signed zero", literal: 0, wantParts: 0},
+		{name: "nonzero", literal: 7, wantParts: 1},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fanoutAlias := values.UniqueCorrelationIdentifier()
+			trailingAlias := values.UniqueCorrelationIdentifier()
+			duplicates := true
+			candidate := NewValueIndexScanMatchCandidateWithFunctions(
+				"item_double_tags_score",
+				[]string{"Item"},
+				[]string{"TAGS", "SCORE"},
+				nil,
+				[]values.CorrelationIdentifier{fanoutAlias, trailingAlias},
+				values.UnknownType,
+				false,
+				nil,
+				&duplicates,
+			).WithRootKeyExpression(&gen.KeyExpression{
+				Then: &gen.Then{Child: []*gen.KeyExpression{
+					candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
+					candidateTestKeyField("SCORE", gen.Field_SCALAR),
+				}},
+			}).WithKeyComponentTypes([]values.Type{
+				values.NullableDouble,
+				values.NullableLong,
+			})
+
+			comparison := predicates.NewLiteralComparison(
+				predicates.ComparisonEquals,
+				tc.literal,
+			)
+			rangeResult := predicates.EmptyComparisonRange().Merge(&comparison)
+			if !rangeResult.Ok {
+				t.Fatal("failed to build equality range")
+			}
+			info := NewRegularMatchInfo(
+				map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+					fanoutAlias: rangeResult.Range,
+				},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			)
+			parts := candidate.ComputeMatchedOrderingParts(
+				info,
+				[]values.CorrelationIdentifier{fanoutAlias, trailingAlias},
+				false,
+			)
+			if len(parts) != tc.wantParts {
+				t.Fatalf("ordering parts = %d, want %d", len(parts), tc.wantParts)
+			}
+			if tc.wantParts == 1 && parts[0].GetParameterId() != trailingAlias {
+				t.Fatalf("ordering continued at %s, want trailing alias %s", parts[0].GetParameterId(), trailingAlias)
+			}
+		})
 	}
 }
 

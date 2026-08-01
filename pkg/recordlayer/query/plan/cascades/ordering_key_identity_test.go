@@ -63,7 +63,9 @@ func orderingIdentityCandidate(name string, cols []string, rowType values.Type) 
 		false,
 		[]string{"ID"},
 		&noDuplicates,
-	).WithRootKeyExpression(orderingIdentityKeyExpression(cols...))
+	).WithRootKeyExpression(orderingIdentityKeyExpression(cols...)).
+		WithKeyComponentTypes(syntheticIndexKeyTypes(len(cols))).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 	return candidate, aliases
 }
 

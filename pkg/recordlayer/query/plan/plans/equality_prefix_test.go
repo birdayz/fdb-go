@@ -64,7 +64,7 @@ func TestEqualityPrefixLen(t *testing.T) {
 					comps[i] = pkOrderingGT(t, int64(i))
 				}
 			}
-			if got := equalityPrefixLen(comps, tc.n); got != tc.want {
+			if got := equalityPrefixLen(comps, testPhysicalLongTypes(len(comps)), tc.n); got != tc.want {
 				t.Fatalf("equalityPrefixLen(%v, %d) = %d, want %d", tc.eqAt, tc.n, got, tc.want)
 			}
 		})
@@ -90,7 +90,8 @@ func TestPKScanOrdering_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *testin
 	}
 	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{id, k, m}).
-		WithScanComparisons(comps)
+		WithScanComparisons(comps).
+		WithKeyComponentTypes(testPhysicalLongTypes(3))
 
 	plain := plan.HintOrdering()
 	if !plain.IsKnown || len(plain.Keys) != 2 || plain.Keys[0] != k || plain.Keys[1] != m {
@@ -148,6 +149,7 @@ func TestRecordQueryIndexPlan_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *
 		pkOrderingEq(t, int64(9)),
 	}
 	plan := NewRecordQueryIndexPlan("IDX", comps, []string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes(testPhysicalLongTypes(3)).
 		WithIndexMetadata([]string{"A", "B", "C"}, []string{"A", "B", "C"}, false)
 
 	plain := plan.HintOrdering()

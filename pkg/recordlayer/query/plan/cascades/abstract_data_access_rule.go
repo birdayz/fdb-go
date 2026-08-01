@@ -384,6 +384,11 @@ func CreateScansForMatches(
 		matchInfo := pm.GetMatchInfo()
 		regularInfo := matchInfo.GetRegularMatchInfo()
 		bindings := regularInfo.GetParameterBindingMap()
+		if !candidateBindingRangesEligible(candidate, bindings) {
+			// Defensive repeat of the match-time gate: hand-built PartialMatches
+			// must not bypass NaN ineligibility and emit an uncompensated probe.
+			continue
+		}
 		prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
 
 		plan := candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
@@ -513,12 +518,6 @@ func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string)
 	return unique, cand.GetColumnNames()
 }
 
-// candidatePKColumns returns the candidate's primary-key column list for
-// ordering-property extension, or nil when the candidate does not expose
-// one or its index fans out (createsDuplicates): positions past a fan-out
-// key part are not sort-ordered, so the PK suffix must not extend the
-// ordering there (Java's computeOrderingFromScanComparisons breaks the
-// sorted-suffix loop at a duplicating key part).
 // candidateUnique reports the candidate's UNIQUE flag, or false when the
 // candidate does not expose one.
 func candidateUnique(cand MatchCandidate) bool {
@@ -539,6 +538,12 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		return idxPlan
 	}
 	stamped := idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+	if typedCandidate, ok := cand.(interface{ GetKeyComponentTypes() []values.Type }); ok {
+		stamped = stamped.WithKeyComponentTypes(typedCandidate.GetKeyComponentTypes())
+	}
+	if typedPKCandidate, ok := cand.(interface{ GetPrimaryKeyComponentTypes() []values.Type }); ok {
+		stamped = stamped.WithPrimaryKeyComponentTypes(typedPKCandidate.GetPrimaryKeyComponentTypes())
+	}
 	if valueCandidate, ok := cand.(*ValueIndexScanMatchCandidate); ok {
 		if valueCols := valueCandidate.GetValueColumnNames(); len(valueCols) > 0 {
 			// The KeyWithValue VALUE part rides onto the plan so the covering
@@ -558,9 +563,10 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		stamped = stamped.WithDistinctRecordsSignal(*sig)
 	}
 	// RFC-189 B3: the STRUCTURAL common PK for PrimaryKeyProperty — stamped
-	// REGARDLESS of fan-out (index entries always carry the PK), unlike the
-	// ordering-suffix pkColumnNames above which candidatePKColumns nils for
-	// fan-out. nil (candidate/def supplied none) leaves the property abstaining.
+	// REGARDLESS of fan-out (index entries always carry the PK). PK coverage
+	// names likewise remain available for fan-out indexes; ordering synthesis
+	// is suppressed independently by the duplicate-producing signal. nil
+	// (candidate/def supplied none) leaves the property abstaining.
 	if pk := candidateCommonPrimaryKey(cand); pk != nil {
 		stamped = stamped.WithCommonPrimaryKey(pk)
 	}
@@ -590,10 +596,10 @@ func candidateDistinctSignal(cand MatchCandidate) *bool {
 	return nil
 }
 
+// candidatePKColumns returns the coordinate-safe visible PK list used by both
+// covering reconstruction and ordering. Fan-out retains coverage; the plan's
+// duplicate-producing signal independently suppresses suffix ordering.
 func candidatePKColumns(cand MatchCandidate) []string {
-	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok && dup.CreatesDuplicates() {
-		return nil
-	}
 	if c, ok := cand.(interface{ GetPKColumnNames() []string }); ok {
 		return c.GetPKColumnNames()
 	}
@@ -968,10 +974,16 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	resolved := ScanDirectionBoth
 	mi := pm.GetMatchInfo()
 	orderingParts := mi.GetMatchedOrderingParts()
+	candidate := pm.GetMatchCandidate()
 
 	var equalityBound []values.Value
 	for _, op := range orderingParts {
-		if op.GetComparisonRange().IsEquality() {
+		shape := candidatePhysicalEqualityShape(
+			candidate,
+			op.GetParameterId(),
+			op.GetComparisonRange(),
+		)
+		if shape.EqualityPrefixLength == 1 && shape.PhysicallyFixed {
 			equalityBound = append(equalityBound, op.GetValue())
 		}
 	}
@@ -996,7 +1008,12 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 		for opIdx < len(orderingParts) {
 			op := orderingParts[opIdx]
 			opIdx++
-			if op.GetComparisonRange().IsEquality() {
+			shape := candidatePhysicalEqualityShape(
+				candidate,
+				op.GetParameterId(),
+				op.GetComparisonRange(),
+			)
+			if shape.EqualityPrefixLength == 1 && shape.PhysicallyFixed {
 				continue
 			}
 

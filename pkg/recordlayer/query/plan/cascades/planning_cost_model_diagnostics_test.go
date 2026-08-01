@@ -290,7 +290,8 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 			[]string{"T"},
 			values.UnknownType,
 			false,
-		).WithIndexMetadata([]string{"A", "B"}, nil, true)
+		).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
+			WithIndexMetadata([]string{"A", "B"}, nil, true)
 
 		counts := diagnosticLogicalCounts(index, nil)
 		if counts.indexScanCount != 1 ||

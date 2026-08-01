@@ -109,7 +109,8 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 	t.Helper()
 	return plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false).
 		WithPrimaryKey(fkChainIDPK()).
-		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, bindField)})
+		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, bindField)}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
 // fkChainFKProbe is a non-unique secondary-index equality probe against rt,
@@ -125,6 +126,7 @@ func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.Cor
 	return plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(false)
 }
@@ -138,6 +140,7 @@ func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias valu
 	return plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(true)
 }
@@ -168,6 +171,7 @@ func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias 
 	return plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainRTPrefixedPK()).
 		WithDistinctRecordsSignal(false)
 }

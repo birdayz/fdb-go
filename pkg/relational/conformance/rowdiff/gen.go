@@ -988,12 +988,12 @@ func genTable(rng *rand.Rand) TableDef {
 	// (DOUBLE/FLOAT) are ONLY ever single-column indexes here — the one
 	// composite index, IDX_AB, is BIGINT-only. genRows seeds -0.0 into the
 	// D/E domains. The Go-side non-terminal signed-zero gaps this once
-	// guarded are CLOSED (CQ-28 constant, CQ-83 correlated — zeroFork in the
-	// executor), so the restriction no longer hides a Go bug. It stays
-	// because this is a CROSS-ENGINE corpus: Java's `=` is bit identity, so
-	// a leading-float composite index makes Java and Go diverge by design on
-	// every zero probe, and lifting the restriction means classifying those
-	// divergences deliberately, not inheriting them as mystery nightly reds.
+	// guarded are CLOSED by RFC-205's typed physical range-set binder, so the
+	// restriction no longer hides a Go bug. It stays because this is a
+	// CROSS-ENGINE corpus: Java and Go do not share one signed-zero equality
+	// contract on a leading-float composite shape. Lifting the restriction
+	// therefore means classifying those divergences deliberately, not
+	// inheriting them as mystery nightly reds.
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	// ≥2 indexes with high probability: that is where intersections and
 	// cost ties live. 0-1 indexes still occur so full scans stay covered.

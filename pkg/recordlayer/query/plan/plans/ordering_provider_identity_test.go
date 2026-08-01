@@ -83,7 +83,9 @@ func TestIndexPlanRichOrderingKeysCarryIdentity(t *testing.T) {
 
 	layout := providerLayout()
 	plan := NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false).
-		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false)
+		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
+		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 
 	ordering := plan.HintRichOrdering()
 	keys := ordering.GetKeys()
@@ -107,7 +109,9 @@ func TestIndexPlanPlainOrderingKeysCarryIdentity(t *testing.T) {
 
 	layout := providerLayout()
 	plan := NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false).
-		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false)
+		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
+		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 
 	ordering := plan.HintOrdering()
 	if !ordering.IsKnown || len(ordering.Keys) != 3 {
@@ -130,7 +134,8 @@ func TestPKScanOrderingKeysCarryIdentity(t *testing.T) {
 		WithPrimaryKey([]values.Value{
 			&values.FieldValue{Field: "GAME", Typ: values.NullableString},
 			&values.FieldValue{Field: "ID", Typ: values.NotNullLong},
-		})
+		}).
+		WithKeyComponentTypes([]values.Type{values.NullableString, values.NotNullLong})
 
 	plain := PKScanOrdering(plan)
 	if !plain.IsKnown || len(plain.Keys) != 2 {
@@ -171,7 +176,9 @@ func TestEqualityBoundPrefixKeysAlsoCarryIdentity(t *testing.T) {
 	plan := NewRecordQueryIndexPlan(
 		"idx", []*predicates.ComparisonRange{eq.Range},
 		[]string{"SCORES"}, layout, false).
-		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false)
+		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
+		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 
 	ordering := plan.HintRichOrdering()
 	keys := ordering.GetKeys()
@@ -200,6 +207,7 @@ func TestUnresolvableProviderKeyStaysLazyRatherThanGuessing(t *testing.T) {
 	t.Parallel()
 
 	plan := NewRecordQueryIndexPlan("idx", nil, []string{"A", "B"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableString}).
 		WithIndexMetadata([]string{"GAME"}, nil, false)
 
 	ordering := plan.HintRichOrdering()
@@ -237,7 +245,8 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 		t.Parallel()
 
 		plan := NewRecordQueryAggregateIndexPlan(
-			NewRecordQueryIndexPlan("IDX_AGG", nil, []string{"ORDERS"}, values.UnknownType, false),
+			NewRecordQueryIndexPlan("IDX_AGG", nil, []string{"ORDERS"}, values.UnknownType, false).
+				WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableString}),
 			"ORDERS", values.UnknownType, "COUNT",
 		).WithGroupColumns([]string{"REGION", "STATUS"}, "")
 

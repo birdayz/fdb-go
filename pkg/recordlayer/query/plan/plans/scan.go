@@ -28,6 +28,11 @@ type RecordQueryScanPlan struct {
 	reverse         bool
 	primaryKeyVals  []values.Value
 	scanComparisons []*predicates.ComparisonRange
+	// keyComponentTypes is aligned with scanComparisons and records the
+	// authoritative physical primary-key type for each bound component. The
+	// executor must use these types, rather than the RHS value's declaration,
+	// when choosing the FDB tuple representation.
+	keyComponentTypes []values.Type
 	// resultValue is the stable per-instance QuantifiedObjectValue standing
 	// for the rows this scan emits. Minted ONCE in NewRecordQueryScanPlan and
 	// carried through every copy (WithPrimaryKey/WithScanComparisons), it gives
@@ -77,7 +82,24 @@ func (p *RecordQueryScanPlan) WithScanComparisons(comps []*predicates.Comparison
 	copy(copied, comps)
 	cp := *p
 	cp.scanComparisons = copied
+	cp.keyComponentTypes = normalizeKeyComponentTypes(p.keyComponentTypes, len(comps))
 	return &cp
+}
+
+// WithKeyComponentTypes returns a copy carrying authoritative physical
+// primary-key types. The vector may extend past the bound comparison prefix:
+// ordering proofs need the domains of unbound suffix components too. Missing
+// entries required by comparisons are made explicit as UnknownType.
+func (p *RecordQueryScanPlan) WithKeyComponentTypes(types []values.Type) *RecordQueryScanPlan {
+	cp := *p
+	cp.keyComponentTypes = normalizeKeyComponentTypes(types, len(p.scanComparisons))
+	return &cp
+}
+
+// GetKeyComponentTypes returns the authoritative physical types aligned with
+// GetScanComparisons.
+func (p *RecordQueryScanPlan) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), p.keyComponentTypes...)
 }
 
 // GetScanComparisons returns the per-column comparison ranges for PK narrowing.
@@ -129,8 +151,44 @@ func (p *RecordQueryScanPlan) structuralKey() *structuralKey {
 	return newStructuralKey().
 		Strs(p.recordTypes).
 		ScanComps(p.scanComparisons).
+		Types(p.keyComponentTypes).
 		Bool(p.reverse).
 		Type(p.flowedType)
+}
+
+func normalizeKeyComponentTypes(types []values.Type, size int) []values.Type {
+	if len(types) > size {
+		size = len(types)
+	}
+	if size <= 0 {
+		return nil
+	}
+	result := make([]values.Type, size)
+	for i := range result {
+		result[i] = values.UnknownType
+		if i < len(types) && types[i] != nil {
+			result[i] = types[i]
+		}
+	}
+	return result
+}
+
+// normalizePrimaryKeyComponentTypes returns an exact-width vector aligned with
+// the visible PK name list. Unlike index-key metadata, which may intentionally
+// include unbound coordinates beyond a comparison prefix, an appended-PK type
+// has no meaning without its parallel visible name.
+func normalizePrimaryKeyComponentTypes(types []values.Type, size int) []values.Type {
+	if size <= 0 {
+		return nil
+	}
+	result := make([]values.Type, size)
+	for i := range result {
+		result[i] = values.UnknownType
+		if i < len(types) && types[i] != nil {
+			result[i] = types[i]
+		}
+	}
+	return result
 }
 
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {

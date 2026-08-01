@@ -34,7 +34,7 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 		[]string{"ID", "K"},
 		true,
 		values.UnknownType,
-	)
+	).WithKeyComponentTypes(syntheticIndexKeyTypes(2))
 
 	eqComparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	equality := predicates.EmptyComparisonRange().Merge(&eqComparison)
@@ -105,7 +105,7 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 		[]string{"ID", "K"},
 		true,
 		values.UnknownType,
-	)
+	).WithKeyComponentTypes(syntheticIndexKeyTypes(2))
 
 	parts := candidate.ComputeMatchedOrderingParts(
 		nil,
@@ -275,7 +275,8 @@ func mixedDirectionInLikeSelect(
 	kValue := values.NewFieldValue(nil, "K", values.UnknownType)
 	scan := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, scanReverse).
 		WithPrimaryKey([]values.Value{idValue, kValue}).
-		WithScanComparisons([]*predicates.ComparisonRange{merged.Range})
+		WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 
 	innerRef := expressions.FinalOf(scan)
 	// The rule reads plan PARTITIONS, which the planner populates on the
@@ -393,7 +394,8 @@ func mixedDirectionDistinctUnion(
 		}
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithPrimaryKey([]values.Value{idValue, kValue}).
-			WithScanComparisons([]*predicates.ComparisonRange{merged.Range})
+			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
 		ref := expressions.FinalOf(scan)
 		computeRefPlanProperties(ref)
 		return ref
@@ -446,7 +448,8 @@ func TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys(t *testing.T) {
 		}
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithPrimaryKey([]values.Value{idValue, kValue}).
-			WithScanComparisons([]*predicates.ComparisonRange{merged.Range})
+			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
 		return computeWrapperRichOrdering(scan)
 	}
 

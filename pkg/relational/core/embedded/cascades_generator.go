@@ -2125,7 +2125,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if rt.PrimaryKey == nil {
 			continue
 		}
-		pkCols := rt.PrimaryKey.FieldNames()
+		pkCols, keyTypes := primaryCandidateKeyComponents(rt)
 		if len(pkCols) == 0 {
 			continue
 		}
@@ -2146,7 +2146,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			// RecordMetaData.getPlannerType, RecordMetaData.java:732-739).
 			flowed = executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions())
 		}
-		candidates = append(candidates, cascades.NewPrimaryScanMatchCandidate(
+		primaryCandidate := cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
 			allTypeNames,
@@ -2154,7 +2154,9 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			upperPK,
 			rt.PrimaryKeyHasRecordTypePrefix(),
 			flowed,
-		))
+		)
+		primaryCandidate.WithKeyComponentTypes(keyTypes)
+		candidates = append(candidates, primaryCandidate)
 	}
 
 	// Register secondary index candidates. Iterate in a deterministic
@@ -2344,6 +2346,93 @@ func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
 	return d.idx.GetPredicateProto()
 }
 
+// IndexKeyComponentTypes derives one authoritative physical tuple type per
+// index-key component across every record type served by the index.
+func (d *metadataIndexDef) IndexKeyComponentTypes() []values.Type {
+	return physicalKeyComponentTypes(d.idx.RootExpression, d.md.RecordTypesForIndex(d.idx))
+}
+
+// IndexPrimaryKeyComponentTypes derives authoritative carriers aligned with
+// IndexPrimaryKeyColumns. The index entry appends the trimmed PK after its own
+// key; these types prevent raw FLOAT/DOUBLE NaN ordering from being advertised
+// through that suffix.
+func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
+	pkCols := d.IndexPrimaryKeyColumns()
+	if len(pkCols) == 0 {
+		return nil
+	}
+	unknown := unknownPhysicalTypes(len(pkCols))
+	rts := d.md.RecordTypesForIndex(d.idx)
+	if len(rts) == 0 {
+		return unknown
+	}
+	leadingRecordTypeKey := false
+	for _, rt := range rts {
+		flatColumns, hasRecordTypeKey, ok := coveredPrimaryKeyColumns(rt)
+		if !ok || len(flatColumns) != len(pkCols) {
+			return unknown
+		}
+		if rt == rts[0] {
+			leadingRecordTypeKey = hasRecordTypeKey
+		} else if hasRecordTypeKey != leadingRecordTypeKey {
+			return unknown
+		}
+		for i := range flatColumns {
+			if !strings.EqualFold(flatColumns[i], pkCols[i]) {
+				return unknown
+			}
+		}
+	}
+	// A leading RecordTypeKey is physically appended before the visible PK
+	// fields. It is harmless for one type-specific index because it is constant
+	// throughout that stream. In a shared index it partitions the stream by
+	// type before the visible fields, so those fields are not globally ordered.
+	if leadingRecordTypeKey && len(rts) != 1 {
+		return unknown
+	}
+	// The planner trims the visible PK name list against visible index names.
+	// Require that selection to match Index.TrimPrimaryKey's physical position
+	// map exactly; otherwise an untrimmed hidden/function coordinate could be
+	// skipped and a later field falsely advertised as ordered.
+	positions := d.idx.PrimaryKeyComponentPositions()
+	physicalOffset := 0
+	if leadingRecordTypeKey {
+		physicalOffset = 1
+	}
+	physicalSize := physicalOffset + len(pkCols)
+	if positions != nil && len(positions) != physicalSize {
+		return unknown
+	}
+	if positions != nil {
+		indexSize := d.idx.RootExpression.ColumnSize()
+		for _, position := range positions {
+			if position >= indexSize {
+				return unknown
+			}
+		}
+	}
+	actualSuffix := make([]string, 0, len(pkCols))
+	for i, column := range pkCols {
+		if positions == nil || positions[physicalOffset+i] < 0 {
+			actualSuffix = append(actualSuffix, column)
+		}
+	}
+	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
+	if len(actualSuffix) != len(nameTrimmed) {
+		return unknown
+	}
+	for i := range actualSuffix {
+		if !strings.EqualFold(actualSuffix[i], nameTrimmed[i]) {
+			return unknown
+		}
+	}
+	physicalTypes := physicalKeyComponentTypes(rts[0].PrimaryKey, rts)
+	if len(physicalTypes) != physicalSize {
+		return unknown
+	}
+	return append([]values.Type(nil), physicalTypes[physicalOffset:]...)
+}
+
 // IndexCreatesDuplicates reports whether the index's root key expression fans
 // out (Java index.getRootExpression().createsDuplicates()) — satisfies
 // cascades.IndexDefWithCreatesDuplicates so the DistinctRecordsProperty is
@@ -2503,9 +2592,56 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 		// column list carries the pseudo-field name at the key's version
 		// position and stays parallel to ColumnSize.
 		return []string{values.PseudoFieldRowVersion}, true
+	case expression.Dimensions != nil:
+		return indexKeyColumnNames(expression.Dimensions.GetWholeKey())
+	case expression.List != nil:
+		var names []string
+		for _, child := range expression.List.GetChild() {
+			childNames, ok := indexKeyColumnNames(child)
+			if !ok {
+				return nil, false
+			}
+			names = append(names, childNames...)
+		}
+		return names, true
+	// Version is NOT listed here: it has its own arm above, which names the
+	// __ROW_VERSION pseudo-column rather than leaving the coordinate unbound.
+	case expression.Value != nil, expression.RecordTypeKey != nil:
+		// Implicit components still occupy a physical coordinate. An empty
+		// display name deliberately leaves their alias unbound, preventing a
+		// later field from being shifted into this key position.
+		return []string{""}, true
+	case expression.Split != nil:
+		return make([]string, int(expression.Split.GetSplitSize())), true
+	case expression.Empty != nil:
+		return nil, true
 	default:
 		return nil, false
 	}
+}
+
+// primaryCandidateKeyComponents returns the physical coordinates the current
+// flat primary-candidate model can represent semantically: top-level scalar
+// fields, optionally after the leading RecordTypeKey supplied by executeScan.
+// Nested/function/literal/version coordinates cannot be expressed as the
+// candidate's bare FieldValues, so the whole candidate is declined rather than
+// matching a different top-level field or shifting a later coordinate.
+func primaryCandidateKeyComponents(rt *recordlayer.RecordType) ([]string, []values.Type) {
+	names, leadingRecordTypeKey, ok := coveredPrimaryKeyColumns(rt)
+	if !ok {
+		return nil, nil
+	}
+	types := physicalKeyComponentTypes(rt.PrimaryKey, []*recordlayer.RecordType{rt})
+	if leadingRecordTypeKey {
+		if len(names) == 0 || len(types) == 0 {
+			return nil, nil
+		}
+		types = types[1:]
+	}
+	if len(names) != len(types) {
+		return nil, nil
+	}
+	return append([]string(nil), names...), append([]values.Type(nil), types...)
 }
 
 // IndexRowType flows the descriptor-shaped positional type for
@@ -2560,40 +2696,100 @@ func (d *metadataIndexDef) IndexRecordTypes() []string {
 
 func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
-	if len(rts) == 0 {
+	// Coverage reconstructs visible fields from the tail of IndexEntry.PrimaryKey.
+	// Expose names only for an exactly coordinate-aligned tail: flat scalar
+	// fields, optionally preceded by the one RecordTypeKey coordinate that the
+	// relational schema builder adds. FieldNames alone is not sufficient:
+	// nested/function keys add logical names, while literal/version coordinates
+	// add no name and can shift the tail heuristic onto the wrong value.
+	pkCols, _, ok := commonCoveredPrimaryKeyColumns(rts)
+	if !ok {
 		return nil
 	}
-	// The PK ordering suffix is claimable ONLY when every record type the
-	// index covers has the IDENTICAL primary-key column list: a multi-type /
-	// universal index interleaves entries whose PK suffixes differ per type,
-	// so no single suffix orders the stream (claiming the first map-iterated
-	// type's PK was both wrong for the other types — a shared index on
-	// `status` would elide `ORDER BY a` on a type whose entries are ordered
-	// by `b` — and NONDETERMINISTIC, since RecordTypesForIndex iterates a
-	// map). All-equal is order-independent; anything else returns nil and the
-	// sort is simply kept (conservative). Java scopes the expansion per
-	// candidate record type (ValueIndexExpansionVisitor), which the
-	// per-queried-type refinement would mirror — tracked follow-up.
-	first := rts[0].PrimaryKey
-	if first == nil {
-		return nil
+	return pkCols
+}
+
+// commonCoveredPrimaryKeyColumns proves that every supplied record type has
+// the same coordinate-safe visible primary-key tail and the same leading
+// RecordTypeKey topology. Value and vector candidates share this authority;
+// neither may reconstruct coverage from FieldNames, which loses hidden tuple
+// coordinates and can shift a later field onto the wrong physical value.
+func commonCoveredPrimaryKeyColumns(
+	recordTypes []*recordlayer.RecordType,
+) ([]string, bool, bool) {
+	if len(recordTypes) == 0 {
+		return nil, false, false
 	}
-	pkCols := first.FieldNames()
-	for _, rt := range rts[1:] {
-		if rt.PrimaryKey == nil {
-			return nil
-		}
-		other := rt.PrimaryKey.FieldNames()
-		if len(other) != len(pkCols) {
-			return nil
+	common, leadingRecordTypeKey, ok := coveredPrimaryKeyColumns(recordTypes[0])
+	if !ok {
+		return nil, false, false
+	}
+	for _, rt := range recordTypes[1:] {
+		other, otherLeadingRecordTypeKey, otherOK := coveredPrimaryKeyColumns(rt)
+		if !otherOK || otherLeadingRecordTypeKey != leadingRecordTypeKey ||
+			len(other) != len(common) {
+			return nil, false, false
 		}
 		for i := range other {
-			if !strings.EqualFold(other[i], pkCols[i]) {
-				return nil
+			if !strings.EqualFold(other[i], common[i]) {
+				return nil, false, false
 			}
 		}
 	}
-	return pkCols
+	return append([]string(nil), common...), leadingRecordTypeKey, true
+}
+
+// coveredPrimaryKeyColumns recognizes the only PK topologies the current flat
+// coverage representation can map without losing tuple coordinates: scalar
+// top-level fields, optionally after one leading RecordTypeKey. The boolean
+// reports that prefix so ordering can distinguish a constant single-type
+// coordinate from a varying shared-index partition.
+func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool) {
+	if rt == nil || rt.PrimaryKey == nil {
+		return nil, false, false
+	}
+	expression := rt.PrimaryKey.ToKeyExpression()
+	if expression == nil {
+		return nil, false, false
+	}
+	var components []*gen.KeyExpression
+	var flattenThen func(*gen.KeyExpression) bool
+	flattenThen = func(current *gen.KeyExpression) bool {
+		if current == nil {
+			return false
+		}
+		if current.Then == nil {
+			components = append(components, current)
+			return true
+		}
+		for _, child := range current.Then.GetChild() {
+			if !flattenThen(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if !flattenThen(expression) || len(components) == 0 ||
+		len(components) != rt.PrimaryKey.ColumnSize() {
+		return nil, false, false
+	}
+	leadingRecordTypeKey := components[0].RecordTypeKey != nil
+	start := 0
+	if leadingRecordTypeKey {
+		start = 1
+	}
+	if start == len(components) {
+		return nil, false, false
+	}
+	columns := make([]string, 0, len(components)-start)
+	for _, component := range components[start:] {
+		if component.Field == nil || component.Field.FieldName == nil ||
+			component.Field.GetFanType() != gen.Field_SCALAR {
+			return nil, false, false
+		}
+		columns = append(columns, component.Field.GetFieldName())
+	}
+	return columns, leadingRecordTypeKey, true
 }
 
 // IndexCommonPrimaryKeyValues returns the index's common primary key translated
@@ -2642,10 +2838,11 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 		return nil
 	}
 	rt := c.md.GetRecordType(recordType)
-	if rt == nil || rt.PrimaryKey == nil {
+	columns, _, ok := coveredPrimaryKeyColumns(rt)
+	if !ok {
 		return nil
 	}
-	return rt.PrimaryKey.FieldNames()
+	return columns
 }
 
 // tryAggregateIndexCandidate checks if the index is an aggregate type
@@ -2678,35 +2875,29 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		return nil
 	}
 
-	// A permuted index with permutedSize > 0 stores its BY_GROUP keys as
-	// [prefix-groups, extremum, permuted-suffix-groups] — NOT logical group
-	// order. The SQL aggregate candidate models neither of the two consequences:
-	// a group-column scan range built in logical order would bind the extremum
-	// slot (missing rows), and the advertised groupCols ordering hint is false
-	// for the physical stream (ORDER BY elimination / multi-aggregate
-	// intersection would mis-merge). Go's own DDL always writes permutedSize=0
-	// (Java MaterializedViewIndexGenerator with no aggregate ORDER BY), so a
-	// nonzero permutation only arrives via record-layer API / Java-written
-	// shared-cluster metadata — decline candidacy for it and let the query fall
-	// back to a base-record StreamingAgg (correct rows, slower). The record-layer
-	// aggregate-function API path (evaluatePermutedMinMaxAggregate) serves
-	// permuted reads with proper prefix-trimming and stays available.
-	// Permutation-aware SQL candidacy (bounds translation + true ordering model,
-	// as Java's planner does) is the tracked follow-up.
-	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
-		if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-			if n, err := strconv.Atoi(v); err != nil || n != 0 {
-				return nil
-			}
-		}
-	}
-
 	allCols := gke.FieldNames()
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
 
 	if groupingCount == 0 {
 		return nil
+	}
+	permutedSize := 0
+	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
+		if raw, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 || parsed > groupingCount {
+				return nil
+			}
+			permutedSize = parsed
+		}
+		if permutedSize > 0 {
+			// The physical key inserts the aggregate value before the permuted
+			// grouping suffix. The current aggregate rule has neither residual
+			// compensation nor a truthful logical ordering for that shape, so a
+			// positive permutation must fall back to base-record aggregation.
+			return nil
+		}
 	}
 
 	groupCols := make([]string, groupingCount)
@@ -2725,6 +2916,9 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		rtNames[i] = rt.Name
 	}
 
+	allTypes := physicalKeyComponentTypes(gke, rts)
+	groupTypes := alignPhysicalTypes(allTypes, groupingCount)
+
 	return cascades.NewAggregateIndexMatchCandidate(
 		idx.Name,
 		rtNames,
@@ -2735,7 +2929,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		// it the plan over this index advertises group order for every column
 		// type, including a DOUBLE whose key order is not its value order.
 		singleRecordTypeRowType(md, idx),
-	)
+	).WithPhysicalGroupingMetadata(groupTypes, groupingCount)
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector
@@ -2786,18 +2980,22 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 		rtNames[i] = rt.Name
 	}
 	var pkCols []string
-	if len(rts) > 0 && rts[0].PrimaryKey != nil {
-		pk := rts[0].PrimaryKey.FieldNames()
+	if pk, _, safe := commonCoveredPrimaryKeyColumns(rts); safe {
 		pkCols = make([]string, len(pk))
 		for i, col := range pk {
 			pkCols[i] = strings.ToUpper(col)
 		}
 	}
 
+	partitionTypes := alignPhysicalTypes(
+		physicalKeyComponentTypes(idx.RootExpression, rts),
+		partitionCount,
+	)
+
 	return cascades.NewVectorIndexScanMatchCandidate(
 		idx.Name, rtNames, upperCols, partitionCount, metric,
 		values.UnknownType, idx.IsUnique(), pkCols,
-	)
+	).WithPartitionKeyComponentTypes(partitionTypes)
 }
 
 // vectorMetricOperator maps the stored HNSW metric option (Java Metric enum

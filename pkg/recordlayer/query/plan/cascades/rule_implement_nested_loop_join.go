@@ -4327,11 +4327,11 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if !ok {
 				continue
 			}
-			correlatedIndexScan := plans.NewRecordQueryIndexPlan(
+			correlatedIndexScan := stampIndexMetadata(cand, plans.NewRecordQueryIndexPlan(
 				cand.CandidateName(),
 				[]*predicates.ComparisonRange{comparisonRange},
 				recordTypes, innerScan.GetFlowedType(), false,
-			)
+			))
 
 			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
 			r.yieldExistsFlatMap(

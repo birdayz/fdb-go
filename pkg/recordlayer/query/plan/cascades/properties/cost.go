@@ -127,6 +127,12 @@ const (
 	//     below) for it was pricing the same physical round trip two
 	//     different ways depending on which plan node issued it.
 	FetchCPU = 1.5
+	// PhysicalRangeSeekCost is the fixed setup charged for each additional
+	// physical range opened by one logical equality leaf. The first range is
+	// already represented by the leaf's existing fetch/scan work; plural range
+	// sets add this unit for every subsequent seek. It deliberately matches the
+	// isolated-round-trip rate rather than the amortized per-row ScanCPU rate.
+	PhysicalRangeSeekCost = FetchCPU
 	// StreamingAggCPU is cheaper than DistinctCPU (no hash table, pre-sorted input).
 	StreamingAggCPU = 1.2
 	// ScanCPU is the AMORTIZED per-row cost of a genuine multi-row streaming
@@ -152,6 +158,11 @@ const (
 	// tip a genuinely-close join-order tie toward fewer inner re-executions.
 	// 0.1 == FilterCPU: one extra row-equivalent of setup per iteration.
 	IterationOverhead = 0.1
+
+	// MaxFiniteHeuristic is the saturation ceiling for planner-only arithmetic.
+	// It is intentionally far below MaxFloat64 so adding two saturated Cost
+	// axes remains finite and the total-cost preorder never sees NaN or Inf.
+	MaxFiniteHeuristic = float64(math.MaxInt64)
 )
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a
@@ -170,6 +181,34 @@ type Cost struct {
 	// rows, summed over the sub-tree (children's CPU is rolled up
 	// into parents).
 	CPU float64
+}
+
+// SaturatingHeuristicAdd adds non-negative planner heuristics without
+// producing NaN or infinity. Invalid or overflowing inputs conservatively
+// saturate to MaxFiniteHeuristic.
+func SaturatingHeuristicAdd(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) || math.IsInf(a, 0) || math.IsInf(b, 0) || a < 0 || b < 0 {
+		return MaxFiniteHeuristic
+	}
+	if a >= MaxFiniteHeuristic || b >= MaxFiniteHeuristic-a {
+		return MaxFiniteHeuristic
+	}
+	return a + b
+}
+
+// SaturatingHeuristicMultiply multiplies non-negative planner heuristics
+// without producing NaN or infinity.
+func SaturatingHeuristicMultiply(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) || math.IsInf(a, 0) || math.IsInf(b, 0) || a < 0 || b < 0 {
+		return MaxFiniteHeuristic
+	}
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a >= MaxFiniteHeuristic || b >= MaxFiniteHeuristic/a {
+		return MaxFiniteHeuristic
+	}
+	return a * b
 }
 
 // Total returns the comparator-friendly total cost as

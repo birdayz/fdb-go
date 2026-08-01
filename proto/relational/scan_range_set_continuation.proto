@@ -1,0 +1,34 @@
+// Go-internal continuation for one logical scan backed by a lazily enumerated
+// set of disjoint physical tuple ranges.
+//
+// This is a Go-only read-side execution detail. It does not change stored keys
+// or any continuation format shared with the Java Record Layer, so it belongs
+// in the relational proto set rather than the Apple mirror.
+syntax = "proto2";
+
+package com.apple.foundationdb.relational.cursors;
+
+option go_package = "fdb.dev/gen";
+
+// ScanRangeSetContinuation records one flat odometer position plus the active
+// leaf cursor's continuation. Its range-set framing is O(number of range
+// decisions), and total size additionally includes the active leaf token;
+// unlike nested ConcatContinuation messages, it never recursively embeds
+// earlier range-set state.
+message ScanRangeSetContinuation {
+  // fingerprint binds the token to the plan, evaluated/coerced components,
+  // tail range shape, physical key types, terminal widening, and direction.
+  required bytes fingerprint = 1;
+
+  // choices is the current zero-based alternative at every odometer
+  // component. The executor validates arity and bounds before opening a leaf.
+  repeated uint32 choices = 2 [packed = true];
+
+  // inner_continuation is the active physical leaf cursor's resume token.
+  optional bytes inner_continuation = 3;
+
+  // child_started distinguishes a continuation within a leaf (whose inner
+  // start token can itself serialize to nil) from a stop immediately before
+  // an unopened leaf.
+  optional bool child_started = 4;
+}

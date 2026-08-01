@@ -1184,12 +1184,13 @@ func TestRFC195_Criterion2AgreesWithTheProvenBound(t *testing.T) {
 
 			// Criterion 2 only derives bounds for DATA ACCESSES, which is the
 			// slice Java's maxOfMaxCardinalitiesOfAllDataAccesses takes too.
+			var criterionMax float64
 			var criterionBounded bool
 			switch p := plan.(type) {
 			case *plans.RecordQueryScanPlan:
-				_, criterionBounded = scanProvableMaxCard(p)
+				criterionMax, criterionBounded = scanProvableMaxCard(p)
 			case *plans.RecordQueryIndexPlan:
-				_, criterionBounded = indexProvableMaxCard(p)
+				criterionMax, criterionBounded = indexProvableMaxCard(p)
 			default:
 				return // not a data access; criterion 2 has no opinion
 			}
@@ -1206,11 +1207,12 @@ func TestRFC195_Criterion2AgreesWithTheProvenBound(t *testing.T) {
 					"constrains cost are reading the same plan differently.",
 					sh.name, criterionBounded, fmtBound(proven.GetMaxCardinality()))
 			}
-			// Where both are bounded, criterion 2's maximum is a point (1) and
-			// the property's is an interval maximum; they must agree on it.
-			if criterionBounded && proven.GetMaxCardinality().Value() != 1 {
-				t.Fatalf("criterion 2 proves a one-row data access for %s while the property "+
-					"proves max=%d -- the two cannot both be right", sh.name, proven.GetMaxCardinality().Value())
+			// Where both are bounded, the exact physical-key multiplicity must
+			// agree. Signed-zero full binds deliberately prove two (or a checked
+			// Cartesian product), not the retired one-row shortcut.
+			if criterionBounded && int64(criterionMax) != proven.GetMaxCardinality().Value() {
+				t.Fatalf("criterion 2 proves max=%v for %s while the property proves max=%d -- the two cannot both be right",
+					criterionMax, sh.name, proven.GetMaxCardinality().Value())
 			}
 		})
 	}
@@ -1401,7 +1403,8 @@ func TestRFC195_StampedPKZeroFloatIsNotAtMostOne(t *testing.T) {
 	mk := func(lit any) *plans.RecordQueryScanPlan {
 		return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: values.NullableDouble}}).
-			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, lit)})
+			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, lit)}).
+			WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	}
 
 	nonZero := mk(float64(5)).ProvenCardinalities(nil)
@@ -1412,12 +1415,10 @@ func TestRFC195_StampedPKZeroFloatIsNotAtMostOne(t *testing.T) {
 	}
 
 	zero := mk(float64(0)).ProvenCardinalities(nil)
-	if !zero.Max.IsUnknown() {
-		t.Fatalf("stamped-PK scan, ZERO float equality: max = %s, want UNKNOWN.\n"+
-			"The executor widens a terminal zero bound across -0.0 and +0.0, which are IEEE-equal "+
-			"but pack to distinct adjacent keys, so the scan can return TWO rows. Proving "+
-			"at-most-one here is a FALSE proof, and under RFC-195's clamp it CAPS the cost "+
-			"estimate to a row count the scan does not honour.",
+	if zero.Max.IsUnknown() || zero.Max.Value() != 2 {
+		t.Fatalf("stamped-PK scan, ZERO float equality: max = %s, want the exact physical multiplicity 2.\n"+
+			"The executor covers -0.0 and +0.0, which are IEEE-equal but distinct tuple keys; "+
+			"RFC-205 replaces both the false max=1 proof and the overly-weak UNKNOWN fallback with max=2.",
 			fmtBound(zero.Max))
 	}
 }

@@ -163,8 +163,16 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) ProvenCardinalities(child [
 // +0.0 (IEEE-equal, distinct adjacent keys), so that proof was false, and under
 // RFC-195's clamp a false max=1 would have CAPPED the honest estimate to it.
 func (p *RecordQueryScanPlan) ProvenCardinalities(_ []properties.Cardinalities) properties.Cardinalities {
-	if isProvablePointProbe(p) {
-		return properties.AtMostOne()
+	if p == nil {
+		return properties.UnknownMaxCardinality()
+	}
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+	); known {
+		return properties.Cardinalities{
+			Min: properties.OfCardinality(0),
+			Max: properties.OfCardinality(multiplicity),
+		}
 	}
 	return properties.UnknownMaxCardinality()
 }
@@ -197,19 +205,13 @@ func (p *RecordQueryIndexPlan) ProvenCardinalities(_ []properties.Cardinalities)
 	if p == nil || !p.IsUnique() {
 		return properties.UnknownMaxCardinality()
 	}
-	comps := p.GetScanComparisons()
-	allEquality := true
-	for _, cr := range comps {
-		if !cr.IsEquality() {
-			allEquality = false
-			break
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+	); known {
+		return properties.Cardinalities{
+			Min: properties.OfCardinality(0),
+			Max: properties.OfCardinality(multiplicity),
 		}
-	}
-	if properties.AnyEqualityWidensBeyondOneKey(comps) {
-		allEquality = false
-	}
-	if allEquality && len(comps) == len(p.GetColumnNames()) {
-		return properties.AtMostOne()
 	}
 	return properties.UnknownMaxCardinality()
 }

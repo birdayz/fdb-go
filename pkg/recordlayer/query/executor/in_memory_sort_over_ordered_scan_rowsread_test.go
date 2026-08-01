@@ -160,7 +160,8 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 			t.Fatal("build price>=398 comparison range")
 		}
 		selectiveIndex := plans.NewRecordQueryIndexPlan(
-			"order_price_idx", []*predicates.ComparisonRange{res.Range}, []string{"Order"}, nil, false)
+			"order_price_idx", []*predicates.ComparisonRange{res.Range}, []string{"Order"}, nil, false).
+			WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		if scansAtMost(t, scan(), 50) {
 			t.Fatalf("full Scan(Order) scanned <= 50 of %d rows — expected it to read the whole table", seeded)

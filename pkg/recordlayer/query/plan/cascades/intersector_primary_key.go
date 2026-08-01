@@ -794,7 +794,12 @@ func adjustedIntersectionOrdering(
 		// contains is fixed. A matched equality after a prefix gap is not
 		// enforced by the scan and must remain directional.
 		actualRange := prefix[part.GetParameterId()]
-		if actualRange != nil && actualRange.IsEquality() {
+		shape := candidatePhysicalEqualityShape(
+			candidate,
+			part.GetParameterId(),
+			actualRange,
+		)
+		if shape.EqualityPrefixLength == 1 && shape.PhysicallyFixed {
 			bindings[value] = []properties.OrderingBinding{
 				properties.FixedBinding(actualRange.GetEqualityComparison()),
 			}
@@ -1248,6 +1253,9 @@ func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
 	matchInfo := pm.GetMatchInfo()
 	regularInfo := matchInfo.GetRegularMatchInfo()
 	bindings := regularInfo.GetParameterBindingMap()
+	if !candidateBindingRangesEligible(candidate, bindings) {
+		return nil
+	}
 	prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
 	return candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
 }

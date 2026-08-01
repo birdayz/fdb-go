@@ -22,12 +22,12 @@ package sqldriver_test
 //	v = 0  via composite index (v, w)      -> [3]     the -0.0 row is lost
 //	v IN (-0.0, 0.0) via composite (v, w)  -> [1]     the +0.0 row is lost
 //
-// Now the test is "nothing after this constrains the key", which is what
-// terminal actually means. A trailing CONSTRAINING comparison is still excluded
-// on purpose: with `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is not
-// a contiguous interval — the span between them also admits (-0.0, w>5) and
-// (+0.0, w<5) — so widening there would return WRONG rows rather than missing
-// ones. That case needs a two-probe union and is tracked as CQ-28.
+// The original terminal-only fix could not safely widen `v = 0 AND w = 5`:
+// the span between (-0.0,5) and (+0.0,5) also admits (-0.0,w>5) and
+// (+0.0,w<5). RFC-205 superseded that CQ-28 limitation with a lazy physical
+// range set, retaining the suffix and opening one exact range per sign. This
+// file keeps the terminal/IN regression; the constrained-suffix and correlated
+// paths are pinned by the RFC-205 range-set integration tests.
 
 import (
 	"context"
@@ -102,6 +102,34 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 			}
 		}
 		return true
+	}
+
+	// CQ-75: IN-list value dedup intentionally collapses the two IEEE-equal
+	// zeros to one logical probe. RFC-205 expands that surviving probe into its
+	// two physical signed-zero ranges. Pin the exact plan as well as results for
+	// both element orders; the unindexed twin additionally guards against the
+	// rejected bit-identity-dedup fix, which duplicated every matching row.
+	const wantCompositeINPlan = "Project([ID#0], IndexScan(C_VW, [=, *] COVERING))"
+	for _, tc := range []struct {
+		name   string
+		inList string
+	}{
+		{name: "negative_then_positive", inList: "(-0.0, 0.0)"},
+		{name: "positive_then_negative", inList: "(0.0, -0.0)"},
+	} {
+		t.Run("cq75_exact_in_"+tc.name, func(t *testing.T) {
+			indexedQuery := "SELECT id FROM c WHERE v IN " + tc.inList
+			if plan := planExplainVia(t, ctx, db, indexedQuery); plan != wantCompositeINPlan {
+				t.Fatalf("EXPLAIN %s\n got: %s\nwant: %s", indexedQuery, plan, wantCompositeINPlan)
+			}
+			if got := ids(t, indexedQuery); !eq(got, []int64{1, 3}) {
+				t.Fatalf("%s = %v, want [1 3]", indexedQuery, got)
+			}
+			unindexedQuery := "SELECT id FROM u WHERE v IN " + tc.inList
+			if got := ids(t, unindexedQuery); !eq(got, []int64{1, 3}) {
+				t.Fatalf("%s = %v, want [1 3] without duplicates", unindexedQuery, got)
+			}
+		})
 	}
 
 	// The access path must not change the answer. Running the SAME predicate

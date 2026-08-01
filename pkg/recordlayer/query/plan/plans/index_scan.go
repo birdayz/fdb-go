@@ -2,6 +2,7 @@ package plans
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -40,6 +41,21 @@ type RecordQueryIndexPlan struct {
 	strictlySorted  bool
 	covering        bool
 	coveringColumns []string
+	// keyComponentTypes is aligned with scanComparisons. It carries the
+	// physical index-key width (not the RHS type), which is load-bearing for
+	// FLOAT versus DOUBLE tuple encoding.
+	keyComponentTypes []values.Type
+	// primaryKeyComponentTypes is aligned with pkColumnNames. Index entries
+	// append the trimmed primary key after the index key, so these types are
+	// required before that suffix can support an ORDER BY claim. In particular,
+	// an appended FLOAT/DOUBLE PK is not logically ordered in the presence of
+	// arbitrary raw NaN encodings.
+	primaryKeyComponentTypes []values.Type
+	// physicalGroupingPrefixCount is aggregate-index metadata. For a permuted
+	// MIN/MAX key it is g-p: only that many logical grouping columns occur
+	// contiguously before the aggregate value in the physical BY_GROUP key.
+	physicalGroupingPrefixCount int
+	physicalGroupingPrefixKnown bool
 
 	// columnNames is the index's key column list, in index-key order. It
 	// drives the ordering the scan provides: the non-equality-bound suffix
@@ -53,9 +69,10 @@ type RecordQueryIndexPlan struct {
 	// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
 	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
 	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
-	// Empty for fan-out (createsDuplicates) indexes, where positions past the
-	// fan-out are not sort-ordered (Java breaks the sorted-suffix loop at a
-	// duplicating key part).
+	// Retained for coordinate-safe covering reconstruction even on fan-out
+	// indexes. Fan-out ordering is suppressed independently by the stamped
+	// createsDuplicates signal, because positions after an exploded key part
+	// are not one globally sorted logical stream.
 	pkColumnNames []string
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
@@ -90,8 +107,9 @@ type RecordQueryIndexPlan struct {
 	// dedups two index legs only when they carry the SAME structural PK — never
 	// conflating Field("ID") with Concat(RecordTypeKey(), Field("ID")). nil = the
 	// property abstains (no dedup); populated REGARDLESS of fan-out (index entries
-	// always carry the PK), unlike pkColumnNames which doubles as the ordering
-	// suffix and is empty for fan-out.
+	// always carry the PK). pkColumnNames is also retained for coordinate-safe
+	// coverage on fan-out scans; the duplicate signal independently suppresses
+	// its use as an ordering suffix.
 	commonPrimaryKeyValues []values.Value
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
@@ -118,12 +136,13 @@ func NewRecordQueryIndexPlan(
 	comps := make([]*predicates.ComparisonRange, len(scanComparisons))
 	copy(comps, scanComparisons)
 	return &RecordQueryIndexPlan{
-		indexName:       indexName,
-		scanComparisons: comps,
-		recordTypes:     dedupSortedStrings(recordTypes),
-		flowedType:      flowedType,
-		reverse:         reverse,
-		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		indexName:         indexName,
+		scanComparisons:   comps,
+		keyComponentTypes: normalizeKeyComponentTypes(nil, len(comps)),
+		recordTypes:       dedupSortedStrings(recordTypes),
+		flowedType:        flowedType,
+		reverse:           reverse,
+		resultValue:       values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
 
@@ -155,7 +174,56 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 	copy(copied, comps)
 	cp := *p
 	cp.scanComparisons = copied
+	cp.keyComponentTypes = normalizeKeyComponentTypes(p.keyComponentTypes, len(comps))
 	return &cp
+}
+
+// WithKeyComponentTypes returns a copy with authoritative physical index-key
+// types. The vector may include unbound key suffix components needed for
+// ordering congruence; it is never truncated to the comparison prefix.
+func (p *RecordQueryIndexPlan) WithKeyComponentTypes(types []values.Type) *RecordQueryIndexPlan {
+	cp := *p
+	cp.keyComponentTypes = normalizeKeyComponentTypes(types, len(p.scanComparisons))
+	return &cp
+}
+
+// GetKeyComponentTypes returns physical types aligned with index-key
+// coordinates; the vector can be longer than GetScanComparisons.
+func (p *RecordQueryIndexPlan) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), p.keyComponentTypes...)
+}
+
+// WithPrimaryKeyComponentTypes returns a copy carrying authoritative physical
+// types aligned with GetPKColumnNames. These types affect ordering only; index
+// scan bounds remain aligned with GetKeyComponentTypes.
+func (p *RecordQueryIndexPlan) WithPrimaryKeyComponentTypes(types []values.Type) *RecordQueryIndexPlan {
+	cp := *p
+	cp.primaryKeyComponentTypes = normalizePrimaryKeyComponentTypes(types, len(p.pkColumnNames))
+	return &cp
+}
+
+// GetPrimaryKeyComponentTypes returns physical types aligned with the
+// untrimmed primary-key column metadata.
+func (p *RecordQueryIndexPlan) GetPrimaryKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), p.primaryKeyComponentTypes...)
+}
+
+// WithPhysicalGroupingPrefixCount marks the contiguous logical grouping-key
+// prefix of a BY_GROUP aggregate index. It is carried on the underlying index
+// plan so the aggregate wrapper can preserve candidate metadata without a
+// second planner-side reconstruction.
+func (p *RecordQueryIndexPlan) WithPhysicalGroupingPrefixCount(count int) *RecordQueryIndexPlan {
+	if count < 0 {
+		count = 0
+	}
+	cp := *p
+	cp.physicalGroupingPrefixCount = count
+	cp.physicalGroupingPrefixKnown = true
+	return &cp
+}
+
+func (p *RecordQueryIndexPlan) physicalGroupingPrefix() (int, bool) {
+	return p.physicalGroupingPrefixCount, p.physicalGroupingPrefixKnown
 }
 
 // WithCommonPrimaryKey returns a copy carrying the index's structural common
@@ -242,17 +310,22 @@ func (p *RecordQueryIndexPlan) ProducesDistinctRecords() bool {
 // the INDEX, not the scan: they are inputs to ordering derivation and to the
 // point-lookup arm of the cost model.
 //
-// They are deliberately NOT part of HashCodeWithoutChildren /
-// EqualsPlanWithoutChildren. Node identity for an index scan is (index name,
-// scan comparisons, record types, reverse, strictlySorted, covering) — two
-// scans of the same index with the same comparisons ARE the same memo node,
-// and the metadata is a function of the index they both name, so folding it
-// into the hash could only ever split identical nodes apart and shift memo
-// dedup without changing what the nodes mean.
+// The names and UNIQUE bit remain derived metadata of the named index. The
+// physical key-type vectors are different: they govern probe multiplicity and
+// ordering congruence, so structuralKey folds them into plan identity. If a
+// caller replaces the PK name coordinate system, any old parallel type proof
+// is cleared to Unknown rather than applied to a different name by position.
 func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []string, unique bool) *RecordQueryIndexPlan {
 	cp := *p
-	cp.columnNames = columnNames
-	cp.pkColumnNames = pkColumnNames
+	cp.columnNames = append([]string(nil), columnNames...)
+	cp.pkColumnNames = append([]string(nil), pkColumnNames...)
+	if slices.Equal(p.pkColumnNames, pkColumnNames) {
+		cp.primaryKeyComponentTypes = normalizePrimaryKeyComponentTypes(
+			p.primaryKeyComponentTypes, len(pkColumnNames),
+		)
+	} else {
+		cp.primaryKeyComponentTypes = normalizePrimaryKeyComponentTypes(nil, len(pkColumnNames))
+	}
 	cp.unique = unique
 	if !cp.orderingKeyNamesKnown {
 		cp.orderingKeyNamesKnown = true
@@ -335,6 +408,10 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 	return newStructuralKey().
 		Str(p.indexName).
 		ScanComps(p.scanComparisons).
+		Types(p.keyComponentTypes).
+		Types(p.primaryKeyComponentTypes).
+		Bool(p.physicalGroupingPrefixKnown).
+		Int(p.physicalGroupingPrefixCount).
 		Bool(p.reverse).
 		Bool(p.strictlySorted).
 		Bool(p.covering).

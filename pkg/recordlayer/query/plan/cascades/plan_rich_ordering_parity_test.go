@@ -190,7 +190,9 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 
 			idx := plans.NewRecordQueryIndexPlan(
 				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
-			).WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique)
+			).WithKeyComponentTypes(syntheticIndexKeyTypes(len(tc.columnNames))).
+				WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique).
+				WithPrimaryKeyComponentTypes(syntheticIndexKeyTypes(len(tc.pkColumnNames)))
 
 			// The index scan is its own cascades expression now (RFC-184 W2): the
 			// memo asks the PLAN's HintRichOrdering directly (no physicalIndexScanWrapper

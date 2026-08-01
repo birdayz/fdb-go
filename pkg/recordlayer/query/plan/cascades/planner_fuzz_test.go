@@ -254,9 +254,11 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		}
 		key := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 		left := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-			WithPrimaryKey([]values.Value{key})
+			WithPrimaryKey([]values.Value{key}).
+			WithKeyComponentTypes([]values.Type{values.NotNullLong})
 		right := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-			WithPrimaryKey([]values.Value{key})
+			WithPrimaryKey([]values.Value{key}).
+			WithKeyComponentTypes([]values.Type{values.NotNullLong})
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
 		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
 		return expressions.NewLogicalIntersectionExpression(

@@ -38,10 +38,13 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	comps := p.GetScanComparisons()
+	shape := physicalEqualityShape(comps, p.GetKeyComponentTypes(), true)
 	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
 	sel, _, _ := properties.BoundSelectivity(comps)
-	if isProvablePointProbe(p) {
-		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		comps, p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+	); known {
+		return uniqueEqualityCost(multiplicity, shape)
 	}
 	types := p.GetRecordTypes()
 	total := 0.0
@@ -53,7 +56,10 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 		}
 	}
 	card := total * sel
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: card,
+		CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+	}, shape)
 }
 
 // HintCost: index scans are cheaper than full table scans because they read a
@@ -72,12 +78,22 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 func (p *RecordQueryIndexPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	base := indexBaseCardinality(p, stats)
 	if p != nil {
+		comps := p.GetScanComparisons()
+		shape := physicalEqualityShape(comps, p.GetKeyComponentTypes(), true)
 		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
-		sel, _, _ := properties.BoundSelectivity(p.GetScanComparisons())
-		if isProvablePointProbe(p) {
-			return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
+		sel, _, _ := properties.BoundSelectivity(comps)
+		if p.IsUnique() {
+			if multiplicity, known := provenFullEqualityMultiplicity(
+				comps, p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+			); known {
+				return uniqueEqualityCost(multiplicity, shape)
+			}
 		}
 		base *= sel
+		return addPhysicalRangeSeekCost(properties.Cost{
+			Cardinality: base,
+			CPU:         base * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+		}, shape)
 	}
 	return properties.Cost{Cardinality: base, CPU: base * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
 }
@@ -113,20 +129,18 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 		if p == nil {
 			return false
 		}
-		return properties.EqualityBoundsCoverKey(p.GetScanComparisons(), len(p.GetPrimaryKeyValues())) &&
-			!properties.AnyEqualityWidensBeyondOneKey(p.GetScanComparisons())
+		multiplicity, known := provenFullEqualityMultiplicity(
+			p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+		)
+		return known && multiplicity == 1
 	case *RecordQueryIndexPlan:
 		if p == nil {
 			return false
 		}
-		comps := p.GetScanComparisons()
-		_, numBound, allEquality := properties.BoundSelectivity(comps)
-		// A widening equality (a zero float) binds TWO keys, so the probe is
-		// not a point probe even with every column equality-bound. Shared with
-		// computeCardinalities and the cost model so one plan cannot carry
-		// contradictory cardinality claims.
-		return p.IsUnique() && allEquality && numBound == len(p.GetColumnNames()) &&
-			!properties.AnyEqualityWidensBeyondOneKey(comps)
+		multiplicity, known := provenFullEqualityMultiplicity(
+			p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+		)
+		return p.IsUnique() && known && multiplicity == 1
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return false
@@ -140,15 +154,57 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 // HintCost: a K-NN probe returns its top-K (or, for an ordered stream, its
 // fixed re-ranked horizon) regardless of table size.
 func (p *RecordQueryVectorIndexPlan) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	card := vectorScanCardinality(p)
-	return properties.Cost{
-		Cardinality: card,
-		CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+	if p == nil {
+		card := vectorScanCardinality(nil)
+		return properties.Cost{
+			Cardinality: card,
+			CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+		}
 	}
+	comps := p.GetPrefixComparisons()
+	shape := physicalEqualityShape(comps, p.GetPartitionKeyComponentTypes(), false)
+	card := vectorScanCardinality(p)
+	partitionCount := len(p.GetPartitionColumns())
+	if partitionCount > 0 {
+		fullyBound := properties.EqualityBoundsCoverKey(comps, partitionCount)
+		if fullyBound && !p.IsOrderedStream() {
+			card = properties.SaturatingHeuristicMultiply(
+				card, float64(shape.SuccessfulSeekUpperBound),
+			)
+		} else {
+			// A partial prefix fans out over an unknown number of remaining
+			// physical partitions. Keep the estimate conservative; multiplying
+			// k only by the known signed-zero choices would advertise a false
+			// N*k bound.
+			card = properties.LeafScanCardinality
+		}
+	}
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: card,
+		CPU: properties.SaturatingHeuristicMultiply(
+			properties.SaturatingHeuristicMultiply(card, properties.ScanCPU),
+			properties.PhysicalWrapperCostMultiplier,
+		),
+	}, shape)
 }
 
 // HintCost: an aggregate index materializes one row per group.
 func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	if p == nil || p.GetIndexPlan() == nil {
+		return properties.Cost{
+			Cardinality: properties.MaxFiniteHeuristic,
+			CPU:         properties.MaxFiniteHeuristic,
+		}
+	}
+	if p.GetPhysicalGroupingPrefixCount() < len(p.GetGroupCols()) {
+		// Positive PERMUTED_MIN/MAX is ineligible under RFC-205. Saturation
+		// makes a hand-built survivor maximally unattractive without injecting
+		// infinity into the total cost preorder.
+		return properties.Cost{
+			Cardinality: properties.MaxFiniteHeuristic,
+			CPU:         properties.MaxFiniteHeuristic,
+		}
+	}
 	tableCard := properties.LeafScanCardinality
 	if stats != nil {
 		tableCard = stats.RecordTypeCardinality(p.GetRecordTypeName())
@@ -157,7 +213,16 @@ func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats prop
 	if cardinality < 1 {
 		cardinality = 1
 	}
-	return properties.Cost{Cardinality: cardinality, CPU: cardinality * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
+	shape := physicalEqualityShape(
+		p.GetIndexPlan().GetScanComparisons(), p.GetKeyComponentTypes(), true,
+	)
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: cardinality,
+		CPU: properties.SaturatingHeuristicMultiply(
+			properties.SaturatingHeuristicMultiply(cardinality, properties.ScanCPU),
+			properties.PhysicalWrapperCostMultiplier,
+		),
+	}, shape)
 }
 
 // HintCost: a literal row source costs nothing to produce.

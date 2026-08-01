@@ -171,14 +171,16 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 
 	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey(pk2).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if cost := concretePlanCost(prefix, stats, compositeCtx); cost.Cardinality == 1 {
 		t.Fatalf("composite-PK prefix bind priced as point probe (cardinality=1); want selectivity estimate")
 	}
 
 	full := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey(pk2).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	if cost := concretePlanCost(full, stats, compositeCtx); cost.Cardinality != 1 {
 		t.Fatalf("provable full-PK bind must stay a point probe, got cardinality=%v", cost.Cardinality)
 	}
@@ -191,7 +193,8 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 	// Without either a plan stamp or context, equality coverage is unproven
 	// and must fall back to selectivity pricing.
 	unstampedFull := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	if cost := concretePlanCost(unstampedFull, stats, nil); cost.Cardinality == 1 {
 		t.Fatalf("unstamped nil-ctx equality must not price as a point probe")
 	}
