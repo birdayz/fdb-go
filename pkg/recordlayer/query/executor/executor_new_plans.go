@@ -44,7 +44,7 @@ func executeAggregateIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
-	scanRange, err := scanComparisonsToTupleRange(idxPlan.GetScanComparisons(), scanBindContext(evalCtx))
+	scanRanges, err := scanComparisonsToTupleRanges(idxPlan.GetScanComparisons(), scanBindContext(evalCtx))
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan range for %q: %w", idxPlan.GetIndexName(), err)
 	}
@@ -76,10 +76,13 @@ func executeAggregateIndexScan(
 	// so a plain SQL MAX/MIN served from a permuted index reflects the true
 	// current extremum under deletes/updates (a monotone _EVER index goes stale).
 	if idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax {
-		return newPermutedAggregateIndexCursor(store, idx, scanRange, continuation, scanProps, len(groupCols), posType)
+		return newPermutedAggregateIndexCursor(store, idx, scanRanges, continuation, scanProps, len(groupCols), posType)
 	}
 
-	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+	indexCursor := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
+		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
+			return maintainer.Scan(r, cont, scanProps)
+		})
 
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
@@ -105,7 +108,7 @@ func executeAggregateIndexScan(
 func newPermutedAggregateIndexCursor(
 	store *recordlayer.FDBRecordStore,
 	idx *recordlayer.Index,
-	scanRange recordlayer.TupleRange,
+	scanRanges []recordlayer.TupleRange,
 	continuation []byte,
 	scanProps recordlayer.ScanProperties,
 	groupCount int,
@@ -123,7 +126,10 @@ func newPermutedAggregateIndexCursor(
 			permutedSize = n
 		}
 	}
-	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
+	inner := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
+		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
+			return store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, r, cont, scanProps)
+		})
 	return &permutedAggregateIndexCursor{
 		inner:      inner,
 		groupCount: groupCount,

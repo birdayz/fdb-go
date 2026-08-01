@@ -218,9 +218,16 @@ Wrong rows / wrong data:
    `sqldriver/embedded_fdb_errors_test.go:125` logs and returns on both fix paths and its own final
    comment disclaims asserting a row count; it stays green whether or not the divergence is fixed,
    and it never checks that the stored value is `0`. Booked.
-3. Correlated float `=` misses `-0.0`/`+0.0` on a non-terminal composite index column — silently
-   missing rows, rare shape. Pinned — `correlated_zero_composite_sentinel_test.go` (RFC-196),
-   "fails loudly the day it is fixed".
+3. **RESOLVED 2026-08-01 (CQ-83, `fix/rfc196-correlated-zero-composite`, awaiting the Graefe
+   lap).** Correlated float `=` no longer misses `-0.0`/`+0.0` on a non-terminal composite index
+   column. The sentinel fired on its own terms and was flipped:
+   `correlated_zero_composite_sentinel_test.go` now asserts the CORRECT rows (both correlation
+   directions, no duplicates, in-between guard rows, residual-path agreement, EXPLAIN pin that the
+   composite probe survives). Mechanism: execution-time probe split — one index range per signed
+   zero, scanned as an ordered concatenation (`zeroFork` in the executor; RFC-196's known gap,
+   closed the way its own analysis prescribed: widening decided at execution time, where the
+   correlated comparand's value is finally known — but as an exact two-range union, not a
+   contract-changing internal filter).
 4. `CURRENT_TIMESTAMP` drifts across rows within one statement (SELECT path). **⚠ NOT PINNED — no
    test exists.** It is booked open work at `TODO.md:8935-8947`, whose closing line is itself the
    instruction to pin it. The session-object half (`session.go:80-133`) is done; the SELECT path is

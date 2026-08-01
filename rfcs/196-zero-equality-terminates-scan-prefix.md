@@ -103,6 +103,17 @@ where the comparand value is finally known. That changes the index scan's
 contract — it would return more rows than its range implies and filter
 internally — and belongs behind its own gate.
 
+**POSTSCRIPT (2026-08-01, CQ-83, branch `fix/rfc196-correlated-zero-composite`):
+the gap is CLOSED, at execution time as prescribed above, but WITHOUT the
+contract change this section anticipated.** The executor's range builder runs
+per-probe with the correlated value in hand; it now splits a non-terminal
+zero-float equality into one range per signed zero and scans them as an
+ordered concatenation (`zeroFork` / `multiRangeScanCursor`,
+`pkg/recordlayer/query/executor`). The union is exact — full composite prefix
+kept, no residual, no internal filtering, no de-sarg, plan shape unchanged —
+and disjointness makes it duplicate-free with no dedup layer. The sentinel
+fired on its own terms and now asserts the correct rows.
+
 ## Verification
 
 - The known-bug sentinel fired on its own terms ("now returns [1] … flip this

@@ -1,40 +1,41 @@
 package sqldriver_test
 
-// KNOWN BUG sentinel — the correlated half of CQ-28, measured rather than
-// assumed. Fails loudly the day it is fixed, forcing this file to be updated.
+// The correlated half of CQ-28 (RFC-196's "known gap, deliberately
+// uncovered"), now FIXED and asserted. This file was the flip-sentinel that
+// pinned the WRONG behavior; the fix landed, it fired, and it now pins the
+// correct rows.
 //
-// CQ-28 fixed a zero-valued float equality in a NON-terminal composite
-// position by terminating the scan prefix at match time, so the executor widens
-// the bound across both signed zeros and the trailing predicate becomes a
-// residual filter. That detection needs the comparand's VALUE, which at match
-// time exists only for a compile-time constant.
+// The shape: `t.v = o.k AND t.w = 5` against composite index (v, w), where
+// the comparand o.k is CORRELATED — supplied per-probe by an outer row and
+// therefore opaque at plan time. When the runtime value is a signed zero,
+// IEEE `=` (this engine's ruled semantics — see DIVERGENCES.md on Java's
+// bit-identity `=`) requires matching BOTH stored zeros, but -0.0 and +0.0
+// are distinct adjacent index keys and the two wanted keys
+// (-0.0, 5) / (+0.0, 5) are NOT a contiguous interval: the span between
+// them also admits (-0.0, w>5) and (+0.0, w<5). A single probe missed a
+// row; a naively widened interval would return wrong rows.
 //
-// A CORRELATED comparand — supplied per-probe by an outer row — is opaque at
-// match time. The full composite prefix is kept, no widening applies, and a
-// stored -0.0 is missed when the outer supplies +0.0 (or vice versa). Measured:
+// The fix is execution-time probe splitting (zeroFork in
+// pkg/recordlayer/query/executor): when the range builder — which runs
+// per-probe, with the correlated value in hand — sees a zero-valued float
+// equality that does NOT terminate the scan prefix, it emits one range per
+// signed zero and the executor scans them as an ordered concatenation.
+// Disjoint ranges make the union duplicate-free with no dedup layer, and
+// the full composite prefix stays sarg'd — no de-sarg, no residual filter.
 //
-//	t.v = o.k AND t.w = 5   (o.k = +0.0, t.v = -0.0)  -> []   WRONG, want [1]
-//	  plan: FlatMap(Scan(O), Fetch(IndexScan(T_VW, [=, =])))
-//	t.v = o.k               (same values, terminal)   -> [1]  correct
-//	  plan: FlatMap(Scan(O), Fetch(IndexScan(T_VW, [=, *])))
-//	v = 0 AND w = 5         (constant, CQ-28 path)    -> [1]  correct
-//	  plan: PredicatesFilter(IndexScan(T_VW, [=, *]))
-//
-// Why it is not fixed the same way: the only match-time option is to terminate
-// the prefix at EVERY float equality whose comparand is opaque, which de-sargs
-// every correlated composite join on a float leading column — trading a rare
-// wrong row for a broad performance cliff on a common shape. Fixing it properly
-// means widening plus residual filtering decided at EXECUTION time, where the
-// comparand's value is finally known, which changes the index scan's contract
-// (it would return more rows than its range implies and filter internally).
-// That is a real design change and belongs behind its own gate.
-//
-// PASSES today by asserting the CURRENT (buggy) result. See RFC-196.
+// Rows 3 and 4 sit BETWEEN the two zero groups' w=5 keys, so this test
+// fails loudly in BOTH error directions: a single-sign probe misses id 1 or
+// 5; a naive contiguous widening pulls in 3 and/or 4. Table t2 carries the
+// same rows with NO index, pinning index-path/residual-path agreement (the
+// sargability differential principle: the access path must never change the
+// answer).
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,7 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czs "+
 		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
+		"CREATE TABLE t2 (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT NOT NULL, k DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czs/s WITH TEMPLATE czs")
 	dsn := fmt.Sprintf("fdbsql:///testdb_czs?cluster_file=%s&schema=s", clusterFilePath)
@@ -57,9 +59,18 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	// t.v is NEGATIVE zero; o.k is POSITIVE zero. IEEE says they are equal.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, 5.0, 5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0)")
+	// id 1: NEGATIVE zero at w=5 — must match a +0.0 (and -0.0) outer key.
+	// id 2: nonzero control at w=5.
+	// id 3: negative zero at w=9 — between the zero groups' w=5 keys; a naive
+	//       contiguous widening wrongly pulls it in.
+	// id 4: positive zero at w=1 — same guard from the other side.
+	// id 5: POSITIVE zero at w=5 — must match a -0.0 (and +0.0) outer key.
+	const rows = " (1, -0.0, 5), (2, 5.0, 5), (3, -0.0, 9), (4, 0.0, 1), (5, 0.0, 5)"
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES"+rows)
+	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, v, w) VALUES"+rows)
+	// Outer keys: id 10 = +0.0, id 30 = -0.0 (both correlation directions),
+	// id 20 = nonzero control.
+	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0), (30, -0.0)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -67,52 +78,95 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	count := func(t *testing.T, q string) int {
+	ids := func(t *testing.T, q string) []int64 {
 		t.Helper()
 		rows, err := conn.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
-		n := 0
+		var out []int64
 		for rows.Next() {
-			n++
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, v)
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		return n
+		sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+		return out
+	}
+	eq := func(g, w []int64) bool {
+		if len(g) != len(w) {
+			return false
+		}
+		for i := range g {
+			if g[i] != w[i] {
+				return false
+			}
+		}
+		return true
 	}
 
-	const buggy = "SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10"
-	if n := count(t, buggy); n != 0 {
-		t.Fatalf("%q now returns %d rows — the correlated half of CQ-28 may be FIXED. "+
-			"Verify it returns exactly t.id 1, then flip this sentinel to assert that and "+
-			"close the gap in RFC-196", buggy, n)
-	}
-
-	// The three shapes that MUST keep working, so a "fix" that simply
-	// de-sargs everything cannot pass by accident.
 	for _, tc := range []struct {
 		query string
-		want  int
+		want  []int64
 		why   string
 	}{
 		{
-			"SELECT t.id FROM t, o WHERE t.v = o.k AND o.id = 10", 1,
-			"correlated zero in TERMINAL position still widens correctly",
+			"SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10",
+			[]int64{1, 5},
+			"correlated +0.0 on a NON-terminal composite column must return BOTH zeros' rows, exactly once each, and no in-between rows",
 		},
 		{
-			"SELECT id FROM t WHERE v = 0 AND w = 5", 1,
+			"SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 30",
+			[]int64{1, 5},
+			"correlated -0.0 (the other correlation direction) must return the same rows",
+		},
+		{
+			"SELECT t2.id FROM t2, o WHERE t2.v = o.k AND t2.w = 5 AND o.id = 10",
+			[]int64{1, 5},
+			"residual-filter path (no index on t2) must agree with the index path, +0.0 outer",
+		},
+		{
+			"SELECT t2.id FROM t2, o WHERE t2.v = o.k AND t2.w = 5 AND o.id = 30",
+			[]int64{1, 5},
+			"residual-filter path must agree with the index path, -0.0 outer",
+		},
+		{
+			"SELECT t.id FROM t, o WHERE t.v = o.k AND o.id = 10",
+			[]int64{1, 3, 4, 5},
+			"correlated zero in TERMINAL position still widens correctly (all zero-v rows)",
+		},
+		{
+			"SELECT id FROM t WHERE v = 0 AND w = 5",
+			[]int64{1, 5},
 			"the constant-zero composite case CQ-28 fixed must stay fixed",
 		},
 		{
-			"SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 20", 1,
+			"SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 20",
+			[]int64{2},
 			"a correlated NONZERO comparand keeps the full composite prefix and matches",
 		},
 	} {
-		if n := count(t, tc.query); n != tc.want {
-			t.Fatalf("%s\n%q returned %d rows, want %d", tc.why, tc.query, n, tc.want)
+		if got := ids(t, tc.query); !eq(got, tc.want) {
+			t.Errorf("%s\n%q returned %v, want %v", tc.why, tc.query, got, tc.want)
 		}
+	}
+
+	// The fix must not de-sarg the correlated composite probe: the join's
+	// inner side still scans the composite index. A "fix" that dropped the
+	// index probe would pass the row assertions above through a slower
+	// residual scan — pin the access path itself.
+	var plan string
+	if err := conn.QueryRowContext(ctx,
+		"EXPLAIN SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10").Scan(&plan); err != nil {
+		t.Fatalf("EXPLAIN: %v", err)
+	}
+	if !strings.Contains(plan, "T_VW") {
+		t.Errorf("correlated composite probe no longer uses index T_VW — de-sargged?\nplan: %s", plan)
 	}
 }

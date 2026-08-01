@@ -116,6 +116,7 @@ go_test(
         "terminal_replay_exec_test.go",
         "unordered_pk_distinct_cardinality_test.go",
         "vector_index_scan_integration_test.go",
+        "zero_fork_scan_ranges_test.go",
     ],
     embed = [":executor"],
     embedsrcs = [
@@ -210,6 +211,7 @@ go_test(
         "merged_leg_wrong_window_test.go",
         "leg_column_owner_selection_test.go",
         "leg_type_channel_test.go",
+        "zero_fork_scan_ranges_test.go",
     ],
     deps = [
         "//gen",

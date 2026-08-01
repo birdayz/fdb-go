@@ -2285,6 +2285,8 @@ closed rather than silently alter rows or output schema.
   correlated comparand that is zero at runtime keeps the full prefix and can
   still miss the row; de-sargging every correlated composite join to cover it
   would trade a rare wrong row for a broad performance cliff.
+  → **The correlated gap is CLOSED 2026-08-01 by CQ-83 (execution-time probe
+  split, `zeroFork` in the executor) — see CQ-83 for the mechanism and pins.**
   Mutation-verified; sentinel flipped to assert correct rows.
   **Two earlier attempts failed and are recorded so they are not retried:** The correct fix is: keep the IN-list dedup as VALUE dedup
   (it is semantically right — `v IN (-0.0, 0.0)` genuinely is one set member
@@ -13507,3 +13509,53 @@ None is speculative: each was re-verified against the tree before booking.
   (`exec_properties` / a lower `CONFORMANCE_A3_POOL_SIZE` under load), not a
   retry. **Do not close this by observing another green run** — three greens are
   already recorded above and they did not settle it.
+- [x] **CQ-83 (HIGH, wrong rows) — DONE 2026-08-01, awaiting Graefe/Torvalds
+  lap (branch `fix/rfc196-correlated-zero-composite`) — the correlated half of
+  CQ-28: a correlated float `=` on a NON-terminal composite index column missed
+  `-0.0`/`+0.0`** (road-to-prod watch-list entry 3; RFC-196's "known gap,
+  deliberately uncovered"). `t.v = o.k AND t.w = 5` against index `(v, w)`
+  probed only the outer key's own signed zero: the comparand is opaque at match
+  time, so CQ-28's constant-only prefix termination never applied, and the
+  wanted key set {(-0.0,5), (+0.0,5)} is not a contiguous interval, so neither
+  a single probe nor a widened one can serve it.
+  **Mechanism — execution-time probe split (executor, no plan change).**
+  `scanComparisonsToTupleRange` already evaluates the correlated comparand
+  per-probe with the value in hand; the only missing piece was that one
+  `TupleRange` cannot express the two-key union. `scanComparisonsToTupleRanges`
+  now records a `zeroFork` for each non-terminal zero-float equality and
+  expands it into one range per signed zero (2^k for k forks, ascending key
+  order); `multiRangeScanCursor` scans them as an ordered `ConcatCursors`
+  chain (existing Java-wire-compatible continuations). Disjoint ranges make
+  the union duplicate-free with NO dedup layer — the IN-rewrite direction
+  CQ-28 twice reverted stays dead. The full composite prefix stays sarg'd:
+  no de-sarg, no residual filter, plan shape unchanged (EXPLAIN-pinned).
+  Wired into all three scan-comparison consumers: index scan, PK scan,
+  aggregate index scan (incl. permuted). Terminal-zero widening (CQ-27) and
+  constant-zero match-time termination (CQ-28) are untouched.
+  **Java citation.** Java needs none of this: `Comparisons.compareEquals`
+  (Comparisons.java:241-247) → `toClassWithRealEquals(...).equals(...)` →
+  `Double.equals` (bit identity), so a Java probe matches exactly one signed
+  key and single-range `ScanComparisons.toTupleRange` is self-consistent. Go's
+  `=` is ruled IEEE (DIVERGENCES.md "Java's float `=` is bit identity"; the
+  CQ-28 RULING 2026-07-28), so Go must return both zeros' rows.
+  **Pins.** `correlated_zero_composite_sentinel_test.go` fired on its own
+  terms and now asserts the CORRECT rows: both correlation directions
+  (+0.0 outer ↔ stored -0.0 and vice versa), exact multiset (duplicates
+  fail), in-between guard rows on BOTH sides (naive widening fails), terminal
+  and constant-zero controls, correlated-nonzero control, unindexed-table
+  residual-path agreement (sargability differential principle), and an
+  EXPLAIN pin that the composite index probe survives. Unit pins in
+  `zero_fork_scan_ranges_test.go`: fork expansion (order, signs, float32
+  typing, cartesian 2-fork, trailing-inequality fork), terminal stays single,
+  single-range projection errors loudly on forks, multiRangeScanCursor
+  forward/reverse ordering and continuation resume at every stop point.
+  **Mutation-verified, three directions, all quoted RED:** fork disabled →
+  `returned [5], want [1 5]` / `returned [1], want [1 5]`; naive contiguous
+  widening → `returned [1 3 4 5], want [1 5]`; overlapping probes →
+  `returned [1 1], want [1 5]`.
+  **Residue, deliberately NOT lifted here:** the rowdiff/sarg-oracle
+  generators' safety invariant (no FLOAT/DOUBLE in a non-terminal
+  composite-index position) no longer guards a Go bug; lifting it means
+  extending the cross-engine corpus where Java's bit-identity `=` diverges by
+  design, i.e. new divergence classifications — its own corpus lap. Their
+  comments now say so.
