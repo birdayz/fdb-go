@@ -71,10 +71,7 @@ func TestFamilyOfMapsTheMeasuredShapes(t *testing.T) {
 // that keeps two families from silently merging into a single file.
 func TestFamilyFileNamesAreInjectiveOverTheCorpus(t *testing.T) {
 	t.Parallel()
-	scenarios, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	scenarios := loadCorpus(t)
 	byFile := map[string]string{}
 	for _, s := range scenarios {
 		family := factorycorpus.FamilyOf(s.Header.FeatureVector)

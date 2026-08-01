@@ -56,8 +56,17 @@ var secondPlanInapplicable = []structuralInapplicability{
 // somebody invented, and this is the one place in the pipeline where a wrong
 // answer silently weakens every file it touches.
 func secondPlanInapplicableFor(c Candidate) *structuralInapplicability {
-	for i := range secondPlanInapplicable {
-		e := &secondPlanInapplicable[i]
+	return inapplicableForIn(secondPlanInapplicable, c)
+}
+
+// inapplicableForIn is the decision procedure over an explicit ledger. The
+// split exists so a test can probe the refusal rules against a ledger of its
+// own instead of swapping the package variable — a parallel test mutating the
+// global raced every other reader in the package, and while the swap was live
+// the spec-matching test could observe a ledger that matches everything.
+func inapplicableForIn(ledger []structuralInapplicability, c Candidate) *structuralInapplicability {
+	for i := range ledger {
+		e := &ledger[i]
 		if e.Pin == "" || e.Applies == nil {
 			continue
 		}

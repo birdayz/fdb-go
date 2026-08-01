@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/factory"
-	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 )
 
@@ -195,10 +194,7 @@ func TestNoCommittedScenarioCarriesAnOffset(t *testing.T) {
 // SQL never promised, and the scenario flakes the first time a plan changes.
 func TestCommittedOrderednessMatchesTheCandidate(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(corpusDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 	bySeed := map[uint64][]factory.Candidate{}
 	checked := 0
 	for _, f := range files {

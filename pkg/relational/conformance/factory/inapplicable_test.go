@@ -48,29 +48,34 @@ func TestEveryInapplicabilityEntryCarriesAPin(t *testing.T) {
 // well-formed, this one says a malformed entry could not weaken a blessing
 // even if it got in. Without it, the pin requirement is a convention that the
 // next edit can quietly break.
+// It probes the decision procedure with a LOCAL ledger, never by swapping the
+// package variable: every test here is parallel, so a global swap-and-restore
+// races the other readers (the race detector caught exactly that), and while
+// the swap is live the spec-matching test can observe a ledger that matches
+// everything. The production path goes through the same procedure
+// (secondPlanInapplicableFor is a one-line delegation), so nothing is lost by
+// probing the parameterised form.
 func TestUnpinnedFamiliesAreRefused(t *testing.T) {
 	t.Parallel()
-	restore := secondPlanInapplicable
-	t.Cleanup(func() { secondPlanInapplicable = restore })
-
 	cand := Candidates(1)[0]
-	secondPlanInapplicable = []structuralInapplicability{{
+
+	unpinned := []structuralInapplicability{{
 		Family:  "everything",
 		Pin:     "", // the defect under test
 		Upgrade: "someday",
 		Applies: func(Candidate) bool { return true },
 	}}
-	if got := secondPlanInapplicableFor(cand); got != nil {
+	if got := inapplicableForIn(unpinned, cand); got != nil {
 		t.Fatalf("an entry with no pin was honoured (family %q); the exemption gate is decorative", got.Family)
 	}
 
-	secondPlanInapplicable = []structuralInapplicability{{
+	predicateless := []structuralInapplicability{{
 		Family:  "everything",
 		Pin:     "TestSomething",
 		Upgrade: "someday",
 		Applies: nil, // cannot match, must not panic
 	}}
-	if got := secondPlanInapplicableFor(cand); got != nil {
+	if got := inapplicableForIn(predicateless, cand); got != nil {
 		t.Fatalf("an entry with no predicate matched (family %q)", got.Family)
 	}
 }

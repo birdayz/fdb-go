@@ -50,10 +50,15 @@ go_library(
 # redundant.
 go_test(
     name = "factorycorpus_test",
-    timeout = "moderate",
+    # long, not moderate: the gates parse the whole committed corpus several
+    # times, which scales with corpus size and runs ~10x slower under the race
+    # lane — the 5000-scenario corpus blew moderate's 300s under -race (~25s
+    # without) while being pure computation, not a hang.
+    timeout = "long",
     srcs = [
         "blessing_ratchet_test.go",
         "census_test.go",
+        "corpus_shared_test.go",
         "family_test.go",
         "format_gate_test.go",
         "header_duplicate_test.go",

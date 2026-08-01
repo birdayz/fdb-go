@@ -58,10 +58,7 @@ func TestCommittedCorpusIsCleanYamsql(t *testing.T) {
 // file whose name no longer derives from its content.
 func TestFamilyPlacementIsSelfConsistent(t *testing.T) {
 	t.Parallel()
-	scenarios, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	scenarios := loadCorpus(t)
 	families := map[string]bool{}
 	for _, s := range scenarios {
 		if err := factorycorpus.CheckFamilyPlacement(s.Path, s.Header.FeatureVector); err != nil {

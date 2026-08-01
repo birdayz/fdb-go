@@ -31,10 +31,7 @@ const corpusDir = "../factorycorpus/testdata"
 // corpus, in seconds.
 func TestFactoryDeterminism(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(corpusDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 
 	// Candidates() is called once per seed and the result reused, both because
 	// it is the expensive part and because doing it that way proves the
