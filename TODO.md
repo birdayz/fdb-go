@@ -10278,11 +10278,30 @@ None is speculative: each was re-verified against the tree before booking.
   `values.LikeMatch` (sentinel changed from `-1` to `0`), the matcher corrected,
   oracle and truth tables re-pinned with Java citations. Pinned end-to-end by
   `pkg/relational/sqldriver/like_escape_parity_fdb_test.go` (both paths).
-  UNPROBED AXIS, recorded at the oracle: Java compiles without DOTALL, so its
-  `_` does not match `\n` and its `$` matches before a final line terminator;
-  Go's matcher and oracle both treat `_` as any rune. Java's corpus has no
-  newline-bearing LIKE case, so this needs a real Java evaluation to settle —
-  do NOT read either implementation as evidence about newlines until then.
+  NEWLINE AXIS — RESOLVED (measured against a real JDK). Java's path is
+  `PatternForLikeValue.eval` → `^…$` → `Pattern.compile` with NO flags →
+  `.find()` (LikeOperatorValue.java:93-99). Measured table (Go was wrong on
+  all five before the fix; now pinned by
+  `TestLikeMatch_JavaNewlineSemantics`):
+
+  | expr | Java | old Go |
+  |---|---|---|
+  | `'a\nb' LIKE 'a_b'` | false | true |
+  | `'a\nb' LIKE 'a%b'` | false | true |
+  | `'\n' LIKE '_'` | false | true |
+  | `'abc\n' LIKE 'abc'` | true | false |
+  | `'a'+U+2028 LIKE 'a'` | true | false |
+  | `'\n' LIKE '%'` | true | true (agreement — the half-fix sentinel) |
+
+  Resolution: `values.LikeMatch` now rejects Java's five line terminators
+  (`\n`, `\r`, U+0085, U+2028, U+2029) in `_`/`%` and accepts one FINAL
+  terminator (`\r\n` as a unit; `$` never matches between its `\r` and `\n`),
+  matching default-mode `Pattern$Dollar`. The fuzz oracle models exactly
+  that (no `(?s)`; explicit terminator class + final-terminator trim) —
+  dropping `(?s)` alone would have broken `'\n' LIKE '%'` since RE2's `$`
+  is end-of-text. `TestLikeMatch_CrossCheckSQLPatternToRegex` binds
+  `values.LikeMatch` to `values.sqlPatternToRegex` over an exhaustive
+  ASCII grid including terminators.
   Retiring the rest of the shadow-evaluator family (`CompareValues`,
   `CastValue`, `ApplyMathOp`, `IsTruthy`) remains the follow-on, and the
   adaptation shape is now established. Original booking below.

@@ -1,21 +1,45 @@
 package values
 
+import "strings"
+
 // LikeMatch implements SQL `LIKE` matching:
-//   - `%` matches zero or more characters
-//   - `_` matches exactly one character
+//   - `%` matches zero or more characters, none of which may be a
+//     line terminator
+//   - `_` matches exactly one character that is not a line terminator
 //   - `escape` (if non-zero) makes a following `%` or `_` literal
 //
-// Greedy backtrack; O(|pattern| * |s|) worst case. Returns true iff
-// the pattern matches the whole string (SQL LIKE is anchored on
-// both ends).
+// Greedy backtrack; O(|pattern| * |s|) worst case.
 //
-// Conformance contract: this is the ONE SQL LIKE matcher. It backs
-// the QueryPredicate-layer ComparisonLike (via the predicates
+// Conformance contract: this is the ONE runtime SQL LIKE matcher. It
+// backs the QueryPredicate-layer ComparisonLike (via the predicates
 // package), the Value-layer LikeOperatorValue, and the map-backed
 // INFORMATION_SCHEMA WHERE evaluator. Java's
-// `PatternForLikeValue.eval` + `LikeOperatorValue.likeOperation` is
-// the spec: Java translates the SQL pattern to a regex and matches
-// it anchored, and this matcher must return what that regex would.
+// `PatternForLikeValue.eval` (PatternForLikeValue.java:96-117) +
+// `LikeOperatorValue.likeOperation` (LikeOperatorValue.java:93-99) is
+// the spec: Java rewrites the SQL pattern into `^<regex>$`, compiles
+// it with `Pattern.compile` and NO flags, and matches via `.find()`.
+// This matcher must return what that composition would.
+//
+// NEWLINE semantics — the observable consequences of "no flags":
+//
+//   - No DOTALL: `_` -> `.` and `%` -> `.*` do NOT match a line
+//     terminator. Java's line-terminator code points in default mode
+//     (java.util.regex.Pattern, "Line terminators") are `\n`, `\r`,
+//     U+0085 (NEL), U+2028 (LS) and U+2029 (PS). A terminator in the
+//     input can only be matched by a literal terminator in the
+//     pattern. So `'a\nb' LIKE 'a_b'` and `'a\nb' LIKE 'a%b'` are
+//     FALSE.
+//   - No MULTILINE, so `^` only matches at index 0 — `.find()` on an
+//     `^...$` pattern degenerates to an anchored match.
+//   - Default `$` matches at end of input OR when the remaining
+//     input is exactly one FINAL line terminator: "\n", "\r\n",
+//     "\r", U+0085, U+2028 or U+2029 — and `$` never matches BETWEEN
+//     the `\r` and `\n` of a final "\r\n"
+//     (java.util.regex.Pattern$Dollar). So `'abc\n' LIKE 'abc'` is
+//     TRUE, `'a' + U+2028 LIKE 'a'` is TRUE, and — because `.*` can
+//     match empty with `$` sitting before the trailing terminator —
+//     `'\n' LIKE '%'` is TRUE even though `%` cannot consume the
+//     `\n` itself.
 //
 // ESCAPE semantics — Java's, exactly, and narrower than the SQL
 // standard's. `PatternForLikeValue` builds its replacement table as
@@ -54,12 +78,32 @@ package values
 // not an unconditional literal.
 //
 // `values.sqlPatternToRegex` (PatternForLikeValue) is the same spec
-// expressed as Java's regex translation; the two are cross-checked
-// against each other by FuzzLikeMatch / FuzzLikeMatchEscape in
-// `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`.
+// expressed as Java's regex translation. The two are cross-checked
+// against each other by TestLikeMatch_CrossCheckSQLPatternToRegex in
+// this package (an exhaustive ASCII pattern/subject/escape grid,
+// evaluating the produced regex under Java's default-mode `.` and
+// `$` semantics), and LikeMatch is independently fuzzed against a
+// Java-semantics regex oracle by FuzzLikeMatch / FuzzLikeMatchEscape
+// in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`.
 // Any divergence between them, or between either and Java, is a
 // conformance bug.
 func LikeMatch(pattern, s string, escape rune) bool {
+	if likeMatchWhole(pattern, s, escape) {
+		return true
+	}
+	// Java's default-mode `$` also matches just before a single FINAL
+	// line terminator, so the regex accepts the input with exactly one
+	// trailing terminator stripped. "\r\n" strips as a unit because
+	// `$` never matches between its `\r` and `\n`.
+	if trimmed, ok := trimFinalLineTerminator(s); ok {
+		return likeMatchWhole(pattern, trimmed, escape)
+	}
+	return false
+}
+
+// likeMatchWhole matches the pattern against ALL of s (both ends
+// anchored, no trailing-terminator tolerance — LikeMatch adds that).
+func likeMatchWhole(pattern, s string, escape rune) bool {
 	p := []rune(pattern)
 	str := []rune(s)
 	pi, si := 0, 0
@@ -85,9 +129,12 @@ func LikeMatch(pattern, s string, escape rune) bool {
 					pi++
 					continue
 				case '_':
-					pi++
-					si++
-					continue
+					// `.` without DOTALL rejects line terminators.
+					if !isJavaLineTerminator(str[si]) {
+						pi++
+						si++
+						continue
+					}
 				default:
 					if p[pi] == str[si] {
 						pi++
@@ -97,7 +144,11 @@ func LikeMatch(pattern, s string, escape rune) bool {
 				}
 			}
 		}
-		if starPi >= 0 {
+		if starPi >= 0 && !isJavaLineTerminator(str[starSi]) {
+			// Resume at the last `%`, letting it consume one more
+			// rune. `.*` without DOTALL cannot consume a terminator,
+			// and no earlier `%` could consume it either, so a
+			// terminator at the resume point exhausts all backtracks.
 			pi = starPi + 1
 			starSi++
 			si = starSi
@@ -118,6 +169,31 @@ func LikeMatch(pattern, s string, escape rune) bool {
 		pi++
 	}
 	return true
+}
+
+// isJavaLineTerminator reports whether r is one of the five code
+// points java.util.regex.Pattern treats as a line terminator in
+// default (non-UNIX_LINES) mode: `\n`, `\r`, NEL, LS, PS. These are
+// what `.` refuses to match without DOTALL and what default-mode `$`
+// tolerates as a single final terminator.
+func isJavaLineTerminator(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u0085' || r == '\u2028' || r == '\u2029'
+}
+
+// trimFinalLineTerminator strips exactly one final Java line
+// terminator from s: the two-rune sequence "\r\n" as a unit
+// (default-mode `$` never matches between a final `\r` and `\n`),
+// else one terminator rune. ok=false if s does not end in one.
+func trimFinalLineTerminator(s string) (string, bool) {
+	if strings.HasSuffix(s, "\r\n") {
+		return s[:len(s)-2], true
+	}
+	for _, term := range []string{"\n", "\r", "\u0085", "\u2028", "\u2029"} {
+		if strings.HasSuffix(s, term) {
+			return s[:len(s)-len(term)], true
+		}
+	}
+	return "", false
 }
 
 // escapedLiteralAt reports whether pattern position pi opens an

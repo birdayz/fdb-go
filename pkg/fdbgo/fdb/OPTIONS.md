@@ -87,8 +87,8 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetDebugRetryLogging` | accept & ignore | RYW:2580 retry-log name | safe (telemetry) | |
 | `SetAutoThrottleTag` | accept & ignore | T:7117 add throttle tag | safe (throttle hint) | (`SetTag` is honored; the *auto-throttle* aspect is the hint) |
 | `SetIncludePortInAddress` | accept & ignore | deprecated / default-on ≥630 | safe | |
-| `SetSpecialKeySpaceRelaxed` | accept & ignore | RYW:2603 relaxes special-key-space range checks | safe | Go has no special-key-space module |
-| `SetSpecialKeySpaceEnableWrites` | accept & ignore | RYW:2607 | safe | same — no module |
+| `SetSpecialKeySpaceRelaxed` | **rejected** (`*UnsupportedOptionError`) | RYW:2602-2605 relaxes special-key-space READ restriction | fails unsafe | Go has no special-key-space module — silently "granting" the relaxation for reads that cannot succeed is the SetReportConflictingKeys migration trap |
+| `SetSpecialKeySpaceEnableWrites` | **rejected** (`*UnsupportedOptionError`) | RYW:2607-2610 arms specialKeySpace->commit translation | fails unsafe | same — without the module the `\xff\xff/management/...` write is dropped or shipped literally; the cluster change silently does not happen |
 | `SetInitializeNewDatabase` | accept & ignore | T:6950 RV=0 + causalWriteRisky | safe | db-bootstrap tool only; never used by app code |
 
 ## Database options (`DatabaseOptions`)

@@ -522,37 +522,23 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 }
 
 // likeMatch implements SQL LIKE pattern matching against `s`:
-//   - `%` matches zero or more characters (runes)
-//   - `_` matches exactly one character (rune)
+//   - `%` matches zero or more characters (runes), none of which
+//     may be a line terminator
+//   - `_` matches exactly one non-line-terminator character (rune)
 //   - every other character matches itself
+//   - a non-zero `escape` rune makes a following `%` or `_` literal
+//     (and is an ordinary character in every other position)
 //
-// When `escape` is non-zero, the rune in the pattern equal to
-// `escape` consumes the next pattern character and matches it
-// literally — e.g. with escape='\\', the pattern `'a\%b'` matches
-// the 3-character string `a%b` (the `%` is literal, not a
-// wildcard). Escape preceding any character — meta or not —
-// produces a literal match of that next character; the escape
-// itself is consumed and not part of the match. SQL standard
-// leaves escape-preceding-non-meta as implementation-defined; this
-// behavior is the "always-consume-next" interpretation.
-// A trailing escape (escape rune at the end of the pattern, no
-// following char) is treated as a malformed pattern — never
-// matches. escape == 0 disables escape handling entirely (matches
-// the pre-LIKE+ESCAPE behaviour).
-//
-// Character-level — matches SQL standard semantics (PostgreSQL /
-// MySQL / Java Record Layer). Multi-byte UTF-8 runes count as one
-// character.
-//
-// Greedy backtrack; O(|pattern| * |s|) worst case. Returns true
-// iff the pattern matches the whole string (SQL LIKE is anchored
-// on both ends).
-//
-// Delegates to values.LikeMatch — the canonical LIKE matcher
-// shared between the QueryPredicate-layer ComparisonLike and the
-// Value-layer LikeOperatorValue. Conformance contract: this and
-// Java's `Comparisons.likeMatcher` must produce identical results.
-// Pinned by FuzzLikeMatch / FuzzLikeMatchEscape.
+// Delegates to values.LikeMatch — the canonical LIKE matcher shared
+// between the QueryPredicate-layer ComparisonLike and the
+// Value-layer LikeOperatorValue; its doc comment
+// (values/like_match.go) carries the full contract, including the
+// escape fallthrough and the newline/`$` semantics. The spec is
+// Java's `PatternForLikeValue.eval` (PatternForLikeValue.java:96-117)
+// + `LikeOperatorValue.likeOperation` (LikeOperatorValue.java:93-99):
+// SQL pattern → `^<regex>$` → `Pattern.compile` with no flags →
+// `.find()`. Pinned by FuzzLikeMatch / FuzzLikeMatchEscape against
+// an oracle that models exactly that composition.
 func likeMatch(pattern, s string, escape rune) bool {
 	return values.LikeMatch(pattern, s, escape)
 }

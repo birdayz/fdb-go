@@ -1258,6 +1258,16 @@ func FuzzLikeMatch(f *testing.F) {
 	f.Add("", "")
 	f.Add("a%b%c", "axbycxyc")
 	f.Add("__", "ab")
+	// Newline-axis seeds: measured Java answers (no DOTALL; default
+	// `$` before a final line terminator).
+	f.Add("a_b", "a\nb")  // false — `.` rejects \n
+	f.Add("a%b", "a\nb")  // false — `.*` rejects \n
+	f.Add("_", "\n")      // false
+	f.Add("abc", "abc\n") // true — `$` before final terminator
+	f.Add("a", "a\u2028") // true — LS is a Java terminator
+	f.Add("%", "\n")      // true — `.*` empty + `$` tolerance
+	f.Add("a", "a\r\n")   // true — final \r\n is one terminator
+	f.Add("a\r", "a\r\n") // false — `$` never between \r and \n
 	f.Fuzz(func(t *testing.T, pattern, s string) {
 		// Cap runaway inputs — the matcher is O(n*m); want fuzz to
 		// fail fast on pathological seeds rather than burn CPU.
@@ -1306,18 +1316,29 @@ func likeMatchRegexOracle(pattern, s string) bool {
 // would merely restate whatever the matcher does and could never
 // catch a divergence from Java.
 //
-// UNPROBED AXIS, deliberately: Java compiles without DOTALL, so its
-// `_` → `.` does not match a newline, and its unanchored-by-default
-// `$` matches before a final line terminator. This oracle uses
-// `(?s)`, so it agrees with likeMatch that `_` matches any rune
-// including `\n`. Settling that against Java needs a real Java
-// evaluation (its yamsql corpus contains no newline-bearing LIKE
-// case); until then neither this oracle nor likeMatch may be read as
-// evidence about newline handling.
+// NEWLINE axis — the oracle models Java's default-mode regex
+// semantics EXPLICITLY, measured against a real JDK (Pattern.compile
+// with no flags + find(), per LikeOperatorValue.java:93-99):
+//
+//   - No DOTALL: `_` → `.` and `%` → `.*` reject Java's five line
+//     terminators (`\n`, `\r`, U+0085, U+2028, U+2029). Go's RE2 `.`
+//     without `s` excludes only `\n`, so the oracle spells the class
+//     out instead of using `.`. Dropping `(?s)` alone would be a
+//     HALF-model: RE2's `$` is end-of-text, which breaks
+//     `'\n' LIKE '%'` (Java: TRUE).
+//   - Default `$` under find() with a `^`-anchored pattern matches
+//     at end of input or just before one FINAL line terminator —
+//     "\r\n" counts as ONE terminator and `$` never matches between
+//     its `\r` and `\n` (java.util.regex.Pattern$Dollar). The oracle
+//     models this as: full match on s, else full match on s with
+//     exactly one trailing terminator stripped.
 func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
+	// `.` under Java default mode: any char except the five Java
+	// line terminators.
+	const javaDot = `[^\n\r\x{0085}\x{2028}\x{2029}]`
 	runes := []rune(pattern)
 	var b strings.Builder
-	b.WriteString("(?s)^")
+	b.WriteString(`\A(?:`)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if escape != 0 && r == escape && i+1 < len(runes) &&
@@ -1328,16 +1349,38 @@ func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
 		}
 		switch r {
 		case '%':
-			b.WriteString(".*")
+			b.WriteString(javaDot + "*")
 		case '_':
-			b.WriteString(".")
+			b.WriteString(javaDot)
 		default:
 			b.WriteString(regexp.QuoteMeta(string(r)))
 		}
 	}
-	b.WriteString("$")
+	b.WriteString(`)\z`)
 	re := regexp.MustCompile(b.String())
-	return re.MatchString(s)
+	if re.MatchString(s) {
+		return true
+	}
+	if trimmed, ok := oracleTrimFinalLineTerminator(s); ok {
+		return re.MatchString(trimmed)
+	}
+	return false
+}
+
+// oracleTrimFinalLineTerminator strips one final Java line
+// terminator ("\r\n" as a unit, else one of `\n`, `\r`, U+0085,
+// U+2028, U+2029). Independent of the matcher's own helper — the
+// oracle must model Java, not restate the implementation.
+func oracleTrimFinalLineTerminator(s string) (string, bool) {
+	if strings.HasSuffix(s, "\r\n") {
+		return s[:len(s)-2], true
+	}
+	for _, term := range []string{"\n", "\r", "\u0085", "\u2028", "\u2029"} {
+		if strings.HasSuffix(s, term) {
+			return s[:len(s)-len(term)], true
+		}
+	}
+	return "", false
 }
 
 // FuzzLikeMatchEscape — same regex-oracle cross-check as FuzzLikeMatch
