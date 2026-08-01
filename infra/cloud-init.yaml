@@ -382,7 +382,16 @@ runcmd:
     # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
     install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
     RUNNER_MODE="${runner_mode}"
-    if [ "$RUNNER_MODE" = "classic" ]; then
+    if [ "$RUNNER_MODE" = "worker" ]; then
+      # Remote-slot worker for the bazelscaleset supervisor (one listener on the
+      # main box, JIT-ephemeral runners launched here over SSH — tools/bazelscaleset
+      # README). No registration, no service: the box only needs the extracted
+      # actions/runner binaries above, Docker, the ci-data volume, and the
+      # supervisor's public key in runner's authorized_keys (installed by the
+      # operator at cutover; a fresh provision needs it re-installed before the
+      # supervisor can launch slots here).
+      true
+    elif [ "$RUNNER_MODE" = "classic" ]; then
       # Break-glass: the classic register-and-listen runner (the wedge-prone path RFC-155
       # replaces). --disableupdate (codex) keeps it on the reviewed runner_version/SHA.
       su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
