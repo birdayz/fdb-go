@@ -69,6 +69,14 @@ type Scaler struct {
 	remoteCfg         remoteProcConfig
 	unhealthyCooldown time.Duration
 
+	// Startup adoption of a previous incarnation's still-running runners
+	// (see adoptOrReapStrayRunners): the local slot-dir scan needs the same
+	// roots reconcile used, and adopted local processes are not our children,
+	// so their liveness is polled at adoptPoll.
+	workBase   string
+	runnerBase string
+	adoptPoll  time.Duration
+
 	pool *slotPool
 
 	nonce int64         // per-process base for runner names (unique across restarts)
@@ -119,6 +127,9 @@ func newScaler(logger *slog.Logger, client scalerClient, scaleSetID int, cfg *co
 			unreachableLimit: 20, // ~5 min of sustained unreachability before the slot is reclaimed
 		},
 		unhealthyCooldown: time.Minute,
+		workBase:          cfg.workBase,
+		runnerBase:        filepath.Clean(cfg.runnerDir),
+		adoptPoll:         5 * time.Second,
 		pool:              pool,
 		nonce:             time.Now().Unix(),
 		running:           make(map[string]*runner),
@@ -217,7 +228,7 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 	if sl.host == "" {
 		proc, err = s.startLocal(sl, jit.EncodedJITConfig)
 	} else {
-		proc, err = launchRemote(ctx, s.conn(sl), sl, jit.EncodedJITConfig, s.remoteCfg, s.logger)
+		proc, err = launchRemote(ctx, s.conn(sl), sl, name, jit.EncodedJITConfig, s.remoteCfg, s.logger)
 	}
 	if err != nil {
 		// The JIT registration exists server-side but its runner never came up;
@@ -238,14 +249,15 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 	s.running[name] = r
 	s.mu.Unlock()
 
-	// Record the local runner's PGID so a crashed supervisor's restart can reap this
-	// slot's stray process group (see reconcileStrayRunners). Pid == PGID: Setpgid
+	// Record the local runner's PGID and name so the next incarnation's startup
+	// can ADOPT this runner if it is still alive (a detach exit for restart) or
+	// reap it if it is dead (see adoptOrReapStrayRunners). Pid == PGID: Setpgid
 	// made the child its own group leader. Remote slots keep their pidfile on the
-	// remote host (written by the session itself; reaped by reconcileRemoteStrays) —
-	// recording a REMOTE pid locally would aim reconcile's SIGKILL at whatever local
-	// process happens to wear that number.
+	// remote host (written by the session itself; probed by adoptRemoteStrays) —
+	// recording a REMOTE pid locally would aim liveness checks and kills at
+	// whatever local process happens to wear that number.
 	if sl.host == "" {
-		writeRunnerPID(s.logger, sl.path, proc.pid())
+		writeRunnerPID(s.logger, sl.path, proc.pid(), name)
 	}
 
 	s.logger.Info("runner started",
@@ -272,17 +284,30 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 // startLocal starts run.sh from the slot's cloned runner dir in its own process
 // group so shutdown can signal the whole runner tree (run.sh -> Runner.Listener
 // -> Runner.Worker -> job steps) at once.
+//
+// ETXTBSY is retried briefly: a fork anywhere in this process (another slot's
+// launch, an ssh probe) that lands between clone-resync's open and close of a
+// binary duplicates the write fd, and until that child execs, executing the
+// file fails with "text file busy" — the well-known Go fork/exec race. The
+// window is microseconds; a bounded retry is the standard cure. A Cmd is not
+// reusable after a failed Start, so each attempt builds a fresh one.
 func (s *Scaler) startLocal(sl *slot, jitConfig string) (runnerProc, error) {
-	cmd := exec.Command(filepath.Join(sl.runnerDir, "run.sh"))
-	cmd.Dir = sl.runnerDir
-	cmd.Env = append(os.Environ(), "ACTIONS_RUNNER_INPUT_JITCONFIG="+jitConfig)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting run.sh: %w", err)
+	var err error
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		cmd := exec.Command(filepath.Join(sl.runnerDir, "run.sh"))
+		cmd.Dir = sl.runnerDir
+		cmd.Env = append(os.Environ(), "ACTIONS_RUNNER_INPUT_JITCONFIG="+jitConfig)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err = cmd.Start(); err == nil {
+			return &localProc{cmd: cmd, logger: s.logger}, nil
+		}
+		if !errors.Is(err, syscall.ETXTBSY) || time.Now().After(deadline) {
+			return nil, fmt.Errorf("starting run.sh: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return &localProc{cmd: cmd, logger: s.logger}, nil
 }
 
 // localProc adapts a local process-group child to runnerProc.
@@ -558,75 +583,266 @@ func (s *Scaler) sweepOrphanFDB(sl *slot) {
 	}
 }
 
-// runnerPIDFile is written into a slot dir with the launched runner's PGID while a
-// runner occupies the slot, and removed when it exits cleanly. A leftover file
-// therefore marks a slot whose runner the previous supervisor incarnation crashed
-// out from under.
+// runnerPIDFile is written into a slot dir while a runner occupies the slot
+// ("pgid\nname\n") and removed when the runner is reaped by the incarnation
+// tracking it. A leftover file therefore marks a runner the previous
+// incarnation exited out from under — deliberately (a detach exit for restart)
+// or by crashing — and the recorded name is what lets the next incarnation
+// adopt it: job messages re-attach by runner name, and the terminal watchdog
+// probes GitHub by runner name.
 const runnerPIDFile = ".bazelscaleset-runner.pid"
 
-func writeRunnerPID(logger *slog.Logger, slotPath string, pid int) {
+func writeRunnerPID(logger *slog.Logger, slotPath string, pid int, name string) {
 	p := filepath.Join(slotPath, runnerPIDFile)
-	if err := os.WriteFile(p, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(strconv.Itoa(pid)+"\n"+name+"\n"), 0o644); err != nil {
 		logger.Warn("could not write runner pid file", slog.String("path", p), slog.Any("err", err))
 	}
+}
+
+// parseRunnerPIDFile parses the current "pid\nname\n" pidfile format, or the
+// legacy bare-pid format written by pre-adoption incarnations (name comes back
+// empty — such a runner cannot be tracked and gets the old kill-reconcile).
+func parseRunnerPIDFile(data []byte) (pid int, name string) {
+	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 3)
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || pid <= 1 {
+		return 0, ""
+	}
+	if len(lines) > 1 {
+		name = strings.TrimSpace(lines[1])
+	}
+	return pid, name
 }
 
 func removeRunnerPID(slotPath string) {
 	_ = os.Remove(filepath.Join(slotPath, runnerPIDFile))
 }
 
-// reconcileStrayRunners kills the leftover runner of any slot whose pid file
-// survived — i.e. a runner the previous incarnation crashed out from under before
-// it could clean up. We must do this before accepting work: a new runner launched
-// into a slot a stray job is still writing would corrupt that job's checkout.
+// adoptedLocalProc tracks a local runner process group this incarnation did not
+// start (it was launched by the previous one and left running across the
+// restart). Its members are not our children, so there is nothing to Wait(2)
+// on: liveness is polled the same way the remote proc's is — the runner is gone
+// when no runner-like member remains in the group (the same member/cmdline
+// guard reconcile always used, so a recycled PGID reads as gone).
+type adoptedLocalProc struct {
+	pgid      int
+	runnerDir string
+	poll      time.Duration
+	logger    *slog.Logger
+}
+
+func (p *adoptedLocalProc) pid() int { return p.pgid }
+
+func (p *adoptedLocalProc) wait() error {
+	for {
+		if !groupHasRunnerMember(p.pgid, p.runnerDir) {
+			return nil
+		}
+		time.Sleep(p.poll)
+	}
+}
+
+func (p *adoptedLocalProc) signal(sig syscall.Signal) {
+	if err := syscall.Kill(-p.pgid, sig); err != nil {
+		p.logger.Warn("signalling adopted runner group failed",
+			slog.Int("pgid", p.pgid),
+			slog.String("signal", sig.String()),
+			slog.Any("err", err))
+	}
+}
+
+// adopt registers a still-live runner from a previous incarnation under its
+// recorded name and starts the same lifecycle machinery a fresh launch would:
+// the wait goroutine frees the slot when the runner exits, and the terminal
+// watchdog covers the wedged-zombie case. JobStarted/JobCompleted messages for
+// the runner re-attach by name, exactly as they would have in the incarnation
+// that launched it. The job-start watchdog is deliberately NOT armed: an
+// adopted runner may be mid-job with its JobStarted long since consumed, and
+// killing it on that timer is precisely the restart-kills-jobs failure adoption
+// exists to prevent.
+func (s *Scaler) adopt(sl *slot, proc runnerProc, name string) {
+	r := &runner{name: name, slot: sl, proc: proc, terminal: make(chan struct{}), done: make(chan struct{})}
+	s.mu.Lock()
+	s.running[name] = r
+	if s.jobTerminalGrace > 0 {
+		r.watching = true
+		s.wg.Add(1)
+		go s.watchTerminal(r)
+	}
+	s.mu.Unlock()
+	s.wg.Add(1)
+	go s.wait(r)
+	s.logger.Info("adopted live runner from previous incarnation",
+		slog.String("name", name),
+		slog.Int("slot", sl.index),
+		slog.String("host", sl.host),
+		slog.Int("pid", proc.pid()))
+}
+
+// adoptOrReapStrayRunners handles, before the listener starts advertising
+// capacity, every local runner a previous incarnation recorded in a slot
+// pidfile:
 //
-// It kills the whole process GROUP (negative pid) so the stray run.sh AND its
-// children (Runner.Listener / Runner.Worker / the job's bazel *client*) all die,
-// not just the named process. The bazel *server* lives in its own session and
-// survives, staying warm (killing the client already releases the output_base
-// lock — no `bazel shutdown`). It is scoped to *our* slot pid files, so it never
-// touches a classic or other runner sharing the host (the side-by-side migration).
-// A cmdline check guards against the recorded PID having been reused since the crash.
+//   - group dead: remove the stale pidfile — the common case after a detach
+//     exit whose runners finished before this restart.
+//   - group alive with a recorded name, slot in the pool: ADOPT it. The
+//     previous incarnation exited for a restart (poll timeout, listener error,
+//     OOM stop) and its runner may be mid-job; killing it here canceled live
+//     CI jobs. Occupying the slot also keeps a new runner from being launched
+//     into a checkout the live job is still writing.
+//   - group alive with a recorded name, slot beyond the pool (a restart with a
+//     lower --max-runners, or an index the pool now maps to a remote host):
+//     leave it running untracked. A JIT runner completes its one job and
+//     deregisters on its own; there is no capacity conflict; its pidfile is
+//     kept so a later restart re-checks it and reaps it once dead.
+//   - group alive but the pidfile has no name (legacy pre-adoption format):
+//     kill the group as the old reconcile did — without a name it cannot be
+//     matched to job messages or watched, so tracking it is impossible.
 //
-// It scans EVERY slot dir on disk (workBase/slot-*), not just the current pool: a
-// restart with a lower --max-runners than a previous run (e.g. 2 -> 1) would otherwise
-// leave a stray runner in a now-out-of-pool higher slot unreaped while the supervisor
-// re-advertises that capacity. Slot dirs persist, so the glob covers every slot
-// any prior incarnation created.
-func reconcileStrayRunners(logger *slog.Logger, workBase, runnerBase string) {
-	runnerBase = filepath.Clean(runnerBase)
-	matches, _ := filepath.Glob(filepath.Join(workBase, "slot-*"))
+// Kills and adoption liveness both operate on process-group MEMBERS, not just
+// the leader: a group outlives its leader, so if run.sh exited but a child
+// (Runner.Worker, etc.) is still alive it must still count. Requiring a
+// runner-like member (this slot's own runner dir) also guards against the
+// recorded PGID having been reused. The scan covers EVERY slot dir on disk
+// (workBase/slot-*), not just the current pool, so no prior configuration's
+// runner is ever invisible.
+func (s *Scaler) adoptOrReapStrayRunners() {
+	matches, _ := filepath.Glob(filepath.Join(s.workBase, "slot-*"))
 	for _, slotPath := range matches {
 		p := filepath.Join(slotPath, runnerPIDFile)
 		data, err := os.ReadFile(p)
 		if err != nil {
-			continue // no stray recorded for this slot — the normal, healthy case
+			continue // nothing recorded for this slot — the normal, healthy case
 		}
-		_ = os.Remove(p)
-
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil || pid <= 1 {
+		pid, name := parseRunnerPIDFile(data)
+		if pid == 0 {
+			_ = os.Remove(p)
 			continue
 		}
-		// Derive this slot's runner dir from its index (slot-N -> <base>-slotN), matching
-		// newSlotPool, so the cmdline guard checks the right runner root.
-		idx := strings.TrimPrefix(filepath.Base(slotPath), "slot-")
-		runnerDir := fmt.Sprintf("%s-slot%s", runnerBase, idx)
-		// Decide on group MEMBERS, not just the leader: a process group outlives its
-		// leader, so if run.sh exited but a child (Runner.Worker, etc.) is still alive
-		// in the group it would keep writing the slot. Checking only the leader's
-		// cmdline would miss that. Requiring a runner-like *member* (this slot's own
-		// runner dir) also guards against the recorded PGID having been reused.
+		// Derive this slot's runner dir from its index (slot-N -> <base>-slotN),
+		// matching newSlotPool, so the member guard checks the right runner root.
+		idxStr := strings.TrimPrefix(filepath.Base(slotPath), "slot-")
+		runnerDir := fmt.Sprintf("%s-slot%s", s.runnerBase, idxStr)
 		if !groupHasRunnerMember(pid, runnerDir) {
+			_ = os.Remove(p) // dead (or PGID recycled to a non-runner): reap the record
 			continue
 		}
-		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
-			logger.Warn("reconcile: kill stray runner group failed", slog.Int("pgid", pid), slog.Any("err", err))
+		if name == "" {
+			_ = os.Remove(p)
+			if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+				s.logger.Warn("reconcile: kill legacy stray runner group failed", slog.Int("pgid", pid), slog.Any("err", err))
+				continue
+			}
+			s.logger.Warn("killed legacy nameless stray runner (pre-adoption pidfile format)",
+				slog.String("slot", filepath.Base(slotPath)), slog.Int("pgid", pid))
 			continue
 		}
-		logger.Warn("reconciled stray runner from a previous incarnation",
-			slog.String("slot", filepath.Base(slotPath)), slog.Int("pgid", pid))
+		idx, err := strconv.Atoi(idxStr)
+		var sl *slot
+		if err == nil {
+			sl = s.pool.takeIndex(idx)
+		}
+		if sl != nil && sl.host != "" {
+			// The index maps to a REMOTE slot in the current pool: a local pidfile
+			// for it is stale topology from a prior all-local configuration. The
+			// remote slot's capacity is unrelated to this local process.
+			s.pool.give(sl)
+			sl = nil
+		}
+		if sl == nil {
+			s.logger.Warn("live runner in an out-of-pool slot; leaving it to finish untracked",
+				slog.String("slot", filepath.Base(slotPath)),
+				slog.String("name", name),
+				slog.Int("pgid", pid))
+			continue
+		}
+		s.adopt(sl, &adoptedLocalProc{pgid: pid, runnerDir: runnerDir, poll: s.adoptPoll, logger: s.logger}, name)
 	}
+}
+
+// adoptRemoteStrays is the remote analogue of adoptOrReapStrayRunners: probe
+// every remote slot's recorded runner session and adopt the live ones. The
+// inspect script removes a stale pidfile on the remote host itself (there is no
+// tracking incarnation left to do it: remote pidfiles are written by the
+// session, not by wait), applying the same cmdline guard against pid reuse. An
+// unreachable host is logged and skipped — launch-time health marks its slot
+// unhealthy the moment it is actually needed.
+func (s *Scaler) adoptRemoteStrays() {
+	for _, sl := range s.pool.all {
+		if sl.host == "" {
+			continue
+		}
+		conn := s.conn(sl)
+		out, err := conn.run(context.Background(), s.remoteCfg.probeTimeout, "", remoteInspectScript(sl))
+		if exitCode(err) == remoteDeadExit {
+			continue // nothing live recorded (any stale pidfile was cleaned remotely)
+		}
+		if err != nil {
+			s.logger.Warn("remote adoption probe failed; slot health will be probed at launch",
+				slog.String("host", sl.host), slog.Int("slot", sl.index), slog.Any("err", err))
+			continue
+		}
+		pid, name := 0, ""
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if rest, ok := strings.CutPrefix(line, "BAZELSCALESET_ADOPT_PID="); ok {
+				if _, err := fmt.Sscanf(rest, "%d", &pid); err != nil {
+					pid = 0
+				}
+			}
+			if rest, ok := strings.CutPrefix(line, "BAZELSCALESET_ADOPT_NAME="); ok {
+				name = rest
+			}
+		}
+		if pid <= 1 {
+			s.logger.Warn("remote adoption probe returned no usable pid",
+				slog.String("host", sl.host), slog.Int("slot", sl.index),
+				slog.String("output", strings.TrimSpace(string(out))))
+			continue
+		}
+		if name == "" {
+			// Legacy nameless session (pre-adoption pidfile format): untrackable,
+			// kill it as the old remote reconcile did and clear its record.
+			ctx, cancel := context.WithTimeout(context.Background(), s.remoteCfg.probeTimeout)
+			_, _ = conn.run(ctx, s.remoteCfg.probeTimeout, "", remoteKillScript(sl, syscall.SIGKILL))
+			_, _ = conn.run(ctx, s.remoteCfg.probeTimeout, "", "rm -f "+shQuote(remotePIDFilePath(sl)))
+			cancel()
+			s.logger.Warn("killed legacy nameless remote stray runner (pre-adoption pidfile format)",
+				slog.String("host", sl.host), slog.Int("slot", sl.index), slog.Int("pid", pid))
+			continue
+		}
+		taken := s.pool.takeIndex(sl.index)
+		if taken == nil {
+			s.logger.Warn("live remote runner but its slot is not free; leaving it untracked",
+				slog.String("host", sl.host), slog.Int("slot", sl.index), slog.String("name", name))
+			continue
+		}
+		s.adopt(taken, &remoteProc{conn: conn, sl: sl, pidNum: pid, cfg: s.remoteCfg, logger: s.logger}, name)
+	}
+}
+
+// detach is the counterpart of shutdown for the self-exit-for-restart paths
+// (poll timeout, listener error, JIT-mint error): the supervisor is about to be
+// restarted by systemd with a fresh session, and its runners are independent
+// processes mid-job or warm-listening. They are left running — a JIT runner
+// completes its one job and deregisters on its own — and their pidfiles let the
+// next incarnation adopt them. Killing them here is what turned every
+// quiet-poll timeout into canceled in-flight CI jobs.
+func (s *Scaler) detach() {
+	s.mu.Lock()
+	total, busy := len(s.running), 0
+	for _, r := range s.running {
+		if r.busy {
+			busy++
+		}
+	}
+	s.mu.Unlock()
+	if total == 0 {
+		return
+	}
+	s.logger.Info("exiting for restart; leaving runners for adoption by the next incarnation",
+		slog.Int("count", total),
+		slog.Int("busy", busy))
 }
 
 func procCmdline(pid int) []byte {

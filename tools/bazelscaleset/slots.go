@@ -206,6 +206,22 @@ func (p *slotPool) take() *slot {
 	return nil
 }
 
+// takeIndex removes and returns the free slot with the given index, or nil if
+// that slot is not currently free. Used by startup adoption to occupy the slot
+// of a still-running runner from the previous incarnation; health cooldowns are
+// ignored — the runner is demonstrably alive on that host.
+func (p *slotPool) takeIndex(index int) *slot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, s := range p.free {
+		if s.index == index {
+			p.free = append(p.free[:i], p.free[i+1:]...)
+			return s
+		}
+	}
+	return nil
+}
+
 // give returns a slot to the pool.
 func (p *slotPool) give(s *slot) {
 	p.mu.Lock()

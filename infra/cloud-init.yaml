@@ -281,6 +281,15 @@ write_files:
       # binaries) the scale set was deleted+recreated on the restart. The main
       # process dying is still handled by Restart=always.
       OOMPolicy=continue
+      # The supervisor's self-exit-for-restart paths (poll timeout, listener
+      # error) leave runners running for the next incarnation to ADOPT. With
+      # the default KillMode=control-group, systemd would SIGTERM/SIGKILL every
+      # leftover process in the cgroup — i.e. the local in-flight runner — the
+      # moment the main process exits, defeating adoption and canceling the
+      # job. KillMode=process signals only the main process; runner lifecycle
+      # (TERM/grace/KILL on genuine stop, watchdogs, adoption) is entirely the
+      # supervisor's own, tracked via slot pidfiles.
+      KillMode=process
 
       [Install]
       WantedBy=multi-user.target

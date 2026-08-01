@@ -110,11 +110,14 @@ func remotePIDFilePath(sl *slot) string {
 // box. It reads the JIT config from stdin, exports it (env is private to the
 // user, unlike argv), and starts run.sh as the leader of a fresh session whose
 // own `echo $$` writes the pidfile — so the recorded pid is exactly the pid
-// whose process group kill/reconcile later target. All stdio is detached so
-// the launching ssh returns immediately and the runner survives any later
-// connection drop. The launch then waits briefly for the pidfile and echoes
-// the pid for the supervisor's log.
-func remoteLaunchScript(sl *slot) string {
+// whose process group kill/reconcile later target. The session also records the
+// runner's NAME as the pidfile's second line: that is what lets a later
+// incarnation adopt the still-running session (job messages and the terminal
+// watchdog are keyed by runner name). All stdio is detached so the launching
+// ssh returns immediately and the runner survives any later connection drop.
+// The launch then waits briefly for the pidfile and echoes the pid for the
+// supervisor's log.
+func remoteLaunchScript(sl *slot, name string) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
 	work := shQuote(sl.path)
 	rdir := shQuote(sl.runnerDir)
@@ -125,13 +128,13 @@ IFS= read -r jit
 export ACTIONS_RUNNER_INPUT_JITCONFIG="$jit"
 mkdir -p ` + work + `
 cd ` + rdir + `
-setsid /bin/sh -c 'echo $$ > ` + pidfile + `; exec ./run.sh' > ` + logf + ` 2>&1 < /dev/null &
+setsid /bin/sh -c '{ echo $$; echo ` + shQuote(name) + `; } > ` + pidfile + `; exec ./run.sh' > ` + logf + ` 2>&1 < /dev/null &
 i=0
 while [ "$i" -lt 50 ]; do
   [ -s ` + pidfile + ` ] && break
   i=$((i+1)); sleep 0.1
 done
-pid=$(cat ` + pidfile + ` 2>/dev/null || true)
+pid=$(head -n 1 ` + pidfile + ` 2>/dev/null || true)
 [ -n "$pid" ] || { echo "bazelscaleset: runner session wrote no pidfile" >&2; exit 65; }
 echo "BAZELSCALESET_REMOTE_PID=$pid"
 `
@@ -142,7 +145,7 @@ echo "BAZELSCALESET_REMOTE_PID=$pid"
 // reads as dead rather than keeping the slot pinned.
 func remoteLivenessScript(sl *slot) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
-	return `pid=$(cat ` + pidfile + ` 2>/dev/null); [ -n "$pid" ] || exit ` + fmt.Sprint(remoteDeadExit) + `
+	return `pid=$(head -n 1 ` + pidfile + ` 2>/dev/null); [ -n "$pid" ] || exit ` + fmt.Sprint(remoteDeadExit) + `
 [ -d "/proc/$pid" ] || exit ` + fmt.Sprint(remoteDeadExit) + `
 tr "\0" " " < "/proc/$pid/cmdline" 2>/dev/null | grep -q -e run.sh -e Runner.Listener -e Runner.Worker || exit ` + fmt.Sprint(remoteDeadExit) + `
 exit 0
@@ -152,24 +155,29 @@ exit 0
 // remoteKillScript signals the runner session's whole process group.
 func remoteKillScript(sl *slot, sig syscall.Signal) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
-	return `pid=$(cat ` + pidfile + ` 2>/dev/null); [ -n "$pid" ] || exit 0
+	return `pid=$(head -n 1 ` + pidfile + ` 2>/dev/null); [ -n "$pid" ] || exit 0
 kill -` + fmt.Sprint(int(sig)) + ` -- "-$pid" 2>/dev/null || true
 `
 }
 
-// remoteReconcileScript is the remote analogue of reconcileStrayRunners: a
-// leftover pidfile from a supervisor incarnation that crashed marks a runner
-// nobody is tracking. Kill its whole process group (cmdline-guarded against
-// pid reuse) before advertising the slot's capacity again.
-func remoteReconcileScript(sl *slot) string {
+// remoteInspectScript reports the recorded runner session on a pool box for
+// startup adoption: exit remoteDeadExit when nothing live is recorded (removing
+// a stale pidfile on the way — remote pidfiles have no tracking incarnation
+// left to clean them), else print the session's pid and recorded name and keep
+// the pidfile. The cmdline guard means a recycled pid reads as dead exactly
+// like the liveness probe's.
+func remoteInspectScript(sl *slot) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
-	return `[ -f ` + pidfile + ` ] || exit 0
-pid=$(cat ` + pidfile + `); rm -f ` + pidfile + `
-[ -n "$pid" ] || exit 0
-[ -d "/proc/$pid" ] || exit 0
-tr "\0" " " < "/proc/$pid/cmdline" 2>/dev/null | grep -q -e run.sh -e Runner.Listener -e Runner.Worker || exit 0
-kill -9 -- "-$pid" 2>/dev/null || true
-echo "reaped stray remote runner pid $pid"
+	dead := fmt.Sprint(remoteDeadExit)
+	return `[ -f ` + pidfile + ` ] || exit ` + dead + `
+pid=$(head -n 1 ` + pidfile + ` 2>/dev/null)
+name=$(sed -n 2p ` + pidfile + ` 2>/dev/null)
+if [ -z "$pid" ] || [ ! -d "/proc/$pid" ] || ! tr "\0" " " < "/proc/$pid/cmdline" 2>/dev/null | grep -q -e run.sh -e Runner.Listener -e Runner.Worker; then
+  rm -f ` + pidfile + `
+  exit ` + dead + `
+fi
+echo "BAZELSCALESET_ADOPT_PID=$pid"
+echo "BAZELSCALESET_ADOPT_NAME=$name"
 `
 }
 
@@ -254,8 +262,8 @@ func (p *remoteProc) signal(sig syscall.Signal) {
 // launchRemote mints nothing itself — the caller already has the JIT config —
 // it delivers the config over stdin and starts the detached runner session,
 // returning a proc that tracks it.
-func launchRemote(ctx context.Context, conn sshConn, sl *slot, jitConfig string, cfg remoteProcConfig, logger *slog.Logger) (*remoteProc, error) {
-	out, err := conn.run(ctx, 2*conn.connectTimeout+30*time.Second, jitConfig+"\n", remoteLaunchScript(sl))
+func launchRemote(ctx context.Context, conn sshConn, sl *slot, name, jitConfig string, cfg remoteProcConfig, logger *slog.Logger) (*remoteProc, error) {
+	out, err := conn.run(ctx, 2*conn.connectTimeout+30*time.Second, jitConfig+"\n", remoteLaunchScript(sl, name))
 	if err != nil {
 		return nil, fmt.Errorf("remote launch on %s failed (exit %d): %s: %w",
 			conn.host, exitCode(err), strings.TrimSpace(string(out)), err)
@@ -272,27 +280,4 @@ func launchRemote(ctx context.Context, conn sshConn, sl *slot, jitConfig string,
 		return nil, fmt.Errorf("remote launch on %s reported no pid: %s", conn.host, strings.TrimSpace(string(out)))
 	}
 	return &remoteProc{conn: conn, sl: sl, pidNum: pid, cfg: cfg, logger: logger}, nil
-}
-
-// reconcileRemoteStrays reaps, on every remote slot's host, a runner session a
-// crashed supervisor incarnation left behind — the remote analogue of
-// reconcileStrayRunners, run before the pool starts advertising capacity. An
-// unreachable host is logged and skipped: launch-time health marks its slot
-// unhealthy the moment it is actually needed.
-func reconcileRemoteStrays(logger *slog.Logger, conns map[int]sshConn, pool *slotPool, probeTimeout time.Duration) {
-	for _, sl := range pool.all {
-		if sl.host == "" {
-			continue
-		}
-		conn := conns[sl.index]
-		out, err := conn.run(context.Background(), probeTimeout, "", remoteReconcileScript(sl))
-		if err != nil {
-			logger.Warn("remote reconcile failed; slot health will be probed at launch",
-				slog.String("host", sl.host), slog.Int("slot", sl.index), slog.Any("err", err))
-			continue
-		}
-		if msg := strings.TrimSpace(string(out)); msg != "" {
-			logger.Warn("remote reconcile", slog.String("host", sl.host), slog.String("msg", msg))
-		}
-	}
 }
