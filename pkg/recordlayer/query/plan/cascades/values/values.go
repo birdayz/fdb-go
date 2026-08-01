@@ -3821,6 +3821,15 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return c.castEvaluated(v)
+}
+
+// castEvaluated applies the cast to an already-evaluated runtime value. The
+// array arm re-enters it per element: an element is ALREADY the evaluated
+// value, so wrapping it in a throwaway untyped ConstantValue just to re-run
+// child evaluation would discard a type for nothing — the element cast needs
+// neither a Child nor an eval context.
+func (c *CastValue) castEvaluated(v any) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -3850,10 +3859,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 				out = append(out, nil)
 				continue
 			}
-			ev, eerr := (&CastValue{
-				Child:  &ConstantValue{Value: e, Typ: UnknownType},
-				Target: at.ElementType,
-			}).Evaluate(evalCtx)
+			ev, eerr := (&CastValue{Target: at.ElementType}).castEvaluated(e)
 			if eerr != nil {
 				return nil, eerr
 			}
