@@ -239,6 +239,7 @@ go_test(
         "join_result_value_is_rc_test.go",
         "join_star_metadata_test.go",
         "join_unnest_exists_plan_smoke_test.go",
+        "join_using_star_fdb_test.go",
         "joined_preserved_outer_join_fdb_test.go",
         "keyword_operators_probe_test.go",
         "kitchen_sink_probe_test.go",

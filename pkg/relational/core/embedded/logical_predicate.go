@@ -2328,6 +2328,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		expandProjQualifier(sq, md, schemaName)
 		needRebuild = true
 	}
+	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
+	// right-side USING copies drop out (Java hides them; expandStar
+	// filters hidden).
+	if expandBareStarOverUsingJoins(sq, md, schemaName, cteScopes) {
+		needRebuild = true
+	}
 	if hasAnyQualifiedStar(sq) {
 		if starErr := expandQualifiedStars(sq, md, schemaName, cteScopes); starErr != nil {
 			return nil, starErr
@@ -2935,7 +2941,7 @@ func buildSelectScope(
 	scope := semantic.NewScope(nil)
 	schemaStrip := newUnnestTableResolver(md, schemaName)
 
-	addSource := func(tableName, alias, bindingID string) bool {
+	addSource := func(tableName, alias, bindingID string, hidden []string) bool {
 		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): on the visitor path
 		// sq keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
 		// runs only on the catalog sub-build path), and a raw ResolveTable
@@ -2977,6 +2983,7 @@ func buildSelectScope(
 					Table:           src.Table,
 					Alias:           aliasID,
 					CorrelationName: bindingOrAlias(bindingID, aliasID),
+					HiddenColumns:   hiddenColumnSet(hidden),
 				}) == nil
 			}
 		}
@@ -2992,6 +2999,7 @@ func buildSelectScope(
 			Table:           tbl,
 			Alias:           aliasID,
 			CorrelationName: bindingOrAlias(bindingID, aliasID),
+			HiddenColumns:   hiddenColumnSet(hidden),
 		}) == nil
 	}
 
@@ -3003,7 +3011,7 @@ func buildSelectScope(
 		} else {
 			return nil
 		}
-	} else if !addSource(sq.tableName, sq.tableAlias, "") {
+	} else if !addSource(sq.tableName, sq.tableAlias, "", nil) {
 		return nil
 	}
 	addUnnestSource := unnestScopeSourceAdder(scope)
@@ -3044,11 +3052,24 @@ func buildSelectScope(
 				return nil
 			}
 		}
-		if !addSource(j.tableName, j.alias, j.bindingID) {
+		if !addSource(j.tableName, j.alias, j.bindingID, j.usingHiddenCols) {
 			return nil
 		}
 	}
 	return expr.New(analyzer, scope)
+}
+
+// hiddenColumnSet folds a USING-hidden column list into the ScopeSource
+// set shape (UPPER keys). Nil in, nil out — most sources hide nothing.
+func hiddenColumnSet(hidden []string) map[string]struct{} {
+	if len(hidden) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(hidden))
+	for _, h := range hidden {
+		out[strings.ToUpper(h)] = struct{}{}
+	}
+	return out
 }
 
 // orderByOutputAliasBinding classifies an ORDER BY key for the
@@ -6754,7 +6775,13 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			newQuals = append(newQuals, qual)
 			continue
 		}
+		// A USING join hides the RIGHT side's copy of each USING column
+		// from star expansion — mixed `alias.*` slots included.
+		hidden := usingHiddenForAlias(sq, qual)
 		for _, c := range cols {
+			if _, hide := hidden[c]; hide {
+				continue
+			}
 			// Star expansion mints the qualified reference structurally —
 			// the segments are known here, never re-derived from the name.
 			newCols = append(newCols, projCol{name: qual + "." + c, bare: c, qualifier: qual, qualified: true})
@@ -6768,6 +6795,121 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	sq.projExprs = newExprs
 	sq.projStarQualifiers = newQuals
 	return nil
+}
+
+// usingHiddenForAlias returns the USING-hidden column set of the join leg
+// whose effective alias (alias, else tableName) matches qual, or nil.
+func usingHiddenForAlias(sq *selectQuery, qual string) map[string]struct{} {
+	for _, j := range sq.joins {
+		a := j.alias
+		if a == "" {
+			a = j.tableName
+		}
+		if strings.EqualFold(a, qual) {
+			return hiddenColumnSet(j.usingHiddenCols)
+		}
+	}
+	return nil
+}
+
+// expandBareStarOverUsingJoins expands a bare `SELECT *` into explicit
+// projCols when a JOIN … USING is present, so the RIGHT side's copy of
+// each USING column drops out of the star — Java's star expansion filters
+// hidden expressions (SemanticAnalyzer.expandStar → nonEphemeralVisible;
+// the right copy was hidden by resolveJoinUsingClause). Without this the
+// nil-projCols path projects every leg column and the row is wider than
+// Java's (`SELECT * FROM ja JOIN jb USING (c1)` must be C1, A2, B2).
+//
+// Returns true when it expanded (caller rebuilds the plan). Declines —
+// keeping the legacy full-width star — when any FROM leg cannot be
+// enumerated from metadata (derived table, lateral unnest, catalog-aware
+// sub-plan): a partial expansion would silently drop those legs' columns,
+// which is worse than the width divergence it fixes.
+func expandBareStarOverUsingJoins(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) bool {
+	if sq == nil || md == nil || sq.projCols != nil || sq.projQualifier != "" ||
+		sq.countStar || len(sq.aggCols) > 0 || sq.derivedQuery != nil {
+		return false
+	}
+	anyHidden := false
+	for _, j := range sq.joins {
+		if len(j.usingHiddenCols) > 0 {
+			anyHidden = true
+			break
+		}
+	}
+	if !anyHidden {
+		return false
+	}
+	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	columnsFor := func(tableName string) ([]string, bool) {
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			if src.Table == nil {
+				return nil, false
+			}
+			cteCols := src.Table.Columns()
+			cols := make([]string, len(cteCols))
+			for i, c := range cteCols {
+				cols[i] = strings.ToUpper(c.Id.Name())
+			}
+			return cols, true
+		}
+		rt := md.GetRecordType(tableName)
+		if rt == nil || rt.Descriptor == nil {
+			return nil, false
+		}
+		fields := rt.Descriptor.Fields()
+		cols := make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
+		}
+		return cols, true
+	}
+	type leg struct {
+		qual   string
+		cols   []string
+		hidden map[string]struct{}
+	}
+	primaryAlias := sq.tableAlias
+	if primaryAlias == "" {
+		primaryAlias = sq.tableName
+	}
+	primaryCols, ok := columnsFor(sq.tableName)
+	if !ok {
+		return false
+	}
+	legs := []leg{{qual: primaryAlias, cols: primaryCols}}
+	for i, j := range sq.joins {
+		if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil {
+			return false
+		}
+		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
+		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+			return false
+		}
+		alias := j.alias
+		if alias == "" {
+			alias = j.tableName
+		}
+		cols, ok := columnsFor(j.tableName)
+		if !ok {
+			return false
+		}
+		legs = append(legs, leg{qual: alias, cols: cols, hidden: hiddenColumnSet(j.usingHiddenCols)})
+	}
+	var projCols []projCol
+	for _, l := range legs {
+		for _, c := range l.cols {
+			if _, hide := l.hidden[c]; hide {
+				continue
+			}
+			projCols = append(projCols, projCol{name: l.qual + "." + c, bare: c, qualifier: l.qual, qualified: true})
+		}
+	}
+	sq.projCols = projCols
+	sq.projAliases = make([]string, len(projCols))
+	sq.projExprs = make([]antlrgen.IExpressionContext, len(projCols))
+	sq.projStarQualifiers = make([]string, len(projCols))
+	return true
 }
 
 // expandProjQualifier handles `SELECT <qualifier>.*` when it is the
@@ -6845,19 +6987,23 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 	if rt == nil || rt.Descriptor == nil {
 		return
 	}
+	// A USING join hides the RIGHT side's copy of each USING column from
+	// star expansion — the qualified star too (Java's expandStar filters
+	// nonEphemeralVisible for `alias.*` exactly as for `*`).
+	hidden := usingHiddenForAlias(sq, qual)
 	fields := rt.Descriptor.Fields()
-	cols := make([]projCol, fields.Len())
-	aliases := make([]string, fields.Len())
-	exprs := make([]antlrgen.IExpressionContext, fields.Len())
-	quals := make([]string, fields.Len())
+	cols := make([]projCol, 0, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
 		bare := strings.ToUpper(string(fields.Get(i).Name()))
-		cols[i] = projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true}
+		if _, hide := hidden[bare]; hide {
+			continue
+		}
+		cols = append(cols, projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true})
 	}
 	sq.projCols = cols
-	sq.projAliases = aliases
-	sq.projExprs = exprs
-	sq.projStarQualifiers = quals
+	sq.projAliases = make([]string, len(cols))
+	sq.projExprs = make([]antlrgen.IExpressionContext, len(cols))
+	sq.projStarQualifiers = make([]string, len(cols))
 	// Clear projQualifier so downstream code doesn't treat this as the
 	// legacy nil-projCols path.
 	sq.projQualifier = ""

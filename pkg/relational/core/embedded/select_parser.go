@@ -128,6 +128,13 @@ type joinClause struct {
 	// synthesized in extractFromSimpleTable (after the left source alias is
 	// known) into onExpr; usingUids is cleared once synthesized.
 	usingUids antlrgen.IUidListContext
+	// usingHiddenCols retains the USING column names (UPPER-folded,
+	// quote-stripped) after the ON synthesis clears usingUids. This
+	// join's RIGHT side hides these columns: Java marks the right copy
+	// hidden (QueryVisitor.resolveJoinUsingClause → Expression.asHidden)
+	// so star expansion drops it and an unqualified reference resolves
+	// the left copy.
+	usingHiddenCols []string
 	// segments preserves the un-flattened uid segments of the source's
 	// dotted name (`FullId().AllUid()`, quote-stripped). For a single-name
 	// table source it is `[name]`; for a correlated array source
@@ -2499,6 +2506,12 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		synth, sErr := synthesizeUsingOnExpr(joins[i].usingUids, leftSrcAlias, joins[i].alias)
 		if sErr != nil {
 			return nil, sErr
+		}
+		// Retain the USING names before clearing: this leg's right side
+		// hides them (star expansion + unqualified resolution).
+		for _, u := range joins[i].usingUids.AllUid() {
+			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
+				strings.ToUpper(functions.StripIdentifierQuotes(u.GetText())))
 		}
 		joins[i].onExpr = synth
 		joins[i].usingUids = nil

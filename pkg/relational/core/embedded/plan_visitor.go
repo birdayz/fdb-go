@@ -558,6 +558,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		expandProjQualifier(sq, v.md, v.schemaName)
 		needRebuild = true
 	}
+	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
+	// right-side USING copies drop out (Java hides them; expandStar
+	// filters hidden).
+	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, v.cteScopes) {
+		needRebuild = true
+	}
 	if hasAnyQualifiedStar(sq) {
 		if starErr := expandQualifiedStars(sq, v.md, v.schemaName, v.cteScopes); starErr != nil {
 			return nil, starErr
