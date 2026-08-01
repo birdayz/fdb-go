@@ -28,7 +28,6 @@ go_library(
         "header.go",
         "load.go",
         "run.go",
-        "sample.go",
         "writer.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/factorycorpus",
@@ -39,25 +38,23 @@ go_library(
     ],
 )
 
-# The per-PR tier: the loader/writer/census gates (no FDB) plus a stratified
-# sample of the committed corpus (one container). NOT tagged out of the default
-# suite — a corpus no fast lane touches goes stale between nightlies. The FULL
-# corpus is the sibling `full` target, which is `manual`.
+# The loader/writer/census/ratchet gates — pure computation, no FDB. The
+# corpus's EXECUTION lives in the sibling `full` target, which runs every
+# committed scenario as ordinary suite content in every `just test`; the
+# per-PR stratified-sample tier this package once carried is gone because a
+# full run in the same suite makes a sample of the same corpus redundant.
 go_test(
     name = "factorycorpus_test",
-    timeout = "long",  # keep: spins an FDB container and runs ~100 scenarios
+    timeout = "moderate",
     srcs = [
         "blessing_ratchet_test.go",
         "census_test.go",
         "header_duplicate_test.go",
-        "sample_fdb_test.go",
         "writer_test.go",
     ],
     data = glob(["testdata/**"]) + ["census_baseline.json"],
     deps = [
         ":factorycorpus",
         "//pkg/relational/conformance/yamsql",
-        "//pkg/relational/sqldriver",
-        "//pkg/testcontainers/foundationdb",
     ],
 )
