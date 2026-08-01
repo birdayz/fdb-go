@@ -489,7 +489,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// Step 3: SELECT + GROUP BY + HAVING → aggregate classification
 	// and operator building.
-	op, stripPrefix := v.visitSelectGroupBy(op, cls, fs)
+	op, stripPrefix, err := v.visitSelectGroupBy(op, cls, fs)
+	if err != nil {
+		return nil, err
+	}
 
 	// Collect SELECT column names and aliases from ANTLR for ORDER BY
 	// positional reference resolution. This is a lightweight scan —
@@ -1308,9 +1311,9 @@ func (v *PlanVisitor) visitWhere(op logical.LogicalOperator, simpleTable *antlrg
 //
 // Returns the wrapped operator and a stripPrefix (non-empty for derived
 // table queries where column names need prefix stripping).
-func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string) {
+func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string, error) {
 	if cls == nil {
-		return op, ""
+		return op, "", nil
 	}
 
 	// Determine strip prefix for derived tables and table aliases.
@@ -1339,7 +1342,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	//   - GROUP BY without aggregates: just the group keys.
 	//   - Mixed: aggCols carries both group-col and agg-function entries.
 	if !cls.countStar && len(cls.aggCols) == 0 && len(cls.groupBy) == 0 {
-		return op, stripPrefix
+		return op, stripPrefix, nil
 	}
 
 	keys := logicalGroupKeys(cls.groupBy)
@@ -1350,6 +1353,29 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			// BARE from here on — stale qualification segments would
 			// chase a qualifier the runtime row no longer carries.
 			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+		}
+	}
+	// DUPLICATE GROUPING EXPRESSIONS reject 42702 (Java: the grouping
+	// value is pulled up over the GroupByExpression's result when the
+	// output is rebound — LogicalOperator.generateGroupBy,
+	// LogicalOperator.java:454 — and a grouping value containing the same
+	// expression twice maps it to TWO output columns, failing
+	// Expressions.pullUp's one-column assertion with AMBIGUOUS_COLUMN,
+	// Expressions.java:112). The identity is the RESOLVED value, which is
+	// why `GROUP BY category, T_G1.category` rejects too — the strip()
+	// above has already folded a single-source qualifier away, so the
+	// same post-strip key identity the slot-matching loop uses
+	// (buildAggregateOutputSlots) is the right equality here: two keys
+	// this comparison cannot tell apart would make every later rebind of
+	// that key ambiguous. Measured live (DuplicateGroupByJavaProbe):
+	// Java 42702s every duplicate shape BEFORE planning; the check
+	// therefore sits at aggregate BUILD time, not in the planner.
+	for i := range keys {
+		for j := i + 1; j < len(keys); j++ {
+			if groupKeysEquivalent(keys[i], keys[j]) {
+				return nil, "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous columns for %s", keys[j].Display)
+			}
 		}
 	}
 	aggCalls, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
@@ -1376,7 +1402,27 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		cls.postAggExprs = antlr
 	}
 
-	return op, stripPrefix
+	return op, stripPrefix, nil
+}
+
+// groupKeysEquivalent reports whether two group keys are the SAME grouping
+// expression under the identity buildAggregateOutputSlots matches with:
+// column keys compare (qualified, qualifier, bare) case-insensitively,
+// expression-redirected keys compare by canonical Display rendering. Two
+// equivalent keys duplicate a grouping value column, which Java rejects
+// 42702 (Expressions.pullUp's ambiguity assertion). A bare key and a
+// differently-QUALIFIED key of another source are NOT equivalent — Java's
+// value identity keeps `a.k, b.k` legal.
+func groupKeysEquivalent(a, b logical.GroupKey) bool {
+	if a.Bare != "" && b.Bare != "" {
+		return a.Qualified == b.Qualified &&
+			strings.EqualFold(a.Bare, b.Bare) &&
+			(!a.Qualified || strings.EqualFold(a.Qualifier, b.Qualifier))
+	}
+	if a.Bare == "" && b.Bare == "" {
+		return strings.EqualFold(strings.TrimSpace(a.Display), strings.TrimSpace(b.Display))
+	}
+	return false
 }
 
 // buildCTEBodyQuery builds a CTE body plan, PRESERVING the body's own WITH

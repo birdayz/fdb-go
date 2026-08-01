@@ -171,8 +171,11 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 					same = strings.EqualFold(strings.TrimSpace(strip(ac.groupCol)), strings.TrimSpace(key.Display))
 				}
 				if same {
-					// Duplicate identical GROUP BY keys produce equal values;
-					// deterministically address the first native slot.
+					// At most one key can match: duplicate grouping keys were
+					// rejected 42702 at aggregate build time
+					// (visitSelectGroupBy's groupKeysEquivalent check, the
+					// analogue of Java Expressions.pullUp's ambiguity
+					// assertion), so the first match is the only match.
 					native = i
 					break
 				}
