@@ -38,7 +38,9 @@ import (
 	"sync"
 	"time"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
@@ -172,14 +174,16 @@ const maxLifecycleRetries = 3
 //     and 1007 above, carrying no information about SQL semantics. Safe to
 //     re-run only because each attempt builds a FRESH uuid-suffixed ephemeral
 //     schema, so a re-attempt is clean rather than a double-apply.
-//   - Go *plandiff.FixtureError whose cause is transport.ErrConnClosed. BOTH
-//     conditions are required. The FixtureError half means the failure hit the
-//     ephemeral DDL/setup that BUILDS the fixture, so the Go engine never
-//     answered the query and there is nothing to compare; a Go error on the
-//     query itself is not a FixtureError and stays a divergence. The
-//     ErrConnClosed half means the pure-Go client's connection was torn down
-//     underneath it (transport/conn.go), not that Go rejected the DDL — without
-//     it, a Go-only DDL gap during setup would be swallowed as infra.
+//   - Go *plandiff.FixtureError whose cause is a pure-Go client connection
+//     teardown (isConnTeardown). BOTH conditions are required. The FixtureError
+//     half means the failure hit the ephemeral DDL/setup that BUILDS the
+//     fixture, so the Go engine never answered the query and there is nothing
+//     to compare; a Go error on the query itself is not a FixtureError and
+//     stays a divergence. The teardown half means the pure-Go client's
+//     connection was torn down underneath it (transport/conn.go), not that Go
+//     rejected the DDL — without it, a Go-only DDL gap during setup would be
+//     swallowed as infra. The teardown travels in two shapes (see
+//     isConnTeardown), and the arm must match both.
 //
 // A lifecycle error is RETRIED, not suppressed. One that survives every attempt
 // still reaches the report — labelled INFRA so nobody chases an engine bug, but
@@ -193,7 +197,7 @@ func isLifecycleError(err error) bool {
 		return true
 	}
 	var fe *plandiff.FixtureError
-	if errors.As(err, &fe) && errors.Is(err, transport.ErrConnClosed) {
+	if errors.As(err, &fe) && isConnTeardown(err) {
 		return true
 	}
 	var je *plandiff.JavaError
@@ -210,6 +214,42 @@ func isLifecycleError(err error) bool {
 	}
 	return false
 }
+
+// isConnTeardown reports whether err carries a pure-Go client connection
+// teardown, in EITHER of the two shapes it actually travels:
+//
+//   - pre-facade (transport/client layers): the transport's ConnClosedError,
+//     matched by sentinel identity (errors.Is transport.ErrConnClosed) or by
+//     its coded *wire.FDBError 1030 request_maybe_delivered.
+//   - post-facade: fdb.Error{Code: 1030}. convertError (fdb/transaction.go)
+//     rebuilds the error as a VALUE type carrying only the code — the wrap
+//     chain, and with it the errors.Is identity to the sentinel, does NOT
+//     survive the facade. The 1030 code is the only structural handle left,
+//     and it is unambiguous: in the pure-Go client 1030 originates ONLY from
+//     a connection teardown (request_maybe_delivered is client-side RPC
+//     machinery in C++ too — fdbrpc.h waitValueOrSignal — never an in-band
+//     storage-server reply). TestConvertError_ConnTeardownShape
+//     (pkg/fdbgo/fdb) pins that this is the exact shape the facade emits.
+//
+// Matching only the sentinel identity would make the arm unsatisfiable for
+// every real facade-crossing teardown — exactly the class of error this
+// classifier exists to keep red-but-INFRA.
+func isConnTeardown(err error) bool {
+	if errors.Is(err, transport.ErrConnClosed) {
+		return true
+	}
+	var wireErr *wire.FDBError
+	if errors.As(err, &wireErr) && wireErr.Code == connTeardownCode {
+		return true
+	}
+	var facadeErr gofdb.Error
+	return errors.As(err, &facadeErr) && facadeErr.Code == connTeardownCode
+}
+
+// connTeardownCode is FDB 1030 request_maybe_delivered
+// (flow/error_definitions.h:57, release-7.3) — the code the pure-Go transport
+// stamps on every connection teardown.
+const connTeardownCode = 1030
 
 // lifecycleDetail returns the INFRA report line for whichever side hit a
 // lifecycle failure, naming the side so a reader knows where to look. Shared by

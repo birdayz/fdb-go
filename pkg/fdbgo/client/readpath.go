@@ -216,7 +216,11 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 				}
 				continue
 			}
-			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+			// A maybeDelivered teardown (1030/1100: the storage connection died
+			// under the in-flight RPC) takes the same arm: C++ loadBalance
+			// retries another alternative and exhausts to all_alternatives_failed,
+			// which this arm already absorbs.
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 				shardRetries++
 				if shardRetries > MaxWrongShardRetries {
 					// Transient routing error exhausted: retry the whole txn
@@ -449,7 +453,10 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 			continue
 		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+		// maybeDelivered (1030/1100, a connection teardown under the in-flight
+		// RPC) joins them: C++ loadBalance retries another alternative and
+		// exhausts to all_alternatives_failed — same absorption, same bound.
+		if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 			tx.db.locCache.invalidate(key, tx.tenantId, false)
 			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 				return nil, err
@@ -699,7 +706,11 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 						}
 						continue // re-send same shard
 					}
-					if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+					// maybeDelivered (1030/1100: the storage connection died
+					// under the in-flight RPC) takes the same arm — C++
+					// loadBalance retries another alternative and exhausts to
+					// all_alternatives_failed, which this arm already absorbs.
+					if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 						relocateRetries++
 						if relocateRetries > maxRelocateRetries {
 							// Surface a RETRYABLE transaction_too_old (not the
@@ -910,6 +921,25 @@ func isAllAlternativesFailed(err error) bool {
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
 }
 
+// isMaybeDelivered reports whether err carries request_maybe_delivered (1030)
+// or broken_promise (1100) — C++ loadBalance's maybeDelivered classification
+// (LoadBalance.actor.h:344: `maybeDelivered = errCode == error_code_broken_promise
+// || errCode == error_code_request_maybe_delivered`). The transport delivers a
+// coded 1030 for every connection teardown, so this is how a read loop
+// recognizes "the connection under my in-flight RPC died". For reads
+// (AtMostOnce::False) C++ retries another alternative and, on exhaustion,
+// surfaces all_alternatives_failed to the read's own retry loop — never the raw
+// teardown code to the application. The Go read loops mirror that by treating
+// maybeDelivered exactly like all_alternatives_failed: invalidate the location,
+// bounded retry, and on exhaustion a RETRYABLE transaction_too_old. The commit
+// path never consults this — it maps ANY teardown to commit_unknown_result
+// (commitpath.go, C++ AtMostOnce::True → NativeAPI.actor.cpp:6937).
+func isMaybeDelivered(err error) bool {
+	var fdbErr *wire.FDBError
+	return errors.As(err, &fdbErr) &&
+		(fdbErr.Code == ErrRequestMaybeDelivered || fdbErr.Code == ErrBrokenPromise)
+}
+
 // isFutureVersionOrProcessBehind returns true for errors that should trigger
 // future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
 // which passes futureVersion=true for future_version (1009) and process_behind (1037).
@@ -941,6 +971,13 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // the right response). hedgeErr seeds the remembered timeout from the hedge arm's own failure — a
 // transport error, never a reply-carried version error (those surface directly via parseGetValueReply on
 // the hedge success path, so they never reach here).
+//
+// A maybeDelivered teardown (1030/1100 — one replica's connection died under the RPC) deliberately
+// matches NO case: it must not end the scan (unlike wrong_shard/all_alternatives it says nothing about
+// the other replicas — C++ loadBalance simply moves to the next alternative, LoadBalance.actor.h:344
+// with the false return at :377) and must not be remembered as a timeout. When every replica is torn
+// down the default arm flattens to all_alternatives_failed, which getValueImpl absorbs via
+// invalidate+relocate — the same exhaustion outcome as C++ loadBalance.
 func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
 	// A cancelled/expired CALLER context propagates IMMEDIATELY — a cancelled read must return ctx.Err(),
 	// never a remembered version error or a flattened timeout. Gate on ctx.Err() (the real READ context),

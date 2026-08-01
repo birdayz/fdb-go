@@ -156,18 +156,74 @@ func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, dialFn DialFu
 	return dialWith(ctx, addr, dialFn, tlsConfig)
 }
 
-// ErrConnClosed is delivered to in-flight requests and queued senders when the
-// connection is torn down (by Close, the monitor, or a read error). The client
-// treats any non-nil transport error as a connection failure → retry, so the
-// concrete value only needs to be non-nil and stable.
+// ErrConnClosed is the identity sentinel for a connection teardown. Every error
+// this package delivers for a torn-down connection matches it via
+// errors.Is(err, ErrConnClosed).
 //
 // Exported so a caller can tell a TRANSPORT teardown apart from an answer the
-// cluster actually gave. It carries no FDB error code, so convertError
-// (fdb/transaction.go) passes it through unchanged and it reaches the caller
-// verbatim at the end of a wrap chain — an `errors.Is` against this value is
-// therefore the only structural way to recognise it downstream, and the
-// alternative (matching the rendered message) is not one.
+// cluster actually gave. The delivered error additionally carries FDB code 1030
+// request_maybe_delivered (see ConnClosedError), so downstream code has two
+// structural handles: errors.Is against this sentinel while the transport error
+// travels as-is, and the 1030 code once a facade has converted it to its own
+// error type (which drops wrap-chain identity) — matching the rendered message
+// is not one.
 var ErrConnClosed = errors.New("connection closed")
+
+// codeRequestMaybeDelivered is FDB error 1030 request_maybe_delivered
+// (flow/error_definitions.h:57, release-7.3): "Request may or may not have been
+// delivered". This is the code an in-flight unreliable RPC observes in C++ when
+// its peer connection dies: tryGetReply waits on
+// IFailureMonitor::onDisconnectOrFailure and completes with
+// request_maybe_delivered() (fdbrpc/include/fdbrpc/fdbrpc.h:794-799 and
+// :815-820), and loadBalance classifies broken_promise/request_maybe_delivered
+// as maybeDelivered (fdbrpc/include/fdbrpc/LoadBalance.actor.h:344) — retrying
+// another alternative for reads (AtMostOnce::False), or throwing
+// request_maybe_delivered for a commit (AtMostOnce::True, LoadBalance.actor.h:
+// 369-370), which tryCommit maps to commit_unknown_result handling
+// (fdbclient/NativeAPI.actor.cpp:6937).
+const codeRequestMaybeDelivered = 1030
+
+// ConnClosedError is the teardown error delivered to in-flight requests and
+// queued senders when the connection is torn down (by Close, the monitor, a
+// read error, or a write error). It matches BOTH errors.Is(err, ErrConnClosed)
+// (teardown identity) and errors.As(err, **wire.FDBError) with code 1030
+// request_maybe_delivered, so the client's retry machinery sees the same coded,
+// C++-faithful condition libfdb_c's loadBalance sees. Cause (the underlying
+// read/write error, when there is one) is carried in the message only — NOT in
+// the Unwrap chain — so a teardown can never spuriously match errors.Is/As
+// probes aimed at its cause (e.g. a context error check).
+type ConnClosedError struct {
+	cause error // optional underlying read/write error; message-only
+}
+
+func (e *ConnClosedError) Error() string {
+	if e.cause != nil {
+		return "connection closed (request_maybe_delivered): " + e.cause.Error()
+	}
+	return "connection closed (request_maybe_delivered)"
+}
+
+func (e *ConnClosedError) Unwrap() []error {
+	return []error{ErrConnClosed, &wire.FDBError{Code: codeRequestMaybeDelivered}}
+}
+
+// errConnClosed is the shared no-cause teardown value. A single value (not a
+// fresh allocation per site) so the cheap hot paths (SendFrame/Flush ctx.Done
+// arms) stay allocation-free.
+var errConnClosed error = &ConnClosedError{}
+
+// codedConnClosed wraps a raw teardown cause (a readLoop/writeLoop I/O error, a
+// recovered loop panic) into the coded ConnClosedError. Idempotent: an error
+// that is already a teardown error passes through unchanged.
+func codedConnClosed(err error) error {
+	if err == nil || errors.Is(err, ErrConnClosed) {
+		if err == nil {
+			return errConnClosed
+		}
+		return err
+	}
+	return &ConnClosedError{cause: err}
+}
 
 // connOption tweaks a Conn before its loop goroutines start. Test-only knobs
 // (e.g. monitor cadence) ride this so the public Dial signature stays clean.
@@ -446,7 +502,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return ErrConnClosed
+		return errConnClosed
 	}
 	// Wait for writeLoop to write+flush, OR bail if the connection is torn down
 	// (Close/monitor/read-error cancels ctx). Without the ctx.Done arm a sender
@@ -459,7 +515,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 		errChanPool.Put(errCh)
 		return err
 	case <-c.ctx.Done():
-		return ErrConnClosed
+		return errConnClosed
 	}
 }
 
@@ -473,7 +529,7 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body}:
 		return nil
 	case <-c.ctx.Done():
-		return ErrConnClosed
+		return errConnClosed
 	}
 }
 
@@ -489,7 +545,7 @@ func (c *Conn) Flush() error {
 	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return ErrConnClosed
+		return errConnClosed
 	}
 	// Bail on connection teardown rather than block forever on errCh (see SendFrame).
 	// errCh is not pooled on the ctx.Done path (stale-value hazard).
@@ -499,7 +555,7 @@ func (c *Conn) Flush() error {
 		errChanPool.Put(errCh)
 		return err
 	case <-c.ctx.Done():
-		return ErrConnClosed
+		return errConnClosed
 	}
 }
 
@@ -558,7 +614,14 @@ func (c *Conn) writeLoop() {
 		}
 		c.hasDirty.Store(false)
 
-		// Notify all waiting senders.
+		// Notify all waiting senders. A write error means the frame may or may
+		// not have reached the peer before the socket died — code it as the
+		// request_maybe_delivered teardown (C++ has no synchronous send errors
+		// at all; a failed send there surfaces only as the disconnect signal →
+		// request_maybe_delivered, fdbrpc.h:794-799).
+		if writeErr != nil {
+			writeErr = codedConnClosed(writeErr)
+		}
 		for _, ch := range errChans {
 			ch <- writeErr
 		}
@@ -587,7 +650,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 	case <-c.ctx.Done():
 		// Connection teardown: failAllPending owns the pending entry and may be
 		// delivering an error to replyCh concurrently — leave the channel to GC.
-		return nil, ErrConnClosed
+		return nil, errConnClosed
 	}
 }
 
@@ -602,7 +665,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 // 4. readLoop exits, signals WaitGroup
 // 5. Close returns
 func (c *Conn) Close() error {
-	c.failConnection(ErrConnClosed)
+	c.failConnection(errConnClosed)
 	c.loopWG.Wait()
 	// Always nil: the socket close happens inside failConnection, whose error is
 	// not actionable (closing an already-dead/closed conn yields a spurious
@@ -629,7 +692,12 @@ func (c *Conn) failConnection(err error) {
 	c.closeOnce.Do(func() {
 		c.cancel()
 		_ = c.conn.Close()
-		c.failAllPending(err)
+		// Code the fan-out: whatever raw cause killed the connection (EOF,
+		// ECONNRESET, a recovered loop panic), every in-flight reply observes a
+		// coded request_maybe_delivered teardown — the exact condition C++'s
+		// waitValueOrSignal delivers on peer disconnect (fdbrpc.h:794-799) —
+		// never a bare I/O error the retry machinery cannot classify.
+		c.failAllPending(codedConnClosed(err))
 	})
 }
 
@@ -703,7 +771,7 @@ func (c *Conn) readLoop() {
 	// socket + fail all pending; C++ disconnect-promise equivalent) is idempotent,
 	// so if Close/monitor already fired this is a no-op and the first caller's error
 	// wins. exitErr carries the real read error, or the panic, when there is one.
-	exitErr := ErrConnClosed
+	exitErr := errConnClosed
 	defer c.loopWG.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -923,7 +991,7 @@ func (c *Conn) connectionMonitor() {
 					// single teardown path: cancel + CLOSE THE SOCKET (so readLoop's
 					// blocking Read unblocks — the old bare cancel() leaked the fd +
 					// goroutine until TCP keepalive) + fail all pending.
-					c.failConnection(ErrConnClosed)
+					c.failConnection(errConnClosed)
 					return
 				}
 				// Bytes arrived (server PINGs, other traffic) but not our PING reply.

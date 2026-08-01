@@ -148,6 +148,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",

@@ -78,7 +78,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 
 			b, err := tx.sendWaitMetrics(ctx, shardBegin, shardEnd, loc.Servers)
 			if err != nil {
-				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
 					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 						return 0, err
@@ -248,7 +248,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 			}
 			points, perr := tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
 			if perr != nil {
-				if isWrongShardServer(perr) || isAllAlternativesFailed(perr) {
+				if isWrongShardServer(perr) || isAllAlternativesFailed(perr) || isMaybeDelivered(perr) {
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
 					if serr := sleepCtx(ctx, wrongShardRetryDelay); serr != nil {
 						return nil, serr

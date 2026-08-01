@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
@@ -130,6 +131,42 @@ func TestResolveFallback(t *testing.T) {
 		}
 		if tried != 2 {
 			t.Fatalf("an unclassified error must NOT stop the scan; want both fallback replicas tried, got %d", tried)
+		}
+	})
+
+	t.Run("teardown_does_not_abort_scan", func(t *testing.T) {
+		t.Parallel()
+		// One replica's connection dies under the RPC (the transport's coded
+		// request_maybe_delivered teardown). Unlike wrong_shard/all_alternatives it
+		// says nothing about the OTHER replicas — C++ loadBalance simply moves to
+		// the next alternative (LoadBalance.actor.h:344, false return at :377) —
+		// so the scan must continue and a later healthy replica's value must win.
+		// Revert-proof: adding isMaybeDelivered to the early-return case aborts on
+		// s2 and never tries s3.
+		val, err := resolveFallback(live(), nil, servers, 0, 1, func(s ServerInfo) ([]byte, error) {
+			if s.Address == "s2" {
+				return nil, &transport.ConnClosedError{}
+			}
+			return []byte("v"), nil // s3 is healthy
+		})
+		if err != nil || string(val) != "v" {
+			t.Fatalf("a single-replica teardown must fall back to a healthy replica; got val=%q err=%v", val, err)
+		}
+	})
+
+	t.Run("all_teardown_flattens_to_all_alternatives", func(t *testing.T) {
+		t.Parallel()
+		// Every fallback replica is torn down → the default arm flattens to
+		// all_alternatives_failed (1006), which getValueImpl absorbs via
+		// invalidate+relocate — the C++ loadBalance exhaustion outcome. It must
+		// NOT flatten to errReplyTimeout (a teardown is not a slow server) and
+		// must NOT surface the raw 1030 (C++ never propagates it from reads).
+		_, err := resolveFallback(live(), nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			return nil, &transport.ConnClosedError{}
+		})
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) || fe.Code != ErrAllAlternativesFailed {
+			t.Fatalf("all-replicas teardown must flatten to all_alternatives_failed (1006); got %v", err)
 		}
 	})
 
