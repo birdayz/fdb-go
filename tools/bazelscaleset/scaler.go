@@ -351,6 +351,15 @@ func (p *localProc) signal(sig syscall.Signal) {
 // INFO, for hours, while the supervisor kept advertising their capacity and
 // every real job queued behind the one slot that worked. So a no-job exit
 // benches the slot on a growing backoff and is logged as the failure it is.
+//
+// Unlike watchJobStart, this is NOT gated on min-runners==0, and the asymmetry
+// is deliberate. With pre-warmed runners a no-job exit can be legitimate (a
+// warm runner told to stand down), so the gate would look consistent — but the
+// two errors cost wildly different amounts. Benching a healthy slot costs one
+// backoff period of warmth, recovers on its own, and is cleared outright by the
+// next job that runs. NOT benching a broken one costs unbounded churn and a
+// starved queue, which is the incident above. Cheap self-healing false positive
+// against an outage-shaped false negative: bench unconditionally.
 func (s *Scaler) wait(r *runner) {
 	defer s.wg.Done()
 
