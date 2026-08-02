@@ -60,6 +60,11 @@ import (
 type rfc204Golden struct {
 	name string
 	body string
+	// wantMetaDataVersion, when non-zero, asserts the version LIVE JAVA
+	// stored — the number the byte comparison pins implicitly and which is
+	// worth stating out loud on the one body whose indexes make it differ
+	// from the template version.
+	wantMetaDataVersion int32
 }
 
 var rfc204Goldens = []rfc204Golden{
@@ -126,6 +131,22 @@ var rfc204Goldens = []rfc204Golden{
 		name: "forward_reference",
 		body: `CREATE TABLE T (id BIGINT, s LATER, PRIMARY KEY(id)) ` +
 			`CREATE TYPE AS STRUCT LATER (a BIGINT)`,
+	},
+	{
+		// INDEXES, because the stored metadata VERSION is a function of them:
+		// Java seeds the builder with the template version and every index
+		// bumps it (RecordMetaDataBuilder.addIndexCommon:1093-1097 under
+		// RecordMetadataSerializer.visit:112), so this body must store
+		// version 3 with its two indexes at lastModified 2 and 3. Every
+		// index-free golden agrees on the version whether that arithmetic is
+		// reproduced or overridden, which is exactly why one of these is
+		// needed: without it, a version override is invisible.
+		name: "value_indexes",
+		body: `CREATE TABLE T1 (id BIGINT, name STRING, PRIMARY KEY(id)) ` +
+			`CREATE TABLE T2 (id BIGINT, tag STRING, PRIMARY KEY(id)) ` +
+			`CREATE INDEX idx_name ON T1 (name) ` +
+			`CREATE INDEX idx_tag ON T2 (tag)`,
+		wantMetaDataVersion: 3,
 	},
 	{
 		name: "struct_nullable_field_variants",
@@ -288,8 +309,24 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 			}()
 			sharedCat, err := catalog.OpenRecordLayerStoreCatalog()
 			Expect(err).NotTo(HaveOccurred())
-			javaNorm, _, err := normalizeStoredTemplate(rawStoredTemplate(sharedCat, templateName))
+			javaNorm, javaMD, err := normalizeStoredTemplate(rawStoredTemplate(sharedCat, templateName))
 			Expect(err).NotTo(HaveOccurred())
+			if g.wantMetaDataVersion != 0 {
+				// Java seeds the builder with the template version and every
+				// index bumps it (RecordMetadataSerializer.visit:112 then
+				// RecordMetaDataBuilder.addIndexCommon:1093-1097), so the
+				// stored version is templateVersion + #indexes and every
+				// index's lastModifiedVersion falls inside it. Stated
+				// explicitly because a version override reproduces every
+				// index-FREE golden byte-for-byte and only shows up here.
+				Expect(javaMD.GetVersion()).To(Equal(g.wantMetaDataVersion),
+					"%s: live Java stored metadata version", g.name)
+				for _, idx := range javaMD.GetIndexes() {
+					Expect(idx.GetLastModifiedVersion()).To(BeNumerically("<=", javaMD.GetVersion()),
+						"%s: Java index %s lastModifiedVersion exceeds the stored metadata version",
+						g.name, idx.GetName())
+				}
+			}
 
 			// --- Go side: same DDL through the production front end,
 			// PERSISTED through Go's template catalog (in a private
@@ -311,12 +348,24 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 			// --- Committed golden: written on RFC204_GOLDEN_OUT re-bless
 			// runs, asserted on every normal run so the pin holds (and
 			// diffs meaningfully) beyond the live-JVM differential.
-			if outDir := os.Getenv("RFC204_GOLDEN_OUT"); outDir != "" {
-				Expect(os.MkdirAll(outDir, 0o755)).To(Succeed())
-				Expect(os.WriteFile(filepath.Join(outDir, g.name+".binpb"), javaNorm, 0o644)).To(Succeed())
-			}
+			blessing := os.Getenv("RFC204_GOLDEN_OUT")
 			committed := javaNorm
-			if p, ok := goldenPath(g.name); ok {
+			if blessing != "" {
+				// A re-bless run WRITES the pin, so it cannot also require
+				// it to be resolvable from runfiles — the file it just wrote
+				// is in the source tree, not in this run's runfiles.
+				Expect(os.MkdirAll(blessing, 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(blessing, g.name+".binpb"), javaNorm, 0o644)).To(Succeed())
+			} else {
+				// The committed golden must RESOLVE. A missing file used to
+				// degrade the three-way comparison to a two-way (live Java
+				// vs Go) silently, so deleting the testdata directory — or
+				// adding a golden name and forgetting to bless it — left the
+				// suite green with the pin gone.
+				p, ok := goldenPath(g.name)
+				Expect(ok).To(BeTrue(),
+					"%s: committed golden conformance/testdata/rfc204/%s.binpb does not resolve; "+
+						"bless it with RFC204_GOLDEN_OUT rather than running without a pin", g.name)
 				b, readErr := os.ReadFile(p)
 				Expect(readErr).NotTo(HaveOccurred())
 				committed = b
@@ -324,9 +373,6 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 					"%s: LIVE Java bytes drifted from the committed golden — either the pinned Java "+
 						"version changed behaviour or the golden is stale; re-bless with RFC204_GOLDEN_OUT "+
 						"only after verifying which", g.name)
-			} else {
-				AddReportEntry("rfc204-golden-missing",
-					fmt.Sprintf("%s: no committed golden staged; compared against live Java only", g.name))
 			}
 
 			if !bytes.Equal(goNorm, committed) {

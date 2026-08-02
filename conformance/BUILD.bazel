@@ -150,7 +150,6 @@ go_test(
         # keep: the RFC-204 committed template byte-goldens
         # (rfc204_template_golden_test.go).
         ["testdata/rfc204/*.binpb"],
-        allow_empty = True,
     ),
     tags = [
         "conformance_java",

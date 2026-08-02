@@ -253,12 +253,18 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 	if err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template to-proto")
 	}
-	// The stored metadata version IS the template version — Java's
-	// RecordMetadataSerializer: getBuilder().setVersion(
-	// schemaTemplate.getVersion()). Beyond byte parity this is what makes
-	// the evolution validator's monotonic-version check meaningful across a
-	// v1→v2 rebind (the builder's own version stays 1 for every build).
-	p.Version = proto.Int32(int32(rl.Version())) //nolint:gosec
+	// The stored metadata version is the one the BUILDER computed, never an
+	// override. Java seeds the builder with the template version
+	// (RecordMetadataSerializer.visit:112, which accept() runs FIRST —
+	// RecordLayerSchemaTemplate.java:378-390) and then every index bumps it
+	// (RecordMetaDataBuilder.addIndexCommon:1093-1097), so Java stores
+	// templateVersion + #indexes and the index lastModifiedVersions land
+	// inside that range. Go's builder reproduces both halves
+	// (metadata.Builder's SetVersion before the tables, RecordMetaDataBuilder
+	// .AddIndex's version++), so overriding the result here would store a
+	// version BELOW indexes that claim to have been modified after it —
+	// self-inconsistent metadata that a Java reader silently repairs upward
+	// and that GetIndexesToBuildSince reads as "every index needs building".
 	return proto.Marshal(p)
 }
 

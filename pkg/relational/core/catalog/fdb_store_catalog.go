@@ -324,7 +324,24 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 			"schema rebind of %s/%s cannot be validated: template types %T -> %T",
 			s.DatabaseName(), s.MetadataName(), oldTmpl, newTmpl)
 	}
-	if verr := recordlayer.ValidateEvolution(oldRL.Underlying(), newRL.Underlying()); verr != nil {
+	// Version monotonicity is judged on the SQL-layer TEMPLATE VERSION — the
+	// axis this catalog itself stores (TEMPLATES.TEMPLATE_VERSION,
+	// fdb_template_catalog.go's Templates row) and the one the SQL layer
+	// advances per CREATE. The record-layer METADATA version is not a
+	// substitute: it is seeded from the template version and then bumped once
+	// per index (RecordMetaDataBuilder.addIndexCommon:1093-1097), so a v2
+	// template with fewer indexes than v1 legitimately carries a LOWER
+	// metadata version. Comparing versions ACROSS template names is
+	// meaningless, so a name-changing rebind is validated structurally only.
+	if oldTmpl.MetadataName() == newTmpl.MetadataName() && newTmpl.Version() <= oldTmpl.Version() {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"cannot rebind schema %s/%s to template %s@%d: version does not advance past the bound %s@%d",
+			s.DatabaseName(), s.MetadataName(),
+			newTmpl.MetadataName(), newTmpl.Version(),
+			oldTmpl.MetadataName(), oldTmpl.Version())
+	}
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
 		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",
 			s.DatabaseName(), s.MetadataName(),

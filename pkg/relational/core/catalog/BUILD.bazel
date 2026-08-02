@@ -42,6 +42,7 @@ go_test(
         "store_catalog_test.go",
         "system_tables_test.go",
         "template_catalog_test.go",
+        "template_version_test.go",
         "transaction_test.go",
     ],
     data = glob(["testdata/**"]),
