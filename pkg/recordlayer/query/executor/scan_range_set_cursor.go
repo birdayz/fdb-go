@@ -242,11 +242,18 @@ func (c *scanRangeSetCursor[T]) OnNext(
 		}
 
 		if c.active == nil {
-			if c.initialPassUsed {
-				if reason, limited := c.limitReason(); limited {
-					return c.stopBeforeCurrentChild(reason)
-				}
-			} else {
+			// Time and byte limits always grant one logical attempt per page, even
+			// in fail mode. Only the scanned-record limiter suppresses that initial
+			// pass when FailOnScanLimitReached is set (Java CursorLimitManager's
+			// record branch alone has the `|| failOnScanLimitReached` condition).
+			// Once the attempt is spent, all three limits gate every later branch.
+			if reason, limited := c.limitReason(); limited &&
+				(c.initialPassUsed ||
+					(c.logicalProperties.ExecuteProperties.FailOnScanLimitReached &&
+						reason == recordlayer.ScanLimitReached)) {
+				return c.stopBeforeCurrentChild(reason)
+			}
+			if !c.initialPassUsed {
 				// Consume the one free attempt before materializing/opening the
 				// first active leaf. An empty first leaf therefore cannot grant
 				// another free attempt to the next branch.

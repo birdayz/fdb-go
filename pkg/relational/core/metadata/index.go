@@ -41,7 +41,7 @@ func (i *RecordLayerIndex) IsUnique() bool { return i.underlying.IsUnique() }
 // IsSparse matches Java's RecordLayerIndex.isSparse() which is
 // "predicate != null" — a predicate-filtered index is sparse because
 // only records matching the predicate have entries.
-func (i *RecordLayerIndex) IsSparse() bool { return i.underlying.Predicate != nil }
+func (i *RecordLayerIndex) IsSparse() bool { return i.underlying.HasPredicate() }
 
 // Accept dispatches into the Visitor.
 func (i *RecordLayerIndex) Accept(v api.Visitor) { v.VisitIndex(i) }
@@ -74,6 +74,11 @@ func (i *RecordLayerIndex) IndexRecordTypes() []string {
 // IndexIsUnique returns whether the index enforces uniqueness.
 // Satisfies cascades.IndexDef.
 func (i *RecordLayerIndex) IndexIsUnique() bool { return i.underlying.IsUnique() }
+
+// IndexHasPredicate satisfies the sparse-index admission extension used by
+// Cascades adapters. Filtered indexes remain unavailable until the candidate
+// graph can carry and imply their predicate.
+func (i *RecordLayerIndex) IndexHasPredicate() bool { return i.underlying.HasPredicate() }
 
 // IndexPrimaryKeyColumns returns nil. This type is only used by the
 // metadata visitor pattern (api.Visitor), never passed to

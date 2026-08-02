@@ -427,12 +427,16 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 
 // TestPlanner_DistinctOverScanElided verifies that a
 // LogicalDistinctExpression over a scan is elided via the PLANNING
-// phase (ImplementDistinctFinalRule) because scans already produce
-// distinct records (DistinctRecordsProperty is true for scans).
+// phase (ImplementDistinctFinalRule) because the scan's authoritative LONG
+// primary key makes physical record identity congruent with logical row
+// equality.
 func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	rowType := values.NewRecordType("Order", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, rowType)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
@@ -440,7 +444,7 @@ func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	ref := expressions.InitialOf(distinct)
 
 	rules := DefaultExpressionRules()
-	p := NewPlanner(rules, nil).
+	p := NewPlanner(rules, &pkPlanContext{pk: map[string][]string{"Order": {"ID"}}}).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithMaxTasks(1_000)
@@ -451,8 +455,8 @@ func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	if best == nil {
 		t.Fatal("expected a plan, got nil")
 	}
-	// Scans produce distinct records, so the Distinct operator should
-	// be elided (no Distinct wrapper in the plan).
+	// This scan's safe PK proves logical row distinctness, so the Distinct
+	// operator should be elided (no Distinct wrapper in the plan).
 	explained := explainPlan(best)
 	if containsDistinctInPlan(explained) {
 		t.Fatalf("expected Distinct to be elided for scan, but got: %s", explained)

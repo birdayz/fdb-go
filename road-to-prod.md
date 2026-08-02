@@ -94,7 +94,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
-| Generation factory corpus (NEW, #555) | **2000** scenarios · **8000** tests; blessings **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenarios, tests, per-feature-vector and per-blessing (`factorycorpus/census_baseline.json`) |
+| Generation factory corpus (NEW, #555) | **1979** scenarios · **7916** tests · **1961** feature vectors; blessings **1763 `metamorphic` + 216 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
 | `.Field`-decides ratchet (RFC-197) | **52** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition` |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
@@ -242,11 +242,15 @@ Wrong rows / wrong data:
    `sqldriver/current_timestamp_crosspage_test.go` (~20-page statements looped across second
    boundaries), `sqldriver/current_timestamp_join_shapes_test.go` (join/EXISTS/scalar-subquery
    battery), and `executor/ordinal_join_clock_test.go` (baked-build clock threading).
-5. NaN comparisons follow Java's total order, not IEEE — `(v/z)=(v/z)` returns ALL rows. Pinned —
-   `nan_comparison_semantics_test.go`. Logical comparison also matches PG/CRDB; the bare standard
-   differs. Raw FDB NaN sign/payload order is a separate indexed-access gap tracked by CQ-84.
-6. Signed zero: Go is IEEE, Java is bit-identity — `WHERE d = 0.0` returns a stored `-0.0` row in
-   Go, not in Java. Pinned — `plandiff/corpus.go:4726` (`DivergenceJavaWrongRowsGoCorrect`).
+5. NaN comparisons follow Java's **boxed-predicate** total order, not IEEE —
+   `(v/z)=(v/z)` returns ALL rows. Pinned — `nan_comparison_semantics_test.go`. PostgreSQL agrees
+   exactly (NaNs equal and greatest); CockroachDB makes NaNs equal/canonical but sorts them least;
+   Java's direct `RelOpValue` primitive `==` instead makes NaN unequal to itself. Raw FDB NaN
+   sign/payload order is a separate indexed-access gap tracked by CQ-84.
+6. Signed zero: Go is IEEE; Java's boxed predicate is bit-identity, while its direct
+   `RelOpValue` primitive `==` agrees with Go — `WHERE d = 0.0` returns a stored `-0.0` row in Go,
+   not through Java's boxed predicate path. Pinned — `plandiff/corpus.go:4726`
+   (`DivergenceJavaWrongRowsGoCorrect`).
 7. BIGINT vs DOUBLE above 2^53 — Java promotes lossily and wrongly matches; Go rewrites exactly.
    Pinned — `plandiff/corpus.go:4741`. **Do not read this as "Go is exact everywhere"**: a DOUBLE
    *column* against an integer constant is lossy in Go too, which is correct SQL and is separately
@@ -408,19 +412,23 @@ is the one known committed-byte divergence (deliberate, reviewed).
 Both merged while this revision was being written, and both are re-verified at `a1d281a63`.
 
 **The generation factory (#555, `491e02a7c`).** `pkg/relational/conformance/factorycorpus` exists
-with **2000 committed scenarios / 8000 tests** (`census_baseline.json`), generated
-→executed→blessed→deduped→committed, with a componentwise census ratchet over scenarios, tests,
-per-feature-vector AND per-blessing. First batch: 1200 seeds → 2268 candidates → 965 blessed → 900
+with **1979 committed scenarios / 7916 tests / 1961 feature vectors** (`census_baseline.json`),
+generated → executed → blessed → deduped → committed. The census ratchet gates scenario/test
+totals and every feature vector; authority is compared per scenario by dedup key so promotion is
+allowed and downgrade is rejected. Aggregate `ByBlessing` counts are report-only, because a floor
+per label would reject promotion. First batch: 1200 seeds → 2268 candidates → 965 blessed → 900
 committed; 1599 TLP partitions and 3226 second-plan pairs, zero disagreements, every oracle
-mutation-proven armed. Blessings are **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in
-every header — the Java leg is environmentally unreachable here, so the corpus does not claim a
+mutation-proven armed. The current blessings are **1763 `metamorphic` + 216
+`metamorphic-tlp-only`**, labeled in every header — the Java leg is environmentally unreachable
+here, so the corpus does not claim a
 cross-engine authority it does not have. **This is the tier's ceiling and should be read as one:**
 metamorphic blessing proves a query agrees with its own transformations, not that it agrees with
 Java. The headers are promotable without regeneration, so the corpus becomes a cross-engine net the
 day the Java leg is reachable — until then it catches self-inconsistency, which is how it caught the
-resolver defect, and not cross-engine divergence. The full corpus is tagged out of the default suite; a stratified
-100-scenario sample rides `just test`. TLP's inherent blindness to branch misassignment is pinned as
-a negative result that re-arms if the checker gains the ability.
+resolver defect, and not cross-engine divergence. The full corpus is ordinary per-PR suite content:
+`just test` and CI execute every committed scenario; the tagged target exists to isolate its FDB
+container, not to reduce it to a sample. TLP's inherent blindness to branch misassignment is pinned
+as a negative result that re-arms if the checker gains the ability.
 
 **The resolver boolean-operand family (#555, same merge).** Found by the factory's FIRST TLP sweep —
 64 of 413 `(p) IS NULL` renderings failed to plan. `walkRecordConstructor` hardcoded the position

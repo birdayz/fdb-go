@@ -5,15 +5,18 @@ package sqldriver_test
 //
 // DIVERGENCES.md claimed Go returned FALSE for `NaN = NaN` "(IEEE, SQL
 // standard)" while Java returned TRUE. That was asserted and never measured.
-// Go returns TRUE — it matches Java here, and both diverge from the SQL
-// standard, Postgres and CockroachDB, all of which make every NaN comparison
-// false.
+// Go returns TRUE. That matches Java's boxed SimpleComparison path,
+// PostgreSQL, and CockroachDB's canonical NaN equality; it differs from IEEE
+// primitive `==` and Java's direct RelOpValue EQ_DD/EQ_FF path.
 //
 // The behaviour is deliberate: predicate comparison falls through to
 // values.CompareFloat64, the Double.compare total order with NaN greatest, and
-// that comment says so. It is what keeps ORDER BY, tuple key order and the
-// merge-sort comparators mutually consistent — strict IEEE would make the
-// comparator non-transitive and destroy the total order they all rely on.
+// that comment says so. PostgreSQL and Java's boxed ordering also put NaN
+// greatest; CockroachDB canonicalizes NaNs but deliberately sorts them first.
+// FDB tuple order is a separate physical order: it preserves NaN sign/payload,
+// so negative NaNs sort below -Inf and positive NaNs above +Inf. Indexed
+// ordered float predicates therefore decline until that mismatch has an exact
+// physical access shape.
 //
 // This test therefore pins CURRENT behaviour rather than desired behaviour, and
 // exists so the semantics cannot drift unobserved while the question is open.
@@ -98,27 +101,28 @@ func TestFDB_NaNComparisonSemantics(t *testing.T) {
 		{
 			"SELECT id FROM t WHERE (v / z) = (v / z)",
 			[]int64{1, 2, 3},
-			"NaN = NaN is TRUE here (total order, Java-matching). IEEE/ANSI say FALSE, " +
-				"which would make this [3] only",
+			"NaN = NaN is TRUE here (boxed-Java/PostgreSQL/Cockroach-compatible). " +
+				"Primitive IEEE and Java's direct RelOp path say FALSE, which would make this [3] only",
 		},
 		{
 			"SELECT id FROM t WHERE (v / z) <> (v / z)", nil,
-			"the mirror: IEEE/ANSI would make this [1 2]",
+			"the mirror: primitive IEEE/Java RelOp would make this [1 2]",
 		},
 		{
 			"SELECT id FROM t WHERE (v / z) > 0",
 			[]int64{1, 2, 3},
-			"NaN is greatest in the total order, so it compares above 0. IEEE says every " +
-				"NaN comparison is false, which would make this [3] only",
+			"NaN is greatest in this total order, so it compares above 0. Primitive IEEE " +
+				"comparisons are false, which would make this [3] only",
 		},
 		{
 			"SELECT id FROM t WHERE (v / z) < 0", nil,
 			"consistent under both readings",
 		},
 		{
-			// Dedup/grouping is settled and would NOT change under an IEEE
-			// predicate move: value identity is tuple-key identity and every
-			// NaN packs to the same key.
+			// Dedup/grouping is settled independently of the raw tuple codec:
+			// DISTINCT recursively canonicalizes NaN sign/payload variants in
+			// its private key, while continuations and stored FDB keys retain
+			// their exact bits.
 			"SELECT id FROM t WHERE (v / z) >= 0",
 			[]int64{1, 2, 3},
 			"same total-order reasoning as `> 0`",
@@ -133,15 +137,15 @@ func TestFDB_NaNComparisonSemantics(t *testing.T) {
 		})
 	}
 
-	// Two NaNs are ONE value for set operations — tuple-key identity, and
-	// stable under any future change to predicate comparison.
+	// Two NaNs are ONE value for set operations through explicit logical
+	// canonicalization, independent of raw FDB tuple-key identity.
 	var n int64
 	if err := conn.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM (SELECT DISTINCT v / z AS k FROM t) AS s").Scan(&n); err != nil {
 		t.Fatalf("distinct count: %v", err)
 	}
 	if n != 2 {
-		t.Fatalf("DISTINCT over {NaN, NaN, +Inf} = %d groups, want 2 — every NaN packs to the "+
-			"same tuple key, so they are one value for set operations", n)
+		t.Fatalf("DISTINCT over {NaN, NaN, +Inf} = %d groups, want 2 — DISTINCT must "+
+			"canonicalize NaN sign/payload variants as one logical value", n)
 	}
 }

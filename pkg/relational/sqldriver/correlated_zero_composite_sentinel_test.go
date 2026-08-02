@@ -188,8 +188,7 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 
 // Shape pins for physical range sets beyond the one-zero sentinel above: the
 // 2^k Cartesian product, aggregate consumers over a plural physical prefix,
-// and the negative result that a REVERSE range-set scan is not SQL-reachable
-// today.
+// and SQL-reachable REVERSE range-set order plus continuation resume.
 // Each subtest is a proof that justified a design decision; the failure
 // messages say what gets re-armed if the pinned fact changes.
 func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {

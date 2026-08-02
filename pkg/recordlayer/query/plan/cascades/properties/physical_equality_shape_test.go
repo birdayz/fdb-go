@@ -125,6 +125,225 @@ func TestPhysicalEqualityShape_NullSafeEqualityWithNullIsOnePhysicalKey(t *testi
 	}
 }
 
+func TestProvenFullEqualityMultiplicity_UniqueNullSemantics(t *testing.T) {
+	t.Parallel()
+	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
+		t.Helper()
+		merged := predicates.EmptyComparisonRange().Merge(&comparison)
+		if !merged.Ok {
+			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
+		}
+		return merged.Range
+	}
+	isNull := rangeOf(predicates.Comparison{Type: predicates.ComparisonIsNull})
+	nullSafeNull := rangeOf(predicates.Comparison{
+		Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(nil),
+	})
+	nullSafeDynamic := func(typ values.Type) *predicates.ComparisonRange {
+		return rangeOf(predicates.Comparison{
+			Type:    predicates.ComparisonNotDistinctFrom,
+			Operand: &values.ParameterValue{Ordinal: 1, Typ: typ},
+		})
+	}
+
+	tests := []struct {
+		name      string
+		comps     []*predicates.ComparisonRange
+		types     []values.Type
+		semantics KeyUniquenessSemantics
+		want      int64
+		known     bool
+	}{
+		{name: "tuple uniqueness includes nullable NULL key", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.NullableLong}, semantics: TupleKeyUnique, want: 1, known: true},
+		{name: "secondary nullable IS NULL has duplicate prefixes", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct},
+		{name: "secondary NOT NULL IS NULL is empty", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.NotNullLong}, semantics: SecondaryUniqueNullsDistinct, known: true},
+		{name: "secondary nullable null-safe NULL has duplicate prefixes", comps: []*predicates.ComparisonRange{nullSafeNull}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct},
+		{name: "secondary NOT NULL null-safe NULL is empty", comps: []*predicates.ComparisonRange{nullSafeNull}, types: []values.Type{values.NotNullLong}, semantics: SecondaryUniqueNullsDistinct, known: true},
+		{name: "secondary nullable dynamic null-safe equality can bind NULL", comps: []*predicates.ComparisonRange{nullSafeDynamic(values.NullableLong)}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct},
+		{name: "secondary nonnullable dynamic null-safe equality is unique", comps: []*predicates.ComparisonRange{rangeOf(predicates.Comparison{Type: predicates.ComparisonNotDistinctFrom, Operand: &values.FieldValue{Field: "X", Typ: values.NotNullLong}})}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct, want: 1, known: true},
+		{name: "secondary nullable ordinary dynamic equality is empty-or-unique", comps: []*predicates.ComparisonRange{physicalShapeEquality(t, &values.ParameterValue{Ordinal: 1, Typ: values.NullableLong})}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct, want: 1, known: true},
+		{name: "secondary ordinary equals NULL is empty", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, nil)}, types: []values.Type{values.NullableLong}, semantics: SecondaryUniqueNullsDistinct, known: true},
+		{name: "secondary signed zero still has two raw unique prefixes", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, float64(0))}, types: []values.Type{values.NullableDouble}, semantics: SecondaryUniqueNullsDistinct, want: 2, known: true},
+		{name: "missing physical nullability declines", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.UnknownType}, semantics: SecondaryUniqueNullsDistinct},
+		{name: "composite nullable component poisons uniqueness", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, int64(7)), isNull}, types: []values.Type{values.NotNullLong, values.NullableLong}, semantics: SecondaryUniqueNullsDistinct},
+		{name: "non-leading equality gap is not full coverage", comps: []*predicates.ComparisonRange{predicates.EmptyComparisonRange(), physicalShapeLiteral(t, int64(7))}, types: []values.Type{values.NotNullLong, values.NotNullLong}, semantics: SecondaryUniqueNullsDistinct},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := ProvenFullEqualityMultiplicity(test.comps, test.types, len(test.comps), test.semantics)
+			if got.IsUnknown() == test.known {
+				t.Fatalf("known = %v, want %v", !got.IsUnknown(), test.known)
+			}
+			if test.known && got.Value() != test.want {
+				t.Fatalf("multiplicity = %d, want %d", got.Value(), test.want)
+			}
+		})
+	}
+}
+
+func TestSecondaryUniqueKeyGloballyEnforced(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		types []values.Type
+		arity int
+		want  bool
+	}{
+		{name: "all authoritative NOT NULL", types: []values.Type{values.NotNullLong, values.NotNullString}, arity: 2, want: true},
+		{name: "nullable component", types: []values.Type{values.NotNullLong, values.NullableString}, arity: 2},
+		{name: "unknown component", types: []values.Type{values.NotNullLong, values.UnknownType}, arity: 2},
+		{name: "FLOAT raw NaN encodings", types: []values.Type{values.NotNullFloat}, arity: 1},
+		{name: "DOUBLE raw NaN encodings", types: []values.Type{values.NotNullDouble}, arity: 1},
+		{name: "missing component", types: []values.Type{values.NotNullLong}, arity: 2},
+		{name: "extra component is ambiguous", types: []values.Type{values.NotNullLong, values.NullableString}, arity: 1},
+		{name: "zero arity", types: []values.Type{values.NotNullLong}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := SecondaryUniqueKeyGloballyEnforced(test.types, test.arity); got != test.want {
+				t.Fatalf("SecondaryUniqueKeyGloballyEnforced = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTupleKeyUniquenessMatchesLogicalEquality(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		types []values.Type
+		arity int
+		want  bool
+	}{
+		{name: "authoritative NOT NULL", types: []values.Type{values.NotNullLong, values.NotNullString}, arity: 2, want: true},
+		{name: "nullable primary component", types: []values.Type{values.NullableLong, values.NullableString}, arity: 2, want: true},
+		{name: "unknown component", types: []values.Type{values.NotNullLong, values.UnknownType}, arity: 2},
+		{name: "nil component", types: []values.Type{values.NotNullLong, nil}, arity: 2},
+		{name: "FLOAT raw NaN encodings", types: []values.Type{values.NotNullFloat}, arity: 1},
+		{name: "nullable FLOAT raw NaN encodings", types: []values.Type{values.NullableFloat}, arity: 1},
+		{name: "DOUBLE raw NaN encodings", types: []values.Type{values.NotNullDouble}, arity: 1},
+		{name: "missing component", types: []values.Type{values.NotNullLong}, arity: 2},
+		{name: "extra component", types: []values.Type{values.NotNullLong, values.NullableString}, arity: 1},
+		{name: "zero arity", types: []values.Type{values.NotNullLong}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := TupleKeyUniquenessMatchesLogicalEquality(test.types, test.arity); got != test.want {
+				t.Fatalf("TupleKeyUniquenessMatchesLogicalEquality = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestValueIdentityMatchesLogicalEqualityIsRecursive(t *testing.T) {
+	t.Parallel()
+	safeRecord := values.NewRecordType("", true, []values.Field{
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NewArrayType(true, values.NullableString)},
+	})
+	unsafeRecord := values.NewRecordType("", true, []values.Field{
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NewArrayType(true, values.NullableDouble)},
+	})
+	for _, test := range []struct {
+		name string
+		typ  values.Type
+		want bool
+	}{
+		{name: "safe nested record", typ: safeRecord, want: true},
+		{name: "nested DOUBLE", typ: unsafeRecord},
+		{name: "erased array", typ: values.NewArrayType(true, nil)},
+		{name: "unknown", typ: values.UnknownType},
+		{name: "enum-like scalar", typ: values.NotNullString, want: true},
+	} {
+		if got := ValueIdentityMatchesLogicalEquality(test.typ); got != test.want {
+			t.Errorf("%s: ValueIdentityMatchesLogicalEquality = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func TestLogicalEqualityAtMostOnePhysicalKey(t *testing.T) {
+	t.Parallel()
+	dynamic := func(typ values.Type) values.Value {
+		return &values.ParameterValue{Ordinal: 1, Typ: typ}
+	}
+	tests := []struct {
+		name         string
+		physicalType values.Type
+		operand      values.Value
+		want         bool
+	}{
+		{name: "DOUBLE positive zero spans both signs", physicalType: values.NotNullDouble, operand: values.LiteralValue(float64(0))},
+		{name: "DOUBLE negative zero spans both signs", physicalType: values.NotNullDouble, operand: values.LiteralValue(math.Copysign(0, -1))},
+		{name: "FLOAT integer zero spans both signs", physicalType: values.NotNullFloat, operand: values.LiteralValue(int64(0))},
+		{name: "DOUBLE NaN spans raw payloads", physicalType: values.NotNullDouble, operand: values.LiteralValue(math.NaN())},
+		{name: "DOUBLE finite nonzero is singleton", physicalType: values.NotNullDouble, operand: values.LiteralValue(1.25), want: true},
+		{name: "FLOAT tiny DOUBLE is empty not narrowed", physicalType: values.NotNullFloat, operand: values.LiteralValue(math.SmallestNonzeroFloat64), want: true},
+		{name: "dynamic DOUBLE can become zero or NaN", physicalType: values.NotNullDouble, operand: dynamic(values.NotNullDouble)},
+		{name: "dynamic integer can become floating-key zero", physicalType: values.NotNullDouble, operand: dynamic(values.NotNullLong)},
+		{name: "LONG integer literal is singleton", physicalType: values.NotNullLong, operand: values.LiteralValue(int64(7)), want: true},
+		{name: "LONG exactly represented float is singleton", physicalType: values.NotNullLong, operand: values.LiteralValue(float64(7)), want: true},
+		{name: "LONG fractional float is empty", physicalType: values.NotNullLong, operand: values.LiteralValue(1.5), want: true},
+		{name: "LONG positive precision cliff is plural", physicalType: values.NotNullLong, operand: values.LiteralValue(float64(1 << 53))},
+		{name: "LONG negative precision cliff is plural", physicalType: values.NotNullLong, operand: values.LiteralValue(-float64(1 << 53))},
+		{name: "LONG dynamic float can reach precision cliff", physicalType: values.NotNullLong, operand: dynamic(values.NotNullDouble)},
+		{name: "LONG dynamic integer stays exact", physicalType: values.NotNullLong, operand: dynamic(values.NotNullLong), want: true},
+		{name: "integer key never equals NaN", physicalType: values.NotNullLong, operand: values.LiteralValue(math.NaN()), want: true},
+		{name: "STRING dynamic equality is exact", physicalType: values.NotNullString, operand: dynamic(values.NotNullString), want: true},
+		{name: "Unknown physical type declines", physicalType: values.UnknownType, operand: values.LiteralValue(int64(7))},
+		{name: "NULL equality is empty without physical metadata", physicalType: values.UnknownType, operand: values.LiteralValue(nil), want: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := LogicalEqualityAtMostOnePhysicalKey(
+				physicalShapeEquality(t, test.operand), test.physicalType,
+			)
+			if got != test.want {
+				t.Fatalf("LogicalEqualityAtMostOnePhysicalKey = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLogicalEqualityProjectionInjective(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		source values.Type
+		target values.Type
+		want   bool
+	}{
+		{name: "LONG to LONG", source: values.NotNullLong, target: values.NullableLong, want: true},
+		{name: "INT to LONG", source: values.NotNullInt, target: values.NotNullLong, want: true},
+		{name: "LONG to INT tuple integer carrier", source: values.NotNullLong, target: values.NotNullInt, want: true},
+		{name: "INT to DOUBLE is exact", source: values.NotNullInt, target: values.NotNullDouble, want: true},
+		{name: "INT to FLOAT rounds", source: values.NotNullInt, target: values.NotNullFloat},
+		{name: "LONG to DOUBLE rounds", source: values.NotNullLong, target: values.NotNullDouble},
+		{name: "FLOAT source has signed-zero aliases", source: values.NotNullFloat, target: values.NotNullFloat},
+		{name: "DOUBLE source has signed-zero and NaN aliases", source: values.NotNullDouble, target: values.NotNullLong},
+		{name: "STRING identity", source: values.NotNullString, target: values.NullableString, want: true},
+		{name: "cross-domain nonnumeric declines", source: values.NotNullString, target: values.NotNullLong},
+		{name: "Unknown source declines", source: values.UnknownType, target: values.NotNullLong},
+		{name: "Unknown target declines", source: values.NotNullLong, target: values.UnknownType},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := LogicalEqualityProjectionInjective(test.source, test.target); got != test.want {
+				t.Fatalf("LogicalEqualityProjectionInjective = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPhysicalEqualityShape_TerminalWideningChangesSeeksNotMultiplicity(t *testing.T) {
 	t.Parallel()
 	zero := physicalShapeLiteral(t, float64(0))

@@ -22,12 +22,38 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          # Retirement ledgers name the exact historical corpus commit. A
+          # shallow checkout would make the permanent history gate a no-op.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Verify corpus retirement history anchors
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          trusted_ref=HEAD
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            # On a PR, authenticate against the target branch as it existed
+            # independently of the proposed history.
+            git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+            trusted_ref="refs/remotes/origin/$GITHUB_BASE_REF"
+          elif [ -n "${EVENT_BEFORE:-}" ] && [[ ! "$EVENT_BEFORE" =~ ^0+$ ]]; then
+            # On a target-branch push, use the pre-push commit when available.
+            if ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$EVENT_BEFORE"
+            fi
+            trusted_ref="$EVENT_BEFORE"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            trusted_ref=HEAD^
+          fi
+          go run ./cmd/verify-corpus-retirement-history -trusted-ref "$trusted_ref"
 
       - name: Check generated code is up to date
         run: |

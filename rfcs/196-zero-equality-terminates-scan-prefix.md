@@ -1,17 +1,17 @@
 # RFC-196 — A zero-valued float equality terminates the scan prefix
 
-Status: **implemented on `fix/cq29-cardinality-bound-violations`, NOT merged, awaiting Graefe + Torvalds ACK.**
-Closes: TODO CQ-28.
+Status: **historical interim design; landed after review and superseded by RFC-205 on 2026-08-01.**
+Closes: TODO CQ-28 historically; RFC-205 is the current complete design.
 
 ## Process note, stated up front
 
 CLAUDE.md requires a Graefe ACK on an RFC *before* implementation for any
 matching/data-access change, and CQ-28's own TODO entry repeated that. The
 implementation was written first and this document after. That ordering was
-wrong. The work is on a branch and unmerged, so the gate can still function as a
-gate — but reviewers should read this as a design under review, not a
-rationalisation of something already shipped. If the design is rejected, the
-commit comes out.
+wrong. At the time, the change remained unmerged so review could still function
+as a gate. Review later completed and the interim design landed; this note is
+retained as the process record, while the postscript below records RFC-205's
+superseding design.
 
 ## The defect
 
@@ -19,7 +19,8 @@ commit comes out.
 `(-0.0, 5)`.
 
 IEEE says `-0.0 == +0.0` and this engine's `=` follows IEEE (deliberately — see
-DIVERGENCES.md on Java's buggy bit-identity `=`). FDB tuple encoding preserves
+DIVERGENCES.md on Java's boxed-predicate bit-identity `=` and its contradictory
+direct primitive `RelOpValue` path). FDB tuple encoding preserves
 the sign bit, because it is Java's encoder and wire compatibility is the hard
 line, so the two zeros are **distinct, adjacent index keys**. An equality probe
 for `0` must therefore span both.

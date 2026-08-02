@@ -32,7 +32,9 @@ func TestScanLikeCost_PointProbeChargesFetchRate(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			t.Parallel()
 			stats := properties.MapStatistics{PerType: map[string]float64{"T": card}}
-			got := scanLikeCost(comps, physicalTypes, []string{"T"}, stats, true)
+			got := scanLikeCost(
+				comps, physicalTypes, []string{"T"}, stats, 1, properties.TupleKeyUnique,
+			)
 			if got.Cardinality != 1 {
 				t.Fatalf("cardinality = %v, want 1 (point probe)", got.Cardinality)
 			}
@@ -56,7 +58,9 @@ func TestScanLikeCost_NonPointProbeCPUUnaffected(t *testing.T) {
 	comps := []*predicates.ComparisonRange{eqRange}
 	physicalTypes := []values.Type{values.NullableLong}
 
-	got := scanLikeCost(comps, physicalTypes, []string{"T"}, stats, false)
+	got := scanLikeCost(
+		comps, physicalTypes, []string{"T"}, stats, 0, properties.TupleKeyUnique,
+	)
 	if got.Cardinality <= 1 {
 		t.Fatalf("cardinality = %v, want a bucket (>1) — non-unique bind is not a point probe", got.Cardinality)
 	}

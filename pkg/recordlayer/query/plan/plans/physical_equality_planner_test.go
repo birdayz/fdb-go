@@ -287,6 +287,64 @@ func TestPhysicalEqualityCardinality_DynamicFloatUnknownButDynamicIntegerOne(t *
 	}
 }
 
+func TestUniqueIndexCardinality_NullableKeysUseNullsDistinctSemantics(t *testing.T) {
+	t.Parallel()
+	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
+		t.Helper()
+		merged := predicates.EmptyComparisonRange().Merge(&comparison)
+		if !merged.Ok {
+			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
+		}
+		return merged.Range
+	}
+	isNull := rangeOf(predicates.Comparison{Type: predicates.ComparisonIsNull})
+	nullSafeNull := rangeOf(predicates.Comparison{
+		Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(nil),
+	})
+	ordinaryParameter := plannerDynamicEquality(t, values.NullableLong)
+
+	for _, test := range []struct {
+		name        string
+		comparison  *predicates.ComparisonRange
+		physical    values.Type
+		wantKnown   bool
+		wantMaximum int64
+	}{
+		{name: "nullable IS NULL is not unique", comparison: isNull, physical: values.NullableLong},
+		{name: "nullable null-safe NULL is not unique", comparison: nullSafeNull, physical: values.NullableLong},
+		{name: "NOT NULL IS NULL is empty", comparison: isNull, physical: values.NotNullLong, wantKnown: true},
+		{name: "NOT NULL null-safe NULL is empty", comparison: nullSafeNull, physical: values.NotNullLong, wantKnown: true},
+		{name: "ordinary nullable parameter is empty-or-unique", comparison: ordinaryParameter, physical: values.NullableLong, wantKnown: true, wantMaximum: 1},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			plan := NewRecordQueryIndexPlan(
+				"U", []*predicates.ComparisonRange{test.comparison},
+				[]string{"T"}, values.UnknownType, false,
+			).WithKeyComponentTypes([]values.Type{test.physical}).
+				WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
+			bound := plan.ProvenCardinalities(nil).Max
+			if bound.IsUnknown() == test.wantKnown {
+				t.Fatalf("maximum known = %v, want %v", !bound.IsUnknown(), test.wantKnown)
+			}
+			if test.wantKnown && bound.Value() != test.wantMaximum {
+				t.Fatalf("maximum = %d, want %d", bound.Value(), test.wantMaximum)
+			}
+			if got := isProvablePointProbe(plan); got != (test.wantKnown && test.wantMaximum == 1) {
+				t.Fatalf("isProvablePointProbe = %v", got)
+			}
+			cost := plan.HintCost(nil, properties.FixedStatistics{Cardinality: 1000})
+			if test.wantKnown && cost.Cardinality != float64(test.wantMaximum) {
+				t.Fatalf("proven cost cardinality = %v, want %d", cost.Cardinality, test.wantMaximum)
+			}
+			if !test.wantKnown && cost.Cardinality <= 1 {
+				t.Fatalf("nullable NULL UNIQUE probe cost = %+v, must remain an unbounded bucket estimate", cost)
+			}
+		})
+	}
+}
+
 func TestPhysicalEqualityCost_EveryPluralLeafPaysSeekSetup(t *testing.T) {
 	t.Parallel()
 	stats := properties.FixedStatistics{Cardinality: 1000}

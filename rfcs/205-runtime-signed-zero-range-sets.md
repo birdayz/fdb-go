@@ -715,9 +715,28 @@ the hand-authored range, planner, continuation, and real-FDB proofs below.
 The reconciled corpus contains 1,979 scenarios, 7,916 tests, and 1,961 feature
 vectors: 1,763 metamorphic and 216 explicitly TLP-only. The same commit carries
 `retirements/2026-08-01-rfc205.json`, which authorizes exactly 24 retirements,
-27 replacements, and 3 additions. Its census hashes bind logical coverage, and
-its complete before/after corpus-tree hashes plus every old/new file hash make
-the transaction content-exact; an unlisted byte change invalidates the ledger.
+27 replacements, and 3 additions. Its format-v2 `base_commit` names the exact
+repository tree from which the old side was measured. CI requires that object
+to be a commit and an ancestor of the independently fetched pre-PR target
+branch, then reads its raw blobs with `git ls-tree` and batched `git cat-file`
+to recompute the old census, complete tree hash, and every retired/replaced
+old-file hash. Archive attributes, checkout filters, nested paths, and
+non-regular Git modes therefore cannot transform or hide evidence. The AFTER
+side is recomputed from raw blobs at the unique Git
+commit that first added the ledger; while a ledger is new to the independently
+fetched trusted branch, it must also match raw proposed HEAD, and the governed
+checkout bytes must match that raw HEAD exactly. Trusted ledgers are immutable
+and undeletable, and at most one new date-named ledger may append in a change.
+This lets later corpus growth coexist
+with old ledgers without ever comparing a historical AFTER state to today's
+tree. A new ledger's BEFORE must also exactly match the fetched target corpus,
+and without a new ledger every trusted YAML must remain present and byte-for-
+byte unchanged; pure additions remain allowed. This exact-tree comparison
+catches balanced delete+add or replacement attacks that preserve every census
+count. Together with every new-file hash, those gates make the transaction
+content- and history-exact; a synthetic side commit, rewritten/deleted ledger,
+invented old hash, missing historical file, pre-existing "addition", re-added
+ledger, or unlisted byte change invalidates the transaction.
 
 Java 4.12.11.0 was also exercised as a prospective second-engine oracle rather
 than assumed authoritative. It could not plan the representative
@@ -854,7 +873,9 @@ disk conditions, and results in the PR; no flake is waived.
 
 ## Implementation verification
 
-The final rebased tree passed all of the following on 2026-08-01:
+A development checkpoint before the final planner and history-gate hardening
+passed all of the following on 2026-08-01. These are historical measurements,
+not the final-tree claim; the source-frozen verification is recorded below:
 
 - deterministic generation, Gazelle, gofumpt/nogo lint, docscheck, and an
   all-target Bazel build;
@@ -866,7 +887,8 @@ The final rebased tree passed all of the following on 2026-08-01:
   executions: 262,945 branch advances, 235,640 malformed-token parses, 385,882
   continuation round trips, and 366,221 paged sweeps;
 - the factory determinism/canonical audit over all 1,979 committed scenarios,
-  plus the content-exact retirement-ledger Go and Bazel runfiles gates; and
+  plus the content-exact retirement-ledger Go and Bazel runfiles gates and the
+  Git-history gate that verifies the ledger's old side at `base_commit`; and
 - the 1M-row FDB stress scale. The pre-change run took 224.48s (100k customer
   ingest 12.398s; 1M three-index order ingest 191.297s). The final run took
   165.21s (9.294s; 138.105s respectively), and every point/range/aggregate/

@@ -469,9 +469,10 @@ type expressionCounts struct {
 	unboundedDataAccess bool
 }
 
-// scanProvableMaxCard returns a primary scan's PROVABLE max cardinality and whether it is known.
-// Java's CardinalitiesProperty bounds a scan at 1 ONLY when every primary-key column is
-// equality-bound (a point lookup); a range, partial bind, or full scan is unknown.
+// scanProvableMaxCard returns a primary scan's PROVABLE max cardinality and
+// whether it is known. Full primary-key equality normally proves one, while k
+// known signed-zero float components prove 2^k physical keys. A dynamic float,
+// range, partial bind, or full scan is unknown.
 //
 // Operates on the bare *plans.RecordQueryScanPlan, the physical scan expression
 // the memo-descent cost walk sees (RFC-184 W2).
@@ -483,41 +484,32 @@ func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
 	if !fullBind || !provable {
 		return 0, false
 	}
-	shape := properties.PhysicalEqualityShapeForComparisons(
-		plan.GetScanComparisons(), plan.GetKeyComponentTypes(), true,
+	multiplicity := properties.ProvenFullEqualityMultiplicity(
+		plan.GetScanComparisons(), plan.GetKeyComponentTypes(),
+		len(plan.GetPrimaryKeyValues()), properties.TupleKeyUnique,
 	)
-	if shape.UnsupportedKnownNaN || shape.ProvenRowMultiplicity.IsUnknown() {
+	if multiplicity.IsUnknown() {
 		return 0, false
 	}
-	return float64(shape.ProvenRowMultiplicity.Value()), true
+	return float64(multiplicity.Value()), true
 }
 
 // indexProvableMaxCard is the logical-memo walk's plan-local cardinality
-// policy: a stamped unique index with every key column equality-bound is at
-// most one row. The concrete walk additionally resolves metadata from its
+// policy: a stamped unique index with every key column equality-bound gets the
+// shared physical multiplicity when it is provable (normally one, but not for
+// signed-zero Cartesian probes or nullable NULL binds). The concrete walk additionally resolves metadata from its
 // PlanContext; keeping this plan-local form here preserves the established
 // logical-fallback comparison when no concrete root exists.
 func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
 	if p == nil || !p.IsUnique() {
 		return 0, false
 	}
-	numBound := 0
-	allEquality := true
-	for _, cr := range p.GetScanComparisons() {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
-		}
-	}
-	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) {
-		shape := properties.PhysicalEqualityShapeForComparisons(
-			p.GetScanComparisons(), p.GetKeyComponentTypes(), true,
-		)
-		if !shape.UnsupportedKnownNaN && !shape.ProvenRowMultiplicity.IsUnknown() {
-			return float64(shape.ProvenRowMultiplicity.Value()), true
-		}
+	multiplicity := properties.ProvenFullEqualityMultiplicity(
+		p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+		properties.SecondaryUniqueNullsDistinct,
+	)
+	if !multiplicity.IsUnknown() {
+		return float64(multiplicity.Value()), true
 	}
 	return 0, false
 }
@@ -1613,28 +1605,28 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		// Primary-key scan: 1 row ONLY on a PROVABLE full-PK equality bind
+		// Primary-key scan: use an exact finite multiplicity only on a
+		// PROVABLE full-PK equality bind
 		// (RFC-186 §2B, RFC-190.3). The plan's stamped PK arity is
 		// authoritative; a single-record-type PlanContext is only a fallback
 		// for older/hand-built plans. Unknown coverage fails closed instead of
 		// treating an all-equality prefix as a point probe.
-		fullBind, provable := pkFullyEqualityBound(pl, ctx)
-		return scanLikeCost(
-			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), pl.GetRecordTypes(),
-			stats, fullBind && provable,
-		)
+		spec, ok := scanLikeCostSpecForPlan(pl, ctx)
+		if !ok {
+			return properties.Cost{}
+		}
+		return scanLikeCostFromSpec(spec, stats)
 	case *plans.RecordQueryIndexPlan:
-		// Secondary index: a full-equality bind is a single row only if the index is
-		// UNIQUE. Resolve uniqueness from PlanContext when available;
+		// Secondary index: a full-equality bind has a finite physical
+		// multiplicity only if the index is UNIQUE and every component proof is
+		// known. Resolve uniqueness from PlanContext when available;
 		// a nil/empty ctx falls back to non-unique (conservative bucket estimate) so
 		// a non-unique equality (`status = ?`) is never mispriced as a point probe.
-		columns, unique := indexMetadata(pl, ctx)
-		fullBindUnique := unique && len(columns) > 0 &&
-			properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), len(columns))
-		return scanLikeCost(
-			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), pl.GetRecordTypes(),
-			stats, fullBindUnique,
-		)
+		spec, ok := scanLikeCostSpecForPlan(pl, ctx)
+		if !ok {
+			return properties.Cost{}
+		}
+		return scanLikeCostFromSpec(spec, stats)
 	case *plans.RecordQueryFlatMapPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
@@ -1651,7 +1643,14 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// charged CPU for scanning the larger, disproven row count.
 		innerCost := child[1]
 		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
-			if corrected, applied := fkChainCappedInnerCost(child[0], innerCost, cap); applied {
+			fixedCPU, derived := fkChainInnerFixedCPU(pl.GetInner(), ctx)
+			if !derived {
+				// Preserve all CPU when a future identity-preserving inner shape
+				// reaches the cap before its fixed/variable decomposition is taught
+				// here. The proven cardinality bound remains independently useful.
+				fixedCPU = innerCost.CPU
+			}
+			if corrected, applied := fkChainCappedInnerCost(child[0], innerCost, cap, fixedCPU); applied {
 				innerCost = corrected
 			}
 		}
@@ -1668,7 +1667,9 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// depending on which cost path evaluated it.
 		uniqueKeyConjuncts, _ := plans.NestedLoopJoinUniqueKeyConjuncts(pl)
 		return properties.NestedLoopJoinCost(
-			child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()), uniqueKeyConjuncts)
+			child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()), uniqueKeyConjuncts,
+			pl.GetJoinType() == plans.JoinLeftOuter,
+		)
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
@@ -1862,37 +1863,183 @@ func warnUnclassifiedPlanType(
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
-// recursion (provably-unique full-equality bind → 1 row; else table cardinality ×
+// recursion (provably-unique full-equality bind → exact physical multiplicity;
+// else table cardinality ×
 // per-comparison selectivity × the physical-wrapper discount). The scan/index
 // WRAPPER HintCost is metadata-aware (unique/covering) for the memo cost framework;
 // the join-ordering cost deliberately uses selectivity-only leaf cost so it is
 // consistent without PlanContext (RFC-069).
 //
-// fullBindUnique gates the 1-row shortcut: a fully-equality-bound access yields a
-// single row ONLY when the access is provably unique. A primary-key scan with every
-// PK column bound is unique (pass true); a secondary INDEX scan may be non-unique
+// uniqueKeyColumnCount gates the multiplicity shortcut: a fully equality-bound
+// access is bounded only when the access is provably unique and every equality
+// component has a known physical multiplicity. A primary-key scan with every
+// PK column bound is unique; a secondary INDEX scan may be non-unique
 // (pass false) — `status = ?` binds the whole index key but selects a large bucket,
 // and costing that as a point probe would let join ordering drive off a big bucket as
 // if it were one row. Without PlanContext we cannot prove a secondary
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 //
-// The 1-row shortcut's CPU is FetchCPU, not ScanCPU: a full-PK/full-unique-index
-// equality bind returns EXACTLY one row via ONE isolated GetRange call (proven
+// The first seek's CPU is FetchCPU, not ScanCPU: an ordinary singleton
+// full-PK/full-unique-index equality bind uses ONE isolated GetRange call (proven
 // against the executor — key_value_cursor.go's initIterator, flat_map_cursor.go's
 // unpipelined per-outer-row ExecutePlan — see FetchCPU's doc comment for the full
 // trace). ScanCPU is the AMORTIZED per-row rate for a range read that streams back
-// MANY rows in one call; a point probe streams back exactly one, so there is
-// nothing to amortize over — it is the same isolated round trip a Fetch pays,
-// priced at the same rate.
+// MANY rows in one call. A signed-zero Cartesian set adds explicit range seeks
+// and marginal row cost through the shared shape; it is never mispriced as a
+// singleton point probe.
+// scanLikeCostSpec is the complete leaf classification shared by the ordinary
+// concrete-cost walk and the FK-cap fixed-CPU decomposition. Keeping primary-
+// key coverage, secondary-index uniqueness, physical equality shape, and
+// uniqueness semantics in one value prevents the cap from assigning a
+// different startup/row split than the leaf formula it is correcting.
+type scanLikeCostSpec struct {
+	comparisons          []*predicates.ComparisonRange
+	physicalTypes        []values.Type
+	recordTypes          []string
+	uniqueKeyColumnCount int
+	uniquenessSemantics  properties.KeyUniquenessSemantics
+}
+
+func scanLikeCostSpecForPlan(p plans.RecordQueryPlan, ctx PlanContext) (scanLikeCostSpec, bool) {
+	switch pl := p.(type) {
+	case *plans.RecordQueryScanPlan:
+		if pl == nil {
+			return scanLikeCostSpec{}, false
+		}
+		fullBind, provable := pkFullyEqualityBound(pl, ctx)
+		pkColumnCount := len(pl.GetPrimaryKeyValues())
+		if pkColumnCount == 0 && ctx != nil && len(pl.GetRecordTypes()) == 1 {
+			pkColumnCount = len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0]))
+		}
+		if !fullBind || !provable {
+			pkColumnCount = 0
+		}
+		return scanLikeCostSpec{
+			comparisons:          pl.GetScanComparisons(),
+			physicalTypes:        pl.GetKeyComponentTypes(),
+			recordTypes:          pl.GetRecordTypes(),
+			uniqueKeyColumnCount: pkColumnCount,
+			uniquenessSemantics:  properties.TupleKeyUnique,
+		}, true
+	case *plans.RecordQueryIndexPlan:
+		if pl == nil {
+			return scanLikeCostSpec{}, false
+		}
+		columns, unique := indexMetadata(pl, ctx)
+		uniqueKeyColumnCount := 0
+		if unique {
+			uniqueKeyColumnCount = len(columns)
+		}
+		return scanLikeCostSpec{
+			comparisons:          pl.GetScanComparisons(),
+			physicalTypes:        pl.GetKeyComponentTypes(),
+			recordTypes:          pl.GetRecordTypes(),
+			uniqueKeyColumnCount: uniqueKeyColumnCount,
+			uniquenessSemantics:  properties.SecondaryUniqueNullsDistinct,
+		}, true
+	default:
+		return scanLikeCostSpec{}, false
+	}
+}
+
+func scanLikeCostFromSpec(spec scanLikeCostSpec, stats properties.StatisticsProvider) properties.Cost {
+	return scanLikeCost(
+		spec.comparisons,
+		spec.physicalTypes,
+		spec.recordTypes,
+		stats,
+		spec.uniqueKeyColumnCount,
+		spec.uniquenessSemantics,
+	)
+}
+
+// fkChainInnerFixedCPU returns the part of one inner execution's CPU that is
+// independent of how many rows that execution returns. innerFullyBindsThread
+// admits exactly Scan/Index through Fetch and TypeFilter, so this recursion is
+// exhaustive for every shape on which fkChainCardinalityCap can currently
+// fire. Unknown future wrappers fail closed; the caller then preserves all CPU.
+func fkChainInnerFixedCPU(p plans.RecordQueryPlan, ctx PlanContext) (float64, bool) {
+	if spec, ok := scanLikeCostSpecForPlan(p, ctx); ok {
+		return scanLikeFixedPerExecutionCPU(spec)
+	}
+
+	var children []plans.RecordQueryPlan
+	switch pl := p.(type) {
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		if pl == nil {
+			return 0, false
+		}
+		children = pl.GetChildren()
+	case *plans.RecordQueryTypeFilterPlan:
+		if pl == nil {
+			return 0, false
+		}
+		children = pl.GetChildren()
+	default:
+		return 0, false
+	}
+	if len(children) != 1 {
+		return 0, false
+	}
+	fixed, ok := fkChainInnerFixedCPU(children[0], ctx)
+	if !ok {
+		return 0, false
+	}
+	// FetchCPU and TypeFilterCPU are charged once per child row by their
+	// formulas, so only the child's fixed intercept survives as fixed work.
+	return properties.SaturatingHeuristicMultiply(fixed, properties.PhysicalWrapperCostMultiplier), true
+}
+
+func scanLikeFixedPerExecutionCPU(spec scanLikeCostSpec) (float64, bool) {
+	shape := properties.PhysicalEqualityShapeForComparisons(
+		spec.comparisons, spec.physicalTypes, true,
+	)
+	if shape.UnsupportedKnownNaN {
+		return 0, false
+	}
+	multiplicityBound := properties.ProvenFullEqualityMultiplicity(
+		spec.comparisons,
+		spec.physicalTypes,
+		spec.uniqueKeyColumnCount,
+		spec.uniquenessSemantics,
+	)
+	if spec.uniqueKeyColumnCount > 0 && !multiplicityBound.IsUnknown() {
+		if multiplicityBound.Value() == 0 {
+			// scanLikeCost's unsatisfiable/zero-multiplicity path still opens
+			// one range and charges precisely this fixed setup.
+			return properties.PhysicalRangeSeekCost, true
+		}
+		return properties.SaturatingHeuristicAdd(
+			properties.FetchCPU,
+			additionalPhysicalRangeSeekCPU(shape),
+		), true
+	}
+	if shape.Unsatisfiable {
+		return properties.PhysicalRangeSeekCost, true
+	}
+	return additionalPhysicalRangeSeekCPU(shape), true
+}
+
+func additionalPhysicalRangeSeekCPU(shape properties.PhysicalEqualityShape) float64 {
+	if shape.SuccessfulSeekUpperBound <= 1 {
+		return 0
+	}
+	return properties.SaturatingHeuristicMultiply(
+		float64(shape.SuccessfulSeekUpperBound-1),
+		properties.PhysicalRangeSeekCost,
+	)
+}
+
 func scanLikeCost(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,
 	recordTypes []string,
 	stats properties.StatisticsProvider,
-	fullBindUnique bool,
+	uniqueKeyColumnCount int,
+	uniquenessSemantics properties.KeyUniquenessSemantics,
 ) properties.Cost {
-	sel, numBound, allEquality := properties.BoundSelectivity(comps)
+	sel, _, _ := properties.BoundSelectivity(comps)
 	shape := properties.PhysicalEqualityShapeForComparisons(comps, physicalTypes, true)
 	if shape.UnsupportedKnownNaN {
 		return properties.Cost{
@@ -1900,9 +2047,11 @@ func scanLikeCost(
 			CPU:         properties.MaxFiniteHeuristic,
 		}
 	}
-	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) &&
-		!shape.ProvenRowMultiplicity.IsUnknown() {
-		multiplicity := shape.ProvenRowMultiplicity.Value()
+	multiplicityBound := properties.ProvenFullEqualityMultiplicity(
+		comps, physicalTypes, uniqueKeyColumnCount, uniquenessSemantics,
+	)
+	if uniqueKeyColumnCount > 0 && !multiplicityBound.IsUnknown() {
+		multiplicity := multiplicityBound.Value()
 		if multiplicity == 0 {
 			return properties.Cost{CPU: properties.PhysicalRangeSeekCost}
 		}
@@ -1950,10 +2099,7 @@ func addRangeSetSeekCost(
 	if shape.SuccessfulSeekUpperBound <= 1 {
 		return base
 	}
-	extra := properties.SaturatingHeuristicMultiply(
-		float64(shape.SuccessfulSeekUpperBound-1), properties.PhysicalRangeSeekCost,
-	)
-	base.CPU = properties.SaturatingHeuristicAdd(base.CPU, extra)
+	base.CPU = properties.SaturatingHeuristicAdd(base.CPU, additionalPhysicalRangeSeekCPU(shape))
 	return base
 }
 
@@ -2386,10 +2532,18 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	// source" — that is this row, so it qualifies; a QOV rooted at any OTHER
 	// quantifier is an outer reference and does not.
 	innerAlias := pl.GetInnerAlias()
-	eqColumns := make(map[values.ColumnIdentity]struct{})
+	eqColumns := make(map[values.ColumnIdentity][]predicates.Comparison)
 	for _, pred := range pl.GetPredicates() {
 		cp, ok := pred.(*predicates.ComparisonPredicate)
 		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+			continue
+		}
+		// The opposite side must be invariant over this filter's input row.
+		// `id = ?` and `id = outer.id` bind one PK value for the whole scan;
+		// `id = other_column` does not. Correlation membership alone cannot
+		// distinguish them because a childless FieldValue intentionally carries
+		// the zero correlation while still reading the current row.
+		if !residualComparandIsRowInvariant(cp.Comparison.Operand, innerAlias) {
 			continue
 		}
 		fv, ok := cp.Operand.(*values.FieldValue)
@@ -2403,20 +2557,140 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 		if !id.Correlation.IsZero() && id.Correlation != innerAlias {
 			continue
 		}
-		eqColumns[id.WithCorrelation(values.CorrelationIdentifier{})] = struct{}{}
+		key := id.WithCorrelation(values.CorrelationIdentifier{})
+		eqColumns[key] = append(eqColumns[key], cp.Comparison)
 	}
-	for _, pk := range pkCols {
+	physicalTypes, typesAligned := residualPrimaryKeyPhysicalTypes(scan, len(pkCols))
+	if !typesAligned {
+		return false
+	}
+	for i, pk := range pkCols {
 		// The metadata name dies here (Java's FieldValue.resolveFieldPath,
 		// FieldValue.java:270-298); downstream only the ordinal is compared.
 		want, ok := values.OrdinalOfNameIn(layout, pk)
 		if !ok {
 			return false
 		}
-		if _, ok := eqColumns[want]; !ok {
+		comparisons := eqColumns[want]
+		if len(comparisons) == 0 {
+			return false
+		}
+		physicalType := values.Type(values.UnknownType)
+		if i < len(physicalTypes) && physicalTypes[i] != nil {
+			physicalType = physicalTypes[i]
+		}
+		atMostOne := false
+		for _, comparison := range comparisons {
+			merged := predicates.EmptyComparisonRange().Merge(&comparison)
+			if merged.Ok && properties.LogicalEqualityAtMostOnePhysicalKey(
+				merged.Range, physicalType,
+			) {
+				atMostOne = true
+				break
+			}
+		}
+		if !atMostOne {
 			return false
 		}
 	}
 	return true
+}
+
+// residualComparandIsRowInvariant proves that v has one value for the whole
+// residual filter execution, rather than being recomputed from each scanned
+// row. Constants and parameters are invariant. A value rooted in an outer
+// quantifier is invariant as long as its tree neither mentions the filter's
+// own quantifier nor contains a childless FieldValue (the legacy childless
+// shape implicitly reads the current frontier row).
+//
+// Unknown childless Value kinds fail closed. For composite Values the Value
+// contract is functional over Children(), so recursively invariant children
+// are sufficient; this mirrors IsConstantValue's conservative structural
+// walk while admitting parameters and outer correlations as runtime constants.
+func residualComparandIsRowInvariant(
+	v values.Value,
+	innerAlias values.CorrelationIdentifier,
+) bool {
+	if v == nil {
+		return false
+	}
+	if _, dependsOnInner := values.GetCorrelatedToOfValue(v)[innerAlias]; dependsOnInner {
+		return false
+	}
+	if values.IsConstantValue(v) {
+		return true
+	}
+	switch value := v.(type) {
+	case *values.ParameterValue, *values.ParameterObjectValue:
+		return true
+	case *values.FieldValue:
+		if value.Child == nil {
+			return false
+		}
+	case *values.QuantifiedObjectValue, *values.QuantifiedRecordValue,
+		*values.ObjectValue, *values.ScalarSubqueryValue,
+		*values.ConstantObjectValue, *values.UnmatchedAggregateValue:
+		// These are correlation-bearing leaves. The inner alias was rejected
+		// above, so they name a value bound outside this filter execution.
+		return true
+	}
+	children := v.Children()
+	if len(children) == 0 {
+		return false
+	}
+	for _, child := range children {
+		if !residualComparandIsRowInvariant(child, innerAlias) {
+			return false
+		}
+	}
+	return true
+}
+
+// residualPrimaryKeyPhysicalTypes resolves a scan's authoritative physical PK
+// types into the PlanContext's visible PK-coordinate order. The scan's
+// structural PK Values and the context's PK columns are translations of the
+// same primary-key expression, so their ordered coordinates are the identity;
+// Field is only a display spelling and is deliberately never consulted. A plan
+// may carry a leading structural RecordTypeValue prefix while its type vector
+// either includes or omits that constant coordinate; alignPKTypesByPosition
+// recognizes only those two explicit topologies.
+func residualPrimaryKeyPhysicalTypes(
+	scan *plans.RecordQueryScanPlan,
+	visiblePKColumnCount int,
+) ([]values.Type, bool) {
+	if scan == nil || visiblePKColumnCount <= 0 {
+		return nil, false
+	}
+	physicalTypes := scan.GetKeyComponentTypes()
+	pkValues := scan.GetPrimaryKeyValues()
+	if len(pkValues) == 0 {
+		if len(physicalTypes) != visiblePKColumnCount {
+			return nil, false
+		}
+		return append([]values.Type(nil), physicalTypes...), true
+	}
+	aligned, ok := alignPKTypesByPosition(pkValues, physicalTypes)
+	if !ok {
+		return nil, false
+	}
+	result := make([]values.Type, 0, visiblePKColumnCount)
+	for i, component := range pkValues {
+		if _, isRecordType := component.(*values.RecordTypeValue); isRecordType {
+			if i != 0 {
+				return nil, false
+			}
+			continue
+		}
+		field, isField := component.(*values.FieldValue)
+		if !isField || field.Child != nil {
+			return nil, false
+		}
+		result = append(result, aligned[i])
+	}
+	if len(result) != visiblePKColumnCount {
+		return nil, false
+	}
+	return result, true
 }
 
 // indexMetadata resolves an index plan's key-column names and uniqueness from the
@@ -2435,10 +2709,10 @@ func indexMetadata(pl *plans.RecordQueryIndexPlan, ctx PlanContext) ([]string, b
 	return nil, false
 }
 
-// scanPlanProvableMaxCard returns a primary scan's PROVABLE max cardinality (1) and
-// whether it is known. Java's CardinalitiesProperty bounds a scan at 1 ONLY when every
-// primary-key column is equality-bound (a point lookup); a range, partial bind, or full
-// scan is unknown. When the PK column count is resolvable via ctx, require the bound
+// scanPlanProvableMaxCard returns a primary scan's PROVABLE max cardinality and
+// whether it is known. Full equality normally proves one, but signed-zero
+// components can prove a larger checked multiplicity; a range, partial bind,
+// or dynamic float scan is unknown. When the PK column count is resolvable via ctx, require the bound
 // columns to cover the FULL primary key (a partial equality prefix of a composite PK is
 // still a range, hence unbounded).
 func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (float64, bool) {
@@ -2495,23 +2769,12 @@ func indexPlanProvableMaxCard(pl *plans.RecordQueryIndexPlan, cols []string, uni
 	if !unique || len(cols) == 0 {
 		return 0, false
 	}
-	numBound := 0
-	allEquality := true
-	for _, cr := range pl.GetScanComparisons() {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
-		}
-	}
-	if numBound > 0 && allEquality && numBound == len(cols) {
-		shape := properties.PhysicalEqualityShapeForComparisons(
-			pl.GetScanComparisons(), pl.GetKeyComponentTypes(), true,
-		)
-		if !shape.UnsupportedKnownNaN && !shape.ProvenRowMultiplicity.IsUnknown() {
-			return float64(shape.ProvenRowMultiplicity.Value()), true
-		}
+	multiplicity := properties.ProvenFullEqualityMultiplicity(
+		pl.GetScanComparisons(), pl.GetKeyComponentTypes(), len(cols),
+		properties.SecondaryUniqueNullsDistinct,
+	)
+	if !multiplicity.IsUnknown() {
+		return float64(multiplicity.Value()), true
 	}
 	return 0, false
 }

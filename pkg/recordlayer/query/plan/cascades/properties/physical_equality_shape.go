@@ -53,6 +53,95 @@ type PhysicalEqualityShape struct {
 	ProvenRowMultiplicity Cardinality
 }
 
+// KeyUniquenessSemantics states which storage invariant a full equality bind
+// may rely on. Primary keys are unique over the complete packed tuple.
+// Secondary UNIQUE indexes use SQL's default NULLS DISTINCT semantics: the
+// uniqueness check is skipped when any indexed component is NULL, so one NULL
+// prefix can have arbitrarily many entries distinguished by their appended PK.
+type KeyUniquenessSemantics uint8
+
+const (
+	TupleKeyUnique KeyUniquenessSemantics = iota
+	SecondaryUniqueNullsDistinct
+)
+
+// TupleKeyUniquenessMatchesLogicalEquality reports whether uniqueness of a raw
+// FDB tuple key implies uniqueness under the engine's logical row-equality
+// relation. The type vector must be authoritative and exactly aligned with the
+// whole key. FLOAT/DOUBLE fail because FDB preserves distinct raw NaN
+// sign/payload encodings while logical DISTINCT canonicalizes every NaN. (The
+// logical row comparator does distinguish signed zero; predicate `=` is the
+// operation that equates the zero signs.) Nullable components are safe here:
+// a primary tuple key can contain only one raw nil value at a coordinate.
+func TupleKeyUniquenessMatchesLogicalEquality(
+	physicalTypes []values.Type,
+	keyColumnCount int,
+) bool {
+	if keyColumnCount <= 0 || len(physicalTypes) != keyColumnCount {
+		return false
+	}
+	for i := 0; i < keyColumnCount; i++ {
+		if !ValueIdentityMatchesLogicalEquality(physicalTypes[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValueIdentityMatchesLogicalEquality reports whether the runtime's lossless
+// physical identity for a value agrees with SQL row equality. It is recursive
+// because ARRAY/STRUCT group keys and DISTINCT rows can contain floating values
+// below the top level. Unknown/ANY types fail closed: a visible literal or Go
+// carrier cannot substitute for missing authoritative metadata.
+func ValueIdentityMatchesLogicalEquality(typ values.Type) bool {
+	if typ == nil {
+		return false
+	}
+	switch typed := typ.(type) {
+	case *values.RecordType:
+		for _, field := range typed.Fields {
+			if !ValueIdentityMatchesLogicalEquality(field.FieldType) {
+				return false
+			}
+		}
+		return true
+	case *values.ArrayType:
+		return typed.ElementType != nil && ValueIdentityMatchesLogicalEquality(typed.ElementType)
+	case *values.RelationType:
+		// Relations are streams, not scalar key coordinates.
+		return false
+	}
+	switch typ.Code() {
+	case values.TypeCodeUnknown, values.TypeCodeAny,
+		values.TypeCodeFloat, values.TypeCodeDouble,
+		values.TypeCodeRecord, values.TypeCodeArray, values.TypeCodeRelation:
+		return false
+	default:
+		return true
+	}
+}
+
+// SecondaryUniqueKeyGloballyEnforced reports whether a secondary UNIQUE
+// declaration is a true uniqueness invariant over every stored index entry.
+// Under the engine's NULLS DISTINCT policy, that additionally requires
+// authoritative NOT NULL metadata for every indexed key component.
+// This stronger global proof is used for DISTINCT elimination and
+// strict-ordering claims; point probes use ProvenFullEqualityMultiplicity,
+// which can still prove individual supported probes on a nullable/floating
+// unique index.
+func SecondaryUniqueKeyGloballyEnforced(physicalTypes []values.Type, keyColumnCount int) bool {
+	if !TupleKeyUniquenessMatchesLogicalEquality(physicalTypes, keyColumnCount) {
+		return false
+	}
+	for i := 0; i < keyColumnCount; i++ {
+		physicalType := physicalEqualityTypeAt(physicalTypes, i)
+		if physicalType.IsNullable() {
+			return false
+		}
+	}
+	return true
+}
+
 // PhysicalEqualityShapeForComparisons classifies the contiguous leading
 // equality prefix using authoritative physical key types. A known physical
 // type wins over the RHS declaration; Unknown stays unknown. The comparand's
@@ -112,6 +201,79 @@ func PhysicalEqualityShapeForComparisons(
 		shape.SuccessfulSeekUpperBoundExact = true
 	}
 	return shape
+}
+
+// ProvenFullEqualityMultiplicity returns the finite physical-row upper bound
+// established by a complete equality bind under the stated uniqueness
+// semantics. It is the shared cardinality authority for primary-key and
+// secondary-UNIQUE probes; ordering deliberately continues to use
+// PhysicalEqualityShape because one NULL prefix is physically fixed even when
+// it is not unique.
+//
+// For a NULLS DISTINCT secondary index, ordinary `= NULL` remains safely empty.
+// IS NULL, static `IS NOT DISTINCT FROM NULL`, and a nullable dynamic null-safe
+// equality decline when the physical key can contain NULL. A NOT NULL target
+// makes the static NULL-only forms empty and keeps a dynamic null-safe equality
+// safe: NULL yields no rows, while every non-NULL value is uniqueness-checked.
+func ProvenFullEqualityMultiplicity(
+	comps []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+	keyColumnCount int,
+	semantics KeyUniquenessSemantics,
+) Cardinality {
+	if !EqualityBoundsCoverKey(comps, keyColumnCount) {
+		return UnknownCardinality()
+	}
+	shape := PhysicalEqualityShapeForComparisons(comps, physicalTypes, true)
+	if shape.UnsupportedKnownNaN || shape.ProvenRowMultiplicity.IsUnknown() {
+		return UnknownCardinality()
+	}
+	if shape.Unsatisfiable {
+		return OfCardinality(0)
+	}
+	if semantics != SecondaryUniqueNullsDistinct {
+		return shape.ProvenRowMultiplicity
+	}
+	if len(physicalTypes) < keyColumnCount || len(comps) < keyColumnCount {
+		return UnknownCardinality()
+	}
+	for i := 0; i < keyColumnCount; i++ {
+		physicalType := physicalEqualityTypeAt(physicalTypes, i)
+		if physicalEqualityTypeUnknown(physicalType) {
+			return UnknownCardinality()
+		}
+		comparison := comps[i].GetEqualityComparison()
+		if comparison == nil {
+			return UnknownCardinality()
+		}
+		switch comparison.Type {
+		case predicates.ComparisonIsNull:
+			if physicalType.IsNullable() {
+				return UnknownCardinality()
+			}
+			return OfCardinality(0)
+		case predicates.ComparisonNotDistinctFrom:
+			if comparison.Operand == nil {
+				return UnknownCardinality()
+			}
+			constant, known := values.EvaluateConstant(comparison.Operand)
+			if known {
+				if constant == nil {
+					if physicalType.IsNullable() {
+						return UnknownCardinality()
+					}
+					return OfCardinality(0)
+				}
+				continue
+			}
+			operandType := comparison.Operand.Type()
+			if physicalType.IsNullable() &&
+				(physicalEqualityTypeUnknown(operandType) || operandType.IsNullable()) {
+				return UnknownCardinality()
+			}
+		}
+	}
+	return shape.ProvenRowMultiplicity
 }
 
 // PhysicalEqualityShapeForComponent classifies one ComparisonRange. The
@@ -243,6 +405,174 @@ func PhysicalEqualityShapeForComponent(
 		SuccessfulSeekUpperBound: 1,
 		ProvenRowMultiplicity:    OfCardinality(1),
 	}
+}
+
+// LogicalEqualityAtMostOnePhysicalKey reports whether evaluating cr as a
+// row-level logical equality over a UNIQUE physical key can match at most one
+// stored key. This is intentionally a different proof from
+// PhysicalEqualityShapeForComponent.
+//
+// A scan range has an exact-or-loud binder: for example, a FLOAT/DOUBLE
+// comparand over an integer key is rejected at runtime when its cmpAny
+// equality class contains several integers. A residual filter or materialized
+// nested-loop join has no such binder. It evaluates cmpAny against every row,
+// so raw physical uniqueness is useful only when the complete logical
+// equality class is provably a singleton (or empty).
+//
+// The two important non-singleton classes are:
+//   - both signed-zero encodings and every raw NaN encoding in a physical
+//     FLOAT/DOUBLE key; and
+//   - adjacent physical integers that round to one FLOAT/DOUBLE comparand at
+//     the binary64 precision cliff.
+//
+// Unknown physical metadata and dynamic shapes that can reach either class
+// fail closed. A constant non-zero, non-NaN floating equality remains useful:
+// at most one physical FLOAT/DOUBLE encoding has that logical value.
+func LogicalEqualityAtMostOnePhysicalKey(
+	cr *predicates.ComparisonRange,
+	physicalType values.Type,
+) bool {
+	if cr == nil || !cr.IsEquality() {
+		return false
+	}
+	comparison := cr.GetEqualityComparison()
+	if comparison == nil {
+		return false
+	}
+	if comparison.Type == predicates.ComparisonIsNull {
+		return true
+	}
+	if comparison.Type != predicates.ComparisonEquals &&
+		comparison.Type != predicates.ComparisonNotDistinctFrom {
+		return false
+	}
+	if comparison.Operand == nil {
+		return false
+	}
+
+	constant, isConstant := values.EvaluateConstant(comparison.Operand)
+	if isConstant && constant == nil {
+		// Ordinary equality is unsatisfiable and null-safe equality selects the
+		// one NULL tuple key. Neither needs a non-null carrier decision.
+		return true
+	}
+	if physicalEqualityTypeUnknown(physicalType) {
+		return false
+	}
+
+	physicalCode := physicalType.Code()
+	if isConstant {
+		floating, isFloating, isNumeric := values.ToFloat64(constant)
+		switch physicalCode {
+		case values.TypeCodeFloat, values.TypeCodeDouble:
+			if !isNumeric {
+				return false
+			}
+			// Every finite non-zero value has at most one physical float
+			// representation in a fixed width. Both zero signs compare equal;
+			// every NaN sign/payload compares equal under the logical total order.
+			return floating != 0 && !math.IsNaN(floating)
+		case values.TypeCodeInt, values.TypeCodeLong:
+			if !isNumeric {
+				return false
+			}
+			if !isFloating {
+				return true
+			}
+			return integerEqualityClassAtMostOne(floating)
+		default:
+			operandType := comparison.Operand.Type()
+			return operandType != nil &&
+				operandType.Code() != values.TypeCodeUnknown &&
+				operandType.Code() == physicalCode
+		}
+	}
+
+	operandType := comparison.Operand.Type()
+	if operandType == nil || operandType.Code() == values.TypeCodeUnknown {
+		return false
+	}
+	operandCode := operandType.Code()
+	switch physicalCode {
+	case values.TypeCodeFloat, values.TypeCodeDouble:
+		// Every numeric runtime domain contains zero; a physical floating key
+		// can contain both signs. Non-numeric declarations are not used as a
+		// type-mismatch proof here: a malformed hand-built plan fails closed.
+		return false
+	case values.TypeCodeInt, values.TypeCodeLong:
+		// Pure integer comparison is exact. A dynamic floating comparand can
+		// acquire a plural integer inverse at runtime.
+		return operandCode == values.TypeCodeInt || operandCode == values.TypeCodeLong
+	default:
+		return operandCode == physicalCode
+	}
+}
+
+// LogicalEqualityProjectionInjective reports whether distinct values of a
+// source key are guaranteed to induce disjoint equality probes in the stated
+// physical target domain. It is stronger than
+// LogicalEqualityAtMostOnePhysicalKey: the latter bounds one probe's result;
+// this one proves that the results of many correlated probes cannot overlap.
+//
+// Floating source keys always decline because distinct physical signed-zero
+// and NaN encodings are already one logical equality value. Integer-to-FLOAT
+// narrowing and LONG-to-DOUBLE conversion also decline because distinct
+// integers can round to one target value. INT-to-DOUBLE is injective over the
+// INT/uint32 domain; integer tuple carriers are mutually exact.
+func LogicalEqualityProjectionInjective(sourceType, physicalTargetType values.Type) bool {
+	if physicalEqualityTypeUnknown(sourceType) || physicalEqualityTypeUnknown(physicalTargetType) {
+		return false
+	}
+	sourceCode := sourceType.Code()
+	targetCode := physicalTargetType.Code()
+	if sourceCode == values.TypeCodeFloat || sourceCode == values.TypeCodeDouble {
+		return false
+	}
+	if targetCode == values.TypeCodeInt || targetCode == values.TypeCodeLong {
+		return sourceCode == values.TypeCodeInt || sourceCode == values.TypeCodeLong
+	}
+	if targetCode == values.TypeCodeFloat || targetCode == values.TypeCodeDouble {
+		return sourceCode == values.TypeCodeInt && targetCode == values.TypeCodeDouble
+	}
+	return sourceCode == targetCode
+}
+
+// integerEqualityClassAtMostOne is the exact inverse-size test for cmpAny's
+// mixed integer/float equality over the full signed tuple-integer domain. The
+// signed-to-unsigned rank transform lets the binary search cover MinInt64
+// through MaxInt64 without overflowing a midpoint. Once the first equal
+// integer is known, inspecting its successor is sufficient because the
+// integer-to-float64 mapping is monotone.
+func integerEqualityClassAtMostOne(floating float64) bool {
+	const signBit = uint64(1) << 63
+	domainLow, domainHigh := int64(math.MinInt64), int64(math.MaxInt64)
+	lowRank := uint64(domainLow) ^ signBit
+	highRank := uint64(domainHigh) ^ signBit
+	predicate := func(integer int64) bool {
+		return compareIntegerToLogicalFloat(integer, floating) >= 0
+	}
+	for lowRank < highRank {
+		middleRank := lowRank + (highRank-lowRank)/2
+		middle := int64(middleRank ^ signBit)
+		if predicate(middle) {
+			highRank = middleRank
+		} else {
+			lowRank = middleRank + 1
+		}
+	}
+	first := int64(lowRank ^ signBit)
+	if !predicate(first) || compareIntegerToLogicalFloat(first, floating) != 0 {
+		return true // empty equality class
+	}
+	return first == math.MaxInt64 || compareIntegerToLogicalFloat(first+1, floating) != 0
+}
+
+func compareIntegerToLogicalFloat(integer int64, floating float64) int {
+	integerAsFloat := float64(integer)
+	if integerAsFloat == floating {
+		return 0
+	}
+	return values.CompareFloat64(integerAsFloat, floating)
 }
 
 // PhysicalKeyOrderingCongruent reports whether FDB tuple order at one key

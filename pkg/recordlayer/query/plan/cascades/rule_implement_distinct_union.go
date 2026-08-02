@@ -178,6 +178,10 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	if len(combo) < 2 {
 		return
 	}
+	commonPrimaryKey := getCommonPK(combo)
+	if len(commonPrimaryKey) == 0 {
+		return
+	}
 
 	satisfyingKeys := mergedOrdering.EnumerateSatisfyingComparisonKeyValues(requestedOrdering)
 	for _, comparisonKeyValues := range satisfyingKeys {
@@ -212,6 +216,8 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		tieBrokenLess := lessWithHashTieBreak(call.CostModel())
 		var childPlans []plans.RecordQueryPlan
 		var newQuantifiers []expressions.Quantifier
+		commonRecordType := ""
+		haveCommonRecordType := false
 		ok := true
 		for _, partition := range combo {
 			var best expressions.RelationalExpression
@@ -237,7 +243,26 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 				ok = false
 				break
 			}
-			childPlans = append(childPlans, pp.GetRecordQueryPlan())
+			childPlan := pp.GetRecordQueryPlan()
+			recordType, identityOK := mergeDistinctStoredRecordIdentity(
+				childPlan, commonPrimaryKey,
+			)
+			if !identityOK ||
+				!mergeDistinctLegProducesDistinctRecords(childPlan) ||
+				haveCommonRecordType && recordType != commonRecordType {
+				// The comparison key is a PHYSICAL record key. It is a valid
+				// SQL UNION-DISTINCT key only while every leg emits the same full
+				// stored record for that key. Row-shaping projections/maps and
+				// different record types can emit different SQL rows with the same
+				// propagated PK. Each leg must also be internally distinct: a merge
+				// cursor holds only one head per leg, so it cannot consume two
+				// consecutive equal rows from that same leg together.
+				ok = false
+				break
+			}
+			commonRecordType = recordType
+			haveCommonRecordType = true
+			childPlans = append(childPlans, childPlan)
 			newQuantifiers = append(newQuantifiers,
 				expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)))
 		}
@@ -263,6 +288,14 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			continue
 		}
 		comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, childPlans[0].GetResultType())
+		if comparisonKeys == nil {
+			// An unresolved free-suffix tiebreak cannot be discarded: the merge
+			// front also uses this tuple for DISTINCT, so a shortened/empty key
+			// would collapse unrelated rows that tie on the requested prefix.
+			// Mirror ImplementInUnionRule and decline this physical candidate;
+			// the sort-based UNION DISTINCT alternative remains available.
+			continue
+		}
 
 		// The merge carries its leg edges directly — one live quantifier per
 		// pinned winner, no separate physical wrapper (RFC-184 W2).
@@ -270,6 +303,240 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			newQuantifiers, comparisonKeys, isReverse, true)
 		call.YieldFinalExpression(mergePlan)
 	}
+}
+
+const maxMergeDistinctIdentityDepth = 64
+
+// mergeDistinctStoredRecordIdentity proves the fact DistinctUnion needs in
+// addition to StoredRecordProperty and PrimaryKeyProperty: the plan emits the
+// complete stored record identified by commonPrimaryKey, without changing the
+// SQL row. Those two generic properties deliberately survive projections and
+// maps because their other record-level consumers need the carried base-record
+// identity. That is not sufficient for SQL row-value DISTINCT: Project(ID, 1)
+// and Project(ID, 2) carry the same ID primary key but are different rows.
+//
+// The returned string is the one base record type. The caller requires it to be
+// identical across every union leg, because primary keys are unique within a
+// record type; T/1 and U/1 are different records even when both plans expose a
+// structurally identical visible ID value.
+func mergeDistinctStoredRecordIdentity(
+	plan plans.RecordQueryPlan,
+	commonPrimaryKey []values.Value,
+) (string, bool) {
+	return mergeDistinctStoredRecordIdentityAtDepth(
+		plan, commonPrimaryKey, 0,
+	)
+}
+
+// Fetch, Projection, and Map deserve special care here. In the current Go
+// executor Fetch is a transparent pass-through (index scans already return the
+// record payload); it is not the Java restoration boundary that turns an
+// arbitrary partial row back into a full record. Projection and Map always
+// construct a new PositionalRow, even for their planner-level "identity"
+// shapes. Consequently Fetch may recurse, but no row-shaping operator below or
+// above it can participate in this proof. Bare covering indexes are rejected
+// for the same reason: their base PK need not identify the emitted index row.
+func mergeDistinctStoredRecordIdentityAtDepth(
+	plan plans.RecordQueryPlan,
+	commonPrimaryKey []values.Value,
+	depth int,
+) (string, bool) {
+	if plan == nil || len(commonPrimaryKey) == 0 || depth >= maxMergeDistinctIdentityDepth {
+		return "", false
+	}
+
+	switch p := plan.(type) {
+	case *plans.RecordQueryScanPlan:
+		return mergeDistinctLeafRecordIdentity(
+			p.GetRecordTypes(), p.GetPrimaryKeyValues(), commonPrimaryKey,
+			p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+		)
+
+	case *plans.RecordQueryIndexPlan:
+		if p.IsCovering() {
+			// A bare covering scan emits a partial/index-shaped row. The base PK
+			// identifies the record it came from, not necessarily that emitted row.
+			return "", false
+		}
+		return mergeDistinctLeafRecordIdentity(
+			p.GetRecordTypes(), p.GetCommonPrimaryKeyValues(), commonPrimaryKey,
+			p.GetPrimaryKeyComponentTypes(), len(p.GetPKColumnNames()),
+		)
+
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		if p.GetFetchIndexRecords() != plans.FetchIndexRecordsPrimaryKey {
+			return "", false
+		}
+		// The Go executor currently treats Fetch as transparent. Preserve that
+		// exact runtime contract and require its input to have already proved
+		// complete stored-row identity.
+		return mergeDistinctUnaryChildIdentity(
+			plan, commonPrimaryKey, depth+1,
+		)
+
+	case *plans.RecordQueryFilterPlan,
+		*plans.RecordQueryPredicatesFilterPlan,
+		*plans.RecordQueryTypeFilterPlan,
+		*plans.RecordQueryLimitPlan,
+		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		// These operators select/remove rows but never reshape a surviving row.
+		return mergeDistinctUnaryChildIdentity(
+			plan, commonPrimaryKey, depth+1,
+		)
+
+	case *plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryMapPlan:
+		// Both executor paths construct a new one-slot PositionalRow even when
+		// the planner classifies the value as an identity. Do not equate their
+		// carried base-record PK with the emitted SQL row.
+		return "", false
+
+	default:
+		// Joins, unions, IN operators, default-row synthesis, DML, aggregate
+		// plans, and every future row-shaping operator need their own explicit
+		// functional-dependency proof before a physical PK can dedup SQL rows.
+		return "", false
+	}
+}
+
+// mergeDistinctUnaryChildIdentity quantifies every physical member of the
+// wrapper's LIVE child reference. Looking only at GetInner's current
+// representative would let extraction relink the wrapper to an unproved member
+// after this rule removed DISTINCT. Logical members are ignored because a
+// physical parent can execute only a physical child winner; at least one such
+// member must exist.
+func mergeDistinctUnaryChildIdentity(
+	plan plans.RecordQueryPlan,
+	commonPrimaryKey []values.Value,
+	depth int,
+) (string, bool) {
+	quantifiers := plan.GetQuantifiers()
+	if len(quantifiers) != 1 {
+		return "", false
+	}
+	ref := quantifiers[0].GetRangesOver()
+	if ref == nil {
+		return "", false
+	}
+
+	recordType := ""
+	foundPhysical := false
+	for _, member := range ref.AllMembers() {
+		physical, ok := member.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		memberRecordType, proved := mergeDistinctStoredRecordIdentityAtDepth(
+			physical.GetRecordQueryPlan(), commonPrimaryKey, depth,
+		)
+		if !proved || foundPhysical && memberRecordType != recordType {
+			return "", false
+		}
+		recordType = memberRecordType
+		foundPhysical = true
+	}
+	return recordType, foundPhysical
+}
+
+func mergeDistinctLeafRecordIdentity(
+	recordTypes []string,
+	planPrimaryKey []values.Value,
+	commonPrimaryKey []values.Value,
+	physicalPrimaryKeyTypes []values.Type,
+	physicalPrimaryKeyColumnCount int,
+) (string, bool) {
+	if len(recordTypes) != 1 || recordTypes[0] == "" ||
+		!mergeDistinctPrimaryKeysEqual(planPrimaryKey, commonPrimaryKey) ||
+		!properties.TupleKeyUniquenessMatchesLogicalEquality(
+			physicalPrimaryKeyTypes, physicalPrimaryKeyColumnCount,
+		) {
+		return "", false
+	}
+	return recordTypes[0], true
+}
+
+func mergeDistinctPrimaryKeysEqual(left, right []values.Value) bool {
+	if len(left) == 0 || len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !values.ValuesStructurallyEqual(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeDistinctLegProducesDistinctRecords proves that one merge input cannot
+// repeat the same base record. The merge cursor removes equal heads from
+// different legs, but only one row from a given leg is visible at a time: a
+// second equal row in that leg is pulled on the next round and would be emitted
+// again. Fan-out index scans are the canonical source of such repeats.
+//
+// This proof is intentionally separate from mergeDistinctStoredRecordIdentity.
+// The latter says a PK identifies the emitted SQL row; this one says the leg
+// emits that row at most once. A row-DISTINCT or PK-DISTINCT wrapper establishes
+// the second fact, while still relying on the identity proof for NaN/raw-key and
+// row-shaping safety.
+func mergeDistinctLegProducesDistinctRecords(plan plans.RecordQueryPlan) bool {
+	return mergeDistinctLegProducesDistinctRecordsAtDepth(plan, 0)
+}
+
+func mergeDistinctLegProducesDistinctRecordsAtDepth(
+	plan plans.RecordQueryPlan,
+	depth int,
+) bool {
+	if plan == nil || depth >= maxMergeDistinctIdentityDepth {
+		return false
+	}
+	switch p := plan.(type) {
+	case *plans.RecordQueryScanPlan:
+		return true
+	case *plans.RecordQueryIndexPlan:
+		return p.ProducesDistinctRecords()
+	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return true
+	case *plans.RecordQueryFilterPlan,
+		*plans.RecordQueryPredicatesFilterPlan,
+		*plans.RecordQueryTypeFilterPlan,
+		*plans.RecordQueryLimitPlan,
+		*plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryMapPlan,
+		*plans.RecordQueryFetchFromPartialRecordPlan:
+		return everyMergeDistinctUnaryChildIsDistinct(plan, depth+1)
+	default:
+		return false
+	}
+}
+
+func everyMergeDistinctUnaryChildIsDistinct(
+	plan plans.RecordQueryPlan,
+	depth int,
+) bool {
+	quantifiers := plan.GetQuantifiers()
+	if len(quantifiers) != 1 {
+		return false
+	}
+	ref := quantifiers[0].GetRangesOver()
+	if ref == nil {
+		return false
+	}
+	foundPhysical := false
+	for _, member := range ref.AllMembers() {
+		physical, ok := member.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		foundPhysical = true
+		if !mergeDistinctLegProducesDistinctRecordsAtDepth(
+			physical.GetRecordQueryPlan(), depth,
+		) {
+			return false
+		}
+	}
+	return foundPhysical
 }
 
 func richOrderingEquals(a, b *properties.RichOrdering) bool {

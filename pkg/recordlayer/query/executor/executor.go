@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -82,6 +83,25 @@ type SumOverflowError struct{ Int32 bool }
 // child; a raw-key scan child consumed it as a scan position).
 type UnsupportedContinuationError struct {
 	Shape string
+}
+
+// FilteredIndexPlanError reports a physical query plan that attempts to read a
+// sparse/filtered index without carrying a predicate-implication proof. The
+// planner currently excludes every filtered index from query candidates, so a
+// plan that reaches this guard is hand-built or stale. Executing it would read
+// only the predicate-selected subset and could silently omit records.
+//
+// Low-level record-store APIs deliberately remain able to scan filtered
+// indexes for maintenance and diagnostics. This is a query-plan invariant.
+type FilteredIndexPlanError struct {
+	IndexName string
+}
+
+func (e *FilteredIndexPlanError) Error() string {
+	return fmt.Sprintf(
+		"executor: filtered index %q cannot be used by a query plan without a predicate-implication proof",
+		e.IndexName,
+	)
 }
 
 func (e *UnsupportedContinuationError) Error() string {
@@ -348,6 +368,9 @@ func executeIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
 	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
+	}
 	maintainer, err := store.GetIndexMaintainer(idx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
@@ -485,6 +508,9 @@ func executeVectorIndexScan(
 	idx := store.GetMetaData().GetIndex(p.GetIndexName())
 	if idx == nil {
 		return nil, fmt.Errorf("executor: vector index %q not found in metadata", p.GetIndexName())
+	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
 	}
 	if err := validateVectorPartitionPlan(idx, p); err != nil {
 		return nil, err
@@ -664,6 +690,29 @@ func executeVectorIndexScan(
 	}
 	result := &indexFetchCursor{inner: indexCursor, store: store}
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// requireReadableQueryIndex is the executor backstop for plans built manually
+// or raced against mutable metadata/store state. Low-level record-store index
+// APIs retain Java's READABLE_UNIQUE_PENDING scannability and sparse-index
+// scanning for online-index tooling, but a query plan may have relied on
+// uniqueness, cardinality, ordering, or complete coverage even when the leaf
+// itself looks like an ordinary scan. Therefore query-plan execution requires
+// both the one state Java admits to planning (strictly READABLE) and a complete
+// index. Filtered indexes remain rejected until physical plans carry a checked
+// predicate-implication proof.
+func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
+	state := store.GetIndexState(idx.Name)
+	if state == recordlayer.IndexStateReadable {
+		if idx.HasPredicate() {
+			return &FilteredIndexPlanError{IndexName: idx.Name}
+		}
+		return nil
+	}
+	return &recordlayer.IndexNotReadableError{
+		IndexName:    idx.Name,
+		CurrentState: state,
+	}
 }
 
 func rejectContinuationForEmptyVectorScan(continuation []byte) error {
@@ -2297,17 +2346,27 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // distinct from any string (the "\x00NULL\x00"-sentinel collision). Java dedups
 // via Set<Key.Evaluated> structured value equality; this is the Go equivalent.
 // The [16]byte→UUID arm mirrors intersectionCompKeyFunc's tuple
-// canonicalization; the composite %T:%v fallback keeps distinct concrete types
-// key-distinct. (The merge-sort union dedups via compareValues on evaluated
-// keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
-// a dedup key at all.)
+// canonicalization. Composite values use a DISTINCT-only typed recursive
+// encoding. It deliberately does not reuse the continuation encoding as-is:
+// continuations must preserve raw floating-point bits so they can reconstruct
+// the original row, while DISTINCT must canonicalize NaNs at every nesting
+// level. (The merge-sort union dedups via compareValues on evaluated keys
+// instead — Java UnionCursor's advance-all-equal — so it no longer packs a
+// dedup key at all.)
 //
 // A zero-valued FLOAT/DOUBLE slot is packed VERBATIM, sign bit and all, so
-// -0.0 and +0.0 dedup as two distinct values. That looks like it contradicts
+// -0.0 and +0.0 dedup as two distinct values. NaNs are the one normalization:
+// every payload/sign representation is replaced with one quiet NaN per width,
+// matching Java Float.equals/Double.equals (via floatToIntBits/doubleToLongBits)
+// and the in-memory total comparator, both of which make all NaNs equal. Raw
+// FDB tuple keys preserve NaN payloads, which is why a FLOAT/DOUBLE UNIQUE
+// index cannot prove logical DISTINCT even though signed-zero keys can remain
+// separate. The zero rule looks like it contradicts
 // cmpAny's IEEE `=`, and a previous revision canonicalized zero here for
-// exactly that reason. It cannot: value identity in this engine is TUPLE-KEY
-// identity, and the tuple encoding is Java's, which preserves the sign bit
-// (Java asserts the two pack distinctly and adjacently in TupleOrderingTest).
+// exactly that reason. It cannot: Java's structured value equality preserves
+// the sign bit (Float.equals/Double.equals use floatToIntBits/doubleToLongBits),
+// and the tuple encoding preserves it too (Java asserts the two zero signs pack
+// distinctly and adjacently in TupleOrderingTest).
 // Canonicalizing only this encoder made the same query return different rows
 // depending on the plan:
 //
@@ -2323,8 +2382,9 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 //     are two physical entries that Java also reads; merging them would mean
 //     either writing key bytes Java does not, or reporting a different group
 //     count than Java does from the same index.
-//   - A UNIQUE index or primary key over the column proves distinctness from
-//     those same bytes, and the planner elides DISTINCT on that proof.
+//   - A metadata key can prove logical DISTINCT only when its physical bytes
+//     are globally congruent with this value identity. FLOAT/DOUBLE keys fail
+//     that proof because raw NaN encodings remain physically distinct.
 //
 // Splitting needs no guard on any of those paths; merging needs one on each
 // and still ends in a divergence. CockroachDB merges because it normalizes
@@ -2334,7 +2394,15 @@ func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
-		case float32, float64:
+		case float32:
+			if math.IsNaN(float64(tv)) {
+				tv = math.Float32frombits(distinctCanonicalNaN32Bits)
+			}
+			t[i] = tv
+		case float64:
+			if math.IsNaN(tv) {
+				tv = math.Float64frombits(distinctCanonicalNaN64Bits)
+			}
 			t[i] = tv
 		case nil, int64, int, uint, uint64, string, []byte, bool:
 			t[i] = tv
@@ -2344,20 +2412,179 @@ func packedDedupKey(slots []any) (string, error) {
 			t[i] = tuple.UUID(tv)
 		default:
 			// Composite/nested slot (struct, array, message): the tuple layer
-			// cannot pack it. Encode LOSSLESSLY via the continuation codec
-			// (type-tagged, length-prefixed, recursive) as one []byte tuple
-			// slot — boundary-safe AND collision-free. The retired %T:%v
+			// cannot pack it. Encode with the DISTINCT-only type-tagged,
+			// length-prefixed recursive codec as one []byte tuple slot —
+			// boundary-safe and collision-free, with recursive NaN
+			// canonicalization but verbatim signed-zero bits. The retired %T:%v
 			// rendering collided on composites ([]any{"a b"} vs
 			// []any{"a","b"} both rendered "[a b]") and split equal protos
 			// across generated/dynamicpb representations (RFC-180 C1).
-			b, err := appendContValue(nil, v)
+			b, err := appendDistinctValue(nil, v)
 			if err != nil {
 				return "", fmt.Errorf("dedup key slot %d: %w", i, err)
 			}
-			t[i] = b
+			// Keep the composite's outer type distinct from a user BYTES value
+			// containing these exact encoder bytes. A nested FDB tuple has its own
+			// type code, while b retains the recursive ARRAY/STRUCT type tags.
+			t[i] = tuple.Tuple{b}
 		}
 	}
 	return string(t.Pack()), nil
+}
+
+const (
+	distinctCanonicalNaN32Bits uint32 = 0x7fc00000
+	distinctCanonicalNaN64Bits uint64 = 0x7ff8000000000000
+)
+
+// appendDistinctValue is the composite-value encoder used only by logical
+// value deduplication. Its framing intentionally mirrors appendContValue's
+// proven type-tagged, length-prefixed format, but its floating-point contract is
+// different: every NaN sign/payload is one value, while both signed-zero bit
+// patterns remain distinct. Keeping this as a separate recursive entry point is
+// essential — appendContValue is a reversible continuation codec and therefore
+// must retain every raw bit of the value it will later reconstruct.
+func appendDistinctValue(buf []byte, v any) ([]byte, error) {
+	switch t := v.(type) {
+	case float32:
+		if math.IsNaN(float64(t)) {
+			t = math.Float32frombits(distinctCanonicalNaN32Bits)
+		}
+		return appendContValue(buf, t)
+	case float64:
+		if math.IsNaN(t) {
+			t = math.Float64frombits(distinctCanonicalNaN64Bits)
+		}
+		return appendContValue(buf, t)
+	case []any:
+		buf = append(buf, contValList)
+		buf = binary.AppendUvarint(buf, uint64(len(t)))
+		for _, element := range t {
+			var err error
+			buf, err = appendDistinctValue(buf, element)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return buf, nil
+	case proto.Message:
+		return appendDistinctProtoMessage(buf, t)
+	default:
+		// Scalars without floating payloads already have the exact typed,
+		// collision-free representation DISTINCT needs. Delegating those arms
+		// avoids a second implementation drifting from the continuation codec;
+		// only the recursive and protobuf arms above intentionally diverge.
+		return appendContValue(buf, v)
+	}
+}
+
+// appendDistinctProtoMessage encodes a STRUCT value independently of its Go
+// representation. Generated and dynamicpb messages with the same protobuf type
+// and contents are the same logical STRUCT value, so the key contains the full
+// protobuf name and deterministic payload, not appendContProtoMessage's
+// continuation-only generated/dynamic representation flag.
+//
+// The input is cloned before canonicalization. DISTINCT is observational only;
+// computing a key must never rewrite a QueryResult that may still be consumed by
+// another operator. Descriptor-driven traversal reaches populated ordinary,
+// oneof, and extension fields, including repeated/map/nested message values.
+// Unknown wire fields are retained verbatim: without a descriptor their fixed32
+// or fixed64 bytes cannot safely be classified as floating point.
+func appendDistinctProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
+	if msg == nil || isNilProtoMessage(msg) {
+		return nil, fmt.Errorf("distinct: cannot encode a nil proto message")
+	}
+	cloned := proto.Clone(msg)
+	if cloned == nil || isNilProtoMessage(cloned) {
+		return nil, fmt.Errorf("distinct: cannot clone proto message of type %T", msg)
+	}
+	reflection := cloned.ProtoReflect()
+	if !reflection.IsValid() {
+		return nil, fmt.Errorf("distinct: cannot encode invalid proto message of type %T", msg)
+	}
+	canonicalizeDistinctProtoNaNs(reflection)
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(cloned)
+	if err != nil {
+		return nil, fmt.Errorf("distinct: cannot encode proto message %q: %w", reflection.Descriptor().FullName(), err)
+	}
+	fullName := string(reflection.Descriptor().FullName())
+	buf = append(buf, contValProtoMsg)
+	buf = binary.AppendUvarint(buf, uint64(len(fullName)))
+	buf = append(buf, fullName...)
+	buf = binary.AppendUvarint(buf, uint64(len(payload)))
+	return append(buf, payload...), nil
+}
+
+func isNilProtoMessage(msg proto.Message) bool {
+	v := reflect.ValueOf(msg)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// canonicalizeDistinctProtoNaNs rewrites only the cloned message passed by
+// appendDistinctProtoMessage. Message.Range covers populated regular, oneof,
+// and extension fields. Map updates are collected and applied after Range so
+// traversal never mutates the map being iterated.
+func canonicalizeDistinctProtoNaNs(message protoreflect.Message) {
+	message.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		switch {
+		case field.IsMap():
+			protoMap := value.Map()
+			type mapUpdate struct {
+				key   protoreflect.MapKey
+				value protoreflect.Value
+			}
+			var updates []mapUpdate
+			protoMap.Range(func(key protoreflect.MapKey, mapValue protoreflect.Value) bool {
+				canonical, changed := canonicalDistinctProtoValue(field.MapValue(), mapValue)
+				if changed {
+					updates = append(updates, mapUpdate{key: key, value: canonical})
+				}
+				return true
+			})
+			for _, update := range updates {
+				protoMap.Set(update.key, update.value)
+			}
+		case field.IsList():
+			list := value.List()
+			for i := 0; i < list.Len(); i++ {
+				canonical, changed := canonicalDistinctProtoValue(field, list.Get(i))
+				if changed {
+					list.Set(i, canonical)
+				}
+			}
+		default:
+			canonical, changed := canonicalDistinctProtoValue(field, value)
+			if changed {
+				message.Set(field, canonical)
+			}
+		}
+		return true
+	})
+}
+
+func canonicalDistinctProtoValue(
+	field protoreflect.FieldDescriptor,
+	value protoreflect.Value,
+) (protoreflect.Value, bool) {
+	switch field.Kind() {
+	case protoreflect.FloatKind:
+		floating := float32(value.Float())
+		if math.IsNaN(float64(floating)) {
+			return protoreflect.ValueOfFloat32(
+				math.Float32frombits(distinctCanonicalNaN32Bits),
+			), true
+		}
+	case protoreflect.DoubleKind:
+		floating := value.Float()
+		if math.IsNaN(floating) {
+			return protoreflect.ValueOfFloat64(
+				math.Float64frombits(distinctCanonicalNaN64Bits),
+			), true
+		}
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		canonicalizeDistinctProtoNaNs(value.Message())
+	}
+	return value, false
 }
 
 func executeProjection(

@@ -559,6 +559,70 @@ func TestFDB_RawNaNPrimaryKeySuffixRetainsLogicalSort(t *testing.T) {
 		return result
 	}
 
+	// Raw NaN payload/sign variants are distinct primary tuple keys but one SQL
+	// DISTINCT value. Exercise both the logical PK-coverage shortcut (explicit
+	// projection) and the record-distinct partition shortcut (SELECT DISTINCT
+	// *) through primary and secondary access paths. Both must retain the
+	// row-value distinct operator; signed zero deliberately remains two values.
+	for _, table := range []string{indexedTable, baselineTable} {
+		for _, projection := range []string{"id, status", "*"} {
+			query := fmt.Sprintf(
+				"SELECT DISTINCT %s FROM %s WHERE status = 'x'", projection, table,
+			)
+			plan, planErr := embedded.PlanRecordQueryWithMetadata(query, md, nil)
+			if planErr != nil {
+				t.Fatalf("plan %q: %v", query, planErr)
+			}
+			hasDistinct := false
+			plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+				if _, ok := node.(*plans.RecordQueryDistinctPlan); ok {
+					hasDistinct = true
+				}
+				return true
+			})
+			if !hasDistinct {
+				t.Fatalf("raw NaN primary keys incorrectly eliminated DISTINCT: %s", plan.Explain())
+			}
+			got := execute(t, plan)
+			sort.Strings(got)
+			want := []string{"+0", "-0", "-1", "1", "nan"}
+			sort.Strings(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%s = %v, want %v; plan: %s", query, got, want, plan.Explain())
+			}
+		}
+	}
+
+	// GROUP BY currently preserves raw storage identity for floating keys so it
+	// can agree with maintained aggregate-index groups. Consequently two NaN
+	// payload groups can surface the same logical (ID, COUNT) row, and the outer
+	// DISTINCT remains semantically necessary.
+	groupDistinctSQL := fmt.Sprintf(
+		"SELECT DISTINCT id, COUNT(*) FROM %s GROUP BY id", baselineTable,
+	)
+	groupDistinctPlan, planErr := embedded.PlanRecordQueryWithMetadata(groupDistinctSQL, md, nil)
+	if planErr != nil {
+		t.Fatalf("plan %q: %v", groupDistinctSQL, planErr)
+	}
+	hasGroupDistinct := false
+	plans.Walk(groupDistinctPlan, func(node plans.RecordQueryPlan) bool {
+		if _, ok := node.(*plans.RecordQueryDistinctPlan); ok {
+			hasGroupDistinct = true
+		}
+		return true
+	})
+	if !hasGroupDistinct {
+		t.Fatalf("floating GROUP BY incorrectly eliminated outer DISTINCT: %s", groupDistinctPlan.Explain())
+	}
+	groupDistinctGot := execute(t, groupDistinctPlan)
+	sort.Strings(groupDistinctGot)
+	groupDistinctWant := []string{"+0", "-0", "-1", "1", "nan"}
+	sort.Strings(groupDistinctWant)
+	if !slices.Equal(groupDistinctGot, groupDistinctWant) {
+		t.Fatalf("%s = %v, want %v; plan: %s",
+			groupDistinctSQL, groupDistinctGot, groupDistinctWant, groupDistinctPlan.Explain())
+	}
+
 	cases := []struct {
 		name     string
 		order    string

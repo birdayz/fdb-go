@@ -8,10 +8,11 @@ import (
 )
 
 type testIndexDef struct {
-	name        string
-	columns     []string
-	recordTypes []string
-	unique      bool
+	name         string
+	columns      []string
+	recordTypes  []string
+	unique       bool
+	hasPredicate bool
 }
 
 func (d testIndexDef) IndexName() string                { return d.name }
@@ -20,6 +21,7 @@ func (d testIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
 func (d testIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d testIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 func (d testIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (d testIndexDef) IndexHasPredicate() bool          { return d.hasPredicate }
 
 func TestNewPlanContextFromIndexDefs_Basic(t *testing.T) {
 	t.Parallel()
@@ -81,6 +83,23 @@ func TestNewPlanContextFromIndexDefs_SkipsEmptyColumns(t *testing.T) {
 	ctx := NewPlanContextFromIndexDefs(defs)
 	if len(ctx.GetMatchCandidates()) != 1 {
 		t.Fatalf("expected 1 candidate (skip empty), got %d", len(ctx.GetMatchCandidates()))
+	}
+}
+
+func TestNewPlanContextFromIndexDefs_SkipsPredicateFilteredIndex(t *testing.T) {
+	t.Parallel()
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		testIndexDef{
+			name: "sparse", columns: []string{"a"}, recordTypes: []string{"T"},
+			hasPredicate: true,
+		},
+		testIndexDef{
+			name: "ordinary", columns: []string{"a"}, recordTypes: []string{"T"},
+		},
+	})
+	candidates := ctx.GetMatchCandidates()
+	if len(candidates) != 1 || candidates[0].CandidateName() != "ordinary" {
+		t.Fatalf("filtered-index admission = %v, want only ordinary", candidates)
 	}
 }
 

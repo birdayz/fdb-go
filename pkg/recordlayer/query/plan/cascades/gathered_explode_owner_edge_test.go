@@ -92,11 +92,14 @@ func TestGatheredExplodeOwnerEdgeReachesPartitionOrder(t *testing.T) {
 
 	owner := values.NamedCorrelationIdentifier("A")
 	flow := values.NamedCorrelationIdentifier("B")
-	ownerQ := scanQuantifier("A")
-	flowQ := scanQuantifier("B")
 
 	t.Run("ordinal bake carries the owner edge", func(t *testing.T) {
 		t.Parallel()
+		// A planner owns its mutable Reference graph. Give each parallel arm a
+		// fresh graph too; sharing these quantifiers races Reference's lazy
+		// correlation cache and does not model production ownership.
+		ownerQ := scanQuantifier("A")
+		flowQ := scanQuantifier("B")
 		el := explodeQuantifierOver(ordinalBakedCollection(t, owner))
 		order := computeTransitiveCorrelationOrder(
 			[]expressions.Quantifier{ownerQ, flowQ, el})
@@ -114,6 +117,8 @@ func TestGatheredExplodeOwnerEdgeReachesPartitionOrder(t *testing.T) {
 
 	t.Run("name-model collection has NO owner edge to recover", func(t *testing.T) {
 		t.Parallel()
+		ownerQ := scanQuantifier("A")
+		flowQ := scanQuantifier("B")
 		el := explodeQuantifierOver(nameModelCollection(owner, flow))
 		order := computeTransitiveCorrelationOrder(
 			[]expressions.Quantifier{ownerQ, flowQ, el})

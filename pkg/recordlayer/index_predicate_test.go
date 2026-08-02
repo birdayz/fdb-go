@@ -588,6 +588,62 @@ func TestIndexSetPredicateProto(t *testing.T) {
 	}
 }
 
+func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	pred := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}
+	if err := idx.SetPredicateProto(pred); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+
+	// Mutating the caller's input after Set must affect neither representation.
+	pred.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("caller mutation changed compiled FALSE evaluator")
+	}
+	if got := idx.GetPredicateProto(); got.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+		t.Fatalf("caller mutation changed stored proto to %s", got.GetConstantPredicate().GetValue())
+	}
+
+	// The getter is also an ownership boundary.
+	got := idx.GetPredicateProto()
+	got.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("getter-result mutation changed compiled FALSE evaluator")
+	}
+	if again := idx.GetPredicateProto(); again.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+		t.Fatalf("getter-result mutation changed stored proto to %s", again.GetConstantPredicate().GetValue())
+	}
+}
+
+func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	if err := idx.SetPredicateProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+
+	wire, err := indexToProto(idx)
+	if err != nil {
+		t.Fatalf("indexToProto: %v", err)
+	}
+	wire.Predicate.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("serialized metadata mutation changed compiled FALSE evaluator")
+	}
+	again, err := indexToProto(idx)
+	if err != nil {
+		t.Fatalf("second indexToProto: %v", err)
+	}
+	if got := again.GetPredicate().GetConstantPredicate().GetValue(); got != gen.ConstantPredicate_FALSE {
+		t.Fatalf("serialized metadata mutation changed internal proto to %s", got)
+	}
+}
+
 func TestIndexSetPredicateProtoNil(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
@@ -608,6 +664,50 @@ func TestIndexSetPredicateProtoNil(t *testing.T) {
 	}
 	if idx.Predicate != nil {
 		t.Fatal("Predicate function should be nil after clearing")
+	}
+}
+
+func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	if idx.HasPredicate() {
+		t.Fatal("new index unexpectedly reports a predicate")
+	}
+	valid := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}
+	if err := idx.SetPredicateProto(valid); err != nil {
+		t.Fatalf("SetPredicateProto(valid): %v", err)
+	}
+	if !idx.HasPredicate() || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+		t.Fatal("valid FALSE proto was not published consistently")
+	}
+
+	// Compilation failure must leave both previously valid representations
+	// intact, rather than publishing a proto that HasPredicate sees while the
+	// evaluator still implements some other predicate.
+	if err := idx.SetPredicateProto(&gen.Predicate{}); err == nil {
+		t.Fatal("empty predicate proto unexpectedly compiled")
+	}
+	if !proto.Equal(idx.GetPredicateProto(), valid) || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+		t.Fatal("rejected proto partially mutated the previous predicate")
+	}
+
+	idx.SetPredicate(func(proto.Message) bool { return true })
+	if !idx.HasPredicate() || idx.GetPredicateProto() != nil || !idx.Predicate(&gen.Order{}) {
+		t.Fatal("programmatic predicate did not replace and clear serialized semantics")
+	}
+	idx.SetPredicate(nil)
+	if idx.HasPredicate() || idx.Predicate != nil || idx.GetPredicateProto() != nil {
+		t.Fatal("SetPredicate(nil) did not clear both predicate representations")
+	}
+
+	// Defensive representation check: metadata loaded by another path may have
+	// only the serializable form. Planner admission must still classify it as
+	// sparse and fail closed.
+	idx.predicateProto = valid
+	if !idx.HasPredicate() {
+		t.Fatal("proto-only predicate representation was not classified as sparse")
 	}
 }
 

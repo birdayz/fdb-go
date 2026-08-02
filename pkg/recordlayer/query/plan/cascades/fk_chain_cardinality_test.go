@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -38,7 +39,7 @@ var fkChainLayouts = map[string]*values.RecordType{
 func fkChainLayout(name string, cols ...string) *values.RecordType {
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
 	return values.NewRecordType(name, false, fields)
 }
@@ -91,14 +92,17 @@ func fkChainCorrelatedRef(t *testing.T, outerRT string, outerAlias values.Correl
 	if !found {
 		return &values.FieldValue{Field: field, Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outerAlias)}
 	}
+	resolved, _ := layout.GetField(ord)
 	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(outerAlias), field, ord, values.UnknownType,
+		values.NewQuantifiedObjectValue(outerAlias), field, ord, resolved.FieldType,
 		values.OrdinalDomainOfType(layout),
 	)
 }
 
 func fkChainFullScan(rt string) plans.RecordQueryPlan {
-	return plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false).WithPrimaryKey(fkChainIDPK())
+	return plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false).
+		WithPrimaryKey(fkChainIDPK()).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
 // fkChainPKProbe is a primary-key equality point probe against rt, correlated
@@ -127,6 +131,8 @@ func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.Cor
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(false)
 }
@@ -141,6 +147,8 @@ func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias valu
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(true)
 }
@@ -172,6 +180,8 @@ func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias 
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
 		[]string{rt}, fkChainRowType(rt), false).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainRTPrefixedPK()).
 		WithDistinctRecordsSignal(false)
 }
@@ -450,17 +460,10 @@ func TestFKChainCardinalityCap_PropagatesAcrossRecordTypeKeyPrefixedPK(t *testin
 	}
 }
 
-// TestFKChainCappedInnerCost_DerivationProperty pins fkChainCappedInnerCost's
-// derivation as a PROPERTY over a table of (outerCard, innerCard, innerCPU,
-// cap) tuples, not one hand-picked example: whenever the cap actually binds
-// (cap < outerCard*innerCard), the derived Cost must (1) make
-// outerCard*corrected.Cardinality land exactly on cap — reproducing the same
-// clamp fkChainCardinalityCap always guaranteed — and (2) scale CPU by the
-// IDENTICAL ratio applied to Cardinality (corrected.CPU/inner.CPU ==
-// corrected.Cardinality/inner.Cardinality), because scanLikeCost's CPU is an
-// exactly linear, zero-intercept function of Cardinality (see
-// fkChainCappedInnerCost's doc comment) — any OTHER ratio would silently
-// reintroduce a cardinality/CPU mismatch under a different derivation.
+// TestFKChainCappedInnerCost_DerivationProperty pins the affine derivation:
+// the cap scales only the row-dependent CPU and preserves the fixed work paid
+// every time FlatMap opens the inner. It also pins malformed/overflow inputs
+// to the conservative no-correction direction.
 func TestFKChainCappedInnerCost_DerivationProperty(t *testing.T) {
 	t.Parallel()
 
@@ -474,36 +477,50 @@ func TestFKChainCappedInnerCost_DerivationProperty(t *testing.T) {
 	}
 
 	cases := []struct {
-		name                 string
-		outerCard, innerCard float64
-		innerCPU, cap        float64
-		wantApplied          bool
+		name                          string
+		outerCard, innerCard          float64
+		innerCPU, cap, fixedCPU       float64
+		wantApplied                   bool
+		wantCardinality, wantInnerCPU float64
 	}{
-		{"binding, matches production T4 hop", 40, 200, 278.1, 2000, true},
-		{"binding, small numbers", 5, 100, 50, 60, true},
-		{"binding, cap much smaller than uncapped total", 1000, 1000, 1000, 1, true},
-		{"not binding, cap exactly equals uncapped total", 10, 20, 5, 200, false},
-		{"not binding, cap exceeds uncapped total", 10, 20, 5, 10000, false},
+		{"zero intercept preserves proportional behavior", 40, 200, 278.1, 2000, 0, true, 50, 69.525},
+		{"mixed fixed and variable CPU", 5, 100, 50, 60, 10, true, 12, 14.8},
+		{"all CPU fixed survives a severe cap", 1000, 1000, 1000, 1, 1000, true, 0.001, 1000},
+		{"zero cap still pays startup", 5, 100, 50, 0, 10, true, 0, 10},
+		{"negative fixed component clamps to zero", 5, 100, 50, 60, -10, true, 12, 6},
+		{"oversized fixed component clamps to all CPU", 5, 100, 50, 60, 500, true, 12, 50},
+		{"unknown fixed component preserves all CPU", 5, 100, 50, 60, math.NaN(), true, 12, 50},
+		{"saturated CPU remains conservative while cardinality binds", properties.MaxFiniteHeuristic, properties.MaxFiniteHeuristic, properties.MaxFiniteHeuristic, properties.MaxFiniteHeuristic / 2, 0, true, 0.5, properties.MaxFiniteHeuristic},
+		{"not binding, cap exactly equals uncapped total", 10, 20, 5, 200, 0, false, 0, 0},
+		{"not binding at saturation ceiling", properties.MaxFiniteHeuristic, properties.MaxFiniteHeuristic, 5, properties.MaxFiniteHeuristic, 0, false, 0, 0},
+		{"empty outer executes no probes", 0, 20, 5, 1, 1, false, 0, 0},
+		{"empty inner estimate cannot be rescaled", 10, 0, 5, 1, 1, false, 0, 0},
+		{"negative cap is invalid", 10, 20, 5, -1, 1, false, 0, 0},
+		{"NaN cap is invalid", 10, 20, 5, math.NaN(), 1, false, 0, 0},
+		{"infinite cap is invalid", 10, 20, 5, math.Inf(1), 1, false, 0, 0},
+		{"NaN cardinality is invalid", math.NaN(), 20, 5, 1, 1, false, 0, 0},
+		{"infinite CPU is invalid", 10, 20, math.Inf(1), 1, 1, false, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			outer := properties.Cost{Cardinality: c.outerCard}
 			inner := properties.Cost{Cardinality: c.innerCard, CPU: c.innerCPU}
-			corrected, applied := fkChainCappedInnerCost(outer, inner, c.cap)
+			corrected, applied := fkChainCappedInnerCost(outer, inner, c.cap, c.fixedCPU)
 			if applied != c.wantApplied {
 				t.Fatalf("applied = %v, want %v", applied, c.wantApplied)
 			}
 			if !applied {
 				return
 			}
+			if !closeEnough(corrected.Cardinality, c.wantCardinality) {
+				t.Errorf("corrected.Cardinality = %v, want %v", corrected.Cardinality, c.wantCardinality)
+			}
+			if !closeEnough(corrected.CPU, c.wantInnerCPU) {
+				t.Errorf("corrected.CPU = %v, want %v", corrected.CPU, c.wantInnerCPU)
+			}
 			if got := c.outerCard * corrected.Cardinality; !closeEnough(got, c.cap) {
 				t.Errorf("outerCard*corrected.Cardinality = %v, want cap = %v", got, c.cap)
-			}
-			wantRatio := corrected.Cardinality / c.innerCard
-			gotRatio := corrected.CPU / c.innerCPU
-			if !closeEnough(gotRatio, wantRatio) {
-				t.Errorf("CPU ratio %v != Cardinality ratio %v — CPU and Cardinality no longer describe the same execution", gotRatio, wantRatio)
 			}
 		})
 	}
@@ -540,7 +557,11 @@ func TestFKChainCardinalityCap_CPUConsistentAcrossChain(t *testing.T) {
 	if !ok {
 		t.Fatalf("cap did not fire on hop3 — precondition of this test is broken")
 	}
-	corrected, applied := fkChainCappedInnerCost(c2, t4Cost, cap)
+	fixedCPU, derived := fkChainInnerFixedCPU(t4Probe, nil)
+	if !derived {
+		t.Fatalf("fixed CPU decomposition declined the reachable T4 probe")
+	}
+	corrected, applied := fkChainCappedInnerCost(c2, t4Cost, cap, fixedCPU)
 	if !applied {
 		t.Fatalf("cap did not bind on hop3 — precondition of this test is broken")
 	}
@@ -612,6 +633,71 @@ func TestFKChainCardinalityCap_CPUUnaffectedWhenCapDoesNotFire(t *testing.T) {
 			got := concretePlanCost(fm, stats, nil)
 			if got.Cardinality != want.Cardinality || got.CPU != want.CPU {
 				t.Fatalf("cost = %+v, want unscaled FlatMapCost %+v — the cap must leave BOTH terms untouched when it declines", got, want)
+			}
+		})
+	}
+}
+
+// The CURRENT inner access must itself partition physical records across
+// distinct outer bind values. Guarding a fan-out index only after it becomes
+// the next hop's outer thread is too late: one repeated-key record can already
+// be returned by two probes in this hop, so their sum may exceed table size.
+func TestFKChainCardinalityCap_DeclinesOnDuplicateProducingInnerIndex(t *testing.T) {
+	t.Parallel()
+	unstamped := func(t *testing.T) plans.RecordQueryPlan {
+		t.Helper()
+		return plans.NewRecordQueryIndexPlan(
+			"t2_by_t1_unstamped",
+			[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T1", fkChainAlias(0), "ID")},
+			[]string{"T2"}, fkChainRowType("T2"), false,
+		).
+			WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+			WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+			WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+			WithCommonPrimaryKey(fkChainIDPK())
+	}
+	tests := []struct {
+		name    string
+		inner   func(*testing.T) plans.RecordQueryPlan
+		wantCap bool
+	}{
+		{
+			name: "explicit fan-out index",
+			inner: func(t *testing.T) plans.RecordQueryPlan {
+				return fkChainFanOutFKProbe(t, "T2", "t2_by_t1_fanout", "T1", fkChainAlias(0))
+			},
+		},
+		{name: "unstamped distinct-record signal", inner: unstamped},
+		{
+			name: "explicit scalar index control",
+			inner: func(t *testing.T) plans.RecordQueryPlan {
+				return fkChainFKProbe(t, "T2", "t2_by_t1_scalar", "T1", fkChainAlias(0))
+			},
+			wantCap: true,
+		},
+	}
+	stats := properties.MapStatistics{PerType: map[string]float64{"T1": 1000, "T2": 20}}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inner := test.inner(t)
+			flatMap := fkChainFlat(fkChainFullScan("T1"), inner, fkChainAlias(0))
+			cap, gotCap := fkChainCardinalityCap(flatMap.(*plans.RecordQueryFlatMapPlan), stats)
+			if gotCap != test.wantCap {
+				t.Fatalf("fkChainCardinalityCap = (%v,%v), want proof=%v", cap, gotCap, test.wantCap)
+			}
+			if test.wantCap {
+				if cap != 20 {
+					t.Fatalf("cap = %v, want inner table size 20", cap)
+				}
+				return
+			}
+			outerCost := concretePlanCost(flatMap.(*plans.RecordQueryFlatMapPlan).GetOuter(), stats, nil)
+			innerCost := concretePlanCost(inner, stats, nil)
+			want := properties.FlatMapCost(outerCost, innerCost)
+			if got := concretePlanCost(flatMap, stats, nil); got != want {
+				t.Fatalf("duplicate-producing inner cost = %+v, want unclamped %+v", got, want)
 			}
 		})
 	}
@@ -878,7 +964,8 @@ func TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation(t *testing.T
 	}
 	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
 		WithPrimaryKey(fkChainIDPK()).
-		WithScanComparisons([]*predicates.ComparisonRange{res.Range})
+		WithScanComparisons([]*predicates.ComparisonRange{res.Range}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
 		values.NewQuantifiedObjectValue(innerAlias), false)
 
@@ -906,7 +993,8 @@ func TestFKChainCardinalityCap_FiresOnSameLayoutOuterCorrelation(t *testing.T) {
 	outer := fkChainFullScan("T2")
 	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
 		WithPrimaryKey(fkChainIDPK()).
-		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T2", outerAlias, "ID")})
+		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T2", outerAlias, "ID")}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
 		values.NewQuantifiedObjectValue(innerAlias), false)
 
@@ -938,7 +1026,12 @@ func TestPKThreadThroughResultValue_DeclinesSameLayoutOtherCorrelation(t *testin
 	childAlias := values.NamedCorrelationIdentifier("i")
 	otherAlias := fkChainAlias(0)
 	childLayout := fkChainRowType("T2")
-	childThread := pkThread{recordType: "T2", pkValues: fkChainIDPK(), ok: true}
+	childThread := pkThread{
+		recordType: "T2",
+		pkValues:   fkChainIDPK(),
+		pkTypes:    []values.Type{values.NotNullLong},
+		ok:         true,
+	}
 
 	// The accept direction first, so the decline below cannot pass by refusing
 	// everything.
@@ -961,5 +1054,259 @@ func TestPKThreadThroughResultValue_DeclinesSameLayoutOtherCorrelation(t *testin
 			"(recordType=%q, %d component(s)) — ordinal 0 of two quantifiers are different "+
 			"columns, and the emitted rows are not identified by the one this thread tracks",
 			crossed.recordType, len(crossed.pkValues))
+	}
+}
+
+func fkTypedEquality(
+	t *testing.T,
+	layout *values.RecordType,
+	alias values.CorrelationIdentifier,
+	field string,
+) *predicates.ComparisonRange {
+	t.Helper()
+	ordinal, ok := layout.FieldIndex(field)
+	if !ok {
+		t.Fatalf("layout %s has no field %s", layout.RecordName, field)
+	}
+	resolved, _ := layout.GetField(ordinal)
+	operand := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(alias), field, ordinal, resolved.FieldType,
+		values.OrdinalDomainOfType(layout),
+	)
+	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatal("failed to construct typed correlated equality")
+	}
+	return merged.Range
+}
+
+// Distinct raw outer PK rows induce disjoint inner probes only when logical
+// equality is injective from the outer key domain into the inner physical key
+// domain. FLOAT/DOUBLE outer keys fail that theorem because -0/+0 (and raw
+// NaNs) are distinct physical keys but one logical value; both outer rows can
+// execute the same plural inner range set and return the same inner rows.
+func TestFKChainCardinalityCap_LogicalEqualityProjectionMustBeInjective(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		sourceType values.Type
+		targetType values.Type
+		wantCap    bool
+	}{
+		{name: "LONG identity control", sourceType: values.NotNullLong, targetType: values.NotNullLong, wantCap: true},
+		{name: "INT to DOUBLE exact control", sourceType: values.NotNullInt, targetType: values.NotNullDouble, wantCap: true},
+		{name: "FLOAT signed-zero aliases", sourceType: values.NotNullFloat, targetType: values.NotNullFloat},
+		{name: "DOUBLE signed-zero and NaN aliases", sourceType: values.NotNullDouble, targetType: values.NotNullDouble},
+		{name: "LONG to DOUBLE rounding aliases", sourceType: values.NotNullLong, targetType: values.NotNullDouble},
+		{name: "INT to FLOAT rounding aliases", sourceType: values.NotNullInt, targetType: values.NotNullFloat},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			outerLayout := values.NewRecordType("O", false, []values.Field{{
+				Name: "K", FieldType: test.sourceType, Ordinal: 0,
+			}})
+			innerLayout := values.NewRecordType("I", false, []values.Field{{
+				Name: "FK", FieldType: test.targetType, Ordinal: 0,
+			}})
+			outerAlias := values.NamedCorrelationIdentifier("o")
+			innerAlias := values.NamedCorrelationIdentifier("i")
+			outer := plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false).
+				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "K"}}).
+				WithKeyComponentTypes([]values.Type{test.sourceType})
+			inner := plans.NewRecordQueryScanPlan([]string{"I"}, innerLayout, false).
+				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "FK"}}).
+				WithScanComparisons([]*predicates.ComparisonRange{
+					fkTypedEquality(t, outerLayout, outerAlias, "K"),
+				}).
+				WithKeyComponentTypes([]values.Type{test.targetType})
+			flatMap := plans.NewRecordQueryFlatMapPlan(
+				outer, inner, outerAlias, innerAlias,
+				values.NewQuantifiedObjectValue(innerAlias), false,
+			)
+			stats := properties.MapStatistics{PerType: map[string]float64{"O": 1000, "I": 20}}
+			cap, gotCap := fkChainCardinalityCap(flatMap, stats)
+			if gotCap != test.wantCap {
+				t.Fatalf("fkChainCardinalityCap = (%v,%v), want proof=%v", cap, gotCap, test.wantCap)
+			}
+			if gotCap && cap != 20 {
+				t.Fatalf("cap = %v, want inner table size 20", cap)
+			}
+			gotCost := concretePlanCost(flatMap, stats, nil)
+			ordinary := properties.FlatMapCost(
+				concretePlanCost(outer, stats, nil), concretePlanCost(inner, stats, nil),
+			)
+			if !test.wantCap && gotCost != ordinary {
+				t.Fatalf("unsafe projection cost = %+v, want ordinary unclamped FlatMapCost %+v", gotCost, ordinary)
+			}
+			if test.wantCap && gotCost.Cardinality > cap {
+				t.Fatalf("injective projection cardinality = %v, exceeds proven cap %v", gotCost.Cardinality, cap)
+			}
+			if test.name == "LONG identity control" {
+				// All 1,000 outer rows still open an isolated full-PK probe.
+				// Only 20 can return a row, so cardinality is capped while the
+				// FetchCPU startup remains payable once per outer execution.
+				if gotCost.Cardinality != 20 || gotCost.CPU != 1480.5 {
+					t.Fatalf("point-probe capped cost = %+v, want {Cardinality:20 CPU:1480.5}", gotCost)
+				}
+				if ordinary.CPU != 1480.5 {
+					t.Fatalf("ordinary point-probe CPU = %v, want 1480.5; cap must not reduce per-probe startup", ordinary.CPU)
+				}
+			}
+		})
+	}
+}
+
+// A correlated INT equality against the first component of a DOUBLE tuple key
+// must cover both physical encodings when the key has a constrained suffix.
+// The FK-table cap may reduce the average rows returned per outer execution,
+// but every execution still opens that second signed-zero range. Fetch and
+// TypeFilter wrap the fixed intercept in their own physical CPU multiplier;
+// neither turns it into row-dependent work.
+func TestFKChainCardinalityCap_PreservesSignedZeroRangeSeekThroughWrappers(t *testing.T) {
+	t.Parallel()
+	outerLayout := values.NewRecordType("O", false, []values.Field{
+		{Name: "K", FieldType: values.NotNullInt, Ordinal: 0},
+		{Name: "S", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	innerLayout := values.NewRecordType("I", false, []values.Field{
+		{Name: "FK", FieldType: values.NotNullDouble, Ordinal: 0},
+		{Name: "FS", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	outerAlias := values.NamedCorrelationIdentifier("o")
+	innerAlias := values.NamedCorrelationIdentifier("i")
+	outer := plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false).
+		WithPrimaryKey([]values.Value{
+			&values.FieldValue{Field: "K"},
+			&values.FieldValue{Field: "S"},
+		}).
+		WithKeyComponentTypes([]values.Type{values.NotNullInt, values.NotNullLong})
+	bareInner := plans.NewRecordQueryIndexPlan(
+		"i_by_fk_fs",
+		[]*predicates.ComparisonRange{
+			fkTypedEquality(t, outerLayout, outerAlias, "K"),
+			fkTypedEquality(t, outerLayout, outerAlias, "S"),
+		},
+		[]string{"I"}, innerLayout, false,
+	).
+		WithKeyComponentTypes([]values.Type{values.NotNullDouble, values.NotNullLong}).
+		WithIndexMetadata([]string{"FK", "FS"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID"}}).
+		WithDistinctRecordsSignal(false)
+
+	shape := properties.PhysicalEqualityShapeForComparisons(
+		bareInner.GetScanComparisons(), bareInner.GetKeyComponentTypes(), true,
+	)
+	if !shape.SuccessfulSeekUpperBoundExact || shape.SuccessfulSeekUpperBound != 2 {
+		t.Fatalf("signed-zero inner shape seeks = (%d, exact=%v), want (2,true)",
+			shape.SuccessfulSeekUpperBound, shape.SuccessfulSeekUpperBoundExact)
+	}
+
+	stats := properties.MapStatistics{PerType: map[string]float64{"O": 1000, "I": 20}}
+	tests := []struct {
+		name      string
+		wrap      func(plans.RecordQueryPlan) plans.RecordQueryPlan
+		wantFixed float64
+	}{
+		{
+			name:      "bare index range set",
+			wrap:      func(p plans.RecordQueryPlan) plans.RecordQueryPlan { return p },
+			wantFixed: properties.PhysicalRangeSeekCost,
+		},
+		{
+			name: "fetch",
+			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
+				return plans.NewRecordQueryFetchFromPartialRecordPlan(
+					p, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+				)
+			},
+			wantFixed: properties.PhysicalRangeSeekCost * properties.PhysicalWrapperCostMultiplier,
+		},
+		{
+			name: "type filter over fetch",
+			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
+				return plans.NewRecordQueryTypeFilterPlan(
+					[]string{"I"},
+					plans.NewRecordQueryFetchFromPartialRecordPlan(
+						p, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+					),
+				)
+			},
+			wantFixed: properties.PhysicalRangeSeekCost *
+				properties.PhysicalWrapperCostMultiplier * properties.PhysicalWrapperCostMultiplier,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inner := test.wrap(bareInner)
+			flatMap := plans.NewRecordQueryFlatMapPlan(
+				outer, inner, outerAlias, innerAlias,
+				values.NewQuantifiedObjectValue(innerAlias), false,
+			)
+			cap, ok := fkChainCardinalityCap(flatMap, stats)
+			if !ok || cap != 20 {
+				t.Fatalf("fkChainCardinalityCap = (%v,%v), want (20,true)", cap, ok)
+			}
+			fixed, ok := fkChainInnerFixedCPU(inner, nil)
+			if !ok || fixed != test.wantFixed {
+				t.Fatalf("fixed inner CPU = (%v,%v), want (%v,true)", fixed, ok, test.wantFixed)
+			}
+			outerCost := concretePlanCost(outer, stats, nil)
+			innerCost := concretePlanCost(inner, stats, nil)
+			corrected, applied := fkChainCappedInnerCost(outerCost, innerCost, cap, fixed)
+			if !applied {
+				t.Fatal("table cap did not bind")
+			}
+			ratio := corrected.Cardinality / innerCost.Cardinality
+			wantInnerCPU := test.wantFixed + (innerCost.CPU-test.wantFixed)*ratio
+			if corrected.CPU != wantInnerCPU {
+				t.Fatalf("corrected inner CPU = %v, want affine fixed+variable*r = %v", corrected.CPU, wantInnerCPU)
+			}
+			got := concretePlanCost(flatMap, stats, nil)
+			want := properties.FlatMapCost(outerCost, corrected)
+			if got != want {
+				t.Fatalf("capped FlatMap cost = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// The structural PK slice and the physical type slice share primary-key
+// component order. Display spellings do not participate in that alignment:
+// two source slots can render with the same name and still carry different
+// physical tuple domains. A name-keyed map collapsed this case and either
+// declined the FK-chain proof or, after a last-write-wins refactor, could
+// attach the wrong signed-zero theorem to a coordinate.
+func TestAlignIndexPKTypesByCoordinate_DuplicateDisplayNamesStayPositional(t *testing.T) {
+	t.Parallel()
+	domain := values.OrdinalDomainOfColumnNames([]string{"DUP", "DUP"})
+	pk := []values.Value{
+		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 1, values.NotNullFloat, domain),
+		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 0, values.NotNullDouble, domain),
+	}
+	physicalTypes := []values.Type{values.NotNullFloat, values.NotNullDouble}
+	aligned, ok := alignIndexPKTypesByCoordinate(
+		pk, 2, physicalTypes,
+	)
+	if !ok {
+		t.Fatal("coordinate-aligned duplicate display names were declined")
+	}
+	if len(aligned) != 2 || aligned[0] != values.NotNullFloat || aligned[1] != values.NotNullDouble {
+		t.Fatalf("aligned types = %v, want [FLOAT DOUBLE] in PK-component order", aligned)
+	}
+
+	prefixed, ok := alignIndexPKTypesByCoordinate(
+		append([]values.Value{values.NewRecordTypeValue(nil)}, pk...),
+		2, physicalTypes,
+	)
+	if !ok || len(prefixed) != 3 || prefixed[0] != values.UnknownType ||
+		prefixed[1] != values.NotNullFloat || prefixed[2] != values.NotNullDouble {
+		t.Fatalf("record-type-prefixed alignment = %v ok=%v, want [UNKNOWN FLOAT DOUBLE]", prefixed, ok)
 	}
 }

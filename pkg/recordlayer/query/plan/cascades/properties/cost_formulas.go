@@ -148,8 +148,11 @@ func FlatMapCost(outer, inner Cost) Cost {
 // uniqueKeyConjuncts is how many of numPreds conjuncts the caller has PROVEN
 // (plans/cost.go's nestedLoopJoinUniqueKeyConjuncts) to be a full equality
 // bind on the inner leg's own UNIQUE key (primary key or a declared-UNIQUE
-// index). For those conjuncts the flat per-predicate FilterSelectivity guess
-// is provably wrong: a unique-key equality can match AT MOST ONE inner row
+// index), with each logical equality class proved to contain at most one raw
+// key. Signed-zero/NaN float classes, precision-cliff integer classes, nullable
+// NULL binds, and unknown types fail closed before this formula. For accepted
+// conjuncts the flat per-predicate FilterSelectivity guess
+// is provably wrong: the equality can match AT MOST ONE inner row
 // per pair, so their TRUE combined selectivity is exactly 1/innerCard, not
 // FilterSelectivity^uniqueKeyConjuncts. This is the exact invariant
 // FlatMapCost's doc comment requires of this function — the two physical
@@ -165,7 +168,12 @@ func FlatMapCost(outer, inner Cost) Cost {
 // correction is a gated ADDITION, never a replacement of the honest fallback
 // when uniqueness cannot be proven (e.g. a non-unique secondary-index
 // equality join, where the flat guess remains the right answer).
-func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int) Cost {
+func NestedLoopJoinCost(
+	outer, inner Cost,
+	numPreds int,
+	uniqueKeyConjuncts int,
+	preservesOuter bool,
+) Cost {
 	if numPreds < 1 {
 		numPreds = 1
 	}
@@ -181,8 +189,17 @@ func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int)
 			sel *= FilterSelectivity
 		}
 	}
+	cardinality := outerCard * innerCard * sel
+	// LEFT OUTER emits at least one matched-or-NULL-padded row per outer row.
+	// In the full-unique-key case this is exact even with additional ON
+	// conjuncts: those predicates can turn a match into a NULL-padded miss, but
+	// cannot remove the outer row. For non-unique joins it is the required floor
+	// beneath the ordinary selectivity estimate.
+	if preservesOuter && cardinality < outerCard {
+		cardinality = outerCard
+	}
 	return Cost{
-		Cardinality: outerCard * innerCard * sel,
+		Cardinality: cardinality,
 		CPU:         (outer.CPU + inner.CPU + outerCard*innerCard*FilterCPU*float64(numPreds)) * PhysicalWrapperCostMultiplier,
 	}
 }

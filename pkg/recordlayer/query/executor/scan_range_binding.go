@@ -134,6 +134,29 @@ func (e *UnknownPhysicalKeyTypeError) Error() string {
 	)
 }
 
+// UnsupportedPhysicalKeyTypeError reports physical metadata that names a
+// placeholder or structured logical type rather than one concrete scalar FDB
+// tuple carrier. Presence is not authority: ANY, NULL, NONE, RECORD, ARRAY,
+// RELATION, and ENUM do not specify how a query comparand was encoded in the
+// key. Production metadata maps enum fields to their LONG wire carrier; a
+// hand-built/stale plan that carries ENUM itself must therefore fail closed.
+type UnsupportedPhysicalKeyTypeError struct {
+	Component    int
+	Comparison   predicates.ComparisonType
+	PhysicalType values.Type
+}
+
+func (e *UnsupportedPhysicalKeyTypeError) Error() string {
+	typ := "UNKNOWN"
+	if e.PhysicalType != nil {
+		typ = e.PhysicalType.Code().String()
+	}
+	return fmt.Sprintf(
+		"scan comparison %d (%v) has unsupported physical key type %s; a concrete scalar tuple carrier is required",
+		e.Component, e.Comparison, typ,
+	)
+}
+
 // UnsupportedPhysicalStartsWithError reports a STARTS_WITH comparison whose
 // authoritative physical key component is not STRING. PREFIX_STRING tuple
 // endpoints describe a byte prefix of a packed string element; applying them
@@ -321,10 +344,10 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 				continue
 			}
 		}
-		if !hasAuthoritativeScanPhysicalType(physicalType) {
-			return scanRangeSetSpec{}, &UnknownPhysicalKeyTypeError{
-				Component: i, Comparison: comparison.Type,
-			}
+		if err := validateAuthoritativeScanPhysicalType(
+			physicalType, i, comparison.Type,
+		); err != nil {
+			return scanRangeSetSpec{}, err
 		}
 
 		// The inverse of a runtime floating comparand over a physical INT/LONG
@@ -456,8 +479,22 @@ func scanPhysicalTypeAt(keyTypes []values.Type, i int) values.Type {
 	return keyTypes[i]
 }
 
-func hasAuthoritativeScanPhysicalType(physicalType values.Type) bool {
-	return physicalType != nil && physicalType.Code() != values.TypeCodeUnknown
+func validateAuthoritativeScanPhysicalType(
+	physicalType values.Type,
+	component int,
+	comparisonType predicates.ComparisonType,
+) error {
+	if physicalType == nil || physicalType.Code() == values.TypeCodeUnknown {
+		return &UnknownPhysicalKeyTypeError{
+			Component: component, Comparison: comparisonType,
+		}
+	}
+	if !physicalType.Code().IsPrimitive() {
+		return &UnsupportedPhysicalKeyTypeError{
+			Component: component, Comparison: comparisonType, PhysicalType: physicalType,
+		}
+	}
+	return nil
 }
 
 // projectScanComparandToKey performs the physical wire conversion while also
@@ -501,8 +538,8 @@ func projectScanComparandToKey(value any, physicalType values.Type) scanKeyCompa
 // validatePhysicalComparandCarrier verifies the projected Go value against the
 // concrete carrier used when that physical key component was written. nil is
 // admitted for every nullable key and handled by the comparison's SQL NULL
-// semantics at the caller. Unknown or structured physical metadata is not a
-// claim and therefore cannot be validated here.
+// semantics at the caller. The caller has already rejected unknown,
+// placeholder, and structured physical metadata.
 func validatePhysicalComparandCarrier(
 	value any,
 	physicalType values.Type,
@@ -514,10 +551,11 @@ func validatePhysicalComparandCarrier(
 	}
 
 	compatible := true
+	projectedType := fmt.Sprintf("%T", value)
 	switch physicalType.Code() {
 	case values.TypeCodeBoolean:
 		_, compatible = value.(bool)
-	case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeEnum:
+	case values.TypeCodeInt, values.TypeCodeLong:
 		_, compatible = value.(int64)
 	case values.TypeCodeFloat:
 		_, compatible = value.(float32)
@@ -534,12 +572,24 @@ func validatePhysicalComparandCarrier(
 	case values.TypeCodeUuid:
 		_, compatible = value.(tuple.UUID)
 	case values.TypeCodeVersion:
-		_, compatible = value.(tuple.Versionstamp)
+		versionstamp, ok := value.(tuple.Versionstamp)
+		compatible = ok
+		if ok {
+			// Ordinary Tuple.Pack deliberately panics for an incomplete commit
+			// versionstamp. Query bounds cannot meaningfully probe the commit-
+			// version placeholder, so reject it before the range-set fingerprint
+			// or materializer reaches Pack.
+			incomplete, err := tuple.Tuple{versionstamp}.HasIncompleteVersionstamp()
+			if err != nil || incomplete {
+				compatible = false
+				projectedType = "incomplete tuple.Versionstamp"
+			}
+		}
 	default:
-		// NULL/ANY/NONE and structured types are not concrete scalar key
-		// carrier claims. Physical metadata construction normally reports them
-		// as Unknown; failing open here avoids inventing an encoding contract.
-		return nil
+		// validateAuthoritativeScanPhysicalType rejects every non-scalar code
+		// before projection. Retain a fail-closed default in case a new primitive
+		// TypeCode is added without defining its tuple carrier here.
+		compatible = false
 	}
 	if compatible {
 		return nil
@@ -548,7 +598,7 @@ func validatePhysicalComparandCarrier(
 		Component:     component,
 		Comparison:    comparisonType,
 		PhysicalType:  physicalType,
-		ProjectedType: fmt.Sprintf("%T", value),
+		ProjectedType: projectedType,
 	}
 }
 
@@ -780,10 +830,10 @@ func bindRangeTail(
 		if value == nil {
 			return boundRangeTail{kind: boundRangeTailEmpty}, nil
 		}
-		if !hasAuthoritativeScanPhysicalType(physicalType) {
-			return boundRangeTail{}, &UnknownPhysicalKeyTypeError{
-				Component: equalityCount, Comparison: comparison.Type,
-			}
+		if err := validateAuthoritativeScanPhysicalType(
+			physicalType, equalityCount, comparison.Type,
+		); err != nil {
+			return boundRangeTail{}, err
 		}
 		if physicalType.Code() != values.TypeCodeString {
 			return boundRangeTail{}, &UnsupportedPhysicalStartsWithError{
@@ -822,10 +872,10 @@ func bindRangeTail(
 			if value == nil {
 				return boundRangeTail{kind: boundRangeTailEmpty}, nil
 			}
-			if !hasAuthoritativeScanPhysicalType(physicalType) {
-				return boundRangeTail{}, &UnknownPhysicalKeyTypeError{
-					Component: equalityCount, Comparison: inequality.Type,
-				}
+			if err := validateAuthoritativeScanPhysicalType(
+				physicalType, equalityCount, inequality.Type,
+			); err != nil {
+				return boundRangeTail{}, err
 			}
 			if projected, ok := projectRuntimeFloatComparisonToIntegerDomain(
 				value, physicalType, inequality.Type,

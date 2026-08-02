@@ -1000,30 +1000,76 @@ func TestScanRangeSetCursorWholeRangeInitialPassGate(t *testing.T) {
 func TestScanRangeSetCursorWholeRangeGateFailMode(t *testing.T) {
 	t.Parallel()
 
-	properties := recordlayer.ForwardScan()
-	properties.ExecuteProperties.ScannedRecordsLimit = 1
-	properties.ExecuteProperties.FailOnScanLimitReached = true
-	properties.ExecuteProperties.ScanState.AddRecordScanned()
-	opened := 0
-	cursor, err := newScanRangeSetCursor[int](
-		testRangeSetSpec([]uint32{2}, nil),
-		nil,
-		properties,
-		func(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) (recordlayer.RecordCursor[int], error) {
-			opened++
-			return &rangeSetScriptCursor{}, nil
+	tests := []struct {
+		name       string
+		properties func() recordlayer.ScanProperties
+		wantReason recordlayer.NoNextReason
+		wantOpened int
+		wantPulled int
+	}{
+		{
+			name: "records deny the initial pass",
+			properties: func() recordlayer.ScanProperties {
+				properties := recordlayer.ForwardScan()
+				properties.ExecuteProperties.ScannedRecordsLimit = 1
+				properties.ExecuteProperties.ScanState.AddRecordScanned()
+				return properties
+			},
+			wantReason: recordlayer.ScanLimitReached,
 		},
-	)
-	if err != nil {
-		t.Fatalf("construct: %v", err)
+		{
+			name: "bytes retain the initial pass",
+			properties: func() recordlayer.ScanProperties {
+				properties := recordlayer.ForwardScan()
+				properties.ExecuteProperties.ScannedBytesLimit = 1
+				properties.ExecuteProperties.ScanState.AddBytesScanned(1)
+				return properties
+			},
+			wantReason: recordlayer.ByteLimitReached,
+			wantOpened: 1,
+			wantPulled: 1,
+		},
+		{
+			name: "time retains the initial pass",
+			properties: func() recordlayer.ScanProperties {
+				properties := recordlayer.ForwardScan()
+				properties.ExecuteProperties.TimeLimit = time.Nanosecond
+				return properties
+			},
+			wantReason: recordlayer.TimeLimitReached,
+			wantOpened: 1,
+			wantPulled: 1,
+		},
 	}
-	_, err = cursor.OnNext(context.Background())
-	var limitErr *recordlayer.ScanLimitReachedError
-	if !errors.As(err, &limitErr) || limitErr.Reason != recordlayer.ScanLimitReached {
-		t.Fatalf("error = %T %v, want scan-limit failure", err, err)
-	}
-	if opened != 1 {
-		t.Fatalf("opened = %d, want first branch only", opened)
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			properties := test.properties()
+			properties.ExecuteProperties.FailOnScanLimitReached = true
+			opened := 0
+			pulled := 0
+			cursor, err := newScanRangeSetCursor[int](
+				testRangeSetSpec([]uint32{2}, nil),
+				nil,
+				properties,
+				func(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) (recordlayer.RecordCursor[int], error) {
+					opened++
+					return &rangeSetScriptCursor{pullCount: &pulled}, nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			_, err = cursor.OnNext(context.Background())
+			var limitErr *recordlayer.ScanLimitReachedError
+			if !errors.As(err, &limitErr) || limitErr.Reason != test.wantReason {
+				t.Fatalf("error = %T %v, want %v failure", err, err, test.wantReason)
+			}
+			if opened != test.wantOpened || pulled != test.wantPulled {
+				t.Fatalf("opened/pulled = %d/%d, want %d/%d", opened, pulled, test.wantOpened, test.wantPulled)
+			}
+		})
 	}
 }
 

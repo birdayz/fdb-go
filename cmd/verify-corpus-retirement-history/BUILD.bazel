@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "verify-corpus-retirement-history_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/verify-corpus-retirement-history",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/relational/conformance/factorycorpus"],
+)
+
+go_binary(
+    name = "verify-corpus-retirement-history",
+    embed = [":verify-corpus-retirement-history_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "verify-corpus-retirement-history_test",
+    srcs = ["main_test.go"],
+    embed = [":verify-corpus-retirement-history_lib"],
+    deps = ["//pkg/relational/conformance/factorycorpus"],
+)

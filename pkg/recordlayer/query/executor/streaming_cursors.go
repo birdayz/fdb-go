@@ -499,8 +499,9 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// groups. This is deliberate and must stay: when the same GROUP BY is
 		// served by a maintained aggregate index, the grouping prefix IS the
 		// index key, so the two signed zeros are two physical entries that Java
-		// reads the same way (Java's own grouping splits them too — its key is
-		// a protobuf message compared with Double.equals). Canonicalizing here
+		// reads the same way (Java's own grouping splits them too — StreamGrouping
+		// compares DynamicMessage grouping values by object-field equality, so a
+		// DOUBLE field ultimately uses Double.equals). Canonicalizing here
 		// would make the answer depend on whether an aggregate index exists.
 		// packedDedupKey follows the same rule for the same reason; see its doc
 		// comment for the full argument, including why the opposite choice

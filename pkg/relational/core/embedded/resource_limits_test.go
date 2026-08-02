@@ -129,6 +129,16 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 		}
 	}
 
+	// A hand-built/stale plan over a sparse index is a clean unsupported
+	// query, never a generic executor failure and never silently incomplete.
+	{
+		got := translateExecError(&executor.FilteredIndexPlanError{IndexName: "IDX_SPARSE"})
+		var apiErr *api.Error
+		if !errors.As(got, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+			t.Fatalf("FilteredIndexPlanError → %v, want *api.Error 0AF00", got)
+		}
+	}
+
 	// A bare deadline is NO LONGER mapped by translateExecError on its own — the
 	// statement-timeout→54F01 mapping is gated on the internal-timeout context cause
 	// (translateExecErrorCtx) so a caller deadline can survive (see below).

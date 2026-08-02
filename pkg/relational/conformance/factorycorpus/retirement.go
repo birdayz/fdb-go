@@ -1,16 +1,19 @@
 package factorycorpus
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // RetirementLedger is the explicit exception to the corpus growth ratchet.
@@ -23,11 +26,65 @@ type RetirementLedger struct {
 	RFC                string             `json:"rfc"`
 	Date               string             `json:"date"`
 	Reason             string             `json:"reason"`
+	BaseCommit         string             `json:"base_commit"`
 	BeforeCensusSHA256 string             `json:"before_census_sha256"`
 	AfterCensusSHA256  string             `json:"after_census_sha256"`
 	BeforeTreeSHA256   string             `json:"before_tree_sha256"`
 	AfterTreeSHA256    string             `json:"after_tree_sha256"`
 	Changes            []RetirementChange `json:"changes"`
+}
+
+// ValidateRetirementLedgerBefore checks the historical half of a retirement
+// against corpus files materialized from ledger.BaseCommit. The CI history
+// command supplies this directory from raw `git ls-tree`/`git cat-file` blobs,
+// then validates the AFTER side at the unique commit that first added the
+// ledger (and against raw proposed HEAD while that ledger is new to the trusted
+// branch). Both endpoints are therefore anchored to repository history without
+// checkout or archive attributes rewriting evidence, and without making an old
+// ledger compare against a later, legitimately grown corpus.
+func ValidateRetirementLedgerBefore(
+	ledger RetirementLedger,
+	before Census,
+	corpusDir string,
+) error {
+	if err := validateRetirementLedgerMetadata(ledger); err != nil {
+		return err
+	}
+	beforeDigest, err := CensusSHA256(before)
+	if err != nil {
+		return fmt.Errorf("fingerprint before census: %w", err)
+	}
+	if beforeDigest != ledger.BeforeCensusSHA256 {
+		return fmt.Errorf("before census SHA-256 %s, ledger authorizes %s", beforeDigest, ledger.BeforeCensusSHA256)
+	}
+	beforeTree, err := loadCorpusTree(corpusDir)
+	if err != nil {
+		return fmt.Errorf("fingerprint before corpus tree: %w", err)
+	}
+	beforeTreeDigest := corpusTreeSHA256(beforeTree)
+	if beforeTreeDigest != ledger.BeforeTreeSHA256 {
+		return fmt.Errorf("before corpus tree SHA-256 %s at base commit %s, ledger authorizes %s",
+			beforeTreeDigest, ledger.BaseCommit, ledger.BeforeTreeSHA256)
+	}
+	for _, change := range ledger.Changes {
+		digest, exists := beforeTree[change.Name]
+		switch change.Disposition {
+		case DispositionRetired, DispositionReplaced:
+			if !exists {
+				return fmt.Errorf("%s file %s is absent at base commit %s",
+					change.Disposition, change.Name, ledger.BaseCommit)
+			}
+			if digest != change.OldSHA256 {
+				return fmt.Errorf("%s file %s SHA-256 %s at base commit %s, ledger requires %s",
+					change.Disposition, change.Name, digest, ledger.BaseCommit, change.OldSHA256)
+			}
+		case DispositionAdded:
+			if exists {
+				return fmt.Errorf("added file %s already exists at base commit %s", change.Name, ledger.BaseCommit)
+			}
+		}
+	}
+	return nil
 }
 
 // RetirementChange identifies one exact corpus file before and after the
@@ -53,6 +110,9 @@ func LoadRetirementLedger(path string) (RetirementLedger, error) {
 	if err != nil {
 		return ledger, fmt.Errorf("read retirement ledger %s: %w", path, err)
 	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return ledger, fmt.Errorf("parse retirement ledger %s: %w", path, err)
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&ledger); err != nil {
@@ -68,6 +128,115 @@ func LoadRetirementLedger(path string) (RetirementLedger, error) {
 		return ledger, fmt.Errorf("retirement ledger %s: %w", path, err)
 	}
 	return ledger, nil
+}
+
+// rejectDuplicateJSONKeys performs a recursive token pass before decoding into
+// the typed ledger. encoding/json otherwise accepts duplicate object keys with
+// last-value-wins semantics, case-insensitively matches struct fields, and
+// replaces invalid UTF-8. A governance authorization must have one unambiguous
+// interpretation of the base commit, endpoint digest, filename, and
+// disposition it names.
+func rejectDuplicateJSONKeys(data []byte) error {
+	if !utf8.Valid(data) {
+		return fmt.Errorf("ledger is not valid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	return scanJSONValueForDuplicateKeys(decoder, "$")
+}
+
+var retirementLedgerJSONKeys = map[string]struct{}{
+	"format_version":       {},
+	"rfc":                  {},
+	"date":                 {},
+	"reason":               {},
+	"base_commit":          {},
+	"before_census_sha256": {},
+	"after_census_sha256":  {},
+	"before_tree_sha256":   {},
+	"after_tree_sha256":    {},
+	"changes":              {},
+}
+
+var retirementChangeJSONKeys = map[string]struct{}{
+	"name":        {},
+	"disposition": {},
+	"old_sha256":  {},
+	"new_sha256":  {},
+}
+
+func canonicalRetirementKeysAt(jsonPath string) map[string]struct{} {
+	if jsonPath == "$" {
+		return retirementLedgerJSONKeys
+	}
+	if strings.HasPrefix(jsonPath, "$.changes[") && strings.HasSuffix(jsonPath, "]") &&
+		!strings.Contains(strings.TrimPrefix(jsonPath, "$.changes["), "].") {
+		return retirementChangeJSONKeys
+	}
+	return nil
+}
+
+func scanJSONValueForDuplicateKeys(decoder *json.Decoder, jsonPath string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		canonicalKeys := canonicalRetirementKeysAt(jsonPath)
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("object key at %s is %T, want string", jsonPath, keyToken)
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON object key %q at %s", key, jsonPath)
+			}
+			if canonicalKeys != nil {
+				if _, canonical := canonicalKeys[key]; !canonical {
+					return fmt.Errorf("non-canonical JSON object key %q at %s", key, jsonPath)
+				}
+			}
+			seen[key] = struct{}{}
+			if err := scanJSONValueForDuplicateKeys(decoder, jsonPath+"."+key); err != nil {
+				return err
+			}
+		}
+		closing, closeErr := decoder.Token()
+		if closeErr != nil {
+			return closeErr
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("object at %s closed by %v", jsonPath, closing)
+		}
+		return nil
+	case '[':
+		index := 0
+		for decoder.More() {
+			if err := scanJSONValueForDuplicateKeys(decoder, fmt.Sprintf("%s[%d]", jsonPath, index)); err != nil {
+				return err
+			}
+			index++
+		}
+		closing, closeErr := decoder.Token()
+		if closeErr != nil {
+			return closeErr
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("array at %s closed by %v", jsonPath, closing)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q at %s", delim, jsonPath)
+	}
 }
 
 // CorpusTreeSHA256 fingerprints every flat YAML file in corpusDir, including
@@ -94,8 +263,9 @@ func CensusSHA256(c Census) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// ValidateRetirementTransition authorizes a ratchet shrink only when both
-// census endpoints and every resulting file match the reviewed ledger.
+// ValidateRetirementTransition authorizes one non-additive corpus transition
+// only when both census endpoints and every resulting file match the reviewed
+// ledger. The census can remain flat for a content replacement.
 func ValidateRetirementTransition(ledger RetirementLedger, before, after Census, corpusDir string) error {
 	beforeDigest, err := CensusSHA256(before)
 	if err != nil {
@@ -162,14 +332,17 @@ func ValidateRetirementLedgerAfter(ledger RetirementLedger, after Census, corpus
 }
 
 func validateRetirementLedgerMetadata(ledger RetirementLedger) error {
-	if ledger.FormatVersion != 1 {
-		return fmt.Errorf("format_version %d, want 1", ledger.FormatVersion)
+	if ledger.FormatVersion != 2 {
+		return fmt.Errorf("format_version %d, want 2", ledger.FormatVersion)
 	}
-	if ledger.RFC == "" || ledger.Date == "" || strings.TrimSpace(ledger.Reason) == "" {
+	if strings.TrimSpace(ledger.RFC) == "" || ledger.Date == "" || strings.TrimSpace(ledger.Reason) == "" {
 		return fmt.Errorf("rfc, date, and reason are required")
 	}
 	if parsed, err := time.Parse("2006-01-02", ledger.Date); err != nil || parsed.Format("2006-01-02") != ledger.Date {
 		return fmt.Errorf("date %q is not YYYY-MM-DD", ledger.Date)
+	}
+	if !validGitCommit(ledger.BaseCommit) {
+		return fmt.Errorf("base_commit must be a lowercase full Git object ID")
 	}
 	if !validSHA256(ledger.BeforeCensusSHA256) || !validSHA256(ledger.AfterCensusSHA256) ||
 		!validSHA256(ledger.BeforeTreeSHA256) || !validSHA256(ledger.AfterTreeSHA256) {
@@ -180,8 +353,8 @@ func validateRetirementLedgerMetadata(ledger RetirementLedger) error {
 	}
 	seen := make(map[string]struct{}, len(ledger.Changes))
 	for i, change := range ledger.Changes {
-		if filepath.Base(change.Name) != change.Name || filepath.Ext(change.Name) != ".yaml" {
-			return fmt.Errorf("changes[%d] name %q is not a flat .yaml corpus name", i, change.Name)
+		if !IsPortableCorpusFilename(change.Name) {
+			return fmt.Errorf("changes[%d] name %q is not a portable flat .yaml corpus name", i, change.Name)
 		}
 		if _, duplicate := seen[change.Name]; duplicate {
 			return fmt.Errorf("changes[%d] duplicates %s", i, change.Name)
@@ -205,6 +378,40 @@ func validateRetirementLedgerMetadata(ledger RetirementLedger) error {
 		}
 	}
 	return nil
+}
+
+// IsPortableCorpusFilename reports whether name is one lowercase-ASCII flat
+// YAML basename on both POSIX and Windows. The restricted alphabet prevents
+// forbidden characters, Unicode normalization ambiguity, and case-folding
+// collisions; Windows device names remain forbidden separately.
+func IsPortableCorpusFilename(name string) bool {
+	if name == "" || !utf8.ValidString(name) || strings.TrimSpace(name) != name ||
+		path.Base(name) != name || filepath.Base(name) != name ||
+		strings.ContainsAny(name, `/\:`) || filepath.IsAbs(name) ||
+		filepath.VolumeName(name) != "" || path.Ext(name) != ".yaml" {
+		return false
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-' {
+			return false
+		}
+	}
+	stem := strings.TrimSuffix(name, ".yaml")
+	deviceStem := strings.ToUpper(strings.SplitN(stem, ".", 2)[0])
+	switch deviceStem {
+	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return false
+	}
+	return true
+}
+
+func validGitCommit(value string) bool {
+	if len(value) != 40 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func loadCorpusTree(corpusDir string) (map[string]string, error) {

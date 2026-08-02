@@ -38,6 +38,9 @@ func executeAggregateIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: aggregate index %q not found", idxPlan.GetIndexName())
 	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
+	}
 	maintainer, err := store.GetIndexMaintainer(idx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", idxPlan.GetIndexName(), err)

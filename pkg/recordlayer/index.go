@@ -486,29 +486,57 @@ func (idx *Index) GetBooleanOption(key string, defaultVal bool) bool {
 // SetPredicateProto for predicates that must survive metadata round-tripping.
 func (idx *Index) SetPredicate(p IndexPredicate) *Index {
 	idx.Predicate = p
+	// A programmatic predicate has no serializable representation. Clear any
+	// previously installed proto so replacing (or clearing) a deserialized
+	// predicate cannot retain stale serialized semantics on the next metadata
+	// round trip.
+	idx.predicateProto = nil
 	return idx
 }
 
 // SetPredicateProto sets a predicate from a proto message. This both stores
 // the proto for round-tripping and builds an evaluator function.
 func (idx *Index) SetPredicateProto(p *gen.Predicate) error {
-	idx.predicateProto = p
-	if p != nil {
-		fn, err := predicateFromProto(p)
-		if err != nil {
-			return fmt.Errorf("index %s: predicate: %w", idx.Name, err)
-		}
-		idx.Predicate = fn
-	} else {
+	if p == nil {
+		idx.predicateProto = nil
 		idx.Predicate = nil
+		return nil
 	}
+	// Take ownership before compiling. predicateFromProto may build closures
+	// from the message, so retaining caller-owned mutable protobuf storage would
+	// let a post-Set mutation desynchronize serialized semantics from the
+	// already-published evaluator.
+	owned := proto.Clone(p).(*gen.Predicate)
+	fn, err := predicateFromProto(owned)
+	if err != nil {
+		// Compile before publishing either representation. A rejected proto must
+		// leave the previously valid predicate intact, not create a half-updated
+		// sparse index whose evaluator and serialization disagree.
+		return fmt.Errorf("index %s: predicate: %w", idx.Name, err)
+	}
+	idx.predicateProto = owned
+	idx.Predicate = fn
 	return nil
 }
 
 // GetPredicateProto returns the proto representation of the predicate, if any.
-// Returns nil for programmatic Go predicates set via SetPredicate().
+// Returns nil for programmatic Go predicates set via SetPredicate(). The
+// returned message is a defensive clone: callers cannot mutate the evaluator's
+// serialized authority through this accessor.
 func (idx *Index) GetPredicateProto() *gen.Predicate {
-	return idx.predicateProto
+	if idx == nil || idx.predicateProto == nil {
+		return nil
+	}
+	return proto.Clone(idx.predicateProto).(*gen.Predicate)
+}
+
+// HasPredicate reports whether this is a sparse/filtered index. Check both
+// representations: programmatic Go predicates have only Predicate, while
+// serialized metadata carries predicateProto (and normally its compiled
+// evaluator too). Keeping one authority prevents planner adapters from
+// accidentally admitting one representation but not the other.
+func (idx *Index) HasPredicate() bool {
+	return idx != nil && (idx.Predicate != nil || idx.predicateProto != nil)
 }
 
 // PrimaryKeyComponentPositions returns the overlap mapping between index key and primary key.

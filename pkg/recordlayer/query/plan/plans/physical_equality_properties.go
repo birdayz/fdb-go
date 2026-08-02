@@ -24,15 +24,15 @@ func provenFullEqualityMultiplicity(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,
 	keyColumnCount int,
+	semantics properties.KeyUniquenessSemantics,
 ) (multiplicity int64, known bool) {
-	if !properties.EqualityBoundsCoverKey(comps, keyColumnCount) {
+	multiplicityBound := properties.ProvenFullEqualityMultiplicity(
+		comps, physicalTypes, keyColumnCount, semantics,
+	)
+	if multiplicityBound.IsUnknown() {
 		return 0, false
 	}
-	shape := physicalEqualityShape(comps, physicalTypes, true)
-	if shape.UnsupportedKnownNaN || shape.ProvenRowMultiplicity.IsUnknown() {
-		return 0, false
-	}
-	return shape.ProvenRowMultiplicity.Value(), true
+	return multiplicityBound.Value(), true
 }
 
 // addPhysicalRangeSeekCost attaches fixed plural-range setup to a leaf's

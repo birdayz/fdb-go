@@ -160,10 +160,15 @@ func newCascadesPlanner(
 	popts plannerOptions,
 	planningRules []cascades.ExpressionRule,
 	stats properties.StatisticsProvider,
+	indexStates ...map[string]recordlayer.IndexState,
 ) *cascades.Planner {
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md, popts.config)
+	var authoritativeStates map[string]recordlayer.IndexState
+	if len(indexStates) > 0 {
+		authoritativeStates = indexStates[0]
+	}
+	planCtx := buildCascadesPlanContext(md, popts.config, authoritativeStates)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
 		WithPlanningExpressionRules(planningRules).

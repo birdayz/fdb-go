@@ -39,39 +39,70 @@ func scanRangeTestEq(t *testing.T, value any) *predicates.ComparisonRange {
 	)
 }
 
-func TestBindScanComparisonsToRangeSet_NonTerminalDoubleZero(t *testing.T) {
+func TestBindScanComparisonsToRangeSet_NonTerminalFloatingZero(t *testing.T) {
 	t.Parallel()
-	comparisons := []*predicates.ComparisonRange{
-		scanRangeTestEq(t, float64(0)),
-		scanRangeTestEq(t, int64(5)),
+	carriers := []struct {
+		name         string
+		physicalType values.Type
+		negativeZero any
+		positiveZero any
+	}{
+		{name: "DOUBLE", physicalType: values.NotNullDouble, negativeZero: math.Copysign(0, -1), positiveZero: float64(0)},
+		{name: "FLOAT", physicalType: values.NotNullFloat, negativeZero: math.Float32frombits(1 << 31), positiveZero: float32(0)},
 	}
-	spec, err := bindScanComparisonsToRangeSet(
-		comparisons,
-		[]values.Type{values.NotNullDouble, values.NotNullLong},
-		nil,
-		false,
-		"idx:T_VW",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spec.empty {
-		t.Fatal("zero equality unexpectedly produced an empty range set")
-	}
-	if got, want := spec.alternativeCounts, []uint32{2, 1}; !equalUint32s(got, want) {
-		t.Fatalf("alternative counts = %v, want %v", got, want)
-	}
+	for _, carrier := range carriers {
+		carrier := carrier
+		for _, comparisonType := range []predicates.ComparisonType{
+			predicates.ComparisonEquals,
+			predicates.ComparisonNotDistinctFrom,
+		} {
+			comparisonType := comparisonType
+			for _, input := range []struct {
+				name string
+				zero any
+			}{
+				{name: "negative", zero: carrier.negativeZero},
+				{name: "positive", zero: carrier.positiveZero},
+			} {
+				input := input
+				name := fmt.Sprintf("%s/%v/%s", carrier.name, comparisonType, input.name)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					comparisons := []*predicates.ComparisonRange{
+						scanRangeTestComparison(t, comparisonType, values.LiteralValue(input.zero)),
+						scanRangeTestEq(t, int64(5)),
+					}
+					spec, err := bindScanComparisonsToRangeSet(
+						comparisons,
+						[]values.Type{carrier.physicalType, values.NotNullLong},
+						nil,
+						false,
+						"idx:T_VW",
+					)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if spec.empty {
+						t.Fatal("zero equality unexpectedly produced an empty range set")
+					}
+					if got, want := spec.alternativeCounts, []uint32{2, 1}; !equalUint32s(got, want) {
+						t.Fatalf("alternative counts = %v, want %v", got, want)
+					}
 
-	negative, err := spec.materialize([]uint32{0, 0})
-	if err != nil {
-		t.Fatal(err)
+					negative, err := spec.materialize([]uint32{0, 0})
+					if err != nil {
+						t.Fatal(err)
+					}
+					positive, err := spec.materialize([]uint32{1, 0})
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertExactZeroRange(t, negative, carrier.negativeZero, int64(5))
+					assertExactZeroRange(t, positive, carrier.positiveZero, int64(5))
+				})
+			}
+		}
 	}
-	positive, err := spec.materialize([]uint32{1, 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertExactZeroRange(t, negative, true, int64(5))
-	assertExactZeroRange(t, positive, false, int64(5))
 }
 
 func TestBindScanComparisonsToRangeSet_ReverseZeroOrder(t *testing.T) {
@@ -97,8 +128,8 @@ func TestBindScanComparisonsToRangeSet_ReverseZeroOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertExactZeroRange(t, first, false, int64(5))
-	assertExactZeroRange(t, second, true, int64(5))
+	assertExactZeroRange(t, first, float64(0), int64(5))
+	assertExactZeroRange(t, second, math.Copysign(0, -1), int64(5))
 }
 
 func TestBindScanComparisonsToRangeSet_TwoZerosCartesianWithoutMaterialization(t *testing.T) {
@@ -548,7 +579,7 @@ func TestBindScanComparisonsToRangeSet_UnknownPhysicalTypeNeverInfersNonNullCarr
 	}
 }
 
-func TestBindScanComparisonsToRangeSet_UnknownPhysicalTypeAllowsTypeIndependentNullSemantics(t *testing.T) {
+func TestBindScanComparisonsToRangeSet_NonAuthoritativePhysicalTypeAllowsTypeIndependentNullSemantics(t *testing.T) {
 	t.Parallel()
 
 	physicalVariants := []struct {
@@ -557,6 +588,13 @@ func TestBindScanComparisonsToRangeSet_UnknownPhysicalTypeAllowsTypeIndependentN
 	}{
 		{name: "missing metadata", keyTypes: nil},
 		{name: "explicit Unknown metadata", keyTypes: []values.Type{values.UnknownType}},
+		{name: "NULL metadata", keyTypes: []values.Type{values.NullType}},
+		{name: "ANY metadata", keyTypes: []values.Type{values.AnyType}},
+		{name: "NONE metadata", keyTypes: []values.Type{values.NoneType}},
+		{name: "RECORD metadata", keyTypes: []values.Type{values.NewRecordType("R", false, nil)}},
+		{name: "ARRAY metadata", keyTypes: []values.Type{values.NewArrayType(false, values.NotNullLong)}},
+		{name: "RELATION metadata", keyTypes: []values.Type{values.NewRelationType(values.NotNullLong)}},
+		{name: "ENUM metadata", keyTypes: []values.Type{values.NewEnumType("E", false, nil)}},
 	}
 	for _, physical := range physicalVariants {
 		physical := physical
@@ -639,6 +677,56 @@ func TestBindScanComparisonsToRangeSet_UnknownPhysicalTypeAllowsTypeIndependentN
 			if len(isNotNullRange.Low) != 1 || isNotNullRange.Low[0] != nil ||
 				isNotNullRange.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 				t.Fatalf("IS NOT NULL range = %+v, want (NULL, tree-end]", isNotNullRange)
+			}
+		})
+	}
+}
+
+func TestBindScanComparisonsToRangeSet_NonScalarPhysicalTypeFailsClosedBeforePacking(t *testing.T) {
+	t.Parallel()
+
+	physicalTypes := []values.Type{
+		values.NullType,
+		values.AnyType,
+		values.NoneType,
+		values.NewRecordType("R", false, nil),
+		values.NewArrayType(false, values.NotNullLong),
+		values.NewRelationType(values.NotNullLong),
+		values.NewEnumType("E", false, nil),
+	}
+	for _, physicalType := range physicalTypes {
+		physicalType := physicalType
+		t.Run(physicalType.Code().String(), func(t *testing.T) {
+			t.Parallel()
+			for _, comparisonType := range []predicates.ComparisonType{
+				predicates.ComparisonEquals,
+				predicates.ComparisonGreaterThan,
+			} {
+				comparisonType := comparisonType
+				t.Run(fmt.Sprint(comparisonType), func(t *testing.T) {
+					t.Parallel()
+					// []any is deliberately not an FDB tuple carrier. Before the
+					// fail-closed type gate it reached range-set fingerprinting for
+					// structured/placeholder metadata and Tuple.Pack panicked.
+					operand := &values.ConstantValue{
+						Value: []any{int64(1)},
+						Typ:   values.UnknownType,
+					}
+					_, err := bindScanComparisonsToRangeSet(
+						[]*predicates.ComparisonRange{
+							scanRangeTestComparison(t, comparisonType, operand),
+						},
+						[]values.Type{physicalType}, nil, false, "unsupported-physical-type",
+					)
+					var unsupported *UnsupportedPhysicalKeyTypeError
+					if !errors.As(err, &unsupported) {
+						t.Fatalf("error = %T(%v), want UnsupportedPhysicalKeyTypeError", err, err)
+					}
+					if unsupported.Component != 0 || unsupported.Comparison != comparisonType ||
+						unsupported.PhysicalType.Code() != physicalType.Code() {
+						t.Fatalf("unsupported physical error = %+v", unsupported)
+					}
+				})
 			}
 		})
 	}
@@ -751,6 +839,7 @@ func TestBindScanComparisonsToRangeSet_IncompatiblePhysicalComparandIsLoud(t *te
 		{name: "BYTES string", physicalType: values.NotNullBytes, runtimeValue: "a"},
 		{name: "UUID unpromoted string", physicalType: values.NotNullUuid, runtimeValue: "550e8400-e29b-41d4-a716-446655440000"},
 		{name: "VERSION string", physicalType: values.NotNullVersion, runtimeValue: "version"},
+		{name: "VERSION incomplete placeholder", physicalType: values.NotNullVersion, runtimeValue: tuple.IncompleteVersionstamp(7)},
 	}
 
 	for _, test := range tests {
@@ -1985,21 +2074,48 @@ func TestBindScanComparisonsToRangeSet_StateIsLinearInComponents(t *testing.T) {
 func assertExactZeroRange(
 	t *testing.T,
 	rng recordlayer.TupleRange,
-	wantNegative bool,
+	wantZero any,
 	wantSuffix int64,
 ) {
 	t.Helper()
 	if len(rng.Low) != 2 || len(rng.High) != 2 {
 		t.Fatalf("range = %+v, want exact two-component tuple", rng)
 	}
-	zero, ok := rng.Low[0].(float64)
-	if !ok || zero != 0 || math.Signbit(zero) != wantNegative {
-		t.Fatalf("zero = %T(%v), signbit=%v, want negative=%v", rng.Low[0], rng.Low[0], math.Signbit(zero), wantNegative)
+	wantWidth, wantNegative, ok := floatingZeroIdentity(wantZero)
+	if !ok {
+		t.Fatalf("test setup: expected zero = %T(%v), want FLOAT or DOUBLE zero", wantZero, wantZero)
+	}
+	for _, endpoint := range []struct {
+		name  string
+		value any
+	}{
+		{name: "low", value: rng.Low[0]},
+		{name: "high", value: rng.High[0]},
+	} {
+		width, negative, isZero := floatingZeroIdentity(endpoint.value)
+		if !isZero || width != wantWidth || negative != wantNegative {
+			t.Fatalf("%s zero = %T(%v), identity=(width:%d negative:%v zero:%v), want width:%d negative:%v",
+				endpoint.name, endpoint.value, endpoint.value, width, negative, isZero, wantWidth, wantNegative)
+		}
+	}
+	if !bytes.Equal(rng.Low.Pack(), rng.High.Pack()) {
+		t.Fatalf("range endpoints pack differently: low=%x high=%x", rng.Low.Pack(), rng.High.Pack())
 	}
 	if rng.Low[1] != wantSuffix || rng.High[1] != wantSuffix ||
 		rng.LowEndpoint != recordlayer.EndpointTypeRangeInclusive ||
 		rng.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("range = %+v, want allOf([zero,%d])", rng, wantSuffix)
+	}
+}
+
+func floatingZeroIdentity(value any) (width int, negative bool, ok bool) {
+	switch zero := value.(type) {
+	case float32:
+		return 32, math.Signbit(float64(zero)), zero == 0
+	case float64:
+		return 64, math.Signbit(zero), zero == 0
+	default:
+		return 0, false, false
 	}
 }
 

@@ -33,9 +33,12 @@ package sqldriver_test
 // The cost is real and deliberate: `WHERE v = 0` matches BOTH rows (cmpAny is
 // IEEE, and the index range is widened to agree with it — see
 // negative_zero_index_sarg_probe_test.go), while DISTINCT keeps them apart. In
-// strict SQL those should agree. They cannot here, and Java is in the same
-// state. CockroachDB merges only because it normalizes zero inside its own key
-// encoder; that option is closed to a port whose encoder is Java's.
+// strict SQL those should agree. They cannot here. Java is internally split:
+// its boxed SimpleComparison equality distinguishes the signs and agrees with
+// tuple/set identity, while direct RelOpValue primitive equality merges them
+// and would have the same equality-vs-DISTINCT mismatch as Go. CockroachDB
+// merges only because it normalizes zero inside its own key encoder; that
+// option is closed to a port whose encoder is Java's.
 
 import (
 	"context"

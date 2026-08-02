@@ -1,6 +1,7 @@
 package factorycorpus_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -11,22 +12,17 @@ import (
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 )
 
-func TestRFC205RetirementLedgerMatchesCommittedCorpus(t *testing.T) {
+// The exact AFTER snapshot is intentionally not compared with today's corpus
+// here: later corpus growth must not invalidate an immutable historical
+// retirement. cmd/verify-corpus-retirement-history validates it against the
+// Git commit that first added this ledger (and against the worktree while the
+// ledger is new to the trusted branch). This hermetic test pins RFC-205's
+// reviewed transaction shape while the generic validator tests endpoint logic.
+func TestRFC205RetirementLedgerShape(t *testing.T) {
 	t.Parallel()
 	ledger, err := factorycorpus.LoadRetirementLedger(filepath.Join("retirements", "2026-08-01-rfc205.json"))
 	if err != nil {
 		t.Fatalf("LoadRetirementLedger: %v", err)
-	}
-	files, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
-	if err := factorycorpus.ValidateRetirementLedgerAfter(
-		ledger,
-		factorycorpus.ComputeCensus(files),
-		factorycorpus.TestdataDir,
-	); err != nil {
-		t.Fatalf("retirement ledger no longer describes the committed corpus: %v", err)
 	}
 	counts := map[string]int{}
 	for _, change := range ledger.Changes {
@@ -52,6 +48,150 @@ func TestLoadRetirementLedgerRejectsTrailingJSON(t *testing.T) {
 	}
 	if _, err := factorycorpus.LoadRetirementLedger(path); err == nil || !strings.Contains(err.Error(), "trailing content") {
 		t.Fatalf("LoadRetirementLedger trailing JSON error = %v, want a trailing-content rejection", err)
+	}
+}
+
+func TestLoadRetirementLedgerRejectsWhitespaceOnlyRFC(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("retirements", "2026-08-01-rfc205.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"rfc": "RFC-205"`), []byte(`"rfc": "   "`), 1)
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factorycorpus.LoadRetirementLedger(path); err == nil || !strings.Contains(err.Error(), "rfc, date, and reason are required") {
+		t.Fatalf("whitespace-only RFC error = %v, want required-field rejection", err)
+	}
+}
+
+func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join("retirements", "2026-08-01-rfc205.json")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		data []byte
+		key  string
+	}{
+		{
+			name: "top-level endpoint",
+			data: bytes.Replace(data,
+				[]byte(`"base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169",`),
+				[]byte(`"base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169", "base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169",`),
+				1,
+			),
+			key: "base_commit",
+		},
+		{
+			name: "nested change name",
+			data: bytes.Replace(data,
+				[]byte(`{"name":`),
+				[]byte(`{"name":"duplicate.yaml","name":`),
+				1,
+			),
+			key: "name",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if bytes.Equal(test.data, data) {
+				t.Fatalf("test mutation for %s did not change source", test.key)
+			}
+			path := filepath.Join(t.TempDir(), "ledger.json")
+			if err := os.WriteFile(path, test.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := factorycorpus.LoadRetirementLedger(path); err == nil ||
+				!strings.Contains(err.Error(), `duplicate JSON object key "`+test.key+`"`) {
+				t.Fatalf("duplicate %s error = %v, want duplicate-key rejection", test.key, err)
+			}
+		})
+	}
+}
+
+func TestLoadRetirementLedgerRequiresCanonicalKeysAndUTF8(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join("retirements", "2026-08-01-rfc205.json")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasonPrefix := []byte(`"reason": "`)
+	reasonIndex := bytes.Index(data, reasonPrefix)
+	if reasonIndex < 0 {
+		t.Fatal("test ledger has no reason field")
+	}
+	invalidUTF8 := append([]byte(nil), data...)
+	insertAt := reasonIndex + len(reasonPrefix)
+	invalidUTF8 = append(invalidUTF8[:insertAt], append([]byte{0xff}, invalidUTF8[insertAt:]...)...)
+	tests := []struct {
+		name, want string
+		data       []byte
+	}{
+		{
+			name: "case-variant top-level field",
+			data: bytes.Replace(data, []byte(`"rfc": "RFC-205"`),
+				[]byte(`"RFC": "RFC-205"`), 1),
+			want: `non-canonical JSON object key "RFC" at $`,
+		},
+		{
+			name: "case-variant nested field",
+			data: bytes.Replace(data, []byte(`"name":`),
+				[]byte(`"Name":`), 1),
+			want: `non-canonical JSON object key "Name" at $.changes[0]`,
+		},
+		{name: "invalid UTF-8", data: invalidUTF8, want: "ledger is not valid UTF-8"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if bytes.Equal(test.data, data) {
+				t.Fatal("test mutation did not change source ledger")
+			}
+			path := filepath.Join(t.TempDir(), "ledger.json")
+			if err := os.WriteFile(path, test.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := factorycorpus.LoadRetirementLedger(path); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("canonical ledger error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestPortableCorpusFilename(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		want bool
+	}{
+		{name: "fc_0000000001_q0_p0.yaml", want: true},
+		{name: "nested/file.yaml"},
+		{name: `nested\file.yaml`},
+		{name: `C:\file.yaml`},
+		{name: "../file.yaml"},
+		{name: "CON.yaml"},
+		{name: "lpt9.anything.yaml"},
+		{name: "trailing.yaml "},
+		{name: "control\x1f.yaml"},
+		{name: "less<than.yaml"},
+		{name: "greater>than.yaml"},
+		{name: `quote"name.yaml`},
+		{name: "pipe|name.yaml"},
+		{name: "question?.yaml"},
+		{name: "star*.yaml"},
+		{name: "café.yaml"},
+		{name: "upper.YAML"},
+		{name: "Upper.yaml"},
+	} {
+		if got := factorycorpus.IsPortableCorpusFilename(test.name); got != test.want {
+			t.Errorf("IsPortableCorpusFilename(%q) = %v, want %v", test.name, got, test.want)
+		}
 	}
 }
 
@@ -92,10 +232,11 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := factorycorpus.RetirementLedger{
-		FormatVersion:      1,
+		FormatVersion:      2,
 		RFC:                "RFC-test",
 		Date:               "2026-08-01",
 		Reason:             "a measured test retirement",
+		BaseCommit:         strings.Repeat("a", 40),
 		BeforeCensusSHA256: beforeDigest,
 		AfterCensusSHA256:  afterDigest,
 		BeforeTreeSHA256:   beforeTreeDigest,
@@ -107,6 +248,9 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 	}
 	if err := factorycorpus.ValidateRetirementTransition(ledger, before, after, dir); err != nil {
 		t.Fatalf("valid transition: %v", err)
+	}
+	if err := factorycorpus.ValidateRetirementLedgerBefore(ledger, before, beforeDir); err != nil {
+		t.Fatalf("valid historical before tree: %v", err)
 	}
 
 	tampered := ledger
@@ -134,6 +278,12 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 	}
 	if err := factorycorpus.ValidateRetirementTransition(ledger, before, after, dir); err == nil {
 		t.Fatal("unlisted corpus edit was accepted")
+	}
+	if err := os.WriteFile(filepath.Join(beforeDir, "replacement.yaml"), []byte("invented old bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := factorycorpus.ValidateRetirementLedgerBefore(ledger, before, beforeDir); err == nil {
+		t.Fatal("ledger accepted old bytes that do not exist in the anchored before tree")
 	}
 }
 

@@ -154,3 +154,61 @@ func TestPointProbeProofsAgreeOnWideningEquality(t *testing.T) {
 		}
 	})
 }
+
+func TestUniqueIndexProofsAgreeOnNullableNullAndComparisonGaps(t *testing.T) {
+	t.Parallel()
+	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
+		t.Helper()
+		merged := predicates.EmptyComparisonRange().Merge(&comparison)
+		if !merged.Ok {
+			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
+		}
+		return merged.Range
+	}
+	isNull := rangeOf(predicates.Comparison{Type: predicates.ComparisonIsNull})
+	equality := rangeOf(predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7)))
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{testIndexDef{
+		name: "U", columns: []string{"V"}, recordTypes: []string{"T"}, unique: true,
+	}})
+	for _, test := range []struct {
+		name      string
+		comps     []*predicates.ComparisonRange
+		types     []values.Type
+		wantKnown bool
+		wantMax   int64
+	}{
+		{name: "nullable IS NULL", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.NullableLong}},
+		{name: "non-leading equality gap", comps: []*predicates.ComparisonRange{predicates.EmptyComparisonRange(), equality}, types: []values.Type{values.NotNullLong, values.NotNullLong}},
+		{name: "ordinary non-null equality", comps: []*predicates.ComparisonRange{equality}, types: []values.Type{values.NullableLong}, wantKnown: true, wantMax: 1},
+		{name: "IS NULL on NOT NULL key is empty", comps: []*predicates.ComparisonRange{isNull}, types: []values.Type{values.NotNullLong}, wantKnown: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			plan := plans.NewRecordQueryIndexPlan(
+				"U", test.comps, []string{"T"}, values.UnknownType, false,
+			).WithKeyComponentTypes(test.types).
+				WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
+
+			propertyMax := computeCardinalities(nil, plan).GetMaxCardinality()
+			logicalMax, logicalKnown := indexProvableMaxCard(plan)
+			concreteMax, concreteKnown := indexPlanProvableMaxCard(plan, []string{"V"}, true)
+			if (!propertyMax.IsUnknown()) != test.wantKnown || logicalKnown != test.wantKnown || concreteKnown != test.wantKnown {
+				t.Fatalf("proof agreement = propertyKnown:%v logicalKnown:%v concreteKnown:%v, want %v", !propertyMax.IsUnknown(), logicalKnown, concreteKnown, test.wantKnown)
+			}
+			if test.wantKnown {
+				if propertyMax.Value() != test.wantMax || int64(logicalMax) != test.wantMax || int64(concreteMax) != test.wantMax {
+					t.Fatalf("proof maxima = property:%d logical:%v concrete:%v, want %d", propertyMax.Value(), logicalMax, concreteMax, test.wantMax)
+				}
+			}
+			cost := concretePlanCost(plan, properties.FixedStatistics{Cardinality: 1000}, ctx)
+			if test.wantKnown {
+				if cost.Cardinality != float64(test.wantMax) {
+					t.Fatalf("concrete cost cardinality = %v, want %d", cost.Cardinality, test.wantMax)
+				}
+			} else if cost.Cardinality <= 1 {
+				t.Fatalf("unproven unique access was priced as a point probe: %+v", cost)
+			}
+		})
+	}
+}

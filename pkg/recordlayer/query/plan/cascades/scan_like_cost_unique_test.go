@@ -27,12 +27,16 @@ func TestScanLikeCost_UniqueGating(t *testing.T) {
 
 	// Provably unique full-equality bind → exactly 1 row.
 	physicalTypes := []values.Type{values.NullableLong}
-	if got := scanLikeCost(comps, physicalTypes, []string{"T"}, stats, true).Cardinality; got != 1 {
+	if got := scanLikeCost(
+		comps, physicalTypes, []string{"T"}, stats, 1, properties.TupleKeyUnique,
+	).Cardinality; got != 1 {
 		t.Fatalf("unique full-equality bind: cardinality=%v, want 1", got)
 	}
 
 	// Non-unique full-equality bind → a bucket, well above 1.
-	nonUniq := scanLikeCost(comps, physicalTypes, []string{"T"}, stats, false).Cardinality
+	nonUniq := scanLikeCost(
+		comps, physicalTypes, []string{"T"}, stats, 0, properties.TupleKeyUnique,
+	).Cardinality
 	if nonUniq <= 1 {
 		t.Fatalf("non-unique full-equality bind: cardinality=%v, want >1 (bucket)", nonUniq)
 	}

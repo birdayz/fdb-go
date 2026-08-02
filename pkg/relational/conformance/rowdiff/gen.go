@@ -1351,9 +1351,12 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	case 2:
 		// NULLABLE sort key (A, C, S, D, or E) with a NULLS placement drawn
 		// from {default, FIRST, LAST}; ID suffix keeps the total order
-		// unique. D/E (DOUBLE/FLOAT) exercise compareSortKey's float64 arm —
-		// the FDB-tuple total order (signed zero split, values.CompareFloat64),
-		// which deliberately disagrees with predicate equality on -0.0/+0.0.
+		// unique. D/E (DOUBLE/FLOAT) exercise compareSortKey's float64 arm.
+		// On this generator's deliberately NaN-free domain (see the ColType
+		// comment), values.CompareFloat64 agrees with the relevant FDB tuple/index
+		// order, including the signed-zero split. It does NOT agree for arbitrary
+		// raw NaN signs/payloads, which this generator never emits. The sort order
+		// deliberately disagrees with predicate equality on -0.0/+0.0.
 		col := []string{"A", "C", "S", "D", "E"}[rng.IntN(5)]
 		orderBy = []OrderKey{
 			{Col: col, Desc: rng.IntN(2) == 0, Nulls: NullsPlacement(rng.IntN(3))},

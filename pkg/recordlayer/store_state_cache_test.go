@@ -949,6 +949,80 @@ var _ = Describe("Store State Cache", func() {
 			Expect(dbEntries).To(Equal(0))
 		})
 
+		It("pass-through per-store override observes a non-cacheable index-state transition", func() {
+			ss := specSubspace()
+			idxMd := buildMetaDataWithIndex()
+			dbCache := NewMetaDataVersionStampStoreStateCache()
+			sharedDB.SetStoreStateCache(dbCache)
+			defer sharedDB.SetStoreStateCache(PassThroughStoreStateCache())
+
+			// Create the default NON-cacheable store, then populate the database
+			// cache with its initial all-READABLE state.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, openErr := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(idxMd).
+					SetSubspace(ss).
+					SetDatabase(sharedDB).
+					CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				Expect(store.storeHeader.GetCacheable()).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, openErr := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(idxMd).
+					SetSubspace(ss).
+					SetDatabase(sharedDB).
+					Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				Expect(store.GetIndexState("test_idx")).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mutate through a fresh FDB-backed view. Non-cacheable stores do not
+			// bump the metadata-version stamp, so the inherited dbCache entry is
+			// intentionally the adversarial stale value for the final open.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, openErr := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(idxMd).
+					SetSubspace(ss).
+					SetDatabase(sharedDB).
+					SetStoreStateCache(PassThroughStoreStateCache()).
+					Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				_, markErr := store.MarkIndexWriteOnly("test_idx")
+				return nil, markErr
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, openErr := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(idxMd).
+					SetSubspace(ss).
+					SetDatabase(sharedDB).
+					SetStoreStateCache(PassThroughStoreStateCache()).
+					Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				Expect(store.GetIndexState("test_idx")).To(Equal(IndexStateWriteOnly))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("Clear removes all cached entries", func() {
 			ss := specSubspace()
 			cache := NewMetaDataVersionStampStoreStateCache()

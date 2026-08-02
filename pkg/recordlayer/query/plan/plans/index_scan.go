@@ -74,8 +74,10 @@ type RecordQueryIndexPlan struct {
 	// createsDuplicates signal, because positions after an exploded key part
 	// are not one globally sorted logical stream.
 	pkColumnNames []string
-	// unique reports whether the index is declared UNIQUE — an all-equality
-	// scan over a unique index's full key yields at most one row.
+	// unique reports whether the index is declared UNIQUE. A full equality
+	// bind then has a bounded physical-key multiplicity only when component
+	// types and values prove it: normally one, 2^k for k signed-zero float
+	// components, and unknown for NULL under NULLS-DISTINCT semantics.
 	unique bool
 	// valueColumnNames are the covering-only columns of a KeyWithValue root —
 	// stored in the FDB VALUE, past the split point. They extend the covering
@@ -308,7 +310,7 @@ func (p *RecordQueryIndexPlan) ProducesDistinctRecords() bool {
 // WithIndexMetadata returns a shallow copy carrying the index's key columns,
 // the record type's primary-key columns, and the UNIQUE flag. These describe
 // the INDEX, not the scan: they are inputs to ordering derivation and to the
-// point-lookup arm of the cost model.
+// full-equality physical-multiplicity arm of the cost model.
 //
 // The names and UNIQUE bit remain derived metadata of the named index. The
 // physical key-type vectors are different: they govern probe multiplicity and

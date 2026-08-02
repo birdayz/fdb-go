@@ -1424,12 +1424,15 @@ func FuzzLikeMatchEscape(f *testing.F) {
 	})
 }
 
-// cmpAny is the PREDICATE comparator. On floats it checks IEEE numeric equality
-// FIRST (-0.0 == +0.0), then falls to the Double.compare total order only for
-// ordering and NaN. So: -0.0 == +0.0 (`-0.0 = 0.0` is TRUE, `-0.0 >= 0.0` keeps
-// the row — a Go-correct divergence from Java's Double.compare, pinned by the
-// RFC-082 corpus); NaN is never equal to a number (`NaN = 5.0` false, `NaN > 5.0`
-// true) but NaN == NaN (matching Java Double.equals). This deliberately DIFFERS
+// cmpAny is the PREDICATE comparator. Java exposes two relevant predicate
+// surfaces: legacy boxed equality uses Double.equals (zero signs distinct, all
+// NaNs equal), while direct RelOpValue EQ_DD uses primitive `==` (zero signs
+// equal, every NaN unequal). Go deliberately combines the useful halves: it
+// checks IEEE numeric equality FIRST (-0.0 == +0.0), then falls to the
+// Double.compare total order for ordering and NaN. Thus -0.0 == +0.0, NaN is
+// unequal to every number, and all NaNs compare equal. It matches Java RelOp
+// for signed zero and boxed equality for NaN, but neither Java surface in full.
+// This deliberately DIFFERS
 // from the SORT total order (values.CompareFloat64, -0.0 < 0.0, tested in
 // values.TestCompareFloat64) — predicate truth may exceed Java; sort order must
 // match the FDB tuple/index. Native `<`/`>` would report every NaN pair as EQUAL.
@@ -1487,7 +1490,8 @@ func TestCmpAny_FloatTotalOrder(t *testing.T) {
 		{"nan_greater_than_int_mixed", nan, int64(100), 1, true},
 		{"int_less_than_nan_mixed", int64(100), nan, -1, true},
 		// cmpAny is the PREDICATE comparator: -0.0 == +0.0 (IEEE numeric equality),
-		// so `-0.0 >= 0.0` keeps the -0.0 row (Go-correct vs Java, RFC-082). The SORT
+		// so `-0.0 >= 0.0` keeps the -0.0 row (matching Java's primitive RelOp path,
+		// differing from its boxed path; RFC-082). The SORT
 		// total order (values.CompareFloat64, -0.0 < 0.0) is tested separately in
 		// values.TestCompareFloat64 — the two deliberately differ on signed zero.
 		{"neg_zero_equals_pos_zero_predicate", negZero, 0.0, 0, true},

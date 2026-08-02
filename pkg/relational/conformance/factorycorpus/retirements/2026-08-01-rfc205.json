@@ -1,8 +1,9 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "rfc": "RFC-205",
   "date": "2026-08-01",
   "reason": "RFC-205 rejects unsafe ordered FLOAT/DOUBLE range access and replaces zero equality's single-probe/fixedness claim with exact plural ranges; 24 obsolete plan points no longer admit a distinct MatchLeaf-disabled plan, while 27 points were re-blessed and 3 new points were added by a 4,337-candidate real-FDB replay with zero findings.",
+  "base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169",
   "before_census_sha256": "f42a794148a14afef705db6fe27675eb8715e2a4f56cae2c799d547a81cd14f2",
   "after_census_sha256": "48d7bd6605265aadda42310823a7c74fc59a58a3642311eeae5e5f0f3d197261",
   "before_tree_sha256": "ec631ddb1d07d63cb23e39a2709245143e798b27e7bb1804dd2c5d4a7b1c0d67",

@@ -62,7 +62,8 @@ func TestPhysicalEqualityScanLikeCost_DynamicAndOverflowRemainFinite(t *testing.
 	comps := []*predicates.ComparisonRange{merged.Range, pkGateEq(t, int64(5))}
 	types := []values.Type{values.NotNullDouble, values.NotNullLong}
 	cost := scanLikeCost(
-		comps, types, []string{"T"}, properties.FixedStatistics{Cardinality: 1000}, true,
+		comps, types, []string{"T"}, properties.FixedStatistics{Cardinality: 1000},
+		len(comps), properties.TupleKeyUnique,
 	)
 	if cost.Cardinality == 1 || cost.Cardinality == 2 {
 		t.Fatalf("dynamic float cardinality = %v, must remain a conservative estimate, not a point/fanout proof", cost.Cardinality)
@@ -88,7 +89,8 @@ func TestPhysicalEqualityScanLikeCost_DynamicAndOverflowRemainFinite(t *testing.
 		zeroTypes[i] = values.NotNullDouble
 	}
 	overflow := scanLikeCost(
-		zeros, zeroTypes, []string{"T"}, properties.FixedStatistics{Cardinality: 1000}, true,
+		zeros, zeroTypes, []string{"T"}, properties.FixedStatistics{Cardinality: 1000},
+		len(zeros), properties.TupleKeyUnique,
 	)
 	if math.IsNaN(overflow.Cardinality) || math.IsInf(overflow.Cardinality, 0) ||
 		math.IsNaN(overflow.CPU) || math.IsInf(overflow.CPU, 0) {
