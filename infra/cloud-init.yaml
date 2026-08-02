@@ -445,7 +445,27 @@ runcmd:
       # supervisor's public key in runner's authorized_keys (installed by the
       # operator at cutover; a fresh provision needs it re-installed before the
       # supervisor can launch slots here).
-      true
+      #
+      # "No service" has to be ENFORCED, not merely not-configured. write_files
+      # installs bazelscaleset.service on every box regardless of mode, and these
+      # boxes are typically repurposed from a scaleset/classic provision that
+      # enabled runner-watchdog.timer -- whose whole job is `systemctl restart
+      # bazelscaleset.service` whenever that unit is not active. On a worker the
+      # supervisor binary is never installed, so the pair becomes a perpetual
+      # motion machine: the unit dies with status 127, the watchdog restarts it
+      # ten minutes later, forever. Measured across the pool: NRestarts of 1143,
+      # 94, 4115 and 2141 against a binary that was never there, and the unit
+      # reporting `disabled` the whole time, which is what made it easy to miss.
+      #
+      # There is exactly ONE listener per scale set and it lives on the main box.
+      # Stop the unit, delete it, mask the name so nothing can recreate it, and
+      # stop the watchdog that would otherwise keep resurrecting it.
+      systemctl disable --now bazelscaleset.service 2>/dev/null || true
+      systemctl disable --now runner-watchdog.timer 2>/dev/null || true
+      rm -f /etc/systemd/system/bazelscaleset.service
+      rm -rf /etc/systemd/system/bazelscaleset.service.d
+      systemctl daemon-reload
+      systemctl mask bazelscaleset.service 2>/dev/null || true
     elif [ "$RUNNER_MODE" = "classic" ]; then
       # Break-glass: the classic register-and-listen runner (the wedge-prone path RFC-155
       # replaces). --disableupdate (codex) keeps it on the reviewed runner_version/SHA.
