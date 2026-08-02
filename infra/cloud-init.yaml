@@ -492,7 +492,12 @@ runcmd:
     # disk_cache/repository_cache at them unconditionally, so a classic runner without
     # them dies with "ERROR: [unix_jni.cc] /mnt/ci-data/bazel-disk-cache (Permission
     # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
-    install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
+    # vulndb-mirror: cmd/vulnscan mirrors the vulnerability database here instead
+    # of fetching one document per advisory from vuln.go.dev on every job, which a
+    # fleet sharing a small address block gets 403-rate-limited for. The volume root
+    # is root-owned 0755, so the runner cannot create this itself and the scan
+    # fails closed (correctly) with "nothing to scan against".
+    install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache /mnt/ci-data/vulndb-mirror
     RUNNER_MODE="${runner_mode}"
     if [ "$RUNNER_MODE" = "worker" ]; then
       # Remote-slot worker for the bazelscaleset supervisor (one listener on the
