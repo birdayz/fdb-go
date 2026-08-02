@@ -151,6 +151,65 @@ when the equivalence is over an ordered sequence rather than a multiset.
 durable reproducers rather than deleted: each one is the exact shape that broke, and the
 `ordered: true` flags are what make them able to express the defect at all.
 
+## CI capacity — declare heavy targets' cost instead of remembering it per call site
+
+### [ ] Tag container-backed test targets with `resources:memory` so Bazel stops packing them
+
+Three nightly race steps were each running four race-instrumented FDB testcontainers on
+the 7.6 GB runner — the shape that starved PR #577 — and all three were fixed by writing
+`--local_test_jobs=1` at the step. That fix is per-invocation and has already been
+forgotten once *in the same file*: `nightly-coverage.yml`'s first race step sat three
+steps above the one that did carry the cap, and `nightly-fuzz.yml` was found only by
+adding a gate. The knob does not travel with the target, and it cannot say "these two are
+heavy, those twelve are free", so it drags a whole lane to the pace of its worst member.
+
+The durable fix is to declare cost where the target is defined. MEASURED on Bazel 9.0.1,
+six-test fixture, `--local_test_jobs=4`, counting actual concurrency:
+
+| declaration | concurrent |
+|---|---|
+| no tag | 4 |
+| `size = "large"` | 4 |
+| `size = "enormous"` | 4 |
+| `--local_resources=memory=4500`, no tag | **4** |
+| `tags = ["resources:memory:2000"]`, budget 4500 | 2 |
+| `tags = ["resources:memory:1200"]`, budget 4500 | 3 |
+| `tags = ["cpu:2"]`, `--local_resources=cpu=4` | 2 |
+| `tags = ["cpu:4"]`, `--local_resources=cpu=4` | 1 |
+| `tags = ["exclusive"]` | 1 |
+
+So `--local_resources=memory` bounds Bazel's memory *accounting* and gates nothing, and
+`size` gates nothing — which is exactly why three steps read as bounded while none were.
+Only a `resources:` / `cpu:` tag gates local packing.
+
+Per-target peaks, MEASURED under `-race` at `GOMAXPROCS=4` on four pinned cores, run to
+completion:
+
+| target | peak RSS |
+|---|---|
+| `//pkg/relational/conformance/factorycorpus/full:full_test` | 5607376 KB = **5.35 GiB** (steady ~3.4 GiB) |
+| `//pkg/relational/sqldriver:sqldriver_test` | ~1.16 GiB |
+
+Proposed: `tags = ["resources:memory:5600"]` on `factorycorpus/full`,
+`resources:memory:1300` on `sqldriver_test`, and leave every other target untagged until
+measured. Then `--local_resources=memory=HOST_RAM*0.6` becomes the budget it is currently
+mistaken for, and `--local_test_jobs=1` can come back off the steps that only need it
+because one member is heavy.
+
+**What this needs that I could not supply:** validation on a 7.6 GB box (or the real
+runner). The open question is Bazel's behaviour when a single action's declared cost
+EXCEEDS the whole budget — `HOST_RAM*0.6` of 7.6 GB is ~4.56 GB, and `factorycorpus/full`
+measured 5.35 GB, so its tag is larger than the budget it is scheduled against. Bazel is
+expected to clamp and run it alone, but that is inference, not measurement, and getting it
+wrong deadlocks the lane rather than slowing it. This repo's box is 62 GB, where the
+question cannot be reproduced. Do not guess it on the wrong hardware — that is how the
+`~5 GB` figure got deleted as "unmeasured" in the first place when it was simply true.
+
+Related: `pkg/docscheck`'s `TestNightlyRaceStepsDeclareTheirJobCount` currently requires
+every race-instrumented nightly step to WRITE `--local_test_jobs`. If the tags land, that
+gate should be revisited — the point of the tags is that the number stops needing to be
+restated at each call site.
+
 ## FDB client — conflicting-keys readback (debugging surface + skew instrument)
 
 ### [ ] Implement `report_conflicting_keys` + `\xff\xff/transaction/conflicting_keys/` in the pure-Go client
