@@ -162,6 +162,43 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	return nil
 }
 
+// matchingColumns returns EVERY column of tbl whose name matches id — Java's
+// per-attribute lookup, which appends one candidate per matching output
+// expression rather than stopping at the first (SemanticAnalyzer.java:417,
+// :422 then reject a list longer than one with AMBIGUOUS_COLUMN).
+//
+// Base tables cannot repeat a column name, so this differs from
+// Table.LookupColumn only for the synthesised sources that CAN: a derived
+// table whose body repeats a star, or a CTE over one.
+//
+// The fast path is deliberate — Columns() copies defensively, and the
+// overwhelming majority of lookups are against base tables.
+func matchingColumns(tbl Table, id Identifier) []Column {
+	first, ok := tbl.LookupColumn(id)
+	if !ok {
+		return nil
+	}
+	var out []Column
+	seenFirst := false
+	for _, c := range tbl.Columns() {
+		if !c.Id.EqualsIgnoreQuoting(id) {
+			continue
+		}
+		if !seenFirst {
+			seenFirst = true
+			continue
+		}
+		if out == nil {
+			out = []Column{first}
+		}
+		out = append(out, c)
+	}
+	if out == nil {
+		return []Column{first}
+	}
+	return out
+}
+
 // ResolveColumn looks up a bare column reference (no qualifier)
 // against the scope's sources, following the parent chain if no
 // local match. Ambiguous matches within a single scope level
@@ -185,7 +222,15 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 		if src.hidesColumn(id) {
 			continue
 		}
-		if c, ok := src.Table.LookupColumn(id); ok {
+		// EVERY matching attribute of the source counts, not the first.
+		// Java's lookup walks the operator's output expressions and appends
+		// each match into one list, so a source that emits the name TWICE
+		// (a derived body with a repeated star: `SELECT a.*, a.* FROM a`)
+		// contributes two candidates and the reference is ambiguous
+		// (SemanticAnalyzer.java:417,:422). A first-match lookup answered
+		// such a reference off column 0 instead — silently, since duplicate
+		// output names are legal to PRODUCE and only illegal to REFERENCE.
+		for _, c := range matchingColumns(src.Table, id) {
 			matches = append(matches, struct {
 				col Column
 				src ScopeSource
@@ -317,7 +362,9 @@ func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column,
 				aliasSeen = true
 				firstAliasTable = src.Table.Name()
 			}
-			if c, ok := src.Table.LookupColumn(col); ok {
+			// Per-attribute, exactly as the bare form: a source emitting the
+			// name twice makes `nested.id` ambiguous, not first-match.
+			for _, c := range matchingColumns(src.Table, col) {
 				matches = append(matches, struct {
 					col       Column
 					src       ScopeSource

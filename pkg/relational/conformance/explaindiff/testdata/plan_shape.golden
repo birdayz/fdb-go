@@ -1022,9 +1022,9 @@ shape:   RecordQueryScanPlan
 sql:   SELECT * FROM a WHERE id = 1 ORDER BY id
 plan:  Scan(A, [=])
 shape: RecordQueryScanPlan
-=== ambiguous_column.yaml#12 expect-error=22023
+=== ambiguous_column.yaml#12 expect-error=42702
 sql:   SELECT id FROM (SELECT a.*, a.* FROM a) AS nested
-plan:  <PLAN-ERROR: 22023: qualifier "A" expanded more than once in SELECT list — duplicate columns>
+plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>
 === ambiguous_group_key_reread.yaml#0 expect-error=42702
 sql:   SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id HAVING id > 0
 plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>

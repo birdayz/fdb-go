@@ -102,15 +102,86 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 		}))
 	})
 
-	// Test 12: SELECT a.*, a.* creates duplicate columns in derived table.
-	// Should error 22023 (invalid_parameter_value).
-	t.Run("select_duplicate_star_derived_table_error", func(t *testing.T) {
+	// Test 12, both halves. A repeated qualified star is a legal PRODUCER and
+	// an ambiguous name only where it is REFERENCED — Java's expandStar carries
+	// no uniqueness rule (SemanticAnalyzer.java:332-347), and AMBIGUOUS_COLUMN
+	// comes from resolveIdentifier's lookup returning more than one matching
+	// attribute (SemanticAnalyzer.java:417,:422). Both halves are live-JVM
+	// measured in conformance/duplicate_star_java_probe_test.go.
+	//
+	// The producer half is the one that must not regress quietly: rejecting it
+	// (Go once answered 22023 here) reports an error on a query Java answers
+	// with rows, and reports it on the INNER select — so the outer 42702 that
+	// is the real error never happens, and a test asserting only the outer
+	// error would still pass with the producer wrongly rejected.
+	t.Run("duplicate_star_producer_is_legal", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		rows, err := db.QueryContext(ctx, "SELECT a.*, a.* FROM a ORDER BY a.id")
+		g.Expect(err).NotTo(gomega.HaveOccurred(), "a repeated qualified star is legal in Java")
+		defer rows.Close()
+		cols, err := rows.Columns()
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(cols).To(gomega.Equal([]string{"ID", "NAME", "ID", "NAME"}))
+		type row struct {
+			id1   int64
+			name1 string
+			id2   int64
+			name2 string
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			g.Expect(rows.Scan(&r.id1, &r.name1, &r.id2, &r.name2)).To(gomega.Succeed())
+			got = append(got, r)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(got).To(gomega.Equal([]row{
+			{1, "alpha", 1, "alpha"},
+			{2, "beta", 2, "beta"},
+		}))
+	})
+
+	// The consumer half: a bare reference to a name the derived row carries
+	// twice is 42702, with Java's exact message text.
+	t.Run("duplicate_star_derived_bare_reference_is_ambiguous", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		_, err := db.QueryContext(ctx,
 			"SELECT id FROM (SELECT a.*, a.* FROM a) AS nested")
-		g.Expect(err).To(gomega.HaveOccurred(), "SELECT a.*, a.* in derived table should error")
-		g.Expect(err.Error()).To(gomega.ContainSubstring("22023"),
-			"expected error code 22023, got: %v", err)
+		g.Expect(err).To(gomega.HaveOccurred(),
+			"a reference to a doubly-emitted name must be ambiguous")
+		g.Expect(err.Error()).To(gomega.ContainSubstring("42702"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("Ambiguous reference ID"))
+	})
+
+	// The qualified spelling of the same reference — Java renders the
+	// reference AS WRITTEN, so the message carries the qualifier.
+	t.Run("duplicate_star_derived_qualified_reference_is_ambiguous", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		_, err := db.QueryContext(ctx,
+			"SELECT nested.id FROM (SELECT a.*, a.* FROM a) AS nested")
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("42702"))
+		g.Expect(err.Error()).To(gomega.ContainSubstring("Ambiguous reference NESTED.ID"))
+	})
+
+	// The negative that keeps the ambiguity check honest: a name the derived
+	// row carries ONCE still resolves, even though the body duplicates a
+	// DIFFERENT name. A per-source (rather than per-attribute) duplicate
+	// detector would reject this too.
+	t.Run("duplicate_star_derived_unique_reference_answers", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		rows, err := db.QueryContext(ctx,
+			"SELECT name FROM (SELECT a.id, a.id, a.name FROM a) AS nested ORDER BY name")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var n string
+			g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+			names = append(names, n)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(names).To(gomega.Equal([]string{"alpha", "beta"}))
 	})
 
 	// Reversed qualified stars over a same-schema self-join: `SELECT t2.*,

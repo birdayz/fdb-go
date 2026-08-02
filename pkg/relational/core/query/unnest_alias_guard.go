@@ -35,7 +35,13 @@ import (
 //     pin in array_unnest_ordinality_fdb_test.go. The guard keeps a future
 //     producer that skips the default from reaching the constructor assert
 //     (the panic-audit assert-locality rule puts the user-facing rejection
-//     HERE, at translation).
+//     HERE, in this predicate).
+//
+// The predicate is applied at two points, and both are load-bearing:
+// RejectUnnestAliasCollisions runs it over the FROM tree during FROM-scope
+// analysis (so the binding error precedes reference resolution), and the
+// translation rejects run it again for any path that reaches translation
+// without the FROM-scope pass.
 func unnestAliasReject(u *logical.LogicalUnnest) *api.Error {
 	if u.AtAlias == "" {
 		return nil
@@ -48,6 +54,35 @@ func unnestAliasReject(u *logical.LogicalUnnest) *api.Error {
 		return api.NewErrorf(api.ErrCodeDuplicateAlias,
 			"lateral unnest AT alias %q collides with the reserved element column name %q; add an AS alias or rename the ordinal",
 			u.AtAlias, values.OrdinalFieldName(0))
+	}
+	return nil
+}
+
+// RejectUnnestAliasCollisions applies unnestAliasReject to every lateral
+// unnest in a logical tree, so the binding error surfaces at FROM-scope
+// analysis rather than at translation.
+//
+// The ORDER is the point, not the reach. `FROM t, t.arr AS X AT X` binds two
+// different things — the element and the ordinal — to one range-variable
+// name, and Java's visitAtomTableItem rejects that where the binding is made,
+// before any SELECT-list reference is resolved against it. Left to
+// translation, the duplicate binding stays live long enough for the semantic
+// scope to see one source carrying the name twice and answer the reference
+// with an ambiguity (42702) — a true statement about a scope that should
+// never have been built, and the wrong error for the query.
+func RejectUnnestAliasCollisions(op logical.LogicalOperator) error {
+	if op == nil {
+		return nil
+	}
+	if u, ok := op.(*logical.LogicalUnnest); ok {
+		if err := unnestAliasReject(u); err != nil {
+			return err
+		}
+	}
+	for _, ch := range op.Children() {
+		if err := RejectUnnestAliasCollisions(ch); err != nil {
+			return err
+		}
 	}
 	return nil
 }

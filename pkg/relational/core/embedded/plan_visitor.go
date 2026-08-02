@@ -42,6 +42,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -500,6 +501,14 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 		if err := rejectAtOrdinalityOnTableWithCTEs(op, v.md, cteNames); err != nil {
 			return nil, err
 		}
+	}
+	// An unnest binding two things to ONE range-variable name (`AS X AT X`) is
+	// a binding error, and it belongs here — at FROM analysis, before any
+	// reference is resolved against the scope that binding would build. Left to
+	// translation it survives long enough for a SELECT-list reference to see
+	// the name twice in one source and report an ambiguity instead. RFC-142.
+	if err := query.RejectUnnestAliasCollisions(op); err != nil {
+		return nil, err
 	}
 
 	// Step 2: WHERE → wrap with filter directly from ANTLR.

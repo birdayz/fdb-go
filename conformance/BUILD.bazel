@@ -86,6 +86,7 @@ go_test(
         "divergence_holds_test.go",
         "duplicate_alias_java_probe_test.go",
         "duplicate_groupby_java_probe_test.go",
+        "duplicate_star_java_probe_test.go",
         "entry_conforms_test.go",
         "error_conformance_test.go",
         "existence_check_conformance_test.go",

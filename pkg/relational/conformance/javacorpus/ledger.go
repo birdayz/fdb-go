@@ -230,6 +230,17 @@ const (
 	// single-unnest form works; the translator has no lowering for a second
 	// one, and declines loudly (0AF00) rather than dropping a leg. RFC-142.
 	SkipGapMultipleLateralUnnests SkipClass = "engine-gap:multiple-lateral-unnests"
+	// SkipGapStarGroupBy is a qualified star in a SELECT list that also carries
+	// GROUP BY. Java expands the star FIRST and then requires each expanded
+	// output to be composable from the grouping expressions, the aggregates and
+	// the outer correlations (LogicalOperator.java:435-441, isComposableFrom →
+	// GROUPING_ERROR), so `SELECT a.* … GROUP BY a1, a2, a3` over a table with
+	// exactly those columns is LEGAL. Go rejects every star-with-GROUP-BY
+	// unconditionally at parse time, where no schema is in hand to expand
+	// against — measured against the live JVM in
+	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
+	// group_by_star_exceeds).
+	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -274,6 +285,7 @@ func AllSkipClasses() []SkipClass {
 		SkipGapResultMetadata,
 		SkipGapSerializationOptions,
 		SkipGapMultipleLateralUnnests,
+		SkipGapStarGroupBy,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,

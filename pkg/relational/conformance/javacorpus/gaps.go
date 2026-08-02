@@ -191,10 +191,27 @@ var engineGaps = []EngineGap{
 	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
 	// :902-916).
 	{"star-expression-metadata.yamsql", SkipGapStructQuery, `"SELECT (*) FROM foo"`, "RFC-204 P3"},
-	// Duplicate qualified-star expansion: Java raises 42702 (ambiguous
-	// column) where Go raises its own 22023 for the same shape — the star
-	// expansion port that RFC-204 §4.4 carries.
-	{"select-a-star.yamsql", SkipGapStructQuery, "expecting '42702' error code, got '22023'", "RFC-204 P3"},
+	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
+	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
+	// `SELECT A.*, A.* FROM A` is legal and the 42702 comes from the OUTER
+	// reference finding two matching attributes (SemanticAnalyzer.java:417,
+	// :422); Go raised its own 22023 at the producer instead. Removing that
+	// rejection, deriving the derived table's schema THROUGH the star, and
+	// counting matches per-attribute makes Go answer the inner query with rows
+	// and the outer reference with 42702 and Java's exact message text — both
+	// halves live-JVM verified (conformance/duplicate_star_java_probe_test.go).
+	//
+	// The file then reaches a gap that has nothing to do with structs, and one
+	// this run measured rather than inferred: a qualified star in a SELECT list
+	// that ALSO carries GROUP BY. Java expands the star first and requires each
+	// expanded output to be composable from the grouping expressions plus the
+	// aggregates plus the outer correlations (LogicalOperator.java:435-441), so
+	// a star covering exactly the grouping list is legal and only a star
+	// exceeding it is 42803. Go rejects the shape unconditionally in the
+	// classifier, which runs before any schema is available to expand against.
+	// Booked to that gap at its own exact rejection, so the struct class no
+	// longer claims the file and the real blocker is counted under its own name.
+	{"select-a-star.yamsql", SkipGapStarGroupBy, "SELECT qualifier.* expands to columns not in GROUP BY", "CQ-72"},
 
 	// NOT struct-related, re-armed by the struct DML landing (these files'
 	// later blocks run for the first time):

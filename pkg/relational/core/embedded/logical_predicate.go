@@ -466,12 +466,6 @@ func buildDerivedTableSourceFromTerm(
 			return semantic.ScopeSource{}, false
 		}
 	}
-	for _, qual := range innerSQ.projStarQualifiers {
-		if qual != "" {
-			return semantic.ScopeSource{}, false
-		}
-	}
-
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 	innerTbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
@@ -490,8 +484,36 @@ func buildDerivedTableSourceFromTerm(
 			projCols[i] = projCol{name: c.Id.Name(), bare: c.Id.Name()}
 		}
 	}
+	// The body's own visible source names, so a qualified-star slot can be
+	// expanded here: the body is single-source at this point (joins declined
+	// above), so `x.*` is the whole table exactly when `x` names it.
+	bodySourceName := innerSQ.tableAlias
+	if bodySourceName == "" {
+		segs := strings.Split(innerSQ.tableName, ".")
+		bodySourceName = segs[len(segs)-1]
+	}
+
 	columns := make([]semantic.Column, 0, len(projCols))
 	for i, col := range projCols {
+		// A qualified-star slot expands to the body source's columns — the
+		// SAME expansion the plan build performs (expandQualifiedStars), done
+		// here so the derived table's schema is the row the body really emits.
+		//
+		// Declining instead was silent, and silently WRONG: the caller drops
+		// the whole resolver on a decline, so the outer SELECT's references
+		// were never adjudicated at all. `SELECT id FROM (SELECT a.*, a.* FROM
+		// a) nested` answered rows off the first ID where Java raises 42702
+		// (live-JVM measured), because the ambiguity only exists in a schema
+		// nothing built.
+		if i < len(innerSQ.projStarQualifiers) && innerSQ.projStarQualifiers[i] != "" {
+			if !strings.EqualFold(innerSQ.projStarQualifiers[i], bodySourceName) {
+				return semantic.ScopeSource{}, false
+			}
+			for _, c := range semantic.NonEphemeral(innerTbl.Columns()) {
+				columns = append(columns, c)
+			}
+			continue
+		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
 		if bareName == "" {
@@ -3359,23 +3381,20 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	if err := check(cls.projQualifier); err != nil {
 		return err
 	}
-	// Detect duplicate qualifier-star references. `SELECT a.*, a.* FROM a`
-	// would expand to duplicate columns (id, name, id, name). Java errors
-	// 42702 at the outer SELECT referencing the ambiguous column; Go
-	// surfaces 22023 here because expanding the same source twice produces
-	// a column list the downstream materialiser/executor can't disambiguate.
-	starSeen := make(map[string]bool, len(cls.projStarQualifiers))
+	// A qualifier repeated across star slots (`SELECT a.*, a.* FROM a`) is
+	// LEGAL: Java's expandStar has no uniqueness rule (SemanticAnalyzer.java
+	// :332-347 resolves each star independently), so the row simply carries
+	// the source's columns twice. Ambiguity is not a property of producing
+	// duplicate names — it is a property of REFERENCING one, and Java raises
+	// it exactly there, when resolveIdentifier's lookup returns more than one
+	// matching attribute (SemanticAnalyzer.java:417,:422 → AMBIGUOUS_COLUMN).
+	// Rejecting the producer instead reported 22023 on a query Java answers
+	// with rows, and reported it on the INNER select of
+	// `SELECT A1 FROM (SELECT A.*, A.* FROM A) nested` — before the outer
+	// reference that is the actual error.
 	for _, q := range cls.projStarQualifiers {
 		if err := check(q); err != nil {
 			return err
-		}
-		if q != "" {
-			up := strings.ToUpper(q)
-			if starSeen[up] {
-				return api.NewErrorf(api.ErrCodeInvalidParameter,
-					"qualifier %q expanded more than once in SELECT list — duplicate columns", q)
-			}
-			starSeen[up] = true
 		}
 	}
 	return nil
