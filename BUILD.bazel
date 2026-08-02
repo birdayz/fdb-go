@@ -3,6 +3,12 @@ load("@rules_go//go:def.bzl", "nogo")
 
 exports_files(["buf.yaml"])
 
+# The console output budget lives here, and the factory corpus's -test.v
+# framing floor has to stay under it or a corpus red names nothing. Staged as
+# data for TestSubtestFramingFitsLogCap in
+# //pkg/relational/conformance/factorycorpus:factorycorpus_test.
+exports_files([".bazelrc"])
+
 # Living docs exported as data for the RFC-131 doc-consistency guard
 # (//pkg/docscheck:docscheck_test). MODULE.bazel is the version source of truth.
 exports_files([

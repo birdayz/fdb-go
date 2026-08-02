@@ -29,11 +29,13 @@ go_library(
         "header.go",
         "load.go",
         "run.go",
+        "summary.go",
         "writer.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/factorycorpus",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
@@ -62,11 +64,23 @@ go_test(
         "family_test.go",
         "format_gate_test.go",
         "header_duplicate_test.go",
+        "incomplete_test.go",
+        "summary_test.go",
         "writer_test.go",
     ],
-    data = glob(["testdata/**"]) + ["census_baseline.json"],
+    # keep: TestSubtestFramingFitsLogCap reads the console output budget from
+    # .bazelrc and fails when the corpus's -test.v framing grows into it. Past
+    # that budget Bazel discards a failing target's output wholesale, so a
+    # corpus red would name no scenario.
+    # keep
+    data = glob(["testdata/**"]) + [
+        "census_baseline.json",
+        "//:.bazelrc",
+    ],
     deps = [
         ":factorycorpus",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
     ],

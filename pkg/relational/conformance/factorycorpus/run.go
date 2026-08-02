@@ -2,10 +2,12 @@ package factorycorpus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 )
 
@@ -36,6 +38,24 @@ func RunScenario(ctx context.Context, clusterFile string, s *Scenario) javacorpu
 // failure wearing the quietest possible output.
 func CheckResult(s *Scenario, res javacorpus.FileResult) error {
 	if res.Status == javacorpus.StatusFail {
+		// "The committed expectation no longer holds" is a claim about what the
+		// ENGINE ANSWERED, and it is false when the query never produced an
+		// answer at all. A scenario that ran out of wall-clock is a statement
+		// about the machine it ran on, and reporting it as a changed answer
+		// sends a triager hunting a planner regression that is not there.
+		//
+		// Measured: at four-way parallelism under -race the corpus loses ~14
+		// scenarios per run this way (37 deadline expiries and 5 execution-limit
+		// errors over three runs), while at 24-way it loses none. Same corpus,
+		// same engine, same commit.
+		//
+		// This still FAILS — a scenario that cannot finish inside its budget is
+		// a real problem, and a suite that swallows it is worse than one that
+		// misnames it. It only stops the failure from lying about its cause.
+		if why := incompleteReason(res.Err); why != "" {
+			return fmt.Errorf("scenario did not COMPLETE within its budget (%s) — a timing outcome "+
+				"under load, NOT a change in what the engine answered:\n%s", why, Describe(s, res))
+		}
 		return fmt.Errorf("committed expectation no longer holds:\n%s", Describe(s, res))
 	}
 	if res.Status == javacorpus.StatusSkip {
@@ -52,6 +72,30 @@ func CheckResult(s *Scenario, res javacorpus.FileResult) error {
 		}
 	}
 	return nil
+}
+
+// incompleteReason names the wall-clock budget a scenario ran out of, or ""
+// when the failure is a genuine disagreement about rows.
+//
+// Both budgets it recognises are WALL-CLOCK, so both are properties of the box
+// rather than of the engine: how many cores the runner has, and what else is
+// running on it. Neither says anything about whether the answer changed.
+func incompleteReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "the per-scenario ScenarioTimeout deadline expired mid-query"
+	}
+	// The per-page execution budget is meant to END a page and hand back a
+	// continuation. When it instead escapes as an error the query is over, and
+	// what ended it was the clock.
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeExecutionLimitReached {
+		return "a per-page execution time limit surfaced as a query error (" +
+			string(api.ErrCodeExecutionLimitReached) + ")"
+	}
+	return ""
 }
 
 // ScenarioTimeout bounds one scenario. A committed scenario runs four queries
