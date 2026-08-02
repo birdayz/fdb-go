@@ -67,6 +67,7 @@ go_test(
         "//:MODULE.bazel",
     ],
     embed = [":yamsql"],
+    tags = ["resources:memory:700"],
     deps = [
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",

@@ -46,6 +46,7 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":catalog"],
+    tags = ["resources:memory:400"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

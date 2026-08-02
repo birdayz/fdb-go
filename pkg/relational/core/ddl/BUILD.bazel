@@ -30,6 +30,7 @@ go_test(
         "ddl_test.go",
         "fdb_ddl_test.go",
     ],
+    tags = ["resources:memory:400"],
     deps = [
         ":ddl",
         "//gen",

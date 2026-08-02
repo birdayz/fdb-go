@@ -31,6 +31,7 @@ go_test(
         "persist_test.go",
     ],
     embed = [":factory-run_lib"],
+    tags = ["resources:memory:400"],
     deps = [
         "//pkg/relational/conformance/factory",
         "//pkg/relational/conformance/factorycorpus",

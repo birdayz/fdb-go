@@ -46,6 +46,10 @@ go_test(
     # so it needs the corpus the sibling package owns.
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
     embed = [":factory"],
+    tags = [
+        "exclusive",
+        "resources:memory:3300",
+    ],
     deps = [
         "//pkg/relational/conformance/explaindiff",
         "//pkg/relational/conformance/factorycorpus",

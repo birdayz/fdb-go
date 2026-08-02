@@ -12,6 +12,7 @@ go_test(
     srcs = [
         "api_parity_options_test.go",
         "build_constrained_filename_test.go",
+        "container_memory_tag_test.go",
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "docs_consistency_test.go",

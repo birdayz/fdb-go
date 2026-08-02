@@ -32,6 +32,7 @@ go_test(
         "retry_test.go",
     ],
     embed = [":foundationdb"],
+    tags = ["resources:memory:1100"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

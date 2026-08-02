@@ -158,6 +158,10 @@ go_test(
     ],
     data = ["//pkg/fdbgo/wire/types:testdata.json"],
     embed = [":client"],
+    tags = [
+        "exclusive",
+        "resources:memory:2500",
+    ],
     deps = [
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",

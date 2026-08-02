@@ -215,6 +215,7 @@ go_test(
         "zero_fork_scan_ranges_test.go",
         "ordinal_join_clock_test.go",
     ],
+    tags = ["resources:memory:400"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

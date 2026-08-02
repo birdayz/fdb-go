@@ -145,7 +145,10 @@ go_test(
         # tagged feature's roster Java? fact against the live Java server.
         "//pkg/relational/conformance/yamsql:testdata",
     ],
-    tags = ["conformance_java"],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

@@ -50,5 +50,6 @@ go_test(
         "runsql_test.go",
     ],
     embed = [":plandiff"],
+    tags = ["resources:memory:400"],
     deps = ["//pkg/testcontainers/foundationdb"],
 )
