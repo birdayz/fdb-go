@@ -13862,6 +13862,52 @@ None is speculative: each was re-verified against the tree before booking.
   boundary is given the record TYPE so it can order the map —
   `executor.ColumnDef` is a flat type string today (CQ-74), so it cannot carry
   one.
+
+  **CORRECTION — "reuse `BuildStructMessage`, the conversion then fires
+  unchanged" DOES NOT WORK AS WRITTEN, and this is the blocker.**
+  `BuildStructMessage(md, fields, convert)` takes a
+  `protoreflect.MessageDescriptor` as its FIRST argument and walks it. Both
+  existing callers get `md` from the TARGET COLUMN's descriptor — the stored
+  table schema (`pkg/relational/core/functions/proto_value.go:363` via
+  `fd.Message()`, `pkg/recordlayer/query/executor/executor.go:3586` likewise).
+  A COMPUTED record has no target column and no stored descriptor, and
+  `RecordConstructorValue.Type()` (`values.go:4277-4289`) returns an ANONYMOUS
+  `*RecordType`. So there is nothing to pass as `md`.
+
+  Java does not have this problem because it SYNTHESISES the descriptor:
+  `RecordConstructorValue.eval` calls
+  `typeRepository.newMessageBuilder(getResultType())`
+  (RecordConstructorValue.java:113-139), which reaches
+  `TypeRepository.Builder.addTypeIfNeeded` → `Type.Record.defineProtoType`
+  (TypeRepository.java:498-503, Type.java:2339-2356) — emit a `DescriptorProto`
+  per record type, recursively, into a `FileDescriptorProto`.
+  **Go has no equivalent.** `values.TypeRepository`
+  (`values/type.go:1618-1697`) is a name→`Type` map with no protobuf surface
+  at all — no `newMessageBuilder`, no `DescriptorProto`, no `dynamicpb`. The
+  only descriptor-emitting machinery in the repo is DDL-time
+  (`pkg/relational/core/metadata/builder.go:659-978`,
+  `tableTypeRepo.defineStruct` at :905 explicitly "Mirrors
+  Type.Record.defineProtoType"), and it is unusable here: it works from
+  `api.DataType` / `api.StructType`, there is no `values.Type` ↔ `api.DataType`
+  bridge, and `defineStruct` errors on an empty name — which is exactly what a
+  computed record has.
+
+  SO THE REAL WORK IS: port `Type.Record.defineProtoType` against
+  `values.Type` — a `values.RecordType` → `protoreflect.MessageDescriptor`
+  emitter living in the `values` package (nested records recursively, arrays
+  as repeated + the `NullableArrayWrapper` identity, UUID as the
+  `com.apple.foundationdb.record.UUID` message dependency, deterministic
+  synthetic type names, and a cache so it is not rebuilt per row). Only then
+  does `BuildStructMessage` have an `md` and the existing
+  `materializeDriverValue` ProtoMessage arm fire unchanged.
+
+  SECOND BLAST RADIUS, also not in the original booking: two consumers read
+  the map SHAPE and break if `Evaluate` starts returning a message.
+  `executor.explodeElementRow` (`executor.go:3796-3827`) type-asserts
+  `elem.(map[string]any)` at :3806, and `FieldValue.descendResolvedPath`
+  (`values/values.go:825-869`) handles `OrdinalRow` and `proto.Message` but
+  DELIBERATELY refuses a map (:840-845 documents the refusal as "never a
+  silent name read"). Both need an arm before the representation flips.
   DONE = `functions.yamsql` passes, `struct-query` reaches 1, and a computed
   record reads back through the driver as an `api.Struct` whose attribute
   ORDER matches the constructor's declaration order.
@@ -13872,17 +13918,41 @@ None is speculative: each was re-verified against the tree before booking.
   because that is the parser's shape for `(expr)`; Java's
   `visitRecordConstructor` has NO such unwrap — it goes straight to
   `RecordConstructorValue.ofColumns` (ExpressionVisitor.java:918-925).
-  MEASURED, live JVM, `conformance/record_constructor_java_probe_test.go`
-  probe `single_element_paren`, `SELECT (1 + 2)`:
-  JAVA `OK cols=[_0(STRUCT)]`; GO `OK cols=[_0(INTEGER)] rows=[[3]]`.
-  CONFIRM BEFORE ACTING: the probe's Java renderer prints every struct as
-  `__unsupported__`, so the column TYPE is the only signal and it has not been
-  cross-checked against a corpus assertion. `select-a-star.yamsql`'s
-  `select ((*)) from t1` expecting a doubly-nested struct is consistent with
-  Java nesting parens as records, which is why this is worth confirming rather
-  than dismissing. If confirmed, unwrapping is a Go divergence on the SHARED
-  surface and the fix is to stop unwrapping — but that re-types every
-  parenthesised scalar in the language, so it needs the corpus run to say what
-  it costs before it is attempted.
-  DONE = a corpus or yamsql assertion settles what Java returns for
-  `SELECT (1+2)`, and Go matches it.
+  **CONFIRMED — the "needs confirmation first" gate is now CLOSED.** The
+  blocker was that the harness rendered every Java struct as
+  `__unsupported__`, so only the column TYPE was visible. `encodeValue`
+  (`conformance/sql_plan_steps.java`) now renders a `RelationalStruct` as its
+  attributes and a `java.sql.Array` as its elements, so struct CONTENTS are
+  measurable. MEASURED, live JVM, `conformance/paren_star_java_probe_test.go`:
+
+    scalar_no_paren    `SELECT 1 + 2`     JAVA `_0(INTEGER)` `3`
+                                          GO   `_0(INTEGER)` `3`     agree
+    scalar_one_paren   `SELECT (1 + 2)`   JAVA `_0(STRUCT)`  `{_0: 3}`
+                                          GO   `_0(INTEGER)` `3`     DIVERGE
+    scalar_two_parens  `SELECT ((1 + 2))` JAVA `_0(STRUCT)`  `{_0: {_0: 3}}`
+                                          GO   `_0(INTEGER)` `3`     DIVERGE
+    column_one_paren   `SELECT (val)`     JAVA `_0(STRUCT)`  `{VAL: 10}`
+                                          GO   `VAL(BIGINT)` `10`    DIVERGE
+
+  So Java really does build a one-field record, it nests on each extra paren,
+  and the inner field takes the ELEMENT's name (`_0` for an expression, `VAL`
+  for a column reference) while the OUTER column is anonymous. Pinned by the
+  assertion spec in the same file, which goes red if either engine moves.
+
+  NEW CONSTRAINT, and it is the reason this is not simply "delete the unwrap".
+  The same parenthesis in an OPERAND position stays scalar in Java:
+
+    paren_scalar_arith        `SELECT (val) + 1`        JAVA `_0(BIGINT)` `11`
+    paren_scalar_in_predicate `WHERE (val) = 10`        JAVA answers row `1`
+
+  Both parse through the SAME `recordConstructor` rule, so Java is unwrapping
+  (or coercing) a one-field record somewhere downstream of
+  `visitRecordConstructor` — not in the constructor itself. Removing Go's
+  unwrap wholesale would therefore re-type `(val) + 1` and `WHERE (val) = 10`
+  into record-vs-scalar shapes Java does not produce. FIND THAT COERCION
+  FIRST: the fix is "move the unwrap from the constructor to wherever Java has
+  it", not "remove the unwrap". Both operand shapes are pinned in the
+  assertion spec so the constraint cannot be lost.
+  DONE = Go returns `{_0: 3}` for `SELECT (1+2)` and `{VAL: 10}` for
+  `SELECT (val)`, while `SELECT (val) + 1` still returns BIGINT `11` and
+  `WHERE (val) = 10` still matches — with the corpus run showing the cost.

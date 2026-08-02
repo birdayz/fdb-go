@@ -206,7 +206,35 @@ var engineGaps = []EngineGap{
 	{"functions.yamsql", SkipGapStructQuery, "actual row at 1 does not match any expected records", "RFC-204 P3"},
 	// `SELECT (*)` — the parenthesised star, a record constructor over the
 	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
-	// :902-916).
+	// :902-916). Go declines it in the expression walker
+	// (walkRecordConstructorInner's "RecordConstructor over STAR"), so every
+	// shape in this file fails 0AF00.
+	//
+	// The naming and typing rule is MEASURED against the live JVM in
+	// conformance/paren_star_java_probe_test.go and agrees with this file's
+	// own expectations, so the file IS the spec:
+	//   - ONE for-each quantifier in scope → a SINGLE struct-typed column
+	//     named after that quantifier (table, alias, subquery alias, TVF
+	//     name), carrying the whole row. An explicit `AS x` overrides it.
+	//   - TWO OR MORE → the column is anonymous (`_0`) and the struct
+	//     FLATTENS every source's columns rather than nesting one struct per
+	//     source. Star.overQuantifiers (Star.java:141-148) builds
+	//     ofUnnamed(quantifiers), but ensureValueConsistentWithExpansion
+	//     replaces it with the flat record constructor over the expansion
+	//     whenever the types differ — which for two quantifiers they always
+	//     do. "Two or more" counts PartiQL unnest bindings, not just joins.
+	//   - `(T.*)` names the column after the qualifier and is unaffected by
+	//     how many sources are in scope.
+	//
+	// TWO THINGS GATE CLOSING THIS FILE, and neither is the star itself:
+	//   - the multi-quantifier arm produces a COMPUTED record, which is
+	//     CQ-86 — a computed record reaches the driver as a bare map, not an
+	//     api.Struct, so its rows would not match even once it plans.
+	//   - the function-source block needs `CREATE TEMPORARY FUNCTION`
+	//     (skip class unsupported:temporary-function) and the values-source
+	//     block needs VALUES as a FROM source. Both are other workstreams, so
+	//     this file re-books at the FIRST of those it reaches rather than
+	//     passing outright.
 	{"star-expression-metadata.yamsql", SkipGapStructQuery, `"SELECT (*) FROM foo"`, "RFC-204 P3"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
