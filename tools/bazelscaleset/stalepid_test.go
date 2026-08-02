@@ -24,8 +24,9 @@ import (
 //   - head inside the truncate window -> empty file, exit 65 ("runner session
 //     wrote no pidfile").
 //
-// Measured: 42 exit-65s in eight hours across the pool, concentrated on the
-// LEAST loaded box — which is what ruled out disk pressure as the cause.
+// Measured: 32 exit-65s in ten hours across the pool, 17 of them on the box with
+// a 150GB root disk at 48% while the other three sat at 91-94%. More than half
+// the failures on the LEAST pressured box is what ruled out disk pressure.
 
 // staleRemoteSlot builds a remote slot whose work dir already holds a pidfile
 // from a previous runner, with a pid that is guaranteed dead.

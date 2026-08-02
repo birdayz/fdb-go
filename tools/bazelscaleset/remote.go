@@ -133,9 +133,10 @@ func remotePIDFilePath(sl *slot) string {
 //   - head lands inside the truncate window: the file is momentarily empty and
 //     the launch fails with "runner session wrote no pidfile" (exit 65).
 //
-// Measured over eight hours: 42 exit-65s across the pool, most of them on the
-// LEAST loaded box, which is what finally ruled out disk pressure — the race is
-// won more often when the box is fast. Publishing via `mv` (atomic within the
+// Measured over ten hours: 32 exit-65s across the pool, 17 of them on the box
+// with a 150GB root disk at 48% while the other three sat at 91-94%. More than
+// half the failures on the LEAST pressured box is what ruled out disk pressure —
+// this race is won more often when the box is fast. Publishing via `mv` (atomic within the
 // directory) removes the truncate window outright, so a non-empty pidfile now
 // always means "the new session published its pid".
 func remoteLaunchScript(sl *slot, name string) string {
