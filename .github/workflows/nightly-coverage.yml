@@ -110,6 +110,18 @@ jobs:
         # preflight instead, which is the only upstream failure that would make
         # this step pass while executing nothing.
         if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.docker.outcome == 'success' }}
+        # --local_test_jobs=1 for the same reason the corpora step below carries
+        # it, and it belongs here at least as much: ALL FIVE of these targets
+        # start an FDB testcontainer, so at the .bazelrc default of 4 this step
+        # packs four race-instrumented containers onto the 7.6 GB runner — the
+        # exact shape that starved PR #577, on the exact same runner label.
+        #
+        # --local_resources=memory does NOT prevent that, which is the trap: it
+        # bounds Bazel's memory ACCOUNTING and leaves the job COUNT alone.
+        # Measured on Bazel 9.0.1 with a six-test fixture at --local_test_jobs=4:
+        # no tag and `--local_resources=memory=4500` still ran 4 concurrently,
+        # while `tags=["resources:memory:2000"]` against the same budget ran 2.
+        # The flag alone was never the cap it reads as.
         run: |
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
@@ -123,6 +135,7 @@ jobs:
             --@rules_go//go/config:race \
             --build_event_json_file=.bazel-bep.race.jsonl \
             --local_resources=memory=HOST_RAM*0.6 \
+            --local_test_jobs=1 \
             --test_timeout=900 \
             --test_summary=detailed
 
@@ -139,13 +152,23 @@ jobs:
         # targets still get the detector, so the exclusion moves the cost off the
         # merge queue rather than dropping the coverage.
         #
-        # --local_test_jobs=1, not the .bazelrc default of 4: measured under -race
-        # on four cores, the corpus execution target runs 5000 scenarios in 1328s
-        # and is by far the heaviest resident set here. Four of these at once on a
-        # 7.6 GB box is what put a 31s target (plandiff) past its 900s timeout on
-        # PR #577 — the runner was out of headroom and everything starved. One at
-        # a time, each target gets the machine and reports its own runtime rather
-        # than the queue's.
+        # --local_test_jobs=1, not the .bazelrc default of 4. MEASURED under -race
+        # at GOMAXPROCS=4 on four pinned cores, run to completion: the corpus
+        # execution target peaks at 5607376 KB — 5.35 GiB — against a 7.6 GiB box
+        # that is also carrying this job's own -Xmx3g Bazel server. It runs 5000
+        # scenarios in 1328s and is by far the heaviest resident set here. Four of
+        # these at once is what put a 31s target (plandiff) past its 900s timeout
+        # on PR #577 — the runner was out of headroom and everything starved. One
+        # at a time, each target gets the machine and reports its own runtime
+        # rather than the queue's.
+        #
+        # Note what that number means for this step even at 1: 5.35 GiB + 3 GiB of
+        # JVM does not fit in 7.6 GiB with room to spare. `jobs=1` is the floor
+        # this flag can buy, not proof the target fits; the durable fix is to
+        # declare the cost on the TARGET (`tags = ["resources:memory:N"]`, which
+        # measurably does gate local packing where --local_resources=memory alone
+        # does not) so it is enforced at every call site instead of remembered at
+        # each one.
         #
         # Timeouts come from the same four slots .bazelrc declares, NOT the flat
         # --test_timeout=900 the step above uses: the corpus target is `eternal` on
