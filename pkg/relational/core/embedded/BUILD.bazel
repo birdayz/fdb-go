@@ -94,6 +94,8 @@ go_test(
         "correlated_scalar_cardinality_plan_test.go",
         "cost_selectivity_test.go",
         "ddl_fail_closed_test.go",
+        "ddl_name_collision_test.go",
+        "ddl_quoted_dot_pk_test.go",
         "derived_unnest_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
@@ -272,6 +274,8 @@ go_test(
         "index_asselect_windowed_reject_test.go",
         "index_asselect_star_array_test.go",
         "struct_ddl_test.go",
+        "ddl_name_collision_test.go",
+        "ddl_quoted_dot_pk_test.go",
     ],
     deps = [
         "//gen",

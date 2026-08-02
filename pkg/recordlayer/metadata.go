@@ -916,9 +916,29 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 	return rtb
 }
 
-// GetRecordType returns the record type for the given name
+// GetRecordType returns the record type for the given name.
+//
+// Record types are keyed by their STORAGE name — the ProtoUtils-escaped
+// descriptor name, which is what the wire carries. A caller holding a USER
+// identifier (SQL text: a table declared `"foo$table"` is stored as
+// FOO__1TABLE) resolves through the escape on a miss.
+//
+// Java does not need this because its relational layer keeps its OWN table
+// map keyed by the user name (RecordLayerSchemaTemplate.getTable) and never
+// addresses RecordMetaData with a user identifier; Go's relational layer
+// uses RecordMetaData directly as its table catalog, so the translation
+// lives here — ONE boundary that every SQL path already funnels through —
+// rather than being sprinkled over the 25 call sites. Storage names stay
+// canonical: the fallback fires only when the direct key misses, so it can
+// never shadow a real type, and ToProtoBufCompliantName is deterministic.
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {
-	return m.recordTypes[name]
+	if rt, ok := m.recordTypes[name]; ok {
+		return rt
+	}
+	if storage, err := ToProtoBufCompliantName(name); err == nil && storage != name {
+		return m.recordTypes[storage]
+	}
+	return nil
 }
 
 // RecordTypes returns all record types

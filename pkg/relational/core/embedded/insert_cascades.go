@@ -125,9 +125,18 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 			fds := desc.Fields()
 			for i := 0; i < fds.Len(); i++ {
 				fd := fds.Get(i)
+				// The explicit column list carries USER identifiers; the
+				// descriptor carries STORAGE names (Java keeps both on the
+				// field — Type.java:2874-2877). Comparing them raw silently
+				// failed to match an escaped column ("a$b" vs A__1B): the
+				// name matched nothing, the slot fell through to the
+				// NULL-fill arm, and the INSERT SUCCEEDED writing NULL over
+				// the value the caller supplied. Match on the user
+				// identifier, which is what the SQL text can spell.
+				fdUserName := recordlayer.ToUserIdentifier(string(fd.Name()))
 				idx := -1
 				for j, col := range cols {
-					if col == string(fd.Name()) {
+					if col == fdUserName || col == string(fd.Name()) {
 						idx = j
 						break
 					}

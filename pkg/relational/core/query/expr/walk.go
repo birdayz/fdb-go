@@ -1568,7 +1568,17 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		}
 		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
 	}
-	return values.NewRecordConstructorValue(fields...), nil
+	rcv := values.NewRecordConstructorValue(fields...)
+	// `STRUCT <name> (…)` declares the record's TYPE name. Java routes this
+	// through RecordConstructorValue.ofColumnsAndName, which resolves the
+	// result type as computeResultType(...).withName(name)
+	// (RecordConstructorValue.java:485-487). The clause was parsed and then
+	// dropped here, so every named literal produced an ANONYMOUS record and
+	// the declared name never reached result metadata.
+	if ofType := rcc.OfTypeClause(); ofType != nil && ofType.Uid() != nil {
+		rcv.SetTypeName(functions.StripIdentifierQuotes(ofType.Uid().GetText()))
+	}
+	return rcv, nil
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades

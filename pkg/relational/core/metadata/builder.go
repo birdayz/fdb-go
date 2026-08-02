@@ -37,9 +37,13 @@ type Builder struct {
 }
 
 type tableSpec struct {
-	name       string
-	columns    []ColumnSpec
-	primaryKey []string
+	name    string
+	columns []ColumnSpec
+	// primaryKey holds one PATH per key part: a plain column is a
+	// one-element path, a nested key (id.a) its segments. Never a joined
+	// dotted string — that form cannot distinguish the nested path id.a
+	// from the single quoted column "a.b".
+	primaryKey [][]string
 	indexes    []indexSpec
 }
 
@@ -136,8 +140,36 @@ func (b *Builder) SetStoreRowVersions(v bool) *Builder {
 }
 
 // AddTable registers a table definition. columns must be listed in
-// declared order; primaryKey is the ordered slice of column names.
+// declared order; primaryKey is the ordered slice of column names — a
+// DOTTED element (id.a) is the nested-column convention, split into path
+// segments here (see AddTablePrimaryKeyPaths for the unambiguous form a
+// quoted identifier carrying a literal '.' needs).
+//
+// The name check is RECIPROCAL with AddAuxiliaryType's: Java's
+// Builder.addTable calls the same verifyNameIsNotUsed
+// (RecordLayerSchemaTemplate.java:465), so a table colliding with an
+// already-registered struct type is rejected whichever side is seen first.
+// Without it a `CREATE TYPE AS STRUCT s ... CREATE TABLE s ...` template
+// builds two descriptors named s, one silently shadowing the other.
 func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []string) *Builder {
+	paths := make([][]string, len(primaryKey))
+	for i, col := range primaryKey {
+		paths[i] = strings.Split(col, ".")
+	}
+	return b.AddTablePrimaryKeyPaths(name, columns, paths)
+}
+
+// AddTablePrimaryKeyPaths registers a table whose primary key parts are
+// given as PATH SEGMENTS rather than dotted strings — Java's
+// RecordLayerTable.Builder.addPrimaryKeyPart, which takes a List<String>
+// (RecordLayerTable.java:295) fed from Identifier.fullyQualifiedName
+// (DdlVisitor.java:183-188). A joined string cannot tell the nested path
+// id.a from the single quoted column "a.b"; the segment list can.
+func (b *Builder) AddTablePrimaryKeyPaths(name string, columns []ColumnSpec, primaryKey [][]string) *Builder {
+	if err := b.verifyNameIsNotUsed(name); err != nil {
+		b.errs = append(b.errs, err)
+		return b
+	}
 	b.tables = append(b.tables, tableSpec{name: name, columns: columns, primaryKey: primaryKey})
 	return b
 }
@@ -1120,21 +1152,18 @@ func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.Key
 	if !intermingle {
 		exprs = append(exprs, recordlayer.RecordTypeKey())
 	}
-	for _, colName := range tbl.primaryKey {
+	for _, segments := range tbl.primaryKey {
 		// Key expressions address proto STORAGE names (Java:
 		// RecordLayerTable.Builder.toKeyExpression via getFieldStorageName) —
 		// identical to the user name except for quoted identifiers carrying
-		// '$', '.' or "__". A DOTTED part (id.a — a primary key over a
-		// struct column's field) walks the segments into
+		// '$', '.' or "__". A MULTI-SEGMENT part (id.a — a primary key over
+		// a struct column's field) walks the segments into
 		// field(storage).nest(child), Java's toKeyExpression recursion
-		// (RecordLayerTable.java:313-329).
-		//
-		// NOTE: the split is on the ALREADY-normalized dotted name the DDL
-		// layer produced (FullIdToName joins normalized uid segments with
-		// '.'), so a '.' can only be a path separator here — a literal dot
-		// INSIDE a quoted identifier is not expressible through this
-		// builder API's dotted-part convention.
-		segments := strings.Split(colName, ".")
+		// (RecordLayerTable.java:313-329). The segmentation is decided by
+		// the parse tree, not by re-splitting a joined name, so a quoted
+		// identifier carrying a literal '.' stays ONE segment and escapes
+		// to a single field(...) on its storage name.
+		colName := strings.Join(segments, ".")
 		var expr recordlayer.KeyExpression
 		for i := len(segments) - 1; i >= 0; i-- {
 			storage, err := recordlayer.ToProtoBufCompliantName(segments[i])

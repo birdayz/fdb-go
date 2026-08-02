@@ -3477,6 +3477,83 @@ func mapColumnResolveError(err error, display string) error {
 	return nil
 }
 
+// structStarQualifiers collects the STRUCT column names of the named tables.
+// A struct column is a LEGAL star qualifier: Java's expandStar tries the
+// qualifier as a relation first and falls through to "qualifying a column
+// inside a table, e.g. SELECT T.A.*" (SemanticAnalyzer.java:361-367), where
+// the qualifier resolves to an expression that must be a STRUCT and is then
+// expanded field-by-field. The relation-only gate rejected those with
+// "table X does not exist" before the expansion could run.
+//
+// The semantic view is deliberate: it already knows which message fields are
+// really STRUCTs, excluding the messages that map to scalars (UUID, the
+// nullable-array wrapper) that a bare "is a message" test would offer as
+// expandable.
+// structColumnFields returns the FIELD NAMES of the struct column named
+// `qual` on one of the given tables, in DECLARED (ordinal) order — Java
+// expands a struct star by ordinal, never by name (expandStructExpression,
+// SemanticAnalyzer.java:746-763).
+//
+// Reports false when `qual` names no struct column, and also when it names
+// one on MORE THAN ONE visible table: an ambiguous struct qualifier must not
+// silently expand the first match, so it is left to fail as an unresolved
+// qualifier instead.
+func structColumnFields(md *recordlayer.RecordMetaData, qual string, tableNames ...string) ([]string, bool) {
+	if md == nil || qual == "" {
+		return nil, false
+	}
+	catalog := rlcatalog.Wrap(md)
+	var found []string
+	seen := 0
+	for _, tableName := range tableNames {
+		if tableName == "" {
+			continue
+		}
+		tbl, ok := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false))
+		if !ok {
+			continue
+		}
+		for _, c := range tbl.Columns() {
+			if len(c.StructFields) == 0 || !strings.EqualFold(c.Id.Name(), qual) {
+				continue
+			}
+			seen++
+			names := make([]string, 0, len(c.StructFields))
+			for _, f := range c.StructFields {
+				names = append(names, strings.ToUpper(f.Id.Name()))
+			}
+			found = names
+		}
+	}
+	if seen != 1 {
+		return nil, false
+	}
+	return found, true
+}
+
+func structStarQualifiers(md *recordlayer.RecordMetaData, tableNames ...string) map[string]bool {
+	out := make(map[string]bool)
+	if md == nil {
+		return out
+	}
+	catalog := rlcatalog.Wrap(md)
+	for _, tableName := range tableNames {
+		if tableName == "" {
+			continue
+		}
+		tbl, found := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false))
+		if !found {
+			continue
+		}
+		for _, c := range tbl.Columns() {
+			if len(c.StructFields) > 0 {
+				out[strings.ToUpper(c.Id.Name())] = true
+			}
+		}
+	}
+	return out
+}
+
 func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaData) error {
 	if sq == nil || md == nil {
 		return nil
@@ -3497,11 +3574,16 @@ func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaDat
 		}
 		addUnnestStarAlias(validSources, j)
 	}
+	tableNames := []string{sq.tableName}
+	for _, j := range sq.joins {
+		tableNames = append(tableNames, j.tableName)
+	}
+	structQuals := structStarQualifiers(md, tableNames...)
 	check := func(qual string) error {
 		if qual == "" {
 			return nil
 		}
-		if !validSources[strings.ToUpper(qual)] {
+		if !validSources[strings.ToUpper(qual)] && !structQuals[strings.ToUpper(qual)] {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
 		}
 		return nil
@@ -3562,11 +3644,16 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 		}
 		addUnnestStarAlias(validSources, j)
 	}
+	tableNames := []string{fs.tableName}
+	for _, j := range fs.joins {
+		tableNames = append(tableNames, j.tableName)
+	}
+	structQuals := structStarQualifiers(md, tableNames...)
 	check := func(qual string) error {
 		if qual == "" {
 			return nil
 		}
-		if !validSources[strings.ToUpper(qual)] {
+		if !validSources[strings.ToUpper(qual)] && !structQuals[strings.ToUpper(qual)] {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
 		}
 		return nil
@@ -6947,6 +7034,38 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	sourceColumns := make(map[string][]string)
 	derivedAliases := make(map[string]struct{})
+	// STRUCT columns of the visible sources, by column name. Java's
+	// expandStar tries the qualifier as a table FIRST and only then falls
+	// through to "qualifying a column inside a table, e.g. SELECT T.A.*"
+	// (SemanticAnalyzer.java:361-367): the qualifier is resolved as an
+	// expression, asserted to be a STRUCT, and expanded field-by-field in
+	// ORDINAL order (expandStructExpression, :746-763). Without the
+	// fall-through a struct qualifier died 42F01 "table HOME does not
+	// exist" — the qualifier was only ever looked up as a relation.
+	structColumns := make(map[string][]string)
+	catalog := rlcatalog.Wrap(md)
+	addStructColumns := func(cols []semantic.Column) {
+		for _, c := range cols {
+			if len(c.StructFields) == 0 {
+				continue
+			}
+			names := make([]string, 0, len(c.StructFields))
+			for _, f := range c.StructFields {
+				names = append(names, strings.ToUpper(f.Id.Name()))
+			}
+			// A struct column name is only a star qualifier when it is
+			// UNAMBIGUOUS across the visible sources; two sources exposing
+			// the same struct column name would otherwise silently expand
+			// the first. Ambiguity drops the entry so the qualifier misses
+			// and the existing diagnostics speak.
+			key := strings.ToUpper(c.Id.Name())
+			if _, dup := structColumns[key]; dup {
+				structColumns[key] = nil
+				continue
+			}
+			structColumns[key] = names
+		}
+	}
 	addSource := func(tableName, alias string) {
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 			if src.Table == nil {
@@ -6962,6 +7081,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 				key = strings.ToUpper(tableName)
 			}
 			sourceColumns[key] = cols
+			addStructColumns(cteCols)
 			return
 		}
 		rt := md.GetRecordType(tableName)
@@ -6978,6 +7098,13 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
 		}
 		sourceColumns[key] = cols
+		// The semantic view (not the raw descriptor) is what knows which
+		// message fields are STRUCTs: it already excludes the messages that
+		// map to scalars — UUID and the nullable-array wrapper — which a
+		// bare "is a message" test would wrongly offer as expandable.
+		if tbl, found := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false)); found { //nolint:staticcheck // catalog is the semantic view; see addStructColumns
+			addStructColumns(tbl.Columns())
+		}
 	}
 	if sq.tableName != "" {
 		alias := sq.tableAlias
@@ -7059,6 +7186,24 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		// Qualified star — expand to individual columns.
 		cols, ok := sourceColumns[strings.ToUpper(qual)]
 		if !ok {
+			// Java's Case 3: not a relation, so try the qualifier as a
+			// STRUCT column and expand its fields
+			// (SemanticAnalyzer.java:361-367). The expansion mints the same
+			// one-level nested references the resolver already handles
+			// (`home.city`), so the descent needs nothing new.
+			if fields, isStruct := structColumns[strings.ToUpper(qual)]; isStruct && fields != nil {
+				for _, f := range fields {
+					newCols = append(newCols, projCol{
+						name: qual + "." + f, bare: f, qualifier: qual, qualified: true,
+					})
+					// Named after the FIELD, as expandStructExpression does
+					// (SemanticAnalyzer.java:756-760).
+					newAliases = append(newAliases, f)
+					newExprs = append(newExprs, nil)
+					newQuals = append(newQuals, "")
+				}
+				continue
+			}
 			newCols = append(newCols, col)
 			newAliases = append(newAliases, "")
 			newExprs = append(newExprs, nil)
@@ -7498,6 +7643,41 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 		}
 	}
 	if tableName == "" {
+		// Java's expandStar Case 3: the qualifier is not a relation, so try
+		// it as a STRUCT column of a visible source and expand its fields in
+		// ORDINAL order (SemanticAnalyzer.java:361-367, expandStructExpression
+		// :746-763). Without this, a whole-projection `SELECT home.*` left
+		// projCols nil and the nil-projCols path answered it as a plain
+		// `SELECT *` — the FULL TABLE, silently, instead of the struct's
+		// fields. (The mixed `SELECT id, home.*` shape takes the
+		// projStarQualifiers path in expandQualifiedStars instead.)
+		var visibleTables []string
+		if sq.tableName != "" {
+			visibleTables = append(visibleTables, sq.tableName)
+		}
+		for _, j := range sq.joins {
+			if j.tableName != "" {
+				visibleTables = append(visibleTables, j.tableName)
+			}
+		}
+		if fields, ok := structColumnFields(md, qual, visibleTables...); ok {
+			cols := make([]projCol, len(fields))
+			// Each expanded column is NAMED AFTER ITS FIELD. Java's
+			// expandStructExpression builds every expanded expression as
+			// `Identifier.of(field.getName(), qualifierParts)`
+			// (SemanticAnalyzer.java:756-760), so the output label is the
+			// FIELD name — not the qualifier, and not the dotted path.
+			aliases := make([]string, len(fields))
+			for i, f := range fields {
+				cols[i] = projCol{name: qual + "." + f, bare: f, qualifier: qual, qualified: true}
+				aliases[i] = f
+			}
+			sq.projCols = cols
+			sq.projAliases = aliases
+			sq.projExprs = make([]antlrgen.IExpressionContext, len(fields))
+			sq.projStarQualifiers = make([]string, len(fields))
+			sq.projQualifier = ""
+		}
 		return // unknown qualifier — validated elsewhere
 	}
 

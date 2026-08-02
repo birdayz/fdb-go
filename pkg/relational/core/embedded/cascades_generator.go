@@ -5943,7 +5943,7 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
 		}
-		b.AddTable(tableName, cols, pkCols)
+		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
 	}
 	for _, clause := range stCtx.AllTemplateClause() {
 		idxDef := clause.IndexDefinition()

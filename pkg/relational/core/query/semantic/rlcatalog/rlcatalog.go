@@ -30,7 +30,19 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 		c.storeRowVersions = md.IsStoreRecordVersions()
 		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
 		for rtName, rt := range md.RecordTypes() {
-			c.byFoldedName[semantic.NewUnquoted(rtName).Name()] = rt
+			// The SQL surface speaks USER identifiers; the descriptor
+			// (and every wire address derived from it) speaks STORAGE
+			// names. They differ exactly when the DDL name carried '$',
+			// '.' or "__" (ProtoUtils escaping). Java keeps both on the
+			// type — Type.Record.fromDescriptorPreservingName stores
+			// `ProtoUtils.toUserIdentifier(descriptor.getName())` as the
+			// NAME and the raw descriptor name as the storage name
+			// (Type.java:2591-2593), and Field does the same per column
+			// (Type.java:2874-2877). Indexing the folded USER name here
+			// is what lets `SELECT … FROM "foo$table"` find the record
+			// type stored as FOO__1TABLE; without it the table exists on
+			// the wire and is unreachable from SQL (42F01).
+			c.byFoldedName[semantic.NewUnquoted(recordlayer.ToUserIdentifier(rtName)).Name()] = rt
 		}
 	}
 	return c
@@ -93,8 +105,11 @@ func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
 	for rtName := range types {
 		// Wrap as unqualified QualifiedName since Record Layer has
 		// no schemas. FromSegments with caseSensitive=true
-		// preserves the source casing verbatim.
-		out = append(out, semantic.FromSegments([]string{rtName}, true))
+		// preserves the source casing verbatim. The USER identifier is
+		// what a caller can actually type back (INFORMATION_SCHEMA rows,
+		// "available tables: …" diagnostics), so the escaping is undone
+		// here for the same reason LookupTable indexes on it.
+		out = append(out, semantic.FromSegments([]string{recordlayer.ToUserIdentifier(rtName)}, true))
 	}
 	return out
 }
@@ -148,7 +163,14 @@ func (t *recordTypeTable) ensureColumnIndex() {
 			// identifier everywhere: the runtime positional layout folds
 			// names too, so folded presentation keeps plan-time and
 			// runtime in one namespace.
+			// Both spellings are lookup keys: the STORAGE name (what the
+			// descriptor carries, and what an internally-minted reference
+			// addressing the proto field uses) and the USER name (what SQL
+			// text spells). They coincide unless the DDL name was escaped.
 			t.colIndex[string(f.Name())] = col
+			if userName := recordlayer.ToUserIdentifier(string(f.Name())); userName != string(f.Name()) {
+				t.colIndex[userName] = col
+			}
 			t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 			t.colOrdered = append(t.colOrdered, col)
 		}
@@ -304,8 +326,14 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 		isArr = true
 		nullable = true
 	}
+	// The COLUMN identifier is the USER name: Java's Field carries
+	// `ProtoUtils.toUserIdentifier(fieldDescriptor.getName())` as its name
+	// and the raw descriptor name separately as the storage name
+	// (Type.java:2874-2877). Identical for every column whose DDL name had
+	// no '$', '.' or "__"; for the rest this is what makes `SELECT "a$b"`
+	// resolve against the field stored as A__1B.
 	col := semantic.Column{
-		Id:       semantic.NewUnquoted(string(f.Name())),
+		Id:       semantic.NewUnquoted(recordlayer.ToUserIdentifier(string(f.Name()))),
 		Type:     protoFieldToSQL(elemF),
 		Nullable: nullable,
 		IsArray:  isArr,

@@ -4341,6 +4341,34 @@ type RecordConstructorValue struct {
 	// execution and each page rebuilds its cursors from it concurrently, so a
 	// later write would be a data race.
 	desc protoreflect.MessageDescriptor
+
+	// typeName is the DECLARED type name of a named struct literal
+	// (`STRUCT GEO (1 AS lat, 2 AS lon)`); empty for the anonymous case.
+	// Java models this as a separate factory —
+	// RecordConstructorValue.ofColumnsAndName (RecordConstructorValue.java
+	// :485-487) builds the value as `computeResultType(columns,
+	// false).withName(name)` — so the name belongs to the resulting Record
+	// TYPE, not to the value. Go computes the type on demand in Type(), so
+	// the name is carried here and applied there.
+	//
+	// This is the USER name. Java's Type.Record.withName also derives the
+	// storage name via ProtoUtils.toProtoBufCompliantName (Type.java
+	// :2221-2223); Go's RecordType has no storage-name field, and the escape
+	// is deterministic, so the wire spelling is recomputed where needed
+	// rather than stored as a second copy that could drift.
+	typeName string
+}
+
+// SetTypeName records the declared name of a named struct literal. Plan-time
+// only, for the same reason SetMessageDescriptor is.
+func (r *RecordConstructorValue) SetTypeName(name string) {
+	r.typeName = name
+}
+
+// TypeName returns the declared name of a named struct literal, or "" when the
+// record is anonymous.
+func (r *RecordConstructorValue) TypeName() string {
+	return r.typeName
 }
 
 // SetMessageDescriptor stamps the plan-time descriptor. Plan-time only — see
@@ -4423,7 +4451,10 @@ func (r *RecordConstructorValue) Type() Type {
 			Ordinal:   i,
 		}
 	}
-	return &RecordType{Nullable: true, Fields: fields}
+	// A named struct literal carries its declared name into the result type,
+	// exactly as Java's ofColumnsAndName resolves the type through
+	// Type.Record.withName (RecordConstructorValue.java:485-487).
+	return &RecordType{RecordName: r.typeName, Nullable: true, Fields: fields}
 }
 
 // Name returns the debug-print kind.

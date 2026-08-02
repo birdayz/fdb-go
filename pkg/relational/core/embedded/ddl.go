@@ -185,7 +185,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"table %q: %v", tableName, err)
 		}
-		b.AddTable(tableName, cols, pkCols)
+		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
 	}
 
 	// Second pass: register indexes.
@@ -676,8 +676,14 @@ func parseColumnDefinitions(colDefs []antlrgen.IColumnDefinitionContext, b *meta
 }
 
 // parseTableDefinition extracts column specs and primary key column
-// names from a TableDefinitionContext.
-func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Builder) ([]metadata.ColumnSpec, []string, error) {
+// PATHS from a TableDefinitionContext. Each path is the key part's uid
+// segments — Java's Identifier.fullyQualifiedName fed to
+// RecordLayerTable.Builder.addPrimaryKeyPart (DdlVisitor.java:183-188,
+// RecordLayerTable.java:295). The segments come from the parse tree, never
+// from splitting a joined name: a quoted identifier may itself contain a
+// literal '.', and once the segments are joined that dot is
+// indistinguishable from a nested-path separator.
+func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Builder) ([]metadata.ColumnSpec, [][]string, error) {
 	cols, err := parseColumnDefinitions(td.AllColumnDefinition(), b)
 	if err != nil {
 		return nil, nil, err
@@ -687,26 +693,34 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Build
 		seen[c.Name()] = true
 	}
 
-	var pkCols []string
+	var pkCols [][]string
 	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
 		for _, fullID := range pkDef.FullIdList().AllFullId() {
-			pkCol := functions.FullIdToName(fullID)
+			// The SEGMENTS are the parse tree's uid children. Joining them
+			// (FullIdToName) and re-splitting on '.' would treat a quoted
+			// column name containing a literal dot ("a.b") as a two-segment
+			// nested path and reject the valid DDL.
+			uids := fullID.AllUid()
+			segments := make([]string, len(uids))
+			for i, u := range uids {
+				segments[i] = functions.StripIdentifierQuotes(u.GetText())
+			}
+			if len(segments) == 0 {
+				continue
+			}
 			// Reject a PRIMARY KEY over an undefined column with a clean 42703 here,
 			// before the metadata builder would surface a leaky internal error
 			// (XX000 "build RecordMetaData: ... field not found in message").
-			// A DOTTED part (id.a — a nested primary key through a struct
-			// column, Java's RecordLayerTable.Builder.toKeyExpression walk) is
-			// validated by its head segment; the struct-field descent is
-			// checked when the key expression is built at Build() time.
-			head := pkCol
-			if dot := strings.IndexByte(head, '.'); dot >= 0 {
-				head = head[:dot]
-			}
-			if !seen[head] {
+			// A MULTI-SEGMENT part (id.a — a nested primary key through a
+			// struct column, Java's RecordLayerTable.Builder.toKeyExpression
+			// walk) is validated by its head segment; the struct-field descent
+			// is checked when the key expression is built at Build() time.
+			if !seen[segments[0]] {
 				return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"primary key column %q is not a defined column", pkCol)
+					"primary key column %q is not a defined column",
+					strings.Join(segments, "."))
 			}
-			pkCols = append(pkCols, pkCol)
+			pkCols = append(pkCols, segments)
 		}
 	}
 
