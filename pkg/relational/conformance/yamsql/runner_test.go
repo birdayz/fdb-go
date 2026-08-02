@@ -89,11 +89,107 @@ func TestYamsqlConformance(t *testing.T) {
 	}
 }
 
+// scenarioBudget bounds one scenario's FDB work. It is a wall-clock
+// budget, so a starved runner spends it without any single statement
+// being slow — which is why scenarioReport names the budget in the
+// failure rather than letting a bare "context deadline exceeded" send
+// the reader hunting for a logic bug.
+const scenarioBudget = 2 * time.Minute
+
+// scenarioOutcome is everything runScenario learned about one scenario.
+// Splitting it out keeps reporting a pure function of the outcome, so the
+// message format is testable without an FDB cluster.
+//
+// Every error field here is a distinct failure path. scenarioReport must
+// render each one; TestScenarioReportNamesTheScenario walks these fields
+// reflectively so a new path cannot be added without a named message.
+type scenarioOutcome struct {
+	LoadErr  error // yamsql.Load failed
+	OpenErr  error // sql.Open failed
+	RunErr   error // yamsql.Run itself failed (bad RunConfig)
+	SetupErr error // schema/setup DDL failed
+
+	Failures  []yamsql.Failure
+	TestsRun  int
+	TestsPass int
+	TestsFail int
+
+	Path    string
+	Elapsed time.Duration
+	Expired bool // the per-scenario deadline fired
+}
+
+// scenarioReport renders an outcome into the lines runScenario emits and
+// reports whether the scenario failed.
+//
+// Every line, pass or fail, is prefixed with "scenario <name>:". Go
+// buffers the "--- FAIL: <subtest>" result lines of parallel subtests and
+// flushes them in one block once all of them finish, so a failure message
+// is written where it happened — routinely a thousand lines away from the
+// only marker that names the scenario. Grepping the scenario name is the
+// search anybody actually runs, and it finds the failure only if the
+// failure carries the name too. A CI report was once misdiagnosed as a
+// message-less FAIL for exactly this reason.
+func scenarioReport(name string, o scenarioOutcome) (lines []string, failed bool) {
+	prefix := "scenario " + name + ": "
+	failf := func(format string, args ...any) {
+		lines = append(lines, prefix+fmt.Sprintf(format, args...))
+		failed = true
+	}
+
+	switch {
+	case o.LoadErr != nil:
+		failf("load %s: %v", o.Path, o.LoadErr)
+	case o.OpenErr != nil:
+		failf("sql.Open: %v", o.OpenErr)
+	case o.RunErr != nil:
+		failf("Run: %v", o.RunErr)
+	case o.SetupErr != nil:
+		failf("setup: %v", o.SetupErr)
+	case o.TestsFail > 0:
+		for _, f := range o.Failures {
+			failf("test[%d] %q:\n%s", f.Index, f.Query, f.Message)
+		}
+		failf("%d/%d tests failed", o.TestsFail, o.TestsRun)
+	}
+
+	if failed {
+		if o.Expired {
+			lines = append(lines, fmt.Sprintf(
+				"%sexhausted the %s per-scenario budget after %s — a starved runner burns this "+
+					"budget with no statement being slow, so rule the machine out before the query",
+				prefix, scenarioBudget, o.Elapsed.Round(time.Second)))
+		}
+		return lines, true
+	}
+	return []string{fmt.Sprintf("%s%d/%d passed", prefix, o.TestsPass, o.TestsRun)}, false
+}
+
 func runScenario(t *testing.T, path, name string) {
 	t.Helper()
+	lines, failed := scenarioReport(name, execScenario(path, name))
+	for _, line := range lines {
+		if failed {
+			t.Error(line)
+		} else {
+			t.Log(line)
+		}
+	}
+	if failed {
+		t.FailNow()
+	}
+}
+
+// execScenario runs one scenario against the shared FDB cluster and
+// reports what happened. It never touches *testing.T: reporting lives in
+// scenarioReport so the message format stays testable on its own.
+func execScenario(path, name string) scenarioOutcome {
+	o := scenarioOutcome{Path: path}
+
 	scenario, err := yamsql.Load(path)
 	if err != nil {
-		t.Fatalf("load %s: %v", path, err)
+		o.LoadErr = err
+		return o
 	}
 
 	// Unique DSN path + template per test to keep parallel runs isolated.
@@ -107,32 +203,31 @@ func runScenario(t *testing.T, path, name string) {
 	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		o.OpenErr = err
+		return o
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), scenarioBudget)
 	defer cancel()
 
+	start := time.Now()
 	res, err := yamsql.Run(ctx, scenario, yamsql.RunConfig{
 		DB:           db,
 		DBPath:       dbPath,
 		SchemaName:   schemaName,
 		TemplateName: tmplName,
 	})
+	o.Elapsed = time.Since(start)
+	o.Expired = ctx.Err() != nil
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		o.RunErr = err
+		return o
 	}
-	if res.SetupError != nil {
-		t.Fatalf("setup: %v", res.SetupError)
-	}
-	if res.TestsFail > 0 {
-		for _, f := range res.Failures {
-			t.Errorf("test[%d] %q:\n%s", f.Index, f.Query, f.Message)
-		}
-		t.Fatalf("%d/%d tests failed", res.TestsFail, res.TestsRun)
-	}
-	t.Logf("scenario %s: %d/%d passed", scenario.Name, res.TestsPass, res.TestsRun)
+	o.SetupErr = res.SetupError
+	o.Failures = res.Failures
+	o.TestsRun, o.TestsPass, o.TestsFail = res.TestsRun, res.TestsPass, res.TestsFail
+	return o
 }
 
 // sanitize makes a scenario name safe for use in a database path and
