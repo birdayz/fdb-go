@@ -25,6 +25,13 @@ type Sweep struct {
 	Java CrossEngine
 	// Date is stamped into every header.
 	Date string
+	// Filter, when non-nil, restricts the sweep to the candidates it accepts.
+	// It exists for re-emission (the format migration regenerates exactly the
+	// committed (seed, query, projection) triples): re-running a seed evaluates
+	// every candidate it derives, and the ones the original batches
+	// dedup-rejected must not be offered now, or a re-emission would grow the
+	// corpus as a side effect of rewriting it.
+	Filter func(Candidate) bool
 }
 
 // RunSeed evaluates every candidate of one seed and offers each outcome to the
@@ -33,6 +40,15 @@ type Sweep struct {
 // construction — so it returns cleanly with nothing offered.
 func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
 	cands := Candidates(seed)
+	if s.Filter != nil {
+		kept := cands[:0]
+		for _, c := range cands {
+			if s.Filter(c) {
+				kept = append(kept, c)
+			}
+		}
+		cands = kept
+	}
 	if len(cands) == 0 {
 		return nil, nil
 	}

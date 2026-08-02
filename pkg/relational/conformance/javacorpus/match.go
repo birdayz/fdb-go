@@ -488,18 +488,21 @@ func matchLong(want int64, actual any, sqlType string, fail func(string, ...any)
 }
 
 // matchFloat mirrors Matchers.matchFloatField: a Float expectation matches a
-// Float or a Double actual, comparing at double width exactly as
-// Float.doubleValue() does.
+// Float actual via Objects.equals and a Double actual via
+// Float.doubleValue()'s boxed comparison. Both arms are BIT equality
+// (Float.equals is floatToIntBits, Double.equals is doubleToLongBits), which
+// is not `==`: NaN equals NaN and +0.0 does NOT equal -0.0 — and the signed
+// zero is the case this repo has already shipped a wrong-rows bug on.
 func matchFloat(want float32, actual any, sqlType string, fail func(string, ...any) error) error {
 	got, ok := actualFloat(actual)
 	if ok {
 		switch javaNumClass(actual, sqlType) {
 		case "Float":
-			if float32(got) == want {
+			if math.Float32bits(float32(got)) == math.Float32bits(want) {
 				return nil
 			}
 		case "Double":
-			if got == float64(want) {
+			if math.Float64bits(got) == math.Float64bits(float64(want)) {
 				return nil
 			}
 		}
@@ -507,11 +510,13 @@ func matchFloat(want float32, actual any, sqlType string, fail func(string, ...a
 	return fail("expected %v (Float), got %v (%s)", want, actual, describe(actual, sqlType))
 }
 
-// matchDouble mirrors the plain-YAML-float expectation: Objects.equals, so no
+// matchDouble mirrors the plain-YAML-float expectation: Objects.equals on a
+// boxed Double, i.e. doubleToLongBits equality (see matchFloat), with no
 // promotion from a Float actual.
 func matchDouble(want float64, actual any, sqlType string, fail func(string, ...any) error) error {
 	got, ok := actualFloat(actual)
-	if ok && javaNumClass(actual, sqlType) == "Double" && got == want {
+	if ok && javaNumClass(actual, sqlType) == "Double" &&
+		math.Float64bits(got) == math.Float64bits(want) {
 		return nil
 	}
 	return fail("expected %v (Double), got %v (%s)", want, actual, describe(actual, sqlType))

@@ -13,18 +13,15 @@ import (
 // to do with the engine, and it costs no container to notice.
 func TestCorpusLoads(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 	tests := 0
 	for _, f := range files {
-		if len(f.Scenario.Setup) == 0 {
-			t.Errorf("%s: no setup statements; the expectations would be frozen over an empty table", f.Path)
+		if len(f.Doc.Setup) == 0 {
+			t.Errorf("%s: %s has no setup statements; the expectations would be frozen over an empty table", f.Path, f.Header.Name)
 		}
-		for i, tc := range f.Scenario.Tests {
+		for i, tc := range f.Doc.Tests {
 			if tc.Query == "" {
-				t.Errorf("%s: tests[%d] has no query", f.Path, i)
+				t.Errorf("%s: %s tests[%d] has no query", f.Path, f.Header.Name, i)
 			}
 			tests++
 		}
@@ -44,10 +41,7 @@ func TestCorpusLoads(t *testing.T) {
 // the second engine from the corpus's authority.
 func TestCensusRatchet(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 	current := factorycorpus.ComputeCensus(files)
 	baseline, err := factorycorpus.LoadCensus(factorycorpus.CensusBaselinePath)
 	if err != nil {
@@ -75,10 +69,7 @@ func TestCensusRatchet(t *testing.T) {
 // missing from the baseline is unratcheted entirely.
 func TestCensusBaselineIsMeasured(t *testing.T) {
 	t.Parallel()
-	files, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 	current := factorycorpus.ComputeCensus(files)
 	baseline, err := factorycorpus.LoadCensus(factorycorpus.CensusBaselinePath)
 	if err != nil {

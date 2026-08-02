@@ -2,48 +2,57 @@ package factorycorpus
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
-	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/pkg/relational/conformance/javacorpus"
 )
 
-// RunFile executes one committed scenario against db and returns the yamsql
-// runner's result.
+// RunScenario executes one committed scenario against the cluster and returns
+// the javayamsql runner's ledger entry.
 //
-// Execution is NOT re-implemented: it delegates to yamsql.Run, so a committed
-// factory scenario is executed by exactly the machinery that executes a
-// hand-authored one — same schema-template lifecycle, same row diff, same
-// column and error-code assertions. That is what makes the output format worth
-// having. Only the LOADING is this package's own, because the corpus must not
-// land in the ledgers the hand-authored corpus generates.
+// Execution is NOT re-implemented: the scenario's document triple goes through
+// javacorpus.RunParsed, so a committed factory scenario is executed by exactly
+// the machinery that executes the vendored Java corpus — same schema_template
+// lifecycle, same option layering, same result matching. That is what makes
+// the shared format worth having. Only the LOADING is this package's own,
+// because provenance is a factory concept the vendored corpus does not carry.
 //
-// Names are derived from the scenario, and the scenario names are unique by
+// The IDPrefix is derived from the scenario name, which is unique by
 // construction (seed, query index, projection), so parallel execution cannot
 // collide on a database path or a template name.
-func RunFile(ctx context.Context, db *sql.DB, f *File) (*yamsql.Result, error) {
-	name := sanitize(f.Header.Name)
-	return yamsql.Run(ctx, f.Scenario, yamsql.RunConfig{
-		DB:           db,
-		DBPath:       DBPathFor(f),
-		SchemaName:   SchemaName,
-		TemplateName: "FC_TMPL_" + strings.ToUpper(name),
+func RunScenario(ctx context.Context, clusterFile string, s *Scenario) javacorpus.FileResult {
+	return javacorpus.RunParsed(ctx, s.SubFile(), javacorpus.Config{
+		ClusterFile: clusterFile,
+		IDPrefix:    "FC_" + sanitize(s.Header.Name),
 	})
 }
 
-// SchemaName is the schema every committed scenario is instantiated under.
-const SchemaName = "fc"
-
-// DBPathFor is the database path a scenario runs in.
-//
-// It exists so the CALLER's DSN and the RUNNER's CREATE DATABASE cannot drift:
-// the caller has to open a connection pointed at a database the runner has not
-// created yet, so the two derive the same path from the same file, and a
-// change to the naming moves both at once. Deriving it twice is how a rename
-// turns into a scenario that creates one database and queries another.
-func DBPathFor(f *File) string { return "/_fc_" + sanitize(f.Header.Name) }
+// CheckResult folds a scenario's ledger entry into pass/fail: every committed
+// test must have RUN and ASSERTED. A skip class that suppressed an assertion,
+// or a query count below the committed stanza count, is a failure — zero
+// failures out of zero executed tests is the loudest possible instrument
+// failure wearing the quietest possible output.
+func CheckResult(s *Scenario, res javacorpus.FileResult) error {
+	if res.Status == javacorpus.StatusFail {
+		return fmt.Errorf("committed expectation no longer holds:\n%s", Describe(s, res))
+	}
+	if res.Status == javacorpus.StatusSkip {
+		return fmt.Errorf("scenario was skipped (%s), but a committed scenario must always be executable:\n%s",
+			res.SkipClass, Describe(s, res))
+	}
+	if res.QueriesRun != len(s.Doc.Tests) {
+		return fmt.Errorf("%d of %d committed tests asserted — the difference ran without being checked:\n%s",
+			res.QueriesRun, len(s.Doc.Tests), Describe(s, res))
+	}
+	for _, sk := range res.Skips {
+		if sk.Class.SuppressesAssertion() {
+			return fmt.Errorf("skip %s removed an assertion (%s):\n%s", sk.Class, sk.Detail, Describe(s, res))
+		}
+	}
+	return nil
+}
 
 // ScenarioTimeout bounds one scenario. A committed scenario runs four queries
 // over at most a couple of dozen rows; anything approaching this bound is a
@@ -52,21 +61,21 @@ func DBPathFor(f *File) string { return "/_fc_" + sanitize(f.Header.Name) }
 // attached.
 const ScenarioTimeout = 2 * time.Minute
 
-// Describe renders a failed result for a test log: which stanza failed, its
-// query, and the diff.
-func Describe(f *File, r *yamsql.Result) string {
+// Describe renders a scenario's result for a test log: where it lives, its
+// provenance, and what happened.
+func Describe(s *Scenario, res javacorpus.FileResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s (seed %d, query %d, projection %d, blessing %s, oracles %s)\n",
-		f.Path, f.Header.Seed, f.Header.QueryIndex, f.Header.Projection,
-		f.Header.Blessing, strings.Join(f.Header.Oracles, "+"))
-	if r.SetupError != nil {
-		fmt.Fprintf(&b, "  setup: %v\n", r.SetupError)
+	fmt.Fprintf(&b, "%s (scenario %s: seed %d, query %d, projection %d, blessing %s, oracles %s)\n",
+		s.Path, s.Header.Name, s.Header.Seed, s.Header.QueryIndex, s.Header.Projection,
+		s.Header.Blessing, strings.Join(s.Header.Oracles, "+"))
+	if res.Err != nil {
+		fmt.Fprintf(&b, "  %v\n", res.Err)
 	}
-	for _, fail := range r.Failures {
-		fmt.Fprintf(&b, "  tests[%d] %s\n    %s\n", fail.Index, fail.Query, fail.Message)
+	for _, sk := range res.Skips {
+		fmt.Fprintf(&b, "  skip %s at %s: %s\n", sk.Class, sk.Where, sk.Detail)
 	}
 	fmt.Fprintf(&b, "  regenerate: go run ./cmd/factory-run -seed-start %d -seeds 1 -date %s\n",
-		f.Header.Seed, f.Header.Date)
+		s.Header.Seed, s.Header.Date)
 	return b.String()
 }
 

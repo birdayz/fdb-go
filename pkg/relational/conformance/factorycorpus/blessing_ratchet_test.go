@@ -116,10 +116,7 @@ func TestTLPOnlyIsADistinctCensusDimension(t *testing.T) {
 	if factorycorpus.BlessingMetamorphicTLPOnly == factorycorpus.BlessingMetamorphic {
 		t.Fatal("the TLP-only label is not distinct from the plain metamorphic one")
 	}
-	files, err := factorycorpus.LoadDir(factorycorpus.TestdataDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	files := loadCorpus(t)
 	c := factorycorpus.ComputeCensus(files)
 	var sum int
 	for _, n := range c.ByBlessing {

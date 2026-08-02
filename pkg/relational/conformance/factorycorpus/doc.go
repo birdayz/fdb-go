@@ -11,29 +11,35 @@
 // converts oracle agreement — a moment-in-time fact — into a regression pin, a
 // permanent one.
 //
-// The package therefore holds four things and no more:
+// The committed format is GENUINE `.yamsql` (RFC-201 §5.7, owner ruling
+// 2026-08-01): one file per feature family (FamilyOf), each holding that
+// family's scenarios as (schema_template, setup, test_block) document triples
+// in the Java yaml-tests dialect — the same convention the vendored corpus
+// uses (cte.yamsql holds the CTE tests). Provenance lives in comments, the one
+// extension yamsql tolerates freely, so Java's own yaml-tests runner can
+// execute a committed file verbatim; that is what makes cross-engine blessing
+// literal rather than aspirational.
 //
-//   - the WRITER (writer.go), which emits a scenario in a canonical yamsql
-//     form that survives a Load/Marshal round trip byte for byte, so a
+// The package therefore holds five things and no more:
+//
+//   - the FAMILY mapping (family.go): feature vector → family key → file
+//     name, the grouping convention the loader cross-checks per scenario;
+//   - the WRITER (writer.go), which emits a family file in a canonical form
+//     that survives a Load/MarshalFamily round trip byte for byte, so a
 //     re-bless produces a reviewable diff instead of reformatting noise;
-//   - the HEADER (header.go), the §5.1 provenance contract every generated
-//     file carries — generator version, seed, blessing oracle, feature vector,
-//     plan shape, date — parseable without executing anything;
-//   - the LOADER (load.go), which is deliberately its OWN loader over its OWN
-//     flat testdata/ directory. Six places glob one level of
-//     `pkg/relational/conformance/yamsql/testdata` — the runner
-//     (yamsql/runner_test.go), SQL_COVERAGE.md (yamsql/coverage.go),
-//     FEATURE_MATRIX.md (yamsql/featurematrix.go), the ANSI ledger twice
-//     (yamsql/ansiledger.go: the evidence collector and the tagged-case
-//     lister) and the EXPLAIN baseline (explaindiff/explaindiff.go) — and a
-//     factory batch must not silently land in the documents
-//     those ledgers generate — machine volume would drown the hand-authored
-//     evidence they exist to report. Validation is NOT re-implemented: the
-//     loader delegates to yamsql.Load, inheriting its strict KnownFields
-//     decoding and every assertion-cannot-be-silently-dropped check;
+//   - the HEADER (header.go), the §5.1 provenance contract every committed
+//     scenario carries — generator version, seed, blessing oracle, feature
+//     vector, plan shape, date — parseable without executing anything;
+//   - the LOADER (load.go), which owns provenance and the provenance↔document
+//     cross-checks over its OWN flat testdata/ directory, and delegates the
+//     yamsql structure to javayamsql.Parse — the strict parser gating the
+//     vendored Java corpus — so the factory corpus cannot drift from the
+//     shared format without the build going red. Execution (run.go) delegates
+//     to javacorpus.RunParsed for the same reason: one runner, not a fork;
 //   - the CENSUS and RATCHET (census.go), the governance instrument of
-//     RFC-201 §8: scenario count, test count and per-feature-vector counts,
-//     computed from the files and gated so they can only go up.
+//     RFC-201 §8: scenario count, test count, per-feature-vector counts and
+//     the per-dedup-key blessing, computed from the files and gated so they
+//     can only go up.
 //
 // The producer lives in the sibling `factory` package and in
 // `cmd/factory-run`; the split is what lets the corpus run with no dependency

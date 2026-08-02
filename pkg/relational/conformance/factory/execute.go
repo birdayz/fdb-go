@@ -154,8 +154,9 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 	shape := explaindiff.ShapeOf(plan)
 
 	results := make([][][]any, len(sqls))
+	columns := make([][]string, len(sqls))
 	for i, s := range sqls {
-		rows, err := queryRows(ctx, r.DefaultConn, s)
+		rows, cols, err := queryRows(ctx, r.DefaultConn, s)
 		if err != nil {
 			// Not a finding: P1 generates only supported shapes, but a
 			// generated shape the engine rejects is a gap to report, not a
@@ -169,6 +170,7 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 			return out
 		}
 		results[i] = rows
+		columns[i] = cols
 	}
 
 	// A partition whose rows all land in one branch is a partition the oracle
@@ -296,7 +298,11 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 	}
 	for i, s := range sqls {
 		scenario.Tests = append(scenario.Tests, yamsql.Test{
-			Query:     s,
+			Query: s,
+			// The column labels feed the writer's by-name cells; they come from
+			// the driver's result-set metadata, which is the same identity
+			// Java's by-name matcher resolves against.
+			Columns:   columns[i],
 			Rows:      results[i],
 			Unordered: !ordered,
 		})
@@ -307,7 +313,6 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 	out.Scenario = scenario
 	out.Header = factorycorpus.Header{
 		Name:          cand.Name(),
-		FormatVersion: factorycorpus.FormatVersion,
 		Generator:     GeneratorVersion,
 		Seed:          cand.Seed,
 		QueryIndex:    cand.QueryIndex,
@@ -387,7 +392,7 @@ func (r *Runner) secondPlan(ctx context.Context, sqlText string, baseRows [][]an
 	if altPlan == basePlan {
 		return false, "", nil
 	}
-	altRows, err := queryRows(ctx, r.SecondPlanConn, sqlText)
+	altRows, _, err := queryRows(ctx, r.SecondPlanConn, sqlText)
 	if err != nil {
 		return false, "", fmt.Errorf("second-plan execution: %w", err)
 	}
@@ -554,6 +559,10 @@ func crossScalar(v any) string {
 		// collapse to "4.61168602e+18". A differential oracle that reports two
 		// different values as equal is worse than no oracle: it passes.
 		return "n:" + strconv.FormatInt(x, 10)
+	case float32:
+		// FLOAT columns are captured at float32 width (queryRows); Java's JSON
+		// leg widens them to float64 the same lossless way this conversion does.
+		return "n:" + crossFloat(float64(x))
 	case float64:
 		return "n:" + crossFloat(x)
 	default:
@@ -591,15 +600,31 @@ func crossFloat(x float64) string {
 // int64 / float64 / string / bool / nil, with byte slices decoded to strings.
 // Anything else reaches valueScalar in the writer and is rejected there rather
 // than being frozen in a form the loader cannot read back.
-func queryRows(ctx context.Context, conn *sql.Conn, sqlText string) ([][]any, error) {
+func queryRows(ctx context.Context, conn *sql.Conn, sqlText string) ([][]any, []string, error) {
 	rows, err := conn.QueryContext(ctx, sqlText)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// A FLOAT column's cell must be captured AT FLOAT WIDTH, because the
+	// committed expectation's spelling is class-sensitive: the yamsql writer
+	// freezes a float32 under `!f` (a Java Float expectation) and a float64 as
+	// a plain YAML float (a Double expectation), and Java's matcher — which
+	// javacorpus mirrors — never lets a Double expectation satisfy a Float
+	// actual. The driver widens FLOAT to float64 on Scan, so the width is
+	// recovered from the column's declared type; the widening is exact in both
+	// directions (every float32 is a float64), so no value is disturbed.
+	isFloat32 := make([]bool, len(cols))
+	if types, err := rows.ColumnTypes(); err == nil {
+		for i, ct := range types {
+			if i < len(isFloat32) && strings.EqualFold(ct.DatabaseTypeName(), "FLOAT") {
+				isFloat32[i] = true
+			}
+		}
 	}
 	out := [][]any{}
 	for rows.Next() {
@@ -609,16 +634,21 @@ func queryRows(ctx context.Context, conn *sql.Conn, sqlText string) ([][]any, er
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for i, v := range vals {
-			if b, ok := v.([]byte); ok {
-				vals[i] = string(b)
+			switch x := v.(type) {
+			case []byte:
+				vals[i] = string(x)
+			case float64:
+				if isFloat32[i] {
+					vals[i] = float32(x)
+				}
 			}
 		}
 		out = append(out, vals)
 	}
-	return out, rows.Err()
+	return out, cols, rows.Err()
 }
 
 // explainOn returns the query's plan text with generated correlation

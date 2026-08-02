@@ -138,31 +138,35 @@ func seededCorpus(t *testing.T, dir string) string {
 	const name = "fc_0000000001_q0_p0"
 	const fv = "shape=single;idx=A;proj=star;where=cmp.eq;order=none"
 	const shape = "0123456789abcdef"
-	data, err := factorycorpus.Marshal(factorycorpus.Header{
-		Name:          name,
-		FormatVersion: factorycorpus.FormatVersion,
-		Generator:     factory.GeneratorVersion,
-		Seed:          1,
-		Date:          "2026-07-31",
-		Blessing:      factorycorpus.BlessingMetamorphic,
-		Oracles:       []string{"tlp", "second-plan"},
-		FeatureVector: fv,
-		PlanShape:     shape,
-		DedupKey:      factorycorpus.DedupKeyOf(fv, shape),
-	}, &yamsql.Scenario{
-		Name:           name,
-		SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
-		Setup:          []string{"INSERT INTO t VALUES (1, 2)"},
-		Tests: []yamsql.Test{{
-			Query:     "SELECT id FROM t WHERE a = 2",
-			Unordered: true,
-			Rows:      [][]any{{int64(1)}},
-		}},
-	})
+	data, err := factorycorpus.MarshalFamily([]*factorycorpus.Scenario{{
+		Header: factorycorpus.Header{
+			Name:          name,
+			Generator:     factory.GeneratorVersion,
+			Seed:          1,
+			Date:          "2026-07-31",
+			Blessing:      factorycorpus.BlessingMetamorphic,
+			Oracles:       []string{"tlp", "second-plan"},
+			FeatureVector: fv,
+			PlanShape:     shape,
+			DedupKey:      factorycorpus.DedupKeyOf(fv, shape),
+		},
+		Doc: &yamsql.Scenario{
+			Name:           name,
+			SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
+			Setup:          []string{"INSERT INTO t VALUES (1, 2)"},
+			Tests: []yamsql.Test{{
+				Query:     "SELECT id FROM t WHERE a = 2",
+				Unordered: true,
+				Columns:   []string{"ID"},
+				Rows:      [][]any{{int64(1)}},
+			}},
+		},
+	}})
 	if err != nil {
 		t.Fatalf("marshal seed scenario: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(corpus, name+".yaml"), data, 0o644); err != nil {
+	fileName := factorycorpus.FamilyFileName(factorycorpus.FamilyOf(fv))
+	if err := os.WriteFile(filepath.Join(corpus, fileName), data, 0o644); err != nil {
 		t.Fatalf("write corpus file: %v", err)
 	}
 	return corpus

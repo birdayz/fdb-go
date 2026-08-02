@@ -25,9 +25,14 @@ go_library(
 
 go_test(
     name = "factory_test",
-    timeout = "long",  # keep: re-plans every committed scenario's four renderings
+    # keep: re-plans every committed scenario's four renderings and re-marshals
+    # every family file, which scales with corpus size and runs ~10x slower in
+    # the race lane (the canonicality walk alone measured 228s under -race at
+    # 5000 scenarios). Eternal is headroom for corpus growth, not present need.
+    timeout = "eternal",
     srcs = [
         "collision_test.go",
+        "corpus_shared_test.go",
         "determinism_test.go",
         "explain_alias_fdb_test.go",
         "export_test.go",

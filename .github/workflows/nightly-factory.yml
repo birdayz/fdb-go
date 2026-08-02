@@ -216,6 +216,15 @@ jobs:
         # writes no test is a broken pipeline, not a quiet success, and the
         # thing that would otherwise hide it is that an empty batch looks
         # exactly like a flattened frontier.
+        # The batch appends scenarios to the RFC-201 §5.7 family files
+        # (<family>.yamsql) — or creates a new family file when a batch reaches
+        # a family first — and re-renders each touched file canonically, so the
+        # PR diff is the appended scenarios plus nothing.
+        #
+        # -update-census: persist() verifies the ratchet against the COMMITTED
+        # baseline first and only then raises it, so the flag cannot mask a
+        # shrink — and without it the batch PR would carry a baseline that no
+        # longer equals the corpus, which TestCensusBaselineIsMeasured rejects.
         run: |
           set -o pipefail
           go run ./cmd/factory-run \
@@ -223,6 +232,7 @@ jobs:
             -seed-start ${{ steps.params.outputs.start }} \
             -quota ${{ steps.params.outputs.quota }} \
             -date ${{ steps.params.outputs.date }} \
+            -update-census \
             2>&1 | tee batch.log
 
       - name: Record genuine-run heartbeat
