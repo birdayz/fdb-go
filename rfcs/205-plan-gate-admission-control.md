@@ -1,8 +1,9 @@
 # RFC-205 — The plan gate: user-facing admission control on the completed plan
 
-**Status:** DRAFT, revision 1. Query-engine review gate applies (Graefe +
-Torvalds RFC ACK required before implementation starts; one joint
-implementation lap per phase).
+**Status:** DRAFT, revision 1 — **awaiting owner review before any review
+gate or implementation** (owner directive: no implementation until the owner
+has personally reviewed this document; the Graefe + Torvalds RFC ACK and the
+per-phase joint implementation laps queue behind that read).
 
 Java reference: `fdb-record-layer/` at tag 4.12.11.0. All Java citations are
 relative to that tree; all Go citations to the repo root. Every load-bearing
