@@ -3,6 +3,7 @@ package infra
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -121,5 +122,54 @@ func runShellSuite(t *testing.T, script string) {
 	}
 	if !strings.Contains(string(out), "ALL OK") {
 		t.Fatalf("%s did not report ALL OK", script)
+	}
+}
+
+// TestFleetGoMatchesGoMod pins the runner's system Go to the toolchain the repo
+// actually builds with.
+//
+// main.tf hardcodes go_version; go.mod is what Bazel's go_sdk resolves from
+// (MODULE.bazel: go_sdk.from_file(go_mod = "//:go.mod")). Nothing connected the
+// two, so a routine `go 1.x` bump in go.mod would leave every box provisioning a
+// Go the repo no longer builds with, silently and only on the fleet.
+//
+// It matters because the boxes DO use their system Go. The vulnerability gate
+// runs govulncheck through it, and a govulncheck compiled against a different
+// toolchain than the code under test is a scanner reasoning about a stdlib that
+// is not the one shipping — which reports as a clean scan, the failure mode that
+// is indistinguishable from working.
+//
+// This is the same class as the clang and gh gaps: a dependency the fleet really
+// had, that nothing declared, found only when a box failed to do its job.
+func TestFleetGoMatchesGoMod(t *testing.T) {
+	t.Parallel()
+
+	tf, err := os.ReadFile("main.tf")
+	if err != nil {
+		t.Fatalf("read main.tf: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*go_version\s*=\s*"([^"]+)"`).FindSubmatch(tf)
+	if m == nil {
+		t.Fatal("main.tf declares no go_version — the fleet's Go pin has moved or been " +
+			"renamed, and this guard is now checking nothing")
+	}
+	fleet := string(m[1])
+
+	gomod, err := os.ReadFile("../go.mod")
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	g := regexp.MustCompile(`(?m)^go\s+(\S+)`).FindSubmatch(gomod)
+	if g == nil {
+		t.Fatal("go.mod has no `go` directive")
+	}
+	repo := string(g[1])
+
+	if fleet != repo {
+		t.Errorf("the fleet provisions Go %s but the repo builds with Go %s (go.mod, which is "+
+			"where MODULE.bazel's go_sdk.from_file reads its toolchain). Bump main.tf's "+
+			"go_version AND go_sha256 together — a version bumped without its checksum fails "+
+			"provisioning at fetch-verified.sh, which is the loud outcome; a checksum left "+
+			"matching a stale version is the quiet one.", fleet, repo)
 	}
 }
