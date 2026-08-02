@@ -391,6 +391,92 @@ func TestPhysicalEqualityShape_CartesianProductAndOverflow(t *testing.T) {
 	}
 }
 
+// TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal pins the COUNT,
+// not merely the non-emptiness, of the ordering prefix across a float
+// coordinate — which is the dimension a len(Keys) != 0 assertion cannot see.
+//
+// A float coordinate that is congruent only through the NaN tie class orders
+// ITSELF and scrambles everything after it: all NaN payloads are one logical
+// value spread over many distinct physical keys, so within that tie the next
+// coordinate is emitted in payload order rather than its own. Claiming the
+// second column here returns rows in the wrong order for
+// ORDER BY v, w — a silent wrong answer, not a missed optimisation.
+//
+// The two-sided arm is the control: a finite interval contains no NaN, so
+// there is no tie class and the prefix legitimately continues.
+func TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal(t *testing.T) {
+	t.Parallel()
+	floatThenLong := []values.Type{values.NullableDouble, values.NullableLong}
+	oneSided := func(t *testing.T) *predicates.ComparisonRange {
+		t.Helper()
+		comparison := predicates.NewLiteralComparison(predicates.ComparisonLessThan, float64(0))
+		merged := predicates.EmptyComparisonRange().Merge(&comparison)
+		if !merged.Ok {
+			t.Fatal("failed to build a one-sided float inequality")
+		}
+		return merged.Range
+	}
+	twoSided := func(t *testing.T) *predicates.ComparisonRange {
+		t.Helper()
+		low := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, float64(-8))
+		merged := predicates.EmptyComparisonRange().Merge(&low)
+		if !merged.Ok {
+			t.Fatal("failed to build the lower bound")
+		}
+		high := predicates.NewLiteralComparison(predicates.ComparisonLessThan, float64(8))
+		merged = merged.Range.Merge(&high)
+		if !merged.Ok {
+			t.Fatal("failed to build the upper bound")
+		}
+		return merged.Range
+	}
+
+	for _, test := range []struct {
+		name         string
+		comps        func(*testing.T) *predicates.ComparisonRange
+		wantStrict   int
+		wantRangeSet int
+		why          string
+	}{
+		{
+			name:         "one-sided inequality stops after the float",
+			comps:        oneSided,
+			wantStrict:   1,
+			wantRangeSet: 1,
+			why:          "the negative-NaN block is a tie class; the next column is in payload order inside it",
+		},
+		{
+			name:         "two-sided finite range continues past the float",
+			comps:        twoSided,
+			wantStrict:   2,
+			wantRangeSet: 2,
+			why:          "a finite interval holds no NaN, so there is no tie class to scramble the next column",
+		},
+		{
+			name:         "unbound float stops after the float, and only for a range-set leaf",
+			comps:        nil,
+			wantStrict:   0,
+			wantRangeSet: 1,
+			why:          "only a range-set leaf splits the blocks at all, and even then the claim ends there",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var comps []*predicates.ComparisonRange
+			if test.comps != nil {
+				comps = []*predicates.ComparisonRange{test.comps(t)}
+			}
+			if got := PhysicalOrderingPrefixLength(comps, floatThenLong, 2); got != test.wantStrict {
+				t.Fatalf("PhysicalOrderingPrefixLength = %d, want %d — %s", got, test.wantStrict, test.why)
+			}
+			if got := PhysicalOrderingPrefixLengthForRangeSet(comps, floatThenLong, 2); got != test.wantRangeSet {
+				t.Fatalf("PhysicalOrderingPrefixLengthForRangeSet = %d, want %d — %s", got, test.wantRangeSet, test.why)
+			}
+		})
+	}
+}
+
 func TestPhysicalOrderingPrefixLength_FloatNaNCongruence(t *testing.T) {
 	t.Parallel()
 
@@ -419,16 +505,17 @@ func TestPhysicalOrderingPrefixLength_FloatNaNCongruence(t *testing.T) {
 		// logical order. Before that split it was NOT congruent, and the cost
 		// of saying so was a blocking in-memory sort over the whole table.
 		{name: "unbound DOUBLE stops for a leaf that cannot split blocks", types: []values.Type{values.NullableDouble, values.NullableLong}, want: 0},
-		// An ordered FLOAT coordinate is congruent for the same reason an
-		// ordered LONG one is: the scan emits its ranges in logical order. The
-		// float case gets there by decomposition rather than by luck — an upper
-		// bound starts at -Inf and holds no NaN, a lower bound puts the
-		// negative-NaN range last, and all NaNs are logically equal. The
-		// INTEGER control below must stay identical; a float-only answer here
-		// means the congruence rule has drifted back to keying on TYPE instead
-		// of on what the scan actually emits.
-		{name: "ordered FLOAT is congruent", comps: []*predicates.ComparisonRange{inequality(float64(0))}, types: []values.Type{values.NullableFloat, values.NullableLong}, want: 2},
-		{name: "ordered LONG control", comps: []*predicates.ComparisonRange{inequality(int64(0))}, types: []values.Type{values.NullableLong, values.NullableLong}, want: 2},
+		// An ordered FLOAT coordinate is congruent for ITSELF and TERMINAL: the
+		// scan emits its ranges in logical order, but the NaN block it appends
+		// is a tie class of many distinct physical keys, so the coordinate
+		// AFTER it comes back in NaN-payload order. Hence 1, not 2.
+		//
+		// The LONG control is the contrast that keeps this honest: an ordered
+		// integer coordinate has no tie class, so its prefix genuinely runs to
+		// the end. If these two ever agree again, the terminality rule has been
+		// lost.
+		{name: "ordered FLOAT is congruent but terminal", comps: []*predicates.ComparisonRange{inequality(float64(0))}, types: []values.Type{values.NullableFloat, values.NullableLong}, want: 1},
+		{name: "ordered LONG control runs to the end", comps: []*predicates.ComparisonRange{inequality(int64(0))}, types: []values.Type{values.NullableLong, values.NullableLong}, want: 2},
 		{name: "nonzero equality excludes NaNs", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, float64(5))}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 2},
 		{name: "signed-zero equality preserves total ORDER BY", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, float64(0))}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 2},
 		{name: "known NaN equality stops", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, math.NaN())}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 0},

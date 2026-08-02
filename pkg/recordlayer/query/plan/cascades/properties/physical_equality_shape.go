@@ -575,52 +575,111 @@ func compareIntegerToLogicalFloat(integer int64, floating float64) int {
 	return values.CompareFloat64(integerAsFloat, floating)
 }
 
+// keyOrderingCongruence answers two questions about one key coordinate, and the
+// SECOND one is what a bare boolean gets wrong.
+//
+// Congruent says physical tuple order at this coordinate agrees with the query
+// comparator for the rows the scan selects. Terminal says the agreement does
+// NOT extend to the coordinates after it, so the ordering claim must stop here.
+//
+// Terminality exists because of the NaN tie class. Every NaN is ONE logical
+// value, but it is spread over many distinct physical keys in two separate
+// blocks. Within that tie class the next coordinate therefore comes back in
+// NaN-PAYLOAD order rather than its own. Concretely, for an index on (v, w):
+//
+//	ORDER BY v, w  over rows with several NaN payloads
+//	physical: nan(p1)/1 nan(p1)/2 nan(p2)/1 nan(p2)/2
+//	logical:  nan/1     nan/1     nan/2     nan/2
+//
+// so claiming w is ordered under a NaN-relaxed v silently returns rows in the
+// wrong order. The relaxation is sound FOR v and false for everything after it.
+//
+// This is corroborated by the binder: bindScanComparisonsToRangeSet splits
+// exactly ONE coordinate, so binding a range set can never license a claim
+// beyond the first non-equality coordinate.
+type keyOrderingCongruence struct {
+	Congruent bool
+	Terminal  bool
+}
+
+// floatOrderedBounds classifies the ordered bounds on a float coordinate.
+func floatOrderedBounds(cr *predicates.ComparisonRange) (hasLow, hasHigh bool) {
+	if cr == nil {
+		return false, false
+	}
+	for _, comparison := range cr.GetInequalityComparisons() {
+		if comparison == nil {
+			continue
+		}
+		switch comparison.Type {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			hasLow = true
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			hasHigh = true
+		}
+	}
+	return hasLow, hasHigh
+}
+
+func keyOrderingCongruenceAt(
+	cr *predicates.ComparisonRange,
+	physicalType values.Type,
+	rangeSetCapable bool,
+) keyOrderingCongruence {
+	if cr != nil && cr.IsEquality() {
+		component := PhysicalEqualityShapeForComponent(cr, physicalType, false)
+		congruent := component.LogicalEquality &&
+			!component.UnsupportedKnownNaN &&
+			(component.PhysicallyFixed || component.MayFanOut || component.Unsatisfiable)
+		return keyOrderingCongruence{Congruent: congruent}
+	}
+	if physicalEqualityTypeUnknown(physicalType) {
+		return keyOrderingCongruence{}
+	}
+	if physicalType.Code() != values.TypeCodeFloat &&
+		physicalType.Code() != values.TypeCodeDouble {
+		return keyOrderingCongruence{Congruent: true}
+	}
+	if cr != nil && cr.IsInequality() {
+		if ComparisonRangeHasUnsupportedKnownNaN(cr, physicalType) {
+			return keyOrderingCongruence{}
+		}
+		hasLow, hasHigh := floatOrderedBounds(cr)
+		switch {
+		case hasLow && hasHigh:
+			// A two-sided finite range contains NO NaN at all, so there is no
+			// tie class and physical order agrees with logical order for this
+			// coordinate AND everything after it.
+			return keyOrderingCongruence{Congruent: true}
+		case hasLow || hasHigh:
+			// One-sided: an upper bound is one range starting at -Inf; a lower
+			// bound is the numeric range followed by the negative-NaN block.
+			// Both are correct FOR THIS COORDINATE only.
+			return keyOrderingCongruence{Congruent: true, Terminal: true}
+		default:
+			// IS NOT NULL alone. The binder emits ONE raw range for it — no
+			// block split — so the negative NaNs come back first. Not congruent.
+			return keyOrderingCongruence{}
+		}
+	}
+	// UNBOUND. Only a leaf that enumerates a physical range set splits the
+	// coordinate into NULL / numbers / the two NaN blocks and returns them in
+	// logical order, and even then the claim stops here.
+	if rangeSetCapable && (cr == nil || cr.IsEmpty()) {
+		return keyOrderingCongruence{Congruent: true, Terminal: true}
+	}
+	return keyOrderingCongruence{}
+}
+
 // PhysicalKeyOrderingCongruent reports whether FDB tuple order at one key
 // coordinate is congruent with the query comparator for the rows selected by
-// cr. Raw FLOAT/DOUBLE keys are not generally congruent: FDB preserves NaN
-// sign/payload regions while the logical comparator canonicalizes all NaNs.
-// A supported equality is safe because it restricts the coordinate to one
-// logical value (including both signed-zero encodings); an unbound or ordered
-// floating coordinate is not. Unknown non-null metadata also fails closed.
+// cr. It does NOT say whether the following coordinates are also ordered; use
+// PhysicalOrderingPrefixLength, which honours terminality.
 func PhysicalKeyOrderingCongruent(
 	cr *predicates.ComparisonRange,
 	physicalType values.Type,
 ) bool {
-	if cr != nil && cr.IsEquality() {
-		component := PhysicalEqualityShapeForComponent(cr, physicalType, false)
-		return component.LogicalEquality &&
-			!component.UnsupportedKnownNaN &&
-			(component.PhysicallyFixed || component.MayFanOut || component.Unsatisfiable)
-	}
-	if physicalEqualityTypeUnknown(physicalType) {
-		return false
-	}
-	if physicalType.Code() != values.TypeCodeFloat &&
-		physicalType.Code() != values.TypeCodeDouble {
-		return true
-	}
-	// A float coordinate constrained by an ordered comparison IS congruent,
-	// because the scan does not emit one raw physical range for it: the binder
-	// decomposes it into ranges that are concatenated in LOGICAL order.
-	//
-	//   - an upper bound yields one range starting at -Inf, inside which
-	//     physical and logical order coincide (it contains no NaN at all);
-	//   - a lower bound yields the finite/+Inf/positive-NaN range followed by
-	//     the negative-NaN range, and since every NaN is logically equal, any
-	//     order among them is a valid logical order.
-	//
-	if cr != nil && cr.IsInequality() && !ComparisonRangeHasUnsupportedKnownNaN(cr, physicalType) {
-		return true
-	}
-	// An UNBOUND float coordinate is NOT congruent here. Making it so requires
-	// splitting the coordinate into NULL, [-Inf..+Inf] and the two NaN blocks
-	// and returning them in logical order, and only a leaf that enumerates a
-	// physical range set can do that. Aggregate indexes read a pre-aggregated
-	// stream and partitioned vector indexes are self-limiting per partition;
-	// neither can, so neither may claim the ordering.
-	// PhysicalKeyOrderingCongruentForRangeSet is the answer for the leaves that
-	// can.
-	return false
+	return keyOrderingCongruenceAt(cr, physicalType, false).Congruent
 }
 
 // PhysicalKeyOrderingCongruentForRangeSet is PhysicalKeyOrderingCongruent for a
@@ -637,17 +696,7 @@ func PhysicalKeyOrderingCongruentForRangeSet(
 	cr *predicates.ComparisonRange,
 	physicalType values.Type,
 ) bool {
-	if PhysicalKeyOrderingCongruent(cr, physicalType) {
-		return true
-	}
-	if physicalEqualityTypeUnknown(physicalType) {
-		return false
-	}
-	if physicalType.Code() != values.TypeCodeFloat &&
-		physicalType.Code() != values.TypeCodeDouble {
-		return false
-	}
-	return cr == nil || cr.IsEmpty()
+	return keyOrderingCongruenceAt(cr, physicalType, true).Congruent
 }
 
 // PhysicalOrderingPrefixLength returns the largest leading key prefix whose
@@ -669,17 +718,7 @@ func PhysicalOrderingPrefixLengthForRangeSet(
 	physicalTypes []values.Type,
 	n int,
 ) int {
-	for i := 0; i < n; i++ {
-		physicalType := physicalEqualityTypeAt(physicalTypes, i)
-		var cr *predicates.ComparisonRange
-		if i < len(comps) {
-			cr = comps[i]
-		}
-		if !PhysicalKeyOrderingCongruentForRangeSet(cr, physicalType) {
-			return i
-		}
-	}
-	return n
+	return physicalOrderingPrefixLength(comps, physicalTypes, n, true)
 }
 
 func PhysicalOrderingPrefixLength(
@@ -687,14 +726,32 @@ func PhysicalOrderingPrefixLength(
 	physicalTypes []values.Type,
 	n int,
 ) int {
+	return physicalOrderingPrefixLength(comps, physicalTypes, n, false)
+}
+
+// physicalOrderingPrefixLength walks the key and stops at the FIRST coordinate
+// that is either incongruent (excluded) or terminal (included, but nothing
+// after it). Returning n whenever every coordinate is congruent is the bug this
+// replaces: a coordinate congruent only through the NaN tie class orders
+// itself and scrambles its successors.
+func physicalOrderingPrefixLength(
+	comps []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+	n int,
+	rangeSetCapable bool,
+) int {
 	for i := 0; i < n; i++ {
 		physicalType := physicalEqualityTypeAt(physicalTypes, i)
 		var cr *predicates.ComparisonRange
 		if i < len(comps) {
 			cr = comps[i]
 		}
-		if !PhysicalKeyOrderingCongruent(cr, physicalType) {
+		congruence := keyOrderingCongruenceAt(cr, physicalType, rangeSetCapable)
+		if !congruence.Congruent {
 			return i
+		}
+		if congruence.Terminal {
+			return i + 1
 		}
 	}
 	return n

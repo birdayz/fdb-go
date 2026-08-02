@@ -82,6 +82,16 @@ func bindingsUseUnknownPhysicalKeyType(
 	return false
 }
 
+// candidateRangeHasUnsupportedPhysicalFloatOrdering reports an ordered
+// FLOAT/DOUBLE bound that THIS leaf cannot represent.
+//
+// It is no longer a statement about float keys in general. A value index or
+// primary scan binds the comparison as an exact physical range set and keeps
+// its index; the leaves that still consult this are the ones that cannot
+// enumerate several ranges — an aggregate index reads a pre-aggregated stream
+// and a partitioned vector index is self-limiting per partition — so for them
+// an ordered float bound really is unrepresentable and the candidate is
+// declined rather than compensated.
 func candidateRangeHasUnsupportedPhysicalFloatOrdering(
 	cr *predicates.ComparisonRange,
 	physicalTypes []values.Type,

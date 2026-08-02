@@ -228,7 +228,11 @@ func TestOrderedIndexScan_RejectsFanOutCandidate(t *testing.T) {
 			false,
 			nil,
 			createsDuplicates,
-		)
+			// A scalar tuple domain for the key coordinate. Sort elision now
+			// depends on the physical key type, so leaving it Unknown would
+			// make this test exercise the fail-closed path instead of the
+			// fan-out cardinality contract it is named for.
+		).WithKeyComponentTypes(syntheticIndexKeyTypes(1))
 	}
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newCandidate("T$tags_fanout", &fanOut),

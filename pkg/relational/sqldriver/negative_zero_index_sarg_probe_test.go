@@ -2,8 +2,11 @@ package sqldriver_test
 
 // Regression pin for TODO.md CQ-27/CQ-83 — an indexed DOUBLE/FLOAT equality
 // probe must agree with the full-scan residual-filter path on a value stored as
-// -0.0 (negative zero), while ordered predicates must decline bounded floating
-// index access because arbitrary raw NaN keys make that order unsound.
+// -0.0 (negative zero). Ordered predicates take the index too: an ordered
+// float comparison is an EXACT range set (one range for </<=, two for >/>=),
+// so declining it would cost the index without fixing a row. Every query below
+// therefore runs on BOTH the index-eligible and full-scan connections and
+// requires the same rows from each.
 //
 // Root cause (fixed): scanComparisonsToTupleRange (executor.go) packed a
 // zero comparand with whatever sign it happened to carry. FDB tuple encoding
@@ -112,15 +115,6 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 				"sentinel proves nothing about the SARG path), got: %s", q, plan)
 		}
 	}
-	requireResidualPlan := func(q string) {
-		t.Helper()
-		plan := explainOnConn(t, ctx, idxConn, q)
-		if !strings.Contains(plan, "PredicatesFilter(Scan(") || strings.Contains(plan, "IndexScan") {
-			t.Fatalf("%q: expected a residual primary scan and no bounded FLOAT/DOUBLE index scan; "+
-				"raw NaN keys violate the logical ordering, got: %s", q, plan)
-		}
-	}
-
 	// probe runs one query on both the index-eligible connection and the
 	// full-scan (MatchLeafRule disabled) connection, asserting BOTH equal
 	// `want` — proving the SARG range and the residual filter now AGREE at
@@ -129,8 +123,6 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		t.Helper()
 		if expectIndex {
 			requireIndexPlan(q)
-		} else {
-			requireResidualPlan(q)
 		}
 		full := ids(fullConn, q)
 		if !eq(full, want) {

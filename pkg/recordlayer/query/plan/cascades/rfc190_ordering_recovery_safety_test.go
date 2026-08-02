@@ -122,6 +122,13 @@ func TestRFC190OrderedFullScanAlternativesFinalPrimaryScanSafety(t *testing.T) {
 	ctx := &rfc190PrimaryKeyPlanContext{
 		primaryKeyColumns: []string{"ID"},
 	}
+	// A REAL flowed type. Sort elision now depends on the physical type of each
+	// primary-key coordinate, because a raw FLOAT/DOUBLE key is not in logical
+	// order; a stubbed UnknownType would exercise that fail-closed path rather
+	// than the reverse-scan recovery this test is named for.
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
 			Value:     values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
@@ -135,7 +142,7 @@ func TestRFC190OrderedFullScanAlternativesFinalPrimaryScanSafety(t *testing.T) {
 		t.Parallel()
 
 		forward := plans.NewRecordQueryScanPlan(
-			[]string{"T"}, values.UnknownType, false,
+			[]string{"T"}, rowType, false,
 		).WithPrimaryKey([]values.Value{
 			values.NewFlatFieldValue("ID", values.UnknownType),
 		})

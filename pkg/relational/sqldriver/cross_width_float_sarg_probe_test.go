@@ -25,11 +25,14 @@ package sqldriver_test
 // representable in both and cannot tell them apart — a suite that only ever
 // tests values like 1.5 passes with every one of the three defects present.
 //
-// The plan assertions are not decoration. Equality must keep the width-aware
-// index probe. Ordered FLOAT/DOUBLE predicates must now take the opposite
-// shape: raw FDB keys retain NaN sign and payload, so their physical order is
-// not congruent with the logical total order and a bounded index range would be
-// incomplete or unsound. Those cases require a residual filter over Scan(T).
+// The plan assertions are not decoration. Equality keeps the width-aware index
+// probe, and ordered FLOAT/DOUBLE predicates keep an index too — as an EXACT
+// range set rather than one raw range. Raw FDB keys retain NaN sign and
+// payload, so physical order disagrees with the logical total order in exactly
+// one place, the negative-NaN block; that is representable as one extra range,
+// not a reason to fall back to a residual scan. The row expectations here are
+// unchanged from when these cases DID fall back, which is the evidence that
+// falling back bought no correctness.
 
 import (
 	"context"

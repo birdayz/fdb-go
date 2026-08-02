@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -99,15 +100,30 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// Matching sort keys to primary-key column NAMES is not sufficient to drop
+	// the sort: it says the scan visits the right columns, not that it visits
+	// them in the LOGICAL order the query asked for. A raw FLOAT/DOUBLE key
+	// coordinate is the case where those differ — FDB tuple order puts the
+	// negative NaNs below -Inf while the comparator makes every NaN greatest.
+	//
+	// This scan carries NO comparisons, so it binds no physical range set and
+	// nothing splits the NaN blocks out; the strict rule is the right one. An
+	// unbound float coordinate therefore ends the usable prefix at 0 and the
+	// sort stays.
+	physicalTypes := physicalTypesFromFlatRow(scan.GetFlowedType(), pkCols, nil)
+	if usable := properties.PhysicalOrderingPrefixLength(
+		nil, physicalTypes, len(pkCols),
+	); len(sortKeys) > usable {
+		return
+	}
+
 	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), reverse)
 	pkVals := make([]values.Value, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 	}
 	plan = plan.WithPrimaryKey(pkVals).
-		WithKeyComponentTypes(physicalTypesFromFlatRow(
-			scan.GetFlowedType(), pkCols, nil,
-		))
+		WithKeyComponentTypes(physicalTypes)
 
 	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
 	// expression now (RFC-184 W2), no adapter needed.
