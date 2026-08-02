@@ -57,10 +57,15 @@ func (r *ImplementInMemorySortRule) Matcher() matching.BindingMatcher { return r
 // and planning fails — rather than by bolting a type check onto ORDER BY
 // parsing, which would diverge the moment the surrounding structure changed.
 //
-// GROUPING IS DELIBERATELY NOT GATED HERE. Java SUPPORTS `GROUP BY <struct>`,
-// flattening the record into its primitive leaves; gating it would invent a
-// divergence rather than close one. Go's streaming-aggregation path builds its
-// own sort directly and does not pass through this rule.
+// GROUPING IS DELIBERATELY NOT GATED HERE — and needs no gate: `GROUP BY
+// <struct>` WORKS, in both engines, because the grouping path flattens a
+// RECORD-typed key into its primitive leaf accessors
+// (Values.primitiveAccessorsForType, Values.java:99-121; Go:
+// values.PrimitiveAccessorsForType via expandGroupingKeysToPrimitives) —
+// its pre-aggregate sort orders leaves, never records, so the comparator
+// hazard this rule declines for ORDER BY is unreachable there. Go's
+// streaming-aggregation path builds its own sort directly and does not
+// pass through this rule.
 //
 // UNKNOWN is admitted: an untyped key (a bound parameter, an internal
 // expression) is not evidence of an unorderable one, and rejecting it here

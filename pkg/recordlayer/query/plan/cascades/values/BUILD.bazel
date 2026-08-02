@@ -19,6 +19,7 @@ go_library(
         "nullable_array_descriptor.go",
         "ordinal_join_seed.go",
         "ordinal_seed_layout.go",
+        "primitive_accessors.go",
         "proto_type.go",
         "pseudo_field.go",
         "pullup.go",

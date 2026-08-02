@@ -23,6 +23,7 @@ go_library(
         "fold_step1_seed_census.go",
         "graph_expansion.go",
         "group_by_mappings.go",
+        "grouping_primitive_expansion.go",
         "implementation_rule.go",
         "in_source.go",
         "index_expansion.go",
@@ -1012,6 +1013,7 @@ go_test(
         "normalize_size_overflow_test.go",
         "plan_finalize.go",
         "plan_finalize_test.go",
+        "grouping_primitive_expansion.go",
     ],
     deps = [
         "//gen",

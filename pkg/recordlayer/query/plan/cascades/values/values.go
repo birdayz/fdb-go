@@ -1062,8 +1062,28 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			return f.evaluateOrdinal(rc.Positional)
 		}
 	}
+	// A protobuf MESSAGE context is a STRUCT value being descended — the
+	// grouping path's primitive leaf accessors
+	// (PrimitiveAccessorsForType) chain FieldValue over a struct-typed
+	// child whose row value is the raw message. Java's FieldValue.eval
+	// resolves exactly this via MessageHelpers.getFieldOnMessage; Go's
+	// twin is protoFieldByName, the same struct descent the executor's
+	// record→row layer uses (upper/lower name folding included). An
+	// ABSENT field is SQL NULL (presence check inside); a field name the
+	// descriptor lacks falls through to the loud tail — that is a
+	// planner bug, not data.
+	if pm, ok := evalCtx.(interface{ ProtoReflect() protoreflect.Message }); ok {
+		if v, found := protoFieldByName(pm.ProtoReflect(), f.Field); found {
+			return v, nil
+		}
+	} else if m, ok := evalCtx.(protoreflect.Message); ok {
+		if v, found := protoFieldByName(m, f.Field); found {
+			return v, nil
+		}
+	}
 	// Unrecognized NON-NIL context: nothing resolved. Production flows an
-	// OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder / nil — reaching
+	// OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder /
+	// proto message (struct descent) / nil — reaching
 	// here is a planner/executor bug, LOUD for pinned and unpinned alike;
 	// a silent NULL would hide it. (A nil context is the
 	// appendNullLeg NULL, handled above.)

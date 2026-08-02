@@ -383,7 +383,7 @@ func parseStructArrayLiteral(
 		// ordinary expression and left for the converter to reject
 		// element-wise, which is where Java rejects it too — coercing the
 		// array literal coerces each element to the target element type
-		// (ExpressionVisitor.coerceValueIfNecessary:1036-1039) and a
+		// (ExpressionVisitor.coerceValueIfNecessary:1030-1039) and a
 		// primitive→record coercion has no physical operator, so
 		// SemanticException INCOMPATIBLE_TYPE (PromoteValue.java:370-371)
 		// surfaces as the verbatim CANNOT_CONVERT_TYPE. Keeping the element
