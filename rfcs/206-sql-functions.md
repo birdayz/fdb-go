@@ -20,12 +20,26 @@ are `file:line` in that tree.
 
 CLAUDE.md declares SQL-layer UDFs out of scope "unless a TODO entry calls for
 them". A TODO entry now calls for them: **TODO.md item 69.7 — "Phase 4: SQL
-functions (`create function`, temporary functions; 44 files)"**, which is
-RFC-201 §Phase 4 (`rfcs/201-layered-test-corpus.md:165`). The yamsql-parity
-ledger makes the demand concrete: `unsupported:temporary-function` = 17 pinned
-files (`pkg/relational/conformance/javacorpus/pinned_ledger_test.go:50`) and
-`unsupported-DDL:function` = 7 files — together the second-largest parity class
-(24 vendored files). Item 69.6's ruling applies verbatim to 69.7: this is
+functions (`create function`, temporary functions; 44 files), views (11),
+enums (3)"** (`TODO.md:13025-13026`), which is RFC-201 §Phase 4
+(`rfcs/201-layered-test-corpus.md:165-166`). This RFC takes the functions half
+of that item; RFC-207 takes the views half.
+
+Two populations, and they are not the same number. The item's **44** is the
+union of every vendored file that touches a function at all (measured:
+`grep -ril "create .*function"` over the corpus → 44 of 238; 11 declare
+`create function`, 33 use temporary functions). The **24** this RFC works from
+is the currently-*classified* population — the files where a function is the
+winning skip cause: `unsupported:temporary-function` = 17, pinned at
+`pkg/relational/conformance/javacorpus/pinned_ledger_test.go:50`, plus the 7 of
+§2.1. The other 20 are masked by earlier-winning classes (struct,
+value-index-as-select) and surface as those classes shrink. Note that
+`unsupported-DDL:function` itself appears in **no** pinned ledger string today:
+it is a MASKED class (`corpus_run_test.go:283-284`), so the 7 is a
+post-unmasking projection, not a pinned count — Phase 0's dependency note is
+where that unmasking happens.
+
+Item 69.6's ruling applies verbatim to 69.7: this is
 query-engine + DDL scale and requires its own RFC and a Graefe gate before
 implementation. This document is that RFC.
 
@@ -51,8 +65,13 @@ Out of scope (each with its own reason, not a deferral of function work):
   functions are not implemented" (`DdlVisitor.java:680-683`). Conformance
   principle: doesn't work in Java ⇒ doesn't work in Go, same way.
 - `LANGUAGE JAVA` / non-SQL parameter style / `RETURNS NULL ON NULL INPUT` —
-  Java rejects all three (`DdlVisitor.java:613`, `:635-638`); Go rejects them
-  identically.
+  Java rejects all three, but not uniformly, and Go must reproduce the
+  asymmetry: parameter style at `DdlVisitor.java:635` and `LANGUAGE JAVA` at
+  `:637-638` are `UNSUPPORTED_OPERATION` and live **only** on the
+  table-function branch (the scalar branch, `:617-632`, checks neither);
+  `RETURNS NULL ON NULL INPUT` is rejected earlier at `:611-613` through an
+  `Assert` overload carrying no `ErrorCode`, i.e. `INTERNAL_ERROR`, not
+  `UNSUPPORTED_OPERATION`.
 - `__ROW_VERSION` pseudo-column and `resultMetadata:` — orthogonal blockers
   inside 3 of the 24 files, already tracked by their own classes.
 
@@ -128,12 +147,13 @@ only on the initial query (`transactions-tests.yamsql:45-47`).
 Two function kinds share only a name and a proto oneof:
 
 **Grammar** (`fdb-relational-core/src/main/antlr/RelationalParser.g4`):
-persisted functions are *only* schema-template clauses (`templateClause:92-94`);
-temporary functions are top-level DDL (`createTempFunction:237-238`,
-`dropTempFunction:241-242`). `functionSpecification:257-259` carries name,
-`sqlParameterDeclarationList` (`:262-276`: `parameterMode? name? type
+persisted functions are *only* schema-template clauses (`templateClause:92-95`);
+temporary functions are top-level DDL (`createTempFunction:237-239`,
+`dropTempFunction:241-243`). `functionSpecification:257-262` carries name,
+`sqlParameterDeclarationList` (`:264-266` → `sqlParameterDeclarations:268-270` →
+`sqlParameterDeclaration:272-274`: `parameterMode? name? type
 (DEFAULT expr)?`), optional `returnsClause`, `routineCharacteristics`.
-`routineBody:332-335` has three arms: `AS queryTerm` (table function),
+`routineBody` (`:331-336`) has three arms (`:332-335`): `AS queryTerm` (table function),
 `AS fullId` (scalar macro), `sqlReturnStatement` (unimplemented). Invocation:
 `tableSourceItem ... #tableValuedFunction` (`:486`), named args via
 `key => value` (`:1220`), scalar calls via
@@ -159,8 +179,9 @@ temporary ones (`:656-663`).
 
 **Storage / wire** (`record_metadata.proto`): `MetaData.user_defined_functions
 = 14` (`:211`); `PUserDefinedFunction` oneof (`:216-221`) =
-`PUserDefinedMacroFunction` (`record_query_plan.proto:294-298`: name, parameter
-`QuantifiedObjectValue`s, `body` as a serialized `PValue` tree) |
+`PUserDefinedMacroFunction` (`record_query_plan.proto:294-298`: `function_name`,
+`repeated PValue arguments` — the parameter `QuantifiedObjectValue`s — and
+`body` as a serialized `PValue` tree) |
 `PRawSqlFunction {name, definition}` (`:192-195`). `RawSqlFunction.toProto`
 (`cascades/RawSqlFunction.java:44-50`) writes the SQL text;
 `CompiledSqlFunction.toProto` deliberately **throws**
@@ -180,10 +201,17 @@ schema template, adds the routine, and binds it to the transaction
 (`RecordContextTransaction.java:86-101`). Statements read
 `getBoundSchemaTemplateMaybe().orElse(connTemplate)`
 (`EmbeddedRelationalStatement.java:66`). Commit or rollback discards the
-context ⇒ `ON COMMIT DROP FUNCTION`. Duplicate ⇒ `DUPLICATE_FUNCTION`;
-replacing/dropping a non-temporary routine ⇒ `INVALID_FUNCTION_DEFINITION`
-(`RecordLayerSchemaTemplate.java:492-500`,
-`DropTemporaryFunctionConstantAction.java:45-59`).
+context ⇒ `ON COMMIT DROP FUNCTION`. Duplicate ⇒ `DUPLICATE_FUNCTION`, raised
+at exactly one site — `CreateTemporaryFunctionConstantAction.java:57-60`, the
+`OR REPLACE`-absent guard — and **not** inside the template builder, whose
+`replaceInvokedRoutine` (`RecordLayerSchemaTemplate.java:492-500`) overwrites a
+same-named temporary silently and raises only `INVALID_FUNCTION_DEFINITION`
+("attempt to replace non-temporary invoked routine!", `:495`). Dropping a
+non-temporary routine is likewise `INVALID_FUNCTION_DEFINITION`, from
+`DropTemporaryFunctionConstantAction.java:52` (absent + `throwIfNotExists` ⇒
+`UNDEFINED_FUNCTION`, `:58`). Go must keep the duplicate guard in the constant
+action rather than pushing it into the builder, or `OR REPLACE` semantics
+invert.
 
 **Invocation = compile-time macro expansion**: a per-query `SqlFunctionCatalog`
 registers every routine of the (possibly transaction-bound) template alongside
@@ -241,9 +269,10 @@ literal context.
   RFC-202's branch contributes `runFromResolutionPostPasses` (the single shared
   DDL/query post-pass sequence) and the "plan a parse subtree against the
   metadata built so far" pattern (`parseAsSelectIndexDefinition`). CTE
-  machinery (`plan_visitor.go:150-265`, `logical.LogicalCTE`,
-  `cascades_translator.go:8729`) is the body-plan-plus-positional-remap
-  analogue for inlining. `values.Replace` / `WalkValue`
+  machinery (`pkg/relational/core/embedded/plan_visitor.go:150-265` with
+  `cteScopes`/`cteBodies` at `:56-57`, and `logical.LogicalCTE` at
+  `pkg/relational/core/query/logical/operators.go:903`) is the
+  body-plan-plus-positional-remap analogue for inlining. `values.Replace` / `WalkValue`
   (`pkg/recordlayer/query/plan/cascades/values/replace.go:19`) are the scalar
   substitution primitives. The single bare-ID call-site gate to extend is
   `walkUserDefinedScalarFunction` (`pkg/relational/core/query/expr/
