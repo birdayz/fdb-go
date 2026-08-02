@@ -224,6 +224,86 @@ func raceScopes(t *testing.T, path string) []string {
 	return out
 }
 
+// TestNightlyRaceStepsDeclareTheirJobCount pins that every race-instrumented
+// nightly `bazel test` says how many tests it runs at once.
+//
+// The default is `.bazelrc`'s --local_test_jobs=4, and these steps run on a
+// 7.6 GB runner where four race-instrumented FoundationDB testcontainers do not
+// fit — that packing is what starved PR #577. The trap is that the steps LOOK
+// bounded: they pass --local_resources=memory=HOST_RAM*0.6, which bounds Bazel's
+// memory accounting and leaves the job count untouched. Measured on Bazel 9.0.1
+// with a six-test fixture at --local_test_jobs=4, `--local_resources=memory=4500`
+// alone still ran 4 concurrently.
+//
+// So a bounded step and an unbounded one read identically, and one of these was
+// in fact left at the default while the step directly beneath it carried the cap
+// — the same file, the same runner, the same targets. Requiring the flag to be
+// WRITTEN makes the omission visible in the diff.
+//
+// This gate deliberately does not check the VALUE. What the right number is
+// depends on the targets and belongs in the step's own comment next to the
+// measurement; what must never happen again is inheriting it silently.
+func TestNightlyRaceStepsDeclareTheirJobCount(t *testing.T) {
+	t.Parallel()
+
+	steps := nightlyRaceSteps(t, workflowDir(t))
+	if len(steps) == 0 {
+		t.Fatal("no race-instrumented nightly steps found — the gate is inspecting nothing, " +
+			"which passes vacuously; the parser or the workflow layout has moved")
+	}
+	for _, s := range steps {
+		if !strings.Contains(s.script, "--local_test_jobs") {
+			t.Errorf("%s step %q runs -race without --local_test_jobs, so it inherits .bazelrc's 4 "+
+				"and packs four race-instrumented targets onto a 7.6 GB runner. "+
+				"--local_resources=memory does NOT cap the job count — measured: with a 4500 MB "+
+				"budget and no per-target tag, Bazel still ran 4 concurrently. State the number.",
+				s.file, s.name)
+		}
+	}
+}
+
+// raceStep is one race-instrumented workflow step, kept with enough identity to
+// name it in a failure.
+type raceStep struct {
+	file   string
+	name   string
+	script string
+}
+
+// nightlyRaceSteps collects every nightly workflow step that runs a
+// race-instrumented `bazel test`, with shell comments already stripped.
+func nightlyRaceSteps(t *testing.T, dir string) []raceStep {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read workflow dir: %v", err)
+	}
+	var out []raceStep
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "nightly-") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		var wf workflow
+		if err := yaml.Unmarshal(raw, &wf); err != nil {
+			t.Fatalf("parse %s: %v", e.Name(), err)
+		}
+		for _, job := range wf.Jobs {
+			for _, step := range job.Steps {
+				script := stripShellComments(step.Run)
+				if !strings.Contains(script, "go/config:race") {
+					continue
+				}
+				out = append(out, raceStep{file: e.Name(), name: step.Name, script: script})
+			}
+		}
+	}
+	return out
+}
+
 // nightlyRacedPatterns collects every target pattern passed to a `bazel test`
 // carrying --@rules_go//go/config:race in a nightly-*.yml workflow.
 func nightlyRacedPatterns(t *testing.T, dir string) []string {

@@ -299,6 +299,13 @@ jobs:
         if: steps.window.outputs.ok == 'true'
         # id: keyed by the genuine-run heartbeat below — this job's only real work.
         id: race
+        # --local_test_jobs=1: all five of these targets start an FDB
+        # testcontainer, and at .bazelrc's default of 4 this step packs four
+        # race-instrumented containers onto the 7.6 GB runner — the shape that
+        # starved PR #577. Unlike the sibling step in nightly-coverage.yml this
+        # one does not even pass --local_resources, but that flag would not have
+        # helped: measured on Bazel 9.0.1, a memory budget with no per-target tag
+        # still runs 4 tests concurrently. The job count is its own knob.
         run: >
           bazelisk test
           //pkg/fdbgo/client:client_test
@@ -307,6 +314,7 @@ jobs:
           //pkg/recordlayer/chaos:chaos_test
           //conformance:conformance_test
           --@rules_go//go/config:race
+          --local_test_jobs=1
           --test_timeout=900
           --test_summary=detailed
 
