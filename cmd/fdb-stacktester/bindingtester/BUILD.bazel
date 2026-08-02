@@ -10,7 +10,10 @@ go_test(
         "@foundationdb//:python_fdb",
     ],
     embed = [":bindingtester"],
-    tags = ["manual"],  # Don't run in just test — needs Docker image build, slow
+    tags = [
+        "manual",
+        "resources:memory:400",
+    ],  # Don't run in just test — needs Docker image build, slow
     deps = [
         "//pkg/testcontainers/foundationdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",

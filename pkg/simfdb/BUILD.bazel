@@ -64,6 +64,7 @@ go_test(
         "snapshot_test.go",
     ],
     embed = [":simfdb"],
+    tags = ["resources:memory:400"],
     deps = [
         "//gen",
         "//pkg/dst",

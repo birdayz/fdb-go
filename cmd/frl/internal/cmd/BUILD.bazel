@@ -90,6 +90,7 @@ go_test(
         "write_integration_test.go",
     ],
     embed = [":cmd"],
+    tags = ["resources:memory:400"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//cmd/frl/internal/meta",

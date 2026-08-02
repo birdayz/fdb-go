@@ -368,6 +368,7 @@ go_test(
     ),
     embed = [":recordlayer"],
     embedsrcs = ["index.go"],
+    tags = ["resources:memory:800"],
     deps = [
         "//gen",
         "//pkg/dst",
@@ -400,7 +401,11 @@ go_test(
     timeout = "eternal",
     srcs = ["million_record_test.go"],
     embed = [":recordlayer"],
-    tags = ["manual"],
+    tags = [
+        "exclusive",
+        "manual",
+        "resources:memory:4300",
+    ],
     deps = [
         "//gen",
         "//pkg/testcontainers/foundationdb",

@@ -46,6 +46,7 @@ go_test(
     # find the corpus at all, which is a far worse outcome than a drifted count.
     data = ["//third_party/apple/fdb-record-layer:yamsql_corpus"],
     embed = [":javacorpus"],
+    tags = ["resources:memory:400"],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",

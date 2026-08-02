@@ -10,7 +10,9 @@ go_test(
         "vector_stress_test.go",
     ],
     tags = [
+        "exclusive",
         "manual",
+        "resources:memory:4300",
         "stress",
     ],
     deps = [

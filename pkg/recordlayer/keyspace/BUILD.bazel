@@ -25,6 +25,7 @@ go_test(
         "resolver_test.go",
     ],
     embed = [":keyspace"],
+    tags = ["resources:memory:400"],
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

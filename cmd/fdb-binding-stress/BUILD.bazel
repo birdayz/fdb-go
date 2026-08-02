@@ -35,4 +35,5 @@ go_test(
     srcs = ["main_test.go"],
     data = [":python_fdb_tar"],
     embed = [":fdb-binding-stress_lib"],
+    tags = ["resources:memory:400"],
 )

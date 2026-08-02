@@ -13,7 +13,10 @@ go_test(
         "vector_benchmark_test.go",
     ],
     data = ["@sift1m//:data"],
-    tags = ["manual"],
+    tags = [
+        "manual",
+        "resources:memory:400",
+    ],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

@@ -37,6 +37,10 @@ go_test(
     # exits. Raise this only if the package ever grows a second top-level Test
     # function, and then only to the number of such functions.
     shard_count = 1,
+    tags = [
+        "exclusive",
+        "resources:memory:2600",
+    ],
     deps = [
         "//pkg/relational/conformance/factorycorpus",
         "//pkg/relational/sqldriver",
