@@ -108,7 +108,6 @@ go_test(
         "positional_test_helpers_test.go",
         "positional_type_cache_bound_test.go",
         "positional_type_cache_test.go",
-        "positional_type_rowversion_cache_test.go",
         "projection_output_names_test.go",
         "recursive_cursor_resume_test.go",
         "recursive_distinct_replay_test.go",
@@ -221,7 +220,6 @@ go_test(
         "positional_type_cache_bound_test.go",
         "frontier_context_carrier_test.go",
         "merge_shape_composite_name_test.go",
-        "positional_type_rowversion_cache_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

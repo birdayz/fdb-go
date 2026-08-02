@@ -13775,6 +13775,33 @@ None is speculative: each was re-verified against the tree before booking.
   (drive from the 1-row table) with a COUNT index declared in its DDL, and
   the joins golden decision is re-derived from real counts.
 
+- [ ] **CQ-89 (MED, wrong rows) — a stored NOT NULL array that is EMPTY reads
+  back as NULL, so `IS NULL` is true and `= []` is UNKNOWN on a column the
+  type forbids to be NULL.** Newly VISIBLE, not newly broken: while the
+  NULLABLE arm was a wire divergence (RFC-143 §3a — Go wrote a plain repeated
+  field where Java writes the `message{ repeated values }` wrapper) it failed
+  first and claimed `arrays-operators.yamsql`. RFC-204 P1 landed the wrapper
+  write side, the nullable arm now matches Java, and the file progresses to
+  its NOT NULL column.
+  **This one is NOT a wire bug — the bytes already match Java.** A NOT NULL
+  array is stored as a FLAT repeated field in both engines, and that is
+  correct; on the wire an empty repeated field is indistinguishable from an
+  absent one. The distinction has to be made on READ, from the type: a field
+  whose type forbids NULL must materialize absent as an EMPTY ARRAY. Java
+  does; Go yields NULL.
+  **Java's answer, measured, not inferred** (`arrays-operators.yamsql`):
+  `SELECT "pk" FROM T1 WHERE "arr_nn" = [] AND "pk" != -1` → `result:
+  [{pk: 0}]`, and the same for the CAST variant.
+  **Currently pinned, both sides:** the corpus file is booked
+  `engine-gap:non-nullable-array-empty` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at its exact row
+  (`{ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}`),
+  and `TestFDB_ArrayComparison/field_comparisons`
+  (`array_comparison_fdb_test.go`) pins the wrong answer with a comment
+  naming this item. DONE = both flip to Java's answer together; the sqldriver
+  pin becomes `[]int64{0}` and the gap entry is deleted with the corpus pass
+  count raised.
+
 - [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
   qualified star in a SELECT list that also carries GROUP BY is rejected
   unconditionally, where Java expands the star FIRST and only then applies the

@@ -174,17 +174,27 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapNullableArrayWrapper is a query over a STORED nullable array
-	// whose answer depends on distinguishing NULL from empty: Go writes a
-	// plain repeated field for nullable arrays instead of Java's
-	// `message{ repeated values }` wrapper (RFC-143 §3a), so a stored `[]`
-	// is byte-identical to a stored NULL and reads back as NULL. The
-	// array COMPARISON semantics themselves are closed (the former
-	// engine-gap:array-comparison class): `[1] = [1]` is TRUE, the
-	// NULL/NONE operand matrix matches the corpus, mismatched ARRAY types
-	// reject 42804 — pinned by TestFDB_ArrayComparison (sqldriver) and
-	// ArrayComparisonJavaProbe (conformance, live-Java measured).
-	SkipGapNullableArrayWrapper SkipClass = "engine-gap:nullable-array-wrapper"
+	// SkipGapNonNullableArrayEmpty is a query over a stored NOT NULL array
+	// that is EMPTY. Such a field is stored as a FLAT repeated field — that
+	// is Java's layout too, and it is correct: only a NULLABLE array gets
+	// the `message{ repeated values }` wrapper. On the wire an empty
+	// repeated field is indistinguishable from an absent one, so the
+	// distinction has to be made on READ, from the type: a column the type
+	// forbids to be NULL must materialize absent as an EMPTY ARRAY, which
+	// is what Java does. Go yields NULL instead, so `IS NULL` answers true
+	// and `= []` answers UNKNOWN on a column that cannot hold NULL.
+	//
+	// This is a READ-side type-interpretation gap, not a wire-format one —
+	// the bytes already match Java. Its NULLABLE sibling WAS a wire gap
+	// (RFC-143 §3a: Go wrote a plain repeated field where Java writes the
+	// wrapper) and is CLOSED, which is what exposed this one: while the
+	// nullable arm failed first it claimed the file. Array COMPARISON
+	// semantics are closed too (the former engine-gap:array-comparison
+	// class): `[1] = [1]` is TRUE, the NULL/NONE operand matrix matches
+	// the corpus, mismatched ARRAY types reject 42804 — pinned by
+	// TestFDB_ArrayComparison (sqldriver) and ArrayComparisonJavaProbe
+	// (conformance, live-Java measured).
+	SkipGapNonNullableArrayEmpty SkipClass = "engine-gap:non-nullable-array-empty"
 	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
 	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
 	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
@@ -268,7 +278,7 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLStruct,
 		SkipDDLFunction,
 		SkipDDLOther,
-		SkipGapNullableArrayWrapper,
+		SkipGapNonNullableArrayEmpty,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
