@@ -482,6 +482,7 @@ go_test(
         "version_index_incomplete_versionstamp_fdb_test.go",
         "w2_metamorphic_test.go",
         "w3_5_plan_diversity_test.go",
+        "whole_struct_comparison_fdb_test.go",
         "windowed_aggregate_probe_test.go",
         "withinbox_dup_fdb_test.go",
         "zero_widen_ordering_test.go",

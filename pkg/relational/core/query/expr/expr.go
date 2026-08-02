@@ -685,9 +685,50 @@ func typeCodeIsArrayOrNone(t values.Type) bool {
 	return t != nil && (t.Code() == values.TypeCodeArray || t.Code() == values.TypeCodeNone)
 }
 
+// comparisonOperandSupported ports Java's RelOpValue.isSupportedOperandType
+// (RelOpValue.java:320-322): a relational operator's operands must be
+// primitive, enum, uuid, array or NONE. It is checked BEFORE any question of
+// mutual compatibility (RelOpValue.java:333 for the unary arm, :344 and :349
+// for the binary one), which is why it catches a RECORD comparand that is
+// perfectly "compatible" with itself.
+//
+// The placeholder carve-out is deliberate and is the one divergence. Java has
+// typed every operand concretely by the time encapsulate runs; Go carries
+// UNKNOWN/NULL/NONE/ANY for bound parameters and untyped internal expressions,
+// and the promotion gate below already states that those keep the runtime
+// path. Rejecting them here would reject `? = ?`, a shape Java never presents
+// to this check at all.
+func comparisonOperandSupported(t values.Type) bool {
+	if values.IsUnresolved(t) {
+		return true
+	}
+	return t.Code().IsPrimitive() || values.IsEnum(t) || values.IsUuid(t) || values.IsArray(t)
+}
+
 func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right values.Value) (predicates.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
+	}
+	// A STRUCT-typed comparand is not comparable, and the rejection has to
+	// happen HERE, at construction, because nothing downstream can tell the
+	// difference between "these records are unequal" and "this comparison was
+	// never meaningful". Both looked identical before: `WHERE home = home`
+	// built a real ComparisonPredicate, the row-time comparator had no record
+	// arm, every row evaluated UNKNOWN, and the query returned ZERO ROWS on a
+	// table whose rows all satisfy it — silent-wrong, on any struct-vs-struct
+	// shape (`home = other`, `home > other`, `SELECT home = other`). Only the
+	// struct-vs-LITERAL spelling was rejected, and only incidentally, by a
+	// translator decline further down.
+	//
+	// IS NULL / IS NOT NULL do NOT arrive here — they are unary predicates
+	// with their own resolver — and that separation is what keeps Go's
+	// whole-struct IS NULL working. Java rejects that too (its unary arm runs
+	// the same gate, RelOpValue.java:333), but Java's rejection is upstream
+	// issue 3700, a limitation filed as a bug, and Go answers it correctly.
+	// See RFC-204 §4.4's amendment.
+	if !comparisonOperandSupported(left.Type()) || !comparisonOperandSupported(right.Type()) {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"a comparison operand of complex type (record) is not supported")
 	}
 	left, right = widenConstAgainstDoubleColumn(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
@@ -1708,10 +1749,55 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		// Type.primitiveType(TypeCode.VERSION, true) (PseudoField.java:37).
 		return values.NullableVersion
 	case "RECORD":
-		// No struct/record Type in the seed enum yet — stays Unknown.
+		// A struct column's real type needs its FIELD LIST, which this
+		// string-keyed mapping does not have — columnCascadesType builds it.
+		// Reaching here means a RECORD arrived without a column to read the
+		// fields from, and UNKNOWN is the honest answer for that.
 		return values.TypeUnknown
 	}
 	return values.TypeUnknown
+}
+
+// structColumnType builds the cascades RecordType for a STRUCT column from its
+// declared field list.
+//
+// Typing a struct column UNKNOWN — which is what this code did while
+// values.RecordType did not exist — is not a neutral placeholder, it is the
+// type system stating something false about the column, and every gate keyed
+// on the type then passes it. That is exactly how `WHERE home = home` reached
+// a row-time comparator with no record arm and answered ZERO ROWS instead of
+// being rejected: the operand gate in ResolveComparison reads the type, and an
+// UNKNOWN operand is deliberately admitted (bound parameters need that).
+//
+// Returns UNKNOWN when the field list is absent (rlcatalog stops the descent
+// on a recursive type, leaving StructFields empty) — an unknown-shaped record
+// is still better described as unknown than as a record with no fields, which
+// is a different, legal type.
+func structColumnType(col semantic.Column) values.Type {
+	if len(col.StructFields) == 0 {
+		return values.TypeUnknown
+	}
+	fields := make([]values.Field, 0, len(col.StructFields))
+	seen := make(map[string]struct{}, len(col.StructFields))
+	for i, f := range col.StructFields {
+		name := f.Id.Name()
+		// NewRecordType PANICS on a duplicate field name. Proto field names
+		// are unique within a message so this cannot fire from the catalog,
+		// but a panic in library code is never the right failure for bad
+		// input — decline to the honest UNKNOWN instead.
+		if name != "" {
+			if _, dup := seen[name]; dup {
+				return values.TypeUnknown
+			}
+			seen[name] = struct{}{}
+		}
+		fields = append(fields, values.Field{
+			Name:      name,
+			Ordinal:   i,
+			FieldType: columnCascadesType(f),
+		})
+	}
+	return values.NewRecordType(col.Type, col.Nullable, fields)
 }
 
 // columnCascadesType maps a resolved semantic.Column to its cascades
@@ -1724,6 +1810,9 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 // scalar mapping of the Type string.
 func columnCascadesType(col semantic.Column) values.Type {
 	elem := sqlTypeToCascadesType(col.Type)
+	if col.Type == "RECORD" {
+		elem = structColumnType(col)
+	}
 	if !col.IsArray {
 		// Honor the catalog's declared nullability (Java's
 		// Type.primitiveType(typeCode, isNullable)): a NOT NULL column's

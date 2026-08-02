@@ -13774,3 +13774,60 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = the join-order probe's exact-driver assertion is restored
   (drive from the 1-row table) with a COUNT index declared in its DDL, and
   the joins golden decision is re-derived from real counts.
+
+- [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
+  qualified star in a SELECT list that also carries GROUP BY is rejected
+  unconditionally, where Java expands the star FIRST and only then applies the
+  grouping rule.** Java: `LogicalOperator.generateGroupBy` walks
+  `outputExpressions.expanded()` — star ALREADY expanded — and asserts each is
+  `SemanticAnalyzer.isComposableFrom(expr, groupBy ∪ aggregates, aliasMap,
+  outerCorrelations)`, else `GROUPING_ERROR`
+  (LogicalOperator.java:435-441). So a star covering exactly the grouping list
+  is legal and only a star reaching past it is 42803. Go rejects every
+  star-with-GROUP-BY in `classifySelectElements`
+  (`select_parser.go:1354-1363`, "SELECT qualifier.* expands to columns not in
+  GROUP BY"), which runs before any schema is in hand to expand against.
+  MEASURED live, both engines, in
+  `conformance/duplicate_star_java_probe_test.go`:
+  - `SELECT a.* FROM T_A a GROUP BY id` → JAVA `42803 "Invalid reference to
+    non-grouping expression A.NAME|string ∪ ∅| ⇾ qf64031cb….NAME"`; GO `42803`
+    (same class, different text) — this arm AGREES.
+  - `SELECT a.* FROM T_A a GROUP BY id, name` → JAVA passes the semantic check
+    and fails only at planning (`"Cascades planner could not plan query"`, no
+    index on the probe table); GO `42803` — this arm DIVERGES.
+  - `SELECT b.bid FROM T_B b WHERE EXISTS (SELECT a.*, b.bid FROM T_A a GROUP
+    BY id, name)` → JAVA reaches planning; GO `42803`.
+  The corpus proof is `select-a-star.yamsql`, which asserts RESULTS for
+  `select B1 from B where exists (select A.*, B1 from A group by A1,A2,A3)`
+  (line 46, repeated at 85) and for the `B.*` variant (line 89) — its table has
+  index `A_idx` on exactly `(A1,A2,A3)`, so Java plans all three. The file is
+  booked `engine-gap:star-group-by-expansion` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at that exact rejection.
+  WHY IT IS NOT A ONE-LINER: the fix has to move star expansion AHEAD of the
+  aggregate reclassification that the same block performs
+  (`select_parser.go:1354-1397` rewrites `projCols` into `aggCols`), and that
+  block runs inside `extractFromQueryTerm`, which has NO metadata and has NINE
+  call sites — including the EXISTS-subquery planner, where an unexpanded star
+  reaching the aggregate pipeline would be silent-wrong rather than loud.
+  DONE = `select-a-star.yamsql` passes its three EXISTS-with-star-GROUP-BY
+  assertions, the two GROUPING_ERROR negatives in the same file (lines 59, 82)
+  still reject 42803, and the gap entry + its skip class are deleted.
+
+- [ ] **CQ-85 (SMALL, query surface): `SELECT *, a.*` — a bare star mixed with
+  any other select item — is rejected by Go and accepted by Java.** MEASURED
+  live, `conformance/duplicate_star_java_probe_test.go` probe
+  `bare_star_plus_qual_star`, `SELECT *, a.* FROM T_A AS a`:
+  JAVA `OK cols=[ID(BIGINT) NAME(STRING) ID(BIGINT) NAME(STRING)]
+  rows=[[1 alpha 1 alpha] [2 beta 2 beta]]`;
+  GO `ERROR sqlstate="0A000" msg="cannot mix * with named columns in SELECT
+  list"`. The rejection is `select_parser.go:777-780`, fired whenever a
+  `SelectStarElementContext` is not the sole select element. Java has no such
+  rule: `expandStar` resolves each star independently and concatenates, which
+  is the same property that makes the duplicate qualified star legal (fixed
+  separately — see the per-attribute ambiguity work). Related to CQ-84 in
+  mechanism (both are star expansion running too late or not at all) but
+  independent of it: this one needs no GROUP BY and no schema-time expansion,
+  only the removal of a rule Java does not have plus the plumbing to expand a
+  bare star into a non-sole slot.
+  DONE = `SELECT *, a.*`, `SELECT a.*, *` and `SELECT *, id` answer with
+  Java's column list, pinned against the live-JVM probe.
