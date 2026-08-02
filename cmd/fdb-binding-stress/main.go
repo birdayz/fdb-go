@@ -239,21 +239,57 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 	r.Pass = err == nil && strings.Contains(output, "had 0 incorrect result(s) and 0 error(s)")
 
 	if !r.Pass && r.Error == "" {
-		for _, line := range strings.Split(output, "\n") {
-			if strings.Contains(line, "incorrect result") {
-				r.Error = strings.TrimSpace(line)
-			}
-		}
-		if r.Error == "" {
-			if err != nil {
-				r.Error = err.Error()
-			} else {
-				r.Error = "no result line in output"
-			}
-		}
+		r.Error = summarizeFailure(output, err)
 	}
 
 	return r
+}
+
+// maxTailLines bounds how much of the tester's output a failure summary carries.
+// A Python traceback's cause is on its last line; three lines also catch the
+// frame that raised it without turning the console into a log dump.
+const maxTailLines = 3
+
+// summarizeFailure turns a failed seed into one console-readable line.
+//
+// The tester's own verdict line wins when it exists. Otherwise the tail of its
+// output is reported, because the interesting failures are the ones where the
+// tester never reached a verdict: reporting only the exec error there says
+// "exit status 1" and nothing else. That is not a hypothetical — a fleet-wide
+// missing Python fdb module was reported as 50 identical "exit status 1" lines,
+// with the traceback naming the cause sitting unread in the per-seed log.
+func summarizeFailure(output string, runErr error) string {
+	var tail []string
+	verdict := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Last verdict wins: the tester prints one per test it ran.
+		if strings.Contains(line, "incorrect result") {
+			verdict = line
+		}
+		tail = append(tail, line)
+		if len(tail) > maxTailLines {
+			tail = tail[1:]
+		}
+	}
+	if verdict != "" {
+		return verdict
+	}
+
+	summary := strings.Join(tail, " | ")
+	switch {
+	case summary != "" && runErr != nil:
+		return runErr.Error() + ": " + summary
+	case summary != "":
+		return summary
+	case runErr != nil:
+		return runErr.Error()
+	default:
+		return "no result line in output"
+	}
 }
 
 func collectLogs(ctx context.Context, container *foundationdb.Container, seedDir string) {
@@ -285,7 +321,9 @@ func setup() (stacktester string, btRunDir string) {
 	}
 
 	fmt.Println("Building stacktester...")
-	cmd := exec.Command("bazelisk", "build", "//cmd/fdb-stacktester:fdb-stacktester")
+	cmd := exec.Command("bazelisk", "build",
+		"//cmd/fdb-stacktester:fdb-stacktester",
+		"//cmd/fdb-binding-stress:python_fdb_tar")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -330,8 +368,57 @@ func setup() (stacktester string, btRunDir string) {
 	s = strings.ReplaceAll(s, "from fdb import LATEST_API_VERSION", "LATEST_API_VERSION = 730")
 	os.WriteFile(initPy, []byte(s), 0o644)
 
+	installPythonFDB(btRunDir)
+	preflightPythonFDB(btRunDir)
+
 	fmt.Fprintf(os.Stderr, "Stacktester: %s\nHarness: %s\n\n", stacktester, btRunDir)
 	return stacktester, btRunDir
+}
+
+// installPythonFDB unpacks the pinned FDB Python client into the harness dir,
+// which is the PYTHONPATH the tester runs under. The client comes from Bazel
+// rather than from the host so the harness runs identically on a fresh CI box
+// and a developer laptop, and so the binding under test is version-locked to
+// the pinned C client instead of to whatever `pip install foundationdb` last
+// left behind.
+func installPythonFDB(btRunDir string) {
+	tar, err := filepath.Abs("bazel-bin/cmd/fdb-binding-stress/python-fdb.tar")
+	if err != nil {
+		log.Fatalf("resolve python fdb tar path: %v", err)
+	}
+	// See the stacktester resolution above for why the symlink is resolved.
+	tar, err = filepath.EvalSymlinks(tar)
+	if err != nil {
+		log.Fatalf("resolve python fdb tar symlinks: %v", err)
+	}
+
+	// Remove any package left by an earlier run: /tmp/bt-run persists across
+	// invocations, so a stale fdb/ would outlive a version bump.
+	if err := os.RemoveAll(filepath.Join(btRunDir, "fdb")); err != nil {
+		log.Fatalf("remove stale python fdb: %v", err)
+	}
+	untar := exec.Command("tar", "xf", tar, "-C", btRunDir)
+	if out, err := untar.CombinedOutput(); err != nil {
+		log.Fatalf("unpack python fdb (%s): %s: %v", tar, out, err)
+	}
+}
+
+// preflightPythonFDB fails the run before any container starts if the tester
+// cannot import its client. Without this the import error surfaces once per
+// seed, as an opaque exec status, after minutes of spinning up FDB containers
+// that never get used.
+func preflightPythonFDB(btRunDir string) {
+	cmd := exec.Command("python3", "-c", "import fdb; print(fdb.__file__)")
+	cmd.Dir = btRunDir
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Fatalf("the binding tester's Python client is not importable — every seed "+
+			"would fail with an opaque exec status.\npython3 -c 'import fdb' under %s said:\n%s\n"+
+			"(the client is unpacked from //cmd/fdb-binding-stress:python_fdb_tar; it also "+
+			"needs libfdb_c on the system loader path)", btRunDir, out)
+	}
+	fmt.Fprintf(os.Stderr, "Python FDB client: %s", out)
 }
 
 func findBindingTesterDir() (string, error) {

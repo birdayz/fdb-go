@@ -153,3 +153,31 @@ http_file(
     sha256 = "bc13a9c57a8dd7d5196888211e5ede657cb64a3ce968608697e4f668251a8487",
     urls = ["https://www.antlr.org/download/antlr-4.13.1-complete.jar"],
 )
+
+# FDB Python client — the reference binding the binding tester drives our
+# stacktester against. It is fetched here rather than assumed present on the
+# host: relying on a host `pip install foundationdb` is what silently blanked
+# the nightly binding-stress lane (every runner in the fleet lacks the module,
+# and the harness reported only "exit status 1").
+#
+# The released sdist is used, NOT @foundationdb//:python_fdb (the in-tree
+# bindings/python/fdb): in the source tree apiversion.py is a CMake template and
+# fdboptions.py does not exist at all — it is generated from fdb.options by
+# vexillographer at build time. Only the sdist carries a complete package.
+# Version tracks the C client pin (bazel_dep foundationdb + .bazelrc FDB_VERSION).
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "fdb_python",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "fdb_srcs",
+    srcs = glob(["fdb/*.py"]),
+)
+""",
+    sha256 = "60ffda04fd49968b5c992104160b2147d04e55bdddeaa5d5e78c7f0baf0d211d",
+    strip_prefix = "foundationdb-7.3.77",
+    urls = ["https://files.pythonhosted.org/packages/cd/b7/9b3de7fcc3280cb7661499bd8889882de7bafbda6153b4bc408ac2faadbe/foundationdb-7.3.77.tar.gz"],
+)
