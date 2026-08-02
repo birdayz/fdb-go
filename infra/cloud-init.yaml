@@ -42,6 +42,59 @@ write_files:
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
+  # link-ci-volume.sh points the stable /mnt/ci-data at the attached CI data
+  # volume. It is a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh
+  # can execute this exact code against fixtures instead of testing a copy of it.
+  #
+  # The link step is migrate-or-abort, never `ln -sfn` onto whatever is there.
+  # `ln -sfn TARGET LINK` creates the link INSIDE LINK when LINK is a real
+  # directory, and that is not hypothetical: on the runner pool the volumes were
+  # attached AFTER the mount wait expired, a later step created /mnt/ci-data as a
+  # plain root-disk directory, and the link landed at /mnt/ci-data/HC_Volume_<id>.
+  # Docker's data-root and every bazel cache then ran on the 75GB root disk
+  # (91-94% full) while the 100GB volume sat at 1%. Silence is the whole failure
+  # mode, so an occupied /mnt/ci-data aborts and asks for a migration.
+  - path: /usr/local/bin/link-ci-volume.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # link-ci-volume.sh [ROOT] -- ROOT defaults to "" (the real filesystem); the
+      # test passes a fixture prefix. Idempotent: safe to re-run on every boot.
+      set -eu
+      R="${1:-}"
+      for i in $(seq 1 90); do
+        VOL=$(ls -d "$R"/mnt/HC_Volume_* 2>/dev/null | head -1) || true
+        [ -n "${VOL:-}" ] && { [ -n "$R" ] || mountpoint -q "$VOL"; } && break
+        sleep 2
+      done
+      [ -n "${VOL:-}" ] || { echo "::error::CI data volume not present"; exit 1; }
+      if [ -z "$R" ] && ! mountpoint -q "$VOL"; then
+        echo "::error::CI data volume $VOL is not mounted"; exit 1
+      fi
+      CI="$R/mnt/ci-data"
+      if [ -L "$CI" ]; then
+        cur=$(readlink "$CI")
+        [ "$cur" = "$VOL" ] || { echo "::error::$CI already links to $cur, want $VOL"; exit 1; }
+      elif [ -e "$CI" ]; then
+        [ -d "$CI" ] || { echo "::error::$CI exists and is not a directory"; exit 1; }
+        if [ -n "$(ls -A "$CI" 2>/dev/null)" ]; then
+          echo "::error::$CI is a NON-EMPTY directory on the root disk. Refusing to nest the volume link inside it (that is how the pool ran 30GB of caches on the root disk with the volume empty). Migrate its contents onto $VOL, replace it with a symlink, then re-run."
+          exit 1
+        fi
+        rmdir "$CI"
+        ln -s "$VOL" "$CI"
+      else
+        ln -s "$VOL" "$CI"
+      fi
+      [ "$(readlink "$CI")" = "$VOL" ] || { echo "::error::$CI is not the expected symlink"; exit 1; }
+      # 0755, not the 0711 a fresh volume root has defaulted to: actions/runner
+      # validates its work directory by walking the ancestor chain and LISTING
+      # each level, so a traverse-only ancestor makes every JIT runner refuse to
+      # start with "Fail to create and validate runner's work directory" -- which
+      # cost this fleet four of its five slots until it was found.
+      chmod 0755 "$VOL"
+      mkdir -p "$CI/docker" "$CI/bazel"
+
   # Watchdog (RFC-155 §5): backstop a WHOLESALE hang of the bazelscaleset supervisor
   # (process alive but its long-poll loop stuck). The supervisor bounds each poll itself
   # (--poll-timeout) and systemd Restart=always covers a crash, so this only needs to
@@ -314,16 +367,9 @@ runcmd:
   # Docker's data-root (/etc/docker/daemon.json) is valid on first boot. Without this the
   # wire-oracle FDB-from-source build fills the 75GB root disk and the genrule OOMs. Fail
   # loud if the volume never mounts (a silent fall-back to root re-creates the disk bug).
-  - |
-    set -eu
-    for i in $(seq 1 90); do
-      VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1) || true
-      [ -n "$${VOL:-}" ] && mountpoint -q "$VOL" && break
-      sleep 2
-    done
-    [ -n "$${VOL:-}" ] && mountpoint -q "$VOL" || { echo "::error::CI data volume not mounted"; exit 1; }
-    ln -sfn "$VOL" /mnt/ci-data
-    mkdir -p /mnt/ci-data/docker /mnt/ci-data/bazel
+  # The logic lives in /usr/local/bin/link-ci-volume.sh (see its write_files entry for
+  # why it is a file: infra/link_ci_volume_test.sh executes that exact script).
+  - /usr/local/bin/link-ci-volume.sh
 
   # Docker
   - systemctl enable --now docker
