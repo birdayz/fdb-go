@@ -78,15 +78,19 @@ func TestIndexDDLProbe_ExtremumAggregateRecognized(t *testing.T) {
 	}
 }
 
-// TestIndexDDLProbe_StructQualifierUnresolvable pins that a dotted path into
-// a struct-typed column does not resolve (42703) — which is what keeps the
-// generator's field-path TRIE effectively single-accessor from SQL today.
-// Struct columns cannot be DECLARED via SQL DDL either (RFC-201 Phase 3), so
-// this pin uses a programmatically-built template — the only way a struct
-// column exists at all. When struct DDL lands and this resolution starts
-// working, the trie's multi-accessor arm becomes SQL-reachable and needs
-// end-to-end goldens (nested nest/concat shapes, IndexTest.java:819-830).
-func TestIndexDDLProbe_StructQualifierUnresolvable(t *testing.T) {
+// TestIndexDDLProbe_StructQualifierResolves pins that a dotted path into a
+// struct-typed column RESOLVES and plans, including in ORDER BY — the
+// lookupNestedField descent (SemanticAnalyzer.java:481-488, :548-602).
+//
+// This test's ancestor asserted the opposite, and the flip is the point: the
+// generator's field-path trie is no longer effectively single-accessor from
+// SQL, so its multi-accessor arm is now REACHABLE. What this does NOT claim is
+// that a nested path can be INDEXED — emitting field(S).nest(...) key
+// expressions is RFC-204 §4.6 / Phase 5 joint with RFC-202, and the corpus
+// still books six files to `unsupported-DDL:struct-index`. The query here is
+// expected to plan through an ordinary scan-and-sort, not through an index on
+// the nested path.
+func TestIndexDDLProbe_StructQualifierResolves(t *testing.T) {
 	t.Parallel()
 	st := api.NewStructType("S1", []api.StructField{
 		api.NewStructField("SA", api.NewLongType(true), 0),
@@ -101,11 +105,22 @@ func TestIndexDDLProbe_StructQualifierUnresolvable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("template: %v", err)
 	}
-	_, err = probePlan(t, tmpl, "SELECT s.sa FROM t1 ORDER BY s.sa")
+	// Both fields, because a descent hard-wired to ordinal 0 plans SA
+	// correctly and silently reads the wrong slot for SB.
+	for _, q := range []string{
+		"SELECT s.sa FROM t1 ORDER BY s.sa",
+		"SELECT s.sb FROM t1 ORDER BY s.sb",
+		"SELECT p1 FROM t1 WHERE s.sb = 7",
+	} {
+		if _, perr := probePlan(t, tmpl, q); perr != nil {
+			t.Errorf("%s: struct-qualified access must resolve: %v", q, perr)
+		}
+	}
+	// A field the struct does not declare stays the clean 42703 — the descent
+	// widens what resolves, it does not make resolution permissive.
+	_, err = probePlan(t, tmpl, "SELECT s.nosuch FROM t1")
 	if err == nil {
-		t.Fatal("struct-qualified access now RESOLVES — the RFC-202 trie's " +
-			"multi-accessor arm is SQL-reachable and needs end-to-end key-expression " +
-			"goldens (field(S).nest(concat(...)) shapes)")
+		t.Fatal("SELECT s.nosuch planned; an undeclared struct field must not resolve")
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedColumn {

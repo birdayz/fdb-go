@@ -209,10 +209,81 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // Returns the underlying semantic errors verbatim so callers can
 // match via errors.As.
 func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.Value, error) {
-	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
+	col, src, accessors, err := r.analyzer.ResolveColumnRefNested(r.scope, qualifier, id)
 	if err != nil {
 		return nil, err
 	}
+	// A reference that descended INTO a struct column resolves to ONE
+	// FieldValue carrying the whole path, not a chain of them — Java's
+	// ofFieldsAndFuseIfPossible collapses the nested access onto the root
+	// read's own FieldPath (FieldValue.java:325-332, applied at
+	// SemanticAnalyzer.java:598-599). The root accessor stays exactly the
+	// reference the struct COLUMN alone would have produced, which is what
+	// keeps the descent additive: the layout the root ordinal indexes, the
+	// correlation it binds and the pin it carries are all decided by the
+	// arms below, and the nested steps ride along as a suffix.
+	if len(accessors) > 0 {
+		root, rerr := r.resolveScopedColumn(col, src, qualifier, col.Id)
+		if rerr != nil {
+			return nil, rerr
+		}
+		return fuseNestedAccessors(root, accessors)
+	}
+	return r.resolveScopedColumn(col, src, qualifier, id)
+}
+
+// fuseNestedAccessors appends a struct descent onto an already-built root
+// column reference, producing ONE FieldValue over a multi-accessor path —
+// Java's FieldValue.ofFieldsAndFuseIfPossible (FieldValue.java:325-332).
+//
+// The receiver governs the root: FieldPath.WithSuffix keeps the root path's
+// domain and pin, which is correct because those describe the layout the ROOT
+// ordinal indexes and nothing about the nested steps. The nested accessors
+// carry their own per-step ordinals (position in the enclosing struct's
+// declared field list) and names; the evaluator reads a nested proto message
+// by name and a positional nested row by ordinal (descendResolvedPath).
+//
+// The value's declared type becomes the LEAF's type — the reference denotes
+// the leaf, not the struct it descended through.
+func fuseNestedAccessors(root values.Value, accessors []semantic.NestedAccessor) (values.Value, error) {
+	fv, ok := root.(*values.FieldValue)
+	if !ok || fv.Resolved == nil {
+		// Every arm of resolveScopedColumn returns a resolved FieldValue or an
+		// error, so this is unreachable from SQL. It is loud rather than a
+		// silent pass-through of the ROOT: returning the struct where the leaf
+		// was asked for is a wrong-column read, which is the one outcome a
+		// descent must never produce.
+		return nil, &NestedDescentError{Root: root}
+	}
+	suffix := make([]values.ResolvedAccessor, len(accessors))
+	for i, a := range accessors {
+		suffix[i] = values.ResolvedAccessor{Field: a.Name, Ordinal: a.Ordinal}
+	}
+	leaf := accessors[len(accessors)-1].Col
+	out := *fv
+	out.Resolved = fv.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
+	out.Typ = columnCascadesType(leaf)
+	return &out, nil
+}
+
+// NestedDescentError reports a struct descent whose root reference is not a
+// resolved FieldValue, so the accessor suffix has nothing to attach to.
+type NestedDescentError struct {
+	Root values.Value
+}
+
+func (e *NestedDescentError) Error() string {
+	return fmt.Sprintf("nested field access cannot descend from a %T root reference", e.Root)
+}
+
+// resolveScopedColumn turns an already-resolved (column, source) pair into the
+// Value the reference denotes. refID is the identifier used to probe a local
+// source for the correlated-shadow decision — the reference's own name for a
+// direct column, and the STRUCT column's name for a reference that descends
+// into one, because it is the struct column whose presence decides whether the
+// resolution fell through to a parent scope.
+func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSource, qualifier, refID semantic.Identifier) (values.Value, error) {
+	id := refID
 	// Resolve to the OUTPUT column name verbatim (Java's SemanticAnalyzer.lookup
 	// returns the output attribute as-is; FieldValue is indexed by the output
 	// column). Derived-table/CTE quantifiers expose their columns under the

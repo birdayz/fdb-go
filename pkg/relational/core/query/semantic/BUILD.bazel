@@ -29,6 +29,7 @@ go_test(
         "parse_bridge_test.go",
         "qualified_name_test.go",
         "scope_build_test.go",
+        "scope_nested_test.go",
         "scope_test.go",
     ],
     embed = [":semantic"],

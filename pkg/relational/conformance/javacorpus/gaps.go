@@ -165,11 +165,14 @@ var engineGaps = []EngineGap{
 	// each is pinned at that exact statement so an unrelated new failure in
 	// the same file stays a hard failure.
 
-	// Nested field access in a PREDICATE: Java resolves `home_address.city`
-	// through the semantic scope's lookupNestedField descent
-	// (SemanticAnalyzer.java:538,:549); Go's last-dot colRef split reads the
-	// qualifier as a FROM source. RFC-204 §4.4.
-	{"struct-type-nullability-variants.yamsql", SkipGapStructQuery, "no FROM source aliased as HOME_ADDRESS", "RFC-204 P3"},
+	// PHASE 3 (resolver) closed nested field access against a TABLE source:
+	// struct-type-nullability-variants.yamsql passes, because the semantic
+	// scope now applies Java's fifth matching rule — lookupNestedField
+	// (SemanticAnalyzer.java:481-488, :548-602) — so `home_address.city`
+	// descends into a struct COLUMN instead of demanding a FROM source named
+	// HOME_ADDRESS. The remaining five are the shapes that rule does not
+	// reach.
+	//
 	// The same descent through an UNNEST binding (`item.sku` where item is a
 	// lateral unnest of a struct array).
 	{"arrays-unnesting-documentation-queries.yamsql", SkipGapStructQuery, `column "ITEM.SKU" does not exist`, "RFC-204 P3"},

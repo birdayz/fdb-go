@@ -85,13 +85,28 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 //
 // Returns the same typed errors as the underlying scope methods.
 func (a *Analyzer) ResolveColumnRef(scope *Scope, qualifier, id Identifier) (Column, ScopeSource, error) {
+	c, src, _, err := a.ResolveColumnRefNested(scope, qualifier, id)
+	return c, src, err
+}
+
+// ResolveColumnRefNested is ResolveColumnRef plus the accessor chain a
+// reference that descends INTO a struct column resolves to — Java's
+// lookupNestedField result (SemanticAnalyzer.java:578-601). The chain is
+// empty for every reference that addresses a source column directly.
+//
+// The BARE arm never descends, and that is Java's rule, not an omission:
+// lookupNestedField returns empty immediately when the requested identifier
+// has one segment (SemanticAnalyzer.java:557-559), because a descent needs a
+// prefix to consume before there is anything left to walk into.
+func (a *Analyzer) ResolveColumnRefNested(scope *Scope, qualifier, id Identifier) (Column, ScopeSource, []NestedAccessor, error) {
 	if scope == nil {
-		return Column{}, ScopeSource{}, &ColumnNotFoundError{Id: id}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{Id: id}
 	}
 	if qualifier.IsZero() {
-		return scope.ResolveColumn(id)
+		c, src, err := scope.ResolveColumn(id)
+		return c, src, nil, err
 	}
-	return scope.ResolveQualifiedColumn(qualifier, id)
+	return scope.ResolveQualifiedColumnNested(qualifier, id)
 }
 
 // ResolveTableRef is the parse-tree convenience wrapper over

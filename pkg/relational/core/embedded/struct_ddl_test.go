@@ -227,25 +227,44 @@ func TestStructDDL_NullabilityVariantsCollapse(t *testing.T) {
 	}
 }
 
-// TestStructDDL_Phase1QuerySurface pins the measured Phase 1 query surface
-// over a struct table: scalar columns stay fully queryable, while NESTED
-// field access is not yet resolvable — the last-dot colRef split makes `s.a`
-// die as a clean 42703 (unresolvable qualifier). The 42703 is the Phase 3
-// re-arm: when nested resolution lands (SemanticAnalyzer.lookupNestedField
-// port), this arm flips to a rows assertion.
-func TestStructDDL_Phase1QuerySurface(t *testing.T) {
+// TestStructDDL_QuerySurface pins the query surface over a struct table:
+// scalar columns stay queryable, and NESTED field access now PLANS — the
+// semantic scope applies Java's fifth matching rule, lookupNestedField
+// (SemanticAnalyzer.java:481-488, :548-602), so `s.a` descends into the
+// struct column instead of demanding a FROM source named S.
+//
+// The two field arms are both asserted because a descent hard-wired to the
+// first field plans `s.a` correctly and reads the wrong slot for `s.b`, and
+// nothing downstream would notice: the ordinal is a number, not a name.
+//
+// A field the struct does not have stays the clean 42703. That is the same
+// rejection an unknown column has always produced, and it is Java's — both
+// lookupNestedField failure arms return Optional.empty() and let
+// UNDEFINED_COLUMN surface generically (SemanticAnalyzer.java:378-379), so
+// there is no bespoke "no such struct field" error to match.
+func TestStructDDL_QuerySurface(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TYPE AS STRUCT s1 (a BIGINT, b BIGINT)
 		 CREATE TABLE t (id BIGINT, s s1, PRIMARY KEY (id))`
 	if _, err := PlanQueryForTest(`SELECT id FROM t`, ddl, nil); err != nil {
 		t.Fatalf("scalar columns of a struct table must stay queryable: %v", err)
 	}
-	_, err := PlanQueryForTest(`SELECT s.a FROM t`, ddl, nil)
+	for _, q := range []string{
+		`SELECT s.a FROM t`,
+		`SELECT s.b FROM t`,
+		`SELECT id FROM t WHERE s.a = 1`,
+		`SELECT id FROM t WHERE s.b = 1`,
+	} {
+		if _, err := PlanQueryForTest(q, ddl, nil); err != nil {
+			t.Errorf("%s: nested field access must plan: %v", q, err)
+		}
+	}
+	_, err := PlanQueryForTest(`SELECT s.nosuch FROM t`, ddl, nil)
 	if err == nil {
-		t.Fatal("nested field access resolved — RFC-204 Phase 3 landed; replace this arm with a rows assertion")
+		t.Fatal("SELECT s.nosuch planned; a field the struct does not declare must not resolve")
 	}
 	if apiErr := api.AsError(err); apiErr == nil || apiErr.Code != api.ErrCodeUndefinedColumn {
-		t.Fatalf("nested access error = %v, want the clean 42703 qualifier miss", err)
+		t.Fatalf("unknown struct field error = %v, want the clean 42703", err)
 	}
 }
 

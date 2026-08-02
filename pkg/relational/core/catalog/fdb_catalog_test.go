@@ -487,6 +487,82 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	})).To(gomega.Succeed())
 }
 
+// TestFDB_SchemaRebindRejectsVersionGoingBackwards pins the OTHER arm of the
+// rebind guard: the TEMPLATE VERSION must advance.
+//
+// The two arms fail for unrelated reasons and are not substitutes. The
+// evolution validator catches a rebind whose SHAPE is incompatible; this one
+// catches a rebind whose shape is perfectly compatible but whose version moves
+// BACKWARDS — re-binding a live schema to a superseded template. Nothing else
+// in the package exercises it, so deleting the monotonic branch left the
+// package green with the guard gone, which is the rot this test closes.
+//
+// v1 and v2 are structurally IDENTICAL on purpose: if the shape differed, the
+// evolution validator could reject the downgrade for its own reasons and the
+// test would pass without the version branch existing at all.
+func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+	tc := cat.SchemaTemplateCatalog()
+
+	build := func() *metadata.RecordLayerSchemaTemplate {
+		b := metadata.NewSchemaTemplateBuilder().SetName("rebind-ver-tmpl")
+		b.AddTable("T", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("V", api.NewLongType(true), 2),
+		}, []string{"ID"})
+		tmpl, err := b.Build()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		return tmpl
+	}
+
+	mdFor := func() *recordlayer.RecordMetaData {
+		p, err := build().Underlying().ToProto()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		md, err := recordlayer.RecordMetaDataFromProto(p)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		return md
+	}
+
+	tmpl1, err := metadata.NewRecordLayerSchemaTemplateWithVersion("rebind-ver-tmpl", mdFor(), 1)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tmpl2, err := metadata.NewRecordLayerSchemaTemplateWithVersion("rebind-ver-tmpl", mdFor(), 2)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Bind the schema at v2, then try to push it back to v1.
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
+		g.Expect(tc.CreateTemplate(tx, tmpl2)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true)
+	})).To(gomega.Succeed())
+
+	downgradeErr := run(func(tx api.Transaction) error {
+		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/rebindverdb", "pub"), true)
+	})
+	g.Expect(downgradeErr).To(gomega.HaveOccurred())
+	g.Expect(downgradeErr.Error()).To(gomega.ContainSubstring(
+		"cannot rebind schema /rebindverdb/pub to template rebind-ver-tmpl@1: " +
+			"version does not advance past the bound rebind-ver-tmpl@2"))
+
+	// The binding is untouched: still v2.
+	g.Expect(run(func(tx api.Transaction) error {
+		s, lerr := cat.LoadSchema(tx, "/rebindverdb", "pub")
+		g.Expect(lerr).ToNot(gomega.HaveOccurred())
+		g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(2))
+		return nil
+	})).To(gomega.Succeed())
+
+	// An EQUAL version is rejected by the same branch (`<=`), and it is a
+	// distinct direction: a guard written `<` would let a same-version rebind
+	// to DIFFERENT metadata through, which is the silent-swap case.
+	sameErr := run(func(tx api.Transaction) error {
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true)
+	})
+	g.Expect(sameErr).ToNot(gomega.HaveOccurred(),
+		"a same-name same-version save is the no-op arm and must be accepted")
+}
+
 // TestFDB_DeleteSchemaNotFound: deleting an absent schema →
 // ErrCodeUndefinedSchema.
 func TestFDB_DeleteSchemaNotFound(t *testing.T) {

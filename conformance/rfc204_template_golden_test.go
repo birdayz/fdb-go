@@ -365,7 +365,7 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 				p, ok := goldenPath(g.name)
 				Expect(ok).To(BeTrue(),
 					"%s: committed golden conformance/testdata/rfc204/%s.binpb does not resolve; "+
-						"bless it with RFC204_GOLDEN_OUT rather than running without a pin", g.name)
+						"bless it with RFC204_GOLDEN_OUT rather than running without a pin", g.name, g.name)
 				b, readErr := os.ReadFile(p)
 				Expect(readErr).NotTo(HaveOccurred())
 				committed = b
