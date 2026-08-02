@@ -190,13 +190,30 @@ jobs:
           cache: false
 
       - name: govulncheck (shipped packages)
-        run: |
-          # Scan the shipped library. pkg/testcontainers is excluded: it wraps the
-          # Docker SDK (TEST infrastructure, not shipped to users) which currently
-          # has open upstream CVEs with no fixed release (GO-2026-4887,
-          # GO-2026-4883). See SECURITY.md. Everything else must be vuln-free.
-          PKGS=$(go list ./pkg/... | grep -v '/testcontainers')
-          go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
+        # Invoked through ./cmd/vulnscan rather than calling govulncheck directly.
+        # The direct call was `go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS`
+        # and it failed the SECURITY GATE on an upstream 403: govulncheck fetches one
+        # document per advisory from vuln.go.dev on every job, and a fleet of
+        # self-hosted runners sharing a small block of addresses gets rate-limited.
+        # Two PRs hit it within seconds of each other.
+        #
+        # The wrapper fixes three things that cannot be fixed in a shell one-liner,
+        # each documented at its own site in cmd/vulnscan:
+        #   - it mirrors the database locally (one 3 MB request per refresh window,
+        #     zero in steady state) instead of issuing hundreds per job, and tolerates
+        #     a failed refresh only while the mirror is inside a HARD staleness bound;
+        #   - it pins the scanner version, so the gate's verdict cannot change without
+        #     a diff in this repository;
+        #   - it classifies on govulncheck's `-format json` output, so "found nothing"
+        #     and "could not consult the database" are different outcomes. They are
+        #     not distinguishable by exit code alone: pointed at an empty directory
+        #     govulncheck exits 0 and emits a well-formed, zero-finding report.
+        #
+        # Both halves are gates. A transient fetch failure no longer reddens the
+        # build, and nothing that failed to consult the database is ever reported as
+        # clean. pkg/testcontainers stays excluded (see SECURITY.md); the exclusion
+        # now lives in cmd/vulnscan next to the scan it applies to.
+        run: go run ./cmd/vulnscan
 
   race:
     name: Race detector (SQL layer + client + cascades)

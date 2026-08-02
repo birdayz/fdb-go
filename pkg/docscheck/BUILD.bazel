@@ -27,6 +27,7 @@ go_test(
         "race_lane_scope_test.go",
         "source_hygiene_test.go",
         "unknown_type_mint_census_test.go",
+        "vuln_gate_test.go",
     ],
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
