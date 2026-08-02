@@ -22,7 +22,7 @@ func TestFDB_NullOrderingProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nullord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullord "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullord/s WITH TEMPLATE nullord")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nullord?cluster_file=%s&schema=s", clusterFilePath)

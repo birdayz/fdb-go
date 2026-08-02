@@ -1469,7 +1469,9 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 		if fd == nil {
 			return values.UnknownType, "", false, false
 		}
-		if fd.IsList() || fd.Kind() != protoreflect.MessageKind {
+		// An intermediate must be a singular STRUCT: flat repeated fields
+		// and NullableArrayWrapper fields are both arrays here.
+		if fd.IsList() || fd.Kind() != protoreflect.MessageKind || values.IsWrappedArrayDescriptor(fd.Message()) {
 			return values.UnknownType, "", false, true
 		}
 		fields = fd.Message().Fields()
@@ -1478,10 +1480,14 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 	if fd == nil {
 		return values.UnknownType, "", false, false
 	}
-	if !fd.IsList() {
+	// The final segment is an array either as a flat repeated field or
+	// through the NullableArrayWrapper; the element type comes from the
+	// EFFECTIVE repeated field, the column name from the outer field.
+	inner, _, ok := values.EffectiveListField(fd)
+	if !ok {
 		return values.UnknownType, "", false, true
 	}
-	return arrayFieldElementType(fd), strings.ToUpper(string(fd.Name())), true, true
+	return arrayFieldElementType(inner), strings.ToUpper(string(fd.Name())), true, true
 }
 
 // containsLateralUnnest reports whether a logical sub-plan contains a

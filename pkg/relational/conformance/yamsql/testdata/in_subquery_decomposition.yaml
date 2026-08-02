@@ -16,14 +16,14 @@
 name: in_subquery_decomposition
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     name STRING,
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_v ON t (v)
   CREATE TABLE tags (
-    id BIGINT NOT NULL,
+    id BIGINT,
     t_id BIGINT,
     label STRING,
     PRIMARY KEY (id)

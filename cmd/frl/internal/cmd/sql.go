@@ -38,6 +38,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/functions"
 
 	// Register the "fdbsql" driver via blank import.
 	_ "fdb.dev/pkg/relational/sqldriver"
@@ -105,6 +106,10 @@ func newSQLCmd() *cobra.Command {
 				// name into "--Database".
 				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
 			}
+			// The schema is an SQL identifier: unquoted folds to upper case
+			// (matching CREATE SCHEMA and ?schema= normalization), so the
+			// meta-command catalog lookups (`\d`) and the connection agree.
+			initSchema = functions.StripIdentifierQuotes(initSchema)
 			dsn := buildFDBSQLDSN(cf, databaseURI, initSchema)
 			db, err := sql.Open("fdbsql", dsn)
 			if err != nil {

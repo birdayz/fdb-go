@@ -87,12 +87,11 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 		d := md.GetRecordType(table).Descriptor
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName(protoreflect.Name(idField)), protoreflect.ValueOfInt64(id))
-		fd := d.Fields().ByName(protoreflect.Name(arrField))
-		l := m.NewField(fd).List()
+		elems := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
 		return m
 	}
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
@@ -100,12 +99,11 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("AID"), protoreflect.ValueOfInt64(aid))
 		m.Set(d.Fields().ByName("K"), protoreflect.ValueOfInt64(k))
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
+		elems := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), elems...)
 		return m
 	}
 

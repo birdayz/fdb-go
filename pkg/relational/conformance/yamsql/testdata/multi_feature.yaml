@@ -9,7 +9,7 @@
 # itself is pinned by offset.yaml.)
 name: multi_feature
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 100, 50), (2, 100, 75), (3, 100, null), (4, 200, 30), (5, 200, 30), (6, 300, 10)
 tests:

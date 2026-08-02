@@ -21,7 +21,7 @@
 # row set alone would not.
 name: ordering_same_leaf_cross_quantifier
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))
 setup:
   # v maps 1->30, 2->10, 3->20; the join `o.v = i.w` therefore pairs
   # o.id=1 with i.id=3, o.id=2 with i.id=1, o.id=3 with i.id=2.

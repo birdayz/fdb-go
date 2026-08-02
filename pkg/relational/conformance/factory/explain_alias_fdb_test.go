@@ -37,7 +37,7 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	const ddl = "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
+	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX idx_a ON t (a)"
 	db := openFactorySchema(t, ctx, "zzalias", ddl)
 

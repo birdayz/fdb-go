@@ -21,7 +21,7 @@ func TestFDB_InListIndexProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ilip")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ilip")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ilip CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE ilip CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ilip/s WITH TEMPLATE ilip")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ilip?cluster_file=%s&schema=s", clusterFilePath)

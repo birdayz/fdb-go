@@ -93,7 +93,7 @@ func TestSQLFault_UpdateRelative_DoubleApply(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 7,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 
@@ -157,7 +157,7 @@ func TestSQLFault_InsertDurablyCommitted_Spurious23505(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 11,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	sim.InjectOnce(simfdb.CommitUnknownApplied)
 
@@ -214,7 +214,7 @@ func TestSQLFault_1021HazardsAreDeterministic(t *testing.T) {
 	for r := 0; r < runs; r++ {
 		func() {
 			db, sim := openSimSchema(t, 7,
-				"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+				"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 			mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 			sim.InjectOnce(simfdb.CommitUnknownApplied)
 			if _, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1"); err != nil {
@@ -261,7 +261,7 @@ func TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce(t *testing.T) {
 	t.Run("relative UPDATE", func(t *testing.T) {
 		t.Parallel()
 		db, sim := openSimSchema(t, 23,
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 		mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 		sim.InjectOnce(simfdb.CommitUnknownDiscarded)
 		if _, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1"); err != nil {
@@ -280,7 +280,7 @@ func TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce(t *testing.T) {
 	t.Run("INSERT", func(t *testing.T) {
 		t.Parallel()
 		db, sim := openSimSchema(t, 29,
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 		sim.InjectOnce(simfdb.CommitUnknownDiscarded)
 		if _, err := db.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 100)"); err != nil {
 			t.Fatalf("INSERT under a discarded 1021: %v — on this branch there is no durable "+

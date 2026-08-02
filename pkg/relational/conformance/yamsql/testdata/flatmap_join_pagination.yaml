@@ -5,8 +5,8 @@
 # ensures the cursor must resume mid-join across multiple pages.
 name: flatmap_join_pagination
 schema_template: |
-  CREATE TABLE parents (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+  CREATE TABLE parents (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE children (id BIGINT, parent_id BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - >-
     INSERT INTO parents VALUES

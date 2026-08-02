@@ -22,7 +22,7 @@ func TestFDB_TransactionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txnprobe")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txnprobe "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txnprobe/s WITH TEMPLATE txnprobe")
 	dsn := fmt.Sprintf("fdbsql:///testdb_txnprobe?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

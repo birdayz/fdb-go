@@ -4,13 +4,13 @@
 name: aggregate_empty_table_java
 schema_template: |
   CREATE TABLE empty_t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE with_data (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)

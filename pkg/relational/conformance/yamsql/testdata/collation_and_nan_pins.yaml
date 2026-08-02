@@ -13,12 +13,12 @@
 name: collation_and_nan_pins
 schema_template: |
   CREATE TABLE s (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE d (
-    id BIGINT NOT NULL,
+    id BIGINT,
     x DOUBLE,
     PRIMARY KEY (id)
   )

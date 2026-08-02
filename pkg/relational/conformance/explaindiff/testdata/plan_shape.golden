@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=347 queries=2502 dml=158 non_query=100 plan_errors=259 unexpected_errors=4
+# files=347 queries=2502 dml=157 non_query=104 plan_errors=259 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -5644,23 +5644,28 @@ plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compati
 === error_code_regression.yaml#10 expect-error=42804
 sql:   SELECT id FROM t WHERE n IN ('text', 'other')
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
-=== error_code_regression.yaml#13 expect-error=22003
+=== error_code_regression.yaml#13
+sql:   DELETE FROM t WHERE id = 3
+plan:  Delete(T, Scan(T, [=]))
+shape: RecordQueryDeletePlan
+shape:   RecordQueryScanPlan
+=== error_code_regression.yaml#15 expect-error=22003
 sql:   SELECT 9223372036854775807 + 1 FROM t WHERE id = 1
 plan:  Project([(9223372036854775807 + 1)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== error_code_regression.yaml#14
+=== error_code_regression.yaml#16
 sql:   SELECT UPPER(s) FROM t
 plan:  Project([UPPER(S#2)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== error_code_regression.yaml#15
+=== error_code_regression.yaml#17
 sql:   SELECT id FROM t ORDER BY id LIMIT 1
 plan:  Limit(1, Project([ID#0], Scan(T)))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
-=== error_code_regression.yaml#16
+=== error_code_regression.yaml#18
 sql:   SELECT id, n FROM t ORDER BY id
 plan:  Project([ID#0, N#1], Scan(T))
 shape: RecordQueryProjectionPlan
@@ -11607,33 +11612,23 @@ sql:   SELECT id, name, optional_val FROM items ORDER BY id
 plan:  Project([ID#0, NAME#1, OPTIONAL_VAL#2], Scan(ITEMS))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== not_null_constraint_java.yaml#3 expect-error=23502
-sql:   UPDATE items SET name = null WHERE id = 1
-plan:  Update(ITEMS, [1 transforms], Scan(ITEMS, [=]))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryScanPlan
-=== not_null_constraint_java.yaml#4
+=== not_null_constraint_java.yaml#2
 sql:   UPDATE items SET optional_val = null WHERE id = 1
 plan:  Update(ITEMS, [1 transforms], Scan(ITEMS, [=]))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryScanPlan
-=== not_null_constraint_java.yaml#5
+=== not_null_constraint_java.yaml#3
 sql:   SELECT optional_val FROM items WHERE id = 1
 plan:  Project([OPTIONAL_VAL#2], Scan(ITEMS, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== not_null_constraint_java.yaml#6
+=== not_null_constraint_java.yaml#5
 sql:   SELECT COUNT(*) FROM items
 plan:  Project([COUNT(*)#0], StreamingAgg(keys=[], Scan(ITEMS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
-=== not_null_violation.yaml#1 expect-error=23502
-sql:   UPDATE t SET name = NULL WHERE id = 1
-plan:  Update(T, [1 transforms], Scan(T, [=]))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryScanPlan
-=== not_null_violation.yaml#2
+=== not_null_violation.yaml#4
 sql:   SELECT id, name FROM t
 plan:  Project([ID#0, NAME#1], Scan(T))
 shape: RecordQueryProjectionPlan

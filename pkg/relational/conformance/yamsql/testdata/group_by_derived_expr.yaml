@@ -7,7 +7,7 @@
 # through the scope chain, producing 42703 or incorrect NULL results.
 name: group_by_derived_expr
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 1), (2, 10, 2), (3, 20, 3), (4, 20, 4), (5, 30, 5)
 tests:

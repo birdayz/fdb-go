@@ -1,7 +1,7 @@
 name: rfc202_version_index_ordered
 schema_template: |
   CREATE TABLE t_ver (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     PRIMARY KEY (id)
   )

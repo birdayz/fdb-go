@@ -78,7 +78,7 @@ func TestFDB_PlanShapePKLookup(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "pk", "CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+	db := setupPlanShapeDB(t, "pk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, u := range []struct {
 		id   int
@@ -148,7 +148,7 @@ func TestFDB_PlanShapeIndexScanRange(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ixr",
-		"CREATE TABLE items (id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE items (id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_price ON items (price)")
 
 	for _, item := range []struct {
@@ -225,7 +225,7 @@ func TestFDB_PlanShapeStreamingAggIndex(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "sagg",
-		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_category ON items (category)")
 
 	for _, item := range []struct {
@@ -309,8 +309,8 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "jfp",
-		"CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (bid BIGINT NOT NULL, aid BIGINT, PRIMARY KEY (bid))")
+		"CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (bid BIGINT, aid BIGINT, PRIMARY KEY (bid))")
 
 	// Insert data into table a.
 	for _, row := range []struct {
@@ -411,7 +411,7 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dpk", "CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+	db := setupPlanShapeDB(t, "dpk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, u := range []struct {
 		id   int
@@ -491,8 +491,8 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "fpbj",
-		"CREATE TABLE dept (did BIGINT NOT NULL, dname STRING, PRIMARY KEY (did)) "+
-			"CREATE TABLE emp (eid BIGINT NOT NULL, did BIGINT, ename STRING, PRIMARY KEY (eid))")
+		"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
+			"CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, PRIMARY KEY (eid))")
 
 	// Seed dept: eng, sales, hr.
 	for _, d := range []struct {
@@ -678,7 +678,7 @@ func TestFDB_PlanShapeTimestampIndexRange(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "tsidx",
-		"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, PRIMARY KEY (id)) "+
+		"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_events_ts ON Events (ts)")
 
 	_, err := db.ExecContext(ctx, "INSERT INTO Events VALUES (1, '2020-01-01 00:00:00'), (2, '2024-06-15 12:00:00')")
@@ -723,8 +723,8 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE parent (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, PRIMARY KEY (id))", tmpl,
+			"CREATE TABLE parent (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE child (id BIGINT, parent_id BIGINT, PRIMARY KEY (id))", tmpl,
 	))
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
@@ -783,7 +783,7 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggidx",
-		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE orders (id BIGINT, status STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status "+
 			"CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region")
 
@@ -891,7 +891,7 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggmm",
-		"CREATE TABLE scores (id BIGINT NOT NULL, team STRING, points BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE scores (id BIGINT, team STRING, points BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_points_by_team AS SELECT MAX(points) FROM scores GROUP BY team "+
 			"CREATE INDEX min_points_by_team AS SELECT MIN(points) FROM scores GROUP BY team")
 
@@ -999,7 +999,7 @@ func TestFDB_AggregateIndex_BoundedScan(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggbound",
-		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_status AS SELECT SUM(amount) FROM orders GROUP BY status")
 
 	for _, o := range []struct {
@@ -1076,7 +1076,7 @@ func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "mmhav",
-		"CREATE TABLE scores (id BIGINT NOT NULL, team STRING, points BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE scores (id BIGINT, team STRING, points BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_pts AS SELECT MAX(points) FROM scores GROUP BY team "+
 			"CREATE INDEX min_pts AS SELECT MIN(points) FROM scores GROUP BY team")
 
@@ -1176,7 +1176,7 @@ func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "permmm",
-		"CREATE TABLE highscores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE highscores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_score AS SELECT MAX(score) FROM highscores GROUP BY player "+
 			"CREATE INDEX min_score AS SELECT MIN(score) FROM highscores GROUP BY player")
 
@@ -1314,7 +1314,7 @@ func TestFDB_AggregateIndex_StaleEverNotServedByValueScan(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "staleever",
-		"CREATE TABLE highscores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE highscores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_ever_score AS SELECT MAX_EVER(score) FROM highscores GROUP BY player "+
 			"CREATE INDEX min_ever_score AS SELECT MIN_EVER(score) FROM highscores GROUP BY player")
 
@@ -1405,7 +1405,7 @@ func TestFDB_AggregateIndex_UngroupedAndEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ungrp",
-		"CREATE TABLE counters (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE counters (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX total_count AS SELECT COUNT(*) FROM counters "+
 			"CREATE INDEX total_sum AS SELECT SUM(val) FROM counters "+
 			"CREATE INDEX count_val AS SELECT COUNT(val) FROM counters")
@@ -1492,7 +1492,7 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aghav",
-		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_region AS SELECT SUM(amount) FROM sales GROUP BY region "+
 			"CREATE INDEX count_by_region AS SELECT COUNT(*) FROM sales GROUP BY region")
 
@@ -2012,7 +2012,7 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "mcgrp",
-		"CREATE TABLE events (id BIGINT NOT NULL, cat STRING, sev STRING, dur BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE events (id BIGINT, cat STRING, sev STRING, dur BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_cat_sev AS SELECT COUNT(*) FROM events GROUP BY cat, sev")
 
 	for _, e := range []struct {
@@ -2090,7 +2090,7 @@ func TestFDB_AggregateIndex_CountStarVsCountCol(t *testing.T) {
 	// Java's aggregate-index-tests-count.yamsql: both COUNT(*) and COUNT(col)
 	// indexes on same table. Planner must pick the correct one.
 	db := setupPlanShapeDB(t, "cntboth",
-		"CREATE TABLE items (id BIGINT NOT NULL, grp BIGINT, val BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE items (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_star AS SELECT COUNT(*) FROM items GROUP BY grp "+
 			"CREATE INDEX cnt_val AS SELECT COUNT(val) FROM items GROUP BY grp")
 
@@ -2179,7 +2179,7 @@ func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "updagg",
-		"CREATE TABLE accounts (id BIGINT NOT NULL, owner STRING, balance BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE accounts (id BIGINT, owner STRING, balance BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_balance AS SELECT SUM(balance) FROM accounts GROUP BY owner")
 
 	for _, a := range []struct {
@@ -2300,7 +2300,7 @@ func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "cmpag",
-		"CREATE TABLE invoices (id BIGINT NOT NULL, vendor STRING, amount BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE invoices (id BIGINT, vendor STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_vendor AS SELECT SUM(amount) FROM invoices GROUP BY vendor "+
 			"CREATE INDEX count_by_vendor AS SELECT COUNT(*) FROM invoices GROUP BY vendor")
 
@@ -2397,7 +2397,7 @@ func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "agglife",
-		"CREATE TABLE counters (id BIGINT NOT NULL, bucket STRING, val BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE counters (id BIGINT, bucket STRING, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_bucket AS SELECT COUNT(*) FROM counters GROUP BY bucket")
 
 	// Insert 3 records into bucket 'A'
@@ -2463,7 +2463,7 @@ func TestFDB_AggregateIndex_NullGroupKey(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "nullgrp",
-		"CREATE TABLE events (id BIGINT NOT NULL, category STRING, weight BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE events (id BIGINT, category STRING, weight BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_cat AS SELECT COUNT(*) FROM events GROUP BY category "+
 			"CREATE INDEX sum_weight_by_cat AS SELECT SUM(weight) FROM events GROUP BY category")
 
@@ -2596,7 +2596,7 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "cntnull",
-		"CREATE TABLE sensors (id BIGINT NOT NULL, sensor STRING, reading BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE sensors (id BIGINT, sensor STRING, reading BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_readings AS SELECT COUNT(reading) FROM sensors GROUP BY sensor")
 
 	inserts := []struct {
@@ -2742,9 +2742,9 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "dtjex",
-		"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (id BIGINT NOT NULL, name STRING, emp_id BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT, name STRING, emp_id BIGINT, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
 		id   int
@@ -2855,8 +2855,8 @@ func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "2dt",
-		"CREATE TABLE a (ida BIGINT NOT NULL, a1 BIGINT, PRIMARY KEY (ida)) "+
-			"CREATE TABLE b (idb BIGINT NOT NULL, b1 BIGINT, PRIMARY KEY (idb))")
+		"CREATE TABLE a (ida BIGINT, a1 BIGINT, PRIMARY KEY (ida)) "+
+			"CREATE TABLE b (idb BIGINT, b1 BIGINT, PRIMARY KEY (idb))")
 
 	if _, err := db.ExecContext(ctx, "INSERT INTO a VALUES (1, 100)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
@@ -2895,7 +2895,7 @@ func TestFDB_OrPredicateFilter(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "orpred",
-		"CREATE TABLE vals (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE vals (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 
 	for i := 1; i <= 10; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO vals VALUES (%d, %d)", i, i*10)); err != nil {
@@ -2968,7 +2968,7 @@ func TestFDB_NestedDerivedTableNullFilter(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "nestdt",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))")
 
 	for i := 1; i <= 5; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t1 VALUES (%d, %d)", i, i*10)); err != nil {
@@ -3016,7 +3016,7 @@ func TestFDB_CaseWhenWithInList(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "casein",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id, col1, col2 int
@@ -3089,7 +3089,7 @@ func TestFDB_CaseWhenWithoutElseReturnsNull(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "casenoelse",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id, col1, col2 int
@@ -3161,7 +3161,7 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "andrange",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i1 ON t1 (col1)")
 
 	for _, r := range []struct {
@@ -3240,8 +3240,8 @@ func TestFDB_JoinWithNotIn(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "jnotin",
-		"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
 		id   int
@@ -3348,7 +3348,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "gbdt",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id, col1, col2 int
@@ -3465,7 +3465,7 @@ func TestFDB_EmptyTableAggregates(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "emptyagg",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	t.Run("sum_empty_is_null", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "SELECT SUM(col1) FROM t1")
@@ -3544,7 +3544,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "compagg",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, grp BIGINT, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id, grp, val int
@@ -3637,8 +3637,8 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "joinob",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, a1 BIGINT, a2 BIGINT, a3 STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, b1 BIGINT, b2 BIGINT, b3 STRING, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, a1 BIGINT, a2 BIGINT, a3 STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, b1 BIGINT, b2 BIGINT, b3 STRING, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id, a1, a2 int
@@ -3741,7 +3741,7 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggdesc",
-		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status")
 
 	for _, o := range []struct {
@@ -3816,7 +3816,7 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggcase",
-		"CREATE TABLE orders (id BIGINT NOT NULL, Status STRING, Amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, Status STRING, Amount BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
 		id     int
@@ -3876,8 +3876,8 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ljoinagg",
-		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, c := range []struct {
 		id   int
@@ -3966,8 +3966,8 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "selstar",
-		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
 	for _, d := range []struct {
 		id   int
@@ -4051,7 +4051,7 @@ func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "dtagg",
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
 		id, did, sal int
@@ -4105,7 +4105,7 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "dtedge",
-		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id       int
@@ -4202,7 +4202,7 @@ func TestFDB_AggExprArgDirect(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "aggexpr",
-		"CREATE TABLE items (id BIGINT NOT NULL, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	for _, r := range []struct {
 		id   int
 		c    string
@@ -4251,7 +4251,7 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "aggvar",
-		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, units BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE sales (id BIGINT, region STRING, units BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id                     int
@@ -4326,7 +4326,7 @@ func TestFDB_MinMaxExpressionArg(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "mmexpr",
-		"CREATE TABLE items (id BIGINT NOT NULL, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	for _, r := range []struct {
 		id   int
 		c    string
@@ -4381,8 +4381,8 @@ func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "dtjnagg",
-		"CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, unit_price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE products (id BIGINT, name STRING, category STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, unit_price BIGINT, PRIMARY KEY (id))")
 
 	for _, p := range []struct {
 		id  int
@@ -4451,7 +4451,7 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "cteagg",
-		"CREATE TABLE orders (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
 		id         int
@@ -4517,8 +4517,8 @@ func TestFDB_UnionWithAggExpr(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "unagg",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id int
@@ -4577,7 +4577,7 @@ func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "ssqagg",
-		"CREATE TABLE items (id BIGINT NOT NULL, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct{ id, p, q int }{
 		{1, 10, 5}, {2, 20, 3}, {3, 100, 2},
@@ -4621,7 +4621,7 @@ func TestFDB_AggExprWithNulls(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "aggnull",
-		"CREATE TABLE items (id BIGINT NOT NULL, grp STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, grp STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id   int
@@ -4689,7 +4689,7 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "havagg",
-		"CREATE TABLE orders (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
 		id         int
@@ -4745,7 +4745,7 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "cplxexpr",
-		"CREATE TABLE t (id BIGINT NOT NULL, cat STRING, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, cat STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id int
@@ -4822,8 +4822,8 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "exgrp",
-		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, c := range []struct {
 		id   int
@@ -4896,7 +4896,7 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "multiaggx",
-		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, cost BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE sales (id BIGINT, region STRING, qty BIGINT, price BIGINT, cost BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id               int
@@ -4974,7 +4974,7 @@ func TestFDB_DistinctWithExpressions(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "distexpr",
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct{ id, a, b int }{
 		{1, 1, 10}, {2, 1, 10}, {3, 2, 20}, {4, 2, 20}, {5, 3, 30},
@@ -5026,7 +5026,7 @@ func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "upddel",
-		"CREATE TABLE inventory (id BIGINT NOT NULL, name STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE inventory (id BIGINT, name STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id         int
@@ -5089,8 +5089,8 @@ func TestFDB_InsertSelectWithAggregate(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "insselagg",
-		"CREATE TABLE orders (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE summary (id BIGINT NOT NULL, region STRING, total BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE summary (id BIGINT, region STRING, total BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
 		id  int
@@ -5139,9 +5139,9 @@ func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "threeway",
-		"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE sales (id BIGINT NOT NULL, prod_id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE categories (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT, cat_id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE sales (id BIGINT, prod_id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO categories VALUES (1, 'Electronics')")
 	db.ExecContext(ctx, "INSERT INTO categories VALUES (2, 'Books')")
@@ -5183,7 +5183,7 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "selfjn",
-		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, mgr_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, name STRING, mgr_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
 		id, mgr, sal int
@@ -5237,7 +5237,7 @@ func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "nestdnull",
-		"CREATE TABLE t (id BIGINT NOT NULL, label STRING, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, label STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id int
@@ -5302,8 +5302,8 @@ func TestFDB_OrPredicateWithJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "orjoin",
-		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, level STRING, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, level STRING, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
@@ -5360,7 +5360,7 @@ func TestFDB_CaseWhenInListCombined(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "casein2",
-		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
 		id, amt int
@@ -5408,7 +5408,7 @@ func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "dtcross",
-		"CREATE TABLE t (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id int
@@ -5448,9 +5448,9 @@ func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "dtexjn",
-		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
@@ -5505,8 +5505,8 @@ func TestFDB_JoinNotInPattern(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "jnotin2",
-		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
 	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
@@ -5544,7 +5544,7 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "between1",
-		"CREATE TABLE t1 (id INTEGER NOT NULL, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id INTEGER, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 1)",
@@ -5664,7 +5664,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "gbalias1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 1)",
@@ -5911,8 +5911,8 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "inssel1",
-		"CREATE TABLE src (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dst (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE src (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dst (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 
 	for i := int64(1); i <= 5; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO src VALUES (%d, %d)", i, i*10)); err != nil {
@@ -5945,8 +5945,8 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 
 	t.Run("insert_select_with_expr", func(t *testing.T) {
 		db2 := setupPlanShapeDB(t, "inssel2",
-			"CREATE TABLE src2 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
-				"CREATE TABLE dst2 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE src2 (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
+				"CREATE TABLE dst2 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 		for i := int64(1); i <= 3; i++ {
 			db2.ExecContext(ctx, fmt.Sprintf("INSERT INTO src2 VALUES (%d, %d)", i, i*10))
 		}
@@ -5969,8 +5969,8 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 
 	t.Run("insert_select_with_where", func(t *testing.T) {
 		db3 := setupPlanShapeDB(t, "inssel3",
-			"CREATE TABLE src3 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
-				"CREATE TABLE dst3 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE src3 (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
+				"CREATE TABLE dst3 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 		for i := int64(1); i <= 5; i++ {
 			db3.ExecContext(ctx, fmt.Sprintf("INSERT INTO src3 VALUES (%d, %d)", i, i*10))
 		}
@@ -6002,7 +6002,7 @@ func TestFDB_UpdateExpressions(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "updexpr1",
-		"CREATE TABLE items (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO items VALUES (1, 10, 100)",
@@ -6073,7 +6073,7 @@ func TestFDB_CoalesceEdgeCases(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "coalesce1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 100)",
@@ -6134,7 +6134,7 @@ func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "mtdel1",
-		"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, status STRING, PRIMARY KEY (id))")
+		"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, status STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO orders VALUES (1, 100, 50, 'pending')",
@@ -6220,7 +6220,7 @@ func TestFDB_LimitBasicPatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "limoff1",
-		"CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for i := int64(1); i <= 10; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -6277,8 +6277,8 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "subsclr1",
-		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, salary BIGINT, dept_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, name STRING, salary BIGINT, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO dept VALUES (1, 'Engineering')",
@@ -6368,7 +6368,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "distfrom1",
-		"CREATE TABLE t1 (id INTEGER NOT NULL, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id INTEGER, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 1)",
@@ -6505,7 +6505,7 @@ func TestFDB_SelfJoinHierarchy(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "selfjoin1",
-		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE emp (id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO emp VALUES (1, 'CEO', NULL)",
@@ -6583,7 +6583,7 @@ func TestFDB_MultiColumnOrderBy(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "mcord1",
-		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO items VALUES (1, 'A', 'Widget', 100)",
@@ -6652,7 +6652,7 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "nullarith1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 20)",
@@ -6753,7 +6753,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "ctejava1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 1)",
@@ -6873,8 +6873,8 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "unionjava1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 1)",
@@ -6950,8 +6950,8 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "cxjoin1",
-		"CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, price BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, customer STRING, PRIMARY KEY (id))")
+		"CREATE TABLE products (id BIGINT, name STRING, category STRING, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, customer STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO products VALUES (1, 'Widget', 'A', 100)",
@@ -7090,7 +7090,7 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "gbtalias1",
-		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, rep STRING, PRIMARY KEY (id))")
+		"CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, rep STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO sales VALUES (1, 'US', 100, 'Alice')",
@@ -7172,7 +7172,7 @@ func TestFDB_NestedAggregateErrors(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "nesterr1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO t1 VALUES (1, 10)")
 	db.ExecContext(ctx, "INSERT INTO t1 VALUES (2, 20)")
@@ -7201,7 +7201,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "strop1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 'Alice')",
@@ -7284,7 +7284,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "cxwhere1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 'foo', 100)",
@@ -7396,9 +7396,9 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "3wjoin1",
-		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO customers VALUES (1, 'Alice')",
@@ -7485,7 +7485,7 @@ func TestFDB_RecursiveCTEBasic(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "rcte1",
-		"CREATE TABLE nodes (id BIGINT NOT NULL, parent_id BIGINT, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE nodes (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO nodes VALUES (1, NULL, 'root')",
@@ -7545,7 +7545,7 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "winagg1",
-		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, year BIGINT, amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE sales (id BIGINT, region STRING, year BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO sales VALUES (1, 'US', 2023, 100)",
@@ -7624,7 +7624,7 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "gbtn1",
-		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO items VALUES (1, 'A', 100)",
@@ -7690,7 +7690,7 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "mixtype1",
-		"CREATE TABLE t1 (id BIGINT NOT NULL, int_val INTEGER, long_val BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, int_val INTEGER, long_val BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
 		"INSERT INTO t1 VALUES (1, 10, 100)",

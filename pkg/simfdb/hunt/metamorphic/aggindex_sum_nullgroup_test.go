@@ -34,7 +34,7 @@ func TestAggregateSumIndexDropsAllNullGroup(t *testing.T) {
 	t.Parallel()
 
 	const (
-		table    = "CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))"
+		table    = "CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))"
 		sumIndex = "CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g"
 	)
 	data := []string{

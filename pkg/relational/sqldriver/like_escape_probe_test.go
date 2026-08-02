@@ -22,7 +22,7 @@ func TestFDB_LikeEscapeProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_likeescp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_likeescp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE likeescp CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE likeescp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_likeescp/s WITH TEMPLATE likeescp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_likeescp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

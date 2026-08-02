@@ -14,7 +14,7 @@
 # never decide whether a rewrite preserves semantics.
 name: limit_one_over_wide_filter
 schema_template: |
-  CREATE TABLE wide (id BIGINT NOT NULL, c0 BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, c10 BIGINT, c11 BIGINT, c12 BIGINT, c13 BIGINT, c14 BIGINT, c15 BIGINT, c16 BIGINT, c17 BIGINT, c18 BIGINT, c19 BIGINT, c20 BIGINT, c21 BIGINT, c22 BIGINT, c23 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE wide (id BIGINT, c0 BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, c10 BIGINT, c11 BIGINT, c12 BIGINT, c13 BIGINT, c14 BIGINT, c15 BIGINT, c16 BIGINT, c17 BIGINT, c18 BIGINT, c19 BIGINT, c20 BIGINT, c21 BIGINT, c22 BIGINT, c23 BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO wide VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), (2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), (3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 tests:

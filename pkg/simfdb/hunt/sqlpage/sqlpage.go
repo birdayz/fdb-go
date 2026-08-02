@@ -325,8 +325,8 @@ func newHarness(seed uint64) (*harness, error) {
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE tmpl " +
-			"CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, PRIMARY KEY (id)) " +
-			"CREATE TABLE t2 (id BIGINT NOT NULL, ref BIGINT, w BIGINT, PRIMARY KEY (id)) " +
+			"CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+			"CREATE TABLE t2 (id BIGINT, ref BIGINT, w BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX idx_cat ON t (cat) " +
 			"CREATE INDEX idx_val ON t (val) " +
 			"CREATE INDEX idx_ref ON t2 (ref)",

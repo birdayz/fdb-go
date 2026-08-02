@@ -21,7 +21,7 @@
 name: order_by_elimination
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     name STRING,
     PRIMARY KEY (id)
@@ -29,14 +29,14 @@ schema_template: |
   CREATE INDEX idx_v ON t (v)
   CREATE INDEX idx_name ON t (name)
   CREATE TABLE ab (
-    a BIGINT NOT NULL,
-    b BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
     c BIGINT,
     PRIMARY KEY (a, b)
   )
   CREATE INDEX idx_ab_c ON ab (c)
   CREATE TABLE rp (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     plan STRING,
     PRIMARY KEY (id)

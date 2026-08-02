@@ -3,7 +3,7 @@
 # Verifies LIMIT works correctly when applied after aggregation.
 name: limit_aggregate
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES (1, 'North', 100), (2, 'North', 200), (3, 'South', 150), (4, 'South', 50), (5, 'East', 300), (6, 'East', 100)
 tests:

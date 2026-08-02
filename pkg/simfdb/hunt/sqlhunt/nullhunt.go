@@ -193,7 +193,7 @@ func nlNewHarness(seed uint64) (*nlHarness, error) {
 	h.closes = append(h.closes, func() { setup.Close() })
 	for _, stmt := range []string{
 		"CREATE DATABASE " + nlDBPath,
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
 		"CREATE SCHEMA " + nlDBPath + "/s WITH TEMPLATE tmpl",
 	} {
 		if _, err := setup.ExecContext(context.Background(), stmt); err != nil {

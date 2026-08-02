@@ -4,7 +4,7 @@
 # addition, subtraction, multiplication.
 name: numeric_overflow_detection
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, big_val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, big_val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 9223372036854775807), (2, -9223372036854775808), (3, 0)
 tests:

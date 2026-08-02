@@ -4,7 +4,7 @@
 # Tests nested derived tables with IS NULL / IS NOT NULL.
 name: null_operator_alignment
 schema_template: |
-  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t1 VALUES (1, 10, 100), (2, 20, 200), (3, NULL, 300)
 tests:

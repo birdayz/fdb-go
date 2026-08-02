@@ -179,8 +179,8 @@ func TestHavingPushdownDeciderDisablesOnAnUnidentifiableKey(t *testing.T) {
 func TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate(t *testing.T) {
 	t.Parallel()
 
-	const ddl = "CREATE TABLE po (id BIGINT NOT NULL, PRIMARY KEY (id)) " +
-		"CREATE TABLE pi (id BIGINT NOT NULL, po_id BIGINT, PRIMARY KEY (id))"
+	const ddl = "CREATE TABLE po (id BIGINT, PRIMARY KEY (id)) " +
+		"CREATE TABLE pi (id BIGINT, po_id BIGINT, PRIMARY KEY (id))"
 
 	// A pure group-key comparison. The rule pushes it below the GroupBy, so the
 	// reference must stay QUALIFIED, and the plan must keep the filter under the

@@ -24,8 +24,8 @@ func TestFDB_ScalarSubqOverflowProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_sso")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sso")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sso "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE o (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE o (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sso/s WITH TEMPLATE sso")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sso?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

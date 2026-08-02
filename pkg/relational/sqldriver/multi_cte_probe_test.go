@@ -21,7 +21,7 @@ func TestFDB_MultiCTEProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_mcte")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mcte")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE mcte CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE mcte CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mcte/s WITH TEMPLATE mcte")
 	dsn := fmt.Sprintf("fdbsql:///testdb_mcte?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

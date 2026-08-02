@@ -21,7 +21,7 @@ func TestFDB_GroupByMultiKeyAggProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_gmk")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gmk")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE gmk CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE gmk CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gmk/s WITH TEMPLATE gmk")
 	dsn := fmt.Sprintf("fdbsql:///testdb_gmk?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

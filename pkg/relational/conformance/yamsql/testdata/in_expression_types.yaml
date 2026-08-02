@@ -3,7 +3,7 @@
 # Exercises IN lists with arithmetic, function calls, and mixed types.
 name: in_expression_types
 schema_template: |
-  CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE items (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO items VALUES (1, 'apple', 10), (2, 'banana', 20), (3, 'cherry', 30), (4, 'date', 40), (5, 'elderberry', 50)
 tests:

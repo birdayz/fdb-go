@@ -5,7 +5,7 @@
 name: aggregate_index_count_star
 schema_template: |
   CREATE TABLE logs (
-    id BIGINT NOT NULL,
+    id BIGINT,
     level STRING,
     message STRING,
     PRIMARY KEY (id)

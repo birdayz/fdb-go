@@ -377,8 +377,8 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			h.batchesPerTx = cfg.batchesPerTx
 			h.createSchema(`
 				CREATE TABLE items (
-					id BIGINT NOT NULL,
-					val BIGINT NOT NULL,
+					id BIGINT,
+					val BIGINT,
 					PRIMARY KEY (id)
 				)
 			`)
@@ -403,10 +403,10 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 
 	h.createSchema(`
 		CREATE TABLE orders (
-			id BIGINT NOT NULL,
-			customer_id BIGINT NOT NULL,
-			amount BIGINT NOT NULL,
-			status STRING NOT NULL,
+			id BIGINT,
+			customer_id BIGINT,
+			amount BIGINT,
+			status STRING,
 			PRIMARY KEY (id)
 		)
 		CREATE INDEX idx_customer ON orders (customer_id)
@@ -416,9 +416,9 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM orders GROUP BY status
 		CREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id
 		CREATE TABLE customers (
-			id BIGINT NOT NULL,
-			name STRING NOT NULL,
-			tier STRING NOT NULL,
+			id BIGINT,
+			name STRING,
+			tier STRING,
 			PRIMARY KEY (id)
 		)
 		CREATE INDEX idx_tier ON customers (tier)

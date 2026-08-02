@@ -23,7 +23,7 @@ func TestFDB_ScalarMathProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_smathp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE smathp "+
-			"CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_smathp/s WITH TEMPLATE smathp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_smathp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

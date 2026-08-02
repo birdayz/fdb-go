@@ -240,11 +240,11 @@ func TestDelete_Explain(t *testing.T) {
 
 func TestDDL_Explain(t *testing.T) {
 	t.Parallel()
-	d := NewDDL("CREATE TABLE", "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	d := NewDDL("CREATE TABLE", "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	if len(d.Children()) != 0 {
 		t.Fatalf("DDL.Children: expected 0, got %d", len(d.Children()))
 	}
-	want := "DDL(CREATE TABLE: CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id)))"
+	want := "DDL(CREATE TABLE: CREATE TABLE t (id BIGINT, PRIMARY KEY (id)))"
 	if got := d.Explain(""); got != want {
 		t.Fatalf("DDL.Explain: got %q", got)
 	}

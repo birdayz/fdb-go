@@ -16,6 +16,7 @@ go_library(
         "leg_identity_census_report.go",
         "like_match.go",
         "map_field_values.go",
+        "nullable_array_descriptor.go",
         "ordinal_join_seed.go",
         "ordinal_seed_layout.go",
         "pseudo_field.go",
@@ -88,6 +89,7 @@ go_library(
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 

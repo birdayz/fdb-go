@@ -13,7 +13,7 @@
 name: rfc202_generated_index_plans
 schema_template: |
   CREATE TABLE t_cover (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     b BIGINT,
     c BIGINT,
@@ -22,7 +22,7 @@ schema_template: |
   )
   CREATE INDEX cover_idx ON t_cover (a) INCLUDE (b, c)
   CREATE TABLE t_desc (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     PRIMARY KEY (id)
   )

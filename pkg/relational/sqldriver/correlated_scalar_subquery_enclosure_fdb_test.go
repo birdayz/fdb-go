@@ -41,11 +41,11 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cl4051_tmpl "+
-		"CREATE TABLE t (tid BIGINT NOT NULL, k BIGINT, PRIMARY KEY (tid)) "+
-		"CREATE TABLE a (aid BIGINT NOT NULL, k BIGINT, PRIMARY KEY (aid)) "+
-		"CREATE TABLE b (bid BIGINT NOT NULL, bref BIGINT, PRIMARY KEY (bid)) "+
-		"CREATE TABLE c (cid BIGINT NOT NULL, ck BIGINT, cv BIGINT, PRIMARY KEY (cid)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, eref BIGINT, PRIMARY KEY (eid))")
+		"CREATE TABLE t (tid BIGINT, k BIGINT, PRIMARY KEY (tid)) "+
+		"CREATE TABLE a (aid BIGINT, k BIGINT, PRIMARY KEY (aid)) "+
+		"CREATE TABLE b (bid BIGINT, bref BIGINT, PRIMARY KEY (bid)) "+
+		"CREATE TABLE c (cid BIGINT, ck BIGINT, cv BIGINT, PRIMARY KEY (cid)) "+
+		"CREATE TABLE e (eid BIGINT, eref BIGINT, PRIMARY KEY (eid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cl4051_tmpl")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
 	if err != nil {

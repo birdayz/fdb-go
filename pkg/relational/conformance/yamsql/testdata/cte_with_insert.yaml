@@ -7,8 +7,8 @@
 # engines, and the destination table stays untouched.
 name: cte_with_insert
 schema_template: |
-  CREATE TABLE source (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dest (id BIGINT NOT NULL, doubled_val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE source (id BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dest (id BIGINT, doubled_val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO source VALUES (1, 10), (2, 20), (3, 30)
 tests:

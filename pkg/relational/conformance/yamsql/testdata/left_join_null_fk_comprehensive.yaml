@@ -5,8 +5,8 @@
 # over LEFT JOIN with NULL FK values.
 name: left_join_null_fk_comprehensive
 schema_template: |
-  CREATE TABLE parent (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT, value BIGINT, PRIMARY KEY (id))
+  CREATE TABLE parent (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE child (id BIGINT, parent_id BIGINT, value BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO parent VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')
   - INSERT INTO child VALUES (10, 1, 100), (20, 1, 200), (30, 2, 150), (40, null, 50)

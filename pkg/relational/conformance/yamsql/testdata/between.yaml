@@ -8,7 +8,7 @@
 # operand to UNKNOWN up front, missing cases where one side is definitive.
 name: between
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 0), (2, 5), (3, 10), (4, 15), (5, 100)
 tests:

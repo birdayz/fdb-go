@@ -3,8 +3,8 @@
 # Exercises subqueries used as derived tables in FROM clause.
 name: derived_table_join
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
-  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 10, 100), (2, 10, 200), (3, 20, 150), (4, 30, 300)
   - INSERT INTO customers VALUES (10, 'Alice'), (20, 'Bob'), (30, 'Charlie')

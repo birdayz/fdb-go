@@ -3,7 +3,7 @@
 name: null_arithmetic_java
 schema_template: |
   CREATE TABLE nums (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     b BIGINT,
     PRIMARY KEY (id)

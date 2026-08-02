@@ -56,31 +56,27 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 	md := buildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := sarrFD.Message()
+	elemDesc := arrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := substructFD.Message()
+	elem2Desc := arrayElementMessageDescriptor(substructFD)
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
-		dl := m.NewField(elem2Desc.Fields().ByName("DEEP")).List()
-		for _, d := range deep {
-			dl.Append(protoreflect.ValueOfInt32(d))
+		dvals := make([]protoreflect.Value, len(deep))
+		for i, d := range deep {
+			dvals[i] = protoreflect.ValueOfInt32(d)
 		}
-		m.Set(elem2Desc.Fields().ByName("DEEP"), protoreflect.ValueOfList(dl))
+		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
-		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
-		for _, s := range sub {
-			sl.Append(protoreflect.ValueOfInt32(s))
+		svals := make([]protoreflect.Value, len(sub))
+		for i, s := range sub {
+			svals[i] = protoreflect.ValueOfInt32(s)
 		}
-		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
-		ssl := m.NewField(substructFD).List()
-		for _, ss := range substruct {
-			ssl.Append(ss)
-		}
-		m.Set(substructFD, protoreflect.ValueOfList(ssl))
+		setArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
+		setArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, sarr ...protoreflect.Value) proto.Message {
@@ -89,11 +85,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		// The shadow scalar column SUB=777: a mis-bind reading the outer-row SUB
 		// instead of the element's SUB array would surface 777s.
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(777))
-		sl := m.NewField(sarrFD).List()
-		for _, e := range sarr {
-			sl.Append(e)
-		}
-		m.Set(sarrFD, protoreflect.ValueOfList(sl))
+		setArrayField(m, sarrFD, sarr...)
 		return m
 	}
 

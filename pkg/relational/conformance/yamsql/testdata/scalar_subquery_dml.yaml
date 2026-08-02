@@ -10,8 +10,8 @@
 # (0AF00) — see the per-stanza comments.
 name: scalar_subquery_dml
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE config (k STRING NOT NULL, n BIGINT, PRIMARY KEY (k))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE config (k STRING, n BIGINT, PRIMARY KEY (k))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)
   - INSERT INTO config VALUES ('threshold', 25), ('multiplier', 100)

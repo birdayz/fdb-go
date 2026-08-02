@@ -933,6 +933,17 @@ func ProtoFieldToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value)
 	if fd.IsMap() {
 		return v.Interface()
 	}
+	// A NullableArrayWrapper column reads through the wrapper as the array
+	// it stores: a PRESENT wrapper with an empty list is [] (distinct from
+	// SQL NULL, which is the ABSENT field — the caller's presence check).
+	if inner, wrapped, ok := EffectiveListField(fd); ok && wrapped {
+		list := v.Message().Get(inner).List()
+		out := make([]any, list.Len())
+		for i := 0; i < list.Len(); i++ {
+			out[i] = protoScalarToRowValue(inner, list.Get(i))
+		}
+		return out
+	}
 	return protoScalarToRowValue(fd, v)
 }
 

@@ -15,39 +15,39 @@
 name: in_list_pushdown
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     v BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE ts (
-    k STRING NOT NULL,
+    k STRING,
     w BIGINT,
     PRIMARY KEY (k)
   )
   CREATE TABLE kvw (
-    a BIGINT NOT NULL,
-    b BIGINT NOT NULL,
-    c BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    c BIGINT,
     v BIGINT,
     PRIMARY KEY (a, b, c)
   )
   CREATE TABLE t2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     v BIGINT,
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_t2_status ON t2 (status)
   CREATE TABLE tp (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     plan STRING,
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_region_plan ON tp (region, plan)
   CREATE TABLE tb (
-    id BIGINT NOT NULL,
+    id BIGINT,
     payload BYTES,
     PRIMARY KEY (id)
   )

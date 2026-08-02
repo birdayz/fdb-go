@@ -140,15 +140,25 @@ func (t *recordTypeTable) ensureColumnIndex() {
 		for i := 0; i < fields.Len(); i++ {
 			f := fields.Get(i)
 			id := semantic.NewUnquoted(string(f.Name()))
+			// A repeated field is a SQL ARRAY; so is a NullableArrayWrapper
+			// field (a singular message wrapping `repeated values` — the
+			// stored shape of a NULLABLE array, whose absence is the NULL
+			// array). The Type string carries the ELEMENT kind; IsArray is
+			// the signal that the column itself is an array, needed to type
+			// the resolved Value as an ArrayType.
+			elemF := f
+			isArr := isRepeated(f)
+			nullable := isNullable(f)
+			if inner, wrapped, ok := values.EffectiveListField(f); ok && wrapped {
+				elemF = inner
+				isArr = true
+				nullable = true
+			}
 			col := semantic.Column{
 				Id:       id,
-				Type:     protoFieldToSQL(f),
-				Nullable: isNullable(f),
-				// A repeated field is a SQL ARRAY. The Type string carries
-				// the element kind (protoKindToSQL maps the scalar Kind);
-				// IsArray is the signal that the column itself is an array,
-				// needed to type the resolved Value as an ArrayType.
-				IsArray: isRepeated(f),
+				Type:     protoFieldToSQL(elemF),
+				Nullable: nullable,
+				IsArray:  isArr,
 			}
 			// The EXACT proto field name is a lookup key (a quoted-DDL
 			// column's field preserves case — "x" — and a quoted lookup

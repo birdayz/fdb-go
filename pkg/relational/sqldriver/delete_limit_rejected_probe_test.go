@@ -25,7 +25,7 @@ func TestFDB_DeleteLimitRejectedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dlr")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dlr")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE dlr CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE dlr CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dlr/s WITH TEMPLATE dlr")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dlr?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

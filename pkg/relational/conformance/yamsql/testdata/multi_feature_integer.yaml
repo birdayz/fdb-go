@@ -7,7 +7,7 @@
 # arithmetic, and DELETE with an INTEGER subquery.
 name: multi_feature_integer
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id))
   CREATE INDEX idx_cat ON products (category)
 setup:
   - INSERT INTO products VALUES (1, 1, 100, 'widget'), (2, 1, 200, 'gadget'), (3, 2, 150, 'gizmo'), (4, 2, 250, 'doohickey'), (5, NULL, 50, 'thingamajig')

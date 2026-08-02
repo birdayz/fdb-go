@@ -125,7 +125,7 @@ func recordedSlots(t *testing.T, pred predicates.QueryPredicate) map[string]int 
 func TestHavingAggregateReferenceCarriesTheSlotItsCompositionChose(t *testing.T) {
 	t.Parallel()
 
-	const ddl = "CREATE TABLE t (k BIGINT NOT NULL, v BIGINT, w BIGINT, PRIMARY KEY (k))"
+	const ddl = "CREATE TABLE t (k BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (k))"
 
 	cases := []struct {
 		name  string
@@ -247,7 +247,7 @@ func TestHavingAggregateReferenceCarriesTheSlotItsCompositionChose(t *testing.T)
 func TestHavingGroupKeyReferenceCarriesTheSlotItsCompositionChose(t *testing.T) {
 	t.Parallel()
 
-	const ddl = "CREATE TABLE t (k BIGINT NOT NULL, v BIGINT, w BIGINT, PRIMARY KEY (k))"
+	const ddl = "CREATE TABLE t (k BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (k))"
 
 	cases := []struct {
 		name  string

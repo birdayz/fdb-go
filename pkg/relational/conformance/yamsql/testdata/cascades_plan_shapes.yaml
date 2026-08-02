@@ -5,7 +5,7 @@
 # exploration → planning → execution.
 name: cascades_plan_shapes
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, status STRING, PRIMARY KEY (id))
   CREATE INDEX idx_customer ON orders (customer_id)
   CREATE INDEX idx_status ON orders (status)
 setup:

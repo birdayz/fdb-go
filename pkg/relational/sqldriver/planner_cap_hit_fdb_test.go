@@ -25,7 +25,7 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 	}
 	tmpl := "capacity_tmpl_" + tag
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmpl+
-		" CREATE TABLE ORDERS (id BIGINT NOT NULL, customer_id BIGINT, status STRING,"+
+		" CREATE TABLE ORDERS (id BIGINT, customer_id BIGINT, status STRING,"+
 		" amount BIGINT, tier STRING, PRIMARY KEY (id))"+
 		" CREATE INDEX idx_customer ON ORDERS(customer_id)"+
 		" CREATE INDEX idx_status ON ORDERS(status)"+

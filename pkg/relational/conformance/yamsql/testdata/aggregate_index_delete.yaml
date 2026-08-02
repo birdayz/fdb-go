@@ -5,7 +5,7 @@
 name: aggregate_index_delete
 schema_template: |
   CREATE TABLE items (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     price BIGINT,
     PRIMARY KEY (id)

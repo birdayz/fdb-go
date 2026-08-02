@@ -20,7 +20,7 @@ func TestFDB_OrderByMixedDirProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_omd")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_omd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE omd "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_omd/s WITH TEMPLATE omd")
 	dsn := fmt.Sprintf("fdbsql:///testdb_omd?cluster_file=%s&schema=s", clusterFilePath)

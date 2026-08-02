@@ -54,7 +54,7 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_selfcmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfcmp_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
 
@@ -114,8 +114,8 @@ func TestFDB_CompositeJoinDrivesProbeSide(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_compjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE compjoin_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, fk BIGINT, a BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE u (id BIGINT NOT NULL, c BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, fk BIGINT, a BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE u (id BIGINT, c BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_compjoin?cluster_file=%s&schema=s", clusterFilePath)

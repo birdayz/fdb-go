@@ -27,8 +27,8 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ssos")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssos")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssos "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssos/s WITH TEMPLATE ssos")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ssos?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -109,8 +109,8 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ssosct")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssosct")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssosct "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, ename STRING, dsal DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, dsal DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssosct/s WITH TEMPLATE ssosct")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ssosct?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -216,8 +216,8 @@ func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ssisp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssisp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssisp "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, ename STRING, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssisp/s WITH TEMPLATE ssisp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ssisp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

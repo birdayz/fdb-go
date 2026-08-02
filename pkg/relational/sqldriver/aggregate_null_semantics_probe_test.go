@@ -21,7 +21,7 @@ func TestFDB_AggregateNullSemanticsProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ans")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ans")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ans CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE ans CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ans/s WITH TEMPLATE ans")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ans?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

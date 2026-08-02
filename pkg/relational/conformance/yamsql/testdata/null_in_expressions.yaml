@@ -4,7 +4,7 @@
 # arithmetic, and comparison operators.
 name: null_in_expressions
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'x'), (2, null, 'y'), (3, 20, null), (4, null, null)
 tests:

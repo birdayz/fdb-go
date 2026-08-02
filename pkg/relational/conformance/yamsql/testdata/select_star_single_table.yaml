@@ -3,7 +3,7 @@
 # Exercises SELECT * with various WHERE, ORDER BY combinations.
 name: select_star_single_table
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)
 tests:

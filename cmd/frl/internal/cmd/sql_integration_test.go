@@ -39,7 +39,7 @@ CREATE DATABASE /frlsql;
 
 CREATE SCHEMA TEMPLATE frlsql_tpl
 CREATE TABLE items (
-  id   BIGINT NOT NULL,
+  id   BIGINT,
   name STRING,
   PRIMARY KEY (id)
 );
@@ -139,8 +139,10 @@ func TestIntegration_MetaCatalog_DatabasesSchemasTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("meta catalog schemas: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "main") || !strings.Contains(out, "frlsql_tpl") {
-		t.Errorf("schemas output missing main/frlsql_tpl:\n%s", out)
+	// The schema was created as unquoted `main`, which normalizes to MAIN
+	// (SQL identifier folding, matching CREATE SCHEMA and ?schema=).
+	if !strings.Contains(out, "MAIN") || !strings.Contains(out, "frlsql_tpl") {
+		t.Errorf("schemas output missing MAIN/frlsql_tpl:\n%s", out)
 	}
 
 	out, err = runCmd(t, "meta", "catalog", "templates", "-o", "json")
@@ -219,7 +221,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	}
 
 	// record get by PK returns one row.
-	out, err = runCmd(t, "record", "get", "1,1", "--database", "/frlsql", "--schema", "main")
+	out, err = runCmd(t, "record", "get", "0,1", "--database", "/frlsql", "--schema", "main")
 	if err != nil {
 		t.Fatalf("record get --database: %v\noutput: %s", err, out)
 	}
@@ -232,7 +234,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store info --database: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Database/schema:   /frlsql/main") ||
+	if !strings.Contains(out, "Database/schema:   /frlsql/MAIN") ||
 		!strings.Contains(out, "Format version:") {
 		t.Errorf("store info missing relational address or header fields:\n%s", out)
 	}
@@ -261,7 +263,7 @@ func TestIntegration_LayeredAddressing_UnknownSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown schema")
 	}
-	if !strings.Contains(err.Error(), "nope") {
+	if !strings.Contains(strings.ToUpper(err.Error()), "NOPE") {
 		t.Errorf("error should name the missing schema: %v", err)
 	}
 }
@@ -331,7 +333,7 @@ func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	r := &sqlRunner{
 		db: db, out: &out, errOut: &errOut, ctx: context.Background(),
 		clusterFile: fixture.clusterFilePath,
-		database:    "/frlsql", schema: "main",
+		database:    "/frlsql", schema: "MAIN",
 		st: plainSQLStyles(), format: sqlFormatTable, timing: true,
 	}
 	defer r.close()

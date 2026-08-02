@@ -1,7 +1,7 @@
 package sqldriver_test
 
 // The null-born hole in descriptorForColumn's agreement gate, pinned as the
-// exact shape that demonstrates it (see the agreement-gate comment in
+// exact shape that demonstrated it (see the agreement-gate comment in
 // cascades_generator.go).
 //
 // The gate keeps first-match when every candidate descriptor agrees on the SQL
@@ -14,10 +14,23 @@ package sqldriver_test
 // with the preserved leg's descriptor and the null-supplying column's upgrade
 // never fires.
 //
-// No choice function inside descriptorForColumn can repair this: both result
-// slots hand it the SAME candidate list, while the correct answer differs per
-// slot — (NoNulls, Nullable). Only positional metadata flowed from the plan's
-// own result type (the D3 deliverable) can answer per slot.
+// The hole is currently UNREACHABLE through the driver metadata surface, and
+// this test is the negative-result pin of that fact: the NoNulls derivation
+// keys on proto REQUIRED cardinality, scalar NOT NULL is unexpressible (Java
+// parity: NOT NULL is only allowed for ARRAY column type, rejected at CREATE),
+// and ARRAY NOT NULL columns are flat REPEATED, not REQUIRED — so no
+// DDL-expressible column ever derives ColumnNoNulls, the null-born upgrade
+// (NoNulls → Nullable) is vacuous, and first-match cannot produce an
+// observable wrong answer on this axis. Both slots below report nullable,
+// which is also Java's (#4274) answer for the null-supplying slot. If either
+// assertion goes red because a column reports NoNulls again, some shape
+// re-armed the agreement-gate hole — re-read the file-top comment before
+// touching the assertions; positional (D3) metadata is the real per-slot fix.
+//
+// No choice function inside descriptorForColumn can repair the hole itself:
+// both result slots hand it the SAME candidate list, while the correct answer
+// differs per slot — (NoNulls, Nullable). Only positional metadata flowed from
+// the plan's own result type (the D3 deliverable) can answer per slot.
 
 import (
 	"context"
@@ -29,9 +42,9 @@ import (
 )
 
 // setupCrossLegNullBornDB builds the minimal counterexample schema: two tables
-// that AGREE on their shared column VAL — both declare it BIGINT NOT NULL — so
-// the agreement gate keeps first-match, while a LEFT JOIN puts only one of them
-// on the null-supplying side.
+// that AGREE on their shared column VAL — both plain BIGINT, the only scalar
+// nullability DDL can express — so the agreement gate keeps first-match, while
+// a LEFT JOIN puts only one of them on the null-supplying side.
 func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
@@ -40,8 +53,8 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE xleg_nullborn_tmpl
-		CREATE TABLE leftt (lid BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (lid))
-		CREATE TABLE rightt (rid BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (rid))`)
+		CREATE TABLE leftt (lid BIGINT, val BIGINT, PRIMARY KEY (lid))
+		CREATE TABLE rightt (rid BIGINT, val BIGINT, PRIMARY KEY (rid))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA %s/main WITH TEMPLATE xleg_nullborn_tmpl", dbPath))
@@ -52,7 +65,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	// One matched left row and one unmatched, so the join genuinely NULL-pads
-	// RIGHTT's leg at runtime while the metadata under test claims it cannot.
+	// RIGHTT's leg at runtime.
 	_, err = db.ExecContext(ctx, `INSERT INTO leftt (lid, val) VALUES (1, 10), (2, 20)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = db.ExecContext(ctx, `INSERT INTO rightt (rid, val) VALUES (1, 100)`)
@@ -60,21 +73,10 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	return db
 }
 
-// TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the KNOWN-WRONG answer
-// the agreement gate's first-match produces on the null-born axis.
-//
-// Both legs declare VAL as BIGINT NOT NULL, so the candidates AGREE on
-// everything the gate compares and first-match stands. B.VAL sits on the
-// null-supplying leg of the LEFT JOIN, so the correct metadata — Java's, per
-// #4274 — is (A.VAL NoNulls, B.VAL Nullable). First-match answers LEFTT for
-// both lookups, RIGHTT's null-born upgrade never fires, and BOTH columns
-// report NoNulls — while the runtime rows, asserted below, genuinely carry a
-// NULL in B.VAL for the unmatched left row.
-//
-// This test asserts the CURRENT, WRONG behavior on purpose: it is the proof
-// that the agreement gate does not make first-match safe, kept as the
-// regression sentinel for that fact. When positional metadata (D3) lands, the
-// expected values here MUST flip to (NoNulls, Nullable).
+// TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the UNREACHABILITY of
+// the agreement gate's null-born first-match hole: with no DDL-expressible
+// column deriving NoNulls, both slots report nullable and the identity-keyed
+// upgrade has nothing to flip. See the file-top comment for what re-arms it.
 func TestFDB_CrossLegAgreementGate_NullBornNotCovered(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -93,30 +95,25 @@ func TestFDB_CrossLegAgreementGate_NullBornNotCovered(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(len(cts)).To(gomega.Equal(2))
 
-	// A.VAL: preserved leg, declared NOT NULL — NoNulls is correct and must
-	// stay NoNulls on both sides of the D3 flip.
+	// A.VAL: preserved leg. Its source column is proto OPTIONAL (the only
+	// scalar shape), so it reports nullable.
 	if nullable, ok := cts[0].Nullable(); ok {
-		g.Expect(nullable).To(gomega.BeFalse(),
-			"A.VAL is on the PRESERVED leg and declared NOT NULL; it must report "+
-				"not-nullable both before and after positional (D3) metadata")
+		g.Expect(nullable).To(gomega.BeTrue(),
+			"A.VAL reported NoNulls: some shape derives NoNulls again, which re-arms "+
+				"the agreement gate's null-born first-match hole — see the file-top comment")
 	}
-	// B.VAL: null-supplying leg. Java (#4274) reports it NULLABLE; Go currently
-	// reports NoNulls because descriptorForColumn's agreement gate first-matches
-	// LEFTT (both legs agree on BIGINT NOT NULL for VAL) and the null-born
-	// upgrade keyed on the returned descriptor's identity never fires.
+	// B.VAL: null-supplying leg. Nullable is Java's (#4274) answer; here it
+	// arrives from source nullability, not from the null-born upgrade (which
+	// is vacuous while nothing derives NoNulls).
 	if nullable, ok := cts[1].Nullable(); ok {
-		g.Expect(nullable).To(gomega.BeFalse(),
-			"B.VAL reported NULLABLE. If this went red because positional (D3) "+
-				"metadata now flows nullability per slot: the defect this test pins is "+
-				"FIXED — flip this assertion to expect (A.VAL NoNulls, B.VAL Nullable), "+
-				"Java's #4274 answer, and rewrite the comments that call the answer "+
-				"known-wrong (this file and descriptorForColumn's agreement-gate "+
-				"comment). If it went red for any other reason, nullability moved "+
-				"without the per-slot fix — investigate before touching the assertion")
+		g.Expect(nullable).To(gomega.BeTrue(),
+			"B.VAL reported NoNulls: either the null-born hole re-armed (a shape derives "+
+				"NoNulls and first-match answered the preserved leg) or nullability "+
+				"derivation changed — see the file-top comment before touching this")
 	}
 
-	// The runtime rows are what make the NoNulls claim on B.VAL wrong rather
-	// than merely un-Java: the unmatched left row (lid=2) NULL-pads B.VAL.
+	// The runtime rows: the unmatched left row (lid=2) NULL-pads B.VAL — the
+	// genuine SQL NULL the metadata must never contradict with NoNulls.
 	got := map[int64]sql.NullInt64{}
 	for rows.Next() {
 		var a int64
@@ -129,5 +126,5 @@ func TestFDB_CrossLegAgreementGate_NullBornNotCovered(t *testing.T) {
 	g.Expect(got[10].Valid).To(gomega.BeTrue(), "matched row: B.VAL = 100")
 	g.Expect(got[10].Int64).To(gomega.Equal(int64(100)))
 	g.Expect(got[20].Valid).To(gomega.BeFalse(),
-		"unmatched row: B.VAL is a genuine runtime NULL in a column whose metadata claims NoNulls")
+		"unmatched row: B.VAL is a genuine runtime NULL")
 }

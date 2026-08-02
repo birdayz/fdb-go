@@ -38,7 +38,7 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	// Two+ aggregate indexes sharing the group column g → the multi-aggregate
 	// intersection (MultiIntersection) whose comparison key is g.
 	db := setupPlanShapeDB(t, "ck",
-		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")

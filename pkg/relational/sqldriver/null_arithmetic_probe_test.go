@@ -21,7 +21,7 @@ func TestFDB_NullArithmeticProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_nap")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nap")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE nap CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE nap CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nap/s WITH TEMPLATE nap")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nap?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

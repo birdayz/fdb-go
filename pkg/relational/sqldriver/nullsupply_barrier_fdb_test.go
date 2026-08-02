@@ -49,7 +49,7 @@ func TestFDB_NullSupplyBarrier(t *testing.T) {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
-		m.Set(sarrFD, protoreflect.ValueOfList(m.NewField(sarrFD).List()))
+		setArrayField(m, sarrFD)
 		return m
 	}
 	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

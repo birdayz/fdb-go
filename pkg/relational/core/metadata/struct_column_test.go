@@ -15,15 +15,19 @@ func longField(name string, idx int) api.StructField {
 	return api.NewStructField(name, api.NewLongType(true), idx)
 }
 
-// TestBuilder_StructColumn_NestedDescriptor pins that a STRUCT column
-// materializes as a nested proto message type of its table, with the
-// declared fields (a scalar + an array), reachable through the built
-// descriptor by the qualified path the unnest classifier walks.
-func TestBuilder_StructColumn_NestedDescriptor(t *testing.T) {
+// TestBuilder_StructColumn_TopLevelDescriptor pins that a STRUCT column
+// materializes as a TOP-LEVEL proto message type in the template's file
+// (Java's FileDescriptorSerializer copies every struct descriptor to the
+// file level), with the declared fields reachable through the descriptor
+// reference. A NULLABLE array field inside the struct is the wrapper shape
+// (optional message with one repeated `values` field — NullableArrayWrapper);
+// a NON-nullable array is a flat repeated field.
+func TestBuilder_StructColumn_TopLevelDescriptor(t *testing.T) {
 	t.Parallel()
 	rec := api.NewStructType("RECT", []api.StructField{
 		longField("SUB", 0),
 		api.NewStructField("ARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
+		api.NewStructField("FLAT", api.NewArrayType(api.NewIntegerType(false), false), 2),
 	}, true)
 	tmpl, err := NewSchemaTemplateBuilder().SetName("st").
 		AddTable("T", []ColumnSpec{
@@ -40,15 +44,34 @@ func TestBuilder_StructColumn_NestedDescriptor(t *testing.T) {
 	}
 	nrec := fd.Message()
 	if nrec == nil || string(nrec.Name()) != "RECT" {
-		t.Fatalf("nested message = %v, want RECT", nrec)
+		t.Fatalf("struct message = %v, want RECT", nrec)
+	}
+	// Top-level placement: RECT's parent is the FILE, not the table message.
+	if _, isMsg := nrec.Parent().(protoreflect.MessageDescriptor); isMsg {
+		t.Fatalf("RECT is nested inside %v; Java emits struct types at file level", nrec.Parent().FullName())
 	}
 	sub := nrec.Fields().ByName("SUB")
-	arr := nrec.Fields().ByName("ARR")
 	if sub == nil || sub.Kind() != protoreflect.Int64Kind {
 		t.Fatalf("REC.SUB = %v, want int64", sub)
 	}
-	if arr == nil || !arr.IsList() || arr.Kind() != protoreflect.Int32Kind {
-		t.Fatalf("REC.ARR = %v, want repeated int32", arr)
+	// Nullable array → NullableArrayWrapper: optional message field whose
+	// message has exactly one repeated `values` field of the element type.
+	arr := nrec.Fields().ByName("ARR")
+	if arr == nil || arr.IsList() || arr.Kind() != protoreflect.MessageKind {
+		t.Fatalf("REC.ARR = %v, want an optional wrapper-message field", arr)
+	}
+	wrapper := arr.Message()
+	if wrapper.Fields().Len() != 1 {
+		t.Fatalf("wrapper %v has %d fields, want exactly 1", wrapper.Name(), wrapper.Fields().Len())
+	}
+	values := wrapper.Fields().ByName("values")
+	if values == nil || !values.IsList() || values.Kind() != protoreflect.Int32Kind {
+		t.Fatalf("wrapper values = %v, want repeated int32", values)
+	}
+	// Non-nullable array → flat repeated field, no wrapper.
+	flat := nrec.Fields().ByName("FLAT")
+	if flat == nil || !flat.IsList() || flat.Kind() != protoreflect.Int32Kind {
+		t.Fatalf("REC.FLAT = %v, want flat repeated int32", flat)
 	}
 }
 

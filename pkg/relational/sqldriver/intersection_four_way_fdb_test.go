@@ -23,7 +23,7 @@ func TestFDB_FourWayIntersection(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ix4way")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ix4way "+
-			"CREATE TABLE ix4 (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE ix4 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON ix4 (a) "+
 			"CREATE INDEX idx_b ON ix4 (b) "+
 			"CREATE INDEX idx_c ON ix4 (c) "+

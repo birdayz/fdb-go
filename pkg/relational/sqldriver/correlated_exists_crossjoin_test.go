@@ -24,8 +24,8 @@ func TestFDB_CorrelatedExistsCrossJoin(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_correxcj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE correxcj_tmpl "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (pid BIGINT NOT NULL, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_correxcj/s WITH TEMPLATE correxcj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -81,8 +81,8 @@ func TestFDB_NestedCorrelatedExists(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_nestexists")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nestexists_tmpl "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (pid BIGINT NOT NULL, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_nestexists/s WITH TEMPLATE nestexists_tmpl")).Error().NotTo(gomega.HaveOccurred())
 

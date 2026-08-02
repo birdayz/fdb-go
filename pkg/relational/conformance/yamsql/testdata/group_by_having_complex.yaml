@@ -3,7 +3,7 @@
 # Exercises GROUP BY with HAVING using various predicate types.
 name: group_by_having_complex
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, rep STRING, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, rep STRING, region STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES (1, 'Alice', 'East', 100), (2, 'Alice', 'East', 200), (3, 'Bob', 'West', 50), (4, 'Bob', 'West', 150), (5, 'Charlie', 'East', 300), (6, 'Dave', 'West', 25)
 tests:

@@ -39,7 +39,7 @@ func TestFDB_InJoin_SortedClaimMatchesExecutionOrder(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_injoin_sorted")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE injoin_sorted_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_injoin_sorted/s WITH TEMPLATE injoin_sorted_tmpl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_injoin_sorted?cluster_file=%s&schema=s", clusterFilePath)

@@ -6,7 +6,7 @@
 # count bounds.
 name: bitwise
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 15, 3), (2, 16, 32), (3, -1, 1), (4, 5, null)
 tests:

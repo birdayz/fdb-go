@@ -3,8 +3,8 @@
 # Exercises DELETE ... WHERE with EXISTS and NOT EXISTS subqueries.
 name: delete_with_subquery
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
-  CREATE TABLE returns (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE TABLE returns (id BIGINT, order_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 10, 100), (2, 20, 200), (3, 10, 50), (4, 30, 300)
   - INSERT INTO returns VALUES (100, 1), (101, 3)

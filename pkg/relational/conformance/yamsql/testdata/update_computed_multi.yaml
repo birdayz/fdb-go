@@ -6,7 +6,7 @@
 # all RHS expressions evaluate against the pre-UPDATE row.
 name: update_computed_multi
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, y BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 100, 80)
 tests:

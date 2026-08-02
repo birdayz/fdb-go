@@ -23,7 +23,7 @@ func TestFDB_ThreeValuedLogicNotAndNeq(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_3vlnn")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tvlnn "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3vlnn/s WITH TEMPLATE tvlnn")
 	dsn := fmt.Sprintf("fdbsql:///testdb_3vlnn?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -4,8 +4,8 @@
 # comparison against scalar subquery, IS NULL check on empty subquery.
 name: subquery_scalar_in_where
 schema_template: |
-  CREATE TABLE config (id BIGINT NOT NULL, threshold BIGINT, PRIMARY KEY (id))
-  CREATE TABLE readings (id BIGINT NOT NULL, sensor STRING, value BIGINT, PRIMARY KEY (id))
+  CREATE TABLE config (id BIGINT, threshold BIGINT, PRIMARY KEY (id))
+  CREATE TABLE readings (id BIGINT, sensor STRING, value BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO config VALUES (1, 50)
   - INSERT INTO readings VALUES (1, 'temp', 30), (2, 'temp', 60), (3, 'humidity', 45), (4, 'humidity', 80)

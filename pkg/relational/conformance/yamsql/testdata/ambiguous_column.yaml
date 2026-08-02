@@ -9,8 +9,8 @@
 # sources, duplicates allowed) remain unaffected.
 name: ambiguous_column
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')
   - INSERT INTO b VALUES (1, 'x'), (2, 'y')

@@ -5,7 +5,7 @@
 # Verify Go matches Java for the no-index, ungrouped path.
 name: aggregate_empty_table
 schema_template: |
-  CREATE TABLE empty_t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE empty_t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 setup: []
 tests:
   # COUNT(*) on empty table returns 0 (never NULL).

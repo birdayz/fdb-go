@@ -376,19 +376,54 @@ func expandFanOutNesting(
 	parent := nesting.Parent
 	switch parent.GetFanType() {
 	case gen.Field_SCALAR:
+		// NullableArrayTypeUtils.matchArrayWrapper: field(X).nest("values",
+		// FT) — or nest(nesting with "values" as its parent, for a struct
+		// element — is the STORED spelling of a wrapped nullable array. The
+		// wrapper hop is storage-only (the query side's logical field is the
+		// array column X itself), so expansion collapses it back onto the
+		// parent and recurses — KeyExpressionExpansionVisitor.java:266-297.
+		// The "values" match is exact-case (matchWrappedField's equals).
+		var wrapperFanType gen.Field_FanType
+		wrapperMatched := false
 		childField := nesting.Child.GetField()
-		if childField != nil &&
-			strings.EqualFold(childField.GetFieldName(), "values") &&
-			(childField.GetFanType() == gen.Field_FAN_OUT ||
-				childField.GetFanType() == gen.Field_CONCATENATE) {
-			// This is the key-expression spelling Java uses for its nullable
-			// array wrapper: field(array).nest(field("values", FAN_OUT)).
-			// Matching it faithfully requires confirming the synthetic
-			// descriptor wrapper and comparing the query's logical array field
-			// with the parent's value. The current candidate bridge does not
-			// carry that descriptor shape, so decline instead of matching the
-			// physical `.values` path as an ordinary nested array.
-			return nil, false
+		childNesting := nesting.Child.GetNesting()
+		switch {
+		case childField != nil && childField.GetFieldName() == values.WrappedArrayValuesFieldName:
+			wrapperFanType, wrapperMatched = childField.GetFanType(), true
+		case childNesting != nil && childNesting.GetParent().GetFieldName() == values.WrappedArrayValuesFieldName:
+			wrapperFanType, wrapperMatched = childNesting.GetParent().GetFanType(), true
+		}
+		if wrapperMatched {
+			collapsedParent := &gen.Field{
+				FieldName:          parent.FieldName,
+				FanType:            wrapperFanType.Enum(),
+				NullInterpretation: parent.NullInterpretation,
+			}
+			switch wrapperFanType {
+			case gen.Field_FAN_OUT:
+				if childNesting != nil {
+					// field(X).nest(values.nest(child)) -> field(X, FAN_OUT).nest(child)
+					return expandFanOutNesting(&gen.Nesting{
+						Parent: collapsedParent,
+						Child:  childNesting.GetChild(),
+					}, state)
+				}
+				return expandFanOutField(collapsedParent, state)
+			case gen.Field_CONCATENATE:
+				// "values" is always a leaf for a Concatenate wrapper
+				// (concatenation produces a list, which has no sub-fields);
+				// a nested child here is a malformed candidate — decline
+				// (Java: Verify.verify).
+				if childNesting != nil {
+					return nil, false
+				}
+				return expandFanOutField(collapsedParent, state)
+			default:
+				// SCALAR "values" under a wrapper spelling: Java throws
+				// "unexpected fan type for array wrapper values field";
+				// declining rejects the candidate fail-closed.
+				return nil, false
+			}
 		}
 		childState := state
 		childState.prefix = appendPath(
@@ -687,6 +722,33 @@ func keyExpressionContainsNonFanOutNestedLeafUnder(
 	}
 	if expression.Nesting != nil {
 		parent := expression.Nesting.GetParent()
+		// The NullableArrayWrapper hop collapses before classification
+		// (NullableArrayTypeUtils.matchArrayWrapper): field(X).nest("values",
+		// FT) IS the array column X at the CURRENT depth, not a nested leaf.
+		if parent != nil && parent.GetFanType() == gen.Field_SCALAR {
+			child := expression.Nesting.GetChild()
+			if cf := child.GetField(); cf != nil &&
+				cf.GetFieldName() == values.WrappedArrayValuesFieldName &&
+				(cf.GetFanType() == gen.Field_FAN_OUT || cf.GetFanType() == gen.Field_CONCATENATE) {
+				collapsed := &gen.KeyExpression{Field: &gen.Field{
+					FieldName: parent.FieldName,
+					FanType:   cf.GetFanType().Enum(),
+				}}
+				return keyExpressionContainsNonFanOutNestedLeafUnder(collapsed, inheritedFanOut, underNesting)
+			}
+			if cn := child.GetNesting(); cn != nil && cn.GetParent() != nil &&
+				cn.GetParent().GetFieldName() == values.WrappedArrayValuesFieldName &&
+				cn.GetParent().GetFanType() == gen.Field_FAN_OUT {
+				collapsed := &gen.KeyExpression{Nesting: &gen.Nesting{
+					Parent: &gen.Field{
+						FieldName: parent.FieldName,
+						FanType:   gen.Field_FAN_OUT.Enum(),
+					},
+					Child: cn.GetChild(),
+				}}
+				return keyExpressionContainsNonFanOutNestedLeafUnder(collapsed, inheritedFanOut, underNesting)
+			}
+		}
 		parentFansOut := parent != nil &&
 			parent.GetFanType() == gen.Field_FAN_OUT
 		return keyExpressionContainsNonFanOutNestedLeafUnder(
@@ -871,17 +933,39 @@ func keyExpressionFlatColumnDescriptors(
 		}
 		arguments := function.GetArguments()
 		if strings.EqualFold(function.GetName(), FunctionKindCardinality) {
-			if keyExpressionShapeCount(arguments) != 1 ||
-				arguments.Field == nil ||
-				arguments.Field.FieldName == nil ||
-				arguments.Field.FanType == nil ||
-				arguments.Field.GetFanType() != gen.Field_CONCATENATE {
+			if keyExpressionShapeCount(arguments) != 1 {
 				return nil, false
 			}
-			return []flatKeyColumnDescriptor{{
-				name:     arguments.Field.GetFieldName(),
-				function: FunctionKindCardinality,
-			}}, true
+			// Flat spelling — field(col, CONCATENATE) — for a NOT NULL
+			// (unwrapped) array column.
+			if arguments.Field != nil {
+				if arguments.Field.FieldName == nil ||
+					arguments.Field.FanType == nil ||
+					arguments.Field.GetFanType() != gen.Field_CONCATENATE {
+					return nil, false
+				}
+				return []flatKeyColumnDescriptor{{
+					name:     arguments.Field.GetFieldName(),
+					function: FunctionKindCardinality,
+				}}, true
+			}
+			// Wrapped spelling — field(col, SCALAR).nest(field("values",
+			// CONCATENATE)) — the NullableArrayWrapper hop over a nullable
+			// array column; the logical key column is the PARENT
+			// (NullableArrayTypeUtils.matchArrayWrapper collapse).
+			if n := arguments.GetNesting(); n != nil &&
+				n.GetParent().GetFieldName() != "" &&
+				n.GetParent().GetFanType() == gen.Field_SCALAR {
+				if cf := n.GetChild().GetField(); cf != nil &&
+					cf.GetFieldName() == values.WrappedArrayValuesFieldName &&
+					cf.GetFanType() == gen.Field_CONCATENATE {
+					return []flatKeyColumnDescriptor{{
+						name:     n.GetParent().GetFieldName(),
+						function: FunctionKindCardinality,
+					}}, true
+				}
+			}
+			return nil, false
 		}
 		if _, isOrder := OrderFunctionDirection(function.GetName()); isOrder {
 			// An order-function wrapper over one direct SCALAR field — the

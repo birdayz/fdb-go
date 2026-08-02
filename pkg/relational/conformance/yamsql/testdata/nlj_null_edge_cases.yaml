@@ -6,9 +6,9 @@
 # multi-way joins, and aggregation over NULL-producing joins.
 name: nlj_null_edge_cases
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))
-  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, region STRING, PRIMARY KEY (id))
-  CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, carrier STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT, name STRING, region STRING, PRIMARY KEY (id))
+  CREATE TABLE shipments (id BIGINT, order_id BIGINT, carrier STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO customers VALUES (1, 'Acme Corp', 'west'), (2, 'Globex', 'east'), (3, 'Initech', null)
   - INSERT INTO orders VALUES (10, 1, 'Widget', 500), (20, 1, 'Gadget', null), (30, 2, 'Sprocket', 300), (40, null, 'Gizmo', 100), (50, null, 'Doohickey', 200)

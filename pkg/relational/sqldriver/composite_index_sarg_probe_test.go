@@ -22,7 +22,7 @@ func TestFDB_CompositeIndexSargProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_cis")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cis")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE cis CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE cis CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cis/s WITH TEMPLATE cis")
 	dsn := fmt.Sprintf("fdbsql:///testdb_cis?cluster_file=%s&schema=s", clusterFilePath)

@@ -1,12 +1,12 @@
 name: ambiguous_group_key_reread
 schema_template: |
   CREATE TABLE po (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE pi (
-    id BIGINT NOT NULL,
+    id BIGINT,
     po_id BIGINT,
     w BIGINT,
     PRIMARY KEY (id)

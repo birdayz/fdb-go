@@ -23,7 +23,7 @@ func TestFDB_HavingSubqueryProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_havsubp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_havsubp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE havsubp CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE havsubp CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_havsubp/s WITH TEMPLATE havsubp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_havsubp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -35,7 +35,7 @@ func TestFDB_UUIDMultiAggregateIntersection(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidmiagg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidmiagg "+
-			"CREATE TABLE t (id BIGINT NOT NULL, g UUID, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, g UUID, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(price) FROM t GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
@@ -73,8 +73,8 @@ func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidwrite")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidwrite "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidwrite?cluster_file=%s&schema=s", clusterFilePath))
 	if err != nil {
@@ -122,7 +122,7 @@ func TestFDB_UUIDScalarFunctionRender(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uuidscalar")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidscalar")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE uuidscalar CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE uuidscalar CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidscalar?cluster_file=%s&schema=s", clusterFilePath))
 	if err != nil {
@@ -153,7 +153,7 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uuidpage")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidpage")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE uuidpage CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE uuidpage CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpage/s WITH TEMPLATE uuidpage")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_uuidpage?cluster_file=%s&schema=s", clusterFilePath))
 	if err != nil {

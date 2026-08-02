@@ -24,7 +24,7 @@ func TestFDB_LargeValueSplitProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_lvs")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_lvs")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE lvs CREATE TABLE t (id BIGINT NOT NULL, data STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE lvs CREATE TABLE t (id BIGINT, data STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_lvs/s WITH TEMPLATE lvs")
 	dsn := fmt.Sprintf("fdbsql:///testdb_lvs?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

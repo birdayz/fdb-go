@@ -3,7 +3,7 @@
 # parity work — parse-failure arms and mixed string/time comparisons)
 name: datetime_edge_pins
 schema_template: |
-  CREATE TABLE ev (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
+  CREATE TABLE ev (id BIGINT, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
 setup:
   - INSERT INTO ev VALUES (1, '2024-03-15', '2024-03-15 10:30:00'), (2, NULL, NULL)
 tests:

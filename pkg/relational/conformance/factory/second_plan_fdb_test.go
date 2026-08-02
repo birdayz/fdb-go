@@ -94,7 +94,7 @@ func TestFDB_SecondPlanKeepsCorrelatedIndexProbe(t *testing.T) {
 	// a different path entirely and does not move. With only `b` indexed the
 	// outer leg is a full scan either way, the two plans come out identical,
 	// and the case proves nothing.
-	const ddl = "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
+	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX idx_a ON t (a) CREATE INDEX idx_b ON t (b)"
 	const query = "SELECT id, a FROM t WHERE (a > 2) AND NOT EXISTS " +
 		"(SELECT 1 FROM t AS r WHERE r.b = t.b)"
@@ -171,7 +171,7 @@ func TestFDB_SecondPlanIsBlindToCorrelatedExists(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	const ddl = "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
+	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX idx_a ON t (a) CREATE INDEX idx_b ON t (b)"
 	db := openFactorySchema(t, ctx, "spblind", ddl)
 
@@ -217,7 +217,7 @@ func TestFDB_SecondPlanOracleComparesRowsUnderBothPlans(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	const ddl = "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
+	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX idx_a ON t (a)"
 	db := openFactorySchema(t, ctx, "spord", ddl)
 

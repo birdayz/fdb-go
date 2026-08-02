@@ -33,10 +33,10 @@ func TestFDB_NWayCommaJoinProjectedExists(t *testing.T) {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE s4nwcj_tmpl"+
-		" CREATE TABLE na (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE nb (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE nc (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE nd (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE na (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nb (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nc (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nd (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE s4nwcj_tmpl"); err != nil {

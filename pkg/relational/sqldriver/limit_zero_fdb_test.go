@@ -26,7 +26,7 @@ func TestFDB_LimitZero(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_limitzero")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE limitzero "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_limitzero/s WITH TEMPLATE limitzero")
 	dsn := fmt.Sprintf("fdbsql:///testdb_limitzero?cluster_file=%s&schema=s", clusterFilePath)

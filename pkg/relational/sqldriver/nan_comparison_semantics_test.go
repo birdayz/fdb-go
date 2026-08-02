@@ -40,7 +40,7 @@ func TestFDB_NaNComparisonSemantics(t *testing.T) {
 	setup := openTestDB(t, "/testdb_nansem")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nansem")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nansem "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, z DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v DOUBLE, z DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nansem/s WITH TEMPLATE nansem")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nansem?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

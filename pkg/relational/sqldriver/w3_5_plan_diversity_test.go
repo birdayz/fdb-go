@@ -47,7 +47,7 @@ func pdDB(t *testing.T, withIndexes bool, seed int64) *sql.DB {
 	}
 	tmpl := fmt.Sprintf("PD_TMPL_%s_%d_%s", tag, seed, t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))`, tmpl)
 	if withIndexes {
 		ddl += "\n\t\tCREATE INDEX idx_a ON t (a)\n\t\tCREATE INDEX idx_b ON t (b)"
 	}

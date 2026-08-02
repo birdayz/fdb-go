@@ -91,12 +91,11 @@ func TestFDB_BuriedElementPredicate(t *testing.T) {
 		d := md.GetRecordType("C").Descriptor
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("CID"), protoreflect.ValueOfInt64(cid))
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
-		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), pvals...)
 		return m
 	}
 

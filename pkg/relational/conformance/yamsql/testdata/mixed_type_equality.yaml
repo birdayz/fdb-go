@@ -9,7 +9,7 @@
 # (DATATYPE_MISMATCH) via ExceptionUtil.translateErrorCode.
 name: mixed_type_equality
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 5, '5'), (2, 10, 'ten'), (3, 5, 'five')
 tests:

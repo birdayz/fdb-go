@@ -4,7 +4,7 @@
 # Go handles it correctly. Pin Go's correct behavior.
 name: upstream_bug_distinct_compound
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'x'), (2, 10, 'x'), (3, 10, 'y'), (4, 20, 'x'), (5, 20, 'x')
 tests:

@@ -5,8 +5,8 @@
 # The correlated scan should use a prefix match (range scan on first PK col).
 name: flatmap_multicolumn_pk
 schema_template: |
-  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE employees (dept_id BIGINT NOT NULL, emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (dept_id, emp_id))
+  CREATE TABLE departments (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (dept_id BIGINT, emp_id BIGINT, name STRING, PRIMARY KEY (dept_id, emp_id))
 setup:
   - INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')
   - INSERT INTO employees VALUES (1, 100, 'Alice'), (1, 101, 'Bob'), (2, 200, 'Charlie')

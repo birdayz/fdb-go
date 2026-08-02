@@ -36,11 +36,11 @@ import (
 func TestOneFinalPlanPerReference(t *testing.T) {
 	t.Parallel()
 
-	const schema = `CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id))
+	const schema = `CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id))
 CREATE INDEX idx_a ON t (a)
 CREATE INDEX idx_b ON t (b)
 CREATE INDEX idx_ab ON t (a, b)
-CREATE TABLE u (id BIGINT NOT NULL, t_id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE u (id BIGINT, t_id BIGINT, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_u_t ON u (t_id)`
 
 	// Spread across the plan families the wrappers cover, since the property

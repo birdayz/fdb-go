@@ -8,7 +8,7 @@
 # semantics match SQL standard on both paths.
 name: aggregate_expr
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)
 tests:

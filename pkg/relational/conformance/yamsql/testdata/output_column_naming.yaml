@@ -11,7 +11,7 @@
 name: output_column_naming
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     b BIGINT,
     PRIMARY KEY (id)

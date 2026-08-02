@@ -2,7 +2,7 @@
   "name": "olp-distinct-groupby-alias",
   "seed": 2,
   "tables": [
-    "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))"
+    "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))"
   ],
   "data": [
     "INSERT INTO t (id,a,b) VALUES (1,5,1)",

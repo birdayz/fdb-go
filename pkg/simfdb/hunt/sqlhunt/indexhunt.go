@@ -191,7 +191,7 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 		"CREATE DATABASE " + siDBPath,
 		// table + secondary index live in the same template string (the fdbsql template grammar
 		// chains CREATE TABLE … CREATE INDEX … ON t (k)).
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, k BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_k ON t (k)",
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_k ON t (k)",
 		"CREATE SCHEMA " + siDBPath + "/s WITH TEMPLATE tmpl",
 	} {
 		if _, err := setup.ExecContext(context.Background(), stmt); err != nil {

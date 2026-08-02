@@ -65,7 +65,7 @@ func TestFDB_DerivedTableOuterFilterProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	db, ctx := dgcOpen(t, "/testdb_dgcderiv", "dgcderiv",
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,10),(2,20),(3,30),(4,40),(5,50)")
 
 	t.Run("derived_filter_then_outer", func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestFDB_GroupByHavingProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	db, ctx := dgcOpen(t, "/testdb_dgcgrp", "dgcgrp",
-		"CREATE TABLE t (id BIGINT NOT NULL, grp BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))")
 	// grp 1: v 10,20 (sum 30, cnt 2); grp 2: v 30 (sum 30, cnt 1); grp 3: v 40,50,60 (sum 150, cnt 3)
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,grp,v) VALUES (1,1,10),(2,1,20),(3,2,30),(4,3,40),(5,3,50),(6,3,60)")
 
@@ -130,7 +130,7 @@ func TestFDB_CaseCoalesceNullifProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	db, ctx := dgcOpen(t, "/testdb_dgccase", "dgccase",
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,v) VALUES (1,10),(2,20),(3,30)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (4)") // v NULL
 

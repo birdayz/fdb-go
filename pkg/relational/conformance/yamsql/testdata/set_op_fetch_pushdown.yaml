@@ -10,7 +10,7 @@
 name: set_op_fetch_pushdown
 schema_template: |
   CREATE TABLE items (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     name STRING,
     price BIGINT,

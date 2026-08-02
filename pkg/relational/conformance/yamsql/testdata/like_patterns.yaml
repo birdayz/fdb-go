@@ -3,7 +3,7 @@
 # Exercises LIKE with various patterns: wildcards, prefix, suffix, contains.
 name: like_patterns
 schema_template: |
-  CREATE TABLE docs (id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+  CREATE TABLE docs (id BIGINT, title STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO docs VALUES (1, 'Hello World'), (2, 'Help Me'), (3, 'World Peace'), (4, 'Testing'), (5, 'Hello')
 tests:

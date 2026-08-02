@@ -30,7 +30,7 @@
 # red on the pre-fix rung.
 name: in_plan_winner_stability
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_val ON t (val)
 setup:
   - INSERT INTO t VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400), (5, 50, 500), (6, 20, 600)

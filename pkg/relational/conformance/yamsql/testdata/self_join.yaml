@@ -6,7 +6,7 @@
 # alias.col to keep the two copies distinct in the combined map.
 name: self_join
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, parent BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
       (1, 0, 10),

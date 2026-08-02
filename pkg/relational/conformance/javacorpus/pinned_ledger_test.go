@@ -62,27 +62,46 @@ package javacorpus_test
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=54 fail=0 skip=184 queries=1256 file_skips{conformance:go-accepts-what-java-rejects=3," +
+const pinnedLedger = "pass=55 fail=0 skip=183 queries=1249 file_skips{conformance:go-accepts-what-java-rejects=3," +
+	"engine-gap:array-comparison=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
-	"engine-gap:dml-returning-result-set=1,engine-gap:error-class=1," +
-	"engine-gap:inline-values-table=1,engine-gap:nested-recursive-with=2," +
-	"engine-gap:nullable-array-wrapper=1,engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
-	"engine-gap:serialization-options=1,fragment=2,no-checks=1,plan-assertion=8," +
-	"polarity:fixed-version-meta=9,polarity:negative-execution=24,polarity:negative-parse=25," +
-	"unsupported-DDL:function=7,unsupported-DDL:other=10,unsupported-DDL:struct=41," +
-	"unsupported:continuation=3,unsupported:multi-cluster=2,unsupported:result-metadata-nested=1," +
-	"unsupported:schema-command=8,unsupported:temporary-function=17," +
-	"vacuous:all-assertions-skipped=2} inner_skips{conformance:go-accepts-what-java-rejects=3," +
+	"engine-gap:correlated-exists-setop=1," +
+	"engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:error-class=2," +
+	"engine-gap:inline-values-table=1,engine-gap:join-using-star=1," +
+	"engine-gap:nested-recursive-with=2,engine-gap:planner-declines=4," +
+	"engine-gap:result-metadata=3," +
+	"engine-gap:returning-dry-run=1," +
+	"engine-gap:serialization-options=1," +
+	"engine-gap:struct-dml=23," +
+	"engine-gap:typed-float-literal=1," +
+	"engine-gap:typed-integer-literal=2,fragment=2,no-checks=1,plan-assertion=8," +
+	"polarity:fixed-version-meta=9,polarity:negative-execution=24," +
+	"polarity:negative-parse=25,unsupported-DDL:function=11," +
+	"unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
+	"unsupported:continuation=3," +
+	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=1," +
+	"unsupported:schema-command=8," +
+	"unsupported:temporary-function=17," +
+	"vacuous:all-assertions-skipped=4} inner_skips{conformance:go-accepts-what-java-rejects=3," +
+	"engine-gap:array-comparison=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
-	"engine-gap:dml-returning-result-set=1,engine-gap:error-class=1," +
-	"engine-gap:inline-values-table=1,engine-gap:nested-recursive-with=2," +
-	"engine-gap:nullable-array-wrapper=1,engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
-	"engine-gap:serialization-options=1,no-checks=8,plan-assertion=595," +
-	"polarity:negative-execution=24,unsupported-DDL:function=7,unsupported-DDL:other=10," +
-	"unsupported-DDL:struct=41,unsupported:check-cache=119,unsupported:continuation=34," +
-	"unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:prepared=173," +
+	"engine-gap:correlated-exists-setop=1," +
+	"engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:error-class=2," +
+	"engine-gap:inline-values-table=1,engine-gap:join-using-star=1," +
+	"engine-gap:nested-recursive-with=2,engine-gap:planner-declines=4," +
+	"engine-gap:result-metadata=3," +
+	"engine-gap:returning-dry-run=1," +
+	"engine-gap:serialization-options=1," +
+	"engine-gap:struct-dml=23," +
+	"engine-gap:typed-float-literal=1," +
+	"engine-gap:typed-integer-literal=2,no-checks=8,plan-assertion=584," +
+	"polarity:negative-execution=24,unsupported-DDL:function=11," +
+	"unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
+	"unsupported:check-cache=123," +
+	"unsupported:continuation=34,unsupported:debugger=3," +
+	"unsupported:multi-cluster=2,unsupported:prepared=186," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=10," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
@@ -98,4 +117,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "158351c3df6cff22820233cbab07af9713d3a73d21ae24e413604e2480393502"
+const pinnedAssignmentDigest = "4061c16819e2bb4c750a5b7ee772dc08b10eff1753b0f1a9df07693644448221"

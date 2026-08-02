@@ -22,7 +22,7 @@ func TestFDB_LargeScanContinuationProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_lsc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_lsc")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE lsc CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE lsc CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_lsc/s WITH TEMPLATE lsc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_lsc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

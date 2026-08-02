@@ -4,9 +4,9 @@
 # predicate push-down and correct join ordering.
 name: join_three_way_predicate
 schema_template: |
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
-  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, name STRING, budget BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT, emp_id BIGINT, name STRING, budget BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')
   - INSERT INTO emp VALUES (10, 1, 'Alice', 120), (20, 1, 'Bob', 100), (30, 2, 'Charlie', 80), (40, 3, 'Dave', 90)

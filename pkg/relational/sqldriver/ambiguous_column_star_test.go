@@ -24,8 +24,8 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ambcol_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ambcol_star_tmpl "+
-			"CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ambcol_star/s WITH TEMPLATE ambcol_star_tmpl")).Error().NotTo(gomega.HaveOccurred())
 

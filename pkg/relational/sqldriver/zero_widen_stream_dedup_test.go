@@ -37,7 +37,7 @@ func TestFDB_ZeroWidenStreamingDedup(t *testing.T) {
 	setup := openTestDB(t, "/testdb_zwsd")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_zwsd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwsd "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_zwsd/s WITH TEMPLATE zwsd")
 	dsn := fmt.Sprintf("fdbsql:///testdb_zwsd?cluster_file=%s&schema=s", clusterFilePath)

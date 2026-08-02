@@ -46,7 +46,7 @@ func TestFDB_LikeTrailingEscape_EnginePath(t *testing.T) {
 	setup := openTestDB(t, "/testdb_like_esc_engine")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_like_esc_engine")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_esc_engine_tmpl "+
-		"CREATE TABLE B (B1 BIGINT NOT NULL, B2 STRING, PRIMARY KEY (B1))")
+		"CREATE TABLE B (B1 BIGINT, B2 STRING, PRIMARY KEY (B1))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_esc_engine/s WITH TEMPLATE like_esc_engine_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_like_esc_engine?cluster_file=%s&schema=s", clusterFilePath)
@@ -94,8 +94,8 @@ func TestFDB_LikeTrailingEscape_MapPath(t *testing.T) {
 	setup := openTestDB(t, "/testdb_like_esc_map")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_like_esc_map")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_esc_map_tmpl "+
-		"CREATE TABLE Z (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-		"CREATE TABLE ZQ (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE TABLE Z (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE ZQ (id BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_like_esc_map?cluster_file=%s", clusterFilePath)

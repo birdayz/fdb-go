@@ -23,8 +23,8 @@ func TestFDB_CrossJoinProjectionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_crossproj")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE crossproj "+
-			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_crossproj/s WITH TEMPLATE crossproj")
 	dsn := fmt.Sprintf("fdbsql:///testdb_crossproj?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

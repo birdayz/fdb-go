@@ -23,7 +23,7 @@ reproducible and drift-guarded, never hand-typed.
 > **Denominator (pinned fact):** SQL:2023 Core as enumerated by PostgreSQL 18 = **176** mandatory
 > feature/subfeature rows (it was 177 in PG13–15; `F812` "Basic flagging" lost Core status in PG16).
 
-This ledger tracks **176** Core rows. **39** are N/A for an embedded record-layer SQL surface (cursors, table privileges, host-language binding, modules, SQL-invoked routines). Of the **137 applicable** Core rows: **Go supports 32** (27 shared-parity + 5 Go-only extension); **4 shared gaps** (roadmap); **0 port-fidelity divergences** (Java has it, Go rejects it → RFC-164); **101 not yet tagged** (Phase 1 — these are unknown, not gaps).
+This ledger tracks **176** Core rows. **39** are N/A for an embedded record-layer SQL surface (cursors, table privileges, host-language binding, modules, SQL-invoked routines). Of the **137 applicable** Core rows: **Go supports 32** (28 shared-parity + 4 Go-only extension); **4 shared gaps** (roadmap); **0 port-fidelity divergences** (Java has it, Go rejects it → RFC-164); **101 not yet tagged** (Phase 1 — these are unknown, not gaps).
 
 | Identifier | Core? | Feature | Java? | Go? | Routing | Evidence |
 |---|:---:|---|:---:|:---:|---|---|
@@ -177,7 +177,7 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | F201 | ✓ | CAST function | yes | yes | shared parity | cast |
 | F221 | ✓ | Explicit defaults | no | untested | untested (Phase 1) | — |
 | F261 | ✓ | CASE expression | partial | partial | shared parity | case_when, coalesce_nullif, coalesce_nullif (gap) |
-| F261-01 | ✓ | Simple CASE | no | yes | Go-only ext | case_when |
+| F261-01 | ✓ | Simple CASE | partial | yes | shared parity | case_when |
 | F261-02 | ✓ | Searched CASE | yes | yes | shared parity | case_when |
 | F261-03 | ✓ | NULLIF | no | no | shared gap → backlog | coalesce_nullif (gap) |
 | F261-04 | ✓ | COALESCE | yes | yes | shared parity | coalesce_nullif |

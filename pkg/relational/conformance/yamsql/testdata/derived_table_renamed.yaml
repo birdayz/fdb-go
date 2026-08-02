@@ -10,8 +10,8 @@
 #   - Comma-join works between two derived tables
 name: derived_table_renamed
 schema_template: |
-  CREATE TABLE a (ida BIGINT NOT NULL, PRIMARY KEY (ida))
-  CREATE TABLE b (idb BIGINT NOT NULL, PRIMARY KEY (idb))
+  CREATE TABLE a (ida BIGINT, PRIMARY KEY (ida))
+  CREATE TABLE b (idb BIGINT, PRIMARY KEY (idb))
 setup:
   - INSERT INTO a VALUES (1)
   - INSERT INTO b VALUES (4)

@@ -24,7 +24,7 @@ func TestFDB_RowValueConstructorProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_rvc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvc")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE rvc CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE rvc CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvc/s WITH TEMPLATE rvc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_rvc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

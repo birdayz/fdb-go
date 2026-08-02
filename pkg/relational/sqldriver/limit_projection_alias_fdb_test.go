@@ -28,7 +28,7 @@ func TestFDB_LimitThroughProjection_KeepsAliases(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE limalias CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, c BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_c ON t (c)")
+		"CREATE SCHEMA TEMPLATE limalias CREATE TABLE t (id BIGINT, a BIGINT, c BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_c ON t (c)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE limalias")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
 	if err != nil {

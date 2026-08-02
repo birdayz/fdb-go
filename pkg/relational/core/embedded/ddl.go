@@ -81,6 +81,11 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 	if err != nil {
 		return 0, err
 	}
+	// The SCHEMA segment is an SQL identifier: unquoted names normalize to
+	// upper case (Java's visitUid normalization) — `create schema /db/test`
+	// creates TEST, which is how a `schema=TEST` connection then finds it.
+	// The database PATH is not an identifier and stays verbatim.
+	schemaName = functions.StripIdentifierQuotes(schemaName)
 	templateID := s.SchemaTemplateId().GetText()
 	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
@@ -100,6 +105,9 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	if err != nil {
 		return 0, err
 	}
+	// Same identifier normalization as execCreateSchema: DROP SCHEMA
+	// /db/test drops TEST.
+	schemaName = functions.StripIdentifierQuotes(schemaName)
 	if dbPath == "" {
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)
@@ -120,7 +128,7 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 }
 
 func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *antlrgen.CreateSchemaTemplateStatementContext) (int64, error) {
-	templateID := s.SchemaTemplateId().GetText()
+	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
 	// WITH OPTIONS(...) — ENABLE_LONG_ROWS / INTERMINGLE_TABLES / STORE_ROW_VERSIONS.
@@ -151,6 +159,10 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		return 0, err
 	}
 
+	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
+		return 0, err
+	}
+
 	// First pass: register tables (indexes reference them by name).
 	for _, clause := range s.AllTemplateClause() {
 		td := clause.TableDefinition()
@@ -158,7 +170,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			continue
 		}
 		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
-		cols, pkCols, err := parseTableDefinition(td)
+		cols, pkCols, err := parseTableDefinition(td, b)
 		if err != nil {
 			// Propagate a specific *api.Error (e.g. 42701 duplicate column, 42703 PK over an
 			// unknown column) as its OWN SQLSTATE instead of masking it under 42F59
@@ -207,21 +219,66 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	return 0, nil
 }
 
+// trimIdentifierQuotes removes surrounding double/back quotes VERBATIM,
+// without the case fold StripIdentifierQuotes applies to unquoted names.
+// Template names historically keep their raw unquoted spelling (a template
+// created as `create schema template foo` is stored "foo"); a QUOTED name
+// must not keep its quote characters — they would leak into the persisted
+// descriptor's FILE name, which is wire.
+func trimIdentifierQuotes(s string) string {
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// registerStructDefinitions is the struct pass: CREATE TYPE AS STRUCT
+// registers an auxiliary type (Java's DdlVisitor.visitStructDefinition
+// builds a table-without-primary-key through the SAME column parser and
+// keeps only its StructType, registered via addAuxiliaryType). A struct
+// field may reference a type declared LATER — the unresolved placeholder is
+// fixed up at Build() by the ported resolveTypes pass. Struct clauses run
+// before the table pass so AddAuxiliaryType's collision check sees other
+// structs; table-vs-type collisions are caught regardless of order
+// (verifyNameIsNotUsed scans both sides). Shared by the production DDL
+// executor and BuildSchemaTemplateFromDDL — one pipeline.
+func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *metadata.Builder) error {
+	for _, clause := range clauses {
+		sd := clause.StructDefinition()
+		if sd == nil {
+			continue
+		}
+		structName := functions.StripIdentifierQuotes(sd.Uid().GetText())
+		cols, err := parseColumnDefinitions(sd.AllColumnDefinition(), b)
+		if err != nil {
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				return err
+			}
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"struct type %q: %v", structName, err)
+		}
+		fields := make([]api.StructField, len(cols))
+		for i, c := range cols {
+			fields[i] = api.NewStructField(c.Name(), c.DataType(), i)
+		}
+		b.AddAuxiliaryType(api.NewStructType(structName, fields, true))
+	}
+	return nil
+}
+
 // rejectUnsupportedTemplateClauses fails closed on schema-template clause
 // kinds the builder below does not read. Silently skipping one builds a
 // DIFFERENT template than the DDL declared — a view or SQL function would
 // simply vanish, and every later reference to it surfaces as a misleading
 // "table does not exist" — the accept-and-drop failure mode this file bans.
-// Java supports all four (DdlVisitor visitStructDefinition /
-// visitEnumDefinition / visitSqlInvokedFunction / visitViewDefinition), so
-// each rejection is a named parity gap, not a divergence: struct types are
-// RFC-201 Phase 3, SQL functions Phase 4.
+// Java supports all of these (DdlVisitor visitEnumDefinition /
+// visitSqlInvokedFunction / visitViewDefinition), so each rejection is a
+// named parity gap, not a divergence: SQL functions are RFC-201 Phase 4.
+// Struct definitions are handled by the struct pass above (RFC-204).
 func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
 	for _, clause := range clauses {
 		switch {
-		case clause.StructDefinition() != nil:
-			return api.NewError(api.ErrCodeUnsupportedOperation,
-				"struct types (CREATE TYPE AS STRUCT) are not yet supported in a schema template")
 		case clause.EnumDefinition() != nil:
 			return api.NewError(api.ErrCodeUnsupportedOperation,
 				"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template")
@@ -544,21 +601,23 @@ func windowedAggregateInTree(node antlr.Tree) bool {
 	return false
 }
 
-// parseTableDefinition extracts column specs and primary key column
-// names from a TableDefinitionContext.
-func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.ColumnSpec, []string, error) {
+// parseColumnDefinitions parses an ordered columnDefinition list into
+// ColumnSpecs — shared by the table pass and the struct pass exactly as
+// Java's visitColumnDefinition serves visitTableDefinition and
+// visitStructDefinition alike. b provides the custom-type lookup
+// (tables-then-auxiliary-types, Java's findType order).
+func parseColumnDefinitions(colDefs []antlrgen.IColumnDefinitionContext, b *metadata.Builder) ([]metadata.ColumnSpec, error) {
 	var cols []metadata.ColumnSpec
-	var pkCols []string
 	seen := make(map[string]bool)
 	foldedSeen := make(map[string]string)
 
-	for i, colDef := range td.AllColumnDefinition() {
+	for i, colDef := range colDefs {
 		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
 		// Reject a duplicate column name with a clean 42701 here, before the proto
 		// descriptor build would surface a leaky internal error (XX000
 		// "protodesc.NewFile: descriptor already declared").
 		if seen[colName] {
-			return nil, nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+			return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
 				"duplicate column name %q in table definition", colName)
 		}
 		seen[colName] = true
@@ -569,13 +628,13 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 		// case-preserving (WS-N Phase D), reject the schema loudly at
 		// CREATE instead of failing as XX000 on the first statement.
 		if prev, dup := foldedSeen[strings.ToUpper(colName)]; dup {
-			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"column names %q and %q collide case-insensitively — the positional row layout folds identifiers, so case-colliding quoted columns are not supported", prev, colName)
 		}
 		foldedSeen[strings.ToUpper(colName)] = colName
 		ct := colDef.ColumnType()
 		if ct == nil {
-			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"column %q has no type", colName)
 		}
 		isRepeated := colDef.ARRAY() != nil
@@ -587,13 +646,23 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 				}
 			}
 		}
-		// Go extension: NOT NULL on any column type is valid (SQL standard).
-		// Java 4.11.1.0 restricts NOT NULL to ARRAY only due to a
-		// RecordMetaData limitation (see TODO #50). We intentionally
-		// don't replicate that restriction.
-		dt, err := parseColumnType(ct, nullable)
+		// NOT NULL is rejected except on ARRAY — Java parity, ported
+		// verbatim (DdlVisitor.visitColumnDefinition:
+		// Assert.thatUnchecked(isRepeated || isNullable,
+		// ErrorCode.UNSUPPORTED_OPERATION, ...)). The restriction is not a
+		// grammar nicety: RecordMetaData has no way to represent scalar
+		// non-nullability (every non-array field is stored LABEL_OPTIONAL),
+		// so accepting NOT NULL here would create a constraint the stored
+		// descriptor cannot carry — it silently vanished on every catalog
+		// round-trip. For ARRAY the wrapper makes it representable
+		// (flat repeated = NOT NULL, NullableArrayWrapper = nullable).
+		if !isRepeated && !nullable {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"NOT NULL is only allowed for ARRAY column type")
+		}
+		dt, err := parseColumnType(ct, nullable, b)
 		if err != nil {
-			return nil, nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 				"column %q", colName)
 		}
 		if isRepeated {
@@ -601,16 +670,39 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 			// The element type is always NOT NULL; the array itself carries nullability.
 			dt = api.NewArrayType(dt.WithNullable(false), nullable)
 		}
-		cols = append(cols, metadata.NewColumnSpec(colName, dt, int32(i+1)))
+		cols = append(cols, metadata.NewColumnSpec(colName, dt, int32(i+1))) //nolint:gosec
+	}
+	return cols, nil
+}
+
+// parseTableDefinition extracts column specs and primary key column
+// names from a TableDefinitionContext.
+func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Builder) ([]metadata.ColumnSpec, []string, error) {
+	cols, err := parseColumnDefinitions(td.AllColumnDefinition(), b)
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		seen[c.Name()] = true
 	}
 
+	var pkCols []string
 	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
 		for _, fullID := range pkDef.FullIdList().AllFullId() {
 			pkCol := functions.FullIdToName(fullID)
 			// Reject a PRIMARY KEY over an undefined column with a clean 42703 here,
 			// before the metadata builder would surface a leaky internal error
 			// (XX000 "build RecordMetaData: ... field not found in message").
-			if !seen[pkCol] {
+			// A DOTTED part (id.a — a nested primary key through a struct
+			// column, Java's RecordLayerTable.Builder.toKeyExpression walk) is
+			// validated by its head segment; the struct-field descent is
+			// checked when the key expression is built at Build() time.
+			head := pkCol
+			if dot := strings.IndexByte(head, '.'); dot >= 0 {
+				head = head[:dot]
+			}
+			if !seen[head] {
 				return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"primary key column %q is not a defined column", pkCol)
 			}
@@ -621,12 +713,25 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 	return cols, pkCols, nil
 }
 
-// parseColumnType maps a ColumnTypeContext to an api.DataType.
-func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataType, error) {
+// parseColumnType maps a ColumnTypeContext to an api.DataType. A
+// non-primitive type is a CUSTOM type reference (grammar: columnType :
+// primitiveType | customType=uid): Java resolves it against the metadata
+// under construction (SemanticAnalyzer.lookupType with
+// metadataBuilder::findType) and falls back to an UnresolvedType
+// placeholder for a forward reference, fixed up at build time.
+func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool, b *metadata.Builder) (api.DataType, error) {
 	pt := ct.PrimitiveType()
 	if pt == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only primitive column types are supported")
+		custom := ct.GetCustomType()
+		if custom == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported column type: %s", ct.GetText())
+		}
+		typeName := functions.StripIdentifierQuotes(custom.GetText())
+		if found, ok := b.FindType(typeName); ok {
+			return found.WithNullable(nullable), nil
+		}
+		return api.NewUnresolvedType(typeName, nullable), nil
 	}
 	switch {
 	case pt.BOOLEAN() != nil:

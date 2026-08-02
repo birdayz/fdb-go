@@ -30,9 +30,9 @@ func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 	}
 	tmpl := fmt.Sprintf("QP_TMPL_%s_%s", suffix, t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE customers (id BIGINT NOT NULL, name STRING, region STRING, active BOOLEAN, PRIMARY KEY (id))
-		CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount DOUBLE, status STRING, PRIMARY KEY (id))
-		CREATE TABLE items (id BIGINT NOT NULL, order_id BIGINT, product STRING, qty BIGINT, price DOUBLE, PRIMARY KEY (id))
+		CREATE TABLE customers (id BIGINT, name STRING, region STRING, active BOOLEAN, PRIMARY KEY (id))
+		CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount DOUBLE, status STRING, PRIMARY KEY (id))
+		CREATE TABLE items (id BIGINT, order_id BIGINT, product STRING, qty BIGINT, price DOUBLE, PRIMARY KEY (id))
 		CREATE INDEX idx_orders_customer ON orders (customer_id)
 		CREATE INDEX idx_orders_status ON orders (status)
 		CREATE INDEX idx_items_order ON items (order_id)`, tmpl)
@@ -1423,7 +1423,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 	}
 	tmpl := fmt.Sprintf("TMPL_%s", t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE nums (id BIGINT NOT NULL, i BIGINT, d DOUBLE, s STRING, b BOOLEAN, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE nums (id BIGINT, i BIGINT, d DOUBLE, s STRING, b BOOLEAN, PRIMARY KEY (id))`, tmpl)
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -1601,8 +1601,8 @@ func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 	}
 	tmpl := fmt.Sprintf("TMPL_%s", t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE src (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
-		CREATE TABLE dst (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE src (id BIGINT, val STRING, PRIMARY KEY (id))
+		CREATE TABLE dst (id BIGINT, val STRING, PRIMARY KEY (id))`, tmpl)
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -2273,8 +2273,8 @@ func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
 	}
 	tmpl := fmt.Sprintf("QP_UWS_%s", t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE t1 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
-		CREATE TABLE t2 (id BIGINT NOT NULL, ref_id BIGINT, tag STRING, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE t1 (id BIGINT, val BIGINT, PRIMARY KEY (id))
+		CREATE TABLE t2 (id BIGINT, ref_id BIGINT, tag STRING, PRIMARY KEY (id))`, tmpl)
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -2648,7 +2648,7 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 	}
 	tmpl := fmt.Sprintf("QP_MTID_%s", t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE t (id BIGINT, val STRING, PRIMARY KEY (id))`, tmpl)
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}

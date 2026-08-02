@@ -31,11 +31,11 @@ func TestFDB_MaterializationOrdinalAlignment(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "matbattery",
-		"CREATE TABLE orders (oid BIGINT NOT NULL, cust BIGINT, status STRING, amt BIGINT, PRIMARY KEY (oid)) "+
+		"CREATE TABLE orders (oid BIGINT, cust BIGINT, status STRING, amt BIGINT, PRIMARY KEY (oid)) "+
 			"CREATE INDEX status_idx ON orders (status) "+
 			"CREATE INDEX cust_idx ON orders (cust) "+
-			"CREATE TABLE cust (cid BIGINT NOT NULL, name STRING, region STRING, PRIMARY KEY (cid)) "+
-			"CREATE TABLE line (lid BIGINT NOT NULL, oid BIGINT, sku STRING, qty BIGINT, PRIMARY KEY (lid))")
+			"CREATE TABLE cust (cid BIGINT, name STRING, region STRING, PRIMARY KEY (cid)) "+
+			"CREATE TABLE line (lid BIGINT, oid BIGINT, sku STRING, qty BIGINT, PRIMARY KEY (lid))")
 
 	mwjoMustExec(t, db, ctx,
 		"INSERT INTO cust (cid, name, region) VALUES (1,'alice','west'),(2,'bob','east'),(3,'carol','west')")

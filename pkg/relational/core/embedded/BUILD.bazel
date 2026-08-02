@@ -147,6 +147,7 @@ go_test(
         "sort_projection_layering_test.go",
         "sort_pullup_test.go",
         "sql_plan_fuzz_test.go",
+        "struct_ddl_test.go",
         "system_rows_test.go",
         "tri_bool_test.go",
         "unnest_element_later_from_item_test.go",
@@ -269,6 +270,7 @@ go_test(
         "index_key_columns_kwv_test.go",
         "index_asselect_windowed_reject_test.go",
         "index_asselect_star_array_test.go",
+        "struct_ddl_test.go",
     ],
     deps = [
         "//gen",
@@ -295,5 +297,6 @@ go_test(
         "//pkg/relational/core/query/semantic",
         "//pkg/relational/core/session",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

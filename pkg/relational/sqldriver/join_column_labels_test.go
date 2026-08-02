@@ -37,8 +37,8 @@ func TestFDB_JoinColumnLabelsUnqualified(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_joincols")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE joincols_tmpl "+
-			"CREATE TABLE Users (uid BIGINT NOT NULL, name STRING, PRIMARY KEY (uid)) "+
-			"CREATE TABLE Orders (oid BIGINT NOT NULL, uid BIGINT, total BIGINT, PRIMARY KEY (oid))")).
+			"CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) "+
+			"CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_joincols/s WITH TEMPLATE joincols_tmpl")).Error().NotTo(gomega.HaveOccurred())

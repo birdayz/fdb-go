@@ -25,7 +25,7 @@ func TestFDB_GroupByOrdinalProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_gbordp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gbordp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE gbordp CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE gbordp CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbordp/s WITH TEMPLATE gbordp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_gbordp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

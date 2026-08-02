@@ -21,8 +21,8 @@ func TestFDB_OuterJoinTypesProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ojt")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ojt")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ojt "+
-		"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-		"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_aid ON b (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ojt/s WITH TEMPLATE ojt")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ojt?cluster_file=%s&schema=s", clusterFilePath)

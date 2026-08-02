@@ -7,7 +7,7 @@
 #   - GROUP BY NULL groups into its own bucket (not colliding with "<nil>")
 name: aggregate_nulls
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', null), (4, 'b', null), (5, null, 7), (6, null, null)
 tests:

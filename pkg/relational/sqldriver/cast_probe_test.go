@@ -22,7 +22,7 @@ func TestFDB_CastProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cast")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE casttbl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cast/s WITH TEMPLATE casttbl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_cast?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

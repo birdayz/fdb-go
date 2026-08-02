@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/google/uuid"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -27,7 +29,8 @@ type Builder struct {
 	name             string
 	version          int
 	tables           []tableSpec
-	errs             []error // deferred errors from AddIndex
+	auxTypes         []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
+	errs             []error     // deferred errors from AddIndex
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
@@ -91,6 +94,12 @@ type ColumnSpec struct {
 func NewColumnSpec(name string, dt api.DataType, fieldNum int32) ColumnSpec {
 	return ColumnSpec{name: name, dt: dt, fieldNum: fieldNum}
 }
+
+// Name returns the column's declared (normalized) name.
+func (c ColumnSpec) Name() string { return c.name }
+
+// DataType returns the column's declared type.
+func (c ColumnSpec) DataType() api.DataType { return c.dt }
 
 // NewSchemaTemplateBuilder returns a Builder with sensible defaults
 // (enableLongRows=true, version=1). Matches Java's default.
@@ -420,34 +429,82 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema template name is required")
 	}
 
-	fd, err := b.buildFileDescriptor()
+	// Resolve forward type references (CREATE TYPE AS STRUCT used before
+	// declaration) before any descriptor is emitted — Java's build() runs
+	// resolveTypes when any table or auxiliary type is unresolved.
+	if b.needsTypeResolution() {
+		if rerr := b.resolveTypes(); rerr != nil {
+			return nil, rerr
+		}
+	}
+
+	fd, fdp, containsNullableArray, err := b.buildFileDescriptor()
 	if err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "build file descriptor")
 	}
 
-	mdBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
+	// The union is Java's relational shape: a "RecordTypeUnion" message with
+	// the usage=UNION option (FileDescriptorSerializer.java:117-140). The
+	// ORIGINAL FileDescriptorProto is retained so RecordMetaData.ToProto()
+	// emits Java's exact bytes (relative type names, no json_name) instead of
+	// the protodesc.ToFileDescriptorProto normalization.
+	mdBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecordsWithUnionName(fd, relationalUnionName)
+	mdBuilder.SetRecordsSourceProto(fdp)
 	mdBuilder.SetSplitLongRecords(b.enableLongRows)
 	mdBuilder.SetStoreRecordVersions(b.storeRowVersions)
 	mdBuilder.SetVersion(b.version)
-	if !b.intermingleTbls {
-		mdBuilder.SetRecordCountKey(recordlayer.RecordTypeKey())
-	} else {
-		mdBuilder.SetRecordCountKey(recordlayer.EmptyKey())
-	}
+	// NO record count key: Java's RecordMetadataSerializer never sets one,
+	// so a relational template's store maintains no record-count subspace —
+	// and the count key is stored metadata, so setting one here was a wire
+	// divergence (a Go-created template counted records where Java's did
+	// not, and the bump inflated the metadata version). Byte-golden-pinned.
 
-	for _, tbl := range b.tables {
-		// buildFileDescriptor() derives the proto message types from b.tables, so
-		// every tbl.name should be present after SetRecords. Check existence via the
-		// nil-returning GetRecordTypes() map rather than GetRecordType(), which
-		// panics on a missing type: a name mismatch here is a descriptor-build bug,
-		// and Build() (which already returns an error) must surface it as a typed
-		// error — not a panic that the db/sql boundary recover turns into a generic
-		// "internal error" with no context.
-		if mdBuilder.GetRecordTypes()[tbl.name] == nil {
-			return nil, api.NewErrorf(api.ErrCodeInternalError,
-				"record type %q not found after SetRecords", tbl.name)
+	for tableIdx, tbl := range b.tables {
+		// Record type names are STORAGE names (Java: the Type.Record storage
+		// name, ProtoUtils.toProtoBufCompliantName of the user name — they
+		// differ only for quoted identifiers carrying '$', '.' or "__").
+		storageName, nameErr := recordlayer.ToProtoBufCompliantName(tbl.name)
+		if nameErr != nil {
+			return nil, api.WrapErrorf(nameErr, api.ErrCodeInvalidSchemaTemplate,
+				"table %q", tbl.name)
 		}
-		rt := mdBuilder.GetRecordType(tbl.name)
+		// buildFileDescriptor() derives the proto message types from b.tables, so
+		// every table storage name should be present after SetRecords. Check
+		// existence via the nil-returning GetRecordTypes() map rather than
+		// GetRecordType(), which panics on a missing type: a name mismatch here is
+		// a descriptor-build bug, and Build() (which already returns an error)
+		// must surface it as a typed error — not a panic that the db/sql boundary
+		// recover turns into a generic "internal error" with no context.
+		if mdBuilder.GetRecordTypes()[storageName] == nil {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"record type %q not found after SetRecords", storageName)
+		}
+		rt := mdBuilder.GetRecordType(storageName)
+		// Explicit record type key = 0-based declaration index, exactly
+		// Java's RecordMetadataSerializer visit(Table):
+		// setRecordTypeKey(recordTypeCounter++). Stored metadata (and the
+		// record-store key prefix for non-intermingled tables), so it must
+		// match byte-for-byte.
+		rt.SetRecordTypeKey(int64(tableIdx))
+		// Index key expressions must match the stored descriptor shape: with
+		// the NullableArrayWrapper emitted, any field path through a nullable
+		// array gains the `values` hop (Java's NullableArrayUtils.wrapArray,
+		// applied by both of its index generators). Applied uniformly to
+		// every index root right before registration.
+		rtDesc := mdBuilder.GetRecordTypes()[storageName].Descriptor
+		addIndex := func(rl *recordlayer.Index) error {
+			if containsNullableArray {
+				wrapped, werr := recordlayer.KeyExpressionFromProto(
+					wrapArrayInternal(rl.RootExpression.ToKeyExpression(), rtDesc))
+				if werr != nil {
+					return api.WrapErrorf(werr, api.ErrCodeInvalidSchemaTemplate,
+						"table %q index %q: nullable-array wrap", tbl.name, rl.Name)
+				}
+				rl.RootExpression = wrapped
+			}
+			mdBuilder.AddIndex(storageName, rl)
+			return nil
+		}
 		pkExpr, err := buildPrimaryKeyExpression(tbl, b.intermingleTbls)
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
@@ -479,7 +536,9 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 							"table %q index %q predicate", tbl.name, idx.name)
 					}
 				}
-				mdBuilder.AddIndex(tbl.name, rl)
+				if aerr := addIndex(rl); aerr != nil {
+					return nil, aerr
+				}
 				continue
 			}
 			if idx.vector {
@@ -488,7 +547,9 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
 						"table %q vector index %q", tbl.name, idx.name)
 				}
-				mdBuilder.AddIndex(tbl.name, rl)
+				if aerr := addIndex(rl); aerr != nil {
+					return nil, aerr
+				}
 				continue
 			}
 			if idx.aggType != "" {
@@ -497,7 +558,9 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
 						"table %q aggregate index %q", tbl.name, idx.name)
 				}
-				mdBuilder.AddIndex(tbl.name, rl)
+				if aerr := addIndex(rl); aerr != nil {
+					return nil, aerr
+				}
 				continue
 			}
 			if idx.cardinalityColumn != "" {
@@ -509,12 +572,15 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				if idx.unique {
 					rl.SetUnique()
 				}
-				mdBuilder.AddIndex(tbl.name, rl)
+				if aerr := addIndex(rl); aerr != nil {
+					return nil, aerr
+				}
 				continue
 			}
 			if idx.fanOutColumn != "" {
-				mdBuilder.AddIndex(tbl.name,
-					recordlayer.NewIndex(idx.name, recordlayer.FanOut(idx.fanOutColumn)))
+				if aerr := addIndex(recordlayer.NewIndex(idx.name, recordlayer.FanOut(idx.fanOutColumn))); aerr != nil {
+					return nil, aerr
+				}
 				continue
 			}
 			keyExpr, idxErr := buildIndexKeyExpression(idx.columns)
@@ -526,7 +592,9 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 			if idx.unique {
 				rl.SetUnique()
 			}
-			mdBuilder.AddIndex(tbl.name, rl)
+			if aerr := addIndex(rl); aerr != nil {
+				return nil, aerr
+			}
 		}
 	}
 
@@ -538,43 +606,94 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	return NewRecordLayerSchemaTemplateWithVersion(b.name, md, b.version)
 }
 
-// buildFileDescriptor constructs a protoreflect.FileDescriptor from
-// the registered table specs. No union descriptor is generated because
-// dynamically-created message types are not in the global proto type
-// registry, so RecordMetaDataBuilder.Build() cannot obtain a message
-// factory for them. Without a union, setRecordsWithoutUnion() is used,
-// which leaves UnionFieldDescriptor nil and skips the factory lookup.
-func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
+// uuidProtoTypeName is the RELATIVE fully-qualified proto message name for
+// the tuple_fields.UUID record (sfixed64 most/least bits) — no leading dot,
+// exactly as Java's Type.Uuid.addProtoField stores it. Matches Java's
+// Type.uuidType lowering; fdb-relational stores UUID column values as
+// TupleFieldsProto.UUID instances.
+const uuidProtoTypeName = "com.apple.foundationdb.record.UUID"
+
+// relationalUnionName is the union message name Java's relational layer
+// writes ("RecordTypeUnion" with the usage=UNION option —
+// FileDescriptorSerializer's unionDescriptorBuilder).
+const relationalUnionName = "RecordTypeUnion"
+
+// buildFileDescriptor constructs the schema template's file descriptor in
+// Java's EXACT stored shape (FileDescriptorSerializer +
+// Type.Record.defineProtoType / Type.addProtoField), because the catalog
+// persists these bytes (RecordMetaData.toProto().records) and a Java client
+// must open a Go-created template byte-for-byte. The measured contract
+// (live-JVM probe, pinned by the RFC-204 conformance byte-goldens):
+//
+//   - file name = template name verbatim (no ".proto", no syntax field);
+//   - dependencies = "tuple_fields.proto", "record_metadata_options.proto";
+//   - per TABLE (declaration order), the closure of message types the table
+//     needs — the table message, struct types, nullable-array wrappers — is
+//     appended in ALPHABETICAL name order (Java iterates a TreeSet,
+//     TypeRepository.getMessageTypes), deduplicated template-wide by name
+//     (a struct shared by two tables is emitted once, under the FIRST
+//     table's batch);
+//   - every non-array field is LABEL_OPTIONAL regardless of SQL nullability
+//     (Type.Record.defineProtoType passes LABEL_OPTIONAL always; Java has
+//     no way to express non-null scalars in RecordMetaData — the
+//     RecordLayerTable.calculateDataType TODO);
+//   - message-typed fields carry only type_name (no explicit TYPE_MESSAGE),
+//     with RELATIVE names ("S1", "com.apple.foundationdb.record.UUID");
+//   - a NON-nullable array is a flat LABEL_REPEATED field; a NULLABLE array
+//     is an OPTIONAL message field referencing a synthetic single-field
+//     wrapper `message W { repeated E values = 1; }` (NullableArrayWrapper);
+//   - the union message "RecordTypeUnion" comes last, usage=UNION option,
+//     one field per table named "<TYPE>_0" (generation 0), numbered by
+//     declaration order, TYPE_MESSAGE + relative type_name + empty
+//     FieldOptions and NO label.
+//
+// The second return value is the ORIGINAL FileDescriptorProto, retained so
+// RecordMetaData.ToProto() emits these bytes verbatim instead of the
+// protodesc.ToFileDescriptorProto normalization (which absolutizes type
+// names and adds json_name — both byte divergences vs Java). The third is
+// Java's containsNullableArray flag (DdlVisitor accumulates it over column
+// definitions): whether any NullableArrayWrapper was emitted, gating the
+// index key-expression wrap pass.
+func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
 	fdp := &descriptorpb.FileDescriptorProto{}
-	fdp.Name = proto.String(b.name + ".proto")
-	fdp.Syntax = proto.String("proto2")
+	fdp.Name = proto.String(b.name)
 	fdp.Dependency = []string{
 		gen.File_tuple_fields_proto.Path(),
 		gen.File_record_metadata_options_proto.Path(),
 	}
 
-	for _, tbl := range b.tables {
-		msgDesc, err := buildMessageDescriptor(tbl)
-		if err != nil {
-			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-				"table %q", tbl.name)
-		}
-		fdp.MessageType = append(fdp.MessageType, msgDesc)
+	unionOpts := &descriptorpb.MessageOptions{}
+	proto.SetExtension(unionOpts, gen.E_Record, &gen.RecordTypeOptions{
+		Usage: gen.RecordTypeOptions_UNION.Enum(),
+	})
+	unionMsg := &descriptorpb.DescriptorProto{
+		Name:    proto.String(relationalUnionName),
+		Options: unionOpts,
 	}
 
-	// Generate the UnionDescriptor message required for record serialization.
-	// Each table gets one optional field numbered starting at 1.
-	unionMsg := &descriptorpb.DescriptorProto{Name: proto.String("UnionDescriptor")}
+	em := &fileEmitter{
+		seen:        map[string]bool{},
+		structTypes: map[string]*api.StructType{},
+	}
 	for i, tbl := range b.tables {
+		storageName, err := em.emitTableClosure(tbl)
+		if err != nil {
+			return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"table %q", tbl.name)
+		}
+		// One union entry per table generation; DDL-built templates have
+		// exactly generation 0. Java sets type AND type_name here (unlike
+		// ordinary message fields, which carry only type_name), an empty
+		// FieldOptions, and no label — measured against the live JVM.
 		unionMsg.Field = append(unionMsg.Field, &descriptorpb.FieldDescriptorProto{
-			Name:     proto.String("_" + tbl.name),
-			Number:   proto.Int32(int32(i + 1)),
-			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Name:     proto.String(storageName + "_0"),
+			Number:   proto.Int32(int32(i + 1)), //nolint:gosec
 			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-			TypeName: proto.String(tbl.name),
+			TypeName: proto.String(storageName),
+			Options:  &descriptorpb.FieldOptions{},
 		})
 	}
-	fdp.MessageType = append(fdp.MessageType, unionMsg)
+	fdp.MessageType = append(em.messages, unionMsg)
 
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
@@ -584,197 +703,273 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 	_ = resolver.RegisterFile(gen.File_tuple_fields_proto)
 	_ = resolver.RegisterFile(gen.File_record_metadata_options_proto)
 
-	fd, err := protodesc.NewFile(fdp, resolver)
+	// The RETAINED proto keeps Java's RELATIVE type_name references
+	// ("com.apple.foundationdb.record.UUID"); protodesc's resolver wants
+	// absolute names, so the in-memory descriptor builds from an
+	// absolutized CLONE — the same bridge FromProto applies to
+	// Java-authored files (recordlayer.AbsolutizeFieldTypeNames).
+	buildable := proto.Clone(fdp).(*descriptorpb.FileDescriptorProto)
+	recordlayer.AbsolutizeFieldTypeNames(buildable)
+	fd, err := protodesc.NewFile(buildable, resolver)
 	if err != nil {
-		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
+		return nil, nil, false, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
 	}
-	return fd, nil
+	return fd, fdp, em.containsNullableArray, nil
 }
 
-// uuidProtoTypeName is the fully-qualified proto message name for the
-// tuple_fields.UUID record (sfixed64 most/least bits). Matches Java's
-// Type.uuidType lowering — fdb-relational stores UUID column values
-// as TupleFieldsProto.UUID instances.
-const uuidProtoTypeName = ".com.apple.foundationdb.record.UUID"
+// fileEmitter accumulates the template's top-level messages with
+// template-wide name deduplication — the Go counterpart of Java's
+// FileDescriptorSerializer.registerTypeDescriptors' descriptorNames set.
+type fileEmitter struct {
+	messages []*descriptorpb.DescriptorProto
+	seen     map[string]bool
+	// structTypes enforces one-storage-name-one-shape template-wide. The
+	// comparison normalizes the struct's OWN nullability away: a struct
+	// column's nullability lives on the referencing column, not the shared
+	// descriptor (Java's nullability collapse, the
+	// RecordLayerTable.calculateDataType TODO — nullable and non-nullable
+	// uses of one named struct share ONE descriptor; reproduced, not fixed,
+	// because the collapsed descriptor is the wire shape).
+	structTypes map[string]*api.StructType
+	// containsNullableArray: any NullableArrayWrapper emitted (Java's
+	// DdlVisitor.containsNullableArray equivalent, gating wrapArray).
+	containsNullableArray bool
+}
 
-// buildMessageDescriptor converts a tableSpec into a proto DescriptorProto.
-// STRUCT columns materialize as NESTED message types of the table message;
-// struct-in-struct recurses, and a struct type name reused within one table
-// must resolve to the SAME shape (the per-table nested namespace has one slot
-// per name).
+// emitTableClosure builds the table's message-type closure in a per-table
+// namespace (Java: one TypeRepository per table visit), sorts it
+// alphabetically, and appends the not-yet-seen names to the file. Returns
+// the table's storage name.
 //
-// DIVERGENCE from Java (not parity): Java's FileDescriptorSerializer
-// (Type.Record.defineProtoType) emits struct descriptors as FILE-LEVEL
-// message types, deduped and name-scoped TEMPLATE-WIDE. Go emits them nested
-// PER TABLE (one namespace per table message). Both are wire-safe — a struct
-// column's bytes are placement-independent, and Go's DDL cannot declare
-// STRUCT columns anyway (this surface is builder-only, for tests) — so the
-// scope difference is invisible to any Java/Go interop. Java additionally
-// wraps a nullable array in a synthetic single-field record; Go writes a
-// plain repeated field (the RFC-143 §3a nullable-array-wrapper divergence,
-// already tracked). If DDL struct columns land, revisit for template-wide
-// dedup.
-func buildMessageDescriptor(tbl tableSpec) (*descriptorpb.DescriptorProto, error) {
-	msg := &descriptorpb.DescriptorProto{Name: proto.String(tbl.name)}
-	ec := &structEmitCtx{
-		tableName: tbl.name,
-		descs:     map[string]*descriptorpb.DescriptorProto{},
-		types:     map[string]*api.StructType{},
+// The per-table scope is measured Java behavior, not an approximation: a
+// nullable array inside a struct SHARED by two tables makes Java's second
+// table define a fresh wrapper (its repo cannot see the first's), whose
+// message is then copied into the file even though the deduplicated struct
+// still references the first wrapper — an orphan message. Byte compat means
+// reproducing that, so wrapper identity is deliberately per-table.
+func (em *fileEmitter) emitTableClosure(tbl tableSpec) (string, error) {
+	storageName, err := recordlayer.ToProtoBufCompliantName(tbl.name)
+	if err != nil {
+		return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "table name %q", tbl.name)
 	}
+	r := &tableTypeRepo{
+		em:        em,
+		tableName: storageName,
+		msgs:      map[string]*descriptorpb.DescriptorProto{},
+		wrappers:  map[string]string{},
+	}
+	msg := &descriptorpb.DescriptorProto{Name: proto.String(storageName)}
+	// Register before walking fields: a column typed as its own table (legal
+	// to EXPRESS — cycles die later in type resolution) must not recurse
+	// forever here.
+	r.msgs[storageName] = msg
 	for _, col := range tbl.columns {
-		ft, typeName, err := datatypeToProtoFieldType(col.dt, ec)
-		if err != nil {
-			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+		if err := r.addField(msg, col.name, col.fieldNum, col.dt); err != nil {
+			return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 				"column %q", col.name)
 		}
-		field := &descriptorpb.FieldDescriptorProto{
-			Name:   proto.String(col.name),
-			Number: proto.Int32(col.fieldNum),
-			Label:  datatypeToLabel(col.dt).Enum(),
-			Type:   ft.Enum(),
-		}
-		if typeName != "" {
-			field.TypeName = proto.String(typeName)
-		}
-		msg.Field = append(msg.Field, field)
 	}
-	// Deterministic nested-type order (map iteration would jitter the
-	// descriptor bytes across builds of the same template).
-	names := make([]string, 0, len(ec.descs))
-	for n := range ec.descs {
+
+	names := make([]string, 0, len(r.msgs))
+	for n := range r.msgs {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		msg.NestedType = append(msg.NestedType, ec.descs[n])
-	}
-	return msg, nil
-}
-
-// structEmitCtx threads the per-table nested-struct emission state:
-// descs is the name→DescriptorProto namespace (one nested message per
-// struct name), and types is the name→api.StructType index used to detect
-// a shape CONFLICT (a name reused with a different declaration).
-type structEmitCtx struct {
-	tableName string
-	descs     map[string]*descriptorpb.DescriptorProto
-	types     map[string]*api.StructType
-}
-
-// structDescriptor emits one struct type as a nested DescriptorProto,
-// registering it (and recursively any struct fields it carries) in the
-// table's nested namespace. Field numbers are the StructField indexes + 1
-// (proto field numbers are 1-based; the api index is 0-based declaration
-// order).
-func structDescriptor(st *api.StructType, ec *structEmitCtx) error {
-	if prev, seen := ec.types[st.Name()]; seen {
-		// One name, one shape: a re-registration of the same name must share
-		// the SAME nested descriptor shape (field names, indexes, and
-		// recursive field types), else the second column would silently
-		// inherit the first's descriptor. Compare with the struct's OWN
-		// nullability normalized away — a struct column's nullability is
-		// per-COLUMN (the referencing field's LABEL_OPTIONAL/REQUIRED, set
-		// from the column's dt), not a property of the shared nested message,
-		// so `nullable P1 P` + `not-null P2 P` legitimately share one `P`
-		// descriptor. Identity short-circuits first, so a SELF-REFERENTIAL
-		// struct (whose field re-enters here mid-build, against a still-empty
-		// prev) is accepted rather than mis-flagged.
-		if prev == st || prev.WithNullable(false).Equal(st.WithNullable(false)) {
-			return nil
+		if em.seen[n] {
+			continue
 		}
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"struct type %q declared twice with different shapes", st.Name())
+		em.seen[n] = true
+		em.messages = append(em.messages, r.msgs[n])
 	}
-	ec.types[st.Name()] = st // register BEFORE recursing (self-reference guard)
-	msg := &descriptorpb.DescriptorProto{Name: proto.String(st.Name())}
-	ec.descs[st.Name()] = msg
-	for i := 0; i < st.NumFields(); i++ {
-		f := st.Field(i)
-		ft, typeName, err := datatypeToProtoFieldType(f.Type(), ec)
+	return storageName, nil
+}
+
+// tableTypeRepo is the per-table type namespace: the closure of message
+// descriptors this table's type needs, plus wrapper dedup by element type
+// (Java: TypeRepository's Type->name BiMap makes equal Array types share
+// one wrapper within a repo).
+type tableTypeRepo struct {
+	em        *fileEmitter
+	tableName string // wrapper-name derivation input (per-table wrapper identity)
+	msgs      map[string]*descriptorpb.DescriptorProto
+	wrappers  map[string]string // element-type signature -> wrapper message name
+}
+
+// addField appends one field to msg following Java's addProtoField
+// dispatch: LABEL_OPTIONAL for everything except flat non-nullable arrays
+// (LABEL_REPEATED) — nullability of scalars/structs does NOT reach the
+// label.
+func (r *tableTypeRepo) addField(msg *descriptorpb.DescriptorProto, userName string, number int32, dt api.DataType) error {
+	fieldName, err := recordlayer.ToProtoBufCompliantName(userName)
+	if err != nil {
+		return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "field name %q", userName)
+	}
+	f := &descriptorpb.FieldDescriptorProto{
+		Name:   proto.String(fieldName),
+		Number: proto.Int32(number),
+	}
+	if at, ok := dt.(*api.ArrayType); ok {
+		if at.IsNullable() {
+			wrapperName, werr := r.wrapperFor(at.ElementType())
+			if werr != nil {
+				return werr
+			}
+			f.Label = descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+			f.TypeName = proto.String(wrapperName)
+		} else {
+			if serr := r.setFieldType(f, at.ElementType()); serr != nil {
+				return serr
+			}
+			f.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+		}
+	} else {
+		if serr := r.setFieldType(f, dt); serr != nil {
+			return serr
+		}
+		f.Label = descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	}
+	msg.Field = append(msg.Field, f)
+	return nil
+}
+
+// setFieldType fills the field's type or type_name (never both for message
+// kinds — Java's Record/Uuid addProtoField set only type_name; the union
+// entry is the one deliberate exception, handled by the caller).
+func (r *tableTypeRepo) setFieldType(f *descriptorpb.FieldDescriptorProto, dt api.DataType) error {
+	setScalar := func(t descriptorpb.FieldDescriptorProto_Type) {
+		f.Type = t.Enum()
+	}
+	switch dt.Code() {
+	case api.CodeBoolean:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_BOOL)
+	case api.CodeInteger:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_INT32)
+	case api.CodeLong:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_INT64)
+	case api.CodeFloat:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_FLOAT)
+	case api.CodeDouble:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_DOUBLE)
+	case api.CodeString:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_STRING)
+	case api.CodeBytes:
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_BYTES)
+	case api.CodeDate, api.CodeTimestamp:
+		// Go extension (Java's relational grammar has no DATE/TIMESTAMP
+		// primitive); stored as ISO strings.
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_STRING)
+	case api.CodeVector:
+		// TYPE_BYTES plus the vectorOptions field extension carrying
+		// precision and dimensions — measured Java shape
+		// ([com.apple.foundationdb.record.field] { vectorOptions {...} }).
+		vt := dt.(*api.VectorType)
+		setScalar(descriptorpb.FieldDescriptorProto_TYPE_BYTES)
+		opts := &descriptorpb.FieldOptions{}
+		proto.SetExtension(opts, gen.E_Field, &gen.FieldOptions{
+			VectorOptions: &gen.FieldOptions_VectorOptions{
+				Precision:  proto.Int32(int32(vt.Precision())),  //nolint:gosec
+				Dimensions: proto.Int32(int32(vt.Dimensions())), //nolint:gosec
+			},
+		})
+		f.Options = opts
+	case api.CodeUUID:
+		// Java emits the RELATIVE fully-qualified name (no leading dot) and
+		// no explicit TYPE_MESSAGE — measured.
+		f.TypeName = proto.String(uuidProtoTypeName)
+	case api.CodeStruct:
+		st := dt.(*api.StructType)
+		name, err := r.defineStruct(st)
 		if err != nil {
-			return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-				"struct %q field %q", st.Name(), f.Name())
+			return err
 		}
-		field := &descriptorpb.FieldDescriptorProto{
-			Name:   proto.String(f.Name()),
-			Number: proto.Int32(int32(f.Index() + 1)), //nolint:gosec
-			Label:  datatypeToLabel(f.Type()).Enum(),
-			Type:   ft.Enum(),
-		}
-		if typeName != "" {
-			field.TypeName = proto.String(typeName)
-		}
-		msg.Field = append(msg.Field, field)
+		f.TypeName = proto.String(name)
+	case api.CodeArray:
+		// An array element that is itself an array — inexpressible in the
+		// SQL grammar (columnDefinition has a single ARRAY suffix).
+		return api.NewError(api.ErrCodeUnsupportedOperation,
+			"array-of-array column types are not supported")
+	default:
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"unsupported DataType code %v", dt.Code())
 	}
 	return nil
 }
 
-// datatypeToProtoFieldType maps an api.DataType to the corresponding
-// proto field type and (for message-typed fields) the fully-qualified
-// type name. Scalar primitives return (TYPE_*, "", nil); message types
-// return (TYPE_MESSAGE, ".pkg.Name", nil). A STRUCT column registers its
-// nested DescriptorProto in ec (the enclosing table's struct-emission
-// context); ec is always non-nil (buildMessageDescriptor threads it) and is
-// only consulted on the CodeStruct arm.
-func datatypeToProtoFieldType(dt api.DataType, ec *structEmitCtx) (descriptorpb.FieldDescriptorProto_Type, string, error) {
-	switch dt.Code() {
-	case api.CodeBoolean:
-		return descriptorpb.FieldDescriptorProto_TYPE_BOOL, "", nil
-	case api.CodeInteger:
-		return descriptorpb.FieldDescriptorProto_TYPE_INT32, "", nil
-	case api.CodeLong:
-		return descriptorpb.FieldDescriptorProto_TYPE_INT64, "", nil
-	case api.CodeFloat:
-		return descriptorpb.FieldDescriptorProto_TYPE_FLOAT, "", nil
-	case api.CodeDouble:
-		return descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, "", nil
-	case api.CodeString:
-		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
-	case api.CodeBytes:
-		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
-	case api.CodeVector:
-		// A vector column is stored as serialized bytes (RealVector.toBytes).
-		// Matches Java's Type.TypeCode.VECTOR → FieldDescriptorProto.Type.TYPE_BYTES.
-		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
-	case api.CodeUUID:
-		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, uuidProtoTypeName, nil
-	case api.CodeDate, api.CodeTimestamp:
-		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
-	case api.CodeArray:
-		// Array types use the element type's proto field type with LABEL_REPEATED.
-		// The label is handled by datatypeToLabel; here we return the element's type.
-		at := dt.(*api.ArrayType)
-		return datatypeToProtoFieldType(at.ElementType(), ec)
-	case api.CodeStruct:
-		// A STRUCT column is a nested message type of its table (Java's
-		// RecordLayerSchemaTemplate resolves DataType.StructType into nested
-		// record types). The file has no proto package, so the qualified
-		// name is .<Table>.<Struct>.
-		st := dt.(*api.StructType)
-		if st.Name() == "" {
-			return 0, "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-				"struct column type must be named")
-		}
-		if err := structDescriptor(st, ec); err != nil {
-			return 0, "", err
-		}
-		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, "." + ec.tableName + "." + st.Name(), nil
-	default:
-		return 0, "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"unsupported DataType code %v", dt.Code())
+// defineStruct registers the struct's message descriptor (and recursively
+// its field types) in the per-table namespace, returning its storage name.
+// Mirrors Type.Record.defineProtoType: field numbers are declaration index
+// + 1, every field LABEL_OPTIONAL unless an array.
+func (r *tableTypeRepo) defineStruct(st *api.StructType) (string, error) {
+	if st.Name() == "" {
+		return "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"struct column type must be named")
 	}
+	storage, err := recordlayer.ToProtoBufCompliantName(st.Name())
+	if err != nil {
+		return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "struct name %q", st.Name())
+	}
+	// One name, one shape — template-wide. Nullability normalized away (the
+	// collapse described on fileEmitter.structTypes). Identity short-circuits
+	// first so a self-referential struct re-entering mid-build is accepted
+	// rather than mis-flagged against a still-empty descriptor.
+	if prev, seenShape := r.em.structTypes[storage]; seenShape {
+		if !(prev == st || prev.WithNullable(false).Equal(st.WithNullable(false))) {
+			return "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"struct type %q declared twice with different shapes", st.Name())
+		}
+	} else {
+		r.em.structTypes[storage] = st
+	}
+	if _, ok := r.msgs[storage]; ok {
+		return storage, nil
+	}
+	msg := &descriptorpb.DescriptorProto{Name: proto.String(storage)}
+	r.msgs[storage] = msg // register BEFORE recursing (self-reference guard)
+	for i := 0; i < st.NumFields(); i++ {
+		fld := st.Field(i)
+		if err := r.addField(msg, fld.Name(), int32(fld.Index()+1), fld.Type()); err != nil { //nolint:gosec
+			return "", api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"struct %q field %q", st.Name(), fld.Name())
+		}
+	}
+	return storage, nil
 }
 
-// datatypeToLabel returns LABEL_REPEATED for array types, OPTIONAL for
-// nullable types, REQUIRED for not-nullable. (Proto2 semantics.)
-func datatypeToLabel(dt api.DataType) descriptorpb.FieldDescriptorProto_Label {
-	if dt.Code() == api.CodeArray {
-		return descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+// wrapperFor returns (defining on first use) the per-table NullableArrayWrapper
+// message for the given element type: message W { repeated E values = 1; }.
+//
+// NAME divergence, deliberate and documented: Java names the wrapper
+// ProtoUtils.uniqueTypeName() = "__type__" + UUID.randomUUID() — a fresh
+// RANDOM name on every serialization (measured: two identical templates get
+// different wrapper names). Every reader is structural
+// (NullableArrayUtils.isWrappedArrayDescriptor checks shape, never the
+// name), so any name is wire-valid; Go keeps Java's exact FORMAT but
+// derives the UUID deterministically from (table, element type) so that
+// identical DDL produces identical bytes. The byte-goldens compare with
+// wrapper names normalized on both sides — Java's own nondeterminism makes
+// literal equality on this one token unpinnable.
+func (r *tableTypeRepo) wrapperFor(elem api.DataType) (string, error) {
+	sig := elem.String()
+	r.em.containsNullableArray = true
+	if name, ok := r.wrappers[sig]; ok {
+		return name, nil
 	}
-	if dt.IsNullable() {
-		return descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	name := "__type__" + strings.ReplaceAll(
+		uuid.NewSHA1(uuid.NameSpaceOID, []byte(r.tableName+"\x00"+sig)).String(), "-", "_")
+	r.wrappers[sig] = name
+	msg := &descriptorpb.DescriptorProto{Name: proto.String(name)}
+	vf := &descriptorpb.FieldDescriptorProto{
+		Name:   proto.String(wrappedArrayFieldName),
+		Number: proto.Int32(1),
+		Label:  descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 	}
-	return descriptorpb.FieldDescriptorProto_LABEL_REQUIRED
+	if err := r.setFieldType(vf, elem); err != nil {
+		return "", err
+	}
+	msg.Field = append(msg.Field, vf)
+	r.msgs[name] = msg
+	return name, nil
 }
 
 // buildPrimaryKeyExpression builds the record layer primary key expression.
@@ -924,7 +1119,34 @@ func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.Key
 		exprs = append(exprs, recordlayer.RecordTypeKey())
 	}
 	for _, colName := range tbl.primaryKey {
-		exprs = append(exprs, recordlayer.Field(colName))
+		// Key expressions address proto STORAGE names (Java:
+		// RecordLayerTable.Builder.toKeyExpression via getFieldStorageName) —
+		// identical to the user name except for quoted identifiers carrying
+		// '$', '.' or "__". A DOTTED part (id.a — a primary key over a
+		// struct column's field) walks the segments into
+		// field(storage).nest(child), Java's toKeyExpression recursion
+		// (RecordLayerTable.java:313-329).
+		//
+		// NOTE: the split is on the ALREADY-normalized dotted name the DDL
+		// layer produced (FullIdToName joins normalized uid segments with
+		// '.'), so a '.' can only be a path separator here — a literal dot
+		// INSIDE a quoted identifier is not expressible through this
+		// builder API's dotted-part convention.
+		segments := strings.Split(colName, ".")
+		var expr recordlayer.KeyExpression
+		for i := len(segments) - 1; i >= 0; i-- {
+			storage, err := recordlayer.ToProtoBufCompliantName(segments[i])
+			if err != nil {
+				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+					"primary key column %q", colName)
+			}
+			if expr == nil {
+				expr = recordlayer.Field(storage)
+			} else {
+				expr = recordlayer.Nest(storage, expr)
+			}
+		}
+		exprs = append(exprs, expr)
 	}
 	if len(exprs) == 1 {
 		return exprs[0], nil

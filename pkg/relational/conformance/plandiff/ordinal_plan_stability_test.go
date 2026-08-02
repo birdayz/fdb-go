@@ -15,21 +15,21 @@ func ordinalSeedPlanCorpus() []Query {
 	return []Query{
 		{
 			Name: "ordinal_3way_chain",
-			SchemaTemplate: "CREATE TABLE A (id BIGINT NOT NULL, b_id BIGINT, PRIMARY KEY (id)) " +
-				"CREATE TABLE B (id BIGINT NOT NULL, c_id BIGINT, PRIMARY KEY (id)) " +
-				"CREATE TABLE C (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))",
+			SchemaTemplate: "CREATE TABLE A (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE B (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE C (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SQL: "SELECT a.id, c.name FROM A a, B b, C c WHERE a.b_id = b.id AND b.c_id = c.id",
 		},
 		{
 			Name: "ordinal_3way_star",
-			SchemaTemplate: "CREATE TABLE H (id BIGINT NOT NULL, PRIMARY KEY (id)) " +
-				"CREATE TABLE X (id BIGINT NOT NULL, hid BIGINT, v BIGINT, PRIMARY KEY (id)) " +
-				"CREATE TABLE Y (id BIGINT NOT NULL, hid BIGINT, w BIGINT, PRIMARY KEY (id))",
+			SchemaTemplate: "CREATE TABLE H (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE X (id BIGINT, hid BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE Y (id BIGINT, hid BIGINT, w BIGINT, PRIMARY KEY (id))",
 			SQL: "SELECT h.id, x.v, y.w FROM H h, X x, Y y WHERE h.id = x.hid AND h.id = y.hid",
 		},
 		{
 			Name:           "ordinal_self_3way",
-			SchemaTemplate: "CREATE TABLE NODE (id BIGINT NOT NULL, parent BIGINT, name STRING, PRIMARY KEY (id))",
+			SchemaTemplate: "CREATE TABLE NODE (id BIGINT, parent BIGINT, name STRING, PRIMARY KEY (id))",
 			SQL:            "SELECT g.id, p.name, gp.name FROM NODE g, NODE p, NODE gp WHERE g.parent = p.id AND p.parent = gp.id",
 		},
 	}

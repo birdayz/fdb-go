@@ -13,8 +13,8 @@
 # trace; not portable).
 name: subquery_in
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)
   - INSERT INTO b VALUES (101, 2), (102, null)

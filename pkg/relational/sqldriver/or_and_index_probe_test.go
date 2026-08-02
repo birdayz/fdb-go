@@ -22,7 +22,7 @@ func TestFDB_OrAndIndexProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_oai")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_oai")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE oai "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oai/s WITH TEMPLATE oai")
 	dsn := fmt.Sprintf("fdbsql:///testdb_oai?cluster_file=%s&schema=s", clusterFilePath)

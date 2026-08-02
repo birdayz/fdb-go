@@ -6,8 +6,8 @@
 name: and_index_intersection_composite_pk
 schema_template: |
   CREATE TABLE events (
-    tenant BIGINT NOT NULL,
-    seq BIGINT NOT NULL,
+    tenant BIGINT,
+    seq BIGINT,
     kind STRING,
     region STRING,
     PRIMARY KEY (tenant, seq)

@@ -133,16 +133,23 @@ func descendToArrayField(fields protoreflect.FieldDescriptors, path []string) (p
 	}
 	for _, seg := range path[:len(path)-1] {
 		fd := protoFieldLookup(fields, seg)
-		if fd == nil || fd.IsList() || fd.Kind() != protoreflect.MessageKind {
+		// Intermediates must be singular STRUCTs — flat repeated fields and
+		// NullableArrayWrapper fields are arrays, not descendable structs.
+		if fd == nil || fd.IsList() || fd.Kind() != protoreflect.MessageKind ||
+			values.IsWrappedArrayDescriptor(fd.Message()) {
 			return nil, false
 		}
 		fields = fd.Message().Fields()
 	}
 	fd := protoFieldLookup(fields, path[len(path)-1])
-	if fd == nil || !fd.IsList() {
+	// The final segment resolves through the NullableArrayWrapper: the
+	// EFFECTIVE repeated field (the wrapper's `values`) carries the element
+	// kind the caller classifies on.
+	inner, _, ok := values.EffectiveListField(fd)
+	if !ok {
 		return nil, false
 	}
-	return fd, true
+	return inner, true
 }
 
 // isChainedUnnest reports whether u's owner (segment 0) is a prior lateral

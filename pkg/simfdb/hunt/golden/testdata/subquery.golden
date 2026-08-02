@@ -1,6 +1,6 @@
 # scenario: subquery (seed 6)
-#   CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))
-#   CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
+#   CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))
+#   CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid

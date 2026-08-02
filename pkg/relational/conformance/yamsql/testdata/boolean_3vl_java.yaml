@@ -4,7 +4,7 @@
 name: boolean_3vl_java
 schema_template: |
   CREATE TABLE lb (
-    a BIGINT NOT NULL,
+    a BIGINT,
     b BOOLEAN,
     PRIMARY KEY (a)
   )

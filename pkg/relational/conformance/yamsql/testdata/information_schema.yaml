@@ -14,8 +14,8 @@
 # is, and the TABLE_NAME IN filter narrows to our own tables.
 name: information_schema
 schema_template: |
-  CREATE TABLE emp_systest (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE dept_systest (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp_systest (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE dept_systest (id BIGINT, name STRING, PRIMARY KEY (id))
 setup: []
 tests:
   # SELECT with a named column now projects to only that column

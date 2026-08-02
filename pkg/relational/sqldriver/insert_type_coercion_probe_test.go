@@ -26,7 +26,7 @@ func TestFDB_InsertTypeCoercionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inscoerce")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inscoerce "+
-			"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, n BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, d DOUBLE, n BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d) CREATE INDEX t_n ON t (n)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inscoerce/s WITH TEMPLATE inscoerce")
 	dsn := fmt.Sprintf("fdbsql:///testdb_inscoerce?cluster_file=%s&schema=s", clusterFilePath)

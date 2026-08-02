@@ -80,6 +80,14 @@ const (
 type FieldKeyExpression struct {
 	fieldName string
 	fanType   FanType
+	// nullInterpretationUnique preserves the proto nullInterpretation field
+	// through a FromProto→ToProto round trip (false = NOT_UNIQUE, the
+	// default; true = UNIQUE). Java's FieldKeyExpression.toProto writes the
+	// field EXPLICITLY even at its default, so the stored bytes carry it —
+	// wire, pinned by the RFC-204 template byte-goldens. Go does not yet
+	// evaluate the UNIQUE semantics; carrying the bit keeps a Java-authored
+	// UNIQUE index from being silently rewritten to NOT_UNIQUE on re-save.
+	nullInterpretationUnique bool
 	// fdCache caches the protoreflect.FieldDescriptor for this field name,
 	// keyed by the message full name. Avoids ByName() map lookup per Evaluate.
 	// Uses atomic.Pointer for goroutine safety (metadata is shared across txns).
@@ -764,6 +772,9 @@ type NestingKeyExpression struct {
 	parentField string
 	fanType     FanType
 	child       KeyExpression
+	// nullInterpretationUnique: see FieldKeyExpression — the parent field's
+	// proto nullInterpretation, preserved for byte-stable round trips.
+	nullInterpretationUnique bool
 }
 
 // Nest creates a nesting expression: navigate into a message field and evaluate

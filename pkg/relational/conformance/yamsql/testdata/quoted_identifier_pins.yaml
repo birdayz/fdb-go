@@ -7,7 +7,7 @@
 name: quoted_identifier_pins
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     "x" BIGINT,
     PRIMARY KEY (id)
   )

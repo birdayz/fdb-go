@@ -21,7 +21,7 @@ func TestFDB_IlikeRegexpBoundaryProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ilrp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ilrp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ilrp CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE ilrp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ilrp/s WITH TEMPLATE ilrp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ilrp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

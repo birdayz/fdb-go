@@ -5,7 +5,7 @@
 # threading, correlated predicate resolution, and EXISTS semi-join.
 name: join_exists_self
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, status STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, status STRING, val BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_status ON t (status)
 setup:
   - INSERT INTO t VALUES (1, 'active', 10), (2, 'inactive', 20), (3, 'active', 30), (4, 'deleted', 40)

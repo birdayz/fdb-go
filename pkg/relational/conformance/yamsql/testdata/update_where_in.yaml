@@ -3,7 +3,7 @@
 # Exercises UPDATE targeting multiple rows via IN predicate.
 name: update_where_in
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, status STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, status STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'pending', 10), (2, 'pending', 20), (3, 'done', 30), (4, 'pending', 40), (5, 'done', 50)
 tests:

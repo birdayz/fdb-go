@@ -33,7 +33,7 @@ func TestFDB_UpdatePrimaryKeyProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_upkp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_upkp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE upkp CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE upkp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_upkp/s WITH TEMPLATE upkp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_upkp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

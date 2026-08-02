@@ -9,7 +9,7 @@
 # RecordAlreadyExistsError is wrapped as SQLSTATE 23505.
 name: unique_violation
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING NOT NULL, email STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))
   CREATE UNIQUE INDEX t_email ON t (email)
 setup:
   - INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com')

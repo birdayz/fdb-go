@@ -4,8 +4,8 @@
 # aggregate, DELETE (no-op).
 name: empty_table_operations
 schema_template: |
-  CREATE TABLE empty_t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
-  CREATE TABLE other_t (id BIGINT NOT NULL, ref_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE empty_t (id BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE other_t (id BIGINT, ref_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO other_t VALUES (1, 10), (2, 20)
 tests:

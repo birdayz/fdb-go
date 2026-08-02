@@ -4,7 +4,7 @@
 name: cte_java_patterns
 schema_template: |
   CREATE TABLE t1 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)

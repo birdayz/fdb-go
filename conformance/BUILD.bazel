@@ -117,7 +117,7 @@ go_test(
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",
-        "rfc204_descriptor_probe_test.go",
+        "rfc204_template_golden_test.go",
         "run_sql_conformance_test.go",
         "scan_conformance_test.go",
         "schema_template_catalog_conformance_test.go",
@@ -173,6 +173,7 @@ go_test(
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
         "@rules_go//go/runfiles",
     ],
 )

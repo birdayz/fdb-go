@@ -18,7 +18,7 @@
 name: covering_index_pushdown
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     tag STRING,
     v BIGINT,
@@ -28,7 +28,7 @@ schema_template: |
   CREATE INDEX idx_status ON t (status)
   CREATE INDEX idx_v ON t (v)
   CREATE TABLE t2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     plan STRING,
     amount BIGINT,
@@ -37,16 +37,16 @@ schema_template: |
   )
   CREATE INDEX idx_region_plan ON t2 (region, plan)
   CREATE TABLE tb (
-    id BIGINT NOT NULL,
+    id BIGINT,
     payload BYTES,
     label STRING,
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_payload ON tb (payload)
   CREATE TABLE kvw (
-    a BIGINT NOT NULL,
-    b BIGINT NOT NULL,
-    c BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    c BIGINT,
     extra STRING,
     PRIMARY KEY (a, b, c)
   )

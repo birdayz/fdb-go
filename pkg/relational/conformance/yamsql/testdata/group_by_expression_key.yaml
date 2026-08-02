@@ -3,7 +3,7 @@
 # Exercises GROUP BY on computed expressions, not just column names.
 name: group_by_expression_key
 schema_template: |
-  CREATE TABLE events (id BIGINT NOT NULL, ts BIGINT, category STRING, value BIGINT, PRIMARY KEY (id))
+  CREATE TABLE events (id BIGINT, ts BIGINT, category STRING, value BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO events VALUES (1, 1000, 'A', 10), (2, 1500, 'B', 20), (3, 2000, 'A', 30), (4, 2500, 'B', 40), (5, 3000, 'C', 50)
 tests:

@@ -80,9 +80,9 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mwjip")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mwjip_tmpl "+
-			"CREATE TABLE t1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, t1_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t3 (id BIGINT NOT NULL, t2_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")

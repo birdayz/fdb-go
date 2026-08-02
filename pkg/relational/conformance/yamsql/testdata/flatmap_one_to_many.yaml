@@ -4,8 +4,8 @@
 # multiple inner rows share the same FK value.
 name: flatmap_one_to_many
 schema_template: |
-  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+  CREATE TABLE authors (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT, author_id BIGINT, title STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO authors VALUES (1, 'Tolkien'), (2, 'Asimov')
   - INSERT INTO books VALUES (1, 1, 'LOTR'), (2, 1, 'Hobbit'), (3, 1, 'Silmarillion'), (4, 2, 'Foundation'), (5, 2, 'I Robot')

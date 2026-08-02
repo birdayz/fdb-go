@@ -8,7 +8,7 @@
 # strictlySorted property on the plan partition.
 name: order_by_index
 schema_template: |
-  CREATE TABLE Products (id BIGINT NOT NULL, price BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE Products (id BIGINT, price BIGINT, name STRING, PRIMARY KEY (id))
   CREATE INDEX idx_products_price ON Products (price)
 setup:
   - INSERT INTO Products VALUES (1, 30, 'banana')

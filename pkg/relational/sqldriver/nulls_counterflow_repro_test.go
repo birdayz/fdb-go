@@ -29,7 +29,7 @@ func TestFDB_NullsCounterflowRepro(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cflow")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cflow "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cflow/s WITH TEMPLATE cflow")
 	dsn := fmt.Sprintf("fdbsql:///testdb_cflow?cluster_file=%s&schema=s", clusterFilePath)

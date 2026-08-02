@@ -110,7 +110,26 @@ const (
 
 	// SkipDDLStruct is a schema template the engine rejects because it
 	// declares a struct type. RFC-201 Phase 3, the largest engine gap.
+	//
+	// RFC-204 Phase 1 emptied this class: CREATE TYPE AS STRUCT registers,
+	// struct columns declare, and the descriptor emits Java's wire shape.
+	// The class name stays declared for the classifier's declaration scan;
+	// struct-declaring files whose DDL still fails do so on their NESTED
+	// AS-SELECT indexes and book to SkipDDLStructIndex below.
 	SkipDDLStruct SkipClass = "unsupported-DDL:struct"
+
+	// SkipDDLStructIndex is a struct-declaring schema template whose struct
+	// DDL succeeds but whose CREATE INDEX ... AS SELECT over NESTED struct
+	// fields the generator cannot build yet — the RFC-204 Phase 5 surface
+	// (multi-accessor chains through MaterializedViewIndexGenerator).
+	SkipDDLStructIndex SkipClass = "unsupported-DDL:struct-index"
+
+	// SkipGapStructDML is a struct-declaring file whose DDL now builds
+	// (RFC-204 Phase 1) and whose first struct-VALUE touch — a struct or
+	// array-of-struct literal in INSERT — declines loudly. The typed
+	// row-constructor push-down that accepts these literals is RFC-204
+	// Phase 2; until then each file is pinned to its exact rejection.
+	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
 
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.

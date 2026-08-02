@@ -22,7 +22,7 @@ func TestFDB_ThreeValuedLogicProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_3vl")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tvl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3vl/s WITH TEMPLATE tvl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_3vl?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

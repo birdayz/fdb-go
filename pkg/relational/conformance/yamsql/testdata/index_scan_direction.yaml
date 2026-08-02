@@ -6,7 +6,7 @@
 name: index_scan_direction
 schema_template: |
   CREATE TABLE events (
-    id BIGINT NOT NULL,
+    id BIGINT,
     ts BIGINT,
     category STRING,
     payload STRING,

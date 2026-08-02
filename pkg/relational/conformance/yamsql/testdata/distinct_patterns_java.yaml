@@ -4,7 +4,7 @@
 name: distinct_patterns_java
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     cat STRING,
     val BIGINT,
     PRIMARY KEY (id)

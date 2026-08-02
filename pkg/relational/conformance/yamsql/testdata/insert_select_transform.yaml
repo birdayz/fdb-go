@@ -3,8 +3,8 @@
 # Exercises INSERT ... SELECT where the SELECT transforms data.
 name: insert_select_transform
 schema_template: |
-  CREATE TABLE source (id BIGINT NOT NULL, name STRING, score BIGINT, PRIMARY KEY (id))
-  CREATE TABLE target (id BIGINT NOT NULL, upper_name STRING, doubled_score BIGINT, PRIMARY KEY (id))
+  CREATE TABLE source (id BIGINT, name STRING, score BIGINT, PRIMARY KEY (id))
+  CREATE TABLE target (id BIGINT, upper_name STRING, doubled_score BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO source VALUES (1, 'Alice', 85), (2, 'Bob', 92), (3, 'Charlie', 78)
 tests:

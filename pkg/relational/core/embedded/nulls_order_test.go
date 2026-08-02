@@ -13,7 +13,7 @@ import (
 func TestNullsOrder_ExplicitPlacementRetainsSort(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_ab ON T(a, b)`
 
 	// Ascending natural placement (NULLS FIRST) IS satisfied by the forward index

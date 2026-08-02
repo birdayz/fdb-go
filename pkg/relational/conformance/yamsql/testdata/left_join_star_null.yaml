@@ -5,8 +5,8 @@
 # correctly handles the full column set from both sides.
 name: left_join_star_null
 schema_template: |
-  CREATE TABLE parent (id BIGINT NOT NULL, pname STRING, PRIMARY KEY (id))
-  CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT, cname STRING, extra BIGINT, PRIMARY KEY (id))
+  CREATE TABLE parent (id BIGINT, pname STRING, PRIMARY KEY (id))
+  CREATE TABLE child (id BIGINT, parent_id BIGINT, cname STRING, extra BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO parent VALUES (1, 'A'), (2, 'B'), (3, 'C')
   - INSERT INTO child VALUES (10, 1, 'x', 100), (20, 1, 'y', 200)

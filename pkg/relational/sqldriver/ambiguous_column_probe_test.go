@@ -22,8 +22,8 @@ func TestFDB_AmbiguousColumnProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ambp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ambp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ambp "+
-		"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE b (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT, y BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ambp/s WITH TEMPLATE ambp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ambp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

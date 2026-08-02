@@ -5,7 +5,7 @@
 name: aggregate_index_multi_group
 schema_template: |
   CREATE TABLE events (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     severity STRING,
     duration BIGINT,

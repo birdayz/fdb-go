@@ -21,7 +21,7 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 	ctx := context.Background()
 
 	ddl := "CREATE TABLE orders (" +
-		"id BIGINT NOT NULL, " +
+		"id BIGINT, " +
 		"customer_id BIGINT, " +
 		"amount BIGINT, " +
 		"PRIMARY KEY (id)) " +

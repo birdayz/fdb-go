@@ -12,13 +12,13 @@
 name: comparison_promotion_gate
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     s STRING,
     b BOOLEAN,
     PRIMARY KEY (id)
   )
   CREATE TABLE empty_t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     s STRING,
     PRIMARY KEY (id)
   )

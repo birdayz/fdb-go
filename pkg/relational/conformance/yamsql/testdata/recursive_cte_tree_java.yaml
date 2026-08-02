@@ -3,7 +3,7 @@
 name: recursive_cte_tree_java
 schema_template: |
   CREATE TABLE tree (
-    id BIGINT NOT NULL,
+    id BIGINT,
     parent_id BIGINT,
     name STRING,
     PRIMARY KEY (id)

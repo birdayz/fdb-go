@@ -90,12 +90,11 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 		d := md.GetRecordType("C").Descriptor
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("CID"), protoreflect.ValueOfInt64(cid))
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
+		arrVals := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			arrVals = append(arrVals, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 

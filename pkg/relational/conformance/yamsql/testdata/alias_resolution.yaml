@@ -4,8 +4,8 @@
 # qualified column names vs aliases, alias reuse across scopes.
 name: alias_resolution
 schema_template: |
-  CREATE TABLE employees (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE departments (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO employees VALUES (1, 'Alice', 10), (2, 'Bob', 20)
   - INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales')

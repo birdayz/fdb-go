@@ -22,7 +22,7 @@ func TestFDB_RecursiveCTEHierarchy(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rctehier")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rctehier "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, mgr BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rctehier/s WITH TEMPLATE rctehier")
 	dsn := fmt.Sprintf("fdbsql:///testdb_rctehier?cluster_file=%s&schema=s", clusterFilePath)

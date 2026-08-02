@@ -182,7 +182,7 @@ func newHarness(seed uint64, faultProb float64) (*harness, error) {
 	h.closes = append(h.closes, func() { setup.Close() })
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))",
 		"CREATE SCHEMA " + dbPath + "/s WITH TEMPLATE tmpl",
 	} {
 		if _, err := setup.ExecContext(context.Background(), stmt); err != nil {

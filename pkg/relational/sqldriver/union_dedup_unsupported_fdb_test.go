@@ -25,7 +25,7 @@ func TestFDB_UnionDedup_Unsupported(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uniondd")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uniondd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uniondd "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uniondd/s WITH TEMPLATE uniondd")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uniondd?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

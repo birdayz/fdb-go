@@ -22,7 +22,7 @@ func TestFDB_SelfJoinChainProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_selfchain")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfchain "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, mgr BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfchain/s WITH TEMPLATE selfchain")
 	dsn := fmt.Sprintf("fdbsql:///testdb_selfchain?cluster_file=%s&schema=s", clusterFilePath)

@@ -19,7 +19,7 @@ func TestFDB_HavingNoGroupByProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_hngp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_hngp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE hngp CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE hngp CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_hngp/s WITH TEMPLATE hngp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_hngp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

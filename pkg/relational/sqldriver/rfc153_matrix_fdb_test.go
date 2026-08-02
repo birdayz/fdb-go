@@ -46,10 +46,10 @@ func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc153mx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153mx "+
-			"CREATE TABLE a (id BIGINT NOT NULL, flag BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, bx BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE d (id BIGINT NOT NULL, b_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, bx_ref BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, bx BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE d (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, bx_ref BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX d_b_id ON d (b_id) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
@@ -175,9 +175,9 @@ func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc153agg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153agg "+
-			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153agg/s WITH TEMPLATE rfc153agg")

@@ -23,8 +23,8 @@ func TestFDB_StarExpansionJoinProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_sej")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sej")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sej "+
-		"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE b (bid BIGINT NOT NULL, y BIGINT, PRIMARY KEY (bid))")
+		"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (bid BIGINT, y BIGINT, PRIMARY KEY (bid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sej/s WITH TEMPLATE sej")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sej?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

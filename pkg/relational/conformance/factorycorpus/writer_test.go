@@ -43,7 +43,7 @@ func sampleScenario(name string, seed uint64, planShape string) *factorycorpus.S
 		Header: sampleHeader(name, seed, planShape),
 		Doc: &yamsql.Scenario{
 			Name:           name,
-			SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, d DOUBLE, e FLOAT, s STRING, PRIMARY KEY (id))\nCREATE INDEX idx_a ON t (a)",
+			SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, d DOUBLE, e FLOAT, s STRING, PRIMARY KEY (id))\nCREATE INDEX idx_a ON t (a)",
 			Setup:          []string{"INSERT INTO t VALUES (1, 5, -0.0, 0.1, 'alpha'), (2, NULL, 2.0, -0.0, '')"},
 			Tests: []yamsql.Test{
 				{

@@ -9,7 +9,7 @@
 # rejection is data-independent, so it fires even though the table has rows.
 name: min_max_string
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'Charlie'), (2, 'Alice'), (3, 'Bob'), (4, 'Dave')
 tests:

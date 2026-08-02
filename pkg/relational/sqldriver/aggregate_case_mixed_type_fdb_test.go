@@ -24,7 +24,7 @@ func TestFDB_AggregateMinMax_MixedTypeCaseOperand(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggmixed")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggmixed "+
-			"CREATE TABLE mixed (id BIGINT NOT NULL, g BIGINT, flag BIGINT, d DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE mixed (id BIGINT, g BIGINT, flag BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggmixed/s WITH TEMPLATE aggmixed")
 	dsn := fmt.Sprintf("fdbsql:///testdb_aggmixed?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

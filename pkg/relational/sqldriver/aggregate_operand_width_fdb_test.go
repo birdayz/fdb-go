@@ -108,7 +108,7 @@ func TestFDB_AggregateOperandWidthIsPositional(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "positional", "CREATE TABLE w ("+
-		"id BIGINT NOT NULL, a BIGINT, v INTEGER, b BIGINT, u INTEGER, PRIMARY KEY (id))")
+		"id BIGINT, a BIGINT, v INTEGER, b BIGINT, u INTEGER, PRIMARY KEY (id))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -155,8 +155,8 @@ func TestFDB_AggregateOperandWidthDeclinesForeignLayout(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "foreign", ""+
-		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE j1 (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -223,8 +223,8 @@ func TestFDB_AggregateOperandWidthJoinLegRaises(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "javagap", ""+
-		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE j1 (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -260,8 +260,8 @@ func TestFDB_AggregateOperandWidthNegativeOverflow(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "negdir", ""+
-		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE j1 (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -296,9 +296,9 @@ func TestFDB_AggregateOperandWidthInt32BoundaryExact(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "i32edge", ""+
-		"CREATE TABLE jmax (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE jmin (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE jmax (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE jmin (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i, v := range []int64{2000000000, 147483647} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -345,9 +345,9 @@ func TestFDB_AggregateOperandWidthBigintBothPaths(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "bigint", ""+
-		"CREATE TABLE bmax (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE bovf (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE bmax (id BIGINT, y BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE bovf (id BIGINT, y BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i, v := range []int64{9223372036854775806, 1} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -402,8 +402,8 @@ func TestFDB_AggregateOperandWidthAvgCountControls(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "avgcount", ""+
-		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE j2 (id2 BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id2))")
+		"CREATE TABLE j1 (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE j2 (id2 BIGINT, y BIGINT, PRIMARY KEY (id2))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
@@ -459,9 +459,9 @@ func TestFDB_AggregateOperandWidthDerivedAndUnionInputs(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := aggWidthDB(t, ctx, "derivedunion", ""+
-		"CREATE TABLE j1 (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE je (id BIGINT NOT NULL, x INTEGER, PRIMARY KEY (id)) "+
-		"CREATE TABLE jb (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE j1 (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE je (id BIGINT, x INTEGER, PRIMARY KEY (id)) "+
+		"CREATE TABLE jb (id BIGINT, x BIGINT, PRIMARY KEY (id))")
 
 	for i := 1; i <= 2; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(

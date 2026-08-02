@@ -23,7 +23,7 @@ func TestFDB_NegativeIntIndexProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_negint")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE negint "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_negint/s WITH TEMPLATE negint")
 	dsn := fmt.Sprintf("fdbsql:///testdb_negint?cluster_file=%s&schema=s", clusterFilePath)

@@ -4,7 +4,7 @@
 # and mixed predicate types.
 name: where_complex_predicates
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'x', 100), (2, 20, 'y', 200), (3, 30, 'x', 300), (4, 40, 'y', 400), (5, 50, 'z', 500)
 tests:

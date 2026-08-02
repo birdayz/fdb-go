@@ -154,14 +154,59 @@ var engineGaps = []EngineGap{
 	// signature matches the escaped form.
 	{"join-tests-outer.yamsql", SkipConformanceGoAccepts, `ORDER BY \"d\".\"name\";": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
-	// A `create schema template` issued as a SETUP STEP rather than as a
-	// schema_template block, declaring struct types. Same Phase-3 gap as the
-	// block form, reached by a different route, so it is classed with it.
-	// The rejection moved from the column-type check to the fail-closed
-	// template-clause guard (the CREATE TYPE AS STRUCT clause itself) when
-	// silently-skipped template clauses were banned.
-	{"showcasing-tests.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
-	{"create-drop-create-template.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
+	// ---- engine-gap:struct-dml (RFC-204 Phase 1 → Phase 2) ----
+	//
+	// Struct DDL builds (CREATE TYPE AS STRUCT registers, struct columns
+	// declare, the descriptor emits Java's wire shape), so these files now
+	// run until their first struct VALUE — a struct or array-of-struct
+	// literal in INSERT — where the engine declines loudly:
+	//   - a bare `(a, b)` tuple at a struct slot dies on the scalar-slot
+	//     guard's 22023 "expected Record but got Primitive" (the typed
+	//     target push-down that accepts it is Phase 2's parseRecordField);
+	//   - a `[(a, b), …]` array-of-struct literal dies on the projection
+	//     walker's multi-element record-constructor decline (0A000).
+	// Each entry pins the file's exact first rejection; anything else in the
+	// same file stays a hard failure.
+	{"primary-key-tests.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"inserts-updates-deletes.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"uuid-non-prepared.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"select-a-star.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"functions.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"struct-type-nullability-variants.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"nested-tests.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldPass/type-named-array.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldPass/struct-type-name.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldPass/nested-struct-column.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldPass/field-named-array.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-struct-type-name.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-nested-struct-type.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-struct-field-name.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-struct-field-type.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-nested-struct-name.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+	{"check-result-metadata/shouldPass/array-of-struct-column.yamsql", SkipGapStructDML, "RecordConstructor with 2 elements", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-array-of-struct-field-name.yamsql", SkipGapStructDML, "RecordConstructor with 2 elements", "RFC-204 P2"},
+	{"check-result-metadata/shouldFail/wrong-array-of-struct-field-type.yamsql", SkipGapStructDML, "RecordConstructor with 2 elements", "RFC-204 P2"},
+	{"array-join-at.yamsql", SkipGapStructDML, "RecordConstructor with 2 elements", "RFC-204 P2"},
+	{"star-expression-metadata.yamsql", SkipGapStructDML, "RecordConstructor with 2 elements", "RFC-204 P2"},
+	{"arrays-unnesting-documentation-queries.yamsql", SkipGapStructDML, "unsupported INSERT VALUES expression", "RFC-204 P2"},
+	// The setup-step `create schema template` route (formerly CQ-73's two
+	// unsupported-DDL:struct gap entries) progresses through template
+	// creation; showcasing-tests then dies at its struct-literal inserts
+	// like the block-form files, while create-drop-create-template PASSES
+	// outright (its struct column is never inserted into).
+	{"showcasing-tests.yamsql", SkipGapStructDML, "expected Record but got Primitive", "RFC-204 P2"},
+
+	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
+	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
+	// applied to the literal), where Java lets the NULL reach message
+	// coercion and dies with an internal XX000 — the code class differs on
+	// a shared-surface statement, so it stays a counted divergence.
+	{"arrays.yamsql", SkipGapErrorClass, "expecting 'XX000' error code, got '23502'", "RFC-204 P2"},
+
+	// RE-ARMED by struct DDL landing (this class was masked while the file's
+	// template failed at its struct declarations): UPDATE … RETURNING with
+	// OPTIONS(DRY RUN) yields no result set through the driver.
+	{"update-delete-returning.yamsql", SkipGapReturningDryRun, "actual result set is NULL, expecting non-NULL result set", "RFC-201 Phase 5"},
 
 	// ---- Gaps armed by RFC-202 S2: these files' index DDL now succeeds, so
 	// their queries run for the first time and each reaches its own

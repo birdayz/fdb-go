@@ -30,10 +30,10 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ixgate")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ixgate "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON t (a) "+
 			"CREATE INDEX idx_b ON t (b) "+
-			"CREATE TABLE t_desc (id BIGINT NOT NULL, a BIGINT, b BIGINT, sort_key BIGINT NOT NULL, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t_desc (id BIGINT, a BIGINT, b BIGINT, sort_key BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_desc_a_sort ON t_desc (a, sort_key) "+
 			"CREATE INDEX idx_desc_b_sort ON t_desc (b, sort_key)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ixgate/s WITH TEMPLATE ixgate")

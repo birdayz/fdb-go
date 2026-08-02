@@ -26,7 +26,7 @@ func TestFDB_NestedDerivedTableProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ndt")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ndt")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ndt CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE ndt CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ndt/s WITH TEMPLATE ndt")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ndt?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

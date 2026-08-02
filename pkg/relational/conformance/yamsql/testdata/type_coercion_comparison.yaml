@@ -4,7 +4,7 @@
 # and mixed-type ORDER BY.
 name: type_coercion_comparison
 schema_template: |
-  CREATE TABLE prices (id BIGINT NOT NULL, int_price BIGINT, float_price DOUBLE, PRIMARY KEY (id))
+  CREATE TABLE prices (id BIGINT, int_price BIGINT, float_price DOUBLE, PRIMARY KEY (id))
 setup:
   - INSERT INTO prices VALUES (1, 100, 99.99), (2, 100, 100.0), (3, 100, 100.01), (4, 50, 50.0)
 tests:

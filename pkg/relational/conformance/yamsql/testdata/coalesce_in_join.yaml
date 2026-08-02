@@ -4,8 +4,8 @@
 # and NULL aggregate results.
 name: coalesce_in_join
 schema_template: |
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales')
   - INSERT INTO emp VALUES (10, 'Alice', 1), (20, 'Bob', 2), (30, 'Charlie', null)

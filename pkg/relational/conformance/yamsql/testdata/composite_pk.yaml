@@ -6,7 +6,7 @@
 #   - partial-prefix lookup in WHERE
 name: composite_pk
 schema_template: |
-  CREATE TABLE t (a BIGINT NOT NULL, b BIGINT NOT NULL, label STRING, PRIMARY KEY (a, b))
+  CREATE TABLE t (a BIGINT, b BIGINT, label STRING, PRIMARY KEY (a, b))
 setup:
   - INSERT INTO t VALUES (1, 10, 'alpha'), (1, 20, 'beta'), (2, 10, 'gamma')
 tests:

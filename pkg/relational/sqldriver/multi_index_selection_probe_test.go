@@ -23,7 +23,7 @@ func TestFDB_MultiIndexSelectionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_multiidx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE multiidx "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b) CREATE INDEX t_ac ON t (a, c)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_multiidx/s WITH TEMPLATE multiidx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_multiidx?cluster_file=%s&schema=s", clusterFilePath)

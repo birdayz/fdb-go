@@ -22,7 +22,7 @@ func TestFDB_ColumnMetadataProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_colmetap")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE colmetap "+
-			"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, s STRING, flag BOOLEAN, bin BYTES, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, d DOUBLE, s STRING, flag BOOLEAN, bin BYTES, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_colmetap/s WITH TEMPLATE colmetap")
 	dsn := fmt.Sprintf("fdbsql:///testdb_colmetap?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

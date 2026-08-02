@@ -27,8 +27,8 @@ func TestFDB_CaseCrossTablePredicate(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_case_xtab")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE case_xtab "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_case_xtab/s WITH TEMPLATE case_xtab")
 	dsn := fmt.Sprintf("fdbsql:///testdb_case_xtab?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

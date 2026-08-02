@@ -62,17 +62,17 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 		// the same query over a THREE-column first leg does not reach the leg-window
 		// path at all — it declines during the ordinal join build — so a
 		// nearly-identical table definition measures nothing.
-		" CREATE TABLE na (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE nb (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE nc (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE nd (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE la (id BIGINT NOT NULL, v BIGINT, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE lb (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE lc (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE ld (id BIGINT NOT NULL, PRIMARY KEY (id))"+
-		" CREATE TABLE lorders (id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE lextras (id BIGINT NOT NULL, ref BIGINT, tag STRING, PRIMARY KEY (id))"+
-		" CREATE TABLE larr (id BIGINT NOT NULL, arr INTEGER ARRAY, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE na (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nb (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nc (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE nd (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE la (id BIGINT, v BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE lb (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE lc (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE ld (id BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE lorders (id BIGINT, amount BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE lextras (id BIGINT, ref BIGINT, tag STRING, PRIMARY KEY (id))"+
+		" CREATE TABLE larr (id BIGINT, arr INTEGER ARRAY, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE s4legid_tmpl"); err != nil {

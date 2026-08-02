@@ -8,7 +8,7 @@
 # RecordIndexUniquenessViolation → ErrorCode.UNIQUE_CONSTRAINT_VIOLATION.
 name: unique_index_violation
 schema_template: |
-  CREATE TABLE Users (id BIGINT NOT NULL, email STRING, PRIMARY KEY (id))
+  CREATE TABLE Users (id BIGINT, email STRING, PRIMARY KEY (id))
   CREATE UNIQUE INDEX idx_users_email ON Users (email)
 setup:
   - INSERT INTO Users VALUES (1, 'alice@example.com')

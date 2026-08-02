@@ -4,7 +4,7 @@
 name: update_delete_where_java
 schema_template: |
   CREATE TABLE inventory (
-    id BIGINT NOT NULL,
+    id BIGINT,
     product STRING,
     qty BIGINT,
     price BIGINT,

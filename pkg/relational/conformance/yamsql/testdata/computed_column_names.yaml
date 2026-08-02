@@ -6,7 +6,7 @@
 # (previously used expression text like "(ID + 10)").
 name: computed_column_names
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
 tests:

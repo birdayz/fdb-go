@@ -5,7 +5,7 @@
 name: aggregate_index_update
 schema_template: |
   CREATE TABLE tasks (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     effort BIGINT,
     PRIMARY KEY (id)

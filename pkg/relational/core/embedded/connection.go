@@ -22,6 +22,7 @@ import (
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -517,7 +518,17 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 
 // SetDefaultSchema sets the initial schema that is restored by ResetSession.
 // Called by the driver when the DSN contains ?schema=.
+//
+// The value is an SQL identifier and normalizes like one: unquoted names
+// fold to upper case, quoted names stay verbatim — the same rule
+// execCreateSchema applies, so `?schema=test1` finds the schema
+// `create schema /db/test1` created (both sides normalize to TEST1,
+// Java's identifier model; the corpus pins both spellings:
+// setup-with-connection-options.yamsql connects lower-case to a lower-case
+// create, create-drop-create-template.yamsql upper-case to a lower-case
+// create).
 func (c *EmbeddedConnection) SetDefaultSchema(s string) {
+	s = functions.StripIdentifierQuotes(s)
 	c.sess.DefaultSchema = s
 	c.sess.Schema = s
 }

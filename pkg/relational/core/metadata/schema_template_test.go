@@ -739,8 +739,17 @@ func TestBuilder_NullableVsNotNullable(t *testing.T) {
 	if len(cols) != 2 {
 		t.Fatalf("len(Columns) = %d, want 2", len(cols))
 	}
-	if cols[0].DataType().IsNullable() {
-		t.Errorf("id should be non-nullable")
+	// Scalar non-nullability does NOT survive RecordMetaData: every
+	// non-array field is stored LABEL_OPTIONAL (Java's
+	// Type.Record.defineProtoType passes LABEL_OPTIONAL unconditionally —
+	// "there is no way to specify non-nullability at the RecordMetaData
+	// level", the DdlVisitor.visitColumnDefinition TODO). The declared
+	// NOT NULL therefore reads back as nullable. If this assertion starts
+	// failing with cols[0] non-nullable, upstream grew a nullability
+	// representation in the descriptor — re-align the emitter with Java
+	// before "fixing" this test.
+	if !cols[0].DataType().IsNullable() {
+		t.Errorf("id reads back NULLABLE (nullability collapse — the descriptor cannot carry scalar NOT NULL)")
 	}
 	if !cols[1].DataType().IsNullable() {
 		t.Errorf("opt should be nullable")
@@ -819,11 +828,43 @@ func TestBuilder_WithFanOutIndex(t *testing.T) {
 	if index == nil || !index.CreatesDuplicates() {
 		t.Fatalf("fanout index = %#v, want a duplicate-producing index", index)
 	}
+	// `tags` is a NULLABLE array, so the descriptor carries the
+	// NullableArrayWrapper and the index root gains the `values` hop:
+	// field(tags, SCALAR).nest(field(values, FAN_OUT)) — Java's
+	// NullableArrayUtils.wrapArray shape. A flat field(tags, FAN_OUT) would
+	// no longer match the stored descriptor (the field is a message now).
 	root := index.RootExpression.ToKeyExpression()
-	if root == nil || root.GetField() == nil ||
+	nest := root.GetNesting()
+	if nest == nil ||
+		nest.GetParent().GetFieldName() != "tags" ||
+		nest.GetParent().GetFanType() != gen.Field_SCALAR ||
+		nest.GetChild().GetField().GetFieldName() != "values" ||
+		nest.GetChild().GetField().GetFanType() != gen.Field_FAN_OUT {
+		t.Fatalf("fanout root = %v, want field(tags, SCALAR).nest(field(values, FAN_OUT))", root)
+	}
+}
+
+// TestBuilder_WithFanOutIndex_NotNullArray pins the FLAT shape for a
+// NON-nullable array: no wrapper in the descriptor, so the fan-out root
+// stays field(tags, FAN_OUT) with no `values` hop.
+func TestBuilder_WithFanOutIndex_NotNullArray(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("fanout_flat").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("id", api.NewLongType(false), 1),
+			NewColumnSpec("tags", api.NewArrayType(api.NewLongType(false), false), 2),
+		}, []string{"id"}).
+		AddFanOutIndex("T", "by_tag", "tags").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	root := tmpl.Underlying().GetIndex("by_tag").RootExpression.ToKeyExpression()
+	if root.GetField() == nil ||
 		root.GetField().GetFieldName() != "tags" ||
 		root.GetField().GetFanType() != gen.Field_FAN_OUT {
-		t.Fatalf("fanout root = %#v, want field(tags, FAN_OUT)", root)
+		t.Fatalf("fanout root = %v, want flat field(tags, FAN_OUT)", root)
 	}
 }
 

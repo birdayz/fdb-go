@@ -21,7 +21,7 @@ func TestFDB_AvgFractionalProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_avgfracp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_avgfracp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE avgfracp CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE avgfracp CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_avgfracp/s WITH TEMPLATE avgfracp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_avgfracp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

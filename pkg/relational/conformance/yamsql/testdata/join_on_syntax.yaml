@@ -5,8 +5,8 @@
 # and mixed ON+WHERE.
 name: join_on_syntax
 schema_template: |
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')
   - INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 150), (30, 2, 'Charlie', 80), (40, null, 'Dave', 90)

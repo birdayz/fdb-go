@@ -4539,13 +4539,13 @@ func SeedRunCorpus() []RunQuery {
 		// exists, but pinning requires the Java
 		// conformance server to capture Java's exact error wording.
 		// Revisit when running cross-engine with Java server.
-		// Skipped not_null_scalar: Java's fdb-relational rejects
-		// `STRING NOT NULL` (or any scalar NOT NULL except ARRAY) at
-		// schema-create time with "NOT NULL is only allowed for ARRAY
-		// column type"; Go follows SQL standard and accepts. Aligning
-		// Go to Java's restriction would invalidate dozens of existing
-		// schemas across the test surface — Java's behaviour is the
-		// non-standard side (TODO #50 reclassified Tier D).
+		// not_null_scalar is no longer a divergence: Go now ports Java's
+		// restriction verbatim — scalar NOT NULL (anything except ARRAY)
+		// is rejected at schema-create with "NOT NULL is only allowed for
+		// ARRAY column type". The stored descriptor cannot carry scalar
+		// non-nullability (every non-array field is LABEL_OPTIONAL), so
+		// the former Go extension silently lost its constraint on every
+		// catalog round-trip. Pinned by error_not_null_violation below.
 		// Skipped reserved_keyword_col: both engines reject `count` as
 		// column name with a syntax error that echoes the offending
 		// CREATE TABLE fragment. Java's harness wraps the auto-generated
@@ -17880,6 +17880,9 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_BTW_01 WHERE v BETWEEN 10 AND 20 ORDER BY id",
 		},
 		{
+			// DELIBERATE scalar NOT NULL: this entry probes the shared
+			// rejection — both engines refuse the CREATE with "NOT NULL is
+			// only allowed for ARRAY column type" (DdlVisitor parity).
 			Name:           "error_not_null_violation",
 			SchemaTemplate: "CREATE TABLE T_NN_01 (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_NN_01 VALUES (1, 'ok')"},
@@ -18493,25 +18496,25 @@ func SeedCorpus() []Query {
 		{
 			Name: "catalog_select_eq_filter",
 			SQL:  "SELECT id FROM Item WHERE val = 5",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 		{
 			Name: "catalog_select_arith_filter",
 			SQL:  "SELECT id FROM Item WHERE val + 1 > 10",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 		{
 			Name: "catalog_delete_filter",
 			SQL:  "DELETE FROM Item WHERE val = 0",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 		{
 			Name: "catalog_update_filter",
 			SQL:  "UPDATE Item SET val = 100 WHERE id = 1",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 		{
@@ -18522,7 +18525,7 @@ func SeedCorpus() []Query {
 			// text fallback).
 			Name: "catalog_derived_table_where",
 			SQL:  "SELECT id FROM (SELECT id, val FROM Item) AS x WHERE val = 5",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 		{
@@ -18531,7 +18534,7 @@ func SeedCorpus() []Query {
 			// walker, then the simplifier dedups / folds).
 			Name: "catalog_and_where",
 			SQL:  "SELECT id FROM Item WHERE val > 5 AND val < 100",
-			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
 	}

@@ -29,7 +29,7 @@ func TestFDB_CorrelatedScalarInPredicate_Boundary(t *testing.T) {
 	setup := openTestDB(t, "/testdb_corrscw")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrscw")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE corrscw "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrscw/s WITH TEMPLATE corrscw")
 	dsn := fmt.Sprintf("fdbsql:///testdb_corrscw?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

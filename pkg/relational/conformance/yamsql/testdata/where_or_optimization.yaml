@@ -4,7 +4,7 @@
 # with OR-connected conditions.
 name: where_or_optimization
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, status STRING, priority BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, status STRING, priority BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'open', 1), (2, 'closed', 2), (3, 'open', 3), (4, 'pending', 1), (5, 'closed', 3)
 tests:

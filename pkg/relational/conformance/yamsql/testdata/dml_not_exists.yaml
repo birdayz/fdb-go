@@ -4,8 +4,8 @@
 # outer-only WHERE predicates must filter rows correctly in UPDATE/DELETE.
 name: dml_not_exists
 schema_template: |
-  CREATE TABLE tasks (id BIGINT NOT NULL, status STRING, assignee_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE completions (id BIGINT NOT NULL, task_id BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE tasks (id BIGINT, status STRING, assignee_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE completions (id BIGINT, task_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO tasks VALUES (1, 'open', 100), (2, 'open', 200), (3, 'closed', 100), (4, 'open', 300)
   - INSERT INTO completions VALUES (10, 2), (20, 4)

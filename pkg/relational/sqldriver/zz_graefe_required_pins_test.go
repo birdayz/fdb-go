@@ -61,9 +61,9 @@ func TestFDB_MultiOuterResidual_NotDroppedToUnboundLeg(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_multiresid")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE multiresid_tmpl "+
-			"CREATE TABLE o (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t (id BIGINT NOT NULL, fk BIGINT, xb BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE bb (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, fk BIGINT, xb BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE bb (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_multiresid/s WITH TEMPLATE multiresid_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_multiresid?cluster_file=%s&schema=s", clusterFilePath)
@@ -111,8 +111,8 @@ func TestFDB_GroupByCount_ResidualNotDropped(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gbcount")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gbcount_tmpl "+
-			"CREATE TABLE o (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t (id BIGINT NOT NULL, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbcount/s WITH TEMPLATE gbcount_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_gbcount?cluster_file=%s&schema=s", clusterFilePath)

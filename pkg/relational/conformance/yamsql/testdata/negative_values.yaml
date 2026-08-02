@@ -3,7 +3,7 @@
 # Exercises arithmetic and comparisons with negative numbers and zero.
 name: negative_values
 schema_template: |
-  CREATE TABLE accounts (id BIGINT NOT NULL, balance BIGINT, PRIMARY KEY (id))
+  CREATE TABLE accounts (id BIGINT, balance BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO accounts VALUES (1, 100), (2, -50), (3, 0), (4, -200), (5, 50)
 tests:

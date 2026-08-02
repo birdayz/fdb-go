@@ -4,8 +4,8 @@
 # active sessions, session duration tracking.
 name: e2e_user_sessions
 schema_template: |
-  CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE sessions (id BIGINT NOT NULL, user_id BIGINT, start_ts BIGINT, end_ts BIGINT, PRIMARY KEY (id))
+  CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sessions (id BIGINT, user_id BIGINT, start_ts BIGINT, end_ts BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
   - INSERT INTO sessions VALUES (10, 1, 1000, 2000), (20, 1, 3000, null), (30, 2, 1500, 1800), (40, 2, 2000, 2500), (50, 3, 500, 600)

@@ -34,8 +34,8 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 	setup := openTestDB(t, "/testdb_sscc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sscc")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscc "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscc/s WITH TEMPLATE sscc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sscc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -139,8 +139,8 @@ func TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown(t *testing.T) {
 	setup := openTestDB(t, "/testdb_sscp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sscp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscp "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscp/s WITH TEMPLATE sscp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sscp?cluster_file=%s&schema=s", clusterFilePath)

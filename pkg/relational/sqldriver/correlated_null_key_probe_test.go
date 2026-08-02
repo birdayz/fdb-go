@@ -28,8 +28,8 @@ func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrnull")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrnull "+
-			"CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrnull/s WITH TEMPLATE corrnull")
 	dsn := fmt.Sprintf("fdbsql:///testdb_corrnull?cluster_file=%s&schema=s", clusterFilePath)

@@ -9,9 +9,9 @@
 # alongside to pin the fallback still works.
 name: pk_pushdown
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE kv (k STRING NOT NULL, g BIGINT NOT NULL, v BIGINT, PRIMARY KEY (k, g))
-  CREATE TABLE kvw (region STRING NOT NULL, bucket BIGINT NOT NULL, tag STRING NOT NULL, v BIGINT, PRIMARY KEY (region, bucket, tag))
+  CREATE TABLE t (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE kv (k STRING, g BIGINT, v BIGINT, PRIMARY KEY (k, g))
+  CREATE TABLE kvw (region STRING, bucket BIGINT, tag STRING, v BIGINT, PRIMARY KEY (region, bucket, tag))
 setup:
   - INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40)
   - INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('b', 1, 300), ('b', 2, 400)

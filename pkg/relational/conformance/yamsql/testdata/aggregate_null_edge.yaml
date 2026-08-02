@@ -4,7 +4,7 @@
 # SUM/AVG/MIN/MAX over NULLs, empty groups, single-row groups.
 name: aggregate_null_edge
 schema_template: |
-  CREATE TABLE scores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id))
+  CREATE TABLE scores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO scores VALUES (1, 'Alice', 100), (2, 'Alice', null), (3, 'Bob', 50), (4, 'Bob', null), (5, 'Bob', null), (6, null, 200)
 tests:

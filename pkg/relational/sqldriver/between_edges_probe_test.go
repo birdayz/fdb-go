@@ -21,7 +21,7 @@ func TestFDB_BetweenEdgesProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_betw")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_betw")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE betw CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE betw CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_betw/s WITH TEMPLATE betw")
 	dsn := fmt.Sprintf("fdbsql:///testdb_betw?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -4,7 +4,7 @@
 name: string_functions_java
 schema_template: |
   CREATE TABLE texts (
-    id BIGINT NOT NULL,
+    id BIGINT,
     val STRING,
     PRIMARY KEY (id)
   )

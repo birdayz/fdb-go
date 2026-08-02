@@ -48,8 +48,8 @@ func TestFDB_ArrayComparison(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arraycmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arraycmp "+
-			"CREATE TABLE dummy (pk BIGINT NOT NULL, PRIMARY KEY (pk)) "+
-			"CREATE TABLE t1 (pk BIGINT NOT NULL, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
+			"CREATE TABLE dummy (pk BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE TABLE t1 (pk BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arraycmp/s WITH TEMPLATE arraycmp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_arraycmp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

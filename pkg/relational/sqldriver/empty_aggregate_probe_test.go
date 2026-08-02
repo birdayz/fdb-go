@@ -20,7 +20,7 @@ func TestFDB_EmptyAggregateProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_emptyagg")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_emptyagg")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE emptyagg CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE emptyagg CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_emptyagg/s WITH TEMPLATE emptyagg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_emptyagg?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

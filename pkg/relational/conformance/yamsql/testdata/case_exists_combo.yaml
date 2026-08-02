@@ -3,8 +3,8 @@
 # Exercises CASE expressions alongside EXISTS subqueries in WHERE.
 name: case_exists_combo
 schema_template: |
-  CREATE TABLE employees (id BIGINT NOT NULL, name STRING, dept STRING, salary BIGINT, PRIMARY KEY (id))
-  CREATE TABLE bonuses (id BIGINT NOT NULL, emp_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT, name STRING, dept STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE bonuses (id BIGINT, emp_id BIGINT, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO employees VALUES (1, 'Alice', 'eng', 100), (2, 'Bob', 'eng', 80), (3, 'Charlie', 'sales', 120), (4, 'Diana', 'sales', 90)
   - INSERT INTO bonuses VALUES (10, 1, 20), (20, 3, 30)

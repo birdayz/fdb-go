@@ -3,7 +3,7 @@
 # Exercises a sequence of DML operations and verifies the final state.
 name: multi_insert_delete
 schema_template: |
-  CREATE TABLE inventory (id BIGINT NOT NULL, product STRING, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE inventory (id BIGINT, product STRING, qty BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO inventory VALUES (1, 'Widget', 100), (2, 'Gadget', 50), (3, 'Doohickey', 75)
 tests:

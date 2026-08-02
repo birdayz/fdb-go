@@ -25,7 +25,7 @@ func TestFDB_NoSpuriousSort(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "r173sort",
-		"CREATE TABLE items (id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE items (id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_price ON items (price)")
 	for _, it := range []struct{ id, price int }{
 		{1, 500}, {2, 50}, {3, 150}, {4, 200}, {5, 25},
@@ -74,7 +74,7 @@ func TestFDB_GroupByHavingOrderBy(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "r173grp",
-		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))")
 	for _, it := range []struct {
 		id       int
 		category string

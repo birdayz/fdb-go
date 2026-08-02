@@ -31,7 +31,7 @@ import (
 func BenchmarkPlannerPlanVsCache(b *testing.B) {
 	const ordersSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   status STRING,
   amount BIGINT,
@@ -43,14 +43,14 @@ CREATE INDEX idx_amount ON ORDERS(amount)
 `
 	const joinSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   amount BIGINT,
   PRIMARY KEY (id)
 )
 CREATE INDEX idx_customer ON ORDERS(customer_id)
 CREATE TABLE CUSTOMERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   name STRING,
   PRIMARY KEY (id)
 )

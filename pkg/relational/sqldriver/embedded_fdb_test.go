@@ -842,7 +842,7 @@ func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
 
 	if _, err := db.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE test_tmpl "+
-			"CREATE TABLE RestaurantRecord (rest_no BIGINT NOT NULL, name STRING, PRIMARY KEY (rest_no))"); err != nil {
+			"CREATE TABLE RestaurantRecord (rest_no BIGINT, name STRING, PRIMARY KEY (rest_no))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 
@@ -856,7 +856,7 @@ func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 	db := openTestDB(t, "/testdb_schema_tmpl_dup")
 	ctx := context.Background()
 
-	ddl := "CREATE SCHEMA TEMPLATE dup_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"
+	ddl := "CREATE SCHEMA TEMPLATE dup_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("first CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -875,7 +875,7 @@ func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE restaurant_tmpl "+
-			"CREATE TABLE RestaurantRecord (rest_no BIGINT NOT NULL, name STRING, PRIMARY KEY (rest_no))"); err != nil {
+			"CREATE TABLE RestaurantRecord (rest_no BIGINT, name STRING, PRIMARY KEY (rest_no))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -975,7 +975,7 @@ func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 	db := openTestDB(t, "/testdb_show_tmpl")
 	ctx := context.Background()
 
-	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"
+	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -1011,7 +1011,7 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE indexed_tmpl " +
-		"CREATE TABLE Order (order_id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (order_id)) " +
+		"CREATE TABLE Order (order_id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (order_id)) " +
 		"CREATE INDEX by_customer ON Order (customer_id)"
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
@@ -1027,7 +1027,7 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE unique_tmpl " +
-		"CREATE TABLE Employee (emp_id BIGINT NOT NULL, email STRING NOT NULL, PRIMARY KEY (emp_id)) " +
+		"CREATE TABLE Employee (emp_id BIGINT, email STRING, PRIMARY KEY (emp_id)) " +
 		"CREATE UNIQUE INDEX by_email ON Employee (email)"
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE with unique index: %v", err)
@@ -1052,7 +1052,7 @@ func TestFDB_EmbeddedInsert(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE insert_tmpl "+
-			"CREATE TABLE Employee (emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (emp_id))"); err != nil {
+			"CREATE TABLE Employee (emp_id BIGINT, name STRING, PRIMARY KEY (emp_id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1095,7 +1095,7 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE multi_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, label STRING, PRIMARY KEY (item_id))"); err != nil {
+			"CREATE TABLE Item (item_id BIGINT, label STRING, PRIMARY KEY (item_id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1149,7 +1149,7 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sel_tmpl "+
-			"CREATE TABLE Person (person_id BIGINT NOT NULL, name STRING, PRIMARY KEY (person_id))"); err != nil {
+			"CREATE TABLE Person (person_id BIGINT, name STRING, PRIMARY KEY (person_id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1218,7 +1218,7 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE del_tmpl "+
-			"CREATE TABLE Widget (widget_id BIGINT NOT NULL, label STRING, PRIMARY KEY (widget_id))")
+			"CREATE TABLE Widget (widget_id BIGINT, label STRING, PRIMARY KEY (widget_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
@@ -1273,7 +1273,7 @@ func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_update_where/items WITH TEMPLATE upd_tmpl")
@@ -1337,7 +1337,7 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sw_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_select_where/items WITH TEMPLATE sw_tmpl")
@@ -1389,7 +1389,7 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_schemata_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+			"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_is_schemata/schema1 WITH TEMPLATE is_schemata_tmpl")
@@ -1425,8 +1425,8 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 		found[schemaName] = true
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(found).To(gomega.HaveKey("schema1"))
-	g.Expect(found).To(gomega.HaveKey("schema2"))
+	g.Expect(found).To(gomega.HaveKey("SCHEMA1"))
+	g.Expect(found).To(gomega.HaveKey("SCHEMA2"))
 }
 
 func TestFDB_InfoSchema_Tables(t *testing.T) {
@@ -1442,8 +1442,8 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_tables_tmpl "+
-			"CREATE TABLE T1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE T2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+			"CREATE TABLE T1 (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT, name STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_is_tables/myschema WITH TEMPLATE is_tables_tmpl")
@@ -1495,7 +1495,7 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_columns_tmpl "+
-			"CREATE TABLE Employee (emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (emp_id))")
+			"CREATE TABLE Employee (emp_id BIGINT, name STRING, PRIMARY KEY (emp_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_is_columns/hr WITH TEMPLATE is_columns_tmpl")
@@ -1553,10 +1553,13 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(colRows).To(gomega.HaveLen(2))
 
-	// Verify emp_id: NOT NULL, BIGINT (CodeLong).
+	// Verify emp_id: BIGINT (CodeLong). Even the PK reports IS_NULLABLE=YES:
+	// scalar NOT NULL is unexpressible (Java parity: NOT NULL is only allowed
+	// for ARRAY column type, rejected at CREATE), so every scalar column is
+	// stored proto OPTIONAL.
 	g.Expect(colRows[0].colName).To(gomega.Equal("EMP_ID"))
 	g.Expect(colRows[0].ordinal).To(gomega.Equal(int64(1)))
-	g.Expect(colRows[0].nullable).To(gomega.Equal("NO"))
+	g.Expect(colRows[0].nullable).To(gomega.Equal("YES"))
 	g.Expect(colRows[0].dataType).To(gomega.Equal("LONG"))
 
 	// Verify name: nullable STRING (CodeString).
@@ -1579,7 +1582,7 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE pq_tmpl "+
-			"CREATE TABLE Widget (widget_id BIGINT NOT NULL, label STRING, PRIMARY KEY (widget_id))")
+			"CREATE TABLE Widget (widget_id BIGINT, label STRING, PRIMARY KEY (widget_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_paramquery/widgets WITH TEMPLATE pq_tmpl")
@@ -1664,7 +1667,7 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_indexes")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_idx_tmpl "+
-			"CREATE TABLE Product (prod_id BIGINT NOT NULL, name STRING, PRIMARY KEY (prod_id)) "+
+			"CREATE TABLE Product (prod_id BIGINT, name STRING, PRIMARY KEY (prod_id)) "+
 			"CREATE INDEX by_name ON Product (name) "+
 			"CREATE UNIQUE INDEX by_id ON Product (prod_id)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -1738,7 +1741,7 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_proj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE proj_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_proj/store WITH TEMPLATE proj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1798,7 +1801,7 @@ func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_apostrophe")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE apos_tmpl "+
-			"CREATE TABLE Note (note_id BIGINT NOT NULL, body STRING, PRIMARY KEY (note_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Note (note_id BIGINT, body STRING, PRIMARY KEY (note_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_apostrophe/notes WITH TEMPLATE apos_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1832,10 +1835,11 @@ func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	g.Expect(gotBody).To(gomega.Equal(wantBody))
 }
 
-// TestFDB_InsertMissingPK verifies that INSERT without a required PRIMARY KEY
-// column returns an error. Proto2 marks NOT NULL columns as "required", and
-// proto serialization enforces required-field presence, so the INSERT fails
-// with RecordSerializationError rather than silently inserting a zero-keyed row.
+// TestFDB_InsertMissingPK pins INSERT-without-PK behavior: the pk column is an
+// ordinary nullable field (scalar NOT NULL is unexpressible — Java parity: NOT
+// NULL is only allowed for ARRAY column type, rejected at CREATE — so nothing
+// is proto REQUIRED anymore), the insert succeeds, and the row is stored under
+// a NULL pk element rather than a zero-keyed one.
 func TestFDB_InsertMissingPK(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -1848,7 +1852,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_missing_pk")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE mpk_tmpl "+
-			"CREATE TABLE Rec (rec_id BIGINT NOT NULL, val STRING, PRIMARY KEY (rec_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Rec (rec_id BIGINT, val STRING, PRIMARY KEY (rec_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_missing_pk/recs WITH TEMPLATE mpk_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1857,11 +1861,15 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// INSERT without pk — proto2 NOT NULL fields are "required"; protobuf
-	// serialization rejects the message with RecordSerializationError.
+	// INSERT without pk — rec_id is nullable like every scalar, so the row
+	// lands with a NULL pk element (the record layer's tuple encoding
+	// carries null natively).
 	_, err = db.ExecContext(ctx, "INSERT INTO Rec (val) VALUES ('no-pk')")
-	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("REC_ID"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var val string
+	g.Expect(db.QueryRowContext(ctx,
+		"SELECT val FROM Rec WHERE rec_id IS NULL").Scan(&val)).To(gomega.Succeed())
+	g.Expect(val).To(gomega.Equal("no-pk"))
 }
 
 // TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
@@ -1880,7 +1888,7 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_type_mismatch")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE tm_tmpl "+
-			"CREATE TABLE Obj (obj_id BIGINT NOT NULL, name STRING, PRIMARY KEY (obj_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Obj (obj_id BIGINT, name STRING, PRIMARY KEY (obj_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_type_mismatch/objs WITH TEMPLATE tm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1922,7 +1930,7 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	// firing on an inner index scan whose Ordering property satisfies.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby/items WITH TEMPLATE ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -1964,7 +1972,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	// NO index on val — Go extension: in-memory sort handles this.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_reject_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2004,7 +2012,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_reject_expr_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, a BIGINT NOT NULL, b BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2042,7 +2050,7 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_desc")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE obdesc_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_desc/items WITH TEMPLATE obdesc_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -2077,7 +2085,7 @@ func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_multi_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, a STRING NOT NULL, b BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE T (id BIGINT, a STRING, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_ab ON T (a, b)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ob_multi/main WITH TEMPLATE ob_multi_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -2143,7 +2151,7 @@ func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dist_orderby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_ob_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_val ON T (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_dist_orderby/main WITH TEMPLATE dist_ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -2178,7 +2186,7 @@ func TestFDB_SelectLimit(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE lim_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_limit/items WITH TEMPLATE lim_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2212,7 +2220,7 @@ func TestFDB_SelectWhereAnd(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wa_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_and/items WITH TEMPLATE wa_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2247,7 +2255,7 @@ func TestFDB_SelectWhereOr(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_or")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wo_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_or/items WITH TEMPLATE wo_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2282,7 +2290,7 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wr_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_range/items WITH TEMPLATE wr_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -2318,7 +2326,7 @@ func TestFDB_DeleteWhereAnd(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_del_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE da_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_del_and/items WITH TEMPLATE da_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2357,7 +2365,7 @@ func TestFDB_UpdateWhereRange(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ur_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_upd_range/items WITH TEMPLATE ur_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2397,7 +2405,7 @@ func TestFDB_SelectCountStar(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE cs_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_count_star/items WITH TEMPLATE cs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2430,7 +2438,7 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_not")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wn_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_not/items WITH TEMPLATE wn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2466,7 +2474,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_noproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE onp_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ob_noproj/items WITH TEMPLATE onp_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -2502,7 +2510,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_distinct/items WITH TEMPLATE dist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2539,7 +2547,7 @@ func TestFDB_SelectWhereIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE in_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_in/items WITH TEMPLATE in_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2574,7 +2582,7 @@ func TestFDB_SelectWhereNotIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nin_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_not_in/items WITH TEMPLATE nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2610,7 +2618,7 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	// val is nullable (no NOT NULL constraint) so unset fields appear as NULL.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE isnull_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_is_null/items WITH TEMPLATE isnull_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2689,7 +2697,7 @@ func TestFDB_SelectWhereLike(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_like/items WITH TEMPLATE like_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2738,7 +2746,7 @@ func TestFDB_SelectWhereBetween(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_between")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE between_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_between/items WITH TEMPLATE between_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2787,7 +2795,7 @@ func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like_us")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_us_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_like_us/items WITH TEMPLATE like_us_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2822,7 +2830,7 @@ func TestFDB_BeginCommit(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_commit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE bc_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_begin_commit/items WITH TEMPLATE bc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2862,7 +2870,7 @@ func TestFDB_BeginRollback(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_rollback")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE br_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_begin_rollback/items WITH TEMPLATE br_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2895,7 +2903,7 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE txm_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2941,7 +2949,7 @@ func TestFDB_SelectWhereNullNotIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE null_nin_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2980,7 +2988,7 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_lhs")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE const_lhs_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_const_lhs/items WITH TEMPLATE const_lhs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3016,7 +3024,7 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE alias_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3053,7 +3061,7 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, name STRING, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -3091,7 +3099,7 @@ func TestFDB_SQLCommitRollback(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sql_txn_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3149,7 +3157,7 @@ func TestFDB_InsertWithoutColumnList(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nocollist_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3182,7 +3190,7 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_arith_tmpl "+
-			"CREATE TABLE Counter (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Counter (id BIGINT, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3217,7 +3225,7 @@ func TestFDB_UpdateInt32Overflow(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_int32_ovf")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_int32_ovf_tmpl "+
-			"CREATE TABLE T32 (id BIGINT NOT NULL, val INTEGER, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE T32 (id BIGINT, val INTEGER, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_upd_int32_ovf/upd_int32_ovf WITH TEMPLATE upd_int32_ovf_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3267,7 +3275,7 @@ func TestFDB_GroupByCount(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpby_tmpl "+
-			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3319,7 +3327,7 @@ func TestFDB_GroupByHaving(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_having")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE having_tmpl "+
-			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3367,7 +3375,7 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpord_tmpl "+
-			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Sale (id BIGINT, region STRING, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3423,7 +3431,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE aggno_tmpl "+
-			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3468,7 +3476,7 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sumdiv_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE T (id BIGINT, qty BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3521,7 +3529,7 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE barebool_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, b BOOLEAN, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE T (id BIGINT, b BOOLEAN, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3626,7 +3634,7 @@ func TestFDB_DoubleColumnComparison(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE double_cmp_tmpl "+
-			"CREATE TABLE D (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE D (id BIGINT, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_double_cmp?cluster_file=%s&schema=items", clusterFilePath)
@@ -3676,7 +3684,7 @@ func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dml_nonbool_tmpl "+
-			"CREATE TABLE A (id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE A (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_dml_nonbool?cluster_file=%s&schema=items", clusterFilePath)
@@ -3711,7 +3719,7 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE scalar_sel_tmpl "+
-			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3743,7 +3751,7 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE coalesce_tmpl "+
-			"CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3783,7 +3791,7 @@ func TestFDB_LimitOffset(t *testing.T) {
 	setup := openTestDB(t, "/testdb_limit_offset")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit_offset")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3821,7 +3829,7 @@ func TestFDB_CaseWhen(t *testing.T) {
 	setup := openTestDB(t, "/testdb_case_when")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_when")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_when/sales WITH TEMPLATE cw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3869,7 +3877,7 @@ func TestFDB_StringFunctions(t *testing.T) {
 	setup := openTestDB(t, "/testdb_strfuncs")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_strfuncs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT, label STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3917,7 +3925,7 @@ func TestFDB_ConcatAndNullIf(t *testing.T) {
 	setup := openTestDB(t, "/testdb_concat")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_concat")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT NOT NULL, first STRING NOT NULL, last STRING NOT NULL, score BIGINT, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT, first STRING, last STRING, score BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_concat/people WITH TEMPLATE cn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3959,7 +3967,7 @@ func TestFDB_UnionAll(t *testing.T) {
 	setup := openTestDB(t, "/testdb_union_all")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_all")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT, label STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_all/store WITH TEMPLATE ua_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4001,8 +4009,8 @@ func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_diffcol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE udcol_tmpl "+
-		"CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_diffcol/s WITH TEMPLATE udcol_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4093,7 +4101,7 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 	setup := openTestDB(t, "/testdb_union_distinct")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT NOT NULL, tag STRING NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT, tag STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4122,7 +4130,7 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	setup := openTestDB(t, "/testdb_is_schemata_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/alpha WITH TEMPLATE iswt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4141,7 +4149,7 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	// filter (the established parallel-safety convention for system-table
 	// tests; the SCHEMA_NAME-only form was a latent race independent of the
 	// WHERE-filter behaviour this test pins).
-	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '/testdb_is_schemata_where' AND SCHEMA_NAME = 'alpha'`)
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '/testdb_is_schemata_where' AND SCHEMA_NAME = 'ALPHA'`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4162,7 +4170,7 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 		}
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
+	g.Expect(schemas).To(gomega.ConsistOf("ALPHA"))
 }
 
 // TestFDB_InfoSchema_SchemataWhere_QualifiedRef pins the map-path evaluator's
@@ -4183,7 +4191,7 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	setup := openTestDB(t, "/testdb_is_schemata_qref")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_qref")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE isqr_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE isqr_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_qref/alpha WITH TEMPLATE isqr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4198,7 +4206,7 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	// Qualified refs ("SCHEMATA".COL) — only resolvable via the kept bare
 	// fallback (the row map carries bare keys). Scoped to this db's catalog
 	// for parallel safety, as in TestFDB_InfoSchema_SchemataWhere.
-	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE "SCHEMATA".CATALOG_NAME = '/testdb_is_schemata_qref' AND "SCHEMATA".SCHEMA_NAME = 'alpha'`)
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE "SCHEMATA".CATALOG_NAME = '/testdb_is_schemata_qref' AND "SCHEMATA".SCHEMA_NAME = 'ALPHA'`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4218,7 +4226,7 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 		}
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
+	g.Expect(schemas).To(gomega.ConsistOf("ALPHA"))
 }
 
 func TestFDB_InsertSelect(t *testing.T) {
@@ -4229,7 +4237,7 @@ func TestFDB_InsertSelect(t *testing.T) {
 	setup := openTestDB(t, "/testdb_insert_select")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_select")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_select/data WITH TEMPLATE is_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4270,7 +4278,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	setup := openTestDB(t, "/testdb_cast_substr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cast_substr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4410,7 +4418,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 	setup := openTestDB(t, "/testdb_math_funcs")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_funcs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4494,7 +4502,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE idf_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4546,7 +4554,7 @@ func TestFDB_HavingCompound(t *testing.T) {
 	setup := openTestDB(t, "/testdb_having_compound")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_having_compound")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4586,7 +4594,7 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	setup := openTestDB(t, "/testdb_where_expr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_where_expr/products WITH TEMPLATE we_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4627,8 +4635,8 @@ func TestFDB_InnerJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_inner_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ij_tmpl
-		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Order (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_inner_join/main WITH TEMPLATE ij_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4687,8 +4695,8 @@ func TestFDB_LeftJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Ord (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Ord (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_join/main WITH TEMPLATE lj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4746,8 +4754,8 @@ func TestFDB_JoinWhere(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jw_tmpl
-		CREATE TABLE Category (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Product (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Category (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Product (id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_where/main WITH TEMPLATE jw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4804,8 +4812,8 @@ func TestFDB_RightJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_right_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Ord (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Ord (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_right_join/main WITH TEMPLATE rj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4865,7 +4873,7 @@ func TestFDB_CountDistinct(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_tmpl
-		CREATE TABLE Sale (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Sale (id BIGINT, customer_id BIGINT, region STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4909,7 +4917,7 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_greatest_least")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gl_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, a BIGINT NOT NULL, b BIGINT NOT NULL, c BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_greatest_least/main WITH TEMPLATE gl_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -4974,8 +4982,8 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subquery_in")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE RestaurantOrder (order_id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (order_id))
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE RestaurantOrder (order_id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (order_id))
 		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
@@ -5023,8 +5031,8 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_groupby")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jgb_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5082,8 +5090,8 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_exists_subquery")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE exists_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Flag (id BIGINT NOT NULL, active BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Flag (id BIGINT, active BIGINT, PRIMARY KEY (id))
 		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
@@ -5129,7 +5137,7 @@ func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_corr_exists_selfjoin")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cesj_tmpl
-		CREATE TABLE t (id BIGINT NOT NULL, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))
+		CREATE TABLE t (id BIGINT, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))
 		CREATE INDEX idx_status ON t (status)
 		CREATE INDEX idx_v ON t (v)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5172,7 +5180,7 @@ func TestFDB_CTE(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE cte_tmpl "+
-			"CREATE TABLE Product (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte/store WITH TEMPLATE cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5271,7 +5279,7 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_proj_fold")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cpf_tmpl
-		CREATE TABLE Item (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_const_proj_fold/main WITH TEMPLATE cpf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5324,7 +5332,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_derived_table")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dt_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_derived_table/main WITH TEMPLATE dt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5366,7 +5374,7 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_agg_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dta_tmpl
-		CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_agg_alias/main WITH TEMPLATE dta_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5415,7 +5423,7 @@ func TestFDB_DerivedTableSortOnlyAgg(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_sortonly")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dts_tmpl
-		CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_sortonly/main WITH TEMPLATE dts_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5453,7 +5461,7 @@ func TestFDB_CTEChaining(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chaining")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chaining/main WITH TEMPLATE chain_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5494,8 +5502,8 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_del_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE uds_tmpl
-		CREATE TABLE Category (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Product (id BIGINT NOT NULL, category_id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Category (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Product (id BIGINT, category_id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_del_subq/main WITH TEMPLATE uds_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5562,8 +5570,8 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_map_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Category (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
+		CREATE TABLE Category (id BIGINT, label STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_map/main WITH TEMPLATE fn_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5618,7 +5626,7 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_map_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_map/main WITH TEMPLATE case_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5667,8 +5675,8 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sqc_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Discount (product_id BIGINT NOT NULL, PRIMARY KEY (product_id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
+		CREATE TABLE Discount (product_id BIGINT, PRIMARY KEY (product_id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_case/main WITH TEMPLATE sqc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5712,7 +5720,7 @@ func TestFDB_AggregateOnCTE(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_cte_tmpl
-		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_cte/main WITH TEMPLATE agg_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5778,8 +5786,8 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_gb_ol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_gb_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_gb_ol/main WITH TEMPLATE join_gb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5837,7 +5845,7 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_agg_having")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_agg_h_tmpl
-		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_agg_having/main WITH TEMPLATE cte_agg_h_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5904,8 +5912,8 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_cte_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_cte/main WITH TEMPLATE join_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -5956,8 +5964,8 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_multi_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE multi_from_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_multi_from/main WITH TEMPLATE multi_from_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6011,9 +6019,9 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_three_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE three_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Region (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, region_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Region (id BIGINT, label STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, region_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_three_from/main WITH TEMPLATE three_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6059,7 +6067,7 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE upd_fn_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_fn/main WITH TEMPLATE upd_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6092,7 +6100,7 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_expr_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_expr/main WITH TEMPLATE ob_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6153,8 +6161,8 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_join_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_join/main WITH TEMPLATE ob_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6211,7 +6219,7 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ltrim")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ltrim_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, s STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ltrim/main WITH TEMPLATE ltrim_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6248,8 +6256,8 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_join_ob")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_join_ob_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_join_ob/main WITH TEMPLATE cte_join_ob_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6308,8 +6316,8 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ud_exists")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ud_exists_tmpl
-		CREATE TABLE Flag (name STRING NOT NULL, PRIMARY KEY (name))
-		CREATE TABLE Product (id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Flag (name STRING, PRIMARY KEY (name))
+		CREATE TABLE Product (id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ud_exists/main WITH TEMPLATE ud_exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6370,7 +6378,7 @@ func TestFDB_NestedStringFunctions(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_nested_fn_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE nfc_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, name STRING, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_nested_fn_case/main WITH TEMPLATE nfc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6422,7 +6430,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_wrap_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_wc_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_wrap_case/main WITH TEMPLATE fn_wc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6452,7 +6460,7 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_ob_strict")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_ob_strict_tmpl
-		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_ob_strict/main WITH TEMPLATE agg_ob_strict_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6503,7 +6511,7 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_agg_err")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_agg_err_tmpl
-		CREATE TABLE S (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE S (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_agg_err/main WITH TEMPLATE ob_agg_err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6552,7 +6560,7 @@ func TestFDB_SelfJoin(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_self_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE self_join_tmpl
-		CREATE TABLE Employee (id BIGINT NOT NULL, name STRING NOT NULL, manager_id BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE Employee (id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_self_join/main WITH TEMPLATE self_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6599,7 +6607,7 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, status STRING NOT NULL, priority BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, status STRING, priority BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_where/main WITH TEMPLATE case_where_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6658,7 +6666,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_multi_expr_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, doubled BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, name STRING, doubled BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_multi_expr/main WITH TEMPLATE ins_multi_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6719,7 +6727,7 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_empty_edge")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE empty_edge_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_empty_edge/main WITH TEMPLATE empty_edge_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6778,8 +6786,8 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_sel_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_sel_cte_tmpl
-		CREATE TABLE Src (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Dst (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Src (id BIGINT, amount BIGINT, PRIMARY KEY (id))
+		CREATE TABLE Dst (id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ins_sel_cte/main WITH TEMPLATE ins_sel_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6825,7 +6833,7 @@ func TestFDB_LeftRight(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_right")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lr_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_right/main WITH TEMPLATE lr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6865,7 +6873,7 @@ func TestFDB_ReversePosition(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_str_more")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE str_more_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, s STRING NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_str_more/main WITH TEMPLATE str_more_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6903,7 +6911,7 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE math_fn_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, x BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, x BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_fn/main WITH TEMPLATE math_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6972,8 +6980,8 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_param_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE param_subq_tmpl
-		CREATE TABLE Customer (id BIGINT NOT NULL, tier STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Customer (id BIGINT, tier STRING, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_param_subq/main WITH TEMPLATE param_subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7017,7 +7025,7 @@ func TestFDB_PiFunctionRejected(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_pi"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE pi_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))`); err != nil {
+	if _, err := setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE pi_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))`); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /testdb_pi/main WITH TEMPLATE pi_tmpl"); err != nil {
@@ -7048,7 +7056,7 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_where_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_cte_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, status STRING NOT NULL, priority BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, status STRING, priority BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_where_cte/main WITH TEMPLATE case_where_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7096,7 +7104,7 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_prop")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_prop_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_prop/main WITH TEMPLATE null_prop_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7151,7 +7159,7 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_cte_bet")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_cte_bet_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_cte_bet/main WITH TEMPLATE null_cte_bet_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7187,7 +7195,7 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_works")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_scw_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_works/main WITH TEMPLATE sc_scw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7237,7 +7245,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_error_paths")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE err_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_error_paths/main WITH TEMPLATE err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7363,31 +7371,14 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeUnknownSchemaTemplate,
 		},
 		{
-			// id is BIGINT NOT NULL. Proto2's LABEL_REQUIRED should reject
-			// an INSERT that leaves it unset. Ideal SQLSTATE is
-			// ErrCodeNotNullViolation (23502) per Java. Currently serialised
-			// through proto's missing-required-field surface as InvalidParameter.
-			// TODO: short-circuit with 23502 at execInsert — see TODO.md.
-			name:     "INSERT omitting NOT NULL primary key",
-			sql:      "INSERT INTO T (n) VALUES (42)",
+			// Scalar NOT NULL is unexpressible (Java parity: NOT NULL is
+			// only allowed for ARRAY column type, rejected at CREATE); the
+			// scalar 23502 surface is gone. Pin the CREATE-time rejection
+			// that replaced it.
+			name:     "CREATE with scalar NOT NULL column",
+			sql:      "CREATE SCHEMA TEMPLATE nn_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))",
 			exec:     true,
-			onDB:     true, // needs the schema-attached db connection
-			wantCode: api.ErrCodeNotNullViolation,
-		},
-		{
-			name:     "INSERT explicit NULL into NOT NULL column",
-			sql:      "INSERT INTO T (id, n) VALUES (NULL, 99)",
-			exec:     true,
-			onDB:     true,
-			wantCode: api.ErrCodeNotNullViolation,
-		},
-		{
-			// Precede with an INSERT so UPDATE has a row to target.
-			name:     "UPDATE SET col = NULL on NOT NULL column",
-			sql:      "UPDATE T SET id = NULL",
-			exec:     true,
-			onDB:     true,
-			wantCode: api.ErrCodeNotNullViolation,
+			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 	}
 
@@ -7430,7 +7421,7 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_cs_order")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_cs_order_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, k STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, k STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7474,7 +7465,7 @@ func TestFDB_GroupByOrderByGroupKey(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_orderkey")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_orderkey_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, k STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE T (id BIGINT, k STRING, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON T (k)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_orderkey/main WITH TEMPLATE gb_orderkey_tmpl")
@@ -7534,8 +7525,8 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_null_tmpl
-		CREATE TABLE A (id BIGINT NOT NULL, k BIGINT, v BIGINT, PRIMARY KEY (id))
-		CREATE TABLE B (id BIGINT NOT NULL, k BIGINT, w BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE A (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))
+		CREATE TABLE B (id BIGINT, k BIGINT, w BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_null/main WITH TEMPLATE join_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7581,7 +7572,7 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_sanity")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_sanity_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7651,7 +7642,7 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct_agg")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE distinct_agg_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7708,8 +7699,8 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_null_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
-		CREATE TABLE U (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))
+		CREATE TABLE U (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7757,7 +7748,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cd_typetag")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_typetag_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7799,7 +7790,7 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_nil")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_nil_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7855,7 +7846,7 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_order_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE INDEX idx_n ON T (n)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_order_null/main WITH TEMPLATE order_null_tmpl")
@@ -7914,7 +7905,7 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_scope")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_scope_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -7953,7 +7944,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_medium_audit")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE medium_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8033,7 +8024,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_not_unknown")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE not_unknown_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8147,7 +8138,7 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_null_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8240,7 +8231,7 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_arith_unified")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE arith_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8309,7 +8300,7 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_mixedtype_eq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE mixedtype_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8362,7 +8353,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_int_range")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE int_range_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n INTEGER, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT, n INTEGER, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_int_range/main WITH TEMPLATE int_range_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8398,7 +8389,7 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE col_types_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, name STRING, flag BOOLEAN, score DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE T (id BIGINT, name STRING, flag BOOLEAN, score DOUBLE, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_col_types/main WITH TEMPLATE col_types_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8434,13 +8425,11 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	for i, ct := range colTypes {
 		nullable, ok := ct.Nullable()
 		g.Expect(ok).To(gomega.BeTrue(), "column %d (%s): Nullable should report ok=true", i, ct.Name())
-		if i == 0 {
-			// id BIGINT NOT NULL → proto REQUIRED → not nullable
-			g.Expect(nullable).To(gomega.BeFalse(), "column 0 (ID): NOT NULL column should report nullable=false")
-		} else {
-			// name/flag/score are OPTIONAL → nullable
-			g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): nullable column should report nullable=true", i, ct.Name())
-		}
+		// All scalar columns — the PK included — are stored proto OPTIONAL:
+		// scalar NOT NULL is unexpressible (Java parity: NOT NULL is only
+		// allowed for ARRAY column type, rejected at CREATE), so every
+		// scalar column reports nullable=true.
+		g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): scalar column should report nullable=true", i, ct.Name())
 	}
 
 	// ColumnTypeLength: STRING columns are variable-length.
@@ -8484,7 +8473,7 @@ func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE alias_shadow_tmpl "+
-			"CREATE TABLE B (id BIGINT NOT NULL, x DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE B (id BIGINT, x DOUBLE, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8524,7 +8513,7 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chain_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_alias_tmpl
-		CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chain_alias/main WITH TEMPLATE chain_alias_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -8579,7 +8568,7 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqt_tmpl "+
-			"CREATE TABLE Items (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE Items (id BIGINT, val BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8644,7 +8633,7 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqti_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8692,7 +8681,7 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqtu_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8743,7 +8732,7 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqtd_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8797,7 +8786,7 @@ func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqtw_tmpl "+
-			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8850,7 +8839,7 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sqtc_tmpl "+
-			"CREATE TABLE Items (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE Items (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8900,7 +8889,7 @@ func TestFDB_DateTimestampColumns(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE datetime_events_tmpl "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, event_date DATE, event_ts TIMESTAMP, PRIMARY KEY(id))")
+			"CREATE TABLE Events (id BIGINT, event_date DATE, event_ts TIMESTAMP, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9009,7 +8998,7 @@ func TestFDB_DateTimestampComparison(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE datetime_logs_tmpl "+
-			"CREATE TABLE Logs (id BIGINT NOT NULL, ts TIMESTAMP, PRIMARY KEY(id))")
+			"CREATE TABLE Logs (id BIGINT, ts TIMESTAMP, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9068,7 +9057,7 @@ func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE datetime_audit_tmpl "+
-			"CREATE TABLE Audit (id BIGINT NOT NULL, created_at TIMESTAMP, PRIMARY KEY(id))")
+			"CREATE TABLE Audit (id BIGINT, created_at TIMESTAMP, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9121,7 +9110,7 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE datetime_cast_tmpl "+
-			"CREATE TABLE T1 (id BIGINT NOT NULL, val STRING, PRIMARY KEY(id))")
+			"CREATE TABLE T1 (id BIGINT, val STRING, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9177,7 +9166,7 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dateparts_tmpl "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, d DATE, PRIMARY KEY(id))")
+			"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, d DATE, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9269,7 +9258,7 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE array_col_tmpl "+
-			"CREATE TABLE TaggedItem (item_id BIGINT NOT NULL, tags STRING ARRAY, PRIMARY KEY (item_id))"); err != nil {
+			"CREATE TABLE TaggedItem (item_id BIGINT, tags STRING ARRAY, PRIMARY KEY (item_id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -9322,7 +9311,7 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dt_edge_tmpl "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY(id))")
+			"CREATE TABLE Events (id BIGINT, d DATE, ts TIMESTAMP, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9508,7 +9497,7 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dt_params_tmpl "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, PRIMARY KEY(id))")
+			"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, PRIMARY KEY(id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9566,7 +9555,7 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 	}
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dt_idx_tmpl "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, label STRING, PRIMARY KEY(id)) "+
 			"CREATE INDEX idx_ts ON Events (ts)")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
@@ -9737,7 +9726,7 @@ func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145w_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145w_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9782,7 +9771,7 @@ func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA TEMPLATE rfc145i_tmpl CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE rfc145i_tmpl CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9839,7 +9828,7 @@ func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145s_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145s_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -9930,7 +9919,7 @@ func queryToStringRows(t *testing.T, db *sql.DB, ctx context.Context, query stri
 // LIMIT compose over exactly this DB's rows and the LIMIT assertions stay
 // deterministic under parallel test execution.
 //
-// Identifier case: schema names preserve the DDL case ("sch1"); table/column/
+// Identifier case: schema names normalize as SQL identifiers — unquoted folds upper (SCH1); table/column/
 // index names are normalised to UPPERCASE by the metadata layer ("ALPHA",
 // "ID", "ALPHA_BY_NAME"), exactly as the existing TestFDB_InfoSchema_* tests.
 func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
@@ -9953,9 +9942,9 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	// Two tables, one with a secondary index, so COLUMNS / INDEXES have
 	// deterministic, distinguishable content across two schemas.
 	mustExec("CREATE SCHEMA TEMPLATE rfc145sweep_tmpl " +
-		"CREATE TABLE Alpha (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) " +
+		"CREATE TABLE Alpha (id BIGINT, name STRING, PRIMARY KEY (id)) " +
 		"CREATE INDEX alpha_by_name ON Alpha (name) " +
-		"CREATE TABLE Beta (bid BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (bid))")
+		"CREATE TABLE Beta (bid BIGINT, flag BOOLEAN, PRIMARY KEY (bid))")
 	mustExec("CREATE SCHEMA " + dbID + "/sch1 WITH TEMPLATE rfc145sweep_tmpl")
 	mustExec("CREATE SCHEMA " + dbID + "/sch2 WITH TEMPLATE rfc145sweep_tmpl")
 
@@ -9975,19 +9964,19 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	}
 	// Projected column + WHERE + ORDER BY.
 	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME`)).
-		To(gomega.Equal([][]string{{"sch1"}, {"sch2"}}), "SCHEMATA projected + ORDER BY")
+		To(gomega.Equal([][]string{{"SCH1"}, {"SCH2"}}), "SCHEMATA projected + ORDER BY")
 	// WHERE on a second column.
-	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' AND SCHEMA_NAME = 'sch2'`)).
-		To(gomega.Equal([][]string{{"sch2"}}), "SCHEMATA WHERE")
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' AND SCHEMA_NAME = 'SCH2'`)).
+		To(gomega.Equal([][]string{{"SCH2"}}), "SCHEMATA WHERE")
 	// ORDER BY + LIMIT.
 	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME LIMIT 1`)).
-		To(gomega.Equal([][]string{{"sch1"}}), "SCHEMATA LIMIT")
+		To(gomega.Equal([][]string{{"SCH1"}}), "SCHEMATA LIMIT")
 	// ORDER BY DESC.
 	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME DESC`)).
-		To(gomega.Equal([][]string{{"sch2"}, {"sch1"}}), "SCHEMATA ORDER BY DESC")
+		To(gomega.Equal([][]string{{"SCH2"}, {"SCH1"}}), "SCHEMATA ORDER BY DESC")
 	// OFFSET + LIMIT.
 	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME LIMIT 1 OFFSET 1`)).
-		To(gomega.Equal([][]string{{"sch2"}}), "SCHEMATA LIMIT OFFSET")
+		To(gomega.Equal([][]string{{"SCH2"}}), "SCHEMATA LIMIT OFFSET")
 
 	// --- TABLES ---  TABLE_CATALOG(0), TABLE_SCHEMA(1), TABLE_NAME(2).
 	starTables := q(`SELECT * FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '` + dbID + `'`)
@@ -9995,9 +9984,9 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	for _, r := range starTables {
 		g.Expect(r).To(gomega.HaveLen(10), "TABLES has 10 columns")
 	}
-	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' ORDER BY TABLE_NAME`)).
+	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' ORDER BY TABLE_NAME`)).
 		To(gomega.Equal([][]string{{"ALPHA"}, {"BETA"}}), "TABLES projected + WHERE + ORDER BY")
-	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' ORDER BY TABLE_NAME LIMIT 1`)).
+	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' ORDER BY TABLE_NAME LIMIT 1`)).
 		To(gomega.Equal([][]string{{"ALPHA"}}), "TABLES LIMIT")
 
 	// --- COLUMNS ---  TABLE_CATALOG(0), …, COLUMN_NAME(3), ORDINAL_POSITION(4).
@@ -10006,9 +9995,9 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	for _, r := range starCols {
 		g.Expect(r).To(gomega.HaveLen(11), "COLUMNS has 11 columns")
 	}
-	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION`)).
+	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION`)).
 		To(gomega.Equal([][]string{{"ID"}, {"NAME"}}), "COLUMNS Alpha projected + WHERE + ORDER BY")
-	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION LIMIT 1`)).
+	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION LIMIT 1`)).
 		To(gomega.Equal([][]string{{"ID"}}), "COLUMNS LIMIT")
 
 	// --- INDEXES ---  TABLE_CATALOG(0), …, TABLE_NAME(2), INDEX_NAME(3).
@@ -10017,7 +10006,7 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	for _, r := range starIdx {
 		g.Expect(r).To(gomega.HaveLen(7), "INDEXES has 7 columns")
 	}
-	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
+	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
 		To(gomega.ContainElement([]string{"ALPHA_BY_NAME"}), "INDEXES Alpha contains ALPHA_BY_NAME")
 }
 

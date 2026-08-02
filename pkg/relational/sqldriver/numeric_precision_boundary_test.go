@@ -38,9 +38,9 @@ func TestFDB_NumericPrecisionBoundary(t *testing.T) {
 	setup := openTestDB(t, "/testdb_npb")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_npb")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE npb "+
-		"CREATE TABLE d (id BIGINT NOT NULL, v DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
-		"CREATE TABLE b (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_n ON b (n)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_npb/s WITH TEMPLATE npb")
 	dsn := fmt.Sprintf("fdbsql:///testdb_npb?cluster_file=%s&schema=s", clusterFilePath)

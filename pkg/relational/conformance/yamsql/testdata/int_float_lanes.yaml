@@ -10,7 +10,7 @@
 # resolver seeds genuine 32-bit static types, and the lanes fire.
 name: int_float_lanes
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a INTEGER, b INTEGER, f FLOAT, g FLOAT, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a INTEGER, b INTEGER, f FLOAT, g FLOAT, w BIGINT, PRIMARY KEY (id))
 setup:
   # MaxInt32 = 2147483647. 3e38 is finite in float32 (max ≈ 3.4e38)
   # but 3e38 + 3e38 crosses it.

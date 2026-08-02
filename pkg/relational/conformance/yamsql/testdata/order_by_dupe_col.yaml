@@ -20,7 +20,7 @@
 # work in Go.
 name: order_by_dupe_col
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
 tests:

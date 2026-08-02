@@ -20,7 +20,7 @@ func TestFDB_BooleanProjectionProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_bpp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bpp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE bpp CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE bpp CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bpp/s WITH TEMPLATE bpp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_bpp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

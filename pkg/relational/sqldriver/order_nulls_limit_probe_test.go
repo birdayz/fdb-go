@@ -22,7 +22,7 @@ func TestFDB_OrderNullsLimitProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_onl")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_onl")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE onl CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE onl CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_onl/s WITH TEMPLATE onl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_onl?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

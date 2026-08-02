@@ -7,8 +7,8 @@
 # same DML scan-loop integration path the IN form previously did.
 name: dml_subquery
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE keep_set (k BIGINT NOT NULL, PRIMARY KEY (k))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE keep_set (k BIGINT, PRIMARY KEY (k))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
   - INSERT INTO keep_set VALUES (2), (4)

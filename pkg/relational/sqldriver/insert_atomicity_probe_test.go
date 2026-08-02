@@ -3,7 +3,9 @@ package sqldriver_test
 // Probes multi-row INSERT statement atomicity: a constraint violation on a row in
 // the middle of a multi-VALUES INSERT rolls back the ENTIRE statement — no partial
 // insert of the preceding/following rows. Covered for a mid-batch duplicate PK
-// (23505, against a pre-existing row) and a mid-batch NOT NULL violation (23502).
+// (23505, against a pre-existing row). The former mid-batch 23502 arm is gone:
+// scalar NOT NULL is unexpressible (Java parity: NOT NULL is only allowed for
+// ARRAY column type, rejected at CREATE); the scalar 23502 surface is gone.
 
 import (
 	"context"
@@ -23,8 +25,8 @@ func TestFDB_InsertAtomicityProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_iatp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_iatp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iatp "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, a BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE u (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_iatp/s WITH TEMPLATE iatp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_iatp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -69,15 +71,6 @@ func TestFDB_InsertAtomicityProbe(t *testing.T) {
 		// rows 1 and 3 must NOT have been inserted — only the pre-existing 2 remains.
 		if got := ids("t"); !eq(got, []int64{2}) {
 			t.Errorf("after failed multi-insert, t = %v, want [2] (atomic rollback, no partial)", got)
-		}
-	})
-	t.Run("mid_batch_not_null_rolls_back_all", func(t *testing.T) {
-		_, err := db.ExecContext(ctx, "INSERT INTO u (id, a) VALUES (1,10),(2,NULL),(3,30)")
-		if err == nil || !strings.Contains(err.Error(), "23502") {
-			t.Fatalf("err = %v, want 23502", err)
-		}
-		if got := ids("u"); len(got) != 0 {
-			t.Errorf("after failed multi-insert, u = %v, want [] (atomic rollback)", got)
 		}
 	})
 	t.Run("valid_multi_insert_all_applied", func(t *testing.T) {

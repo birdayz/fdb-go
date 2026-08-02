@@ -30,7 +30,7 @@ func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggidx_ng")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggidxng "+
-			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM t GROUP BY g")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggidx_ng/s WITH TEMPLATE aggidxng")

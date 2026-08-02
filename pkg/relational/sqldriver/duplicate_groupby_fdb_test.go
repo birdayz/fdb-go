@@ -38,8 +38,8 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dupgroupby")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dupgroupby "+
-			"CREATE TABLE t1 (id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, category STRING, PRIMARY KEY (id))")
+			"CREATE TABLE t1 (id BIGINT, category STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, category STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupgroupby/s WITH TEMPLATE dupgroupby")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dupgroupby?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

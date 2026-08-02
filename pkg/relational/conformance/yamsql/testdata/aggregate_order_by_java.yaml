@@ -4,7 +4,7 @@
 name: aggregate_order_by_java
 schema_template: |
   CREATE TABLE scores (
-    id BIGINT NOT NULL,
+    id BIGINT,
     player STRING,
     game STRING,
     score BIGINT,

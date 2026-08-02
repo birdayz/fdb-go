@@ -3578,16 +3578,28 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	// scalar lanes — the executor-side mirror of the relational
 	// ConvertToProtoValue repeated arm, so an array written via UPDATE
 	// is byte-identical to one written via INSERT … VALUES.
-	if fd.IsList() {
-		elems, ok := v.([]any)
-		if !ok {
+	if inner, wrapped, ok := values.EffectiveListField(fd); ok {
+		elems, elemsOK := v.([]any)
+		if !elemsOK {
 			// Fall to the scalar lanes' verbatim 22000 below.
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 		}
-		parent := dynamicpb.NewMessage(fd.ContainingMessage())
-		lv := parent.NewField(fd)
-		list := lv.List()
+		var list protoreflect.List
+		var result protoreflect.Value
+		if wrapped {
+			// NULLABLE array: write through the NullableArrayWrapper — a
+			// present wrapper with an empty list keeps [] distinct from
+			// NULL, Java's stored shape.
+			wrapperMsg, wl := values.NewWrappedArrayMessage(fd)
+			list = wl
+			result = protoreflect.ValueOfMessage(wrapperMsg)
+		} else {
+			parent := dynamicpb.NewMessage(fd.ContainingMessage())
+			lv := parent.NewField(fd)
+			list = lv.List()
+			result = lv
+		}
 		for _, e := range elems {
 			if e == nil {
 				// Java forbids NULL elements in collections
@@ -3597,13 +3609,13 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
 					"NULL as elements of a collection are currently not supported")
 			}
-			pv, err := goToProtoScalarValue(fd, e)
+			pv, err := goToProtoScalarValue(inner, e)
 			if err != nil {
 				return protoreflect.Value{}, err
 			}
 			list.Append(pv)
 		}
-		return lv, nil
+		return result, nil
 	}
 	return goToProtoScalarValue(fd, v)
 }

@@ -3,8 +3,8 @@
 # Exercises CTEs referenced in FROM clause with joins.
 name: cte_join
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'Alice', 10, 100), (2, 'Bob', 10, 120), (3, 'Charlie', 20, 80), (4, 'Dave', 20, 90)
   - INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Sales')

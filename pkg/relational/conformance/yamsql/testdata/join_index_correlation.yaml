@@ -6,12 +6,12 @@
 name: join_index_correlation
 schema_template: |
   CREATE TABLE departments (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE employees (
-    id BIGINT NOT NULL,
+    id BIGINT,
     dept_id BIGINT,
     name STRING,
     salary BIGINT,

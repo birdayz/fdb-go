@@ -4,7 +4,7 @@
 # testing the predicate push-down through plan nodes.
 name: multiple_where_predicates
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, price BIGINT, stock BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, category STRING, price BIGINT, stock BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 'A', 100, 50), (2, 'Gadget', 'B', 200, 0), (3, 'Doohickey', 'A', 50, 30), (4, 'Thingamajig', 'C', 300, 10), (5, 'Whatsit', 'B', 150, 20)
 tests:

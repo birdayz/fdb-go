@@ -4,9 +4,9 @@
 # correlated scans are chained.
 name: flatmap_three_way
 schema_template: |
-  CREATE TABLE regions (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE stores (id BIGINT NOT NULL, region_id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE products (id BIGINT NOT NULL, store_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE regions (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE stores (id BIGINT, region_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, store_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO regions VALUES (1, 'North'), (2, 'South')
   - INSERT INTO stores VALUES (10, 1, 'Store_A'), (20, 1, 'Store_B'), (30, 2, 'Store_C')

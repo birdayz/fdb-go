@@ -29,7 +29,7 @@ func TestFDB_BytesGtIndexConformanceProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_bgt")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bgt")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE bgt CREATE TABLE t (id BIGINT NOT NULL, b BYTES, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE bgt CREATE TABLE t (id BIGINT, b BYTES, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_b ON t (b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bgt/s WITH TEMPLATE bgt")
 	dsn := fmt.Sprintf("fdbsql:///testdb_bgt?cluster_file=%s&schema=s", clusterFilePath)

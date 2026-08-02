@@ -10,8 +10,8 @@
 # scalar_subq_in_select_list). Pinned below as rows.
 name: correlated_subquery_probes
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
   - INSERT INTO project VALUES (100, 1), (101, 2)

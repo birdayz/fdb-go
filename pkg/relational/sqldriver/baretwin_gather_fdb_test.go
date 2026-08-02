@@ -72,11 +72,8 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	a := dynamicpb.NewMessage(aDesc)
 	a.Set(aDesc.Fields().ByName("AID"), protoreflect.ValueOfInt64(1))
 	a.Set(aDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(100))
-	arrFd := aDesc.Fields().ByName("ARR")
-	arr := a.NewField(arrFd).List()
-	arr.Append(protoreflect.ValueOfInt32(7))
-	arr.Append(protoreflect.ValueOfInt32(8))
-	a.Set(arrFd, protoreflect.ValueOfList(arr))
+	setArrayField(a, aDesc.Fields().ByName("ARR"),
+		protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
 
 	bDesc := md.GetRecordType("B").Descriptor
 	bm := dynamicpb.NewMessage(bDesc)

@@ -78,12 +78,11 @@ func TestFDB_EnclosedMiddleUnnestExists(t *testing.T) {
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("AID"), protoreflect.ValueOfInt64(aid))
 		m.Set(d.Fields().ByName("K"), protoreflect.ValueOfInt64(k))
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
+		arrVals := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			arrVals = append(arrVals, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 	mk2 := func(table, f1, f2 string, v1, v2 int64) proto.Message {

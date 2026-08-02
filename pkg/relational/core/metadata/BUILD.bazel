@@ -3,10 +3,12 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "metadata",
     srcs = [
+        "aux_types.go",
         "builder.go",
         "column.go",
         "doc.go",
         "index.go",
+        "nullable_array_wrap.go",
         "proto_types.go",
         "schema_template.go",
         "table.go",
@@ -17,6 +19,7 @@ go_library(
         "//gen",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",

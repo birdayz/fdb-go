@@ -33,9 +33,9 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_union_join")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_join_tmpl "+
-			"CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_union_join/s WITH TEMPLATE union_join_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_union_join?cluster_file=%s&schema=s", clusterFilePath)

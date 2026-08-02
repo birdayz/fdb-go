@@ -42,7 +42,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				sysDB.ExecContext(context.Background(), "CREATE DATABASE "+dbPath)
 				tmpl := fmt.Sprintf("sqlpar_tmpl_w%d", cfg.workers)
 				sysDB.ExecContext(context.Background(),
-					fmt.Sprintf("CREATE SCHEMA TEMPLATE %s CREATE TABLE items (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))", tmpl))
+					fmt.Sprintf("CREATE SCHEMA TEMPLATE %s CREATE TABLE items (id BIGINT, val BIGINT, PRIMARY KEY (id))", tmpl))
 				sysDB.ExecContext(context.Background(),
 					fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 			}

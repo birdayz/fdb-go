@@ -1,20 +1,30 @@
 # not_null_violation.yaml
 #
-# swingshift-35 commits 1f389611/e9959ba9/38410fec: INSERT/UPDATE NULL
-# into a NOT NULL column raises ErrCodeNotNullViolation (23502). Before
-# the fix this surfaced as a proto missing-required-field error
-# instead of the Java-conformant SQLSTATE.
+# NOT NULL on a NON-ARRAY column is rejected at CREATE — Java parity,
+# ported verbatim (DdlVisitor.visitColumnDefinition asserts
+# isRepeated || isNullable → UNSUPPORTED_OPERATION "NOT NULL is only
+# allowed for ARRAY column type"). The former Go extension (scalar
+# NOT NULL columns enforced with 23502) is gone: the stored descriptor
+# cannot carry scalar non-nullability (every non-array field is
+# LABEL_OPTIONAL, Java's RecordMetaData limitation), so the constraint
+# silently vanished on every catalog round-trip.
 name: not_null_violation
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'alice')
 tests:
-  - query: INSERT INTO t VALUES (2, NULL)
-    error_code: "23502"
-  - query: UPDATE t SET name = NULL WHERE id = 1
-    error_code: "23502"
-  # Baseline: a valid INSERT succeeds with no rows returned.
+  # NOT NULL on a scalar column → rejected at CREATE with Java's error.
+  - exec: CREATE SCHEMA TEMPLATE bad_nn_scalar CREATE TABLE t2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+    error_code: "0A000"
+    error: "NOT NULL is only allowed for ARRAY column type"
+  - exec: CREATE SCHEMA TEMPLATE bad_nn_string CREATE TABLE t3 (id BIGINT, name STRING NOT NULL, PRIMARY KEY (id))
+    error_code: "0A000"
+  # NOT NULL stays legal on an ARRAY column (the one representable case:
+  # a flat repeated field, vs the NullableArrayWrapper for nullable).
+  - exec: CREATE SCHEMA TEMPLATE ok_nn_array CREATE TABLE t4 (id BIGINT, arr BIGINT ARRAY NOT NULL, PRIMARY KEY (id))
+  - exec: DROP SCHEMA TEMPLATE ok_nn_array
+  # Baseline: the scenario's own (nullable-column) table works normally.
   - query: SELECT id, name FROM t
     rows:
       - [1, 'alice']

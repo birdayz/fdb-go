@@ -5,9 +5,9 @@
 # INSERT SELECT, UPDATE WHERE, DELETE WHERE.
 name: e2e_ecommerce
 schema_template: |
-  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id))
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, total BIGINT, status STRING, PRIMARY KEY (id))
-  CREATE TABLE order_items (id BIGINT NOT NULL, order_id BIGINT NOT NULL, product STRING, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT, name STRING, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE order_items (id BIGINT, order_id BIGINT, product STRING, qty BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO customers VALUES (1, 'Alice', 'gold'), (2, 'Bob', 'silver'), (3, 'Charlie', 'gold'), (4, 'Diana', 'bronze')
   - INSERT INTO orders VALUES (100, 1, 500, 'shipped'), (101, 1, 200, 'pending'), (102, 2, 300, 'shipped'), (103, 3, 100, 'cancelled')

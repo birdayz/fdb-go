@@ -64,7 +64,7 @@ func TestJavaRunner_HappyPath(t *testing.T) {
 	got := runner.Run(context.Background(), Query{
 		Name:           "x",
 		SQL:            "SELECT id, name FROM Item",
-		SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))",
+		SchemaTemplate: "CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))",
 	})
 	if got.Err != nil {
 		t.Fatalf("unexpected error: %v", got.Err)

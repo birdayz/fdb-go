@@ -4,7 +4,7 @@
 # and concatenation in the projection list.
 name: select_expression_projection
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, tax_rate BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, price BIGINT, tax_rate BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 100, 10), (2, 'Gadget', 200, 20), (3, 'Doohickey', 50, 5)
 tests:

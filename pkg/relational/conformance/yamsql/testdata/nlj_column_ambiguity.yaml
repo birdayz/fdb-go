@@ -6,9 +6,9 @@
 # engine returns the wrong table's value, the assertion fails.
 name: nlj_column_ambiguity
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, budget BIGINT, PRIMARY KEY (id))
-  CREATE TABLE project (id BIGINT NOT NULL, name STRING, lead_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, budget BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT, name STRING, lead_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'Alice', 100, 70), (2, 'Bob', 200, 80), (3, 'Carol', 100, 90)
   - INSERT INTO dept VALUES (100, 'Engineering', 5000), (200, 'Sales', 3000)

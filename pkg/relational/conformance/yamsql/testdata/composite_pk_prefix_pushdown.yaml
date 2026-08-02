@@ -21,15 +21,15 @@
 name: composite_pk_prefix_pushdown
 schema_template: |
   CREATE TABLE kv (
-    a BIGINT NOT NULL,
-    b BIGINT NOT NULL,
-    c BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    c BIGINT,
     v BIGINT,
     PRIMARY KEY (a, b, c)
   )
   CREATE TABLE kv2 (
-    a BIGINT NOT NULL,
-    b BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
     label STRING,
     PRIMARY KEY (a, b)
   )

@@ -9,7 +9,7 @@
 # CAST on literal).
 name: select_no_from
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
 tests:
   - query: SELECT 1 + 2
     error_code: "0AF00"

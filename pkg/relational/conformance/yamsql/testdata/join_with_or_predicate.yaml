@@ -4,8 +4,8 @@
 # from different tables.
 name: join_with_or_predicate
 schema_template: |
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
   - INSERT INTO emp VALUES (10, 1, 'Alice', 120), (20, 2, 'Bob', 80), (30, 3, 'Charlie', 90)

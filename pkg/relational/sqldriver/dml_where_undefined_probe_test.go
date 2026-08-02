@@ -26,7 +26,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dwu")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dwu")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE dwu CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE dwu CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
 		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dwu/"+schema+" WITH TEMPLATE dwu")

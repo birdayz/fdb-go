@@ -6,7 +6,7 @@
 # (commit cc303815c). Workaround: pre-aggregate via a derived table.
 name: count_distinct
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   # Mixed types that happen to share a string representation.
   - INSERT INTO t VALUES (1, 5, '5'), (2, 10, '10'), (3, 5, '5'), (4, null, null)

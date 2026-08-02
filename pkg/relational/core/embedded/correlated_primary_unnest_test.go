@@ -20,7 +20,7 @@ func TestPlanCorrelatedPrimaryUnnestExists(t *testing.T) {
 
 	const schema = `
 CREATE TABLE t (
-  id BIGINT NOT NULL,
+  id BIGINT,
   tags BIGINT ARRAY,
   PRIMARY KEY (id)
 )`
@@ -43,7 +43,7 @@ func TestPlanCorrelatedPrimaryUnnestExistsRejectsNonArrays(t *testing.T) {
 
 	const schema = `
 CREATE TABLE t (
-  id BIGINT NOT NULL,
+  id BIGINT,
   tags BIGINT ARRAY,
   PRIMARY KEY (id)
 )`
@@ -83,12 +83,12 @@ func TestPlanCorrelatedPrimaryUnnestKeepsTableFirstResolution(t *testing.T) {
 
 	const schema = `
 CREATE TABLE t (
-  id BIGINT NOT NULL,
+  id BIGINT,
   tags BIGINT ARRAY,
   PRIMARY KEY (id)
 )
 CREATE TABLE tags (
-  id BIGINT NOT NULL,
+  id BIGINT,
   e BIGINT,
   PRIMARY KEY (id)
 )`
@@ -158,7 +158,7 @@ func TestPlanCorrelatedPrimaryUnnestKeepsQuotedElementIdentity(t *testing.T) {
 
 	const schema = `
 CREATE TABLE t (
-  id BIGINT NOT NULL,
+  id BIGINT,
   tags BIGINT ARRAY,
   PRIMARY KEY (id)
 )`
@@ -259,57 +259,27 @@ func TestMetadataPlanContextMatchCandidateIdentityIsStable(t *testing.T) {
 	}
 }
 
-// TestStructColumnIsRejectedAtDDL pins the gate that makes a MULTI-SEGMENT
-// lateral unnest (`FROM t, t.rec.arr AS x`) unreachable from SQL: a struct
-// column cannot be declared, so no table can carry a nested array for such a
-// path to descend.
-//
-// This is a load-bearing NEGATIVE result, not trivia. The lowering's
-// multi-segment collection bake (unnestBakedRootCollection's suffix arm, pinned
-// unit-wise by TestUnnestBakedRootCollectionFusesAMultiSegmentPath in
-// pkg/relational/core/query) has no end-to-end route ONLY because of this
-// rejection. When struct columns land, that arm becomes reachable and needs a
-// full translateUnnestJoin case plus a rows assertion — nothing else records
-// that dependency, so the day this test starts failing is the day the coverage
-// gap opens.
-func TestStructColumnIsRejectedAtDDL(t *testing.T) {
+// TestStructMultiSegmentUnnestPlans replaces the retired
+// TestStructColumnIsRejectedAtDDL sentinel: struct columns ARE declarable
+// (RFC-204 Phase 1), so the multi-segment lateral unnest
+// (`FROM w, w.nested.vals AS x`) is REACHABLE — the plan-time half is pinned
+// here, the rows half end-to-end by TestFDB_StructMultiSegmentUnnest
+// (pkg/relational/sqldriver), exactly the coverage the sentinel demanded.
+func TestStructMultiSegmentUnnestPlans(t *testing.T) {
 	t.Parallel()
 
 	const schema = `
 CREATE TYPE AS STRUCT nested_s (vals BIGINT ARRAY, label STRING)
 CREATE TABLE w (
-  wid BIGINT NOT NULL,
+  wid BIGINT,
   nested nested_s,
   PRIMARY KEY (wid)
 )`
-	_, err := PlanQueryForTest(`SELECT x FROM w, w.nested.vals AS x`, schema, nil)
-	if err == nil {
-		t.Fatal("a struct column was accepted — a nested array is now declarable, so the " +
-			"multi-segment lateral-unnest arm is REACHABLE and needs end-to-end coverage " +
-			"through translateUnnestJoin (see TestUnnestBakedRootCollectionFusesAMultiSegmentPath)")
+	explain, err := PlanQueryForTest(`SELECT x FROM w, w.nested.vals AS x`, schema, nil)
+	if err != nil {
+		t.Fatalf("multi-segment lateral unnest must plan over a struct column: %v", err)
 	}
-	// The DDL wraps the column rejection in a table-scope error, so the code
-	// that matters sits down the Unwrap chain rather than on the outermost
-	// error. Walking to it is the point: an outer-code assertion would go on
-	// passing if the inner cause changed to something unrelated.
-	var found bool
-	for e := err; e != nil; e = errors.Unwrap(e) {
-		var apiErr *api.Error
-		// Two gates stand in front of the multi-segment path, either is the
-		// pin: the template-clause fail-closed rejection (CREATE TYPE AS
-		// STRUCT itself), and — for templates built programmatically without
-		// the clause — the column-type rejection.
-		if errors.As(e, &apiErr) && apiErr.Code == api.ErrCodeUnsupportedOperation &&
-			(strings.Contains(apiErr.Message, "only primitive column types") ||
-				strings.Contains(apiErr.Message, "struct types (CREATE TYPE AS STRUCT) are not yet supported")) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("error = %v, want %s \"only primitive column types are supported\" in the "+
-			"cause chain — a DIFFERENT rejection means the multi-segment path is now "+
-			"blocked somewhere else, and this pin has stopped naming the thing that "+
-			"re-arms it", err, api.ErrCodeUnsupportedOperation)
+	if !strings.Contains(explain, "Explode") {
+		t.Fatalf("plan = %s, want the FlatMap/Explode unnest topology", explain)
 	}
 }

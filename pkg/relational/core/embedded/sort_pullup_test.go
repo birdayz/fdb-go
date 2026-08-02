@@ -10,7 +10,7 @@ import (
 
 const sortPullupSchema = `
 CREATE TABLE T (
-  id BIGINT NOT NULL,
+  id BIGINT,
   a BIGINT,
   b BIGINT,
   c BIGINT,

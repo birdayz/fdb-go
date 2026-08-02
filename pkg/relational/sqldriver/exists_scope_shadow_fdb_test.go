@@ -106,11 +106,11 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("C"), protoreflect.ValueOfInt64(c))
-		l := m.NewField(desc.Fields().ByName("ARR")).List()
+		arrVals := make([]protoreflect.Value, 0, len(arr))
 		for _, v := range arr {
-			l.Append(protoreflect.ValueOfInt64(v))
+			arrVals = append(arrVals, protoreflect.ValueOfInt64(v))
 		}
-		m.Set(desc.Fields().ByName("ARR"), protoreflect.ValueOfList(l))
+		setArrayField(m, desc.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 	stDesc := md.GetRecordType("ST").Descriptor

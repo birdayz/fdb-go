@@ -4,8 +4,8 @@
 # result where unmatched rows have NULL inner values).
 name: group_by_null_join
 schema_template: |
-  CREATE TABLE regions (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE stores (id BIGINT NOT NULL, region_id BIGINT, revenue BIGINT, PRIMARY KEY (id))
+  CREATE TABLE regions (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE stores (id BIGINT, region_id BIGINT, revenue BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO regions VALUES (1, 'East'), (2, 'West'), (3, 'North')
   - INSERT INTO stores VALUES (10, 1, 100), (11, 1, 200), (12, 2, 150), (13, NULL, 50)

@@ -4,7 +4,7 @@
 # when IN-list is combined with ORDER BY.
 name: in_list_with_order_by
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'Alice', 30), (2, 'Bob', 10), (3, 'Charlie', 20), (4, 'Dave', 40), (5, 'Eve', 50)
 tests:

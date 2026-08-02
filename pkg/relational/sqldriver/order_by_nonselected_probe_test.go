@@ -20,7 +20,7 @@ func TestFDB_OrderByNonSelectedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_obns")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_obns")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE obns CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE obns CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_obns/s WITH TEMPLATE obns")
 	dsn := fmt.Sprintf("fdbsql:///testdb_obns?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

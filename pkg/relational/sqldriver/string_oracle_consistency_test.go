@@ -25,7 +25,7 @@ func TestFDB_StringOracleConsistency(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_stroracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stroracle "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stroracle/s WITH TEMPLATE stroracle")
 	dsn := fmt.Sprintf("fdbsql:///testdb_stroracle?cluster_file=%s&schema=s", clusterFilePath)

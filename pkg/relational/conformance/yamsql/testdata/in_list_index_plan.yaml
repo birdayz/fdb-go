@@ -9,7 +9,7 @@
 name: in_list_index_plan
 schema_template: |
   CREATE TABLE items (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     name STRING,
     price BIGINT,

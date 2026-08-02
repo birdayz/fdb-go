@@ -33,15 +33,26 @@ func fanTypeFromProto(ft gen.Field_FanType) FanType {
 }
 
 // ToKeyExpression serializes a FieldKeyExpression to proto.
-// Matches Java's FieldKeyExpression.toKeyExpression().
+// Matches Java's FieldKeyExpression.toKeyExpression(): the
+// nullInterpretation field is written EXPLICITLY even at its NOT_UNIQUE
+// default — the stored bytes carry it (byte-golden-pinned).
 func (f *FieldKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	ft := fanTypeToProto(f.fanType)
 	return &gen.KeyExpression{
 		Field: &gen.Field{
-			FieldName: &f.fieldName,
-			FanType:   &ft,
+			FieldName:          &f.fieldName,
+			FanType:            &ft,
+			NullInterpretation: nullInterpretationEnum(f.nullInterpretationUnique),
 		},
 	}
+}
+
+// nullInterpretationEnum maps the preserved bit back to the proto enum.
+func nullInterpretationEnum(unique bool) *gen.Field_NullInterpretation {
+	if unique {
+		return gen.Field_UNIQUE.Enum()
+	}
+	return gen.Field_NOT_UNIQUE.Enum()
 }
 
 // ToKeyExpression serializes a CompositeKeyExpression (ThenKeyExpression) to proto.
@@ -65,8 +76,9 @@ func (n *NestingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	return &gen.KeyExpression{
 		Nesting: &gen.Nesting{
 			Parent: &gen.Field{
-				FieldName: &n.parentField,
-				FanType:   &ft,
+				FieldName:          &n.parentField,
+				FanType:            &ft,
+				NullInterpretation: nullInterpretationEnum(n.nullInterpretationUnique),
 			},
 			Child: n.child.ToKeyExpression(),
 		},
@@ -236,8 +248,9 @@ func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression
 // fieldFromProto reconstructs a FieldKeyExpression from a proto Field.
 func fieldFromProto(f *gen.Field) *FieldKeyExpression {
 	return &FieldKeyExpression{
-		fieldName: f.GetFieldName(),
-		fanType:   fanTypeFromProto(f.GetFanType()),
+		fieldName:                f.GetFieldName(),
+		fanType:                  fanTypeFromProto(f.GetFanType()),
+		nullInterpretationUnique: f.GetNullInterpretation() == gen.Field_UNIQUE,
 	}
 }
 
@@ -251,9 +264,10 @@ func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 		return nil, fmt.Errorf("nesting child: %w", err)
 	}
 	return &NestingKeyExpression{
-		parentField: n.Parent.GetFieldName(),
-		fanType:     fanTypeFromProto(n.Parent.GetFanType()),
-		child:       child,
+		parentField:              n.Parent.GetFieldName(),
+		fanType:                  fanTypeFromProto(n.Parent.GetFanType()),
+		child:                    child,
+		nullInterpretationUnique: n.Parent.GetNullInterpretation() == gen.Field_UNIQUE,
 	}, nil
 }
 

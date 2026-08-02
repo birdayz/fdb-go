@@ -22,7 +22,7 @@ func TestFDB_CoalesceNullifProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_coal")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_coal")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE coal CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE coal CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_coal/s WITH TEMPLATE coal")
 	dsn := fmt.Sprintf("fdbsql:///testdb_coal?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -47,8 +47,8 @@ func TestFDB_ProjectedExistsRound12(t *testing.T) {
 	setup := openTestDB(t, "/testdb_pexr12")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr12")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12_tmpl "+
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t2 (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr12/s WITH TEMPLATE pexr12_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_pexr12?cluster_file=%s&schema=s", clusterFilePath))
@@ -286,8 +286,8 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 	setup := openTestDB(t, "/testdb_pexr12dml")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr12dml")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12dml_tmpl "+
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t2 (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr12dml/s WITH TEMPLATE pexr12dml_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_pexr12dml?cluster_file=%s&schema=s", clusterFilePath))

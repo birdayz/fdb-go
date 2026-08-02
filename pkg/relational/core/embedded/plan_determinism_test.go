@@ -44,7 +44,7 @@ import (
 )
 
 const multiEqSchema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_a ON T(a)
 CREATE INDEX idx_b ON T(b)
 CREATE INDEX idx_c ON T(c)`
@@ -118,7 +118,7 @@ func TestPlanDeterminism_EqualCostIndexTie(t *testing.T) {
 	// Two indexes on `a`: a `WHERE a = 5` scan costs the same on either, so which
 	// is chosen is a pure tie — the partial-match / candidate map-order leak.
 	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx1 ON T(a)
 CREATE INDEX idx2 ON T(a)`
 

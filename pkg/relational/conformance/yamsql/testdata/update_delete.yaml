@@ -6,7 +6,7 @@
 # with v IS NULL. Only IS NULL / IS NOT NULL probes NULL directly.
 name: update_delete
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 20), (4, null)
 tests:

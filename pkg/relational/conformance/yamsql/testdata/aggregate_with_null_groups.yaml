@@ -4,7 +4,7 @@
 # creating a NULL group.
 name: aggregate_with_null_groups
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'East', 100), (2, 'East', 200), (3, 'West', 150), (4, null, 50), (5, null, 75)
 tests:

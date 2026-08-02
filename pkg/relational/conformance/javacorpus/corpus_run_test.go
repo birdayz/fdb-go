@@ -147,22 +147,23 @@ func TestJavaCorpusRuns(t *testing.T) {
 	// A gap entry whose file stopped failing is a CLOSED gap nobody deleted,
 	// and it would keep a working file booked as broken. Assert each entry
 	// still matched something.
-	// A matched gap's skip detail is "<booking>: <error>" — key on each
-	// entry's OWN booking rather than a hardcoded "CQ-" prefix, so a gap
-	// booked to an RFC follow-up (e.g. "RFC-143 §3a") is checked the same
-	// way as a CQ-numbered one.
-	matched := map[string]bool{}
+	// A matched gap's skip detail is "<Booking>: <error>" (runner.go's
+	// gapFor arm), so reachability keys on each entry's OWN booking prefix —
+	// hard-coding one booking scheme ("CQ-") silently un-pinned every
+	// RFC-booked entry.
+	matchedBookings := map[string]map[string]bool{}
 	for _, f := range ledger.Files() {
 		for _, s := range f.Skips {
-			for _, g := range javacorpus.EngineGaps() {
-				if f.Path == g.Path && strings.HasPrefix(s.Detail, g.Booking+": ") {
-					matched[f.Path] = true
+			if i := strings.Index(s.Detail, ": "); i > 0 {
+				if matchedBookings[f.Path] == nil {
+					matchedBookings[f.Path] = map[string]bool{}
 				}
+				matchedBookings[f.Path][s.Detail[:i]] = true
 			}
 		}
 	}
 	for _, g := range javacorpus.EngineGaps() {
-		if !matched[g.Path] {
+		if !matchedBookings[g.Path][g.Booking] {
 			t.Errorf("engine gap %s (%s, %s) no longer matches: the file either passes now — "+
 				"delete the entry and raise the pass count — or fails differently, which is a new bug.",
 				g.Path, g.Class, g.Booking)
@@ -290,9 +291,11 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"declares its functions in the schema template, which now fails closed as unsupported-DDL:function " +
 		"instead of silently dropping the declarations and running against a template missing them. The gap " +
 		"re-arms when template function DDL lands (RFC-201 Phase 4)",
-	javacorpus.SkipGapReturningDryRun: "the RETURNING-DRY-RUN witness (update-delete-returning.yamsql) declares " +
-		"struct types, which now fail closed as unsupported-DDL:struct instead of being silently dropped from " +
-		"the template. The gap re-arms with struct DDL (RFC-201 Phase 3)",
+	javacorpus.SkipDDLStruct: "EMPTIED by RFC-204 Phase 1: CREATE TYPE AS STRUCT registers, struct " +
+		"columns declare, and every former carrier re-booked to a narrower named class " +
+		"(engine-gap:struct-dml, unsupported-DDL:struct-index, function/view causes) or passes. The class " +
+		"stays declared as the declaration-scan fallback for a struct-declaring template failing DDL for " +
+		"a cause the message rules do not name",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

@@ -61,12 +61,11 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	rec := func(id int64, arr []int32) proto.Message {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		fd := desc.Fields().ByName("ARR")
-		list := m.NewField(fd).List()
+		vals := make([]protoreflect.Value, 0, len(arr))
 		for _, v := range arr {
-			list.Append(protoreflect.ValueOfInt32(v))
+			vals = append(vals, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(list))
+		setArrayField(m, desc.Fields().ByName("ARR"), vals...)
 		return m
 	}
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

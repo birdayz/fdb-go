@@ -21,8 +21,8 @@ func TestFDB_SetOpsDistinctProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_setops")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE setops "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_setops/s WITH TEMPLATE setops")
 	dsn := fmt.Sprintf("fdbsql:///testdb_setops?cluster_file=%s&schema=s", clusterFilePath)

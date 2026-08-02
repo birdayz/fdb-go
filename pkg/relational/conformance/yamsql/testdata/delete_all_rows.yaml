@@ -3,7 +3,7 @@
 # Exercises DELETE without WHERE (or with always-true WHERE).
 name: delete_all_rows
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')
 tests:

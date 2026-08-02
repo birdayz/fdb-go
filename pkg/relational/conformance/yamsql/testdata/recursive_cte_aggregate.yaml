@@ -5,7 +5,7 @@
 # operators.
 name: recursive_cte_aggregate
 schema_template: |
-  CREATE TABLE tree (id BIGINT NOT NULL, parent_id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tree (id BIGINT, parent_id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO tree VALUES (1, NULL, 10), (2, 1, 20), (3, 1, 30), (4, 2, 40), (5, 2, 50)
 tests:

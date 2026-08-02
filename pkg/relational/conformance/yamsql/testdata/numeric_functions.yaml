@@ -12,7 +12,7 @@
 # typed-error channel: ABS(MinInt64)→22003, MOD(x,0)→22012, SQRT(<0)→22023.
 name: numeric_functions
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, f FLOAT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v DOUBLE, n BIGINT, f FLOAT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
       (1, 2.5, 10, 2.0),

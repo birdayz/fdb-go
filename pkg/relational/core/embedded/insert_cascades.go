@@ -19,6 +19,17 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// fieldTypeIsNotNullable reports whether the target field's declared TYPE
+// is non-nullable — Java's `fieldType.isNullable()` gate
+// (ExpressionVisitor.parseRecordFieldsUnderReorderings:1067). With scalar
+// NOT NULL unexpressible, the only non-nullable declarable type is a
+// NOT NULL array, stored as a FLAT repeated field (a nullable array is the
+// NullableArrayWrapper message instead). proto2 `required` is kept for
+// hand-authored/Java-app descriptors, where it is the only non-null signal.
+func fieldTypeIsNotNullable(fd protoreflect.FieldDescriptor) bool {
+	return fd.Cardinality() == protoreflect.Required || fd.IsList()
+}
+
 // buildInsertValuesArray converts an INSERT … VALUES row list into a
 // Cascades array literal: one RecordConstructorValue per row, gathered
 // into an ArrayConstructorValue. translateInsert wraps this array in an
@@ -127,7 +138,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				case idx >= len(exprs):
 					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 						"Value of column \"%s\" is not provided", fd.Name())
-				case fd.Cardinality() == protoreflect.Required:
+				case fieldTypeIsNotNullable(fd):
 					return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 						"null value in column \"%s\" violates not-null constraint", fd.Name())
 				default:
@@ -198,7 +209,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 			if evalErr != nil {
 				return nil, translateExecError(evalErr)
 			}
-			if val == nil && fd.Cardinality() == protoreflect.Required {
+			if val == nil && fieldTypeIsNotNullable(fd) {
 				return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 					"NULL value in column %q violates NOT NULL constraint", col)
 			}
@@ -293,7 +304,7 @@ func validateUpdateAssignments(upd *logical.LogicalUpdate, md *recordlayer.Recor
 		if fd == nil {
 			continue
 		}
-		if fd.Cardinality() == protoreflect.Required && isStaticNull(a.Value) {
+		if fieldTypeIsNotNullable(fd) && isStaticNull(a.Value) {
 			return api.NewErrorf(api.ErrCodeNotNullViolation,
 				"NULL value in column %q violates NOT NULL constraint", a.Column)
 		}

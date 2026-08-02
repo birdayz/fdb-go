@@ -3,8 +3,8 @@
 # Exercises UPDATE ... SET ... WHERE EXISTS with correlation.
 name: update_correlated_exists
 schema_template: |
-  CREATE TABLE accounts (id BIGINT NOT NULL, balance BIGINT, tier STRING, PRIMARY KEY (id))
-  CREATE TABLE transactions (id BIGINT NOT NULL, account_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE accounts (id BIGINT, balance BIGINT, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE transactions (id BIGINT, account_id BIGINT, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO accounts VALUES (1, 1000, 'basic'), (2, 500, 'basic'), (3, 200, 'basic')
   - INSERT INTO transactions VALUES (10, 1, 500), (20, 1, 300), (30, 2, 100)

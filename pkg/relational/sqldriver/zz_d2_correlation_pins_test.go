@@ -26,8 +26,8 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_paramleg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paramleg_tmpl "+
-			"CREATE TABLE o (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t (id BIGINT NOT NULL, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_paramleg?cluster_file=%s&schema=s", clusterFilePath)
@@ -83,9 +83,9 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nestedfm")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nestedfm_tmpl "+
-			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_nestedfm?cluster_file=%s&schema=s", clusterFilePath)
@@ -135,9 +135,9 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbp)
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" "+
-			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbp+"/s WITH TEMPLATE "+tmpl)
 
 	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbp, clusterFilePath)

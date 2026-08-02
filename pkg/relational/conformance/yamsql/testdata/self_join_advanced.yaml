@@ -4,7 +4,7 @@
 # to itself with different aliases, finding pairs and hierarchies.
 name: self_join_advanced
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, manager_id BIGINT, salary BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'CEO', null, 300), (2, 'VP', 1, 200), (3, 'Director', 1, 180), (4, 'Manager', 2, 150), (5, 'Engineer', 4, 120)
 tests:

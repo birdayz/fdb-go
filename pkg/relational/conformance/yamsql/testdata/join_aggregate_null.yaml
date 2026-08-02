@@ -5,8 +5,8 @@
 # and LEFT JOIN with NULL propagation through aggregates.
 name: join_aggregate_null
 schema_template: |
-  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE departments (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Marketing'), (3, 'Sales')
   - INSERT INTO employees VALUES (10, 1, 100, 'Alice'), (11, 1, 120, 'Bob'), (12, 1, NULL, 'Charlie'), (20, 2, 80, 'Dave'), (30, NULL, 90, 'Eve')

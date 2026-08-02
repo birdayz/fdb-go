@@ -42,8 +42,8 @@ func TestFDB_DelimitedDottedAliasIsVerbatim(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dotalias")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dotalias_tmpl "+
-			"CREATE TABLE Users (uid BIGINT NOT NULL, name STRING, PRIMARY KEY (uid)) "+
-			"CREATE TABLE Orders (oid BIGINT NOT NULL, uid BIGINT, name STRING, PRIMARY KEY (oid))")).
+			"CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) "+
+			"CREATE TABLE Orders (oid BIGINT, uid BIGINT, name STRING, PRIMARY KEY (oid))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_dotalias/s WITH TEMPLATE dotalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
@@ -144,8 +144,8 @@ func TestFDB_DuplicateBareLeafKeepsTwoColumns(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dupleaf")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dupleaf_tmpl "+
-			"CREATE TABLE A (id BIGINT NOT NULL, k STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE B (id BIGINT NOT NULL, k STRING, PRIMARY KEY (id))")).
+			"CREATE TABLE A (id BIGINT, k STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE B (id BIGINT, k STRING, PRIMARY KEY (id))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_dupleaf/s WITH TEMPLATE dupleaf_tmpl")).Error().NotTo(gomega.HaveOccurred())

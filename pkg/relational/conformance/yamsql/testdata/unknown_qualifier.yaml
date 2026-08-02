@@ -7,8 +7,8 @@
 # Go must match this behavior.
 name: unknown_qualifier
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE s (sid BIGINT NOT NULL, label STRING, PRIMARY KEY (sid))
+  CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE s (sid BIGINT, label STRING, PRIMARY KEY (sid))
 setup:
   - INSERT INTO t VALUES (1, 'alpha'), (2, 'beta')
   - INSERT INTO s VALUES (10, 'x'), (20, 'y')
