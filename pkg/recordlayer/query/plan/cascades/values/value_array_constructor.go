@@ -58,7 +58,7 @@ func (*ArrayConstructorValue) Name() string { return "array" }
 //
 // The UNTYPED empty literal `[]` (element type NONE) is special: its
 // result type is the bare NONE type, not Array(NONE) — matching
-// Java's emptyArrayOfNone (AbstractArrayConstructorValue.java:305-310,
+// Java's emptyArrayOfNone (AbstractArrayConstructorValue.java:304,
 // getResultType() returns Type.noneType()). NONE is what the
 // promotion lattice keys on (NONE_TO_ARRAY; Type.maximumType's NONE
 // arms), so `arr = []` promotes the literal to the column's ARRAY

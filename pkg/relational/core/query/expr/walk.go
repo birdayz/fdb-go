@@ -1980,7 +1980,7 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 // through the ConstantExpressionAtom dispatch.
 // resolveDecimalText parses one decimal literal token — including Java's
 // WIDTH SUFFIXES — into a typed constant, mirroring
-// ParseHelpers.parseDecimal (ParseHelpers.java:68-101):
+// ParseHelpers.parseDecimal (ParseHelpers.java:68-104):
 //
 //   - a REAL token containing '.': f/F parses the binary32 FLOAT
 //     (Float.parseFloat of the suffix-stripped text), d/D the DOUBLE;

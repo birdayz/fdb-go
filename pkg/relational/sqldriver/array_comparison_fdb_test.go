@@ -4,11 +4,12 @@ package sqldriver_test
 // FROM} over ARRAY operands, plus the NULL/NONE (untyped `[]`) operand
 // matrix and the plan-time rejections.
 //
-// The spec is Java's RelOpValue.encapsulate (RelOpValue.java:326-385):
+// The spec is Java's RelOpValue.encapsulate (RelOpValue.java:325-381):
 // ARRAY operands are legal for the equality family only; an ARRAY compared
 // against NULL or the untyped empty array `[]` (the NONE type) promotes the
-// other side via PromoteValue (NULL_TO_ARRAY / NONE_TO_ARRAY,
-// PromoteValue.java:88-90); after promotion the two ARRAY types must match
+// other side via PromoteValue (NULL_TO_ARRAY at PromoteValue.java:88,
+// NONE_TO_ARRAY at :90 — reached through promoteOperands → maximumType,
+// never applied directly); after promotion the two ARRAY types must match
 // modulo nullability — INTEGER ARRAY vs BIGINT ARRAY is DATATYPE_MISMATCH
 // (42804), promotable in principle but deliberately unsupported
 // (RelOpValue.java:365-370) — and there is no ordering operator over ARRAY

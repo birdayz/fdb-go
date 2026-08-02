@@ -1,7 +1,7 @@
 package expr_test
 
 // WIDTH-SUFFIXED numeric literals — the walker-level pins for Java's
-// ParseHelpers.parseDecimal (ParseHelpers.java:68-101). The suffix decides
+// ParseHelpers.parseDecimal (ParseHelpers.java:68-104). The suffix decides
 // the literal's STATIC TYPE: `2L` is LONG even though 2 fits int32 (no
 // re-narrowing), `1I` is INT, `1.0f` is the binary32 FLOAT, `2.0d` DOUBLE.
 // Before the port the whole token went to strconv and every suffixed

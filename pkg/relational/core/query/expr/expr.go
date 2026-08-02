@@ -666,7 +666,7 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 				"The operands of a comparison operator are not compatible.")
 		}
 		// ARRAY comparison rules (Java RelOpValue.encapsulate,
-		// RelOpValue.java:344-378):
+		// RelOpValue.java:325-381):
 		//   - ARRAY vs the untyped NULL or NONE (`[]` literal): promote
 		//     the other operand toward the ARRAY type via PromoteValue
 		//     (NULL_TO_ARRAY evaluates to NULL, NONE_TO_ARRAY passes the

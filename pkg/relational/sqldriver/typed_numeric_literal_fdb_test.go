@@ -2,7 +2,7 @@ package sqldriver_test
 
 // WIDTH-SUFFIXED numeric literals — Java parity for the `1I`/`2L`/`1.0f`/
 // `2.0d` literal forms (Java ParseHelpers.parseDecimal,
-// ParseHelpers.java:68-101):
+// ParseHelpers.java:68-104):
 //
 //   - with a '.' in the token: f/F parses the binary32 FLOAT
 //     (Float.parseFloat), d/D the DOUBLE — the suffix is only honoured

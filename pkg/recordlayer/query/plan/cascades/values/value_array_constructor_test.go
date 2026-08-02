@@ -27,7 +27,7 @@ func TestArrayConstructorValue_Type(t *testing.T) {
 
 // The UNTYPED empty literal `[]` (element type NONE) types as the bare
 // NONE type, not Array(NONE) — Java's emptyArrayOfNone
-// (AbstractArrayConstructorValue.java:305-310). NONE is what the
+// (AbstractArrayConstructorValue.java:304). NONE is what the
 // promotion lattice keys on (NONE_TO_ARRAY, MaximumType's NONE arms),
 // so `arr = []` promotes instead of failing an Array(NONE) recursion.
 func TestArrayConstructorValue_EmptyUntypedIsNoneType(t *testing.T) {
