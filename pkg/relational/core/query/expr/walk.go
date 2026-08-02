@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
@@ -1423,11 +1424,30 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 	return values.NewArrayConstructorValue(elemType, children), nil
 }
 
-// walkRecordConstructor unwraps a single-element, unnamed-field,
-// un-typed record constructor — the parser's shape for
-// parenthesised expressions `(expr)`. Multi-element or annotated
-// record constructors require dedicated values.RecordConstructorValue
-// support, not wired yet.
+// walkRecordConstructorInner resolves a record constructor in EXPRESSION
+// position — Java's ExpressionVisitor.visitRecordConstructor
+// (ExpressionVisitor.java:889-926), minus the two star arms (those need the
+// logical operators in scope, not just the expression resolver).
+//
+// Two outcomes, and which one applies is a property of the SYNTAX, not a
+// preference:
+//
+//   - exactly one element, unnamed, un-typed → the parser's shape for a
+//     PARENTHESISED EXPRESSION `(expr)`, so unwrap. SQL has no one-tuple
+//     literal to distinguish it from, which is why Java's grammar reuses the
+//     rule and why the unwrap is not a shortcut.
+//   - anything else → a genuine record, built as a RecordConstructorValue
+//     exactly as Java's RecordConstructorValue.ofColumns does. Field names
+//     come from each element's optional `AS name`, and an unnamed element
+//     takes the ordinal key `_i` (Java's Record.Field anonymous naming).
+//
+// Building the second case is what lets a struct literal appear where a value
+// is expected rather than only as a DML target — `SELECT (1, 1.0, 'a', true)`,
+// and through it `COALESCE(null, (1, 1.0, 'a', true))`, whose NULL operand
+// promotes to the record type through the existing NULL→RECORD lattice edge
+// (Java PromoteValue.java:89) and whose result type is the field-name merge in
+// MaximumType (Java Type.java:638-666). No second mechanism: the promotion and
+// the merge were already there; only the producer was missing.
 func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorContext, pos walkPos) (values.Value, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("expr.walkRecordConstructor: nil")
@@ -1436,28 +1456,45 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("RecordConstructor ctx %T", rc)}
 	}
+	// `(t.*)` / `(*)` — the parenthesised star. It packs the whole row into one
+	// struct-typed column and is resolved against the FROM sources, which this
+	// resolver does not carry; the projection layer handles it.
+	if rcc.STAR() != nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR"}
+	}
 	exprs := rcc.AllExpressionWithOptionalName()
-	if len(exprs) != 1 {
-		return nil, &UnsupportedExpressionShapeError{
-			Shape: fmt.Sprintf("RecordConstructor with %d elements; walker handles 1-elem (paren expr) only", len(exprs)),
+	if len(exprs) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with no elements"}
+	}
+	if len(exprs) == 1 && rcc.OfTypeClause() == nil {
+		if ewon, isEwon := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext); isEwon && ewon.Uid() == nil {
+			// The caller's position, NOT a fresh predicate context. Hardcoding
+			// WalkExpression here made every paren-unwrap discard where it was, so a
+			// parenthesised comparison was rejected in five operand positions that
+			// accept the same comparison unparenthesised.
+			return r.walkExpressionInner(ewon.Expression(), pos)
 		}
 	}
-	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
-	if !ok {
-		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", exprs[0])}
+	fields := make([]values.RecordConstructorField, 0, len(exprs))
+	for i, e := range exprs {
+		ewon, isEwon := e.(*antlrgen.ExpressionWithOptionalNameContext)
+		if !isEwon {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", e)}
+		}
+		// Every element resolves in EXPRESSION position regardless of where the
+		// constructor itself sits: a record's fields are values, never
+		// predicates, even when the constructor appears in a predicate operand.
+		v, err := r.WalkExpression(ewon.Expression())
+		if err != nil {
+			return nil, err
+		}
+		name := values.OrdinalFieldName(i)
+		if ewon.Uid() != nil {
+			name = functions.StripIdentifierQuotes(ewon.Uid().GetText())
+		}
+		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
 	}
-	if ewon.Uid() != nil {
-		// Named field — real record constructor, not a paren-wrap.
-		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with named field"}
-	}
-	if rcc.OfTypeClause() != nil {
-		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with OfType"}
-	}
-	// The caller's position, NOT a fresh predicate context. Hardcoding
-	// WalkExpression here made every paren-unwrap discard where it was, so a
-	// parenthesised comparison was rejected in five operand positions that
-	// accept the same comparison unparenthesised.
-	return r.walkExpressionInner(ewon.Expression(), pos)
+	return values.NewRecordConstructorValue(fields...), nil
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades

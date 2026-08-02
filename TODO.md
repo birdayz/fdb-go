@@ -13831,3 +13831,58 @@ None is speculative: each was re-verified against the tree before booking.
   bare star into a non-sole slot.
   DONE = `SELECT *, a.*`, `SELECT a.*, *` and `SELECT *, id` answer with
   Java's column list, pinned against the live-JVM probe.
+
+- [ ] **CQ-86 (MED, result surfacing — closes functions.yamsql): a COMPUTED
+  record reaches the driver as a bare `map[string]any`, so it is not an
+  `api.Struct` and nothing downstream can describe it as one.** The query is
+  otherwise CORRECT — `SELECT COALESCE(null, (1, 1.0, 'a', true))` plans and
+  evaluates to `{_0: int64(1), _1: float64(1.0), _2: "a", _3: true}`, pinned in
+  `pkg/relational/sqldriver/record_constructor_expression_fdb_test.go` — so
+  this is purely the boundary conversion. `materializeDriverValue`
+  (`cascades_generator.go`) is Java's `RowStruct.getObject` Types.STRUCT arm
+  (RowStruct.java:184-197) and converts a `protoreflect.ProtoMessage` into a
+  `rowstruct.MessageStruct`; a computed record never reaches that arm because
+  it is not a message. THE JAVA ANSWER IS ALREADY HALF-WRITTEN IN GO: Java's
+  `RecordConstructorValue.eval` builds a dynamic proto Message from the record
+  type (RecordConstructorValue.java:113-139) — the SAME structural walk
+  `values.BuildStructMessage` already performs on the DML side — so in Java a
+  computed record IS a message and the existing conversion fires unchanged.
+  Go's `RecordConstructorValue.Evaluate` returns a map instead.
+  MEASURED, live JVM, `conformance/record_constructor_java_probe_test.go`
+  probe `bare_record_literal`: JAVA `OK cols=[_0(STRUCT)]`
+  rows=`[map[__unsupported__:com.apple.foundationdb.relational.api.ImmutableRowStruct]]`
+  (the harness cannot render a Java struct's contents, but the TYPE is STRUCT);
+  GO `OK cols=[_0(STRUCT)] rows=[[map[_0:1 _1:1 _2:a _3:true]]]` — a raw map.
+  Booked `engine-gap:struct-query` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at the row-shape mismatch.
+  WHY IT IS NOT A ONE-LINER: `RecordConstructorValue` is also the whole-row
+  projection carrier, so changing `Evaluate` to return a message changes the
+  representation every projection flows. Either that conversion is done for
+  every projection row (matching Java, and the honest end state) or the
+  boundary is given the record TYPE so it can order the map —
+  `executor.ColumnDef` is a flat type string today (CQ-74), so it cannot carry
+  one.
+  DONE = `functions.yamsql` passes, `struct-query` reaches 1, and a computed
+  record reads back through the driver as an `api.Struct` whose attribute
+  ORDER matches the constructor's declaration order.
+
+- [ ] **CQ-87 (SMALL, needs confirmation first): Java may wrap a
+  PARENTHESISED SCALAR into a one-field record where Go unwraps it.** Go's
+  `walkRecordConstructorInner` unwraps a one-element unnamed constructor
+  because that is the parser's shape for `(expr)`; Java's
+  `visitRecordConstructor` has NO such unwrap — it goes straight to
+  `RecordConstructorValue.ofColumns` (ExpressionVisitor.java:918-925).
+  MEASURED, live JVM, `conformance/record_constructor_java_probe_test.go`
+  probe `single_element_paren`, `SELECT (1 + 2)`:
+  JAVA `OK cols=[_0(STRUCT)]`; GO `OK cols=[_0(INTEGER)] rows=[[3]]`.
+  CONFIRM BEFORE ACTING: the probe's Java renderer prints every struct as
+  `__unsupported__`, so the column TYPE is the only signal and it has not been
+  cross-checked against a corpus assertion. `select-a-star.yamsql`'s
+  `select ((*)) from t1` expecting a doubly-nested struct is consistent with
+  Java nesting parens as records, which is why this is worth confirming rather
+  than dismissing. If confirmed, unwrapping is a Go divergence on the SHARED
+  surface and the fix is to stop unwrapping — but that re-types every
+  parenthesised scalar in the language, so it needs the corpus run to say what
+  it costs before it is attempted.
+  DONE = a corpus or yamsql assertion settles what Java returns for
+  `SELECT (1+2)`, and Go matches it.

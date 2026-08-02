@@ -117,6 +117,7 @@ go_test(
         "rangeset_conformance_test.go",
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
+        "record_constructor_java_probe_test.go",
         "reverse_scan_conformance_test.go",
         "rfc204_template_golden_test.go",
         "run_sql_conformance_test.go",

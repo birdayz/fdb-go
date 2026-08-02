@@ -1462,6 +1462,26 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
+	// IN is a comparison, so its operands answer to the same whitelist the
+	// binary form does (Java RelOpValue.isSupportedOperandType,
+	// RelOpValue.java:320-322). The ROW-VALUE spelling `(a, b) IN ((1,2),
+	// (3,4))` is what reaches here with a record operand, and it must reject
+	// rather than plan: the list membership test compares a record against
+	// each element with no record comparator behind it, so it answered NO ROWS
+	// for a matching row and ALL ROWS for the negated form. That is the same
+	// silent-wrong the binary gate closes, arriving through the other door —
+	// and it only became reachable once record constructors could be built in
+	// expression position at all, which is why the gate has to be on both.
+	if !comparisonOperandSupported(left.Type()) {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"a comparison operand of complex type (record) is not supported")
+	}
+	for _, e := range rhs {
+		if e != nil && !comparisonOperandSupported(e.Type()) {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"a comparison operand of complex type (record) is not supported")
+		}
+	}
 	// Same cross-type index-SARG fix as widenConstAgainstDoubleColumn, for IN: when
 	// the LHS is a DOUBLE column, widen integer list elements to float64 so each
 	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE

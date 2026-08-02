@@ -182,11 +182,28 @@ var engineGaps = []EngineGap{
 	// own exact rejection, so the struct class no longer claims it and the
 	// real blocker is counted under its own name.
 	{"arrays-unnesting-documentation-queries.yamsql", SkipGapMultipleLateralUnnests, "multiple lateral array unnests in one FROM clause are not yet supported", "RFC-142"},
-	// A record constructor in EXPRESSION position (a COALESCE argument),
-	// which needs the projection-side RecordConstructorValue rather than the
-	// DML target-type push-down.
-	{"inserts-updates-deletes.yamsql", SkipGapStructQuery, "RecordConstructor with 2 elements", "RFC-204 P3"},
-	{"functions.yamsql", SkipGapStructQuery, `"select coalesce(null, (1, 1.0, 'a', true)) from C"`, "RFC-204 P3"},
+	// inserts-updates-deletes.yamsql PASSES: the record constructor now builds
+	// in EXPRESSION position (Java's ExpressionVisitor.visitRecordConstructor
+	// → RecordConstructorValue.ofColumns), and its `UPDATE … SET b3 =
+	// coalesce(b3, (b1, b2), …)` binds the anonymous literal to the target
+	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
+	// target type in hand.
+	//
+	// functions.yamsql advanced but did not close, and its rejection changed
+	// KIND: it is no longer a planning decline, it is a RESULT-SURFACING gap.
+	// The query plans and evaluates CORRECTLY — the row carries
+	// {_0: int64(1), _1: float64(1.0), _2: "a", _3: true}, pinned in
+	// pkg/relational/sqldriver/record_constructor_expression_fdb_test.go — but
+	// a COMPUTED record reaches the driver as a bare map[string]any, so it is
+	// not an api.Struct and the matcher's nested comparison declines it. Java
+	// does not have this shape at all: RecordConstructorValue.eval builds a
+	// dynamic proto Message (RecordConstructorValue.java:113-139, the same
+	// structural walk Go's values.BuildStructMessage performs on the DML side),
+	// so the driver's ProtoMessage → RelationalStruct conversion
+	// (RowStruct.java:184-197) fires for a computed record exactly as it does
+	// for a stored one. Go's RecordConstructorValue.Evaluate returns a map, so
+	// materializeDriverValue's ProtoMessage arm never sees it.
+	{"functions.yamsql", SkipGapStructQuery, "actual row at 1 does not match any expected records", "RFC-204 P3"},
 	// `SELECT (*)` — the parenthesised star, a record constructor over the
 	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
 	// :902-916).

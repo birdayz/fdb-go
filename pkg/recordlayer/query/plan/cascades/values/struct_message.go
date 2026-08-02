@@ -53,10 +53,40 @@ func BuildStructMessage(
 ) (protoreflect.Value, error) {
 	msg := dynamicpb.NewMessage(md)
 	fds := md.Fields()
+	// An ANONYMOUS record binds POSITIONALLY. `(b1, b2)` carries no field
+	// names at all, and the ordinal keys `_0`, `_1`, … are exactly how this
+	// codebase spells "unnamed" (OrdinalFieldName is Java's Record.Field
+	// anonymous naming) — so a name-keyed lookup finds nothing and the whole
+	// literal reads as undeclared. Java never reaches that state because it
+	// binds earlier: parseRecordFields applies the TARGET type's field names
+	// by position while visiting the constructor
+	// (ExpressionVisitor.visitRecordConstructor → parseRecordFieldsUnderReorderings).
+	// Go's constructor is built without a target in expression position — a
+	// COALESCE operand has no target until the assignment coerces it — so the
+	// positional binding happens here instead, at the coercion, which is the
+	// only point where both the record and its target are in hand.
+	//
+	// Arity must match exactly, mirroring Java's
+	// `Assert.thatUnchecked(targetFields.size() == parserRuleContexts.size())`;
+	// a mismatch falls through to the name-keyed path and its error, which
+	// names the real problem.
+	positional := len(fields) > 0 && len(fields) == fds.Len()
+	if positional {
+		for name := range fields {
+			if !IsOrdinalFieldName(name) {
+				positional = false
+				break
+			}
+		}
+	}
 	matched := 0
 	for i := 0; i < fds.Len(); i++ {
 		sub := fds.Get(i)
-		v, present := fields[string(sub.Name())]
+		key := string(sub.Name())
+		if positional {
+			key = OrdinalFieldName(i)
+		}
+		v, present := fields[key]
 		if !present {
 			continue
 		}
