@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# The fleet's provisioning inputs are code, so they get a test target `just test` reaches.
+# Before this, neither shell suite was referenced by any workflow, the justfile or a BUILD
+# file: they were green by hand only, nothing kept them green, and both had silently
+# stopped testing what their headers claimed.
+#
+# data carries what the tests read and execute — cloud-init.yaml (the size guard renders
+# it; link_ci_volume_test.sh extracts the shipped scripts out of it), migrate-ci-volume.sh
+# (executed against fixtures) and the two suites themselves. The bazel runfiles tree
+# mirrors the workspace layout, so the suites' `cd $(dirname $0)/..` resolves the same way
+# it does in a checkout.
+go_test(
+    name = "infra_test",
+    srcs = [
+        "infra_test.go",
+        "render_test.go",
+        "template_model_test.go",
+    ],
+    data = [
+        "cloud-init.yaml",
+        "link_ci_volume_test.sh",
+        "migrate-ci-volume.sh",
+        "migrate_ci_volume_test.sh",
+    ],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+)

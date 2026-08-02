@@ -4,8 +4,17 @@
 # the daemon creates its data-root as a mode-0711 dir on the ROOT DISK. The volume link
 # then refuses to nest inside it (100 GB unused, caches filling the 75 GB root), and the
 # traverse-only ancestor makes the runner refuse to start: "Fail to create and validate
-# runner's work directory". bootcmd is the only hook before package install; runcmd
-# unmasks once the link exists.
+# runner's work directory". bootcmd is the only hook before package install, so the mask
+# stays here and stays unconditional.
+#
+# What must NOT stay here is the decision to lift it. bootcmd is PER_ALWAYS and runcmd is
+# PER_INSTANCE, so mask-here + unmask-there left every boot after the first with no
+# container runtime, on a box that still registered a runner and claimed testcontainers
+# jobs. The obvious repair -- make bootcmd conditional on the volume -- does not work
+# either: bootcmd runs in cloud-init's network stage, which on Ubuntu is
+# Before=sysinit.target and is NOT ordered after local-fs.target, so the fstab mount has
+# not happened yet and the volume looks absent on every boot. ci-docker-gate.service below
+# is the fix: After=local-fs.target, so it both sees the mount and runs every boot.
 bootcmd:
   - systemctl mask docker.service docker.socket
 
@@ -14,22 +23,26 @@ package_update: true
 # it in @local_config_cc inside the output base, which lives on the CI volume and outlives
 # the box. That cache was built against clang, so a box with only gcc fails every C++ action
 # with `gcc: error: unrecognized command-line option '-Wthread-safety'`. It was installed by
-# hand on the old fleet, which is why nothing declared it.
+# hand on the old fleet, which is why nothing declared it. Same class: gh (nightly-factory
+# ends a 5h batch lane with `gh pr create` — exit 127 after all the work), unzip
+# (claude.yml unpacks bun), rsync (this file's scaleset branch + the migration runbook).
+# All are in the 24.04 archive (gh 2.45.0/universe), so apt, not another pinned tarball.
 packages:
   - docker.io
   - build-essential
   - clang
   - curl
+  - gh
   - git
   - jq
+  - rsync
+  - unzip
 
-# This box is 7.6 GB RAM with the FDB-container suite running at --local_test_jobs=4
-# (each test spawns a multi-GB FDB server). With NO swap, a memory spike OOM-kills test
-# processes and can wedge the whole runner — zero headroom (observed: 10 OOM-kills in a
-# 42-day session, culminating in an sshd-starving wedge). A swap file converts those fatal
-# OOM-kills into survivable slowdowns; swappiness=10 keeps tests on RAM until real pressure
-# so the common path stays fast. NOTE: this only buys headroom — for real capacity, bump
-# server_type (e.g. cx33 -> a 16 GB type) or lower --local_test_jobs.
+# 7.6 GB RAM running the FDB-container suite at --local_test_jobs=4 (each test spawns a
+# multi-GB FDB server). With NO swap a memory spike OOM-kills test processes and can wedge
+# the runner (observed: 10 OOM-kills in 42 days, ending in an sshd-starving wedge). Swap
+# converts those into survivable slowdowns; swappiness=10 keeps the common path on RAM.
+# This only buys headroom — real capacity needs a bigger server_type or fewer test jobs.
 swap:
   filename: /swapfile
   size: 4294967296 # 4 GiB
@@ -38,6 +51,15 @@ write_files:
   - path: /etc/sysctl.d/99-ci-swap.conf
     content: |
       vm.swappiness=10
+
+  # runner is created with useradd + `usermod -aG docker` and nothing else, so it had no
+  # sudo — while workflows shell out to `sudo apt-get install` (claude.yml's unzip step).
+  # Passwordless because a job step cannot answer a prompt; docker group membership is
+  # already root-equivalent here, so this grants nothing the account did not have.
+  - path: /etc/sudoers.d/runner
+    permissions: "0440"
+    content: |
+      runner ALL=(ALL) NOPASSWD:ALL
 
   - path: /etc/docker/daemon.json
     content: |
@@ -57,18 +79,15 @@ write_files:
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
-  # link-ci-volume.sh points the stable /mnt/ci-data at the attached CI data
-  # volume. It is a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh
-  # can execute this exact code against fixtures instead of testing a copy of it.
+  # link-ci-volume.sh points the stable /mnt/ci-data at the attached CI data volume. It is
+  # a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh executes this exact
+  # code against fixtures instead of a copy of it.
   #
-  # The link step is migrate-or-abort, never `ln -sfn` onto whatever is there.
-  # `ln -sfn TARGET LINK` creates the link INSIDE LINK when LINK is a real
-  # directory, and that is not hypothetical: on the runner pool the volumes were
-  # attached AFTER the mount wait expired, a later step created /mnt/ci-data as a
-  # plain root-disk directory, and the link landed at /mnt/ci-data/HC_Volume_<id>.
-  # Docker's data-root and every bazel cache then ran on the 75GB root disk
-  # (91-94% full) while the 100GB volume sat at 1%. Silence is the whole failure
-  # mode, so an occupied /mnt/ci-data aborts and asks for a migration.
+  # The link step is migrate-or-abort, never `ln -sfn` onto whatever is there: `ln -sfn
+  # TARGET LINK` puts the link INSIDE LINK when LINK is a real directory, which is how the
+  # pool ended up with /mnt/ci-data/HC_Volume_<id> and ran Docker + every bazel cache on
+  # the 75GB root disk (91-94%) while the 100GB volume sat at 1%. Silence is the whole
+  # failure mode, so an occupied /mnt/ci-data aborts and asks for a migration.
   - path: /usr/local/bin/link-ci-volume.sh
     permissions: "0755"
     content: |
@@ -77,6 +96,12 @@ write_files:
       # test passes a fixture prefix. Idempotent: safe to re-run on every boot.
       set -eu
       R="$${1:-}"
+      # Idempotent fstab entry. by-id, never /dev/sdX: sdX renumbers across boots and a
+      # renumbered `nofail` entry silently does not mount.
+      persist() {
+        grep -q " $2 " "$R/etc/fstab" 2>/dev/null \
+          || echo "$1 $2 ext4 discard,nofail,defaults 0 0" >> "$R/etc/fstab"
+      }
       # 10 minutes, not 3: the volume is a separate TF resource attached after boot, so
       # cloud-init races the attach, and losing is unrecoverable (cloud-init is one-shot —
       # the box sits with no runner). Measured: 3 minutes lost the race on 1 of 5 boxes.
@@ -86,14 +111,12 @@ write_files:
         # Mount it ourselves: Hetzner automounts only at ATTACH time, so a volume attached
         # after boot has no mount and no fstab entry, and waiting cannot produce one.
         # Measured: 2 of 5 boxes came up with /dev/sdb attached, unmounted, unlisted.
-        if [ -z "$R" ]; then
-          dev=$(ls /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -1) || true
-          if [ -n "$${dev:-}" ]; then
-            mp="/mnt/HC_Volume_$(basename "$dev" | sed 's/scsi-0HC_Volume_//')"
-            mkdir -p "$mp"
-            grep -q " $mp " /etc/fstab 2>/dev/null || echo "$dev $mp ext4 discard,nofail,defaults 0 0" >> /etc/fstab
-            mount "$mp" 2>/dev/null || true
-          fi
+        dev=$(ls "$R"/dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -1) || true
+        if [ -n "$${dev:-}" ]; then
+          mp="$R/mnt/HC_Volume_$(basename "$dev" | sed 's/scsi-0HC_Volume_//')"
+          mkdir -p "$mp"
+          persist "$${dev#$R}" "$${mp#$R}"
+          [ -n "$R" ] || mount "$mp" 2>/dev/null || true
         fi
         sleep 2
       done
@@ -101,6 +124,17 @@ write_files:
       if [ -z "$R" ] && ! mountpoint -q "$VOL"; then
         echo "::error::CI data volume $VOL is not mounted"; exit 1
       fi
+      # Persist ALWAYS, not only when we mounted it ourselves. Hetzner's attach-time
+      # automount mounts but writes no fstab entry, and it usually WINS the race above
+      # (measured: 3 of 5 boxes came up already mounted), so the loop breaks on iteration 1
+      # and never reaches the branch that authored fstab. Nothing re-runs on reboot
+      # (PER_INSTANCE), so such a box came back unmounted with /mnt/ci-data dangling and
+      # every cache silently on the root disk. Derive the device from the volume id, not
+      # from whoever mounted it, so both race outcomes converge here.
+      ID=$(basename "$VOL" | sed 's/HC_Volume_//')
+      DEV="/dev/disk/by-id/scsi-0HC_Volume_$ID"
+      [ -e "$R$DEV" ] || { echo "::error::no $DEV backing $VOL; refusing to leave the mount unpersisted (it would not survive a reboot)"; exit 1; }
+      persist "$DEV" "/mnt/HC_Volume_$ID"
       CI="$R/mnt/ci-data"
       if [ -L "$CI" ]; then
         cur=$(readlink "$CI")
@@ -125,12 +159,48 @@ write_files:
       chmod 0755 "$VOL"
       mkdir -p "$CI/docker" "$CI/bazel"
 
+  # Re-decide on EVERY boot whether Docker may run, once the mounts are up. See the bootcmd
+  # note: this is the only place that both runs every boot and can see the fstab mount.
+  # Fail CLOSED -- Docker runs only when /mnt/ci-data really is the volume symlink with its
+  # data-root on it, because an unmasked Docker without the volume silently refills the
+  # 75 GB root disk, which is worse than a box that visibly cannot run containers.
+  # A FILE, not an ExecStart one-liner, so infra/link_ci_volume_test.sh runs this exact
+  # code; ROOT defaults to "" and the test passes a fixture prefix.
+  - path: /usr/local/bin/ci-docker-gate.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -u
+      D="$${1:-}/mnt/ci-data"
+      if [ -L "$D" ] && [ -d "$D/docker" ]; then
+        systemctl unmask docker.service docker.socket
+        # The boot transaction was built while docker was masked, so unmasking alone
+        # leaves it stopped for the rest of this boot. Start it explicitly.
+        systemctl daemon-reload
+        systemctl start docker.service
+      else
+        systemctl stop docker.service docker.socket 2>/dev/null || true
+        systemctl mask docker.service docker.socket
+      fi
+
+  - path: /etc/systemd/system/ci-docker-gate.service
+    content: |
+      [Unit]
+      Description=Gate Docker on the CI data volume being mounted
+      # The whole point: later than the fstab mount, so the check sees reality.
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/ci-docker-gate.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
   # Watchdog: restart the unit that serves jobs on THIS box. The mode branch writes the
-  # unit name to a config file; hardcoding it is how the pool boxes burned NRestarts of
-  # 1143, 94, 4115 and 2141 restarting a bazelscaleset binary never installed on them.
-  # No config => do nothing. The heartbeat arm is opt-in: a supervisor stamps one on each
-  # successful poll, so a stale stamp means wedged rather than idle; a classic runner
-  # stamps nothing and its liveness IS the unit being active, which the first arm covers.
+  # unit name to a config file; hardcoding it burned NRestarts of 1143/94/4115/2141 on a
+  # binary never installed (infra/README.md). No config => do nothing. The heartbeat arm is
+  # opt-in: a classic runner stamps none and its liveness IS the unit being active.
   - path: /usr/local/bin/runner-watchdog.sh
     permissions: "0755"
     content: |
@@ -191,21 +261,12 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Orphan-FDB-container sweep. testcontainers-go starts a Ryuk reaper
-  # that's supposed to clean up FDB containers when the parent test
-  # process dies. Under memory pressure the OS OOM-killer can take
-  # Ryuk out before reaping (Ryuk is small, ~14 MB image, so a likely
-  # victim). When that happens, FDB containers become orphans:
-  # `docker ps` shows them running with no Ryuk watcher and no parent
-  # test. Each leaks ~700 MB of RSS via the inner fdbserver process.
+  # Orphan-FDB-container sweep. testcontainers-go's Ryuk reaper cleans up FDB containers
+  # when the parent test dies, but under memory pressure the OOM-killer takes Ryuk out
+  # first (~14 MB image, a likely victim) and the containers become orphans leaking
+  # ~700 MB RSS each. The sweep kills foundationdb/foundationdb containers older than
+  # 30 min (no per-test container lives that long) and pins Ryuk's oom_score_adj to -500.
   # See `automemory/project_hetzner_runner_fdbserver_leak.md`.
-  #
-  # The sweep kills any foundationdb/foundationdb container running
-  # for more than 30 minutes (no real test should run that long —
-  # max test_timeout is 60 min for the eternal slot, but containers
-  # are scoped per-test which finishes well under that). It also
-  # bumps Ryuk's oom_score_adj to -500 so the kernel prefers to OOM
-  # almost any other process before it.
   - path: /usr/local/bin/orphan-fdb-sweep.sh
     permissions: "0755"
     content: |
@@ -273,15 +334,11 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Bazel-cache LRU prune. The /etc/bazel.bazelrc GC flags below
-  # (--experimental_disk_cache_gc_*) run IN-SERVER during IDLE only — and this
-  # box's servers rarely idle long enough (jobs `bazelisk shutdown` up front, the
-  # watchdog reaps residents), so the native GC never engaged and the disk cache
-  # grew unbounded until the 98 GB CI volume hit 100% (ENOSPC failed CI builds
-  # with empty compiler diagnostics). This timer is the lifecycle-independent
-  # backstop: mtime is a true LRU signal (Bazel >=7 touches disk-cache entries on
-  # hit). Also sweeps stale per-workspace-path output bases (layout churn strands
-  # dead multi-GB _bazel_runner/<hash> dirs).
+  # Bazel-cache LRU prune. The bazelrc --experimental_disk_cache_gc_* flags run IN-SERVER
+  # during IDLE only, and these servers rarely idle that long, so the native GC never
+  # engaged and the cache grew until the volume hit 100% (ENOSPC, empty compiler
+  # diagnostics). This timer is the lifecycle-independent backstop; mtime is a true LRU
+  # signal (Bazel >=7 touches entries on hit). Also sweeps stale output bases.
   - path: /etc/systemd/system/bazel-cache-prune.service
     content: |
       [Unit]
@@ -309,19 +366,15 @@ write_files:
 
   # --- bazelscaleset (RFC-155) — runner scale-set supervisor (runner_mode=scaleset) ---
 
-  # CI-box-only Bazel config (NOT the committed repo .bazelrc). Read as the system rc
-  # before the workspace .bazelrc; the committed config stays "build from source, no
-  # cache" (RFC-108) for every developer + fresh checkout. The caches here are LOCAL-ONLY
-  # (this box's own from-source outputs / hash-verified externals, never remote/imported),
-  # so they stay inside RFC-108 — a wider reuse window than the per-output_base action
-  # cache, hardened by --incompatible_strict_action_env (set in the repo). Build flags.
+  # CI-box-only Bazel config (NOT the committed repo .bazelrc), read as the system rc
+  # before it; the committed config stays "build from source, no cache" (RFC-108) for every
+  # developer. These caches are LOCAL-ONLY — this box's own from-source outputs and
+  # hash-verified externals, never remote/imported — so they stay inside RFC-108.
   - path: /etc/bazel.bazelrc
     permissions: "0644"
     content: |
-      # Keep the single warm slot's bazel server resident between jobs (RFC-155 §7).
-      # No --host_jvm_args=-Xmx bound: at maxRunners=1 the one server has ample RAM, and
-      # a cold-build analysis wants the JVM default heap, not a cap (the cap was only ever
-      # to squeeze two servers onto this 7.6 GiB box, which proved unviable — see below).
+      # Keep this box's one bazel server resident between jobs (RFC-155 §7). No -Xmx bound:
+      # one server has ample RAM and a cold-build analysis wants the JVM default heap.
       startup --max_idle_secs=21600
       build --disk_cache=/mnt/ci-data/bazel-disk-cache
       build --repository_cache=/mnt/ci-data/bazel-repo-cache
@@ -367,21 +420,11 @@ write_files:
       ExecStart=/usr/local/bin/bazelscaleset-run.sh
       Restart=always
       RestartSec=5
-      # A leaked/oversized job process getting OOM-killed must fail THAT job, not
-      # stop the whole supervisor. The systemd default (OOMPolicy=stop) tore the
-      # unit down mid-job when the kernel OOM-killed one leaked conformance JVM:
-      # the running job was canceled, the supervisor exited, and (pre-PR-#444
-      # binaries) the scale set was deleted+recreated on the restart. The main
-      # process dying is still handled by Restart=always.
+      # An OOM-killed job process must fail THAT job, not tear down the supervisor
+      # mid-job (the systemd default, OOMPolicy=stop, did exactly that).
       OOMPolicy=continue
-      # The supervisor's self-exit-for-restart paths (poll timeout, listener
-      # error) leave runners running for the next incarnation to ADOPT. With
-      # the default KillMode=control-group, systemd would SIGTERM/SIGKILL every
-      # leftover process in the cgroup — i.e. the local in-flight runner — the
-      # moment the main process exits, defeating adoption and canceling the
-      # job. KillMode=process signals only the main process; runner lifecycle
-      # (TERM/grace/KILL on genuine stop, watchdogs, adoption) is entirely the
-      # supervisor's own, tracked via slot pidfiles.
+      # The supervisor's self-exit-for-restart paths leave runners up for the next
+      # incarnation to ADOPT; the default KillMode=control-group would kill them with it.
       KillMode=process
 
       [Install]
@@ -401,6 +444,10 @@ runcmd:
   # so the cap applies from first boot (it also vacuums any existing overage).
   - systemctl restart systemd-journald
 
+  # A malformed drop-in breaks sudo for every user, so prove the one write_files installed
+  # parses before anything depends on it.
+  - visudo -cf /etc/sudoers.d/runner || { echo "::error::/etc/sudoers.d/runner is not valid sudoers"; exit 1; }
+
   # CI data volume (RFC-115 §7): the 100GB ext4 volume (hcloud_volume.runner_data) is
   # ext4-formatted by tofu and auto-mounted by Hetzner at /mnt/HC_Volume_<id>. Link it to a
   # STABLE /mnt/ci-data and create Docker + Bazel subdirs on it BEFORE Docker starts, so
@@ -413,10 +460,21 @@ runcmd:
   # would log the error and provision onto the root disk anyway. `exit 1` aborts it.
   - /usr/local/bin/link-ci-volume.sh || { echo "::error::CI data volume link failed — refusing to provision onto the root disk"; exit 1; }
 
-  # Docker, now that /mnt/ci-data resolves to the volume (see the bootcmd mask above).
-  - systemctl unmask docker.service docker.socket
-  - systemctl enable --now docker
-  - systemctl restart docker
+  # Docker, now that /mnt/ci-data resolves to the volume (see the bootcmd decision above).
+  # ASSERT it came up. Bare `systemctl` items fail OPEN — runcmd has no set -e, so a dockerd
+  # that refuses to start (bad data-root, unmounted volume) left provisioning to continue,
+  # the runner to register, and the box to claim testcontainers jobs it cannot run. Same
+  # discipline as infra/migrate-ci-volume.sh's post-start `docker info` check.
+  - |
+    set -eu
+    systemctl unmask docker.service docker.socket
+    systemctl enable --now docker
+    systemctl restart docker
+    i=0
+    while [ $i -lt 15 ]; do docker info >/dev/null 2>&1 && break; i=$((i+1)); sleep 2; done
+    docker info >/dev/null 2>&1 || { echo "::error::dockerd did not start; refusing to register a runner that cannot run containers"; exit 1; }
+    # Nothing in runcmd runs again (PER_INSTANCE); from here on the gate owns the decision.
+    systemctl enable ci-docker-gate.service
 
   # Pinned + checksummed tool installs (RFC-108 §1). ONE block under `set -eu` so a
   # checksum mismatch in fetch-verified.sh ABORTS — cloud-init runcmd has no set -e by
@@ -435,9 +493,8 @@ runcmd:
     chmod 0755 /usr/local/bin/bazelisk
     ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
     # Just (pinned tarball — no curl|bash). --no-same-owner + chown root: GNU tar as root
-    # would otherwise preserve the archive's uid/gid (the just release ships uid 1001), so
-    # on an image where the runner account gets uid 1001 /usr/local/bin/just would be
-    # CI-job-writable and persist across runs (codex).
+    # preserves the archive uid/gid (1001), which on an image where runner gets uid 1001
+    # would leave /usr/local/bin/just CI-job-writable across runs.
     "$FV" "https://github.com/casey/just/releases/download/${just_version}/just-${just_version}-x86_64-unknown-linux-musl.tar.gz" "${just_sha256}" /tmp/just.tar.gz
     tar --no-same-owner -xzf /tmp/just.tar.gz -C /usr/local/bin just
     chown root:root /usr/local/bin/just
@@ -474,9 +531,7 @@ runcmd:
     chmod 0644 /etc/profile.d/go.sh
 
   # GitHub Actions runner (pinned version + checksummed — was releases/latest, RFC-108 §1).
-  # --ephemeral (opt-in via runner_ephemeral) gives one-job-per-process fresh state;
-  # continuous ephemeral operation also needs a token-refresh service (a PAT to mint a new
-  # registration token after each job) — that automation is a documented follow-up.
+  # --ephemeral (opt-in) also needs a token-refresh service to run continuously; follow-up.
   - |
     set -eu
     # Extract the stock actions/runner BINARIES (both modes need them: classic registers
@@ -494,42 +549,11 @@ runcmd:
     # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
     install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
     RUNNER_MODE="${runner_mode}"
-    if [ "$RUNNER_MODE" = "worker" ]; then
-      # Remote-slot worker for the bazelscaleset supervisor (one listener on the
-      # main box, JIT-ephemeral runners launched here over SSH — tools/bazelscaleset
-      # README). No registration, no service: the box only needs the extracted
-      # actions/runner binaries above, Docker, the ci-data volume, and the
-      # supervisor's public key in runner's authorized_keys (installed by the
-      # operator at cutover; a fresh provision needs it re-installed before the
-      # supervisor can launch slots here).
-      #
-      # "No service" has to be ENFORCED, not merely not-configured. write_files
-      # installs bazelscaleset.service on every box regardless of mode, and these
-      # boxes are typically repurposed from a scaleset/classic provision that
-      # enabled runner-watchdog.timer -- whose whole job is `systemctl restart
-      # bazelscaleset.service` whenever that unit is not active. On a worker the
-      # supervisor binary is never installed, so the pair becomes a perpetual
-      # motion machine: the unit dies with status 127, the watchdog restarts it
-      # ten minutes later, forever. Measured across the pool: NRestarts of 1143,
-      # 94, 4115 and 2141 against a binary that was never there, and the unit
-      # reporting `disabled` the whole time, which is what made it easy to miss.
-      #
-      # There is exactly ONE listener per scale set and it lives on the main box.
-      # Stop the unit, delete it, mask the name so nothing can recreate it, and
-      # stop the watchdog that would otherwise keep resurrecting it.
-      systemctl disable --now bazelscaleset.service 2>/dev/null || true
-      systemctl disable --now runner-watchdog.timer 2>/dev/null || true
-      rm -f /etc/systemd/system/bazelscaleset.service
-      rm -rf /etc/systemd/system/bazelscaleset.service.d
-      systemctl daemon-reload
-      systemctl mask bazelscaleset.service 2>/dev/null || true
-    elif [ "$RUNNER_MODE" = "classic" ]; then
-      # Register-and-listen: one durable registration per box, so the runner list stays
-      # the size of the fleet. The scale set minted a JIT runner per job and never
-      # unregistered them (1907 offline registrations against 5 live slots), and its single
-      # supervisor gated every box. --disableupdate pins the reviewed runner_version/SHA.
-      # --work puts job workspaces on the 100 GB volume; the default (_work under the
-      # runner dir) is the 75 GB root disk the volume exists to avoid.
+    if [ "$RUNNER_MODE" = "classic" ]; then
+      # Register-and-listen: one durable registration per box, so the runner list stays the
+      # size of the fleet (the scale set never unregistered its JIT runners: 1907 offline
+      # registrations against 5 slots). --disableupdate pins the reviewed version/SHA; --work
+      # puts job workspaces on the 100 GB volume, not the root disk it exists to avoid.
       install -d -o runner -g runner /mnt/ci-data/runner-work
       su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --work /mnt/ci-data/runner-work --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
       # The runner service is not a login shell: it takes PATH from this file, so
@@ -565,9 +589,9 @@ runcmd:
       install -d -m 0755 /etc/bazelscaleset
       printf '%s' "${base64encode(bazelscaleset_app_private_key)}" | base64 -d > /etc/bazelscaleset/app.pem
       chmod 0600 /etc/bazelscaleset/app.pem && chown runner:runner /etc/bazelscaleset/app.pem
-      # TODO: fetch the pinned bazelscaleset binary once a CI-built release exists; until then
-      # it is placed out-of-band (a `GOOS=linux go build` of tools/bazelscaleset, scp'd in):
-      #   "$FV" ".../bazelscaleset-${bazelscaleset_version}-linux-amd64" "${bazelscaleset_sha256}" /usr/local/bin/bazelscaleset && chmod 0755 /usr/local/bin/bazelscaleset
+      # TODO: fetch the pinned bazelscaleset binary through fetch-verified.sh once a CI-built
+      # release exists (version+sha in main.tf's locals, like every other tool). Until then
+      # it is placed out-of-band: a `GOOS=linux go build` of tools/bazelscaleset, scp'd in.
       systemctl enable --now bazelscaleset.service
       # The watchdog backstops a wholesale supervisor hang via the heartbeat the supervisor
       # stamps on every successful poll; systemd Restart=always handles a plain crash.

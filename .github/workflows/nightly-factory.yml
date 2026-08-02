@@ -23,7 +23,7 @@ on:
     # 02:41 UTC — an off-minute between the rowdiff sweep (00:17) and the
     # stress job (04:23). See nightly-rowdiff.yml for why the runner-side
     # window check below is load-bearing rather than belt-and-braces: GitHub
-    # dispatches the JOB when the single self-hosted slot frees up, which a
+    # dispatches the JOB when a self-hosted box frees up, which a
     # backlog delays by hours.
     - cron: '41 2 * * *'
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
     steps:
       - name: Check nightly window
         # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
-        # JOB whenever hetzner-fdb-vm (the single self-hosted slot) frees up,
+        # JOB whenever a hetzner-fdb-vm box frees up,
         # which a backlog delays by hours — landing a multi-hour run in the
         # middle of the workday. The check MUST run here, as the first step on
         # the runner actually allocated: a pre-queue gate passes at dispatch
