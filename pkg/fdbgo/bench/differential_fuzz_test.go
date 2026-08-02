@@ -395,6 +395,27 @@ func TestDifferential_RYWCoalescing(t *testing.T) {
 			{kind: fzSet, keyIdx: 1, operand: []byte("v")},
 			{kind: fzCompareAndClear, keyIdx: 1, operand: []byte("x")}, // no match → kept
 		}}},
+		// The ZERO-LENGTH operand axis, which every case above leaves unprobed. An atomic
+		// operand is always PRESENT in C++ — empty-but-present for a zero-length one; only
+		// the synthetic SetValue stack bottom is not-present (WriteMap.cpp:105/143). A client
+		// that folds an empty operand as ABSENT takes doAndV2's / doByteMin's absent→operand
+		// branch (Atomic.h:71/:229) and ships the SECOND operand verbatim. FuzzDifferential
+		// found the And shape (go persisted 0x30, libfdb_c 0x00); the corpus entry
+		// testdata/fuzz/FuzzDifferential/and_empty_operand_first_in_txn is the same input.
+		{"and_empty_operand_then_operand", [][]fuzzOp{{
+			{kind: fzAnd, keyIdx: 2, operand: []byte{}},     // And→AndV2 at API ≥ 510
+			{kind: fzAnd, keyIdx: 2, operand: []byte{0x30}}, // folds → operand 0x00
+		}}},
+		{"bytemin_empty_operand_then_operand", [][]fuzzOp{{
+			{kind: fzByteMin, keyIdx: 3, operand: []byte{}},
+			{kind: fzByteMin, keyIdx: 3, operand: []byte{0x30}}, // "" < 0x30 → stays empty
+		}}},
+		// A fold whose RESULT is empty must stay present for the next fold in the chain.
+		{"bytemin_fold_to_empty_then_operand", [][]fuzzOp{{
+			{kind: fzByteMin, keyIdx: 0, operand: []byte{0x30}},
+			{kind: fzByteMin, keyIdx: 0, operand: []byte{}},
+			{kind: fzByteMin, keyIdx: 0, operand: []byte{0x20}},
+		}}},
 	}
 	for _, tc := range cases {
 		tc := tc

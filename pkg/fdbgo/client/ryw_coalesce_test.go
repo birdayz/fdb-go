@@ -317,3 +317,93 @@ func TestRywAtomic_ChainFolds(t *testing.T) {
 		t.Fatalf("resolved value = %v, want le8(%d)", got, 5+n)
 	}
 }
+
+// TestCoalesceOverAtomics_EmptyOperandStaysPresent pins the dimension the fold table above
+// leaves unprobed: a ZERO-LENGTH operand. C++ RYWMutation.value for an atomic op is always a
+// PRESENT Optional — empty-but-present for a zero-length operand; the only not-present
+// RYWMutation is the synthetic SetValue stack bottom pushed over a cleared range
+// (WriteMap.cpp:105/143). Go encodes not-present as a nil []byte, so if the fold hands an
+// empty operand to applyAtomic's BASE slot it is read as ABSENT and takes the
+// absent -> operand branch of doAndV2 (Atomic.h:71) / doByteMin (:229) / doMinV2 (:222),
+// which yields the second operand verbatim instead of combining the two.
+//
+// Found by //pkg/fdbgo/bench FuzzDifferential against libfdb_c: And(k,"") And(k,0x30) in one
+// txn persisted 0x30 through the pure-Go client and 0x00 through libfdb_c.
+func TestCoalesceOverAtomics_EmptyOperandStaysPresent(t *testing.T) {
+	t.Parallel()
+	m := func(op MutationType, p []byte) rywMutation { return rywMutation{typ: op, param: p} }
+	rows := []struct {
+		name string
+		op   MutationType
+		a, b []byte
+		want []byte
+	}{
+		// AndV2 over an empty FIRST operand: doAndV2 sees a present-empty base, so it
+		// falls through to doAnd, whose result is operand-width and zero beyond the
+		// (empty) base -> 0x00. Reading the empty operand as absent would give 0x30.
+		{"AndV2 empty then operand", MutAndV2, []byte{}, []byte{0x30}, []byte{0x00}},
+		{"AndV2 nil then operand", MutAndV2, nil, []byte{0x30}, []byte{0x00}},
+		// ByteMin: present-empty compares lexicographically BELOW any non-empty operand,
+		// so the fold keeps the empty operand. Absent would give 0x30.
+		{"ByteMin empty then operand", MutByteMin, []byte{}, []byte{0x30}, []byte{}},
+		{"ByteMin nil then operand", MutByteMin, nil, []byte{0x30}, []byte{}},
+		// ByteMax agrees on both readings ("" > 0x30 is false either way) — pinned so a
+		// future change that special-cases presence here has to stay consistent.
+		{"ByteMax empty then operand", MutByteMax, []byte{}, []byte{0x30}, []byte{0x30}},
+		// And (pre-510 op code, still reachable via the raw client API): no V2 absent
+		// branch, so both readings agree — pinned as the control row.
+		{"And empty then operand", MutAnd, []byte{}, []byte{0x30}, []byte{0x00}},
+	}
+	for _, r := range rows {
+		s := coalesceOverAtomics(nil, m(r.op, r.a))
+		s = coalesceOverAtomics(s, m(r.op, r.b))
+		if len(s) != 1 {
+			t.Errorf("%s: stack len=%d, want 1 (associative fold)", r.name, len(s))
+			continue
+		}
+		if !bytes.Equal(s[0].param, r.want) {
+			t.Errorf("%s: folded operand = %x, want %x (an empty operand is PRESENT, not absent)", r.name, s[0].param, r.want)
+		}
+	}
+
+	// A fold whose RESULT is empty must stay present for the NEXT fold: ByteMin(0x30) then
+	// ByteMin("") resolves to the empty operand, and a third ByteMin(0x20) must still see
+	// present-empty and keep it.
+	s := coalesceOverAtomics(nil, m(MutByteMin, []byte{0x30}))
+	s = coalesceOverAtomics(s, m(MutByteMin, []byte{}))
+	s = coalesceOverAtomics(s, m(MutByteMin, []byte{0x20}))
+	if len(s) != 1 || !bytes.Equal(s[0].param, []byte{}) {
+		t.Errorf("ByteMin(0x30)+ByteMin(\"\")+ByteMin(0x20): stack=%d operand=%x, want 1 fold with an empty operand (a folded-to-empty result is PRESENT)", len(s), s[len(s)-1].param)
+	}
+}
+
+// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path
+// rather than the fold helper directly: rywCache.atomic copies the operand out of the shared
+// byteBuf via allocBytes, and allocBytes(0) on a still-unallocated buffer returns a NIL slice.
+// So the divergence is armed exactly when a zero-length atomic operand is the first one in the
+// transaction — the shape FuzzDifferential minimised to.
+func TestRywAtomic_EmptyOperandFirstInTxn(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	key := []byte("c")
+	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn -> allocBytes(0)
+	c.atomic(MutAndV2, key, []byte{0x30}) // folds onto it
+	c.mu.Lock()
+	entry := c.writes[string(key)]
+	c.mu.Unlock()
+	if len(entry.atomics) != 1 {
+		t.Fatalf("chain length = %d, want 1 (AndV2 is associative and always folds)", len(entry.atomics))
+	}
+	if !bytes.Equal(entry.atomics[0].param, []byte{0x00}) {
+		t.Fatalf("shipped operand = %x, want 00 — an empty operand must fold as PRESENT-empty (libfdb_c persists 00 here, C++ Atomic.h:54-68)", entry.atomics[0].param)
+	}
+	// The shipped mutation is what the key ends up as: AndV2 over an absent storage key
+	// returns the operand verbatim (Atomic.h:71), so the persisted value is 0x00.
+	got, cleared, unresolved := resolveAtomics(nil, entry.atomics)
+	if cleared || unresolved {
+		t.Fatalf("resolve flags: cleared=%v unresolved=%v, want both false", cleared, unresolved)
+	}
+	if !bytes.Equal(got, []byte{0x00}) {
+		t.Fatalf("resolved value = %x, want 00", got)
+	}
+}
