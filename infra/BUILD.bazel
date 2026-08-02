@@ -20,8 +20,10 @@ go_test(
     data = [
         "cloud-init.yaml",
         "link_ci_volume_test.sh",
+        "main.tf",
         "migrate-ci-volume.sh",
         "migrate_ci_volume_test.sh",
+        "//:go.mod",
     ],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )
