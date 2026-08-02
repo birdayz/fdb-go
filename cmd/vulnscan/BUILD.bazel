@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "vulnscan_lib",
+    srcs = [
+        "classify.go",
+        "main.go",
+        "mirror.go",
+    ],
+    importpath = "fdb.dev/cmd/vulnscan",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "vulnscan",
+    embed = [":vulnscan_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "vulnscan_test",
+    srcs = [
+        "classify_test.go",
+        "mirror_test.go",
+    ],
+    embed = [":vulnscan_lib"],
+)

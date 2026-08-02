@@ -384,6 +384,28 @@ is 1–3 hours on one box and parallelizes by seed range.
 > pushes the full run out of ordinary-suite cost, that is a new ruling to
 > seek, not a license to quietly reintroduce the split.
 
+**Where that measured basis stands now (2026-08-02).** The corpus is 5000
+scenarios, not 2000, and the ruling's `~40s` is no longer the number. Measured:
+**514s** non-race alone on the CI runner (nightly-factory run 30747534073), which
+is still ordinary-target cost against its `eternal` budget and so still satisfies
+the ruling as written — the full corpus remains in every `just test` and every
+non-race PR CI run, unsampled.
+
+Under the **race detector** it is a different target entirely: 1328s on four
+cores measured directly, 1830s on the CI runner when co-scheduled, and 3612s —
+a TIMEOUT — on PR #590. At that weight it starved the rest of the PR race lane:
+`//pkg/relational/conformance/plandiff`, which runs in 31s, reported TIMEOUT in
+915.2s on PR #577 having done nothing but wait for memory. So `ci.yml`'s race
+lane now subtracts `//pkg/relational/conformance/...` and `nightly-coverage.yml`
+races those targets instead, one at a time. That is a change to which LANE
+instruments the corpus, not to whether the corpus runs per PR; the ruling's
+subject — no stratified sample, full corpus in the ordinary suite — is intact.
+
+The 514s is worth watching rather than filing: it is 6% of the "Build, Lint &
+Test" job and the fastest-growing line in it. `cmd/test-budget` now prints every
+target's budget utilisation on every CI run and annotates at 70%, so the next
+move toward the wall arrives as a warning rather than as a blocked merge queue.
+
 Three tiers, mapped to the real capacity constraints (the CI runner is a
 single-slot box; heavy lanes are already nightly there):
 

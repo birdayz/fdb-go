@@ -1,0 +1,19 @@
+<?xml version="1.1" encoding="UTF-8" standalone="no"?>
+<query version="2">
+    <rule class="go_test" location="pkg/a/BUILD.bazel:1:1" name="//pkg/a:a_test">
+        <string name="size" value="medium"/>
+        <string name="timeout" value="long"/>
+    </rule>
+    <rule class="go_test" location="pkg/b/BUILD.bazel:1:1" name="//pkg/b:b_test">
+        <string name="size" value="large"/>
+        <string name="timeout" value="long"/>
+    </rule>
+    <rule class="go_test" location="pkg/c/BUILD.bazel:1:1" name="//pkg/c:c_test">
+        <string name="size" value="medium"/>
+        <string name="timeout" value="moderate"/>
+    </rule>
+    <rule class="go_test" location="pkg/d/BUILD.bazel:1:1" name="//pkg/d:d_test">
+        <string name="size" value="enormous"/>
+        <string name="timeout" value="eternal"/>
+    </rule>
+</query>

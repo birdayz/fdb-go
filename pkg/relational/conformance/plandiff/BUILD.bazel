@@ -30,6 +30,14 @@ go_test(
     # scheduled alongside it. Nothing here got slower; the runner got busier. Same
     # right-sizing the rowdiff, sqldriver, chaos and conformance targets carry, and the
     # same reason: medium is only safe for a target that runs close to alone.
+    #
+    # How far that goes when the runner is not just busy but out of memory: measured
+    # 31s solo under -race on four cores, this target reported TIMEOUT in 915.2s on
+    # PR #577's race lane — a 29x stretch, with no work of its own added. It was
+    # sharing a 4-vCPU / 7.6 GB box with the 5000-scenario corpus target, the
+    # heaviest in that lane, and the box had nothing left to schedule it with. The lesson
+    # is not that 900s is too small; it is that a wall-clock budget cannot be met by
+    # a target that is not being scheduled. The fix lives in ci.yml's lane scope.
     timeout = "long",
     srcs = [
         "catalog_aware_test.go",

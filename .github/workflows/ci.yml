@@ -62,6 +62,16 @@ jobs:
         id: test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
+      - name: Timeout budgets
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        # Same gate as the race lane's, over the main suite — see the long comment
+        # there for why a run's own event stream, with cache hits dropped, is the
+        # only honest measure. This lane is where the heavy corpus targets carry
+        # their real budgets, so it is where their growth shows up first.
+        run: |
+          bazelisk query 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
+          go run ./cmd/test-budget -lane suite -bep .bazel-bep.jsonl -targets .bazel-targets.xml -warn 0.70 -threshold 0.90
+
       # Report/upload run on test success OR failure (always() lost the report on a
       # red suite) — but NOT when the test step was SKIPPED (e.g. the Docker preflight
       # aborted first): there's no BEP then, and `> test-report.html` would otherwise
@@ -180,13 +190,30 @@ jobs:
           cache: false
 
       - name: govulncheck (shipped packages)
-        run: |
-          # Scan the shipped library. pkg/testcontainers is excluded: it wraps the
-          # Docker SDK (TEST infrastructure, not shipped to users) which currently
-          # has open upstream CVEs with no fixed release (GO-2026-4887,
-          # GO-2026-4883). See SECURITY.md. Everything else must be vuln-free.
-          PKGS=$(go list ./pkg/... | grep -v '/testcontainers')
-          go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
+        # Invoked through ./cmd/vulnscan rather than calling govulncheck directly.
+        # The direct call was `go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS`
+        # and it failed the SECURITY GATE on an upstream 403: govulncheck fetches one
+        # document per advisory from vuln.go.dev on every job, and a fleet of
+        # self-hosted runners sharing a small block of addresses gets rate-limited.
+        # Two PRs hit it within seconds of each other.
+        #
+        # The wrapper fixes three things that cannot be fixed in a shell one-liner,
+        # each documented at its own site in cmd/vulnscan:
+        #   - it mirrors the database locally (one 3 MB request per refresh window,
+        #     zero in steady state) instead of issuing hundreds per job, and tolerates
+        #     a failed refresh only while the mirror is inside a HARD staleness bound;
+        #   - it pins the scanner version, so the gate's verdict cannot change without
+        #     a diff in this repository;
+        #   - it classifies on govulncheck's `-format json` output, so "found nothing"
+        #     and "could not consult the database" are different outcomes. They are
+        #     not distinguishable by exit code alone: pointed at an empty directory
+        #     govulncheck exits 0 and emits a well-formed, zero-finding report.
+        #
+        # Both halves are gates. A transient fetch failure no longer reddens the
+        # build, and nothing that failed to consult the database is ever reported as
+        # clean. pkg/testcontainers stays excluded (see SECURITY.md); the exclusion
+        # now lives in cmd/vulnscan next to the scan it applies to.
+        run: go run ./cmd/vulnscan
 
   race:
     name: Race detector (SQL layer + client + cascades)
@@ -202,7 +229,19 @@ jobs:
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
+      - name: Set up Go
+        # For `go run ./cmd/test-budget` in the budget step. It is deliberately not
+        # built through Bazel: the race lane's whole cache discipline is that its
+        # output_base only ever sees the race config, and building one tool at the
+        # normal config there would discard the race analysis cache — the exact
+        # thrash the isolated base exists to prevent.
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
       - name: -race tests (SQL layer + client + cascades) — isolated output_base
+        id: race
         # CACHE ISOLATION (the perf fix). -race builds with --@rules_go//go/config:race,
         # a DIFFERENT build config than the normal "Build, Lint & Test" job. On a SHARED
         # output_base (the default), alternating that flag makes Bazel DISCARD the
@@ -228,6 +267,30 @@ jobs:
         # race-instrumented they'd dominate PR latency (RFC-107 §3). A data race in
         # either corrupts a SHARED FDB cluster, so keep it gating.
         #
+        # That exclusion is why REL_SCOPE subtracts //pkg/relational/conformance/...
+        # rather than being a plain //pkg/relational/... wildcard. The rule was
+        # written for //pkg/fdbgo/...; the relational wildcard quietly acquired the
+        # same class as directories were added under it, and nobody ever expanded
+        # the scope "with measured numbers" the way RFC-107 §3 requires — the
+        # corpora expanded into it. Measured, -race, four cores (the runner is a
+        # 4-vCPU cx33), each target alone: the corpus execution target
+        # //pkg/relational/conformance/factorycorpus/full runs 5000 scenarios in
+        # 1328s and is the heaviest target in the lane, while
+        # //pkg/relational/sqldriver takes 277s and
+        # //pkg/relational/conformance/plandiff takes 31s. Co-scheduled four at a
+        # time on a 4-vCPU / 7.6 GB box those numbers stop meaning anything: on
+        # PR #577's run plandiff — a 31s target — hit its 900s timeout, and
+        # sqldriver hit its own, while the corpus target ran 1830s. Nothing had
+        # got slower; the runner had run out of resources and every target was
+        # starving.
+        #
+        # The corpora are CONTENT gates, not concurrency probes: they drive the same
+        # driver → planner → executor stack sqldriver_test already drives from 1292
+        # concurrent tests, over per-scenario state that is shared with nothing. The
+        # race-coverage delta is ~0 and the cost is the merge queue. They keep
+        # running non-instrumented in "Build, Lint & Test" on every PR, and under
+        # the detector in nightly-coverage's race step.
+        #
         # CASCADES is the third scope. Note precisely what it adds: the relational
         # scope already LINKS AND DRIVES the Cascades planner, so planner code was
         # never entirely un-raced — it was covered INDIRECTLY, through whatever
@@ -240,14 +303,30 @@ jobs:
         run: |
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/..."
+          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/..."
           CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE (codex): count each gate independently. Counting the
           # UNION would let one side silently drop to zero (e.g. the client packages stop
           # exposing test targets) while the other keeps the union > 0 — `bazel test`
           # would still exit 0 and quietly lose that race coverage. All must be non-empty.
-          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(echo "$1" | sed 's/ / + /g'))" 2>/dev/null | wc -l; }
+          #
+          # A scope is a list of `bazel test` TARGET PATTERNS, where `-//pkg/x/...`
+          # subtracts; `bazel query` wants one expression, where `a - b` subtracts.
+          # qexpr translates, per token, instead of blanket-joining on " + " — that
+          # older one-liner turned an exclusion into `a + -b`, which query rejects,
+          # and the guard would have counted 0 and failed the job on syntax.
+          qexpr() {
+            expr=""
+            for p in $1; do
+              case "$p" in
+                -*) expr="$expr - ${p#-}" ;;
+                *)  if [ -z "$expr" ]; then expr="$p"; else expr="$expr + $p"; fi ;;
+              esac
+            done
+            echo "$expr"
+          }
+          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(qexpr "$1"))" 2>/dev/null | wc -l; }
           NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE"); NX=$(q "$CASCADES_SCOPE")
           if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
@@ -263,6 +342,54 @@ jobs:
           # Cascades runs FIRST: it is the cheap CPU-only scope, so a planner race is
           # reported in seconds instead of behind two testcontainer suites.
           RACE="bazelisk --output_base=$RACE_BASE --host_jvm_args=-Xmx3g test --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors --local_resources=memory=HOST_RAM*0.6"
-          $RACE $CASCADES_SCOPE
-          $RACE $REL_SCOPE
-          $RACE $CLIENT_SCOPE
+          # Each scope writes its OWN event stream, and each scope's queried target
+          # set is captured next to it, so the budget step below can say which
+          # target used how much of which budget. One shared .bazel-bep.jsonl (the
+          # .bazelrc default) would be truncated by the next invocation and the
+          # first two scopes would go unmeasured.
+          for s in cascades:"$CASCADES_SCOPE" rel:"$REL_SCOPE" client:"$CLIENT_SCOPE"; do
+            name="${s%%:*}"
+            bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g \
+              query "tests($(qexpr "${s#*:}"))" --output=xml --xml:default_values \
+              > ".bazel-targets.race-$name.xml"
+          done
+          # `--` before the scope is load-bearing, not style: Bazel rejects a
+          # negative target pattern that appears before the end-of-options marker
+          # ("Invalid options syntax: -//pkg/..."), so REL_SCOPE's exclusion needs
+          # it. Passing it for every scope keeps the three invocations identical.
+          $RACE --build_event_json_file=.bazel-bep.race-cascades.jsonl -- $CASCADES_SCOPE
+          $RACE --build_event_json_file=.bazel-bep.race-rel.jsonl -- $REL_SCOPE
+          $RACE --build_event_json_file=.bazel-bep.race-client.jsonl -- $CLIENT_SCOPE
+
+      - name: Race lane timeout budgets
+        # Runs on success OR failure: a lane that just timed out is exactly the
+        # lane whose budget report matters, and `if: success()` would withhold it
+        # there. Skipped only when the race step never ran (Docker preflight
+        # aborted), where there is no event stream to read.
+        if: ${{ !cancelled() && steps.race.outcome != 'skipped' }}
+        # THE POINT: a Bazel timeout tells you a suite outgrew its budget at the
+        # moment that fact blocks the merge queue, and not one run earlier. The
+        # action cache makes that worse rather than better — a master run that
+        # executes 2 of its 25 gated targets (measured, run 30751175864) reports
+        # green while measuring almost nothing, so the growth first becomes visible
+        # on whichever PR happens to invalidate the cache. cmd/test-budget reads
+        # this run's event streams, DROPS the cache hits (their duration belongs to
+        # some earlier run on some earlier box), and reports while the target still
+        # has headroom instead of after it has none.
+        #
+        # Two lines, deliberately: warn at 70%, fail at 90%. One line low enough to
+        # give notice would sit on top of targets that are big but healthy —
+        # //pkg/relational/conformance/rowdiff runs 659s of its 900s budget on
+        # master, passing every time — and failing there would block PRs that
+        # changed nothing, which is the disease, not the cure. One line high enough
+        # to avoid that gives no notice at all. So the warning is the early signal
+        # a human reads, and the failure is the last stop before a timeout.
+        run: |
+          for name in cascades rel client; do
+            [ -f ".bazel-bep.race-$name.jsonl" ] || continue
+            go run ./cmd/test-budget \
+              -lane "race/$name" \
+              -bep ".bazel-bep.race-$name.jsonl" \
+              -targets ".bazel-targets.race-$name.xml" \
+              -warn 0.70 -threshold 0.90
+          done
