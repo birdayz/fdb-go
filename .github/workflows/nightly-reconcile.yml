@@ -2,7 +2,7 @@ name: Nightly Reconcile
 
 # THE PROBLEM THIS EXISTS FOR.
 #
-# Every heavy nightly runs on `hetzner-fdb`, a SINGLE self-hosted slot, and each
+# Every heavy nightly runs on `hetzner-fdb-vm`, a SINGLE self-hosted slot, and each
 # opens with a "Check nightly window" step: if the runner is finally allocated
 # outside the job's window, the step sets `ok=false`, every subsequent step is
 # `if:`-skipped, and the job exits SUCCESS. A green check mark then means one of
@@ -45,7 +45,7 @@ on:
   schedule:
     # 09:11 UTC — late enough that a net which ran last night has already
     # published its heartbeat. This job runs on a GitHub-hosted runner and only
-    # reads the API, so it never competes for hetzner-fdb and needs no window of
+    # reads the API, so it never competes for hetzner-fdb-vm and needs no window of
     # its own; GitHub's dispatch delay on it is harmless.
     - cron: '11 9 * * *'
   workflow_dispatch:

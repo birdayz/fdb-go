@@ -61,13 +61,13 @@ write_files:
       # link-ci-volume.sh [ROOT] -- ROOT defaults to "" (the real filesystem); the
       # test passes a fixture prefix. Idempotent: safe to re-run on every boot.
       set -eu
-      R="${1:-}"
+      R="$${1:-}"
       for i in $(seq 1 90); do
         VOL=$(ls -d "$R"/mnt/HC_Volume_* 2>/dev/null | head -1) || true
-        [ -n "${VOL:-}" ] && { [ -n "$R" ] || mountpoint -q "$VOL"; } && break
+        [ -n "$${VOL:-}" ] && { [ -n "$R" ] || mountpoint -q "$VOL"; } && break
         sleep 2
       done
-      [ -n "${VOL:-}" ] || { echo "::error::CI data volume not present"; exit 1; }
+      [ -n "$${VOL:-}" ] || { echo "::error::CI data volume not present"; exit 1; }
       if [ -z "$R" ] && ! mountpoint -q "$VOL"; then
         echo "::error::CI data volume $VOL is not mounted"; exit 1
       fi
@@ -95,38 +95,56 @@ write_files:
       chmod 0755 "$VOL"
       mkdir -p "$CI/docker" "$CI/bazel"
 
-  # Watchdog (RFC-155 §5): backstop a WHOLESALE hang of the bazelscaleset supervisor
-  # (process alive but its long-poll loop stuck). The supervisor bounds each poll itself
-  # (--poll-timeout) and systemd Restart=always covers a crash, so this only needs to
-  # catch a wedge via the heartbeat the supervisor stamps on every successful poll. Far
-  # simpler than the classic runner's load/silence arms: a healthy idle supervisor still
-  # polls (~every 50s), so a stale heartbeat means genuinely wedged, not merely idle.
-  # (Classic break-glass mode is a manual fallback and is monitored by hand.)
+  # Watchdog: restart the unit that actually serves jobs on THIS box. Which unit that
+  # is depends on the runner mode, so the mode branch writes it to the config file and
+  # the watchdog reads it — the unit name is never hardcoded here.
+  #
+  # Hardcoding it is precisely how the pool boxes burned NRestarts of 1143, 94, 4115 and
+  # 2141 restarting a bazelscaleset binary that was never installed on them: a watchdog
+  # aimed at a unit this box does not run is a perpetual motion machine, not a backstop.
+  # With no config file it does nothing, which is the correct behaviour for a box whose
+  # mode never claimed a unit.
+  #
+  # The heartbeat arm is opt-in for the same reason. A supervisor bounds each poll itself
+  # and stamps a heartbeat on success, so a stale stamp means genuinely wedged rather than
+  # merely idle. A classic runner stamps nothing: its liveness IS the unit being active,
+  # which the first arm already covers.
   - path: /usr/local/bin/runner-watchdog.sh
     permissions: "0755"
     content: |
       #!/bin/bash
       set -uo pipefail
-      UNIT="bazelscaleset.service"
-      HEARTBEAT="/run/bazelscaleset/heartbeat"
-      POLL_TIMEOUT=120                 # matches --poll-timeout (2m)
-      STALE=$(( POLL_TIMEOUT * 3 ))    # 6m: heartbeat older than this => wedged
-      NOW=$(date +%s)
+      CONF=/etc/runner-watchdog.conf
+      [ -r "$CONF" ] || exit 0
+      # shellcheck source=/dev/null
+      . "$CONF"
+      UNIT="$${WATCH_UNIT:-}"
+      [ -n "$UNIT" ] || exit 0
+      # A masked unit is a deliberate "never run this here" from the mode branch; a
+      # watchdog that restarts through a mask defeats the enforcement.
+      if [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = "masked" ]; then
+        exit 0
+      fi
       # Dead process -> restart (Restart=always usually beats us; this is the backstop).
       if ! systemctl is-active --quiet "$UNIT"; then
-        echo "bazelscaleset not active, restarting"
+        echo "$UNIT not active, restarting"
         systemctl restart "$UNIT"
         exit 0
       fi
-      # Alive but its poll loop is wedged: the heartbeat has gone stale. Restart for a
-      # fresh session.
+      # Alive but wedged, for units that publish a heartbeat. No heartbeat configured =>
+      # active is the whole health signal, and we are done.
+      HEARTBEAT="$${WATCH_HEARTBEAT:-}"
+      [ -n "$HEARTBEAT" ] || exit 0
+      POLL_TIMEOUT=120                 # matches --poll-timeout (2m)
+      STALE=$(( POLL_TIMEOUT * 3 ))    # 6m: heartbeat older than this => wedged
+      NOW=$(date +%s)
       LAST=$(cat "$HEARTBEAT" 2>/dev/null || echo 0)
       if ! [ "$LAST" -gt 0 ] 2>/dev/null; then
         LAST=0
       fi
       AGE=$(( NOW - LAST ))
       if [ "$AGE" -gt "$STALE" ]; then
-        echo "bazelscaleset heartbeat stale ($${AGE}s > $${STALE}s), restarting"
+        echo "$UNIT heartbeat stale ($${AGE}s > $${STALE}s), restarting"
         systemctl restart "$UNIT"
       fi
 
@@ -467,11 +485,37 @@ runcmd:
       systemctl daemon-reload
       systemctl mask bazelscaleset.service 2>/dev/null || true
     elif [ "$RUNNER_MODE" = "classic" ]; then
-      # Break-glass: the classic register-and-listen runner (the wedge-prone path RFC-155
-      # replaces). --disableupdate (codex) keeps it on the reviewed runner_version/SHA.
+      # The register-and-listen runner: this box registers itself with the repo, holds one
+      # long-lived registration, and serves jobs matching its labels. One durable
+      # registration per box, so the runner list stays the size of the fleet.
+      #
+      # A scale set instead mints a JIT runner per job. Ours never unregistered them, so the
+      # repo accumulated 1907 offline registrations against 5 live slots, and a job could sit
+      # queued while the supervisor churned runners that exited before claiming it. The
+      # supervisor was also a single point of failure for the whole fleet: stop it and every
+      # box goes dark at once, which is exactly what happened.
+      #
+      # --disableupdate keeps the runner on the reviewed runner_version/SHA.
       su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
       ( cd "$RUNNER_DIR" && ./svc.sh install runner && ./svc.sh start )
-      systemctl enable --now runner-watchdog.timer
+      # The supervisor unit ships in write_files on every box regardless of mode. Here it
+      # must never run: enforce that the same way worker mode does, or a repurposed box
+      # keeps a second claimant on this fleet's jobs.
+      systemctl disable --now bazelscaleset.service 2>/dev/null || true
+      rm -f /etc/systemd/system/bazelscaleset.service
+      rm -rf /etc/systemd/system/bazelscaleset.service.d
+      systemctl daemon-reload
+      systemctl mask bazelscaleset.service 2>/dev/null || true
+      # Point the watchdog at the unit svc.sh just installed. Its name embeds the repo and
+      # runner name, so resolve it rather than guessing.
+      RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
+      if [ -n "$RUNNER_UNIT" ]; then
+        printf 'WATCH_UNIT=%s\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
+        systemctl enable --now runner-watchdog.timer
+      else
+        echo "::error::classic runner service unit not found after svc.sh install"
+        exit 1
+      fi
     else
       # bazelscaleset (RFC-155). Clean second runner dir (own .runner/.credentials so it can
       # never collide), CI-only bazel caches, the App private key, then the supervisor.
@@ -486,8 +530,10 @@ runcmd:
       # it is placed out-of-band (a `GOOS=linux go build` of tools/bazelscaleset, scp'd in):
       #   "$FV" ".../bazelscaleset-${bazelscaleset_version}-linux-amd64" "${bazelscaleset_sha256}" /usr/local/bin/bazelscaleset && chmod 0755 /usr/local/bin/bazelscaleset
       systemctl enable --now bazelscaleset.service
-      # The watchdog now targets bazelscaleset.service + its heartbeat (RFC-155 §5), so
-      # it backstops a wholesale supervisor hang; systemd Restart=always handles a crash.
+      # The watchdog backstops a wholesale supervisor hang via the heartbeat the supervisor
+      # stamps on every successful poll; systemd Restart=always handles a plain crash.
+      printf 'WATCH_UNIT=%s\nWATCH_HEARTBEAT=%s\n' \
+        bazelscaleset.service /run/bazelscaleset/heartbeat > /etc/runner-watchdog.conf
       systemctl enable --now runner-watchdog.timer
     fi
 

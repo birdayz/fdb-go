@@ -43,12 +43,12 @@ on:
 jobs:
   corpus:
     name: Full committed corpus (the regression net)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 180
     steps:
       - name: Check nightly window
         # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
-        # JOB whenever hetzner-fdb (the single self-hosted slot) frees up,
+        # JOB whenever hetzner-fdb-vm (the single self-hosted slot) frees up,
         # which a backlog delays by hours — landing a multi-hour run in the
         # middle of the workday. The check MUST run here, as the first step on
         # the runner actually allocated: a pre-queue gate passes at dispatch
@@ -140,7 +140,7 @@ jobs:
 
   batch:
     name: Generate a batch (the growth lane)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 300
     needs: corpus
     steps:
@@ -156,7 +156,7 @@ jobs:
             exit 0
           fi
           # Same wrapping band as the corpus job above and as every other
-          # hetzner-fdb net — the allocation hour is a property of the single
+          # hetzner-fdb-vm net — the allocation hour is a property of the single
           # shared runner queue, not of what the job does once it has it.
           WINDOW_START=18
           WINDOW_END=12

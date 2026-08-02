@@ -34,16 +34,18 @@ variable "github_runner_token" {
   default     = ""
 }
 
-# --- bazelscaleset (RFC-155) runner scale-set supervisor ---
-# These deploy the supervisor (a GitHub App authenticates it to register the scale
-# set + mint JIT runners). NOTE: this box has prevent_destroy + is grandfathered on a
-# cheaper price tier, so a user_data change can't be `tofu apply`-ed without an explicit
-# replace (which would cost more) — bazelscaleset was deployed OUT-OF-BAND on the live
-# box. This config is the source-of-truth for a future intentional re-provision.
+# --- Runner mode ---
+#
+# The fleet runs 'classic': every box registers itself once and listens. The scale-set
+# supervisor ('scaleset') is retired but kept buildable because its variables and
+# cloud-init branch are still referenced; do not point the fleet back at it without
+# fixing the two defects that retired it — JIT runners were never unregistered (1907
+# offline registrations against 5 live slots) and one supervisor process gated every
+# box in the fleet.
 variable "runner_mode" {
-  description = "Which runner the box provisions: 'scaleset' (bazelscaleset, default) or 'classic' (the old register-and-listen runner; break-glass)."
+  description = "Which runner the box provisions: 'classic' (register-and-listen, one durable registration per box — the fleet default) or 'scaleset' (bazelscaleset supervisor + JIT runners)."
   type        = string
-  default     = "scaleset"
+  default     = "classic"
 }
 
 variable "bazelscaleset_app_client_id" {
@@ -131,9 +133,9 @@ variable "github_repo" {
 }
 
 variable "runner_labels" {
-  description = "Comma-separated runner labels"
+  description = "Comma-separated runner labels. Every workflow's `runs-on` must name a label here. NOT 'hetzner-fdb': that name belongs to the retired runner scale set, and GitHub routes `runs-on: <scale-set-name>` to the scale set — which has no listener — so those jobs queue forever instead of reaching these runners."
   type        = string
-  default     = "self-hosted,linux,x64,hetzner"
+  default     = "hetzner-fdb-vm"
 }
 
 variable "s3_endpoint" {
@@ -190,28 +192,26 @@ resource "hcloud_server" "runner" {
   })
 
   lifecycle {
-    # The grandfathered runner sits on Hetzner's old (cheaper) price tier; a replacement
-    # would cost more, so it must never be destroyed/replaced. prevent_destroy hard-blocks
-    # any plan that would do so (e.g. a user_data/runner-token ForceNew) — `tofu apply`
-    # ERRORS instead of recreating. This is also what makes hcloud_volume.runner_data's
-    # direct reference to this resource safe: a stray token change can't silently take the
-    # box (and its attached volume) down.
-    prevent_destroy = true
-    # user_data is immutable-by-policy on this box: it was configured out-of-band
-    # (bazelscaleset deploy, RFC-155) and any template change would otherwise plan a
-    # ForceNew that prevent_destroy turns into a hard apply error. Template evolution
-    # applies to the runner_pool below; this box only changes via intentional re-provision.
+    # This box carried prevent_destroy because it sat on Hetzner's old, cheaper price
+    # tier — a replacement re-prices at current rates. That block was dropped on owner
+    # authorisation to move the whole fleet off the scale set, which could not be done
+    # in place: the box's user_data was also frozen by ignore_changes, so its mode only
+    # ever changes by re-provisioning.
+    #
+    # Registration tokens expire and rotate on every apply, so without ignore_changes
+    # each re-apply would ForceNew a live box. A template change therefore reaches this
+    # box the same way it reaches the pool: an explicit `tofu apply -replace=...`, which
+    # provisions from the current template.
     ignore_changes = [user_data]
   }
 }
 
-# --- Runner pool (count-parameterized, classic mode) ---
+# --- Runner pool (count-parameterized) ---
 #
-# Additional boxes beyond the grandfathered supervisor box. Worker mode: no runner
-# registration — the bazelscaleset supervisor on the main box launches JIT-ephemeral
-# runners here over SSH (remote slots, tools/bazelscaleset README). One scale set,
-# one listener, slots across the fleet. Classic mode remains the break-glass path
-# (set runner_mode=classic + a registration token) if the supervisor is down.
+# Every pool box registers itself and listens, same as the box above; the pool exists
+# to add capacity, not a different kind of runner. Each serves one job at a time, which
+# is what the box can actually do: .bazelrc caps --local_test_jobs=4 because each test
+# job runs its own FoundationDB container, and a 4-core box is saturated by one such job.
 #
 # Scale up: raise runner_count and apply with a fresh registration token:
 #   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)
@@ -259,7 +259,7 @@ resource "hcloud_server" "runner_pool" {
     github_repo         = var.github_repo
     github_runner_token = var.runner_registration_token
     runner_name         = "gh-runner-drain-${count.index}"
-    runner_labels       = "hetzner-fdb"
+    runner_labels       = var.runner_labels
     runner_ephemeral    = false
     runner_version      = local.versions.runner_version
     runner_sha256       = local.versions.runner_sha256
@@ -270,7 +270,7 @@ resource "hcloud_server" "runner_pool" {
     mc_release          = local.versions.mc_release
     mc_sha256           = local.versions.mc_sha256
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
-    runner_mode                       = "worker"
+    runner_mode                       = var.runner_mode
     bazelscaleset_version             = local.versions.bazelscaleset_version
     bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
     bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id

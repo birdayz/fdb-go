@@ -33,7 +33,11 @@ for (let i = start + 1; i < lines.length; i++) {
   if (l.trim() !== "" && !l.startsWith("      ")) break;
   out.push(l.slice(6));
 }
-fs.writeFileSync(process.argv[1], out.join("\n"));
+// cloud-init.yaml is a Terraform template, so a shell expansion the template must not
+// interpolate is written escaped ($${VOL:-}) and reaches the box as ${VOL:-}. Apply the
+// same unescaping templatefile does, or this test runs a script that differs from the
+// deployed one in exactly the characters that decide whether it works.
+fs.writeFileSync(process.argv[1], out.join("\n").replace(/\$\$\{/g, "${").replace(/%%\{/g, "%{"));
 ' "$SCRIPT"
 [ -s "$SCRIPT" ] || { echo "FATAL: extracted an empty script"; exit 1; }
 # Sanity-check the EXTRACTION only, against things every version of the script

@@ -21,13 +21,13 @@ on:
 jobs:
   stress:
     name: Stress suite 10K/100K/1M (planner / cost-model / executor)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 120
 
     steps:
       - name: Check nightly window
         # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
-        # actual JOB whenever hetzner-fdb (our single self-hosted slot) is
+        # actual JOB whenever hetzner-fdb-vm (our single self-hosted slot) is
         # free — a backlog (regular PR CI, or another nightly still running)
         # can delay that by hours, landing this 2h stress run in the middle
         # of the workday. The check MUST run here, as the first step on the

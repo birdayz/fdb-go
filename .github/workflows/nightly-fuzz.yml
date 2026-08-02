@@ -20,13 +20,13 @@ on:
 jobs:
   diff-fuzz:
     name: Differential Serialization Fuzzer
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 45
 
     steps:
       - name: Check nightly window
         # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
-        # actual JOB whenever hetzner-fdb (our single self-hosted slot) is
+        # actual JOB whenever hetzner-fdb-vm (our single self-hosted slot) is
         # free — a backlog (regular PR CI, or another nightly still running)
         # can delay that by hours, landing this job in the middle of the
         # workday. The check MUST run here, as the first step on the
@@ -252,7 +252,7 @@ jobs:
 
   race-detector:
     name: Race Detector
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 30
 
     steps:
@@ -335,7 +335,7 @@ jobs:
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 60
 
     steps:
@@ -430,7 +430,7 @@ jobs:
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 60
 
     steps:
@@ -614,7 +614,7 @@ jobs:
 
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 75
 
     steps:
