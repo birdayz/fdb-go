@@ -127,9 +127,9 @@ locals {
 }
 
 variable "github_repo" {
-  description = "GitHub repository (owner/repo)"
+  description = "GitHub repository (owner/repo) the runners register against. This is the REMOTE name (birdayz/fdb-go), which differs from the local checkout directory (fdb-record-layer-go) — registration POSTs to https://github.com/<this>, and the old value 404'd because no such repo exists. Nothing caught it: the pool ran in worker mode (no registration at all) and the supervisor box was configured out-of-band, so this value was never once exercised."
   type        = string
-  default     = "birdayz/fdb-record-layer-go"
+  default     = "birdayz/fdb-go"
 }
 
 variable "runner_labels" {
