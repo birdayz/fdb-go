@@ -324,6 +324,7 @@ go_test(
         "plan_expression_flag_parity_test.go",
         "plan_extraction_fuzz_test.go",
         "plan_extraction_test.go",
+        "plan_finalize_test.go",
         "plan_invariants_test.go",
         "plan_leg_concat_layout_test.go",
         "plan_properties_order_test.go",
@@ -1010,6 +1011,7 @@ go_test(
         "sparse_candidate_expansion_test.go",
         "normalize_size_overflow_test.go",
         "plan_finalize.go",
+        "plan_finalize_test.go",
     ],
     deps = [
         "//gen",

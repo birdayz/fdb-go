@@ -13939,9 +13939,15 @@ None is speculative: each was re-verified against the tree before booking.
   (`values/values.go:825-869`) handles `OrdinalRow` and `proto.Message` but
   DELIBERATELY refuses a map (:840-845 documents the refusal as "never a
   silent name read"). Both need an arm before the representation flips.
-  DONE = `functions.yamsql` passes, `struct-query` reaches 1, and a computed
-  record reads back through the driver as an `api.Struct` whose attribute
-  ORDER matches the constructor's declaration order.
+  DONE = `functions.yamsql` clears its struct-query blocker, `struct-query`
+  reaches 1, and a computed record reads back through the driver as an
+  `api.Struct` whose attribute ORDER matches the constructor's declaration
+  order. NOT "`functions.yamsql` passes": clearing the struct blocker only
+  moves the file to its NEXT rejection, and it lands on DML RETURNING
+  (`engine-gap:dml-returning-result-set`, pinned in `gaps.go` at
+  `update C set st = coalesce(st, null) where c1 = 4 returning "new".st`),
+  which is a different workstream. The file passing is CQ-72's bar, not this
+  item's.
 
 - [ ] **CQ-87 (SMALL, needs confirmation first): Java may wrap a
   PARENTHESISED SCALAR into a one-field record where Go unwraps it.** Go's

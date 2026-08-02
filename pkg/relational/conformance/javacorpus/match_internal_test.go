@@ -484,5 +484,42 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 		if g.Class == "" {
 			t.Errorf("gap %s has no skip class", g.Path)
 		}
+		if want, ok := statementExactGaps[g.Path]; ok && !strings.Contains(g.Signature, want) {
+			t.Errorf("gap %s must stay STATEMENT-EXACT: signature %q no longer quotes %q, so any other "+
+				"failure of the same class anywhere in the file would be swallowed as this one",
+				g.Path, g.Signature, want)
+		}
 	}
+	for path := range statementExactGaps {
+		found := false
+		for _, g := range EngineGaps() {
+			if g.Path == path {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("statementExactGaps names %s, which is no longer in the gap table — delete the "+
+				"requirement in the same change that deletes the entry", path)
+		}
+	}
+}
+
+// statementExactGaps are the gap entries whose signature must quote the EXACT
+// failing statement rather than the class-level rejection text alone.
+//
+// Both files are big — array-join-at.yamsql is thirty PartiQL AT shapes, and
+// functions.yamsql asserts 111 queries — and both were originally pinned to a
+// message their file can produce from many different statements ("Cascades
+// planner could not plan query"; "actual result set is NULL, expecting non-NULL
+// result set"). A signature that generic converts the entry from "this measured
+// divergence" into "any failure of this shape anywhere in the file", which is
+// precisely the mute allowlist the gap table exists not to be: a NEW decline at
+// a different query would have been counted as the known one and the run would
+// have stayed green.
+//
+// The values are prefixes of the runner's `%q`-formatted statement text, so the
+// embedded SQL quotes appear escaped.
+var statementExactGaps = map[string]string{
+	"array-join-at.yamsql": `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\"`,
+	"functions.yamsql":     `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
 }

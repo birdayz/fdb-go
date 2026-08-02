@@ -554,11 +554,18 @@ So the repository is built once per plan and each `RecordConstructorValue`'s
 resolved `protoreflect.MessageDescriptor` is STAMPED onto the value at plan
 time; `Evaluate` then builds its `dynamicpb` message context-free. This is
 semantically equivalent to Java rather than a weakening of it: the repository is
-per-plan on both sides, every descriptor in one plan comes from the same
-repository build, so nested constructors agree on descriptor identity and the
-reconciliation Java needs for the mixed case
-(`RecordConstructorValue.deepCopyIfNeeded`, :165-216) has nothing left to
-reconcile. Stamping happens on the plan-cache MISS path only, before
+per-plan on both sides, and every descriptor in one plan comes from the same
+repository build, so nested constructors *within a plan* agree on descriptor
+identity and the reconciliation Java needs for the mixed case
+(`RecordConstructorValue.deepCopyIfNeeded`, :165-216) has nothing left to do
+there. It is NOT a claim that a query has only one repository: a scalar subquery
+is planned and baked as its own plan (`scalar_subquery_planning.go` calls
+`FinalizePlan` on it separately) and therefore carries its own repository. That
+case is not a hole — it is the reconciliation path, ported: a message whose
+descriptor differs from the target field's goes through
+`values.rowMessageToProtoValue`'s by-number copy
+(`copyFieldsByNumber`, the port of `MessageHelpers.deepCopyMessageIfNeeded`,
+:247-295) and lands correctly. Stamping happens on the plan-cache MISS path only, before
 `PlanCache.Put`, and the field is immutable afterwards — the cache hands the
 same plan pointer to every later execution and each page rebuilds its cursor
 hierarchy from it concurrently, so a value mutated at execution time would be a

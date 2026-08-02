@@ -213,8 +213,12 @@ var engineGaps = []EngineGap{
 	// The SECOND is what this entry books, and it has nothing to do with
 	// structs: `update … returning "new".st` produces no result set, because
 	// DML RETURNING is not implemented. Pinned at that exact statement so the
-	// struct and LEAST/GREATEST fixes above cannot silently regress behind it.
-	{"functions.yamsql", SkipGapDMLReturning, "actual result set is NULL, expecting non-NULL result set", "CQ-72"},
+	// struct and LEAST/GREATEST fixes above cannot silently regress behind it —
+	// the bare "no result set" text alone would swallow ANY other
+	// result-set-less assertion this 111-query file grows.
+	// (The %q-formatted statement text escapes the embedded quotes, so the
+	// signature matches the escaped form.)
+	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
 	// `SELECT (*)` — the parenthesised star, a record constructor over the
 	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
 	// :902-916). Go declines it in the expression walker
@@ -276,8 +280,12 @@ var engineGaps = []EngineGap{
 	// Go-accepts-what-Java-rejects class join-tests-outer.yamsql carries.
 	{"uuid-non-prepared.yamsql", SkipConformanceGoAccepts, `"select * from ta where b is not null order by b": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 	// A lateral unnest of a DERIVED TABLE's array column with AT — the
-	// correlated-unnest-over-subquery shape Cascades declines.
-	{"array-join-at.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
+	// correlated-unnest-over-subquery shape Cascades declines. Pinned at the
+	// exact statement: this file is 30 queries of PartiQL AT shapes and the
+	// bare 0AF00 text would have counted a decline on ANY of them as this one.
+	// (The %q-formatted statement text escapes the embedded quotes, so the
+	// signature matches the escaped form.)
+	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\", \"subquery\".\"arr1\" AS \"val\" AT \"at\"": 0AF00: Cascades planner could not plan query`, "CQ-72"},
 
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics

@@ -8,8 +8,8 @@ package sqldriver_test
 //
 // The row-value rejections are load-bearing, not incidental. Both spellings put a
 // RECORD where a comparison expects a scalar, which Java refuses at construction
-// (RelOpValue.isSupportedOperandType, RelOpValue.java:320-322, asserted at :333/:344/
-// :349), and Go has no record comparator to fall back on. When record constructors
+// (RelOpValue.isSupportedOperandType, RelOpValue.java:320-322, asserted at :333/:345/
+// :350), and Go has no record comparator to fall back on. When record constructors
 // became buildable in expression position the IN spelling briefly PLANNED instead,
 // and it was silently wrong in both directions — MEASURED over rows (1,1,2),(2,3,4),
 // (4,1,9) plus an a-NULL row: `(a,b) IN ((1,2),(3,4))` returned NO ids where 1 and 2

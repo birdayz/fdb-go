@@ -19,14 +19,22 @@ import (
 // the reasoning, and TestFrontierContextIsNotAUniformCarrier pins the premise
 // it rests on.
 //
-// ONE repository for the whole plan is the load-bearing part, not an
-// optimisation: descriptor identity is per-repository, so two constructors of
-// the same record type stamped from different repositories would produce
-// messages that are wire-compatible but not identity-equal, and a nested
-// constructor's message could not be set into its parent's field without a
-// copy. Sharing the repository is what makes Java's deepCopyIfNeeded
-// reconciliation (RecordConstructorValue.java:165-216) have nothing to
-// reconcile.
+// One repository per plan is what makes the COMMON case free; it is not a
+// correctness requirement. Descriptor identity is per-repository, so two
+// constructors of the same record type stamped from different repositories
+// produce messages that are wire-compatible but not identity-equal. Within one
+// plan that never happens, which is why a nested constructor's message can be
+// set straight into its parent's field — Java's deepCopyIfNeeded
+// (RecordConstructorValue.java:165-216) has nothing to reconcile there.
+//
+// ACROSS plans it does happen, by design: a scalar subquery is planned and
+// baked as its own plan (embedded/scalar_subquery_planning.go calls FinalizePlan
+// on it separately, because it hangs off the cascadesPlan rather than off any
+// child edge of the outer plan), so it carries its own repository. A message
+// built from that repository and set into an outer constructor's field takes
+// the by-number copy in values.rowMessageToProtoValue — the port of
+// deepCopyIfNeeded — and lands correctly. So the guarantee this walk provides
+// is "one repository per plan", and the copy is what covers the rest.
 //
 // Call it exactly once per plan, on the plan-cache MISS path before
 // PlanCache.Put. The cache returns the SAME plan pointer to every subsequent
@@ -76,9 +84,10 @@ func FinalizePlan(plan plans.RecordQueryPlan) {
 // This costs nothing today: a DML statement returns a row COUNT, not rows. The
 // grammar carries a RETURNING token (it is generated from Java's) but the Go
 // translator implements no RETURNING clause, so no computed record under a DML
-// root can reach the driver. TestFinalizePlanSkipsWriteFedValues pins that,
-// and names what gets re-armed if RETURNING ever lands: the returned
-// projection would need stamping while the write source still must not be.
+// root can reach the driver. TestFDB_RecordConstructorInExpressionPosition's
+// multi_row_insert_values_is_not_baked subtest pins that, and names what gets
+// re-armed if RETURNING ever lands: the returned projection would need
+// stamping while the write source still must not be.
 func feedsAWrite(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryInsertPlan,
@@ -121,11 +130,21 @@ func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository,
 // grouping keys), so a result-value-only walk would miss precisely the
 // constructors that produce computed records.
 //
-// The set of fields below is cross-checked by TestFinalizePlanCoversStructuralKey
-// against each plan's structuralKey() declaration, which is the codebase's
-// existing single-point-of-truth for "which fields identify this plan". A plan
-// that grows a new value-bearing field fails that test rather than silently
-// going unstamped.
+// GetChildren() alone is not enough either, and that gap is the sharper one: a
+// plan may hold a whole sub-PLAN in a structural field that GetChildren
+// deliberately does not return. RecordQueryAggregateIndexPlan is exactly that
+// shape — a leaf by Java's RecordQueryPlanWithNoChildren contract, wrapping a
+// RecordQueryIndexPlan whose scan comparands are only reachable from its arm
+// here.
+//
+// TestFinalizePlanCoversStructuralKey guards both gaps. It reflects over every
+// plan type's struct fields, flags the ones whose type transitively carries a
+// Value, a QueryPredicate, a ComparisonRange or a plan edge, and then requires
+// each flagged field to be proven BEHAVIOURALLY: a sentinel
+// RecordConstructorValue planted in the field must come back stamped after
+// FinalizePlan. A plan that grows a new value-bearing field, or one whose
+// subtree stops being reachable, fails that test rather than silently going
+// unstamped.
 func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository) {
 	stampValue(plan.GetResultValue(), repo)
 
@@ -149,6 +168,18 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 	case *plans.RecordQueryIndexPlan:
 		stampValues(p.GetCommonPrimaryKeyValues(), repo)
 		stampScanComparisons(p.GetScanComparisons(), repo)
+	case *plans.RecordQueryAggregateIndexPlan:
+		// The wrapped index scan is a STRUCTURAL field, not a child: this plan
+		// is Java's RecordQueryPlanWithNoChildren and GetChildren returns nil.
+		// So the plan walk never descends into it and only this arm reaches its
+		// comparands and common primary key. Recursing through
+		// stampNodeLocalValues rather than repeating the index-plan field list
+		// keeps the two in step by construction. The nil guard is for the
+		// struct-literal test plans that bypass the constructor — a typed-nil
+		// pointer in an interface is not == nil, so it must be checked here.
+		if idx := p.GetIndexPlan(); idx != nil {
+			stampNodeLocalValues(idx, repo)
+		}
 	case *plans.RecordQueryVectorIndexPlan:
 		stampScanComparisons(p.GetPrefixComparisons(), repo)
 		stampValue(p.GetQueryVector(), repo)

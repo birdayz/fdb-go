@@ -217,6 +217,34 @@ func copyFieldsByNumber(dst, src protoreflect.Message) error {
 			}
 			return false
 		}
+		// SHAPE CHECK BEFORE ANY WRITE. protoreflect's Set/Mutable PANIC when
+		// the value does not match the target field — a kind mismatch, or a
+		// scalar written to a repeated field. Field number is the only join
+		// key here (it is the wire identity), so nothing upstream guarantees
+		// the two fields agree on anything else; two independently synthesised
+		// descriptors that disagree at the same number are exactly the case
+		// this function exists to survive. Principle 4: a library returns a
+		// typed error, it does not panic.
+		if sfd.IsMap() != tfd.IsMap() || sfd.IsList() != tfd.IsList() || sfd.Kind() != tfd.Kind() {
+			err = &ProtoTypeError{
+				TypeName: string(dst.Descriptor().FullName()),
+				Reason: fmt.Sprintf(
+					"field number %d is %s in the source (%s) but %s in the target (%s)",
+					sfd.Number(), describeFieldShape(sfd), sfd.FullName(),
+					describeFieldShape(tfd), tfd.FullName()),
+			}
+			return false
+		}
+		if sfd.IsMap() {
+			// A SQL struct has no map-typed field, so a map here means the two
+			// descriptors are not the wire-compatible pair this copy assumes.
+			// Declining loudly beats a partial copy that looks like success.
+			err = &ProtoTypeError{
+				TypeName: string(dst.Descriptor().FullName()),
+				Reason:   fmt.Sprintf("field %s is a map, which no SQL struct type produces", sfd.FullName()),
+			}
+			return false
+		}
 		switch {
 		case sfd.IsList():
 			list := dst.Mutable(tfd).List()
@@ -246,6 +274,19 @@ func copyFieldsByNumber(dst, src protoreflect.Message) error {
 		return true
 	})
 	return err
+}
+
+// describeFieldShape renders the part of a field's type the by-number copy has
+// to agree on — cardinality plus kind — for the mismatch error.
+func describeFieldShape(fd protoreflect.FieldDescriptor) string {
+	switch {
+	case fd.IsMap():
+		return "a map"
+	case fd.IsList():
+		return "repeated " + fd.Kind().String()
+	default:
+		return fd.Kind().String()
+	}
 }
 
 // asInt64 widens the engine's integer carriers. The row domain uses int64 for

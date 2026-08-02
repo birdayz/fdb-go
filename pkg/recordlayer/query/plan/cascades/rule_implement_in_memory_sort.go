@@ -37,6 +37,47 @@ func NewImplementInMemorySortRule() *ImplementInMemorySortRule {
 
 func (r *ImplementInMemorySortRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// sortKeysAreOrderable reports whether every sort key has a type an ORDERING
+// can be defined on.
+//
+// Java satisfies a requested ordering only out of PRIMITIVE parts:
+// RequestedOrdering.ofPrimitiveParts (RequestedOrdering.java:313-326) is what
+// LogicalOperator.generateSort feeds (LogicalOperator.java:552-571), and it
+// never expands a record into its leaves the way the GROUPING path does via
+// Values.primitiveAccessorsForType (Values.java:99-121). So a RECORD-typed
+// ORDER BY key matches no index ordering, no plan survives, and Cascades ends
+// at UnableToPlanException — surfacing as 0AF00 "Cascades planner could not
+// plan query" (CascadesPlanner.java:407, mapped at ExceptionUtil.java:79-80).
+//
+// Go reaches a DIFFERENT place for the same query only because Go has an
+// in-memory sort fallback that Java's Cascades does not: the fallback accepted
+// the record key and the comparator then failed at ROW TIME with a raw
+// internal message naming *dynamicpb.Message. Declining to yield here restores
+// Java's outcome by Java's own route — the ordering is simply unsatisfiable
+// and planning fails — rather than by bolting a type check onto ORDER BY
+// parsing, which would diverge the moment the surrounding structure changed.
+//
+// GROUPING IS DELIBERATELY NOT GATED HERE. Java SUPPORTS `GROUP BY <struct>`,
+// flattening the record into its primitive leaves; gating it would invent a
+// divergence rather than close one. Go's streaming-aggregation path builds its
+// own sort directly and does not pass through this rule.
+//
+// UNKNOWN is admitted: an untyped key (a bound parameter, an internal
+// expression) is not evidence of an unorderable one, and rejecting it here
+// would reject shapes that plan and run correctly today.
+func sortKeysAreOrderable(sortKeys []expressions.SortKey) bool {
+	for _, sk := range sortKeys {
+		if sk.Value == nil {
+			continue
+		}
+		t := sk.Value.Type()
+		if values.IsRecord(t) || values.IsArray(t) {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	s := call.Bindings.Get(r.matcher).(*expressions.LogicalSortExpression)
 	if s.IsUnsorted() {
@@ -45,6 +86,9 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 
 	sortKeys := s.GetSortKeys()
 	if len(sortKeys) == 0 {
+		return
+	}
+	if !sortKeysAreOrderable(sortKeys) {
 		return
 	}
 

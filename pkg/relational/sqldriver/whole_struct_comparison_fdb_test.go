@@ -15,7 +15,7 @@ import (
 // Java rejects it at construction: RelOpValue asserts every operand satisfies
 // isSupportedOperandType (primitive / enum / uuid / array / none;
 // RelOpValue.java:320-322), checked before any compatibility question
-// (RelOpValue.java:333,:344,:349). A RECORD comparand fails that assert.
+// (RelOpValue.java:333,:345,:350). A RECORD comparand fails that assert.
 //
 // Go used to build the predicate anyway, because the SQL layer typed a struct
 // column UNKNOWN and every type-keyed gate therefore admitted it. The result
@@ -102,7 +102,7 @@ func TestFDB_WholeStructComparison(t *testing.T) {
 				}
 				rows.Close()
 				t.Fatalf("a whole-struct comparison was ACCEPTED and answered %v — "+
-					"Java rejects the shape (RelOpValue.java:333,:344,:349) and Go has no "+
+					"Java rejects the shape (RelOpValue.java:333,:345,:350) and Go has no "+
 					"record comparator, so any answer here is manufactured: %s", got, tc.sql)
 			}
 			g.Expect(err.Error()).To(gomega.ContainSubstring("0AF00"),

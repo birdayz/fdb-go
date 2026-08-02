@@ -235,6 +235,48 @@ func buildWherePredicateForDerived(
 	return pred, true
 }
 
+// renameCarriedColumn re-labels a resolved source column as one output column
+// of a derived table / CTE, carrying EVERYTHING ELSE across.
+//
+// The whole point is what it does NOT drop. A virtual column minted as
+// `semantic.Column{Id, Type, Nullable}` loses StructFields and IsArray, and a
+// STRUCT column then types UNKNOWN (structColumnType returns UNKNOWN on an
+// empty field list) instead of RECORD. UNKNOWN is deliberately ADMITTED by the
+// comparison operand gate — bound parameters need that carve-out — so a
+// whole-struct comparison that rejects 0AF00 on the base table planned
+// straight through a derived table and returned SILENT WRONG ROWS. Java never
+// has this hole: a derived table's columns are the body's Values and carry
+// their real Type, so the operand check (RelOpValue.isSupportedOperandType,
+// RelOpValue.java:320-322) sees the record either way.
+//
+// Ephemeral is CLEARED rather than carried: an explicitly projected item is a
+// visible output of the derived table, whatever its source column's star
+// visibility was.
+func renameCarriedColumn(src semantic.Column, outName string) semantic.Column {
+	src.Id = semantic.FromNormalized(outName)
+	src.Ephemeral = false
+	return src
+}
+
+// lookupSourceColumn finds the column a derived-table projection item reads,
+// trying the structured bare segment first and the full spelling second (a
+// rebased or computed item has no bare segment). A miss is not an error — the
+// caller falls back to an honestly UNKNOWN virtual column.
+func lookupSourceColumn(cols []semantic.Column, bare, full string) (semantic.Column, bool) {
+	for _, name := range [2]string{bare, full} {
+		if name == "" {
+			continue
+		}
+		id := semantic.FromNormalized(name)
+		for _, c := range cols {
+			if c.Id.Name() == id.Name() {
+				return c, true
+			}
+		}
+	}
+	return semantic.Column{}, false
+}
+
 // buildDerivedTableSource synthesises a virtual ScopeSource for
 // `FROM (SELECT col1, col2 FROM realtable) AS alias`. Walks the inner
 // query's parse tree via extractFromQueryTerm, then builds a
@@ -431,7 +473,8 @@ func buildDerivedTableSourceFromTerm(
 		}
 		aliasID := semantic.FromNormalized(alias)
 		// Apply inner projection aliases if present.
-		cols := innerSrc.Table.Columns()
+		srcCols := innerSrc.Table.Columns()
+		cols := srcCols
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
@@ -439,11 +482,29 @@ func buildDerivedTableSourceFromTerm(
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
-				cols = append(cols, semantic.Column{
-					Id:       semantic.FromNormalized(name),
-					Type:     "UNKNOWN",
-					Nullable: true,
-				})
+				// CARRY THE WHOLE RESOLVED COLUMN, rename only. Minting a bare
+				// {Id, Type:"UNKNOWN", Nullable} drops StructFields and IsArray,
+				// and every gate keyed on the flowed type then reads a struct
+				// column as UNKNOWN — which comparisonOperandSupported
+				// DELIBERATELY admits (bound parameters need that). The result
+				// was a whole-struct comparison that planned through a derived
+				// table and answered SILENT WRONG ROWS while the same predicate
+				// on the base table rejected 0AF00. The type is not decoration:
+				// it is what makes the operand gate, nested-field resolution
+				// (x.h.city) and array typing work at all.
+				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
+				if !found {
+					// Not attributable to a source column (a computed or
+					// rebased item): UNKNOWN is the honest answer, there is no
+					// column to carry.
+					cols = append(cols, semantic.Column{
+						Id:       semantic.FromNormalized(name),
+						Type:     "UNKNOWN",
+						Nullable: true,
+					})
+					continue
+				}
+				cols = append(cols, renameCarriedColumn(resolved, name))
 			}
 		}
 		virtualTable := &semantic.StaticTable{
@@ -529,12 +590,11 @@ func buildDerivedTableSourceFromTerm(
 		}
 		// The virtual column carries the OUTPUT name the derived-table
 		// projection emits (Java resolves references to the output column
-		// verbatim — no reverse-map to the underlying source column).
-		columns = append(columns, semantic.Column{
-			Id:       semantic.FromNormalized(outName),
-			Type:     innerCol.Type,
-			Nullable: innerCol.Nullable,
-		})
+		// verbatim — no reverse-map to the underlying source column) and
+		// EVERYTHING ELSE from the source column unchanged. See
+		// renameCarriedColumn: rebuilding it field-by-field is what dropped
+		// StructFields and let a struct comparison bypass the operand gate.
+		columns = append(columns, renameCarriedColumn(innerCol, outName))
 	}
 
 	aliasID := semantic.FromNormalized(alias)
@@ -1205,6 +1265,20 @@ func buildCTEColumnSource(
 				outName = innerSQ.projAliases[i]
 			}
 			if isComputed {
+				// UNKNOWN IS CORRECT HERE, unlike the non-computed arm below.
+				// A computed projection item (`SELECT a + b AS x`) has NO
+				// source column to carry a type from — this function works off
+				// the parse tree and never encapsulates the expression, so
+				// there is nothing more honest to say about x's type than
+				// "unknown". The sibling arms mint UNKNOWN for a struct column
+				// that DOES have a resolvable type, which is a lie the operand
+				// gate then trusts; this one is the genuine article.
+				//
+				// A computed item can therefore still carry a struct past the
+				// gate (`SELECT CASE … END AS s`), but only by way of a
+				// SELECT-list expression Go does not type at all — closing that
+				// needs the CTE body's expressions encapsulated here, not a
+				// wider carry.
 				columns = append(columns, semantic.Column{
 					Id:       semantic.FromNormalized(outName),
 					Type:     "UNKNOWN",
@@ -1225,12 +1299,11 @@ func buildCTEColumnSource(
 				return semantic.ScopeSource{}, false
 			}
 			// The virtual column carries the OUTPUT name the CTE body
-			// projection emits — references resolve to it verbatim.
-			columns = append(columns, semantic.Column{
-				Id:       semantic.FromNormalized(outName),
-				Type:     innerCol.Type,
-				Nullable: innerCol.Nullable,
-			})
+			// projection emits — references resolve to it verbatim — and
+			// EVERYTHING ELSE from the source column (renameCarriedColumn):
+			// dropping StructFields here typed a CTE's struct column UNKNOWN
+			// and bypassed the whole-struct comparison gate.
+			columns = append(columns, renameCarriedColumn(innerCol, outName))
 		}
 	}
 
@@ -1661,6 +1734,109 @@ func cteBodyAllAliasesCaseSafe(body *antlrgen.QueryTermDefaultContext) bool {
 	return true
 }
 
+// cteBodyLeg is one resolved FROM leg of a CTE body: the name it binds in the
+// body's scope, and the columns it contributes.
+type cteBodyLeg struct {
+	bind string // UPPERCASED alias, else table name
+	cols []semantic.Column
+}
+
+// cteBodyLegColumns resolves every FROM leg of a CTE body to its columns, by
+// the same three routes the rest of this file uses (a prior CTE's scope, a
+// derived sub-body, or the catalog). A leg that resolves to nothing is simply
+// omitted — callers treat an unattributable projection item as UNKNOWN, which
+// is what they did for EVERY item before.
+//
+// This exists so the ON-only wrap rebuild can carry a projected column's REAL
+// type instead of minting UNKNOWN. Minting UNKNOWN is not a neutral
+// placeholder: a STRUCT column typed UNKNOWN is admitted by the comparison
+// operand gate (the carve-out bound parameters need), so `ON c.h = c.o` over a
+// CTE planned a whole-struct comparison that the same predicate on the base
+// table rejects 0AF00 — and answered silent wrong rows.
+func cteBodyLegColumns(
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+	sq *selectQuery,
+) []cteBodyLeg {
+	if md == nil || sq == nil {
+		return nil
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	resolve := func(name, alias string, derived antlrgen.IQueryContext) (cteBodyLeg, bool) {
+		bind := alias
+		if bind == "" {
+			bind = name
+		}
+		if bind == "" {
+			return cteBodyLeg{}, false
+		}
+		leg := cteBodyLeg{bind: strings.ToUpper(bind)}
+		switch {
+		case derived != nil:
+			src, ok := buildDerivedTableSource(md, bind, derived)
+			if !ok || src.Table == nil {
+				return cteBodyLeg{}, false
+			}
+			leg.cols = src.Table.Columns()
+		default:
+			if src, found := cteScopes[strings.ToUpper(name)]; found {
+				if src.Table == nil {
+					return cteBodyLeg{}, false
+				}
+				leg.cols = src.Table.Columns()
+				break
+			}
+			tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(name, "."), false))
+			if err != nil || tbl == nil {
+				return cteBodyLeg{}, false
+			}
+			leg.cols = tbl.Columns()
+		}
+		return leg, true
+	}
+	var legs []cteBodyLeg
+	if leg, ok := resolve(sq.tableName, sq.tableAlias, sq.derivedQuery); ok {
+		legs = append(legs, leg)
+	}
+	for _, jc := range sq.joins {
+		if leg, ok := resolve(jc.tableName, jc.alias, jc.derivedQuery); ok {
+			legs = append(legs, leg)
+		}
+	}
+	return legs
+}
+
+// lookupCTEBodyColumn finds the source column a CTE-body projection item reads.
+// A QUALIFIED item is matched against the leg it names; a BARE item is searched
+// across every leg and must hit EXACTLY ONE — a bare name two legs both carry
+// is ambiguous, and picking either would be the arbitrary resolution the rest
+// of this function's admission rules exist to avoid.
+func lookupCTEBodyColumn(legs []cteBodyLeg, col projCol) (semantic.Column, bool) {
+	name := col.bare
+	if name == "" {
+		return semantic.Column{}, false
+	}
+	want := semantic.FromNormalized(name).Name()
+	var hit semantic.Column
+	found := 0
+	for _, leg := range legs {
+		if col.qualified && !strings.EqualFold(leg.bind, col.qualifier) {
+			continue
+		}
+		for _, c := range leg.cols {
+			if c.Id.Name() == want {
+				hit = c
+				found++
+			}
+		}
+	}
+	if found != 1 {
+		return semantic.Column{}, false
+	}
+	return hit, true
+}
+
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -1794,6 +1970,12 @@ func buildCTEOnOnlySource(
 	// per-source poison marker in the resolver — is a booked conformance slice;
 	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
 	aliasQuoted := cteBodyAliasQuoted(body)
+	// The body's legs, resolved to their columns, so each admitted output
+	// column can carry its SOURCE column's real type rather than UNKNOWN. The
+	// legs are enumerable by this point (cteBodyLegsEnumerable ran above), so
+	// a leg that fails to resolve here is genuinely unattributable, not merely
+	// unvisited.
+	bodyLegs := cteBodyLegColumns(md, cteScopes, innerSQ)
 	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
 	seen := make(map[string]int, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
@@ -1827,6 +2009,17 @@ func buildCTEOnOnlySource(
 			return semantic.ScopeSource{}, false
 		}
 		seen[runtimeName]++
+		// Carry the source column's type when the item is attributable to one
+		// (see cteBodyLegColumns for why UNKNOWN here was a correctness bug,
+		// not a cosmetic gap). A computed item has no source column and stays
+		// honestly UNKNOWN.
+		isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
+		if !isComputed {
+			if srcCol, ok := lookupCTEBodyColumn(bodyLegs, col); ok {
+				columns = append(columns, renameCarriedColumn(srcCol, runtimeName))
+				continue
+			}
+		}
 		columns = append(columns, semantic.Column{
 			Id:       semantic.FromNormalized(runtimeName),
 			Type:     "UNKNOWN",

@@ -688,7 +688,7 @@ func typeCodeIsArrayOrNone(t values.Type) bool {
 // comparisonOperandSupported ports Java's RelOpValue.isSupportedOperandType
 // (RelOpValue.java:320-322): a relational operator's operands must be
 // primitive, enum, uuid, array or NONE. It is checked BEFORE any question of
-// mutual compatibility (RelOpValue.java:333 for the unary arm, :344 and :349
+// mutual compatibility (RelOpValue.java:333 for the unary arm, :345 and :350
 // for the binary one), which is why it catches a RECORD comparand that is
 // perfectly "compatible" with itself.
 //

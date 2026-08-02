@@ -137,6 +137,7 @@ go_test(
         "pullup_test.go",
         "rebase_fuzz_test.go",
         "rebase_test.go",
+        "record_constructor_message_copy_test.go",
         "replace_test.go",
         "resolved_ordinal_test.go",
         "rfc176_p1_vector_config_identity_test.go",
