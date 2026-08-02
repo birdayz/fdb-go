@@ -19,7 +19,7 @@ var _ = Describe("Stopped", func() {
 	ctx := context.Background()
 
 	It("reports the out-of-band reason it was given", func() {
-		c := Stopped[int](TimeLimitReached, &StartContinuation{})
+		c := Stopped[int](TimeLimitReached, NewBytesContinuation([]byte{0x03}))
 		result, err := c.OnNext(ctx)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.HasNext()).To(BeFalse())
@@ -28,14 +28,14 @@ var _ = Describe("Stopped", func() {
 	})
 
 	It("reports a resumable, non-end continuation", func() {
-		c := Stopped[int](TimeLimitReached, &StartContinuation{})
+		c := Stopped[int](TimeLimitReached, NewBytesContinuation([]byte{0x03}))
 		result, _ := c.OnNext(ctx)
 		Expect(result.GetContinuation().IsEnd()).To(BeFalse())
 		Expect(result.HasStoppedBeforeEnd()).To(BeTrue())
 	})
 
 	It("keeps reporting the same stop on re-call", func() {
-		c := Stopped[int](ScanLimitReached, &StartContinuation{})
+		c := Stopped[int](ScanLimitReached, NewBytesContinuation([]byte{0x03}))
 		first, _ := c.OnNext(ctx)
 		second, _ := c.OnNext(ctx)
 		Expect(second.GetNoNextReason()).To(Equal(first.GetNoNextReason()))
@@ -46,7 +46,7 @@ var _ = Describe("Stopped", func() {
 		// The propagation must not become a silent truncation for consumers
 		// that have no resume point: errIfDrainTruncated is what keeps a
 		// value-only drain loud.
-		_, err := AsList[int](ctx, Stopped[int](TimeLimitReached, &StartContinuation{}))
+		_, err := AsList[int](ctx, Stopped[int](TimeLimitReached, NewBytesContinuation([]byte{0x03})))
 		Expect(err).To(HaveOccurred())
 		var sle *ScanLimitReachedError
 		Expect(errors.As(err, &sle)).To(BeTrue())
@@ -54,7 +54,7 @@ var _ = Describe("Stopped", func() {
 	})
 
 	It("closes like any other cursor", func() {
-		c := Stopped[int](ByteLimitReached, &StartContinuation{})
+		c := Stopped[int](ByteLimitReached, NewBytesContinuation([]byte{0x03}))
 		Expect(c.IsClosed()).To(BeFalse())
 		Expect(c.Close()).To(Succeed())
 		Expect(c.IsClosed()).To(BeTrue())

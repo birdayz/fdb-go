@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"container/heap"
 	"context"
 	"fmt"
@@ -911,14 +910,18 @@ func executeFirstOrDefault(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	resume, innerCont, decodeErr := decodeFirstOrDefaultContinuation(continuation)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
 	// A resume from the emitted row's own continuation: the single row
 	// was already consumed — the cursor is exhausted, never re-executed
 	// (re-execution would re-emit the row: a duplicate under any parent
 	// that snapshots child positions).
-	if bytes.Equal(continuation, singleResultConsumedToken) {
+	if resume == fodResumeConsumed {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props)
 	if err != nil {
 		return nil, err
 	}
@@ -947,8 +950,13 @@ func executeFirstOrDefault(
 			// An out-of-band (resource-limit) stop after the first row means the
 			// input was TRUNCATED — a second matching row may exist beyond the
 			// cap, so at-most-one is not yet proven. That is a PAGE BOUNDARY, not
-			// a failure: hand the stop up so the parent pages and re-runs this
-			// plan with a fresh budget (see restartAfterOutOfBand).
+			// a failure: hand the stop up so the parent pages.
+			//
+			// Whole-leg restart, NOT a checkpoint on the inner's position: the
+			// operator is holding `first`, and a stop cursor carries no value, so
+			// resuming the inner past `first` would lose it. Restarting re-derives
+			// it. This is the one branch where the restart is the only correct
+			// resume — see restartAfterOutOfBand.
 			if second.GetNoNextReason().IsOutOfBand() {
 				_ = inner.Close()
 				return restartAfterOutOfBand(second.GetNoNextReason()), nil
@@ -963,9 +971,12 @@ func executeFirstOrDefault(
 	// so the default must NOT be fabricated (that is Java's
 	// RecordQueryFirstOrDefaultPlan.java:100-106 / issue 3220, which treats the
 	// truncated inner as an empty one and answers EXISTS wrongly). Hand the stop
-	// up instead (see restartAfterOutOfBand).
+	// up as a CHECKPOINT on the inner's own position (see
+	// checkpointAfterOutOfBand): at this point the operator's entire state is
+	// "zero rows seen", which the inner's continuation captures exactly, so the
+	// resumed leg carries on from where it stopped instead of starting over.
 	if result.GetNoNextReason().IsOutOfBand() {
-		return restartAfterOutOfBand(result.GetNoNextReason()), nil
+		return checkpointAfterOutOfBand(result)
 	}
 	defaultVal := p.GetDefaultValue()
 	if defaultVal == nil {
@@ -978,42 +989,85 @@ func executeFirstOrDefault(
 	return newSingleResultCursor(qr), nil
 }
 
-// restartAfterOutOfBand is the cursor a first-or-default hands back when its
-// inner leg halted on an out-of-band resource limit (scanned records, scanned
-// bytes, or — the reason this exists — the per-page TIME budget) before the
-// operator could decide what to flow.
+// An out-of-band stop underneath a first-or-default is a resumable PAGE
+// BOUNDARY, not a failure. The per-page time budget exists precisely so a page
+// ends before FDB's 5s transaction wall, and every Java operator propagates such
+// a stop upward with a continuation rather than throwing
+// (FlatMapPipelinedCursor.java:325-367 forwards the inner's reason verbatim;
+// MemorySortCursor.java:78-93 checkpoints its sorter; CursorLimitManager.java:144
+// is the ONLY place in the Java engine that turns a limit into an exception, and
+// only under failOnScanLimitReached). Collapsing it into an error here made a
+// slow-but-healthy cluster fail a legitimate query with 54F01 — the cluster was
+// not out of budget, the PAGE was.
 //
-// An out-of-band stop is a resumable page boundary by construction: the time
-// limit exists precisely so a page ends before FDB's 5s transaction wall, and
-// every Java operator propagates such a stop upward with a continuation rather
-// than throwing (FlatMapPipelinedCursor.java:325-367 forwards the inner's
-// reason verbatim; MemorySortCursor.java:78-93 checkpoints its sorter;
-// CursorLimitManager.java:144 is the ONLY place in the Java engine that turns a
-// limit into an exception, and only under failOnScanLimitReached). Collapsing it
-// into an error here made a slow-but-healthy cluster fail a legitimate query
-// with 54F01 — the cluster was not out of budget, the PAGE was.
+// This operator is EAGER: unlike a streaming cursor it must drain its inner leg
+// to decide what to flow, so it meets the stop itself instead of passing a
+// no-next result through. It therefore has to mint the resume position, and
+// which position is correct depends on what it was holding when the stop
+// arrived — hence two functions below, not one.
 //
-// The continuation is a StartContinuation: non-end, so the parent treats it as a
-// live resume point, but carrying no bytes, so the resumed page re-runs this
-// whole first-or-default from scratch against its outer row with a fresh budget.
-// That is the only correct resume position — the operator's answer is a function
-// of the ENTIRE inner leg, so a partial position could not be resumed into a
-// verdict. Nothing is lost by restarting: no row of this operator was emitted.
-//
-// This is deliberately NOT what Java does at this operator. Java's
-// RecordQueryFirstOrDefaultPlan.java:100-106 passes a null continuation to its
-// child and reads a truncated inner as an EMPTY one, which silently answers
-// NOT EXISTS = true from a partial scan — a wrong answer its own comment flags
-// as unfixed (FoundationDB/fdb-record-layer#3220). Propagating the stop matches
-// the cursor framework's contract (RecordCursor.java:212-215: a non-exhausted
-// stop must carry a non-end continuation) instead of the buggy operator.
+// Neither is what Java does here. RecordQueryFirstOrDefaultPlan.java:100-106
+// hands its child a null continuation and reads a truncated inner as an EMPTY
+// one, silently answering NOT EXISTS = true from a partial scan — a wrong answer
+// its own comment flags as unfixed (FoundationDB/fdb-record-layer#3220), and
+// RecordCursor.java:920-925 names the fix in the abstract: when the future is
+// backed by a cursor that may stop out-of-band, "it may be desirable to include
+// the progress included in the underlying cursor in the final continuation …
+// something more bespoke may be required". checkpointAfterOutOfBand is that
+// bespoke thing.
 //
 // Consumers that cannot page still fail loud: any eager drain routes through
 // errIfBufferTruncated / errIfDrainTruncated, which turn this same out-of-band
 // stop into 54F01. Only a parent with a real resume point — the nested-loop
-// flat map — converts it into a page boundary.
+// flat map, or the paginating SQL driver — converts it into a page boundary.
+
+// checkpointAfterOutOfBand handles the stop that arrives BEFORE any inner row.
+// The operator's entire state at that instant is "zero rows seen", and the inner
+// leg's own continuation captures exactly where it got to — so the two together
+// are a complete resume position. The resumed leg carries on from the checkpoint
+// and the first row it then finds is still the leg's first row.
+//
+// This is what makes the fix work on a genuinely slow cluster rather than only
+// on a slightly slow one: progress becomes per INNER ROW instead of per outer
+// row. A restart here would re-scan the same prefix every page, so a leg that
+// cannot fit one page's budget would never finish — the driver's no-progress
+// tripwire would fire and the query would fail with 54F01 anyway, just with a
+// different message.
+//
+// Falls back to a whole-leg restart only when the inner has no resumable
+// position to checkpoint (a start/end continuation), which is not a state any
+// current leaf produces after an out-of-band stop but is cheap to be right about.
+func checkpointAfterOutOfBand(result recordlayer.RecordCursorResult[QueryResult]) (recordlayer.RecordCursor[QueryResult], error) {
+	reason := result.GetNoNextReason()
+	cont := result.GetContinuation()
+	if cont == nil || cont.IsEnd() {
+		return restartAfterOutOfBand(reason), nil
+	}
+	inner, err := cont.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(inner) == 0 {
+		return restartAfterOutOfBand(reason), nil
+	}
+	return recordlayer.Stopped[QueryResult](reason,
+		recordlayer.NewBytesContinuation(encodeFirstOrDefaultCheckpoint(inner))), nil
+}
+
+// restartAfterOutOfBand handles the stop that arrives while the operator is
+// already holding its first row — the strict at-most-one probe. A stop cursor
+// carries no value, so resuming the inner PAST that row would lose it; the whole
+// leg has to run again. Nothing is lost by that: no row of this operator was
+// emitted, and the re-run re-derives both the row and the cardinality proof.
+//
+// The livelock this can produce is real and deliberate: if one page's budget
+// cannot reach the first row and probe past it, every page restarts at the same
+// position and the driver's no-progress tripwire fires. That is the correct-or-
+// loud outcome for a budget too small to answer the query at all, and it is the
+// backstop the empty-branch checkpoint above no longer needs.
 func restartAfterOutOfBand(reason recordlayer.NoNextReason) recordlayer.RecordCursor[QueryResult] {
-	return recordlayer.Stopped[QueryResult](reason, &recordlayer.StartContinuation{})
+	return recordlayer.Stopped[QueryResult](reason,
+		recordlayer.NewBytesContinuation([]byte{fodTagRestart}))
 }
 
 func executeDefaultOnEmpty(
@@ -2002,6 +2056,39 @@ func (c *errResultCursor) OnNext(context.Context) (recordlayer.RecordCursorResul
 func (c *errResultCursor) Close() error   { return nil }
 func (c *errResultCursor) IsClosed() bool { return false }
 
+// A first-or-default's continuation namespace is TAGGED. The operator is eager —
+// it drains its inner leg to decide whether to flow the first row or the default
+// — so the byte string it hands its parent has to say WHICH of three states it
+// stopped in, and one of those states carries the inner leg's own continuation
+// bytes as a payload.
+//
+// An untagged namespace cannot express that safely. The "one row was consumed"
+// marker is the single byte 0x01, and the operator used to pass anything else
+// straight through to its inner as that inner's continuation — so an inner
+// continuation that happened to BE 0x01 would have resumed as already-consumed.
+// That is a silent wrong answer, not a crash: the operator flows nothing where
+// the inner still had rows, and an EXISTS built on it inverts. The collision was
+// unreachable only because nothing ever fed this operator a real inner
+// continuation; checkpointing (checkpointAfterOutOfBand) is exactly what starts
+// doing so, which is why the namespace gets tagged in the same change.
+//
+// The tag byte makes the three states disjoint by construction. 0x01 keeps its
+// meaning so continuations issued before the tagging still decode correctly.
+const (
+	fodTagConsumed   byte = 0x01 // the single row was emitted and consumed
+	fodTagCheckpoint byte = 0x02 // zero rows seen; payload is the inner leg's position
+	fodTagRestart    byte = 0x03 // re-run the whole leg from the beginning
+)
+
+// fodResume is what a decoded first-or-default continuation says to do.
+type fodResume int
+
+const (
+	fodResumeStart    fodResume = iota // run the inner leg from the beginning
+	fodResumeConsumed                  // the row is gone; the cursor is exhausted
+	fodResumeInner                     // run the inner leg from the decoded position
+)
+
 // singleResultConsumedToken is the continuation a singleResultCursor's
 // emitted row carries: "the one row was consumed". A resume from it is
 // EXHAUSTED (executeFirstOrDefault returns Empty). The retired
@@ -2010,7 +2097,55 @@ func (c *errResultCursor) IsClosed() bool { return false }
 // snapshot the child as START — safe only while the shape stayed ≤1 row
 // under a per-outer-row FlatMap; any other parent would have silently
 // replayed the row.
-var singleResultConsumedToken = []byte{0x01}
+var singleResultConsumedToken = []byte{fodTagConsumed}
+
+// encodeFirstOrDefaultCheckpoint wraps an inner leg's continuation bytes so they
+// cannot be mistaken for any other state in this operator's namespace.
+func encodeFirstOrDefaultCheckpoint(inner []byte) []byte {
+	out := make([]byte, 0, len(inner)+1)
+	out = append(out, fodTagCheckpoint)
+	return append(out, inner...)
+}
+
+// decodeFirstOrDefaultContinuation reads this operator's namespace. An
+// unrecognised tag is a corrupt continuation and must surface as one — silently
+// treating it as a fresh start would re-emit rows the caller already consumed
+// (the reason executeFlatMap raises ContinuationParseError on a bad envelope).
+func decodeFirstOrDefaultContinuation(b []byte) (fodResume, []byte, error) {
+	if len(b) == 0 {
+		return fodResumeStart, nil, nil
+	}
+	switch b[0] {
+	case fodTagConsumed:
+		if len(b) != 1 {
+			return fodResumeStart, nil, &recordlayer.ContinuationParseError{
+				Message:  "first-or-default consumed token carries a payload",
+				RawBytes: b,
+			}
+		}
+		return fodResumeConsumed, nil, nil
+	case fodTagRestart:
+		if len(b) != 1 {
+			return fodResumeStart, nil, &recordlayer.ContinuationParseError{
+				Message:  "first-or-default restart token carries a payload",
+				RawBytes: b,
+			}
+		}
+		return fodResumeStart, nil, nil
+	case fodTagCheckpoint:
+		// An empty payload is a checkpoint at the very beginning — the same
+		// thing as a restart, and handled as one rather than rejected.
+		if len(b) == 1 {
+			return fodResumeStart, nil, nil
+		}
+		return fodResumeInner, b[1:], nil
+	default:
+		return fodResumeStart, nil, &recordlayer.ContinuationParseError{
+			Message:  "unknown first-or-default continuation tag",
+			RawBytes: b,
+		}
+	}
+}
 
 // singleResultCursor yields one result then ends.
 type singleResultCursor struct {
