@@ -2,6 +2,7 @@ package factorycorpus_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -69,6 +70,17 @@ func TestCheckResultNamesATimeoutAsATimeout(t *testing.T) {
 	}
 	if !strings.Contains(got.Error(), "did not COMPLETE within its budget") {
 		t.Errorf("failure must name the budget it ran out of; got:\n%v", got)
+	}
+	// The classification must survive as a TYPE, not only as wording. The
+	// summary ranks changed answers above timing artifacts by asking
+	// errors.As, so a return that carries the right sentence in an untyped
+	// error re-buries every real regression under the timeouts while every
+	// message assertion above stays green.
+	var inc *factorycorpus.IncompleteError
+	if !errors.As(got, &inc) {
+		t.Errorf("a wall-clock failure must be an *IncompleteError — the summary's ranking asks the "+
+			"type, and an untyped error silently ranks changed answers below timeouts. Got %T:\n%v",
+			got, got)
 	}
 }
 

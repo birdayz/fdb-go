@@ -115,6 +115,88 @@ func TestFailureSummaryIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestFailureSummaryRanksChangedAnswersAboveTimeouts pins the shape a
+// contended run actually produces, because that is the only shape in which
+// this can go wrong.
+//
+// CheckResult classifies a scenario that ran out of wall-clock separately from
+// one whose answer changed, on the grounds that they mean opposite things. A
+// summary ordered by name alone throws that away: it draws its ten names
+// uniformly from the failures, and on a loaded box the failures are
+// overwhelmingly timing.
+//
+// The numbers below are measured, not invented — one contended run of the full
+// corpus produced 58 failures of which 53 were deadline expiries. Ordered by
+// name, such a run names about one changed answer in ten lines; the reader
+// sees "timeout, timeout, timeout", concludes load, and the regression the
+// corpus exists to catch is in the omitted tail.
+//
+// A single-class fixture cannot express this: with only timeouts or only
+// mismatches every ordering agrees, and the test passes with the defect fully
+// present.
+func TestFailureSummaryRanksChangedAnswersAboveTimeouts(t *testing.T) {
+	t.Parallel()
+
+	var mixed []factorycorpus.ScenarioFailure
+	// Named so that EVERY timing failure sorts before EVERY genuine one by
+	// name — so name order alone would bury all five.
+	for i := 0; i < 53; i++ {
+		mixed = append(mixed, factorycorpus.ScenarioFailure{
+			Name: fmt.Sprintf("fc_00000%05d_q0_p0", i),
+			Path: "testdata/join3_comma__and_cmp__none.yamsql", Seed: uint64(i), Date: "2026-08-01",
+			Err: &factorycorpus.IncompleteError{
+				Reason: "the per-scenario ScenarioTimeout deadline expired mid-query",
+				Detail: "…",
+			},
+		})
+	}
+	for i := 0; i < 5; i++ {
+		mixed = append(mixed, factorycorpus.ScenarioFailure{
+			Name: fmt.Sprintf("fc_99999%05d_q0_p0", i),
+			Path: "testdata/join2_comma__and_arith-cmp__none.yamsql", Seed: uint64(900 + i), Date: "2026-08-01",
+			Err: errors.New("committed expectation no longer holds:\nrow 3 differs"),
+		})
+	}
+
+	s := factorycorpus.FailureSummary(mixed, 5000, 0)
+
+	// All five changed answers must be named, ahead of any timeout.
+	for i := 0; i < 5; i++ {
+		want := fmt.Sprintf("fc_99999%05d_q0_p0", i)
+		if !strings.Contains(s, want) {
+			t.Errorf("changed answer %q was ranked out of the summary by timing artifacts — this is "+
+				"the regression the corpus exists to catch, omitted in favour of failures that say "+
+				"nothing about the engine. Got:\n%s", want, s)
+		}
+	}
+	if first, last := strings.Index(s, "fc_9999900000_q0_p0"), strings.Index(s, "fc_0000000000_q0_p0"); first > last && last >= 0 {
+		t.Errorf("a wall-clock timeout was ranked above a changed answer:\n%s", s)
+	}
+	// The counts must say what the mix was, so a reader knows before reading
+	// the names whether this red is about the engine or about the box.
+	if !strings.Contains(s, "58 of 5000 scenarios failed (5 changed answers, 53 ran out of wall-clock)") {
+		t.Errorf("summary must break the count down by class; got:\n%s", s)
+	}
+	// And the bound still holds with a mixed population.
+	if len(s) > 4096 {
+		t.Errorf("summary is %d bytes, over budget", len(s))
+	}
+}
+
+// TestFailureSummaryOmitsTheBreakdownWhenThereIsNoMix keeps the header honest
+// for the ordinary case: a red that is entirely one class must not grow a
+// parenthetical restating its own total.
+func TestFailureSummaryOmitsTheBreakdownWhenThereIsNoMix(t *testing.T) {
+	t.Parallel()
+	s := factorycorpus.FailureSummary(failures(3), 5000, 0)
+	if strings.Contains(s, "changed answers,") {
+		t.Errorf("a single-class summary must not carry a breakdown; got:\n%s", s)
+	}
+	if !strings.Contains(s, "3 of 5000 scenarios failed\n") {
+		t.Errorf("summary must carry the plain count; got:\n%s", s)
+	}
+}
+
 func TestFailureSummaryEmpty(t *testing.T) {
 	t.Parallel()
 	if s := factorycorpus.FailureSummary(nil, 5000, 0); s != "" {

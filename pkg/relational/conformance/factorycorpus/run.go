@@ -53,8 +53,7 @@ func CheckResult(s *Scenario, res javacorpus.FileResult) error {
 		// a real problem, and a suite that swallows it is worse than one that
 		// misnames it. It only stops the failure from lying about its cause.
 		if why := incompleteReason(res.Err); why != "" {
-			return fmt.Errorf("scenario did not COMPLETE within its budget (%s) — a timing outcome "+
-				"under load, NOT a change in what the engine answered:\n%s", why, Describe(s, res))
+			return &IncompleteError{Reason: why, Detail: Describe(s, res)}
 		}
 		return fmt.Errorf("committed expectation no longer holds:\n%s", Describe(s, res))
 	}
@@ -72,6 +71,26 @@ func CheckResult(s *Scenario, res javacorpus.FileResult) error {
 		}
 	}
 	return nil
+}
+
+// IncompleteError is a scenario that never produced an answer because it ran
+// out of wall-clock, as opposed to one whose answer changed.
+//
+// It is a TYPE rather than a formatted string because the distinction has a
+// second consumer: FailureSummary has to rank a genuine disagreement above a
+// timing artifact, and a summary that re-derives the class by matching on its
+// own prose would break the moment the sentence is reworded.
+type IncompleteError struct {
+	// Reason names the wall-clock budget that ended the scenario.
+	Reason string
+	// Detail is the scenario's full description, as every other corpus failure
+	// carries it.
+	Detail string
+}
+
+func (e *IncompleteError) Error() string {
+	return fmt.Sprintf("scenario did not COMPLETE within its budget (%s) — a timing outcome "+
+		"under load, NOT a change in what the engine answered:\n%s", e.Reason, e.Detail)
 }
 
 // incompleteReason names the wall-clock budget a scenario ran out of, or ""
