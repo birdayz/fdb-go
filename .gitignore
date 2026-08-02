@@ -92,3 +92,4 @@ scratchpad/
 
 # compiled binaries (stray go build outputs)
 /factory-run
+/factory-migrate
