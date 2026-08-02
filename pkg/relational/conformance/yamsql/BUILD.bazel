@@ -50,6 +50,7 @@ go_test(
         "coverage_test.go",
         "featurematrix_test.go",
         "load_strict_test.go",
+        "runner_report_test.go",
         "runner_test.go",
         "yamsql_test.go",
     ],
