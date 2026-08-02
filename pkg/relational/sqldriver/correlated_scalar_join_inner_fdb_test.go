@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_CorrelatedScalarJoinInner pins a correlated scalar subquery whose
@@ -117,23 +119,42 @@ func TestFDB_CorrelatedScalarJoinInner(t *testing.T) {
 	// (e) PARENTHESIZED plain column through the join-inner: the walked
 	// FieldValue's scalarCol resolution over the QUALIFIED-keyed join row.
 	// The unambiguous case rides the merged row's bare last-leg-wins twin key.
+	//
+	// `(i.qty)` is a ONE-FIELD RECORD, so the subquery's column is a STRUCT and
+	// the qty is read through it. Java agrees that `(col)` is a record —
+	// MEASURED, conformance/paren_star_java_probe_test.go `column_one_paren`:
+	// JAVA `_0(STRUCT)` `{VAL: 10}` — though the enclosing scalar subquery is a
+	// Go-only extension (Java answers 42601 for every subquery-in-SELECT arm of
+	// that probe). What this test pins is unchanged: the qualified-key
+	// resolution over the join row, now asserted inside the wrapper.
+	var qtyStruct any
 	if err := db.QueryRowContext(ctx, "SELECT (SELECT (i.qty) FROM orders o JOIN items i ON i.order_id = o.id "+
-		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&qty); err != nil {
+		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&qtyStruct); err != nil {
 		t.Fatalf("parenthesized column through join-inner: %v", err)
 	}
-	if !qty.Valid || qty.Int64 != 4 {
-		t.Errorf("parenthesized join-inner scalar = %d (valid=%v), want 4", qty.Int64, qty.Valid)
+	qs, isStruct := qtyStruct.(api.Struct)
+	if !isStruct {
+		t.Fatalf("parenthesized join-inner scalar: got %T, want an api.Struct (a one-element record constructor)", qtyStruct)
+	}
+	if got := qs.Attributes(); len(got) != 1 || got[0] != int64(4) {
+		t.Errorf("parenthesized join-inner scalar = %v, want [4]", got)
 	}
 
 	// (f) The AMBIGUOUS-column dimension of (e): `id` exists in BOTH join
 	// legs — a bared scalarCol would read the last-leg-wins twin (items.id =
 	// 13, SILENT WRONG); the qualified key must win (orders.id = 3 for bob).
+	// Read through the one-field record, as in (e).
+	var ambig any
 	if err := db.QueryRowContext(ctx, "SELECT (SELECT (o.id) FROM orders o JOIN items i ON i.order_id = o.id "+
-		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&qty); err != nil {
+		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&ambig); err != nil {
 		t.Fatalf("ambiguous parenthesized column through join-inner: %v", err)
 	}
-	if !qty.Valid || qty.Int64 != 3 {
-		t.Errorf("ambiguous parenthesized join-inner scalar = %d (valid=%v), want 3 (orders.id — a bared key reads the wrong leg)", qty.Int64, qty.Valid)
+	as, isStruct := ambig.(api.Struct)
+	if !isStruct {
+		t.Fatalf("ambiguous parenthesized join-inner scalar: got %T, want an api.Struct", ambig)
+	}
+	if got := as.Attributes(); len(got) != 1 || got[0] != int64(3) {
+		t.Errorf("ambiguous parenthesized join-inner scalar = %v, want [3] (orders.id — a bared key reads the wrong leg)", got)
 	}
 
 	// (g) OUTER-scope parenthesized column COMBINED with a join-inner: the
@@ -141,12 +162,16 @@ func TestFDB_CorrelatedScalarJoinInner(t *testing.T) {
 	// branch (a wrong check ordering would key the outer c.name as a
 	// nonexistent inner C.NAME). bob's subquery matches exactly one joined
 	// row, so the materialized outer value flows once.
-	var nm sql.NullString
+	var nm any
 	if err := db.QueryRowContext(ctx, "SELECT (SELECT (c.name) FROM orders o JOIN items i ON i.order_id = o.id "+
 		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&nm); err != nil {
 		t.Fatalf("outer-scope parenthesized column through join-inner: %v", err)
 	}
-	if !nm.Valid || nm.String != "bob" {
-		t.Errorf("outer-scope parenthesized join-inner scalar = %q (valid=%v), want bob (the OUTER c.name, materialized)", nm.String, nm.Valid)
+	ns, isStruct := nm.(api.Struct)
+	if !isStruct {
+		t.Fatalf("outer-scope parenthesized join-inner scalar: got %T, want an api.Struct", nm)
+	}
+	if got := ns.Attributes(); len(got) != 1 || got[0] != "bob" {
+		t.Errorf("outer-scope parenthesized join-inner scalar = %v, want [bob] (the OUTER c.name, materialized)", got)
 	}
 }

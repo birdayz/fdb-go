@@ -70,6 +70,12 @@ var _ = Describe("ParenStarJavaProbe", func() {
 		setup := []string{
 			"INSERT INTO FOO VALUES (1, 10)",
 			"INSERT INTO BAR VALUES (1, 20)",
+			// For the correlated scalar-subquery arms below: bval = 1 points at
+			// FOO.id = 1 while bid = 5 stays distinct from it, so the outer and
+			// inner scopes are TELLABLE APART. It matches no other probe —
+			// star_two_tables joins FOO.id = BAR.bid, and bid = 5 has no FOO —
+			// so the existing answers are unchanged.
+			"INSERT INTO BAR VALUES (5, 1)",
 		}
 
 		probes := []struct{ name, sql string }{
@@ -132,6 +138,46 @@ var _ = Describe("ParenStarJavaProbe", func() {
 			// no-unwrap reading extends past projection position.
 			{"paren_scalar_in_predicate", "SELECT id FROM FOO WHERE (val) = 10"},
 			{"paren_scalar_arith", "SELECT (val) + 1 FROM FOO"},
+
+			// ---- the one-element arm inside a SCALAR SUBQUERY ----
+			// The shape two sqldriver scope-regression tests assert
+			// (correlated_scalar_projection_edgecases, correlated_scalar_join_inner):
+			// a parenthesised column inside a correlated scalar subquery. Those
+			// tests exist to pin SCOPE — a bared outer reference silently reads
+			// the INNER column of the same name — and they scan into an int64.
+			// Removing the one-element unwrap re-types the subquery's sole
+			// column, so before adapting them we need to know what Java does
+			// here, and it is NOT derivable from the projection-position arms
+			// above: a scalar subquery must yield a single VALUE, so Java could
+			// legitimately keep the record, unwrap it, or reject it.
+			//
+			// BAR carries (5, 1) so the inner row's bid=5 is DISTINCT from the
+			// outer FOO.id=1. That is the whole point: an answer of 1 is the
+			// OUTER scope (correct), an answer of 5 is the bared-key leak.
+			// The seeded (1, 20) does not satisfy bval = FOO.id, so exactly one
+			// inner row matches and the subquery stays single-valued.
+			//
+			// The control first: no inner parens, unambiguously a scalar.
+			{
+				"corr_scalar_no_paren",
+				"SELECT (SELECT FOO.id FROM BAR WHERE BAR.bval = FOO.id) FROM FOO WHERE FOO.id = 1",
+			},
+			// The question: the OUTER column through parens.
+			{
+				"corr_scalar_paren_outer_col",
+				"SELECT (SELECT (FOO.id) FROM BAR WHERE BAR.bval = FOO.id) FROM FOO WHERE FOO.id = 1",
+			},
+			// The same through an INNER column, which is the join-inner test's
+			// shape — no outer correlation in the parens themselves.
+			{
+				"corr_scalar_paren_inner_col",
+				"SELECT (SELECT (BAR.bid) FROM BAR WHERE BAR.bval = FOO.id) FROM FOO WHERE FOO.id = 1",
+			},
+			// Non-correlated, to separate "scalar subquery" from "correlated".
+			{
+				"uncorr_scalar_paren_col",
+				"SELECT (SELECT (val) FROM FOO WHERE id = 1) FROM FOO WHERE id = 1",
+			},
 		}
 
 		render := func(engine string, r plandiff.RunResult) string {

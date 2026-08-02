@@ -88,6 +88,11 @@ func planScalarSubqueryPlans(
 		if err := cascades.ValidatePlanInvariants(subPlan); err != nil {
 			return nil, api.NewError(api.ErrCodeInternalError, "malformed scalar-subquery plan: "+err.Error())
 		}
+		// A scalar subquery is planned into its OWN plan and cached alongside
+		// the outer one, so it needs its own bake — the outer FinalizePlan
+		// walk cannot reach it (it hangs off the cascadesPlan, not off the
+		// outer plan's child edges).
+		cascades.FinalizePlan(subPlan)
 		out = append(out, PlannedScalarSubquery{
 			Alias: ssq.Alias,
 			Plan:  subPlan,

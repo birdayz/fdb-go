@@ -191,7 +191,7 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, pos walk
 // `(a > 3) + 1` and `(a > 3) LIKE 'x'` are type errors, and they must stay
 // errors.
 func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
-	return r.walkAtomInner(atom, posPredicate)
+	return r.walkFunctionOperand(atom, posPredicate)
 }
 
 // walkOperand is THE operand walk — the Go analogue of the single
@@ -204,7 +204,34 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 // bug four more times, and the shape of the bug was that each position decided
 // for itself what its operand meant.
 func (r *Resolver) walkOperand(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
-	return r.walkAtomInner(atom, posOperand)
+	return r.walkFunctionOperand(atom, posOperand)
+}
+
+// walkFunctionOperand walks an atom that is about to become a FUNCTION
+// ARGUMENT and flattens a single-item record out of the result.
+//
+// This is where Java puts it. BaseVisitor.resolveFunction defaults
+// flattenSingleItemRecords to true (BaseVisitor.java:253-261) and
+// SemanticAnalyzer maps it over every argument
+// (SemanticAnalyzer.java:991-994), so arithmetic (ExpressionVisitor.java:731),
+// comparison (:699), bitwise (:691), logical (:509), NOT (:501), IS NULL
+// (:581), LIKE (:615), IN (:627) and BETWEEN (:716-722) all flatten their
+// operands. walkAtom and walkOperand are the two Go walks those positions use
+// and the ONLY things they are used for, which makes them the exact Go
+// analogue of that argument mapping — one place rather than nine call sites
+// that could each drift.
+//
+// The flatten is what lets the record constructor keep its record: `(val)`
+// resolves to a one-field record everywhere, and it is consumption AS AN
+// ARGUMENT that turns it back into a scalar. Projection position consumes
+// nothing, so there the record survives — which is precisely the Java
+// behaviour.
+func (r *Resolver) walkFunctionOperand(atom antlrgen.IExpressionAtomContext, pos walkPos) (values.Value, error) {
+	v, err := r.walkAtomInner(atom, pos)
+	if err != nil {
+		return nil, err
+	}
+	return functions.FlattenRecordWithOneField(v), nil
 }
 
 // walkAtomInner dispatches concrete ExpressionAtom variants in the caller's
@@ -936,7 +963,11 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, v)
+			// A named scalar call is a function call like any other, so its
+			// arguments flatten too — `UPPER((name))` is UPPER of the string,
+			// not of a one-field record (ExpressionVisitor.java:392/:401 go
+			// through the same resolveFunction default).
+			args = append(args, functions.FlattenRecordWithOneField(v))
 		}
 	}
 	// Vector distance functions (euclidean_distance, cosine_distance, ...)
@@ -976,6 +1007,21 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
+	}
+	// Java rejects a function call with no physical implementation for its
+	// argument types during ENCAPSULATION, before a plan exists
+	// (VariadicFunctionValue.java:208-212 →
+	// FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES → 22F00). Rejecting here
+	// keeps that shape: `least(struct_col, struct_col)` is a static type
+	// error, not a query that plans and then fails partway through a scan
+	// with a runtime carrier-mismatch message.
+	switch values.DiagnoseScalarFunctionArguments(name, args) {
+	case values.ScalarFunctionArgumentsIncompatible:
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"function %s has incompatible argument types", name)
+	case values.ScalarFunctionArgumentsNoOperator:
+		return nil, api.NewErrorf(api.ErrCodeInvalidArgumentForFunction,
+			"function %s is not defined for argument type %s", name, typ)
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
@@ -1429,17 +1475,26 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 // (ExpressionVisitor.java:889-926), minus the two star arms (those need the
 // logical operators in scope, not just the expression resolver).
 //
-// Two outcomes, and which one applies is a property of the SYNTAX, not a
-// preference:
+// There is exactly ONE outcome: a record. A one-element constructor is NOT
+// unwrapped, because Java does not unwrap it either — visitRecordConstructor
+// goes straight to RecordConstructorValue.ofColumns
+// (ExpressionVisitor.java:918-925) whatever the element count. `SELECT (1 + 2)`
+// is therefore a one-field STRUCT and `SELECT ((1 + 2))` nests twice, both
+// measured against the live JVM.
 //
-//   - exactly one element, unnamed, un-typed → the parser's shape for a
-//     PARENTHESISED EXPRESSION `(expr)`, so unwrap. SQL has no one-tuple
-//     literal to distinguish it from, which is why Java's grammar reuses the
-//     rule and why the unwrap is not a shortcut.
-//   - anything else → a genuine record, built as a RecordConstructorValue
-//     exactly as Java's RecordConstructorValue.ofColumns does. Field names
-//     come from each element's optional `AS name`, and an unnamed element
-//     takes the ordinal key `_i` (Java's Record.Field anonymous naming).
+// That looks wrong until you see where the ambiguity is actually resolved. SQL
+// gives `(expr)` and a one-tuple literal the same parse and has no syntax to
+// separate them, so Java decides by POSITION rather than by parse: the
+// constructor always builds the record, and every FUNCTION ARGUMENT is then
+// flattened back to a scalar by functions.FlattenRecordWithOneField. That is
+// why `(val) + 1` is a plain BIGINT while `SELECT (val)` is a struct — same
+// parse, different position. Putting the unwrap HERE instead cannot express
+// that difference: it collapses the projection case too, which is the
+// divergence this shape used to have.
+//
+// Field names come from each element's optional `AS name`; an unnamed element
+// takes its own inherent name (a column reference contributes the column name)
+// and only a nameless expression falls back to the ordinal key `_i`.
 //
 // Building the second case is what lets a struct literal appear where a value
 // is expected rather than only as a DML target — `SELECT (1, 1.0, 'a', true)`,
@@ -1466,28 +1521,47 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 	if len(exprs) == 0 {
 		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with no elements"}
 	}
-	if len(exprs) == 1 && rcc.OfTypeClause() == nil {
-		if ewon, isEwon := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext); isEwon && ewon.Uid() == nil {
-			// The caller's position, NOT a fresh predicate context. Hardcoding
-			// WalkExpression here made every paren-unwrap discard where it was, so a
-			// parenthesised comparison was rejected in five operand positions that
-			// accept the same comparison unparenthesised.
-			return r.walkExpressionInner(ewon.Expression(), pos)
-		}
-	}
 	fields := make([]values.RecordConstructorField, 0, len(exprs))
 	for i, e := range exprs {
 		ewon, isEwon := e.(*antlrgen.ExpressionWithOptionalNameContext)
 		if !isEwon {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", e)}
 		}
-		// Every element resolves in EXPRESSION position regardless of where the
-		// constructor itself sits: a record's fields are values, never
-		// predicates, even when the constructor appears in a predicate operand.
-		v, err := r.WalkExpression(ewon.Expression())
+		// Elements resolve in the CALLER'S position, not a fresh expression
+		// position. Java has no position notion at all — a comparison is a
+		// boolean-typed value wherever it appears — so forwarding the caller's
+		// position is the closest Go analogue. It is also what keeps
+		// `(a > 3) IS NULL` resolving: the one-element unwrap used to forward
+		// the position on its way out, and with the unwrap gone the forwarding
+		// has to happen here instead.
+		v, err := r.walkExpressionInner(ewon.Expression(), pos)
 		if err != nil {
 			return nil, err
 		}
+		// An unnamed element takes the ordinal key. Java instead takes the
+		// element's own inherent name — a column reference contributes the
+		// column, so `SELECT (val)` is `{VAL: 10}` on the live JVM where Go
+		// answers `{_0: 10}`. That difference is NOT closable here on its own,
+		// and the reason is structural rather than a matter of effort.
+		//
+		// Java can afford inherent names because a record built where a TARGET
+		// TYPE is in scope never keeps them: parseRecordFieldsUnderReorderings
+		// (ExpressionVisitor.java:1040-1083) overwrites them with the target's
+		// field names BY POSITION. Go has no target type at construction — a
+		// COALESCE operand acquires one only when the assignment coerces it —
+		// so it defers that binding to values.BuildStructMessage, which
+		// receives the record as an ORDER-LESS map[string]any and can only
+		// recover position from the ordinal names themselves. Give the fields
+		// inherent names and that recovery is gone: `(b1, b2)` assigned to a
+		// struct S arrives named B1/B2, matches none of S's fields, and the
+		// write fails.
+		//
+		// Closing it therefore means porting Java's construction-time target
+		// binding (or making the coercion order-preserving), not renaming
+		// fields here. Measured: doing only the rename turns
+		// `update B set b3 = coalesce(b3, (b1, b2), ...)` into
+		// `record constructor for "S" carries 2 fields, 0 of which the target
+		// struct declares`.
 		name := values.OrdinalFieldName(i)
 		if ewon.Uid() != nil {
 			name = functions.StripIdentifierQuotes(ewon.Uid().GetText())

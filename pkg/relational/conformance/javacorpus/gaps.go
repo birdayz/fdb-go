@@ -189,21 +189,32 @@ var engineGaps = []EngineGap{
 	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
 	// target type in hand.
 	//
-	// functions.yamsql advanced but did not close, and its rejection changed
-	// KIND: it is no longer a planning decline, it is a RESULT-SURFACING gap.
-	// The query plans and evaluates CORRECTLY — the row carries
-	// {_0: int64(1), _1: float64(1.0), _2: "a", _3: true}, pinned in
-	// pkg/relational/sqldriver/record_constructor_expression_fdb_test.go — but
-	// a COMPUTED record reaches the driver as a bare map[string]any, so it is
-	// not an api.Struct and the matcher's nested comparison declines it. Java
-	// does not have this shape at all: RecordConstructorValue.eval builds a
-	// dynamic proto Message (RecordConstructorValue.java:113-139, the same
-	// structural walk Go's values.BuildStructMessage performs on the DML side),
-	// so the driver's ProtoMessage → RelationalStruct conversion
-	// (RowStruct.java:184-197) fires for a computed record exactly as it does
-	// for a stored one. Go's RecordConstructorValue.Evaluate returns a map, so
-	// materializeDriverValue's ProtoMessage arm never sees it.
-	{"functions.yamsql", SkipGapStructQuery, "actual row at 1 does not match any expected records", "RFC-204 P3"},
+	// functions.yamsql: the struct-query gap CLOSED and the file RE-BOOKED, it
+	// did not pass. A COMPUTED record now reaches the driver as an api.Struct
+	// — RFC-204 §4.5.1's plan-time bake stamps each RecordConstructorValue
+	// with a descriptor from the plan's single type repository, so Evaluate
+	// builds a dynamic proto Message exactly as Java's
+	// RecordConstructorValue.eval does (RecordConstructorValue.java:113-139),
+	// and materializeDriverValue's ProtoMessage → api.Struct conversion (Java
+	// RowStruct.java:184-197) fires for a computed record just as it already
+	// did for a stored one.
+	//
+	// Clearing that exposed two further blockers, each independent of structs
+	// and of each other. The FIRST is fixed here rather than booked: LEAST and
+	// GREATEST admitted argument types Java rejects, and rejected them with
+	// the wrong SQLSTATE. Java runs a two-step admission
+	// (VariadicFunctionValue.encapsulate :190-212) — fold with maximumType,
+	// then look up a physical operator — and the two steps carry DIFFERENT
+	// codes: `greatest(bytes_col, 'a')` has no common type (22000), while
+	// `least(struct_col, struct_col)` has a common type with no operator
+	// registered for it (22F00). Go had neither check; both now run at plan
+	// time, modelled on Java's operator map rather than a reject list.
+	//
+	// The SECOND is what this entry books, and it has nothing to do with
+	// structs: `update … returning "new".st` produces no result set, because
+	// DML RETURNING is not implemented. Pinned at that exact statement so the
+	// struct and LEAST/GREATEST fixes above cannot silently regress behind it.
+	{"functions.yamsql", SkipGapDMLReturning, "actual result set is NULL, expecting non-NULL result set", "CQ-72"},
 	// `SELECT (*)` — the parenthesised star, a record constructor over the
 	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
 	// :902-916). Go declines it in the expression walker

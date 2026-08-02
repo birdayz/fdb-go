@@ -96,6 +96,184 @@ type scalarFunctionDefinition struct {
 	cascadesSafe      bool
 	scalarCall        bool
 	legacyMapFunction LegacyMapScalarFunction
+	// physicalOperatorTypes is the set of RESULT type codes for which a
+	// physical implementation of this function exists. Empty means
+	// unrestricted.
+	//
+	// This is Java's operator map, not a hand-written reject list. Java
+	// registers one PhysicalOperator per (comparison function, type code)
+	// pair and looks the pair up during encapsulation; a type code with no
+	// registered operator has no implementation, and Java raises
+	// FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES rather than planning a call
+	// it cannot run (VariadicFunctionValue.java:208-212). Modelling the
+	// SUPPORTED set the same way means a type the engine later learns to
+	// compare is enabled by registering it here, exactly as adding a
+	// PhysicalOperator enables it in Java.
+	physicalOperatorTypes []TypeCode
+}
+
+// comparisonPhysicalOperatorTypes is Java's PhysicalOperator enum for
+// GREATEST/LEAST, which registers exactly these six result type codes
+// (VariadicFunctionValue.java, GREATEST_INT/LONG/BOOLEAN/STRING/FLOAT/DOUBLE
+// and the LEAST mirror). Notably absent: RECORD, ARRAY, BYTES, UUID and the
+// temporal codes — `least(struct_col, struct_col)` has no operator and is a
+// 22F00, not a runtime type error.
+var comparisonPhysicalOperatorTypes = []TypeCode{
+	TypeCodeInt, TypeCodeLong, TypeCodeBoolean,
+	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
+}
+
+// withPhysicalOperatorTypes restricts a definition to the result type codes
+// that have a physical implementation.
+func withPhysicalOperatorTypes(
+	definition scalarFunctionDefinition,
+	codes []TypeCode,
+) scalarFunctionDefinition {
+	definition.physicalOperatorTypes = codes
+	return definition
+}
+
+// ScalarFunctionArgumentDiagnosis is the outcome of Java's two-step argument
+// admission for a function that declares a physical-operator map.
+type ScalarFunctionArgumentDiagnosis int
+
+const (
+	// ScalarFunctionArgumentsOK — the call is admissible.
+	ScalarFunctionArgumentsOK ScalarFunctionArgumentDiagnosis = iota
+	// ScalarFunctionArgumentsIncompatible — the argument types have no common
+	// type. Java's SemanticException INCOMPATIBLE_TYPE; the caller raises
+	// 22000.
+	ScalarFunctionArgumentsIncompatible
+	// ScalarFunctionArgumentsNoOperator — the arguments agree on a type, but
+	// no physical operator implements the function for it. Java's
+	// FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES; the caller raises 22F00.
+	ScalarFunctionArgumentsNoOperator
+)
+
+// DiagnoseScalarFunctionArguments runs Java's argument admission for a
+// function that declares an operator map, and reports WHICH of the two
+// rejections applies — they carry different SQLSTATEs and the corpus asserts
+// both, so collapsing them into one "bad arguments" answer would be wrong half
+// the time.
+//
+// Java (VariadicFunctionValue.encapsulate, :190-212):
+//
+//  1. fold the argument types with Type.maximumType; a null fold is
+//     INCOMPATIBLE_TYPE → 22000.
+//  2. look up a PhysicalOperator for the folded type; a miss is
+//     FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES → 22F00.
+//
+// Both steps are decided here rather than deferring step 1 to the existing
+// runtime path, because Go's CommonValueType is MORE PERMISSIVE than Java's
+// maximumType: it folds (BYTES, STRING) to BYTES, so
+// `greatest(bytes_col, 'a')` would otherwise plan and return a value where
+// Java rejects the query outright. Folding with maximumTypeCode here is what
+// makes the rejection happen at all.
+//
+// This does not touch CommonValueType itself, which serves COALESCE, IFNULL
+// and IF as well; those follow Java's own (different) admission and are not in
+// this function's scope.
+func DiagnoseScalarFunctionArguments(name string, args []Value) ScalarFunctionArgumentDiagnosis {
+	definition, ok := scalarFunctionDefinitionFor(name)
+	if !ok || len(definition.physicalOperatorTypes) == 0 {
+		return ScalarFunctionArgumentsOK
+	}
+	folded, state := foldArgumentTypeCodes(args)
+	switch state {
+	case argumentFoldUnresolved:
+		return ScalarFunctionArgumentsOK
+	case argumentFoldIncompatible:
+		return ScalarFunctionArgumentsIncompatible
+	}
+	for _, c := range definition.physicalOperatorTypes {
+		if c == folded {
+			return ScalarFunctionArgumentsOK
+		}
+	}
+	return ScalarFunctionArgumentsNoOperator
+}
+
+type argumentFoldState int
+
+const (
+	argumentFoldOK argumentFoldState = iota
+	argumentFoldIncompatible
+	argumentFoldUnresolved
+)
+
+// foldArgumentTypeCodes folds the argument type codes left to right, the way
+// Java's encapsulate folds them with Type.maximumType.
+//
+// A NULL literal is skipped rather than folded: Java's maximumType absorbs it
+// into the other operand's concrete type (marking the result nullable), so
+// `least(x, null)` is typed by x alone.
+func foldArgumentTypeCodes(args []Value) (TypeCode, argumentFoldState) {
+	var folded TypeCode
+	found := false
+	for _, a := range args {
+		if a == nil {
+			return folded, argumentFoldUnresolved
+		}
+		t := a.Type()
+		if t == nil {
+			return folded, argumentFoldUnresolved
+		}
+		code := t.Code()
+		if code == TypeCodeNull {
+			continue
+		}
+		if code == TypeCodeUnknown {
+			return folded, argumentFoldUnresolved
+		}
+		if !found {
+			folded, found = code, true
+			continue
+		}
+		next, ok := maximumTypeCode(folded, code)
+		if !ok {
+			return folded, argumentFoldIncompatible
+		}
+		folded = next
+	}
+	if !found {
+		return folded, argumentFoldUnresolved
+	}
+	return folded, argumentFoldOK
+}
+
+// numericPromotionRank orders the numeric codes by Java's widening lattice.
+// rank 0 means "not numeric".
+func numericPromotionRank(code TypeCode) int {
+	switch code {
+	case TypeCodeInt:
+		return 1
+	case TypeCodeLong:
+		return 2
+	case TypeCodeFloat:
+		return 3
+	case TypeCodeDouble:
+		return 4
+	}
+	return 0
+}
+
+// maximumTypeCode is Type.maximumType reduced to type CODES: identical codes
+// fold to themselves, two numeric codes fold to the wider, and every other
+// pairing has no maximum (Java returns null, which encapsulate turns into
+// INCOMPATIBLE_TYPE). That last clause is the one that matters here — it is
+// why `greatest(bytes_col, 'a')` is an error rather than a BYTES comparison.
+func maximumTypeCode(a, b TypeCode) (TypeCode, bool) {
+	if a == b {
+		return a, true
+	}
+	ra, rb := numericPromotionRank(a), numericPromotionRank(b)
+	if ra > 0 && rb > 0 {
+		if ra >= rb {
+			return a, true
+		}
+		return b, true
+	}
+	return a, false
 }
 
 func scalarCallFunction(
@@ -231,11 +409,13 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 		LegacyMapScalarFunctionCoalesce),
 	"IFNULL": polymorphicScalarCall(
 		scalarFunctionIfNull, scalarFunctionCommonResult),
-	"GREATEST": legacyMapScalarCall(commonNumericArguments(
+	"GREATEST": legacyMapScalarCall(withPhysicalOperatorTypes(commonNumericArguments(
 		polymorphicScalarCall(scalarFunctionGreatest, scalarFunctionCommonResult)),
+		comparisonPhysicalOperatorTypes),
 		LegacyMapScalarFunctionGreatest),
-	"LEAST": legacyMapScalarCall(commonNumericArguments(
+	"LEAST": legacyMapScalarCall(withPhysicalOperatorTypes(commonNumericArguments(
 		polymorphicScalarCall(scalarFunctionLeast, scalarFunctionCommonResult)),
+		comparisonPhysicalOperatorTypes),
 		LegacyMapScalarFunctionLeast),
 	"NULLIF": internalScalarCall(
 		scalarFunctionNullIf, scalarFunctionNullableFirstArgumentResult),

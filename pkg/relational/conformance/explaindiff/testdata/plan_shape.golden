@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=347 queries=2502 dml=157 non_query=104 plan_errors=259 unexpected_errors=4
+# files=347 queries=2502 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -6427,9 +6427,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === greatest_least.yaml#10 expect-error=22000
 sql:   SELECT GREATEST(1, 'a') FROM t
-plan:  Project([GREATEST(1, 'a')], Scan(T))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+plan:  <PLAN-ERROR: 22000: function GREATEST has incompatible argument types>
 === group_by_case.yaml#0
 sql:   SELECT CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END, COUNT(*) FROM items GROUP BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END ORDER BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END
 plan:  Project([CASE(WHEN(PREDICATE, TRUE), ['CHEAP', 'EXPENSIVE'])#0, COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['cheap', 'expensive'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['cheap', 'expensive']) ASC], Scan(ITEMS))))

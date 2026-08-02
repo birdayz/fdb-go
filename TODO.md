@@ -13832,9 +13832,40 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = `SELECT *, a.*`, `SELECT a.*, *` and `SELECT *, id` answer with
   Java's column list, pinned against the live-JVM probe.
 
-- [ ] **CQ-86 (MED, result surfacing — closes functions.yamsql): a COMPUTED
-  record reaches the driver as a bare `map[string]any`, so it is not an
-  `api.Struct` and nothing downstream can describe it as one.** The query is
+- [x] **CQ-86 (MED, result surfacing): a COMPUTED record reaches the driver as
+  a bare `map[string]any`, so it is not an `api.Struct` and nothing downstream
+  can describe it as one.** DONE via RFC-204 §4.5.1's PLAN-TIME DESCRIPTOR
+  BAKE. `cascades.FinalizePlan` (`plan_finalize.go`) builds ONE
+  `values.NewTypeProtoRepository()` per plan and stamps every reachable
+  `*RecordConstructorValue` with `MessageDescriptorFor(rc.Type())`; a stamped
+  constructor's `Evaluate` builds a `dynamicpb` message POSITIONALLY, as Java's
+  `RecordConstructorValue.eval` does. The descriptor rides on the VALUE rather
+  than the evaluation context (Java's carrier) because Go has no uniform
+  context — see §4.5.1 and `TestFrontierContextIsNotAUniformCarrier`. Stamping
+  runs on the plan-cache MISS path only; the hit path shares one plan pointer
+  across concurrent pages, so a later write would race.
+  The descriptor EMITTER the entry called "the real work" already existed
+  (`values/proto_type.go`), so what was missing was only the per-plan walk.
+  Both predicted consumer breakages were real and are fixed:
+  `explodeElementRow` gained a message arm laying the row out in DECLARED
+  field order, and `protoFieldByName` gained the ESCAPED-name lookup it never
+  had — a field whose identifier `ToProtoBufCompliantName` mangles (`a$b` →
+  `a__1b`) previously resolved to nothing and read back as a silent NULL.
+  NOT DONE, and deliberately so: the bake stops at a DML plan
+  (`feedsAWrite`). A constructor feeding a WRITE must keep the map, because
+  the target's descriptor governs there and Go binds to it at coercion time
+  (`BuildStructMessage`); baking its own inferred descriptor loses width
+  promotion, the anonymous-positional bind, NOT NULL and the arity check.
+  MEASURED both ways — removing the guard breaks multi-row `INSERT … VALUES`
+  across 6+ corpus files.
+  `functions.yamsql` did NOT close: `engine-gap:struct-query` drops 2 → 1 as
+  predicted, but the file RE-BOOKS to `engine-gap:dml-returning-result-set`.
+  Clearing the struct blocker exposed two further gaps — LEAST/GREATEST
+  argument admission (FIXED here: Java's two-step fold-then-operator-map check,
+  22000 vs 22F00, which Go had neither of) and DML RETURNING, which is
+  unimplemented and is what the file now rests on.
+
+  Original booking follows. The query is
   otherwise CORRECT — `SELECT COALESCE(null, (1, 1.0, 'a', true))` plans and
   evaluates to `{_0: int64(1), _1: float64(1.0), _2: "a", _3: true}`, pinned in
   `pkg/relational/sqldriver/record_constructor_expression_fdb_test.go` — so

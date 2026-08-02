@@ -71,32 +71,42 @@ package javacorpus_test
 // RFC-204 Phase 3 (record constructor in expression position) CLOSED
 // inserts-updates-deletes.yamsql — the struct literal builds as a value, not
 // only as a DML target, and an anonymous one binds positionally to its target
-// struct. functions.yamsql stays booked but its rejection changed KIND: the
-// query now plans and evaluates correctly and fails only because a COMPUTED
-// record reaches the driver as a bare map rather than an api.Struct.
+// struct.
+//
+// RFC-204 §4.5.1 (the plan-time descriptor bake) then closed the struct-query
+// half for functions.yamsql: a COMPUTED record reaches the driver as an
+// api.Struct, so `engine-gap:struct-query` drops 2 → 1 (the survivor is
+// `SELECT (*)`). The file RE-BOOKS rather than passing —
+// `engine-gap:dml-returning-result-set` 1 → 2 — because clearing the struct
+// blocker exposed an unrelated one: DML RETURNING produces no result set.
+//
+// The `queries` jump (1408 → 1516) is the honest signal of that movement: 108
+// more result-consuming configs are now asserted against the engine, nearly
+// all of them functions.yamsql statements that previously died at its first
+// struct query and never ran.
 //
 // `queries` counts result-consuming configs actually asserted against the
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=65 fail=0 skip=173 queries=1408 file_skips{conformance:go-accepts-what-java-rejects=4," +
+const pinnedLedger = "pass=65 fail=0 skip=173 queries=1516 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:array-comparison=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=2," +
 	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:multiple-lateral-unnests=1,engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1,engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
-	"engine-gap:struct-query=2,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
+	"engine-gap:struct-query=1,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
 	"fragment=2,no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9,polarity:negative-execution=26," +
 	"polarity:negative-parse=25,unsupported-DDL:function=11,unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
 	"unsupported:continuation=3,unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17,vacuous:all-assertions-skipped=4} inner_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:array-comparison=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
+	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=2," +
 	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:multiple-lateral-unnests=1,engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1,engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
-	"engine-gap:struct-query=2,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
+	"engine-gap:struct-query=1,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
 	"no-checks=8,plan-assertion=618,polarity:negative-execution=26,unsupported-DDL:function=11,unsupported-DDL:other=11," +
 	"unsupported-DDL:struct-index=6,unsupported:check-cache=142,unsupported:continuation=34,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=207,unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
+	"unsupported:multi-cluster=2,unsupported:prepared=208,unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
@@ -111,4 +121,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "8d91003a3e716ea061805f0fd19ef3aa85d56676de385eec47d9167b15b9edae"
+const pinnedAssignmentDigest = "78d5ea4174e6e2de4cfaa387f1279372d5fd9dfa7a9653d48b74a6e97742db40"

@@ -50,6 +50,7 @@ go_library(
         "plan_context_builder.go",
         "plan_executability.go",
         "plan_extraction.go",
+        "plan_finalize.go",
         "plan_invariants.go",
         "plan_properties.go",
         "plan_reachability.go",
@@ -1008,6 +1009,7 @@ go_test(
         "index_predicate_to_query.go",
         "sparse_candidate_expansion_test.go",
         "normalize_size_overflow_test.go",
+        "plan_finalize.go",
     ],
     deps = [
         "//gen",

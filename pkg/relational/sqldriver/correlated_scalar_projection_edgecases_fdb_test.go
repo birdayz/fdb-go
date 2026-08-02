@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_FieldValuedComputedScalar pins a bug where a PARENTHESIZED plain
@@ -42,8 +44,16 @@ func TestFDB_FieldValuedComputedScalar(t *testing.T) {
 		t.Fatalf("seed orders: %v", err)
 	}
 
+	// The inner select list is a BARE column, deliberately unparenthesised.
+	// It read `(o.amount)`, which is no longer a bare field value: a
+	// parenthesised select element is a one-field RECORD (measured against a
+	// live JVM, conformance/paren_star_java_probe_test.go), so the
+	// parenthesised spelling made this a struct-valued scalar subquery and
+	// stopped testing the bare-field path this case is named for. The
+	// parenthesised spelling is a separate shape and is pinned separately —
+	// see correlated_scalar_join_inner_fdb_test.go case (e).
 	var v sql.NullInt64
-	const q = "SELECT (SELECT (o.amount) FROM orders o WHERE o.id = c.id) " +
+	const q = "SELECT (SELECT o.amount FROM orders o WHERE o.id = c.id) " +
 		"FROM customers c WHERE c.id = 1"
 	if err := db.QueryRowContext(ctx, q).Scan(&v); err != nil {
 		t.Fatalf("field-valued computed scalar: %v\n  sql: %s", err, q)
@@ -74,13 +84,32 @@ func TestFDB_FieldValuedComputedScalar(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "INSERT INTO corders VALUES (5, 1)"); err != nil {
 		t.Fatalf("seed corder: %v", err)
 	}
+	//
+	// The subquery's sole element is `(c.id)`, a ONE-FIELD RECORD, so the
+	// column is a STRUCT and the id is read through it rather than scanned as
+	// an int64. That is not incidental to this test — `(expr)` is a record in
+	// Java too, MEASURED on the live JVM
+	// (conformance/paren_star_java_probe_test.go, `column_one_paren`: JAVA
+	// `_0(STRUCT)` `{VAL: 10}`) — and the scope question this test exists for
+	// is unchanged by the wrapper: it is asked of the value INSIDE it.
+	//
+	// A scalar subquery in SELECT position is itself a Go-only read-side
+	// extension: all four of the probe's subquery arms are 42601 syntax errors
+	// on the live JVM, so there is no Java behaviour here to conform to, only
+	// Go's own one-element rule applied consistently inside a construct Java
+	// cannot parse.
 	const qOuter = "SELECT (SELECT (c.id) FROM corders o WHERE o.customer_id = c.id) " +
 		"FROM customers c WHERE c.id = 1"
-	if err := db.QueryRowContext(ctx, qOuter).Scan(&v); err != nil {
+	var outer any
+	if err := db.QueryRowContext(ctx, qOuter).Scan(&outer); err != nil {
 		t.Fatalf("outer-scope parenthesized scalar: %v\n  sql: %s", err, qOuter)
 	}
-	if !v.Valid || v.Int64 != 1 {
-		t.Errorf("outer-scope parenthesized scalar = %d (valid=%v), want 1 (the OUTER c.id; the inner o.id=5 means the bared key read the wrong scope)", v.Int64, v.Valid)
+	os, isStruct := outer.(api.Struct)
+	if !isStruct {
+		t.Fatalf("outer-scope parenthesized scalar: got %T, want an api.Struct (a one-element record constructor)", outer)
+	}
+	if got := os.Attributes(); len(got) != 1 || got[0] != int64(1) {
+		t.Errorf("outer-scope parenthesized scalar = %v, want [1] (the OUTER c.id; the inner o.id=5 means the bared key read the wrong scope)", got)
 	}
 
 	// (The AT-ordinal-alias scope corner — `AS v AT c` colliding with an outer

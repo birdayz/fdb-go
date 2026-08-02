@@ -55,6 +55,8 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // Canonical ISO 8601 layouts for temporal value formatting/parsing.
@@ -902,6 +904,30 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 			if f := fields.Get(i); strings.EqualFold(string(f.Name()), name) {
 				fd = f
 				break
+			}
+		}
+	}
+	if fd == nil {
+		// The descriptor's field names are ESCAPED
+		// (protoname.ToProtoBufCompliantName, applied wherever a descriptor is
+		// emitted from a SQL identifier), and the escaping is not
+		// case-insensitivity — it REWRITES characters: `a$b` is stored as
+		// `a__1b`, `a.b` as `a__2b`, `a__b` as `a__0b`. None of the three
+		// attempts above can reach those, so a field whose identifier the
+		// escaper mangles would resolve to "no such field" and, for an
+		// unpinned path, read back as a silent NULL.
+		//
+		// An escaper error means the identifier could never have produced a
+		// field name in the first place, so there is nothing to match.
+		if escaped, err := protoname.ToProtoBufCompliantName(name); err == nil && escaped != name {
+			fd = fields.ByName(protoreflect.Name(escaped))
+			if fd == nil {
+				for i := 0; i < fields.Len(); i++ {
+					if f := fields.Get(i); strings.EqualFold(string(f.Name()), escaped) {
+						fd = f
+						break
+					}
+				}
 			}
 		}
 	}
@@ -4279,6 +4305,34 @@ type RecordConstructorField struct {
 // Mirrors Java's `RecordConstructorValue`.
 type RecordConstructorValue struct {
 	Fields []RecordConstructorField
+
+	// desc is the message descriptor STAMPED at plan time, from the single
+	// per-plan type repository (FinalizePlan). Java reads the equivalent off
+	// the EvaluationContext instead (RecordConstructorValue.java:113-114); Go
+	// has no uniform context to read it from — Evaluate was measured
+	// receiving four unrelated concrete types, the most frequent being a bare
+	// positional row with no binding surface at all — so the descriptor rides
+	// on the value. RFC-204 §4.5.1 records the decision and
+	// TestFrontierContextIsNotAUniformCarrier pins the premise, so that this
+	// reverts to Java's shape if the contexts are ever unified.
+	//
+	// Written once, on the plan-cache MISS path before PlanCache.Put, and
+	// never afterwards: the cache hands the SAME plan pointer to every later
+	// execution and each page rebuilds its cursors from it concurrently, so a
+	// later write would be a data race.
+	desc protoreflect.MessageDescriptor
+}
+
+// SetMessageDescriptor stamps the plan-time descriptor. Plan-time only — see
+// the field comment for why a later write races.
+func (r *RecordConstructorValue) SetMessageDescriptor(md protoreflect.MessageDescriptor) {
+	r.desc = md
+}
+
+// MessageDescriptor returns the stamped descriptor, or nil if this constructor
+// was never walked by FinalizePlan.
+func (r *RecordConstructorValue) MessageDescriptor() protoreflect.MessageDescriptor {
+	return r.desc
 }
 
 // NewRecordConstructorValue constructs a RecordConstructorValue.
@@ -4355,10 +4409,26 @@ func (r *RecordConstructorValue) Type() Type {
 // Name returns the debug-print kind.
 func (*RecordConstructorValue) Name() string { return "record" }
 
-// Evaluate produces a map[string]any with each field evaluated.
-// Downstream consumers (projections, field-access) index into this
-// map by field name.
+// Evaluate produces the constructed record.
+//
+// STAMPED (the plan path): a dynamicpb message of the baked descriptor, which
+// is what Java always produces (RecordConstructorValue.eval builds a
+// DynamicMessage from the per-plan TypeRepository). This is the only form that
+// can reach the driver as an api.Struct, because a bare map carries no
+// declared field ORDER and no type identity.
+//
+// UNSTAMPED: the name-keyed map. This is not a fallback for plan values — every
+// constructor in a plan is stamped by FinalizePlan before the plan is cached.
+// It is the representation for constructors that never went through a plan
+// walk at all: constant folding evaluates a constructor at build time (before
+// any plan exists to walk), and unit tests hand-build constructors directly.
+// Neither has a repository to bake against, and neither reaches the driver.
+// A type with no message form (MessageDescriptorFor returns *ProtoTypeError)
+// also stays here rather than failing the query.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
+	if r.desc != nil {
+		return buildRecordMessage(r.desc, r.Fields, evalCtx)
+	}
 	out := make(map[string]any, len(r.Fields))
 	for _, f := range r.Fields {
 		fv, err := f.Value.Evaluate(evalCtx)

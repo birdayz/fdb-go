@@ -245,7 +245,7 @@ type fieldDebt struct {
 }
 
 var knownFieldDecisionDebt = map[string]fieldDebt{
-	// boundary (1). It was 0 — MIGRATED (RFC-197 item 1): both covered-column
+	// boundary (2). It was 0 — MIGRATED (RFC-197 item 1): both covered-column
 	// sites now resolve the index definition's column names against each record
 	// type's descriptor when the translate function is built, and match a
 	// domain-checked ordinal (values.FieldValue.OrdinalIn) at push time.
@@ -256,7 +256,14 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// detector followed it across the call. Reporting the bucket as migrated
 	// while the walk could not reach one of its members is exactly the false
 	// green this pass was built to end, so the count rises and says why.
-	"pkg/recordlayer/query/plan/cascades/values/values.go:902": {1, "boundary: descendResolvedPath's nested-record step resolves a ResolvedAccessor's per-step name against a PROTO DESCRIPTOR (protoFieldByName, called with acc.Field at :856) -- three spellings tried, then a case-insensitive scan. Newly visible: the name crossed a plain string parameter. This is the documented survivor of the accessor name (values.go's own contract: the name lives on ONLY for nested descent into a proto.Message or nested record map), and it may well be correct -- but it is the boundary shape by definition, the descriptor layer stores names, and the fix if there is one is to resolve the nested path to field NUMBERS once at the boundary. Recorded rather than allowlisted: the allowlist's emptiness is itself a pinned claim, and opening it needs the nested-descent audit, not a judgement call here"},
+	//
+	// It rises again, 1 → 2, for a SECOND attempt inside that same descent
+	// rather than a second site: protoFieldByName learned to try the escaped
+	// spelling of the name, closing a silent-NULL read of any field whose
+	// identifier the proto-name escaper rewrites. Both entries retire
+	// together, on the same ordinal resolution.
+	"pkg/recordlayer/query/plan/cascades/values/values.go:922": {1, "boundary: the same nested-record descent as :904, one attempt further down. protoFieldByName now also tries the ESCAPED spelling of the accessor name (protoname.ToProtoBufCompliantName), because a descriptor emitted from a SQL identifier stores the escaped form and no case folding maps `a$b` onto `a__1b` -- without it a mangled field name resolved to nothing and read back as a silent NULL. It is the SAME debt as :904 and retires with it: the fix is to resolve the nested path to field NUMBERS once at the boundary, at which point neither spelling attempt exists"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:904": {1, "boundary: descendResolvedPath's nested-record step resolves a ResolvedAccessor's per-step name against a PROTO DESCRIPTOR (protoFieldByName, called with acc.Field at :856) -- three spellings tried, then a case-insensitive scan. Newly visible: the name crossed a plain string parameter. This is the documented survivor of the accessor name (values.go's own contract: the name lives on ONLY for nested descent into a proto.Message or nested record map), and it may well be correct -- but it is the boundary shape by definition, the descriptor layer stores names, and the fix if there is one is to resolve the nested path to field NUMBERS once at the boundary. Recorded rather than allowlisted: the allowlist's emptiness is itself a pinned claim, and opening it needs the nested-descent audit, not a judgement call here"},
 
 	// escape (0) -- MIGRATED (RFC-197 item 2). fieldValueAliasAndCol
 	// and bareColumnName are gone: the join fast path asks a value for its
@@ -300,8 +307,8 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// of //pkg/relational/... green; only six executor UNIT tests, which assert
 	// on the emitted map keys, go red. The binding is already ordinal at
 	// runtime. What is left is entirely plan-time, and it is these four lines.
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1744": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1731": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1770": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1757": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
 
 	"pkg/relational/core/query/cascades_translator.go:1062": {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName (group_by.go:147-157). Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
 	"pkg/relational/core/query/cascades_translator.go:1071": {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:118). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
@@ -330,9 +337,9 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// withOrdinals form appends `#ordinal` precisely so two reads of
 	// duplicate-named slots do not render alike. The naming caller is the one that
 	// passes false.
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1742": {1, "contract: FieldPath.toString rendering joins the child's rendering to the field name. Debt through ColumnNameValue (withOrdinals=false), which is an output-NAMING authority, not through ExplainValue beside it; retires when a projected column takes its name from a resolved slot rather than from a rendered path"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1768": {1, "contract: FieldPath.toString rendering joins the child's rendering to the field name. Debt through ColumnNameValue (withOrdinals=false), which is an output-NAMING authority, not through ExplainValue beside it; retires when a projected column takes its name from a resolved slot rather than from a rendered path"},
 
-	"pkg/recordlayer/query/plan/cascades/values/values.go:1542":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go:1568":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
 	"pkg/relational/core/embedded/logical_predicate.go:6284":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4845":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
@@ -382,7 +389,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// consumers by TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
 	// TestGatheredExplodeOwnerEdgeReachesMatchEnumerator, whose name-model arms
 	// go red if the slice is ever restored.
-	"pkg/relational/core/embedded/cascades_generator.go:4384": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
+	"pkg/relational/core/embedded/cascades_generator.go:4390": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
 	//
 	// clustered_outer_scalar.go:189/402/405/406 MIGRATED (RFC-197 item 6). The
 	// pull-up bake and the outer-ref classifier attribute a reference to a leg by
@@ -447,7 +454,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:3683":   {1, "dotted: MINT. CQ-53's surviving producer — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap inner's binder can resolve the merged row by that string. Its twin in rule_implement_nested_loop_join.go is deleted (the re-anchor now carries Java's null-named ordinal accessor, FieldValue.java:335-338); this one is on the unnest-merge path and dies with the same work"},
 	"pkg/relational/core/query/cascades_translator.go:965":    {1, "dotted: MINT. Registers the QUALIFIED spelling of a quantifier-addressed group key as an alias of its output ordinal, because SELECT/HAVING/ORDER-BY re-read it qualified while AggregateKeyColumnName names it bare. The ordinal is in hand at the registration — what is missing is a reference that arrives stating it, which is the same resolver gap rule_projection_merge.go:113 records under name-keyed"},
 	"pkg/relational/core/query/cascades_translator.go:1057":   {1, "dotted: MINT. The READ side of the same alias table — composes 'ALIAS.COL' to match a reference against the group-by output names registered at :886. The pair is one channel and retires as one; splitting them across buckets would let either end look closed while the other holds it open"},
-	"pkg/relational/core/embedded/cascades_generator.go:3306": {1, "dotted: MINT. Composes 'CORR.FIELD' as the lookup key into the null-supplying-window metadata map, so a QOV-addressed reference and a flat one reach the same nullability answer. The correlation is RIGHT THERE in the expression being joined — the key could be the identity pair rather than its rendering, which makes this the cheapest of the five to convert and the one whose conversion proves nothing about the others"},
+	"pkg/relational/core/embedded/cascades_generator.go:3312": {1, "dotted: MINT. Composes 'CORR.FIELD' as the lookup key into the null-supplying-window metadata map, so a QOV-addressed reference and a flat one reach the same nullability answer. The correlation is RIGHT THERE in the expression being joined — the key could be the identity pair rather than its rendering, which makes this the cheapest of the five to convert and the one whose conversion proves nothing about the others"},
 	"pkg/relational/core/embedded/logical_predicate.go:9540":  {1, "dotted: MINT. Builds the correlated-scalar column key qualified when the scalar is inner-scoped and bare when it is not, so the SAME column is two different keys depending on a scoping test performed elsewhere. That is the flat representation's characteristic failure and not a lookup detail: the key's shape encodes a decision, so a reader cannot tell a qualified column from a bare one that happens to contain a dot"},
 
 	// name-keyed (5). Two of these are newly VISIBLE rather than new: the
@@ -491,7 +498,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// two buckets was the misfiling, and the upstream fix that retires all four
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
-	"pkg/relational/core/embedded/cascades_generator.go:3415": {1, "translator: parsed column ref matched against declared inner columns"},
+	"pkg/relational/core/embedded/cascades_generator.go:3421": {1, "translator: parsed column ref matched against declared inner columns"},
 	// CQ-52 converted the PROJECTION channel: LogicalProject now carries the
 	// parser's segment triple beside Projections, so a projected reference
 	// arrives at these bakers already segmented and nothing slices its name.
@@ -525,7 +532,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go:5829":   {1, "translator: QUALIFIER segment of the same fallback slice as 5742 -- one site now serves BOTH the single-ForEach and multi-ForEach arms, which previously sliced separately at :5769 and :5839. The leg-window comparisons it feeds are invisible to this gate (plain-string parameters into legWindowSlot / legBake)"},
 	"pkg/relational/core/query/cascades_translator.go:6119":   {1, "translator: bakeSegmentedColumnRef's exact first-match of the SEGMENTED carrier's rendered name against the output column list -- the name is still what selects the slot, so it is still debt, but it is no longer the name that decides QUALIFICATION: that comes from the parser's segment count. Same resolve-then-bake shape as 6130, on the converted path"},
 	"pkg/relational/core/embedded/cascades_generator.go:3435": {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
-	"pkg/relational/core/embedded/cascades_generator.go:3429": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
+	"pkg/relational/core/embedded/cascades_generator.go:3441": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6967":  {1, "translator: join-side name set during translation (laundered map key)"},
 	"pkg/relational/core/query/cascades_translator.go:2145":   {1, "translator: unnest element alias resolution, flat arm; the sibling arm consults the ordinal"},
 	"pkg/relational/core/query/cascades_translator.go:2159":   {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},

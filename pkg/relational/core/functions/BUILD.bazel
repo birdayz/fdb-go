@@ -7,6 +7,7 @@ go_library(
         "ast_util.go",
         "cast.go",
         "compare.go",
+        "flatten.go",
         "proto_value.go",
         "time.go",
     ],

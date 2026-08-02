@@ -30,6 +30,7 @@ go_test(
         "expr_test.go",
         "float32_bounds_test.go",
         "fullstack_test.go",
+        "paren_record_position_test.go",
         "predicatevalue_equals_test.go",
         "predrow_test.go",
         "resolve_identifier_ordinal_bind_test.go",

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/onsi/gomega"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_RecordConstructorInExpressionPosition pins the record constructor as
@@ -39,7 +41,8 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcexpr_tmpl "+
 			"CREATE TYPE AS STRUCT S4 (a BIGINT, b DOUBLE, c STRING, d BOOLEAN) "+
-			"CREATE TABLE C (id BIGINT, s S4, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE C (id BIGINT, s S4, PRIMARY KEY (id)) "+
+			"CREATE TABLE D (d1 BIGINT, d2 STRING, d3 BIGINT, PRIMARY KEY (d1))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_rcexpr/s WITH TEMPLATE rcexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -49,9 +52,18 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	defer db.Close()
 	g.Expect(db.ExecContext(ctx, "INSERT INTO C VALUES (1, (7, 2.5, 'x', true))")).Error().NotTo(gomega.HaveOccurred())
 
-	// one() runs a single-column, single-row query and returns the field map
-	// of the struct it produced.
-	one := func(t *testing.T, query string) map[string]any {
+	// oneStruct() runs a single-column, single-row query and returns the
+	// api.Struct the computed record produced.
+	//
+	// An api.Struct, not a map: a COMPUTED record has no target column and so
+	// no stored descriptor, and RFC-204 §4.5.1 gives it one by baking a
+	// synthesised descriptor onto the constructor at plan time. That is what
+	// lets it arrive here as a struct at all — a bare map carries neither
+	// declared field ORDER nor type identity, so the driver could only hand it
+	// over as an opaque map. Asserting the api.Struct is therefore the whole
+	// point of the pin, and asserting its ORDER is what proves the descriptor's
+	// ordinals (not map iteration order) drove the layout.
+	oneStruct := func(t *testing.T, query string) api.Struct {
 		t.Helper()
 		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx, query)
@@ -60,9 +72,15 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 		g.Expect(rows.Next()).To(gomega.BeTrue(), "query returned no rows: %s", query)
 		var v any
 		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
-		m, ok := v.(map[string]any)
-		g.Expect(ok).To(gomega.BeTrue(), "expected a record, got %T from %s", v, query)
-		return m
+		s, ok := v.(api.Struct)
+		g.Expect(ok).To(gomega.BeTrue(), "expected an api.Struct, got %T from %s", v, query)
+		return s
+	}
+
+	// one() returns the struct's attributes in DECLARED order.
+	one := func(t *testing.T, query string) []any {
+		t.Helper()
+		return oneStruct(t, query).Attributes()
 	}
 
 	// The MIXED-WIDTH shape is deliberate. A record of four same-typed fields
@@ -70,12 +88,7 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	// so the pin carries a BIGINT, a DOUBLE, a STRING and a BOOLEAN and
 	// asserts the Go type of each: the DOUBLE is the one that would silently
 	// arrive as an integer if the element types were not carried through.
-	wantMixed := map[string]any{
-		"_0": int64(1),
-		"_1": float64(1.0),
-		"_2": "a",
-		"_3": true,
-	}
+	wantMixed := []any{int64(1), float64(1.0), "a", true}
 
 	t.Run("bare_record_constructor_is_a_value", func(t *testing.T) {
 		g := gomega.NewWithT(t)
@@ -96,7 +109,7 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	t.Run("coalesce_record_then_null_short_circuits", func(t *testing.T) {
 		g := gomega.NewWithT(t)
 		g.Expect(one(t, "SELECT COALESCE((1, 2), null) FROM C")).To(gomega.Equal(
-			map[string]any{"_0": int64(1), "_1": int64(2)}))
+			[]any{int64(1), int64(2)}))
 	})
 
 	// Named elements take their given names rather than the ordinal keys —
@@ -105,24 +118,69 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	// silently dropped.
 	t.Run("named_elements_keep_their_names", func(t *testing.T) {
 		g := gomega.NewWithT(t)
-		g.Expect(one(t, "SELECT (1 AS x, 'q' AS y) FROM C")).To(gomega.Equal(
-			map[string]any{"X": int64(1), "Y": "q"}))
+		s := oneStruct(t, "SELECT (1 AS x, 'q' AS y) FROM C")
+		g.Expect(s.Attributes()).To(gomega.Equal([]any{int64(1), "q"}))
+		// Read each element BY NAME as well as by position. The positional
+		// assertion above passes even if both names were dropped to `_0`/`_1`,
+		// so it cannot detect a lost alias on its own.
+		g.Expect(s.AttributeByName("X")).To(gomega.Equal(int64(1)))
+		g.Expect(s.AttributeByName("Y")).To(gomega.Equal("q"))
 	})
 
-	// The negative that keeps the unwrap intact: a ONE-element unnamed
-	// constructor is the parser's shape for a parenthesised expression, so it
-	// must NOT become a one-field record. SQL has no one-tuple literal to
-	// distinguish it from, and turning it into a record would re-type every
-	// parenthesised scalar in the language.
-	t.Run("single_element_paren_still_unwraps_to_a_scalar", func(t *testing.T) {
+	// A ONE-element unnamed constructor in SELECT position is a ONE-FIELD
+	// RECORD, not an unwrapped scalar. The intuition that `(1 + 2)` is "just
+	// parentheses" is wrong at the top of a select list, and it was asserted
+	// here before being measured: a live JVM answers `SELECT (1 + 2) FROM FOO`
+	// with a STRUCT column whose single field is `_0` (pinned against the
+	// conformance server in conformance/paren_star_java_probe_test.go, which
+	// reads back column type STRUCT and the row value `{_0: 3}`).
+	//
+	// The unwrap Java DOES have is positional, not constructor-local: a
+	// parenthesised expression consumed as an OPERAND (arithmetic, a
+	// predicate) stays a scalar. That arm is pinned separately by
+	// parenthesised_predicate_still_unwraps below, so the two shapes cannot
+	// collapse into each other unnoticed.
+	t.Run("single_element_paren_is_a_one_field_record", func(t *testing.T) {
 		g := gomega.NewWithT(t)
-		rows, err := db.QueryContext(ctx, "SELECT (1 + 2) FROM C")
+		g.Expect(one(t, "SELECT (1 + 2) FROM C")).To(gomega.Equal([]any{int64(3)}),
+			"a one-element constructor in select position is a one-field record, as measured against Java")
+	})
+
+	// The WRITE path must NOT take the plan-time descriptor bake, and this is
+	// the shape that proves it independently of the UPDATE arm below.
+	//
+	// A multi-row `INSERT … VALUES` builds a record constructor per ROW, and
+	// those constructors feed the stored record's descriptor, not the driver.
+	// Baking a descriptor synthesised from the constructor's OWN inferred type
+	// substitutes the wrong descriptor for the target's and the write dies
+	// ("cannot synthesise a protobuf descriptor for __type__1.C1: cannot store
+	// protoreflect.Value in a int64 field"). RFC-204 §4.5.1's bake therefore
+	// stops at a DML plan; FinalizePlan.feedsAWrite is the cut.
+	//
+	// The table is deliberately ALL SCALARS and the insert MULTI-ROW: that is
+	// the shape the plan-time INSERT … VALUES writer handles, and it is where
+	// the bake does damage, because that writer hands the constructor children
+	// that are ALREADY protoreflect.Values. A struct-column insert takes the
+	// executor's writer instead and survives, so a struct-flavoured test here
+	// would pass with the bug fully present.
+	//
+	// Mixed column types and a NULL are deliberate for the same reason: a
+	// uniform row would survive several wrong descriptors by coincidence.
+	t.Run("multi_row_insert_values_is_not_baked", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		_, err := db.ExecContext(ctx,
+			"INSERT INTO D VALUES (10, 'ten', 30), (11, 'eleven', null)")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+
+		rows, err := db.QueryContext(ctx, "SELECT d2, d3 FROM D WHERE d1 = 11")
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer rows.Close()
 		g.Expect(rows.Next()).To(gomega.BeTrue())
-		var v any
-		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
-		g.Expect(v).To(gomega.Equal(int64(3)), "a parenthesised scalar must stay a scalar, not become a record")
+		var d2 string
+		var d3 any
+		g.Expect(rows.Scan(&d2, &d3)).To(gomega.Succeed())
+		g.Expect(d2).To(gomega.Equal("eleven"))
+		g.Expect(d3).To(gomega.BeNil(), "a NULL column must stay absent, not become 0")
 	})
 
 	// The coercion half. An ANONYMOUS record literal assigned to a struct

@@ -524,6 +524,51 @@ reworked to Java's shape before it becomes reachable.
   REACHABLE once struct DDL lands; today it is masked, corpus_run_test.go:295).
   Array type names render Java's `ARRAY(elem)` / `ARRAY(STRUCT)` forms.
 
+#### 4.5.1 The computed-record descriptor is BAKED onto the plan, not carried on the context
+
+A COMPUTED record — `SELECT (1, 1.0, 'a', true)`, the result of
+`RecordConstructorValue` — has no target column and therefore no stored
+descriptor, so it can only reach the driver as an `api.Struct` if a descriptor
+is SYNTHESISED for it (§4.2's emitter, driven from `values.Type` rather than
+`api.DataType`). Java synthesises it at OPTIMIZE time: `QueryPlan.java:639-643`
+builds one `TypeRepository` per plan from `usedTypes().evaluate(relationalExpression)`,
+hands it to the evaluation context, and `RecordConstructorValue.eval` reads it
+back with `context.getTypeRepository()` (RecordConstructorValue.java:113-114).
+
+Go builds the repository at the same point but carries it differently, and the
+difference is forced rather than chosen. Java can read the repository off the
+context because Java has exactly ONE `EvaluationContext` type. Go has no uniform
+context: `RecordConstructorValue.Evaluate` was measured receiving FOUR unrelated
+concrete types across three packages — `*executor.PositionalRow`,
+`*executor.EvaluationContext`, `*values.RowEvalContext` and `embedded.stmtClock`
+— and the most frequent is the BARE positional row, because `frontierRowContext`
+deliberately flows the row itself when no param / scalar-subquery / correlation
+binding is in play. A bare row has no binding surface, so there is nowhere for a
+repository to ride. That refusal is pinned by
+`executor.TestFrontierContextIsNotAUniformCarrier`, which names this decision in
+its failure message: if the contexts are ever unified, the context carrier
+becomes viable again and this divergence should be retired in favour of Java's
+shape.
+
+So the repository is built once per plan and each `RecordConstructorValue`'s
+resolved `protoreflect.MessageDescriptor` is STAMPED onto the value at plan
+time; `Evaluate` then builds its `dynamicpb` message context-free. This is
+semantically equivalent to Java rather than a weakening of it: the repository is
+per-plan on both sides, every descriptor in one plan comes from the same
+repository build, so nested constructors agree on descriptor identity and the
+reconciliation Java needs for the mixed case
+(`RecordConstructorValue.deepCopyIfNeeded`, :165-216) has nothing left to
+reconcile. Stamping happens on the plan-cache MISS path only, before
+`PlanCache.Put`, and the field is immutable afterwards — the cache hands the
+same plan pointer to every later execution and each page rebuilds its cursor
+hierarchy from it concurrently, so a value mutated at execution time would be a
+data race.
+
+Rejected: reworking `frontierRowContext` to always wrap the frontier row in a
+`RowEvalContext`. It would restore Java's carrier, but it changes the dispatch a
+large body of ordinal-model census assertions is built around, for zero semantic
+gain over the bake.
+
 ### 4.6 Index expressions over nested fields (joint with RFC-202)
 
 This RFC adds no index syntax: every nested-path index in the 39 files is
