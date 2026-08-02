@@ -275,3 +275,42 @@ func messageNames(fd protoreflect.FileDescriptor) []string {
 	}
 	return out
 }
+
+// TestStructDDL_UnnestStructArrayFieldAccess pins the descent through a
+// LATERAL UNNEST binding: `FROM t, t.items AS item` followed by `item.sku`.
+//
+// This needs its own test and cannot lean on the corpus. The corpus file that
+// surfaced the shape (arrays-unnesting-documentation-queries.yamsql) unnests
+// TWO arrays in one FROM clause and now rests on that separate limitation, so
+// it no longer exercises the descent at all — the proof would have evaporated
+// with the gap it used to sit behind.
+//
+// Java reaches this structurally rather than by a second rule: the unnest
+// quantifier's flowed object type IS the array's element type, so a record
+// element's fields are the quantifier's own output attributes and `item.sku`
+// matches by the ordinary qualifier-prefixed rule
+// (SemanticAnalyzer.java:475-480). Go's unnest binding is a virtual
+// one-column scope source, so the element's field list is carried onto that
+// column and the SAME lookupNestedField descent reaches it.
+func TestStructDDL_UnnestStructArrayFieldAccess(t *testing.T) {
+	t.Parallel()
+	const ddl = `CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT)
+		 CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))`
+	for _, q := range []string{
+		`SELECT i.sku FROM orders, orders.items AS i`,
+		`SELECT i.qty FROM orders, orders.items AS i`,
+		`SELECT order_id FROM orders, orders.items AS i WHERE i.sku = 'x'`,
+	} {
+		if _, err := PlanQueryForTest(q, ddl, nil); err != nil {
+			t.Errorf("%s: unnest element field access must resolve: %v", q, err)
+		}
+	}
+	// An undeclared element field stays the clean 42703.
+	_, err := PlanQueryForTest(`SELECT i.nosuch FROM orders, orders.items AS i`, ddl, nil)
+	if err == nil {
+		t.Fatal("i.nosuch planned; an undeclared element field must not resolve")
+	}
+	if apiErr := api.AsError(err); apiErr == nil || apiErr.Code != api.ErrCodeUndefinedColumn {
+		t.Fatalf("unknown element field error = %v, want the clean 42703", err)
+	}
+}

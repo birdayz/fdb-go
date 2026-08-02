@@ -1849,7 +1849,7 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	if err != nil || rv == nil {
 		return nil
 	}
-	if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child != nil && fv.SourceRelativeBaked() {
+	if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child != nil && fv.RootIsLegRelativeUnpinned() {
 		return fv
 	}
 	return nil

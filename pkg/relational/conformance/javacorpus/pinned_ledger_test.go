@@ -65,18 +65,18 @@ package javacorpus_test
 const pinnedLedger = "pass=64 fail=0 skip=174 queries=1395 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:array-comparison=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
-	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:nested-recursive-with=2," +
+	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:multiple-lateral-unnests=1,engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:struct-query=5,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
+	"engine-gap:struct-query=4,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
 	"fragment=2,no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9,polarity:negative-execution=26," +
 	"polarity:negative-parse=25,unsupported-DDL:function=11,unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
 	"unsupported:continuation=3,unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17,vacuous:all-assertions-skipped=4} inner_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:array-comparison=1,engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1,engine-gap:dml-returning-result-set=1," +
-	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:nested-recursive-with=2," +
+	"engine-gap:error-class=2,engine-gap:inline-values-table=1,engine-gap:join-using-star=1,engine-gap:multiple-lateral-unnests=1,engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:struct-query=5,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
+	"engine-gap:struct-query=4,engine-gap:typed-float-literal=1,engine-gap:typed-integer-literal=2," +
 	"no-checks=8,plan-assertion=617,polarity:negative-execution=26,unsupported-DDL:function=11,unsupported-DDL:other=11," +
 	"unsupported-DDL:struct-index=6,unsupported:check-cache=142,unsupported:continuation=34,unsupported:debugger=3," +
 	"unsupported:multi-cluster=2,unsupported:prepared=207,unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
@@ -94,4 +94,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "8cc45231aab7d535a5ffab440c6bce8934e54788ea88759a93d022bc6746dfa2"
+const pinnedAssignmentDigest = "ace3249a4aa96e6c66ce488881dc5082b75119981aa55978f218f9c1f276c4af"

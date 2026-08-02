@@ -225,6 +225,11 @@ const (
 	// (compression/encryption) the store layer does not implement, so reads
 	// that Java rejects (wrong key, missing encryption) succeed in Go.
 	SkipGapSerializationOptions SkipClass = "engine-gap:serialization-options"
+	// SkipGapMultipleLateralUnnests is a FROM clause carrying MORE THAN ONE
+	// lateral array unnest (`FROM t, t.a AS x AT i, t.b AS y AT j`). The
+	// single-unnest form works; the translator has no lowering for a second
+	// one, and declines loudly (0AF00) rather than dropping a leg. RFC-142.
+	SkipGapMultipleLateralUnnests SkipClass = "engine-gap:multiple-lateral-unnests"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -268,6 +273,7 @@ func AllSkipClasses() []SkipClass {
 		SkipConformanceGoAccepts,
 		SkipGapResultMetadata,
 		SkipGapSerializationOptions,
+		SkipGapMultipleLateralUnnests,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,

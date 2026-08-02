@@ -173,9 +173,15 @@ var engineGaps = []EngineGap{
 	// HOME_ADDRESS. The remaining five are the shapes that rule does not
 	// reach.
 	//
-	// The same descent through an UNNEST binding (`item.sku` where item is a
-	// lateral unnest of a struct array).
-	{"arrays-unnesting-documentation-queries.yamsql", SkipGapStructQuery, `column "ITEM.SKU" does not exist`, "RFC-204 P3"},
+	// RE-BOOKED, not closed-by-relabel: `item.sku` (item = a lateral unnest
+	// of a struct array) now RESOLVES — the unnest binding's virtual column
+	// carries the array ELEMENT's field list, so the same lookupNestedField
+	// descent that serves a struct column reaches it. The file then hits a
+	// gap that has nothing to do with structs: its FROM clause unnests TWO
+	// arrays, and the translator lowers only one. Booked to that gap, at its
+	// own exact rejection, so the struct class no longer claims it and the
+	// real blocker is counted under its own name.
+	{"arrays-unnesting-documentation-queries.yamsql", SkipGapMultipleLateralUnnests, "multiple lateral array unnests in one FROM clause are not yet supported", "RFC-142"},
 	// A record constructor in EXPRESSION position (a COALESCE argument),
 	// which needs the projection-side RecordConstructorValue rather than the
 	// DML target-type push-down.

@@ -2060,7 +2060,44 @@ func isLateralUnnestJoin(j joinClause, visible map[string]struct{}, resolvesToTa
 // scope via buildOuterScopeSources) derives it here so they cannot diverge. The
 // translator rewrites these references to the inner Explode binding when lowering
 // the unnest. ok=false when the source has neither an AS nor an AT alias. RFC-142.
+// unnestElementStructFields returns the declared field list of the ELEMENT
+// type of the array a lateral unnest ranges over, when that element is a
+// struct — and nil for a scalar-element array, which has no fields.
+//
+// This is what makes `FROM orders, orders.items AS item` support `item.sku`.
+// Java gets there structurally: the unnest quantifier's flowed object type IS
+// the array's element type, so a record element's fields are the quantifier's
+// own output attributes and `item.sku` matches by the ordinary
+// qualifier-prefixed rule (SemanticAnalyzer.java:475-480). Go's unnest binding
+// is instead a VIRTUAL one-column table (the AS alias), so the element's
+// fields have to be carried onto that column — where the same descent that
+// serves a struct COLUMN then reaches them (lookupNestedField, :548-602).
+// One mechanism, two entry points, rather than a second resolution path.
+//
+// The array column is looked up through the scope the unnest is being added
+// to, which already holds the outer source: `segments` is ["ORDERS","ITEMS"],
+// resolved as source-alias then column. A miss returns nil — an unnest over
+// something the scope cannot type is not this function's to reject, and the
+// reference simply fails to resolve as it did before.
+func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.Column {
+	if scope == nil || len(j.segments) != 2 {
+		return nil
+	}
+	col, _, err := scope.ResolveQualifiedColumn(
+		semantic.FromNormalized(j.segments[0]),
+		semantic.FromNormalized(j.segments[1]),
+	)
+	if err != nil || !col.IsArray {
+		return nil
+	}
+	return col.StructFields
+}
+
 func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
+	return unnestVirtualScopeSourceWithElement(j, nil)
+}
+
+func unnestVirtualScopeSourceWithElement(j joinClause, elemFields []semantic.Column) (semantic.ScopeSource, bool) {
 	// The (AS, AT) pair MUST come from the same normalization the logical
 	// lowering uses (unnestAliases) — otherwise the WHERE/projection scope
 	// binds the unnest column under the parser's DEFAULTED alias (the joined
@@ -2071,7 +2108,18 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	var cols []semantic.Column
 	corr := asAlias
 	if asAlias != "" {
-		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true})
+		// A STRUCT-element unnest binding types as RECORD and carries the
+		// element's fields, so `item.sku` descends; a scalar-element binding
+		// keeps UNKNOWN, which is what every non-struct consumer already
+		// expects. The type is not cosmetic — the descent's first gate is
+		// that the column HAS fields, and a column with fields that still
+		// claimed UNKNOWN would be two statements about one thing.
+		elemCol := semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true}
+		if len(elemFields) > 0 {
+			elemCol.Type = "RECORD"
+			elemCol.StructFields = elemFields
+		}
+		cols = append(cols, elemCol)
 	}
 	if atAlias != "" {
 		// The unnest WITH ORDINALITY ordinal is a 1-based, NON-NULL INT
@@ -2108,7 +2156,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 // resolves (RFC-142).
 func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 	return func(j joinClause) bool {
-		src, ok := unnestVirtualScopeSource(j)
+		src, ok := unnestVirtualScopeSourceWithElement(j, unnestElementStructFields(scope, j))
 		if !ok {
 			return false
 		}
