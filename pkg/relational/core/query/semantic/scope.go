@@ -50,6 +50,25 @@ type ScopeSource struct {
 	// shadowing match is taken and the non-shadowing matches are ignored;
 	// two shadowing matches are still ambiguous.
 	Shadowing bool
+	// HiddenColumns names columns of this source that UNQUALIFIED
+	// references skip — Java's Expression visibility
+	// (SemanticAnalyzer.java:468: an unqualified reference ignores a
+	// non-visible attribute; a qualified reference still binds it). A
+	// JOIN … USING marks the RIGHT side's copy of each USING column
+	// hidden (QueryVisitor.resolveJoinUsingClause → asHidden), which is
+	// what makes a bare reference to the USING column resolve the LEFT
+	// copy instead of being ambiguous. Keys are UPPER-folded bare names.
+	HiddenColumns map[string]struct{}
+}
+
+// hidesColumn reports whether this source hides id from UNQUALIFIED
+// resolution. Fold matches the scope's case-insensitive lookup.
+func (s ScopeSource) hidesColumn(id Identifier) bool {
+	if len(s.HiddenColumns) == 0 {
+		return false
+	}
+	_, hidden := s.HiddenColumns[strings.ToUpper(id.Name())]
+	return hidden
 }
 
 // NewScope constructs a Scope inheriting from parent. parent may be
@@ -160,6 +179,12 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 		src ScopeSource
 	}
 	for _, src := range s.sources {
+		// An UNQUALIFIED reference skips a source's hidden columns
+		// (SemanticAnalyzer.java:468) — the right-side USING copy stays
+		// addressable via its qualifier only.
+		if src.hidesColumn(id) {
+			continue
+		}
 		if c, ok := src.Table.LookupColumn(id); ok {
 			matches = append(matches, struct {
 				col Column

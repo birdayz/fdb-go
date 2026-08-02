@@ -599,6 +599,21 @@ func isOrderingComparison(op predicates.ComparisonType) bool {
 	return false
 }
 
+// isNullOrNone reports whether t is the untyped NULL literal type or
+// the NONE type of the untyped empty array literal `[]` — the two
+// operand types RelOpValue.encapsulate promotes toward an ARRAY
+// counterpart before dispatching an ARRAY comparison.
+func isNullOrNone(t values.Type) bool {
+	return t != nil && (t.Code() == values.TypeCodeNull || t.Code() == values.TypeCodeNone)
+}
+
+// typeCodeIsArrayOrNone reports whether t is typed ARRAY or NONE (the
+// untyped empty array literal `[]`) — the operand types that have no
+// ordering operator at all in Java's RelOpValue operator map.
+func typeCodeIsArrayOrNone(t values.Type) bool {
+	return t != nil && (t.Code() == values.TypeCodeArray || t.Code() == values.TypeCodeNone)
+}
+
 func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right values.Value) (predicates.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
@@ -608,6 +623,17 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
+	// NO ORDERING OVER ARRAYS (Java RelOpValue.encapsulate): the
+	// BinaryPhysicalOperator map has EQ/NEQ/IS_DISTINCT/NOT_DISTINCT rows
+	// for ARRAY and NONE operands only — no LT/LTE/GT/GTE row exists for
+	// either, so `[1] < [2]` (and `[1] >= NULL`, `[] > x`, …) rejects with
+	// COMPARISON_OF_INCOMPATIBLE_TYPES no matter what the other operand
+	// is. Checked outside the both-types-known gate below: ONE operand
+	// typed ARRAY/NONE already proves no operator row can match.
+	if isOrderingComparison(op) && (typeCodeIsArrayOrNone(left.Type()) || typeCodeIsArrayOrNone(right.Type())) {
+		return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+			"The operands of a comparison operator are not compatible.")
+	}
 	// PLAN-TIME promotion gate (Java SemanticAnalyzer + PromoteValue
 	// lattice): a comparison whose operand types have NO common maximum
 	// (STRING vs a number, BOOLEAN vs a number, BYTES vs anything else)
@@ -638,6 +664,45 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		if isOrderingComparison(op) && (lt.Code() == values.TypeCodeBoolean || rt.Code() == values.TypeCodeBoolean) {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 				"The operands of a comparison operator are not compatible.")
+		}
+		// ARRAY comparison rules (Java RelOpValue.encapsulate,
+		// RelOpValue.java:325-381):
+		//   - ARRAY vs the untyped NULL or NONE (`[]` literal): promote
+		//     the other operand toward the ARRAY type via PromoteValue
+		//     (NULL_TO_ARRAY evaluates to NULL, NONE_TO_ARRAY passes the
+		//     empty slice through), so the usual ARRAY equality applies.
+		//   - After promotion the two ARRAY types must match modulo
+		//     nullability. INTEGER ARRAY vs BIGINT ARRAY could be
+		//     promoted in principle but is deliberately unsupported
+		//     (RelOpValue.java:365-370) — Go's recursive MaximumType
+		//     would accept it, so the equality gate here is what keeps
+		//     the engines aligned.
+		// (Ordering over ARRAY/NONE is rejected above the both-types-
+		// known gate — one typed operand suffices to prove it.)
+		// Rejections are COMPARISON_OF_INCOMPATIBLE_TYPES →
+		// DATATYPE_MISMATCH with Java's message (ExceptionUtil.java:98).
+		if lt.Code() == values.TypeCodeArray || rt.Code() == values.TypeCodeArray {
+			// Non-nil: the MaximumType==nil gate above already
+			// rejected incompatible pairs, and ARRAY vs NULL/NONE/
+			// ARRAY all have a defined maximum.
+			maxT := values.MaximumType(lt, rt)
+			if maxT == nil {
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
+			}
+			if isNullOrNone(lt) {
+				left = values.NewPromoteValue(left, maxT)
+				lt = left.Type()
+			}
+			if isNullOrNone(rt) {
+				right = values.NewPromoteValue(right, maxT)
+				rt = right.Type()
+			}
+			if lt.Code() != values.TypeCodeArray || rt.Code() != values.TypeCodeArray ||
+				!values.WithNullability(lt, false).Equals(values.WithNullability(rt, false)) {
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
+			}
 		}
 	}
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
@@ -1595,6 +1660,17 @@ func columnCascadesType(col semantic.Column) values.Type {
 			elem = values.WithNullability(elem, col.Nullable)
 		}
 		return elem
+	}
+	// The ELEMENT type of a column array is always NOT NULL (Java DDL:
+	// ArrayType.from(elementType.withNullable(false), isNullable) — the
+	// array itself carries the nullability). This matters for array
+	// comparisons: an array literal's element type is NOT NULL too
+	// (Java Type.fromObject → primitiveType(typeCode, false)), and the
+	// comparison gate requires the array types to match modulo OUTER
+	// nullability only — a nullable element type here made Go reject
+	// `arr = [1]` 42804 where live Java (4.12.11.0) returns rows.
+	if elem != nil && elem.Code() != values.TypeCodeUnknown && elem.IsNullable() {
+		elem = values.WithNullability(elem, false)
 	}
 	return values.NewArrayType(col.Nullable, elem)
 }

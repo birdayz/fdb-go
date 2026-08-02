@@ -392,8 +392,12 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 		if bothNull {
 			distinct = false
 		} else if left != nil && right != nil {
-			cmp, ok := cmpAny(left, right)
-			if ok && cmp == 0 {
+			if isCompositeOperand(left) || isCompositeOperand(right) {
+				// ARRAY / record operands: Java's IS_DISTINCT_FROM_ARRAY_ARRAY
+				// and NOT_DISTINCT_FROM_ARRAY_ARRAY delegate to the same list
+				// equality as EQ (RelOpValue.java:1151-1152).
+				distinct = !deepValueEqual(left, right)
+			} else if cmp, ok := cmpAny(left, right); ok && cmp == 0 {
 				distinct = false
 			}
 			// Type mismatch keeps distinct=true (they're not equal).
@@ -490,6 +494,28 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 			return TriTrue, nil
 		}
 		return TriFalse, nil
+	}
+	// ARRAY (and record) equality — the EQ/NEQ_ARRAY_ARRAY physical
+	// operators (RelOpValue.java:1149-1150): two-valued once both
+	// operands are non-NULL (the null check above already returned
+	// UNKNOWN otherwise). Only the equality family is defined over
+	// composites — ordering over arrays was rejected at plan time, so
+	// an ordering op that still meets one here degrades to UNKNOWN
+	// exactly as the cmpAny type-mismatch path always did.
+	if isCompositeOperand(left) || isCompositeOperand(right) {
+		switch c.Type {
+		case ComparisonEquals:
+			if deepValueEqual(left, right) {
+				return TriTrue, nil
+			}
+			return TriFalse, nil
+		case ComparisonNotEquals:
+			if deepValueEqual(left, right) {
+				return TriFalse, nil
+			}
+			return TriTrue, nil
+		}
+		return TriUnknown, nil
 	}
 	cmp, ok := cmpAny(left, right)
 	if !ok {
@@ -684,6 +710,72 @@ func cmpAny(a, b any) (int, bool) {
 		return bytes.Compare(av[:], bv[:]), true
 	}
 	return 0, false
+}
+
+// isCompositeOperand reports whether an evaluated operand is a
+// composite — an ARRAY ([]any) or a record (map[string]any) — i.e. a
+// value whose comparison must go through deepValueEqual rather than
+// the scalar total-order comparator cmpAny.
+func isCompositeOperand(v any) bool {
+	switch v.(type) {
+	case []any, map[string]any:
+		return true
+	}
+	return false
+}
+
+// deepValueEqual is the ARRAY (and nested-record) equality — the Go
+// analogue of Java's Comparisons.compareListEquals /
+// compareListStartsWith (Comparisons.java:301-333), which back the
+// EQ/NEQ/IS_DISTINCT/NOT_DISTINCT _ARRAY_ARRAY physical operators
+// (RelOpValue.java:1149-1152). Two-valued by design: once both
+// OPERANDS are non-NULL the answer is TRUE or FALSE — element NULLs
+// do not propagate UNKNOWN outward (both-NULL elements are EQUAL,
+// one-NULL is UNEQUAL, exactly compareListStartsWith's arms).
+//
+//   - []any (arrays, and array elements that are themselves arrays)
+//     compare by length then pairwise recursion — size mismatch is
+//     FALSE (compareListEquals's size check), order is significant.
+//   - map[string]any (a RecordConstructorValue element, e.g. an array
+//     of tuples) compares by key set and pairwise recursion (Java's
+//     List.equals over the tuple's field values).
+//   - Scalar leaves delegate to cmpAny — the same comparator scalar
+//     predicates use — so numeric width noise (int32 vs int64 carriers
+//     of the same INTEGER element) cannot fabricate inequality. Java
+//     uses strict equals here, but its plan-time gate (ported to
+//     ResolveComparison) guarantees equal element types, so on
+//     reachable inputs the two agree.
+func deepValueEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if av, ok := a.([]any); ok {
+		bv, ok2 := b.([]any)
+		if !ok2 || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !deepValueEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if av, ok := a.(map[string]any); ok {
+		bv, ok2 := b.(map[string]any)
+		if !ok2 || len(av) != len(bv) {
+			return false
+		}
+		for k, ae := range av {
+			be, present := bv[k]
+			if !present || !deepValueEqual(ae, be) {
+				return false
+			}
+		}
+		return true
+	}
+	cmp, ok := cmpAny(a, b)
+	return ok && cmp == 0
 }
 
 // promoteFloat returns (a,b) as float64 when at least one side is

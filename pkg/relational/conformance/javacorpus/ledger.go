@@ -147,10 +147,17 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapArrayComparison is an equality / IS DISTINCT comparison whose
-	// operands are arrays — the comparison evaluates to NULL instead of a
-	// boolean.
-	SkipGapArrayComparison SkipClass = "engine-gap:array-comparison"
+	// SkipGapNullableArrayWrapper is a query over a STORED nullable array
+	// whose answer depends on distinguishing NULL from empty: Go writes a
+	// plain repeated field for nullable arrays instead of Java's
+	// `message{ repeated values }` wrapper (RFC-143 §3a), so a stored `[]`
+	// is byte-identical to a stored NULL and reads back as NULL. The
+	// array COMPARISON semantics themselves are closed (the former
+	// engine-gap:array-comparison class): `[1] = [1]` is TRUE, the
+	// NULL/NONE operand matrix matches the corpus, mismatched ARRAY types
+	// reject 42804 — pinned by TestFDB_ArrayComparison (sqldriver) and
+	// ArrayComparisonJavaProbe (conformance, live-Java measured).
+	SkipGapNullableArrayWrapper SkipClass = "engine-gap:nullable-array-wrapper"
 	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
 	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
 	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
@@ -160,8 +167,6 @@ const (
 	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
-	// SkipGapTypedIntLiteral is a width-suffixed integer literal (`1I`, `2L`).
-	SkipGapTypedIntLiteral SkipClass = "engine-gap:typed-integer-literal"
 	// SkipGapRowVersion is the `__ROW_VERSION` pseudo-column.
 	SkipGapRowVersion SkipClass = "engine-gap:row-version-pseudocolumn"
 	// SkipGapTableValuedFunction is a table-valued function in FROM.
@@ -214,11 +219,10 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLValueIndexAsSelect,
 		SkipDDLOther,
-		SkipGapArrayComparison,
+		SkipGapNullableArrayWrapper,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
-		SkipGapTypedIntLiteral,
 		SkipGapRowVersion,
 		SkipGapTableValuedFunction,
 		SkipGapInlineValues,

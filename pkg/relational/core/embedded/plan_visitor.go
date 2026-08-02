@@ -489,7 +489,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// Step 3: SELECT + GROUP BY + HAVING → aggregate classification
 	// and operator building.
-	op, stripPrefix := v.visitSelectGroupBy(op, cls, fs)
+	op, stripPrefix, err := v.visitSelectGroupBy(op, cls, fs)
+	if err != nil {
+		return nil, err
+	}
 
 	// Collect SELECT column names and aliases from ANTLR for ORDER BY
 	// positional reference resolution. This is a lightweight scan —
@@ -553,6 +556,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
 		expandProjQualifier(sq, v.md, v.schemaName)
+		needRebuild = true
+	}
+	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
+	// right-side USING copies drop out (Java hides them; expandStar
+	// filters hidden).
+	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, v.cteScopes) {
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
@@ -1308,9 +1317,9 @@ func (v *PlanVisitor) visitWhere(op logical.LogicalOperator, simpleTable *antlrg
 //
 // Returns the wrapped operator and a stripPrefix (non-empty for derived
 // table queries where column names need prefix stripping).
-func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string) {
+func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string, error) {
 	if cls == nil {
-		return op, ""
+		return op, "", nil
 	}
 
 	// Determine strip prefix for derived tables and table aliases.
@@ -1339,7 +1348,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	//   - GROUP BY without aggregates: just the group keys.
 	//   - Mixed: aggCols carries both group-col and agg-function entries.
 	if !cls.countStar && len(cls.aggCols) == 0 && len(cls.groupBy) == 0 {
-		return op, stripPrefix
+		return op, stripPrefix, nil
 	}
 
 	keys := logicalGroupKeys(cls.groupBy)
@@ -1350,6 +1359,70 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			// BARE from here on — stale qualification segments would
 			// chase a qualifier the runtime row no longer carries.
 			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+		}
+	}
+	// DUPLICATE GROUPING EXPRESSIONS reject 42702 (Java: the grouping
+	// value is pulled up over the GroupByExpression's result when the
+	// output is rebound — LogicalOperator.generateGroupBy,
+	// LogicalOperator.java:454 — and a grouping value containing the same
+	// expression twice maps it to TWO output columns, failing
+	// Expressions.pullUp's one-column assertion with AMBIGUOUS_COLUMN,
+	// Expressions.java:112). The identity is the RESOLVED VALUE, which is
+	// why `GROUP BY category, T_G1.category` rejects too — the strip()
+	// above has already folded a single-source qualifier away, so column
+	// keys compare by the same post-strip identity the slot-matching loop
+	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve through
+	// the semantic scope and compare by VALUE equality — key.Display is
+	// the RAW SOURCE SLICE (canonicalTextOf keeps original whitespace),
+	// so a text comparison let `GROUP BY amount+1, amount + 1` through
+	// while catching only the byte-identical spelling (measured live:
+	// Java 42702s both). When no resolver exists or a walk declines, the
+	// fallback identity is the token-concatenated GetText — token-stream
+	// equality, whitespace-invariant. Measured live
+	// (DuplicateGroupByJavaProbe): Java 42702s every duplicate shape
+	// BEFORE planning; the check therefore sits at aggregate BUILD time,
+	// not in the planner.
+	exprKeyVals := make([]values.Value, len(cls.groupBy))
+	if exprKeyCount := func() (n int) {
+		for _, k := range cls.groupBy {
+			if k.bare == "" && k.expr != nil {
+				n++
+			}
+		}
+		return n
+	}(); exprKeyCount > 1 {
+		if resolver := buildSelectScope(selectQueryFromClassification(cls, fs), v.md, v.schemaName, v.cteScopes); resolver != nil {
+			for i, k := range cls.groupBy {
+				if k.bare != "" || k.expr == nil {
+					continue
+				}
+				if val, walkErr := resolver.WalkExpression(k.expr); walkErr == nil {
+					exprKeyVals[i] = val
+				}
+			}
+		}
+	}
+	for i := range keys {
+		for j := i + 1; j < len(keys); j++ {
+			same := false
+			switch {
+			case exprKeyVals[i] != nil && exprKeyVals[j] != nil:
+				// Both walks resolved in the SAME scope, so leaf
+				// correlations already agree — the identity alias map.
+				same = values.SemanticEqualsUnderAliasMap(exprKeyVals[i], exprKeyVals[j], nil)
+			case i < len(cls.groupBy) && j < len(cls.groupBy) &&
+				cls.groupBy[i].bare == "" && cls.groupBy[i].expr != nil &&
+				cls.groupBy[j].bare == "" && cls.groupBy[j].expr != nil:
+				// Resolver unavailable/declined: token-stream identity
+				// (GetText concatenates tokens, dropping whitespace).
+				same = strings.EqualFold(cls.groupBy[i].expr.GetText(), cls.groupBy[j].expr.GetText())
+			default:
+				same = groupKeysEquivalent(keys[i], keys[j])
+			}
+			if same {
+				return nil, "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous columns for %s", keys[j].Display)
+			}
 		}
 	}
 	aggCalls, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
@@ -1376,7 +1449,28 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		cls.postAggExprs = antlr
 	}
 
-	return op, stripPrefix
+	return op, stripPrefix, nil
+}
+
+// groupKeysEquivalent reports whether two COLUMN group keys are the same
+// grouping column under the identity buildAggregateOutputSlots matches
+// with: (qualified, qualifier, bare) case-insensitively. Two equivalent
+// keys duplicate a grouping value column, which Java rejects 42702
+// (Expressions.pullUp's ambiguity assertion). A bare key and a
+// differently-QUALIFIED key of another source are NOT equivalent — Java's
+// value identity keeps `a.k, b.k` legal. EXPRESSION keys never decide
+// here: their identity is the resolved VALUE (or the token stream when no
+// resolver exists) at the caller — Display is the raw source slice, and
+// comparing it treats `amount+1` and `amount + 1` as different
+// expressions. An expression pair that somehow reaches this comparison
+// fails OPEN (no 42702) rather than guessing from text.
+func groupKeysEquivalent(a, b logical.GroupKey) bool {
+	if a.Bare != "" && b.Bare != "" {
+		return a.Qualified == b.Qualified &&
+			strings.EqualFold(a.Bare, b.Bare) &&
+			(!a.Qualified || strings.EqualFold(a.Qualifier, b.Qualifier))
+	}
+	return false
 }
 
 // buildCTEBodyQuery builds a CTE body plan, PRESERVING the body's own WITH

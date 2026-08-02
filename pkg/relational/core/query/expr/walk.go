@@ -445,6 +445,15 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	// dropping the suffix here used to cast the ARRAY operand to the bare
 	// element type and die "No cast defined from ARRAY to STRING".
 	if dtc.ARRAY() != nil {
+		// The ELEMENT type is always NOT NULL (Java SemanticAnalyzer.
+		// lookupType: `ArrayType.from(type.withNullable(false), …)`,
+		// SemanticAnalyzer.java:739) — element nullability is part of the
+		// array-comparison type match, so a nullable element here made
+		// `arr = CAST([] AS INTEGER ARRAY)` reject 42804 against a column
+		// whose element type is NOT NULL by the same Java rule.
+		if target.Code() != values.TypeCodeUnknown && target.IsNullable() {
+			target = values.WithNullability(target, false)
+		}
 		target = values.NewArrayType(true, target)
 	}
 	return r.ResolveCast(inner, target)
@@ -1937,40 +1946,19 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 		// or REAL_LITERAL (float). Distinguish by which terminal is
 		// non-nil. Fall back to int parse when the literal node is
 		// missing (defensive — shouldn't happen).
+		isReal := false
 		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			if dl.REAL_LITERAL() != nil {
-				text := k.GetText()
-				f, err := strconv.ParseFloat(text, 64)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(f)
-			}
+			isReal = dl.REAL_LITERAL() != nil
 		}
-		text := k.GetText()
-		n, err := strconv.ParseInt(text, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
-		}
-		return r.ResolveConstant(n)
+		return r.resolveDecimalText(k.GetText(), isReal)
 	case *antlrgen.NegativeDecimalConstantContext:
 		// `-N` constant — same DecimalLiteral wrapper but with a
 		// leading MINUS. Dispatch on REAL vs DECIMAL again.
-		text := k.GetText()
+		isReal := false
 		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			if dl.REAL_LITERAL() != nil {
-				f, err := strconv.ParseFloat(text, 64)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(f)
-			}
+			isReal = dl.REAL_LITERAL() != nil
 		}
-		n, err := strconv.ParseInt(text, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expr.walkConstant: negative integer parse %q: %w", text, err)
-		}
-		return r.ResolveConstant(n)
+		return r.resolveDecimalText(k.GetText(), isReal)
 	case *antlrgen.StringConstantContext:
 		// Grammar emits the literal including surrounding quotes;
 		// strip them. Only single-quoted SQL strings for now.
@@ -1990,6 +1978,77 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 // by the grammar-Predicate handlers that receive STRING_LITERAL
 // tokens directly (LikePredicate pattern) rather than going
 // through the ConstantExpressionAtom dispatch.
+// resolveDecimalText parses one decimal literal token — including Java's
+// WIDTH SUFFIXES — into a typed constant, mirroring
+// ParseHelpers.parseDecimal (ParseHelpers.java:68-104):
+//
+//   - a REAL token containing '.': f/F parses the binary32 FLOAT
+//     (Float.parseFloat of the suffix-stripped text), d/D the DOUBLE;
+//     unsuffixed stays DOUBLE. Java honours the suffix only when a '.'
+//     is present (the contains(".") gate), so an exponent-only `1e5f`
+//     fails to parse in BOTH engines rather than silently floating.
+//     (Java's h/H Half arm has no counterpart: the Go grammar's
+//     REAL_TYPE_MODIFIER is F|D only, so the token cannot lex.)
+//   - an integer token: l/L parses LONG and STAYS LONG even when the
+//     value fits int32 (Long.parseLong — no re-narrowing), i/I parses
+//     INT with Integer.parseInt's range check (out-of-int32-range is an
+//     error, not a clamp); unsuffixed keeps the fits-int32-then-INT-
+//     else-LONG rule (intLiteralType).
+//
+// The suffix width is observable: INT operands ride the int32-bounded
+// arithmetic lane (ADD_II overflow → 22003) where LONG operands return
+// the wide value, and `1I = 1L` promotes exactly as Java's
+// literal-tests.yamsql pins.
+func (r *Resolver) resolveDecimalText(text string, isReal bool) (values.Value, error) {
+	n := len(text)
+	if isReal {
+		if n > 1 && strings.Contains(text, ".") {
+			switch text[n-1] {
+			case 'f', 'F':
+				f, err := strconv.ParseFloat(text[:n-1], 32)
+				if err != nil {
+					return nil, &NumericOverflowLiteralError{Text: text}
+				}
+				return r.ResolveConstant(float32(f))
+			case 'd', 'D':
+				f, err := strconv.ParseFloat(text[:n-1], 64)
+				if err != nil {
+					return nil, &NumericOverflowLiteralError{Text: text}
+				}
+				return r.ResolveConstant(f)
+			}
+		}
+		f, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, &NumericOverflowLiteralError{Text: text}
+		}
+		return r.ResolveConstant(f)
+	}
+	if n > 1 {
+		switch text[n-1] {
+		case 'l', 'L':
+			v, err := strconv.ParseInt(text[:n-1], 10, 64)
+			if err != nil {
+				return nil, &NumericOverflowLiteralError{Text: text}
+			}
+			// The suffix PINS the width: `2L` is LONG, never re-narrowed
+			// by intLiteralType's fits-int32 rule.
+			return &values.ConstantValue{Value: v, Typ: values.NullableLong}, nil
+		case 'i', 'I':
+			v, err := strconv.ParseInt(text[:n-1], 10, 32)
+			if err != nil {
+				return nil, &NumericOverflowLiteralError{Text: text}
+			}
+			return &values.ConstantValue{Value: v, Typ: values.NullableInt}, nil
+		}
+	}
+	v, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
+	}
+	return r.ResolveConstant(v)
+}
+
 func stripStringLiteral(text string) string {
 	if len(text) >= 2 && text[0] == '\'' && text[len(text)-1] == '\'' {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
