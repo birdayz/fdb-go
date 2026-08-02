@@ -2,9 +2,17 @@
 
 - **Status:** PROPOSED
 - **Branch:** `rfc/207-create-view`
-- **Depends on:** RFC-202 implementation (PR #577, `feat/rfc202-value-index-as-select`,
-  head `4f6910e8a`) — see §0(b). Interacts with RFC-204 (arrays-unnesting) and
-  RFC-206 (SQL functions, drafted concurrently).
+- **Depends on:** RFC-202 implementation (PR #577, `feat/rfc202-value-index-as-select`)
+  — see §0(b). Interacts with RFC-204 (arrays-unnesting) and
+  RFC-206 (SQL functions, drafted concurrently). That branch moves; every
+  `on that branch` line number below was read at `335b6beb7` and must be
+  re-confirmed at rebase time, not trusted.
+- **Authorized by:** TODO.md item 69.7 (`TODO.md:13025-13026`), RFC-201's
+  Phase 4 — "SQL functions (… 44 files), **views** (11), **enums** (3)"
+  (`rfcs/201-layered-test-corpus.md:165-166`). The "11" is this RFC's §1
+  population, measured independently below. This is what puts a
+  `fdb-relational` feature in scope at all under CLAUDE.md; RFC-206 takes the
+  functions half of the same item.
 - **Java reference:** `fdb-record-layer/` at tag 4.12.11.0. Views landed upstream in
   4.8.3.0 ("Support SQL views — PR #3680",
   `fdb-record-layer/docs/sphinx/source/ReleaseNotes.md:1642`).
@@ -31,15 +39,15 @@ Four facts the implementation must be built on, all measured (§9):
 exactly two passes over `AllTemplateClause()`: a table pass (`:148-170`) and an
 index pass (`:173-190`); a `viewDefinition` clause satisfies neither `if` and is
 `continue`d without error. The duplicate catalog-less builder
-`buildSchemaTemplateFromDDL` (`pkg/relational/core/embedded/cascades_generator.go:5615`,
+`buildSchemaTemplateFromDDL` (`pkg/relational/core/embedded/cascades_generator.go:5616`,
 passes `:5648-5661` and `:5663-5672`) has the same shape. The template is
 "created" minus its views; the first query against the view name dies later at
-`validateTablesAndColumnsInner` (`cascades_generator.go:5251-5267`) with a
+`validateTablesAndColumnsInner` (`cascades_generator.go:5256-5267`) with a
 misleading `42F01 table "v" does not exist`. The fail-closed
 `rejectUnsupportedTemplateClauses` the task brief attributes to master is **not
 on master** — it lives on PR #577 (`feat/rfc202-value-index-as-select`,
-`pkg/relational/core/embedded/ddl.go:210-236` on that branch), where a view
-clause gets an explicit
+`pkg/relational/core/embedded/ddl.go:210-236` on that branch, view arm at
+`:231-233`), where a view clause gets an explicit
 `0A000 views (CREATE VIEW) are not yet supported in a schema template`.
 That rejection has **no dedicated unit test** on the branch (only the corpus
 ledger pins it indirectly); §7 S3 closes that gap in the same commit that
@@ -69,7 +77,7 @@ is the implementation's first red→green pin (§7 S1).
 
 **(d) "MaterializedViewIndexGenerator" is a misnomer — Java views are never
 materialized.** Four independent proofs: the persisted proto is two strings
-(§2.2); `api/metadata/View.java:26` says "Metadata for a **non-materialized**
+(§2.2); `fdb-relational-api/.../api/metadata/View.java:26` says "Metadata for a **non-materialized**
 view"; `RecordLayerView.java:32-33` says "stored as raw SQL definitions and
 compiled lazily when referenced"; the docs (`VIEW.rst:7`) say "Views do not
 store data themselves… read-only and cannot be the target of INSERT, UPDATE, or
@@ -149,7 +157,8 @@ Go already has the identical grammar and generated machinery:
 `pkg/relational/core/parser/grammar/RelationalParser.g4:245-247`, generated
 `TemplateClauseContext.ViewDefinition()`
 (`pkg/relational/core/parser/gen/relational_parser.go:5228`), and an unused
-`parser.ParseView` (`pkg/relational/core/parser/parser.go:120-140`) that
+`parser.ParseView` (`pkg/relational/core/parser/parser.go:118-142`, func at
+`:124`) that
 mirrors Java's `QueryParser.parseView`. **No grammar work is needed.**
 
 ### 2.2 Storage — two strings, nothing else
@@ -168,7 +177,8 @@ The persisted form is the view name and the **raw SQL text of the query body**.
 No serialized plan, no KeyExpression, no result-type descriptor. Model class
 `metadata/View.java:33-92` (`toProto` `:57-62`, `fromProto` `:90-92`); builder
 plumbing `RecordMetaDataBuilder.java:117` (viewMap), `:237-240` (deserialize),
-`:1214-1216` (`addView`); serialize `RecordMetaData.java:706`; accessor `:727-729`.
+`:1214-1216` (`addView`); serialize `RecordMetaData.java:706`; accessor
+`getViewMap()` `:726-729`.
 
 Two properties of the definition string are load-bearing:
 
@@ -247,12 +257,13 @@ bypasses it.
 only view-specific line in the whole feature is the normalization for bare
 tables: `if (semanticAnalyzer.tableExists(...))` wrap the table in a trivial
 SELECT (`:318-322`) so both shapes reach the generator as a `SelectExpression`
-(asserted at `OnSourceIndexGenerator.java:179`).
+(asserted at `OnSourceIndexGenerator.java:180`).
 
 `OnSourceIndexGenerator.generate()` (`:172-229`) pushes the named index columns
 through the view's result value (`:184-197`), rebuilds a select **reusing the
 view's quantifiers and predicates** with the index projection (`:212-217`),
-adds the ASC/DESC/NULLS sort (`:199-204`, `:222`), and then delegates to
+adds the ASC/DESC/NULLS sort (`OrderByExpression.of` at `:205-209`, applied via
+`generateSort` at `:225`), and then delegates to
 `MaterializedViewIndexGenerator.from(...)` (`:226-228`) — the identical entry
 point `visitIndexAsSelectDefinition` uses (`DdlVisitor.java:216`). The index
 lands **on the base table** (`DdlVisitor.java:434-439`,
@@ -295,7 +306,7 @@ SQLSTATEs, `pkg/relational/api/errcode.go`):
 | unknown FROM name (unknown view, view over unknown table) | `UNDEFINED_TABLE` "Unknown table %s" (`SemanticAnalyzer.java:301-305`) | 42F01 | `ErrCodeUndefinedTable` (`errcode.go:95`) |
 | malformed view body | `SYNTAX_ERROR` (`DdlStatementParsingTest.java:1249-1265`) | 42601 | `ErrCodeSyntaxError` (`errcode.go:83`) |
 | `AT` (unnest) clause on a view | `WRONG_OBJECT_TYPE` (`LogicalOperator.java:202-206`) | 42809 | `ErrCodeWrongObjectType` (`errcode.go:92`) |
-| index column unresolvable against view output | `UNDEFINED_COLUMN` (`OnSourceIndexGenerator.java:206,210`) | 42703 | `ErrCodeUndefinedColumn` (`errcode.go:87`) |
+| index column unresolvable against view output | `UNDEFINED_COLUMN` (`OnSourceIndexGenerator.java:201,207`) | 42703 | `ErrCodeUndefinedColumn` (`errcode.go:87`) |
 | prepared param in view body | rejected (`DdlVisitor.java:554-555`) | — | same routing as Java's `validateNoPreparedParams` |
 
 ---
@@ -319,7 +330,8 @@ substring capture.
 
 **Byte-goldens, live JVM, per RFC-202 D11 mechanics**
 (`rfcs/202-value-index-as-select.md:866-905`): the conformance server's
-`createSchemaTemplatePersistentJava` (`conformance/sql_plan_steps.java:332-346`)
+`createSchemaTemplatePersistentJava` (`conformance/sql_plan_steps.java:643-657`
+— RFC-202 §D11 cites `:332-346` for the same method, which is stale)
 executes arbitrary template DDL and persists Java's `MetaData` into the shared
 FDB catalog; Go reads the stored bytes back via
 `SchemaTemplateCatalog().ListTemplates` (`fdb_template_catalog.go:167-192`).
@@ -449,7 +461,7 @@ projection `keyColumns ++ (include \ keys)` + ORDER BY from the key columns'
 order clauses, `runFromResolutionPostPasses`, `queryddl.Generate`
 (`query/ddl/generator.go:63`), `AddGeneratedIndex`. The generator's
 decompose spine (`Project → Sort → Aggregate → Filter → Scan`,
-`generator.go:126`) already accepts precisely the shapes the corpus's view
+`generator.go:117`; `Generate` at `:63`) already accepts precisely the shapes the corpus's view
 bodies produce: predicate views → sparse indexes (S5's predicate arm),
 aggregate GROUP BY views → aggregate indexes (the aggregate arm), incl.
 `legacy_extremum_ever` (`index-ddl.yamsql:88-89`). **No new generator
@@ -488,8 +500,10 @@ roster side: `yamsql/ansiledger.go` gains Go entries for F031-02 / F311-03
 1. **Persist a compiled plan / KeyExpression for the view.** Breaks the hard
    line — Java persists two strings (§2.2) and re-parses on load; a serialized
    Go plan is unreadable to Java and freezes planner internals into stored
-   bytes. Java's own `@SuppressWarnings` note (`RecordMetadataDeserializer.java:188`)
-   shows they considered richer storage and deferred it.
+   bytes. The argument stands on the proto alone; do not read
+   `RecordMetadataDeserializer.java:188`'s `@SuppressWarnings` note as
+   corroboration — it is about an unused formal parameter, not about deferred
+   richer storage.
 2. **Text-macro substitution** (splice the view's SQL text into the referencing
    query string and re-parse the whole thing). String manipulation of SQL is
    banned in this repo for cause; it also breaks literal extraction, alias
@@ -509,8 +523,11 @@ roster side: `yamsql/ansiledger.go` gains Go entries for F031-02 / F311-03
    bypasses `LogicalOperatorCatalog` for views (§2.4); a shared expansion
    breaks quantifier-identity freshness for self-joins over a view.
 7. **DROP VIEW / standalone CREATE VIEW / temporary views / WITH CHECK
-   OPTION.** Java has none of them (§2.1; `View.java:48`; roster F311-04
-   `SupportNone`). Conformance principle: doesn't work in Java → doesn't work
+   OPTION.** Java has none of them (§2.1 for the grammar;
+   `fdb-relational-api/.../api/metadata/View.java:46-48` — "Temporary views are
+   not currently supported"; WITH CHECK OPTION appears nowhere in the tree, so
+   that one is an absence, not a citation; roster F311-04 `SupportNone` at
+   `ansi_roster.go:300`). Conformance principle: doesn't work in Java → doesn't work
    in Go, same shape.
 
 ---
@@ -603,10 +620,14 @@ the same commit as each capability, never separately.
 - Go baseline: `rejectUnsupportedTemplateClauses` absent from master, present
   at `origin/feat/rfc202-value-index-as-select:pkg/relational/core/embedded/ddl.go:210-236`
   (shown via `git show` in-session); master's silent-drop two-pass shape read
-  at `ddl.go:120-190`; `metadata_proto.go` zero `Views` hits;
-  `parser.ParseView` at `parser.go:118-142`; stubs at
+  at `ddl.go:120-190`; `metadata_proto.go` zero `Views` hits
+  (`grep -c 'Views' pkg/recordlayer/metadata_proto.go` → `0`, against
+  `gen/record_metadata.pb.go:960` where the field is parsed and `:1184` where
+  `PView` is declared — this is what makes §0(c) a data-loss bug and not a
+  missing feature); `parser.ParseView` at `parser.go:118-142`; stubs at
   `schema_template.go:152-158`; error constants at
-  `errcode.go:45,83,87,92,95,114`; Java SQLSTATEs at `ErrorCode.java:117,122,125,147`.
+  `errcode.go:83,87,92,95,114`; Java SQLSTATEs at
+  `ErrorCode.java:113` (SYNTAX_ERROR), `:117`, `:122`, `:125`, `:147`.
 
 **INFERRED** (stated as design, to be proven by the phase gates):
 
