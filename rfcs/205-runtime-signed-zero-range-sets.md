@@ -902,6 +902,50 @@ diagnostic. The gate was rerun from start with four jobs and passed, followed by
 the complete four-job test suite. This is recorded as an infrastructure retry,
 not waived as a test flake.
 
+### Source-frozen verification
+
+The implementation source was frozen at
+`79466077b6499e75ce36c2e68875e28280bcff95` on 2026-08-02. The only subsequent
+tree edits were this verification record, a precision correction in
+`DIVERGENCES.md`, and the stress recipe's aggregate timeout; no Go, protobuf,
+planner, executor, or corpus bytes changed. That source passed:
+
+- two consecutive `just generate` runs with byte-identical diff and status
+  fingerprints, followed by `just lint`, `just build`, and pre-commit's complete
+  generate/lint/build/test chain;
+- `go run ./cmd/verify-corpus-retirement-history -trusted-ref origin/master`,
+  authenticating BEFORE at `51d9e9701bbcb959ae09e472fa9e6bb2c9e84169`,
+  first-add AFTER at `97a49228d019df009e33c7891e04853ab9d98625`,
+  and raw proposed HEAD at the source-frozen commit;
+- the focused executor/planner/embedded Bazel matrix (4/4 targets and 6,032
+  reported cases), the focused signed-zero/NaN/index-state real-FDB matrix (73
+  cases), and the governance/history/docs matrix (4/4 targets), all with zero
+  failures;
+- `just test`: 76/76 non-stress targets in 88.727s; and the exact CI-tagged
+  command, including bindingtester and Docker-required SimFDB differential:
+  77/77 targets in 64.699s with 11,470 reported passing and zero reported
+  failing/skipped cases (some targets do not publish case metadata);
+- race-mode Bazel scopes: cascades 7/7 in 36.906s, all relational targets 25/25
+  in 488.528s (including the full committed corpus), and FDB
+  client/transport/API targets 5/5 in 181.597s;
+- four 60-second continuation/range-set fuzzers with 2,844,802 aggregate
+  executions: 346,631 branch advances, 571,202 malformed-token parses, 952,133
+  continuation round trips, and 974,836 paged sweeps; and
+- the complete real-FDB stress target after its aggregate timeout was corrected
+  from 600s to 1,800s: 12 suites / 114 cases, zero failures/skips, in 718.851s.
+  The 1M SQL suite passed in 156.46s (100k customer ingest 7.385s; 1M
+  three-index order ingest 131.470s), and both vector proofs passed (cold-start
+  88.86s; streaming heap bound 237.95s).
+
+The first stress invocation had already passed the raw/record-layer scaling and
+all 10K/100K/1M SQL assertions when the old 600s **target-wide** budget expired
+during the final vector proof. Because that target contains the entire stress
+family rather than one scale point, the stale recipe was corrected to match its
+existing Bazel `eternal` classification and the whole target was rerun from
+start. The passing rerun, rather than the partial first run, is the evidence.
+The host had 21GiB free on a 98%-used `/home` filesystem and 32GiB free in
+`/dev/shm`; no failure was waived for disk pressure or concurrent load.
+
 ## Review disposition
 
 The independent post-rebase Graefe review returned **ACK**: the scoped non-NaN
