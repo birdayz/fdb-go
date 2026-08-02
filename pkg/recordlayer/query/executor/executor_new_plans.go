@@ -1006,6 +1006,17 @@ func executeFirstOrDefault(
 // which position is correct depends on what it was holding when the stop
 // arrived — hence two functions below, not one.
 //
+// The asymmetry is LOAD-BEARING, not stylistic, and it is the thing to read
+// before collapsing the two branches into one. Point the empty branch's
+// checkpoint at the strict branch and the operator silently drops the row it was
+// holding: the resumed inner starts PAST that row, finds nothing, and the
+// default is fabricated in its place. A correlated scalar subquery then answers
+// NULL where it had a value — the observable is a caller failing to scan NULL
+// into a non-nullable column, and TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors
+// /ScannedRowsLimitStrictScalarSubquery is what catches it. Point the strict
+// branch's restart at the empty branch and nothing is wrong, only slow —
+// unboundedly so, which the livelock backstop turns into a loud failure.
+//
 // Neither is what Java does here. RecordQueryFirstOrDefaultPlan.java:100-106
 // hands its child a null continuation and reads a truncated inner as an EMPTY
 // one, silently answering NOT EXISTS = true from a partial scan — a wrong answer
