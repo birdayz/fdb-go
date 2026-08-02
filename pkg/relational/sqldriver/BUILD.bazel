@@ -33,8 +33,9 @@ go_test(
     # Under the race detector on four cores (the CI runner is a 4-vCPU cx33)
     # the same suite takes 277s solo — 31% of the budget, comfortable. It has
     # nonetheless TIMED OUT at 913s in the race lane (PR #577), because it was
-    # co-scheduled with the 5000-scenario corpus target, which holds ~5 GB RSS
-    # on a 7.6 GB box. That was a scheduling defect, fixed in ci.yml by scoping
+    # co-scheduled with the 5000-scenario corpus target — the heaviest in that
+    # lane — on a 4-vCPU / 7.6 GB box with nothing left to give. That was a
+    # scheduling defect, fixed in ci.yml by scoping
     # the lane, NOT a budget defect here: raising this budget would have hidden
     # a starving runner behind a bigger number.
     size = "large",

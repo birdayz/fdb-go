@@ -84,6 +84,11 @@ jobs:
 
       - name: Check Docker (else coverage + race silently no-op)
         if: steps.window.outputs.ok == 'true'
+        # `id` is load-bearing: the race steps below run on a RED coverage step
+        # (a failing test must not cost the corpora their only raced run) but
+        # must NOT run when this preflight failed, or they would skip their way
+        # to exit 0 and re-open the exact hole this step exists to close.
+        id: docker
         # The coverage run and the race step below drive real FDB testcontainers;
         # without Docker every FDB test hits the allowed `FDB not available (no Docker)`
         # skip and the job reports SUCCESS with no coverage/race data (RFC-107). Fail
@@ -97,7 +102,14 @@ jobs:
         run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
-        if: steps.window.outputs.ok == 'true'
+        # `!cancelled()`, not the implicit success(): the step immediately above
+        # is `bazelisk coverage //...`, which runs these same packages
+        # UNINSTRUMENTED. Under success() any red test anywhere in //... would
+        # delete this lane's raced run of them for the night — the one run that
+        # can find the race that made the test red. Gated on the Docker
+        # preflight instead, which is the only upstream failure that would make
+        # this step pass while executing nothing.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.docker.outcome == 'success' }}
         run: |
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
@@ -115,19 +127,25 @@ jobs:
             --test_summary=detailed
 
       - name: Race detector (SQL conformance corpora)
-        if: steps.window.outputs.ok == 'true'
+        # Same condition, same reason as the race step above: this lane is the
+        # corpora's ONLY raced run, and success() would hand a red `bazelisk
+        # coverage //...` the power to delete it for the night.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.docker.outcome == 'success' }}
         # These are the targets the PR race lane deliberately does NOT carry
-        # (ci.yml's REL_SCOPE subtracts them, per RFC-107 §3's rule that
-        # Docker-backed conformance suites must not dominate PR latency). Nightly
-        # is where they still get the detector, so the exclusion moves the cost off
-        # the merge queue rather than dropping the coverage.
+        # (ci.yml's REL_SCOPE subtracts them). RFC-107 §3 made that scoping call
+        # for //pkg/fdbgo/... on measured-latency grounds — race-instrumented
+        # Docker/cgo suites become the PR lane's entire cost — and the relational
+        # wildcard has since grown into the same class. Nightly is where these
+        # targets still get the detector, so the exclusion moves the cost off the
+        # merge queue rather than dropping the coverage.
         #
         # --local_test_jobs=1, not the .bazelrc default of 4: measured under -race
-        # on four cores, the corpus execution target alone holds ~5 GB RSS while
-        # running 5000 scenarios. Four of these at once on a 7.6 GB box is what put
-        # a 31s target (plandiff) past its 900s timeout on PR #577 — the box ran
-        # out of memory and everything starved. One at a time, each target gets the
-        # machine and reports its own runtime rather than the queue's.
+        # on four cores, the corpus execution target runs 5000 scenarios in 1328s
+        # and is by far the heaviest resident set here. Four of these at once on a
+        # 7.6 GB box is what put a 31s target (plandiff) past its 900s timeout on
+        # PR #577 — the runner was out of headroom and everything starved. One at
+        # a time, each target gets the machine and reports its own runtime rather
+        # than the queue's.
         #
         # Timeouts come from the same four slots .bazelrc declares, NOT the flat
         # --test_timeout=900 the step above uses: the corpus target is `eternal` on
@@ -153,6 +171,15 @@ jobs:
         # or the tool would judge against budgets Bazel did not enforce.
         if: ${{ steps.window.outputs.ok == 'true' && !cancelled() }}
         run: |
+          # Same guard the race lane's budget step carries. This step is not
+          # success()-gated, so it also runs when the race step above was skipped
+          # or died before Bazel wrote its event stream; without this, an absent
+          # upstream surfaces as `read bep: no such file or directory` and exit 2
+          # — a tool crash standing in for the real story.
+          if [ ! -f .bazel-bep.race-corpora.jsonl ]; then
+            echo "::warning::no corpora race event stream — the race step did not run to the point of writing one; no budgets to report"
+            exit 0
+          fi
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base --host_jvm_args=-Xmx3g \
             query 'tests(//pkg/relational/conformance/...)' --output=xml --xml:default_values \
             > .bazel-targets.race-corpora.xml

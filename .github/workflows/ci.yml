@@ -258,12 +258,14 @@ jobs:
         # corpora expanded into it. Measured, -race, four cores (the runner is a
         # 4-vCPU cx33), each target alone: the corpus execution target
         # //pkg/relational/conformance/factorycorpus/full runs 5000 scenarios in
-        # 1328s holding ~5 GB RSS, while //pkg/relational/sqldriver takes 277s and
+        # 1328s and is the heaviest target in the lane, while
+        # //pkg/relational/sqldriver takes 277s and
         # //pkg/relational/conformance/plandiff takes 31s. Co-scheduled four at a
-        # time on a 7.6 GB box those numbers stop meaning anything: on PR #577's run
-        # plandiff — a 31s target — hit its 900s timeout, and sqldriver hit its own,
-        # while the corpus target ran 1830s. Nothing had got slower; the box was out
-        # of memory and every target was starving.
+        # time on a 4-vCPU / 7.6 GB box those numbers stop meaning anything: on
+        # PR #577's run plandiff — a 31s target — hit its 900s timeout, and
+        # sqldriver hit its own, while the corpus target ran 1830s. Nothing had
+        # got slower; the runner had run out of resources and every target was
+        # starving.
         #
         # The corpora are CONTENT gates, not concurrency probes: they drive the same
         # driver → planner → executor stack sqldriver_test already drives from 1292
