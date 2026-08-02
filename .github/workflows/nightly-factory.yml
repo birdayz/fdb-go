@@ -232,10 +232,14 @@ jobs:
         # longer equals the corpus, which TestCensusBaselineIsMeasured rejects.
         run: |
           set -o pipefail
-          # bazelisk, not `go run`: the runner image has no Go toolchain (every
-          # batch died in 12s with exit 127 `go: command not found` — measured
-          # 2026-08-02, twice: the first fix commit staged only .gitignore and
-          # this hunk never landed).
+          # bazelisk, not `go run`. Originally because the runner image had no Go
+          # at all (every batch died in 12s with exit 127 `go: command not
+          # found`); the fleet now installs a pinned Go, so that reason is spent
+          # and the remaining one is the durable one: `go run` would resolve the
+          # toolchain and the module graph itself, off whatever the box happens
+          # to have, while everything else in this repo is built by Bazel from
+          # the go_sdk pinned to go.mod. Two toolchains reaching the same corpus
+          # is a divergence waiting to be blamed on the engine.
           #
           # Build first, separately, so a compile break fails as a compile break
           # instead of impersonating the tool's exit 1 (see the typed codes
