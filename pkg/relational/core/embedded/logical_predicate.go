@@ -5144,7 +5144,29 @@ func buildLogicalPlanForUpdateWithCatalog(
 				continue
 			}
 			if idx < len(updOp.Sets) {
-				if v, err := resolver.WalkExpression(el.Expression()); err == nil && v != nil {
+				// A STRUCT target takes the same target-type push-down the
+				// INSERT path uses, so `SET s = (100, 100)` acquires the
+				// column's field names and types instead of dying as an
+				// untyped multi-element record constructor. Java reaches the
+				// same typed result from the other side — it builds an
+				// ANONYMOUS record here (visitUpdatedElement,
+				// ExpressionVisitor.java:1085-1090, with no target type in
+				// state) and coerces it into the target descriptor when the
+				// transform is applied (MessageHelpers.deepCopyMessageIfNeeded,
+				// keyed by field number = position). Pushing the type down is
+				// the same information applied earlier, and it is what lets a
+				// mistyped literal fail at plan time rather than at write.
+				var v values.Value
+				var err error
+				if fd := structSetTargetField(rt, updOp.Sets[idx].Column); fd != nil {
+					v, err = parseUpdateSetValue(fd, el.Expression(), resolver)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					v, err = resolver.WalkExpression(el.Expression())
+				}
+				if err == nil && v != nil {
 					updOp.Sets[idx].Value = v
 				}
 			}

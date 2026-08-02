@@ -65,6 +65,7 @@ go_library(
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/query/semantic",
         "//pkg/relational/core/query/semantic/rlcatalog",
+        "//pkg/relational/core/rowstruct",
         "//pkg/relational/core/session",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@org_golang_google_protobuf//proto",

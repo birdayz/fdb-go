@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )
 
@@ -282,7 +283,7 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 	u := exp.Untag()
 	switch u.Kind {
 	case javayamsql.KindMap:
-		return fail("expected to match a struct, got %v (%T) — struct-typed results are RFC-201 Phase 3", actual, actual)
+		return matchStruct(u, actual, rowNum, cellRef, fail)
 	case javayamsql.KindSeq:
 		return matchArray(u, actual, rowNum, cellRef, fail)
 	case javayamsql.KindString:
@@ -308,6 +309,80 @@ func matchField(exp *javayamsql.Value, actual any, sqlType string, rowNum int, c
 		return matchDouble(u.Float, actual, sqlType, fail)
 	}
 	return fail("unsupported expectation kind %s", u.Kind)
+}
+
+// matchStruct mirrors Matchers' Map-expectation arm (Matchers.java:609-616)
+// and the matchMap it delegates to (:560-585), against a struct actual.
+//
+// Three details are Java's and each is load-bearing:
+//   - cardinality is STRICT in both directions (:568-571) — unlike the array
+//     arm, where a surplus actual element is tolerated;
+//   - an entry with a VALUE resolves the attribute BY NAME (case-insensitively,
+//     RelationalStruct.getOneBasedPosition:159); a bare key, or one carrying
+//     `!pos`, resolves by 1-based POSITION (:576-577);
+//   - the failure reference nests with a '.' separator (:578), so a mismatch
+//     deep inside a struct names its whole path.
+func matchStruct(exp *javayamsql.Value, actual any, rowNum int, cellRef string, fail func(string, ...any) error) error {
+	s, ok := actual.(api.Struct)
+	if !ok {
+		return fail("expected to match a struct, got %v (%T)", actual, actual)
+	}
+	if got := s.AttributeCount(); got != len(exp.Map) {
+		return fail("! expected a row comprising %d column(s), received %d column(s) instead.",
+			len(exp.Map), got)
+	}
+	for i, e := range exp.Map {
+		var (
+			val    any
+			err    error
+			subRef string
+		)
+		pos := i + 1
+		p, userPos := posTagValue(e.Key)
+		if userPos {
+			pos = p
+		}
+		if e.Val.IsNull() || userPos {
+			val, err = s.Attribute(pos)
+		} else {
+			name, _ := e.Key.AsString()
+			val, err = s.AttributeByName(name)
+		}
+		if e.Val.IsNull() {
+			subRef = fmt.Sprintf("pos<%d>", pos)
+		} else {
+			name, _ := e.Key.AsString()
+			subRef = name
+		}
+		if err != nil {
+			return fail("%v", err)
+		}
+		expected := e.Val
+		if e.Val.IsNull() {
+			// Matchers.valueElseKey: a bare key IS the expectation.
+			expected = e.Key
+		}
+		nested := subRef
+		if cellRef != "" {
+			nested = cellRef + "." + subRef
+		}
+		if err := matchField(expected, val, "", rowNum, nested); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// posTagValue reports the explicit 1-based column a `!pos n` key carries.
+func posTagValue(key *javayamsql.Value) (int, bool) {
+	if key == nil || key.TagName() != javayamsql.TagPos {
+		return 0, false
+	}
+	n, ok := key.AsInt()
+	if !ok {
+		return 0, false
+	}
+	return int(n), true
 }
 
 // matchArray mirrors the nested-array branch: element i of the expectation is

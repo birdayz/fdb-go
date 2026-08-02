@@ -29,6 +29,7 @@ go_library(
         "semantic_equals.go",
         "semantic_hash.go",
         "simplifier_value.go",
+        "struct_message.go",
         "translation_map.go",
         "type.go",
         "value_andor.go",

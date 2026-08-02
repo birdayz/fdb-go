@@ -129,7 +129,21 @@ const (
 	// array-of-struct literal in INSERT — declines loudly. The typed
 	// row-constructor push-down that accepts these literals is RFC-204
 	// Phase 2; until then each file is pinned to its exact rejection.
+	//
+	// EMPTY as of Phase 2: struct literals write, structs read back as
+	// api.Struct, and every carrier either passes or moved on to the
+	// QUERY-surface class below. Kept declared because the ledger's classes
+	// are the vocabulary the corpus reports in, and a re-armed struct-DML
+	// regression belongs back here rather than in a new name.
 	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
+
+	// SkipGapStructQuery is a struct-declaring file whose DML now works and
+	// which reaches a struct QUERY-surface gap: nested field access
+	// (`s.field` in a predicate or projection), a record constructor in an
+	// expression position, or `SELECT (*)`. This is RFC-204 Phase 3's work
+	// list — Java resolves these through SemanticAnalyzer's lookupNestedField
+	// descent and RecordConstructorValue in expression position.
+	SkipGapStructQuery SkipClass = "engine-gap:struct-query"
 
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.

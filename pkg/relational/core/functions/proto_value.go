@@ -3,6 +3,7 @@ package functions
 import (
 	"database/sql/driver"
 	"encoding/binary"
+	"errors"
 	"math"
 	"time"
 
@@ -323,8 +324,64 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 				return uuidStringToProtoMessage(fd, uuid.UUID(v).String())
 			}
 		}
+		// A STRUCT cell. The typed row constructor the DML target-type
+		// push-down builds (Java: RecordConstructorValue, typed by
+		// ExpressionVisitor.parseRecordField's recursion,
+		// ExpressionVisitor.java:967-1008) evaluates to a map keyed by the
+		// TARGET field names — the names the push-down adopted from the
+		// column's Type.Record — so the nested message is built by walking
+		// the TARGET descriptor's fields, which is Java's own pairing:
+		// RecordConstructorValue.eval sets child i on
+		// `fieldDescriptors.get(i)` (RecordConstructorValue.java:113-139).
+		if m, ok := val.(map[string]any); ok {
+			return structToProtoValue(fd.Message(), m)
+		}
 	}
 	return protoreflect.Value{}, cannotConvertTypeError()
+}
+
+// structToProtoValue builds the nested dynamic message for a STRUCT cell
+// from the evaluated record constructor's field map.
+//
+// A field whose value is NULL is left ABSENT rather than set — Java's
+// RecordConstructorValue.eval takes the same branch (a null child is not
+// set on the builder at all, RecordConstructorValue.java:135), and absence
+// is what makes a nullable struct field read back as NULL. A NULL at a
+// NON-nullable field is rejected HERE and not one level up, because here is
+// where Java rejects it too: eval's `Verify.verify(fieldType.isNullable(),
+// "Cannot set a non-nullable field to the NULL value")` (:135) sits at the
+// message build, which is the one point every writer reaches — INSERT …
+// VALUES, INSERT … SELECT and UPDATE alike. The visitor-level gate
+// (ExpressionVisitor.java:1068) covers only the column a statement did not
+// mention at all.
+//
+// Each field is converted through ConvertToProtoValue, not the scalar
+// lanes, so a struct field that is itself an ARRAY takes the list arm —
+// including the NullableArrayWrapper build, which Java performs at this
+// same point in eval (RecordConstructorValue.java:127-131).
+func structToProtoValue(md protoreflect.MessageDescriptor, fields map[string]any) (protoreflect.Value, error) {
+	pv, err := values.BuildStructMessage(md, fields, ConvertToProtoValue)
+	if err != nil {
+		return protoreflect.Value{}, structBuildError(err)
+	}
+	return pv, nil
+}
+
+// structBuildError states the shared builder's typed failures in the SQL
+// layer's vocabulary: a NULL at a non-nullable field is the same 23502 the
+// top-level column gate reports, and a name the target struct does not
+// declare is unreachable from the DML push-down (every name is adopted FROM
+// the target descriptor), so it is loud rather than a silently dropped value.
+func structBuildError(err error) error {
+	var nn *values.NonNullableFieldError
+	if errors.As(err, &nn) {
+		return api.NewErrorf(api.ErrCodeNotNullViolation, "%s", nn.Error())
+	}
+	var ud *values.UndeclaredStructFieldError
+	if errors.As(err, &ud) {
+		return api.NewErrorf(api.ErrCodeInternalError, "%s", ud.Error())
+	}
+	return err
 }
 
 // cannotConvertTypeError is the Java-verbatim 22000: 'A value cannot

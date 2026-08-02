@@ -39,6 +39,7 @@ import (
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1724,12 +1725,36 @@ func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason rec
 // (RFC-162, decision (b)). A fixed [16]byte / tuple.UUID at this boundary
 // is unambiguously a UUID: BYTES columns surface as a []byte slice, never a
 // 16-array, so the type switch never misfires.
+// A STRUCT column arrives here as the raw proto message the value layer
+// carries (values.protoScalarToRowValue keeps nested non-UUID messages raw
+// for further descent) and must NOT leave as one: Java hands a struct column
+// to the client as a RelationalStruct, built at exactly this boundary —
+// RowStruct.getObject's Types.STRUCT arm wraps the Message in an
+// ImmutableRowStruct (RowStruct.java:184-197, :293-294). An ARRAY of structs
+// is the same conversion per element (Java: getArray → the array's element
+// materialization → getStruct).
 func materializeDriverValue(v any) any {
 	switch u := v.(type) {
 	case [16]byte:
 		return tuple.UUID(u).String()
 	case tuple.UUID:
 		return u.String()
+	case protoreflect.ProtoMessage:
+		s, err := rowstruct.New(u.ProtoReflect())
+		if err != nil {
+			// The descriptor could not be described as a struct type. Left
+			// as the raw message rather than dropped: the row still carries
+			// the value, and the client sees an unconverted message instead
+			// of a silent NULL.
+			return v
+		}
+		return s
+	case []any:
+		out := make([]any, len(u))
+		for i, e := range u {
+			out[i] = materializeDriverValue(e)
+		}
+		return out
 	default:
 		return v
 	}

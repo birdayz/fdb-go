@@ -241,19 +241,23 @@ func TestJavaCorpusRuns(t *testing.T) {
 	}
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
-	// 24 / 11 / 7, from 24 / 10 / 8. The single move is
-	// `wrong-array-element-type.yamsql` going claimed-earlier → suppressed:
-	// while the array-literal INSERT gap was open its setup insert died and
-	// the parent's gap entry claimed the file; with the gap closed the file
-	// runs through to its descending resultMetadata assertion, where the
-	// CQ-74 metadata truncation declines the comparison
-	// (unsupported:result-metadata-nested — a SuppressesAssertion class).
-	// The earlier history (24/10/8 from 20/15/7 — all five scalar
-	// `check-result-metadata/shouldFail/*` files moving suppressed → booked
-	// once the directive became checked) still holds for the other 41 files.
-	if booked != 24 || suppressed != 11 || claimedEarlier != 7 {
+	// 26 / 16 / 0, from 24 / 11 / 7. CLAIMED-EARLIER IS NOW EMPTY, and that
+	// is the point of the move: every one of the seven was a
+	// struct-declaring negative whose file died at its first struct literal,
+	// so a parent gap entry claimed it before its own assertion ran. With
+	// struct DML landed (RFC-204 Phase 2) each of the seven reaches the
+	// statement it is actually testing — two fail as designed (booked) and
+	// five reach an assertion a SuppressesAssertion class declines
+	// (unsupported:result-metadata-nested, the CQ-74 nested metadata
+	// surface). A negative that never reached its own assertion was the
+	// weakest state in this ledger; none remain.
+	// The earlier history (24/11/7 from 24/10/8, and that from 20/15/7 —
+	// the five scalar `check-result-metadata/shouldFail/*` files moving
+	// suppressed → booked once the directive became checked) still holds
+	// for the other 35 files.
+	if booked != 26 || suppressed != 16 || claimedEarlier != 0 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
-			"pinned baseline is 24 / 11 / 7 (42 manifest entries)", booked, suppressed, claimedEarlier)
+			"pinned baseline is 26 / 16 / 0 (42 manifest entries)", booked, suppressed, claimedEarlier)
 	}
 
 	if got := census.Line(); got != pinnedLedger {
