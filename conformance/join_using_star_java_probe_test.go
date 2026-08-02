@@ -62,6 +62,11 @@ var _ = Describe("JoinUsingStarJavaProbe", func() {
 			{"order_by_bare_using", "SELECT b2 FROM JA JOIN JB USING (c1) ORDER BY c1"},
 			{"left_join_using_star", "SELECT * FROM JA LEFT JOIN JB USING (c1)"},
 			{"star_on_join_control", "SELECT * FROM JA JOIN JB ON JA.c1 = JB.c1"},
+			// DERIVED legs hide their USING copy exactly like base
+			// tables — the leg's columns come from its own select list.
+			{"rev_derived_leg_using", "SELECT * FROM JA JOIN (SELECT c1, b2 FROM JB) AS X USING (c1)"},
+			{"derived_leg_bare_col", "SELECT c1 FROM JA JOIN (SELECT c1, b2 FROM JB) AS X USING (c1)"},
+			{"derived_primary_using", "SELECT * FROM (SELECT c1, a2 FROM JA) AS Y JOIN JB USING (c1)"},
 		}
 
 		render := func(engine string, r plandiff.RunResult) string {

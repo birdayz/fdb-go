@@ -3022,6 +3022,10 @@ func buildSelectScope(
 				if j.bindingID != "" {
 					src.CorrelationName = j.bindingID
 				}
+				// A USING join hides this leg's copy of each USING
+				// column from UNQUALIFIED resolution — derived legs
+				// exactly like base tables.
+				src.HiddenColumns = hiddenColumnSet(j.usingHiddenCols)
 				if scope.AddSource(src) != nil {
 					return nil
 				}
@@ -6820,14 +6824,23 @@ func usingHiddenForAlias(sq *selectQuery, qual string) map[string]struct{} {
 // nil-projCols path projects every leg column and the row is wider than
 // Java's (`SELECT * FROM ja JOIN jb USING (c1)` must be C1, A2, B2).
 //
-// Returns true when it expanded (caller rebuilds the plan). Declines —
-// keeping the legacy full-width star — when any FROM leg cannot be
-// enumerated from metadata (derived table, lateral unnest, catalog-aware
-// sub-plan): a partial expansion would silently drop those legs' columns,
-// which is worse than the width divergence it fixes.
+// Returns true when it expanded (caller rebuilds the plan). A DERIVED
+// leg enumerates from its own select list (buildDerivedTableSource — the
+// same deriver the semantic scope uses), so `JA JOIN (SELECT c1, b2 FROM
+// JB) AS X USING (c1)` hides X's c1 exactly like a base-table leg
+// (measured live: Java answers [C1 A2 B2]). Declines — keeping the
+// legacy full-width star — only when a leg genuinely cannot be
+// enumerated (an UNDERIVABLE derived body such as a join-bodied one,
+// a lateral unnest, a catalog-aware sub-plan): a partial expansion would
+// silently drop that leg's columns. Measured today that decline is
+// UNREACHABLE for USING legs — the one underivable derived shape
+// (join-bodied) fail-closes 0AF00 at the ON-scope drop-risk gate before
+// any star expansion; TestFDB_JoinUsingStarHidesRightColumns's
+// underivable-leg subtest pins that unreachability and re-arms the
+// hidden-star expectation if the shape ever plans.
 func expandBareStarOverUsingJoins(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) bool {
 	if sq == nil || md == nil || sq.projCols != nil || sq.projQualifier != "" ||
-		sq.countStar || len(sq.aggCols) > 0 || sq.derivedQuery != nil {
+		sq.countStar || len(sq.aggCols) > 0 {
 		return false
 	}
 	anyHidden := false
@@ -6869,28 +6882,54 @@ func expandBareStarOverUsingJoins(sq *selectQuery, md *recordlayer.RecordMetaDat
 		cols   []string
 		hidden map[string]struct{}
 	}
+	derivedColumns := func(alias string, inner antlrgen.IQueryContext) ([]string, bool) {
+		src, ok := buildDerivedTableSource(md, alias, inner)
+		if !ok || src.Table == nil {
+			return nil, false
+		}
+		srcCols := src.Table.Columns()
+		cols := make([]string, len(srcCols))
+		for i, c := range srcCols {
+			cols[i] = strings.ToUpper(c.Id.Name())
+		}
+		return cols, true
+	}
 	primaryAlias := sq.tableAlias
 	if primaryAlias == "" {
 		primaryAlias = sq.tableName
 	}
-	primaryCols, ok := columnsFor(sq.tableName)
+	var primaryCols []string
+	var ok bool
+	if sq.derivedQuery != nil {
+		primaryCols, ok = derivedColumns(sq.tableName, sq.derivedQuery)
+	} else {
+		primaryCols, ok = columnsFor(sq.tableName)
+	}
 	if !ok {
 		return false
 	}
 	legs := []leg{{qual: primaryAlias, cols: primaryCols}}
 	for i, j := range sq.joins {
-		if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil {
-			return false
-		}
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
-			return false
-		}
 		alias := j.alias
 		if alias == "" {
 			alias = j.tableName
 		}
-		cols, ok := columnsFor(j.tableName)
+		var cols []string
+		switch {
+		case j.derivedQuery != nil:
+			// A catalog-aware inner plan may coexist with the parsed
+			// derived body; the SELECT LIST is still the column
+			// authority, so enumerate from it.
+			cols, ok = derivedColumns(alias, j.derivedQuery)
+		case j.catalogAwareInnerPlan != nil:
+			return false
+		default:
+			visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
+			if isLateralUnnestJoin(j, visible, resolvesToTable) {
+				return false
+			}
+			cols, ok = columnsFor(j.tableName)
+		}
 		if !ok {
 			return false
 		}

@@ -161,6 +161,62 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 		}
 	})
 
+	t.Run("derived leg star hides its USING copy", func(t *testing.T) {
+		t.Parallel()
+		// The derived leg's columns come from its own select list
+		// (buildDerivedTableSource) — hiding works exactly as for a
+		// base-table leg (measured live: Java answers [C1 A2 B2]).
+		cols, got := run(t, "SELECT * FROM ja JOIN (SELECT c1, b2 FROM jb) AS X USING (c1)")
+		wantCols := []string{"C1", "A2", "B2"}
+		if strings.Join(cols, ",") != strings.Join(wantCols, ",") {
+			t.Fatalf("columns = %v, want %v", cols, wantCols)
+		}
+		if len(got) != 1 || got[0] != "1|a1|b1" {
+			t.Fatalf("rows = %v, want [1|a1|b1]", got)
+		}
+	})
+
+	t.Run("derived leg bare USING column resolves", func(t *testing.T) {
+		t.Parallel()
+		_, got := run(t, "SELECT c1 FROM ja JOIN (SELECT c1, b2 FROM jb) AS X USING (c1)")
+		if len(got) != 1 || got[0] != "1" {
+			t.Fatalf("rows = %v, want [1]", got)
+		}
+	})
+
+	t.Run("derived primary star hides the right copy", func(t *testing.T) {
+		t.Parallel()
+		cols, got := run(t, "SELECT * FROM (SELECT c1, a2 FROM ja) AS Y JOIN jb USING (c1)")
+		wantCols := []string{"C1", "A2", "B2"}
+		if strings.Join(cols, ",") != strings.Join(wantCols, ",") {
+			t.Fatalf("columns = %v, want %v", cols, wantCols)
+		}
+		if len(got) != 1 || got[0] != "1|a1|b1" {
+			t.Fatalf("rows = %v, want [1|a1|b1]", got)
+		}
+	})
+
+	t.Run("underivable derived leg is unreachable — the query fail-closes first", func(t *testing.T) {
+		t.Parallel()
+		// NEGATIVE-RESULT PIN: the one derived-leg shape the schema
+		// deriver cannot enumerate (a JOIN-BODIED body —
+		// buildDerivedTableSourceFromTerm bails on inner joins) never
+		// reaches star expansion at all: the ON-scope drop-risk gate
+		// rejects the whole query 0AF00 (dropping the ON would return
+		// cross-product rows). expandBareStarOverUsingJoins's decline
+		// path is therefore UNREACHABLE for USING legs today — every
+		// USING-leg shape that plans is enumerated and hides. If this
+		// starts failing because the query now PLANS, join-bodied
+		// derived legs became resolvable and the hidden-star expectation
+		// must be asserted here instead (Java answers with X's c1
+		// hidden).
+		_, err := db.QueryContext(ctx,
+			"SELECT * FROM ja JOIN (SELECT jb.c1 AS c1, jd.d2 AS d2 FROM jb JOIN jd ON jb.c1 = jd.c1) AS X USING (c1)")
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("join-bodied derived USING leg: expected the 0AF00 fail-closed rejection, got %v", err)
+		}
+	})
+
 	t.Run("ON join keeps both copies", func(t *testing.T) {
 		t.Parallel()
 		cols, _ := run(t, "SELECT * FROM ja JOIN jb ON ja.c1 = jb.c1")
