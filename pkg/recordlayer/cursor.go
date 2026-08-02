@@ -271,6 +271,35 @@ func (c *emptyCursor[T]) Close() error { c.closed = true; return nil }
 
 func (c *emptyCursor[T]) IsClosed() bool { return c.closed }
 
+// stoppedCursor is a cursor that immediately reports a no-next result with a
+// caller-supplied reason and continuation — the cursor-level spelling of Java's
+// RecordCursorResult.withoutNextValue(continuation, reason). It exists so a plan
+// whose construction ALREADY consumed the out-of-band stop (it had to drain its
+// input eagerly to decide what to flow) can still hand its parent a stop the
+// parent can page on, instead of collapsing a resumable page boundary into a
+// terminal error.
+type stoppedCursor[T any] struct {
+	reason       NoNextReason
+	continuation RecordCursorContinuation
+	closed       bool
+}
+
+// Stopped returns a cursor that produces no value and reports the given
+// NoNextReason and continuation. reason must be a genuine stop reason and, per
+// RecordCursor's contract (RecordCursor.java:212-215), anything other than
+// SourceExhausted must carry a NON-end continuation so the caller can resume.
+func Stopped[T any](reason NoNextReason, continuation RecordCursorContinuation) RecordCursor[T] {
+	return &stoppedCursor[T]{reason: reason, continuation: continuation}
+}
+
+func (c *stoppedCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error) {
+	return NewResultNoNext[T](c.reason, c.continuation), nil
+}
+
+func (c *stoppedCursor[T]) Close() error { c.closed = true; return nil }
+
+func (c *stoppedCursor[T]) IsClosed() bool { return c.closed }
+
 // errorCursor is a cursor that immediately returns an error on every OnNext call.
 // Used when a cursor cannot be created (e.g., scanning a non-readable index).
 type errorCursor[T any] struct {

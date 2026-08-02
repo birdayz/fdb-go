@@ -944,25 +944,28 @@ func executeFirstOrDefault(
 				return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
 					"scalar subquery returned more than one row")
 			}
-			// An out-of-band (resource-limit) stop after the first row means the input
-			// was TRUNCATED — a second matching row may exist beyond the cap, so we can
-			// no longer prove at-most-one. Error (→ 54F01) rather than silently accept
-			// the first row (RFC-106a; same guard as the uncorrelated path).
-			if lerr := errIfBufferTruncated(second); lerr != nil {
+			// An out-of-band (resource-limit) stop after the first row means the
+			// input was TRUNCATED — a second matching row may exist beyond the
+			// cap, so at-most-one is not yet proven. That is a PAGE BOUNDARY, not
+			// a failure: hand the stop up so the parent pages and re-runs this
+			// plan with a fresh budget (see restartAfterOutOfBand).
+			if second.GetNoNextReason().IsOutOfBand() {
 				_ = inner.Close()
-				return nil, lerr
+				return restartAfterOutOfBand(second.GetNoNextReason()), nil
 			}
 		}
 		_ = inner.Close()
 		return newSingleResultCursor(first), nil
 	}
 	_ = inner.Close()
-	// An out-of-band (resource-limit) stop before the first row means the input was
-	// TRUNCATED — we can't tell whether a matching row would have followed, so error
-	// (→ 54F01) instead of fabricating the default and returning a wrong EXISTS/scalar
-	// answer from a partial scan (RFC-106a).
-	if lerr := errIfBufferTruncated(result); lerr != nil {
-		return nil, lerr
+	// An out-of-band (resource-limit) stop before the first row means the input
+	// was TRUNCATED — we cannot tell whether a matching row would have followed,
+	// so the default must NOT be fabricated (that is Java's
+	// RecordQueryFirstOrDefaultPlan.java:100-106 / issue 3220, which treats the
+	// truncated inner as an empty one and answers EXISTS wrongly). Hand the stop
+	// up instead (see restartAfterOutOfBand).
+	if result.GetNoNextReason().IsOutOfBand() {
+		return restartAfterOutOfBand(result.GetNoNextReason()), nil
 	}
 	defaultVal := p.GetDefaultValue()
 	if defaultVal == nil {
@@ -973,6 +976,44 @@ func executeFirstOrDefault(
 		return nil, err
 	}
 	return newSingleResultCursor(qr), nil
+}
+
+// restartAfterOutOfBand is the cursor a first-or-default hands back when its
+// inner leg halted on an out-of-band resource limit (scanned records, scanned
+// bytes, or — the reason this exists — the per-page TIME budget) before the
+// operator could decide what to flow.
+//
+// An out-of-band stop is a resumable page boundary by construction: the time
+// limit exists precisely so a page ends before FDB's 5s transaction wall, and
+// every Java operator propagates such a stop upward with a continuation rather
+// than throwing (FlatMapPipelinedCursor.java:325-367 forwards the inner's
+// reason verbatim; MemorySortCursor.java:78-93 checkpoints its sorter;
+// CursorLimitManager.java:144 is the ONLY place in the Java engine that turns a
+// limit into an exception, and only under failOnScanLimitReached). Collapsing it
+// into an error here made a slow-but-healthy cluster fail a legitimate query
+// with 54F01 — the cluster was not out of budget, the PAGE was.
+//
+// The continuation is a StartContinuation: non-end, so the parent treats it as a
+// live resume point, but carrying no bytes, so the resumed page re-runs this
+// whole first-or-default from scratch against its outer row with a fresh budget.
+// That is the only correct resume position — the operator's answer is a function
+// of the ENTIRE inner leg, so a partial position could not be resumed into a
+// verdict. Nothing is lost by restarting: no row of this operator was emitted.
+//
+// This is deliberately NOT what Java does at this operator. Java's
+// RecordQueryFirstOrDefaultPlan.java:100-106 passes a null continuation to its
+// child and reads a truncated inner as an EMPTY one, which silently answers
+// NOT EXISTS = true from a partial scan — a wrong answer its own comment flags
+// as unfixed (FoundationDB/fdb-record-layer#3220). Propagating the stop matches
+// the cursor framework's contract (RecordCursor.java:212-215: a non-exhausted
+// stop must carry a non-end continuation) instead of the buggy operator.
+//
+// Consumers that cannot page still fail loud: any eager drain routes through
+// errIfBufferTruncated / errIfDrainTruncated, which turn this same out-of-band
+// stop into 54F01. Only a parent with a real resume point — the nested-loop
+// flat map — converts it into a page boundary.
+func restartAfterOutOfBand(reason recordlayer.NoNextReason) recordlayer.RecordCursor[QueryResult] {
+	return recordlayer.Stopped[QueryResult](reason, &recordlayer.StartContinuation{})
 }
 
 func executeDefaultOnEmpty(
@@ -1000,9 +1041,11 @@ func executeDefaultOnEmpty(
 	// the whole OrElse — mirroring Java's clearSkipAndLimit-on-child +
 	// skipThenLimit-on-orElse split. An out-of-band inner stop before the first
 	// row flows through OrElse's UNDECIDED no-next (Java's behaviour): the caller
-	// resumes and the default is NEVER fabricated on truncation, so the eager
-	// RFC-106a truncation error is unnecessary here (DefaultOnEmpty is a streaming
-	// cursor; the eager FirstOrDefault/scalar-subquery paths keep their guard).
+	// resumes and the default is NEVER fabricated on truncation. FirstOrDefault
+	// reaches the same outcome by a different route (restartAfterOutOfBand) —
+	// being eager, it has to convert the stop into one explicitly. The
+	// uncorrelated scalar-subquery path has no parent that can page and so keeps
+	// its RFC-106a truncation error.
 	nestedProps := props.ClearSkipAndLimit()
 	primaryFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 		inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, cont, nestedProps)

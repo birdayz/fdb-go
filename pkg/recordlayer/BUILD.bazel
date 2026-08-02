@@ -329,6 +329,7 @@ go_test(
         "split_key_expression_test.go",
         "split_record_test.go",
         "stale_metadata_test.go",
+        "stopped_cursor_test.go",
         "store_api_test.go",
         "store_bug_verify_test.go",
         "store_builder_test.go",
