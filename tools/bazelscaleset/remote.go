@@ -117,18 +117,41 @@ func remotePIDFilePath(sl *slot) string {
 // ssh returns immediately and the runner survives any later connection drop.
 // The launch then waits briefly for the pidfile and echoes the pid for the
 // supervisor's log.
+//
+// The stale-pidfile removal and the write-then-rename are what make that wait
+// mean anything. A REMOTE pidfile outlives its runner — wait() only unlinks
+// local ones, because a remote file has no tracking incarnation to clean it —
+// so the previous runner's file is still sitting there, non-empty, when the
+// next launch starts. Without the rm, `[ -s pidfile ]` is satisfied on the
+// first iteration by that corpse and the loop never waits for the new session
+// at all, leaving `head` racing the child's truncate two ways, both bad:
+//
+//   - head wins: the launch reports the PREVIOUS runner's dead pid. The
+//     supervisor tracks that pid, its liveness probe finds nothing runner-like
+//     within ~15s, and it logs a clean `runner exited err=<nil>` and frees the
+//     slot — while the real runner is alive and untracked on the box.
+//   - head lands inside the truncate window: the file is momentarily empty and
+//     the launch fails with "runner session wrote no pidfile" (exit 65).
+//
+// Measured over eight hours: 42 exit-65s across the pool, most of them on the
+// LEAST loaded box, which is what finally ruled out disk pressure — the race is
+// won more often when the box is fast. Publishing via `mv` (atomic within the
+// directory) removes the truncate window outright, so a non-empty pidfile now
+// always means "the new session published its pid".
 func remoteLaunchScript(sl *slot, name string) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
 	work := shQuote(sl.path)
 	rdir := shQuote(sl.runnerDir)
 	logf := shQuote(sl.path + "/runner.log")
+	tmpfile := shQuote(remotePIDFilePath(sl) + ".new")
 	return `set -e
 IFS= read -r jit
 [ -n "$jit" ] || { echo "bazelscaleset: no jitconfig on stdin" >&2; exit 64; }
 export ACTIONS_RUNNER_INPUT_JITCONFIG="$jit"
 mkdir -p ` + work + `
 cd ` + rdir + `
-setsid /bin/sh -c '{ echo $$; echo ` + shQuote(name) + `; } > ` + pidfile + `; exec ./run.sh' > ` + logf + ` 2>&1 < /dev/null &
+rm -f ` + pidfile + ` ` + tmpfile + `
+setsid /bin/sh -c '{ echo $$; echo ` + shQuote(name) + `; } > ` + tmpfile + `; mv ` + tmpfile + ` ` + pidfile + `; exec ./run.sh' > ` + logf + ` 2>&1 < /dev/null &
 i=0
 while [ "$i" -lt 50 ]; do
   [ -s ` + pidfile + ` ] && break
