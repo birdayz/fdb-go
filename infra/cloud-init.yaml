@@ -1,5 +1,23 @@
 #cloud-config
 
+# `packages:` installs docker.io during cloud-init's CONFIG stage, and Ubuntu's postinst
+# STARTS the daemon there — stages before runcmd, where the CI volume gets linked. A
+# started Docker creates its data-root (/mnt/ci-data/docker, per daemon.json below) on
+# whatever /mnt/ci-data is at that moment: a fresh mode-0711 directory ON THE ROOT DISK.
+#
+# Everything downstream then goes wrong quietly. link-ci-volume.sh correctly refuses to
+# nest the volume inside that directory, so the 100 GB volume sits unused while the caches
+# fill the 75 GB root disk; and every path under /mnt/ci-data now sits behind a
+# traverse-only ancestor, which the actions runner rejects outright:
+#
+#   Fail to create and validate runner's work directory '/mnt/ci-data/runner-work'
+#
+# bootcmd is the only ordering hook that runs before the package install, so the daemon is
+# masked here and unmasked in runcmd once the volume is actually linked. runcmd's "BEFORE
+# Docker starts" comment described the intent; this is what enforces it.
+bootcmd:
+  - systemctl mask docker.service docker.socket
+
 package_update: true
 packages:
   - docker.io
@@ -62,9 +80,29 @@ write_files:
       # test passes a fixture prefix. Idempotent: safe to re-run on every boot.
       set -eu
       R="$${1:-}"
-      for i in $(seq 1 90); do
+      # 10 minutes, not 3. The volume is a SEPARATE Terraform resource attached after the
+      # server boots, so on a fresh provision cloud-init races the attach — and losing that
+      # race is fatal and unrecoverable here (cloud-init is one-shot: it aborts, and the box
+      # sits with no runner until someone re-provisions it by hand). Measured: a 3-minute
+      # wait lost the race on 1 of 5 boxes in a single fleet rebuild.
+      for i in $(seq 1 300); do
         VOL=$(ls -d "$R"/mnt/HC_Volume_* 2>/dev/null | head -1) || true
         [ -n "$${VOL:-}" ] && { [ -n "$R" ] || mountpoint -q "$VOL"; } && break
+        # Mount it ourselves if the device is attached but nothing mounted it. Hetzner's
+        # automount only runs at ATTACH time, and the volume is a separate Terraform
+        # resource attached after the server boots — so on a fresh provision, and on every
+        # reboot after one, there is no mount and no fstab entry, and waiting cannot
+        # produce one. Measured: 2 of 5 boxes in a fleet rebuild came up with /dev/sdb
+        # attached, unmounted, and absent from fstab.
+        if [ -z "$R" ]; then
+          dev=$(ls /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -1) || true
+          if [ -n "$${dev:-}" ]; then
+            mp="/mnt/HC_Volume_$(basename "$dev" | sed 's/scsi-0HC_Volume_//')"
+            mkdir -p "$mp"
+            grep -q " $mp " /etc/fstab 2>/dev/null || echo "$dev $mp ext4 discard,nofail,defaults 0 0" >> /etc/fstab
+            mount "$mp" 2>/dev/null || true
+          fi
+        fi
         sleep 2
       done
       [ -n "$${VOL:-}" ] || { echo "::error::CI data volume not present"; exit 1; }
@@ -387,9 +425,14 @@ runcmd:
   # loud if the volume never mounts (a silent fall-back to root re-creates the disk bug).
   # The logic lives in /usr/local/bin/link-ci-volume.sh (see its write_files entry for
   # why it is a file: infra/link_ci_volume_test.sh executes that exact script).
-  - /usr/local/bin/link-ci-volume.sh
+  # Fail loud, for real: runcmd entries share one shell with no `set -e`, so a bare
+  # invocation here would log its error and let provisioning continue onto the root disk —
+  # which is the silent degradation this script exists to prevent. `exit 1` aborts the
+  # runcmd script, so cloud-init reports status: error instead of done.
+  - /usr/local/bin/link-ci-volume.sh || { echo "::error::CI data volume link failed — refusing to provision onto the root disk"; exit 1; }
 
-  # Docker
+  # Docker, now that /mnt/ci-data resolves to the volume (see the bootcmd mask above).
+  - systemctl unmask docker.service docker.socket
   - systemctl enable --now docker
   - systemctl restart docker
 
@@ -433,6 +476,21 @@ runcmd:
   - install -d -o runner -g runner /mnt/ci-data/bazel /home/runner/.cache
   - ln -sfn /mnt/ci-data/bazel /home/runner/.cache/bazel
   - chown -h runner:runner /home/runner/.cache/bazel
+
+  # Go toolchain, pinned + checksummed like every other tool here. Not every job goes
+  # through Bazel: the libfdbc cgo build runs `go build` directly and the Bazel-Go-SDK
+  # resolver falls back to system `go`, so without this those jobs die on `go: command
+  # not found` (exit 127) — which reads as a broken job, not a missing toolchain.
+  - |
+    set -eu
+    /usr/local/bin/fetch-verified.sh "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" "${go_sha256}" /tmp/go.tar.gz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm /tmp/go.tar.gz
+    # /etc/profile.d covers interactive shells; the runner service is NOT one, so its
+    # PATH comes from the .path file the runner reads at job start (written below).
+    printf 'export PATH=$PATH:/usr/local/go/bin\n' > /etc/profile.d/go.sh
+    chmod 0644 /etc/profile.d/go.sh
 
   # GitHub Actions runner (pinned version + checksummed — was releases/latest, RFC-108 §1).
   # --ephemeral (opt-in via runner_ephemeral) gives one-job-per-process fresh state;
@@ -496,7 +554,15 @@ runcmd:
       # box goes dark at once, which is exactly what happened.
       #
       # --disableupdate keeps the runner on the reviewed runner_version/SHA.
-      su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
+      # --work puts job workspaces on the 100 GB volume. The default (_work under the
+      # runner dir) is the 75 GB root disk, which is what the volume exists to avoid:
+      # a checkout plus a cold FDB build there is how this box filled up before.
+      install -d -o runner -g runner /mnt/ci-data/runner-work
+      su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --work /mnt/ci-data/runner-work --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
+      # The runner service is not a login shell: it takes PATH from this file, so
+      # /etc/profile.d/go.sh does not reach it and Go has to be added here explicitly.
+      printf '%s\n' "/usr/local/go/bin:/home/runner/go/bin:$(cat /etc/environment | sed -n 's/^PATH="\(.*\)"$/\1/p')" > "$RUNNER_DIR/.path"
+      chown runner:runner "$RUNNER_DIR/.path"
       ( cd "$RUNNER_DIR" && ./svc.sh install runner && ./svc.sh start )
       # The supervisor unit ships in write_files on every box regardless of mode. Here it
       # must never run: enforce that the same way worker mode does, or a repurposed box

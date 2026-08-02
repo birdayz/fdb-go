@@ -74,9 +74,9 @@ variable "ssh_public_key_file" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type"
+  description = "Hetzner server type. cpx32 (4 shared vCPU, 8 GB), the same shape and roughly the same price as the cx33 this fleet used to run. cx33 is out of stock in every datacenter, and the dedicated-core alternative (ccx23) exceeds this account's dedicated-core quota, so cpx32 is what can actually be provisioned. A larger box would relieve the 4-way contention behind the test timeouts, but that is a cost decision, not a provisioning one — the timeouts are being fixed by sharding the oversized targets instead."
   type        = string
-  default     = "cx33"
+  default     = "cpx32"
 }
 
 variable "location" {
@@ -107,6 +107,13 @@ locals {
     # is placed out-of-band (the live deploy scp'd a locally-built `GOOS=linux go build`).
     bazelscaleset_version = "TODO-release"
     bazelscaleset_sha256  = "TODO-sha256"
+    # Go toolchain. MUST match go.mod's `go` directive: the workflows that do not go
+    # through Bazel run the system `go` directly (the libfdbc cgo build hardcodes
+    # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on
+    # PATH fails those jobs with `go: command not found` — exit 127, not a test failure.
+    # Nothing installed it before: the old boxes were provisioned by hand.
+    go_version = "1.26.5"
+    go_sha256  = "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"
     # bazelisk launcher (reads .bazelversion → Bazel 9.0.1; this is just the launcher).
     bazelisk_version = "1.28.1"
     bazelisk_sha256  = "22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8"
@@ -175,6 +182,8 @@ resource "hcloud_server" "runner" {
     runner_ephemeral    = var.runner_ephemeral
     runner_version      = local.versions.runner_version
     runner_sha256       = local.versions.runner_sha256
+    go_version          = local.versions.go_version
+    go_sha256           = local.versions.go_sha256
     bazelisk_version    = local.versions.bazelisk_version
     bazelisk_sha256     = local.versions.bazelisk_sha256
     just_version        = local.versions.just_version
@@ -237,7 +246,7 @@ variable "runner_registration_token" {
 variable "runner_pool_types" {
   description = "Per-index server type for pool runners (falls back to the last entry when runner_count exceeds the list; mixed because Hetzner pools go out of stock — cx33 was unavailable at first provision)"
   type        = list(string)
-  default     = ["cx33", "cx33", "cx33", "ccx23"]
+  default     = ["cpx32", "cpx32", "cpx32", "cpx32"]
 }
 
 variable "runner_pool_locations" {
@@ -263,6 +272,8 @@ resource "hcloud_server" "runner_pool" {
     runner_ephemeral    = false
     runner_version      = local.versions.runner_version
     runner_sha256       = local.versions.runner_sha256
+    go_version          = local.versions.go_version
+    go_sha256           = local.versions.go_sha256
     bazelisk_version    = local.versions.bazelisk_version
     bazelisk_sha256     = local.versions.bazelisk_sha256
     just_version        = local.versions.just_version
