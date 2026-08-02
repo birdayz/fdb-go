@@ -290,6 +290,7 @@ go_test(
         "runner_test.go",
         "save_error_test.go",
         "scan_limit_test.go",
+        "scan_limiter_anchor_test.go",
         "scan_properties_test.go",
         "scan_test.go",
         "schema_migration_test.go",

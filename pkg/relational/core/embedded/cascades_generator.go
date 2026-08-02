@@ -1680,6 +1680,22 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// setFailOnScanLimitReached(true)). Default off.
 	props.FailOnScanLimitReached = r.conn.failOnScanLimitReached
 
+	// Inside an explicit transaction the scan/time/byte counters are
+	// TRANSACTION-scoped (RFC-198 Decision 5): every page of every statement
+	// charges one shared ScanLimiterState held on the embeddedTx, so N pages
+	// get one budget against FDB's 5-second wall instead of N fresh 4s
+	// budgets — Java's transaction-scoped ExecuteState plus its
+	// transactionCreateTime anchor, reproduced by one object. The state's
+	// time anchor is corrected to the read-version instant by
+	// preflightTxBudget before each page. Auto-commit keeps the fresh
+	// per-page state DefaultExecutePropertiesIn minted above — a page IS a
+	// transaction there. The armed record/byte limits are opt-in, so the
+	// whole-transaction tightening reaches only callers who armed them
+	// (Decision 5a).
+	if r.tx != nil {
+		props.ScanState = r.tx.scanStateIn(r.env())
+	}
+
 	// RFC-130: thread the statement-wide ExecuteState into this page's props so
 	// the in-memory buffering operators charge the shared memory byte budget.
 	// The SAME pointer is assigned every page, so the budget survives the
@@ -1799,6 +1815,11 @@ func (r *paginatingRows) fetchPage() error {
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
 	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if r.tx != nil {
+			if err := r.preflightTxBudget(rctx); err != nil {
+				return nil, err
+			}
+		}
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 
@@ -1898,6 +1919,54 @@ func (r *paginatingRows) fetchPage() error {
 
 	if txErr != nil {
 		return translateExecErrorCtx(r.ctx, txErr)
+	}
+	return nil
+}
+
+// preflightTxBudget enforces the whole-transaction time budget before a page
+// runs (RFC-198 Decisions 5 and 6, interim state). The budget is anchored on
+// the CLIENT'S READ-VERSION INSTANT — when FDB's 5-second MVCC window actually
+// opened — never on statement start (the refuted proxy: a first statement need
+// not take a read version at all) and never on BeginTx (an idle transaction
+// has no window yet).
+//
+// Three arms:
+//   - the backend cannot report the instant (the cgo escape hatch has no such
+//     accessor), or no read version has been taken yet: no window is open, the
+//     page proceeds on the fresh statement-anchored budget;
+//   - the window is open and the budget remains: re-anchor the shared
+//     transaction ScanLimiterState on the instant so every leaf cursor's
+//     elapsed measurement counts from the true window start (idempotent
+//     between GRVs), and proceed;
+//   - the budget is exhausted: fail 40001 NAMING THE 5-SECOND WINDOW. It is
+//     40001 and not 54F01 because no limit the caller can raise makes an FDB
+//     transaction live longer than five seconds, and it is the same code
+//     translateFDBCode assigns to FDB's own transaction_too_old (1007), so
+//     retry logic is uniform whether the driver pre-empts or FDB does.
+//     Pre-empting here also keeps the zero-progress liveness tripwire honest:
+//     without it an exhausted budget produces a rowless unadvanced page and a
+//     54F01 telling the user to raise limits that are not the problem.
+//
+// INTERIM, by RFC-198 Decision 6: the end state is Java's clean stop — a
+// transaction-bound continuation with reason TRANSACTION_LIMIT_REACHED and the
+// transaction left open — which needs RFC-203's in-transaction continuation
+// surface (OptContinuation is still rejected at this head). The stated
+// retirement condition: when RFC-203's G12a/G12b land, this error becomes a
+// boundary and the test written for it is rewritten, not deleted.
+func (r *paginatingRows) preflightTxBudget(rctx *recordlayer.FDBRecordContext) error {
+	rep, ok := rctx.Transaction().(fdb.ReadVersionInstantReporter)
+	if !ok {
+		return nil
+	}
+	instant, ok := rep.ReadVersionInstant()
+	if !ok {
+		return nil
+	}
+	env := r.env()
+	r.tx.scanStateIn(env).AnchorAt(instant)
+	if env.Since(instant) >= txPageTimeLimit {
+		return api.NewError(api.ErrCodeSerializationFailure,
+			"transaction read budget exhausted: the explicit transaction's reads are bound to FDB's 5-second MVCC window, which opened at the transaction's first read; commit sooner or decompose the work into smaller transactions")
 	}
 	return nil
 }

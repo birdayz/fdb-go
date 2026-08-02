@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/wire"
 
@@ -195,6 +196,36 @@ type embeddedTx struct {
 	// transaction-scoped object dies on (result sets here; the schema-cache
 	// binding and the per-transaction store follow the same flag).
 	terminated atomic.Bool
+
+	// scanState is the TRANSACTION-scoped scanned-records/scanned-bytes/time
+	// counter set (RFC-198 Decision 5). Minted lazily on first use through
+	// NewScanLimiterStateIn(env) — the seamed constructor — and shared by
+	// every page of every statement in this transaction, so N pages get one
+	// budget against FDB's 5-second wall instead of N fresh 4s budgets. Its
+	// time anchor is re-anchored to the client's read-version instant at each
+	// page preflight (paginatingRows.preflightTxBudget); the counters are
+	// Java's transaction-scoped ExecuteState by another name
+	// (ExecuteProperties.java Builder copies the state reference, and
+	// newExecuteProperties runs once per transaction). Auto-commit statements
+	// never see this field — each page stays its own transaction with its own
+	// fresh state, unchanged.
+	//
+	// NOT to be confused with paginatingRows.execState (RFC-130's memory byte
+	// budget), which deliberately stays STATEMENT-scoped: a memory budget is a
+	// property of one statement's buffering operators, and sharing it across a
+	// transaction would make the third statement fail for memory the first two
+	// released.
+	scanState *recordlayer.ScanLimiterState
+}
+
+// scanStateIn returns the transaction-scoped ScanLimiterState, minting it on
+// first use through the seamed constructor so the sim clock governs the anchor
+// and every elapsed measurement.
+func (tx *embeddedTx) scanStateIn(env *dst.Env) *recordlayer.ScanLimiterState {
+	if tx.scanState == nil {
+		tx.scanState = recordlayer.NewScanLimiterStateIn(env)
+	}
+	return tx.scanState
 }
 
 // terminate marks the transaction ended. Idempotent; called at all four doors.

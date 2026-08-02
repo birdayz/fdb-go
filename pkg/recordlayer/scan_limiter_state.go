@@ -131,6 +131,27 @@ func NewScanLimiterStateIn(env *dst.Env) *ScanLimiterState {
 	return &ScanLimiterState{startTime: env.Now(), env: env}
 }
 
+// AnchorAt moves the time anchor to t, keeping the records/bytes counters.
+// It exists for the ONE state whose lifetime outlives the instant it was
+// minted at: the transaction-scoped state of an explicit SQL transaction
+// (RFC-198 Decision 5). That state is minted at the first statement's
+// executeProps — before any read has happened — but the budget it enforces is
+// FDB's 5-second MVCC window, which opens at the GRV. Minting time is the
+// refuted proxy (a first statement need not take a read version at all: a
+// RYW-covered read or a store-state-cache hit reads nothing), so the page
+// preflight re-anchors on the client's read-version instant once one exists.
+// Re-anchoring is idempotent between GRVs, and a retry's fresh GRV re-anchors
+// automatically at the next page.
+//
+// A zero t is ignored: "no instant" must never look like an epoch-zero anchor
+// that makes every elapsed measurement astronomical.
+func (s *ScanLimiterState) AnchorAt(t time.Time) {
+	if s == nil || t.IsZero() {
+		return
+	}
+	s.startTime = t
+}
+
 // RecordsScanned returns the number of records charged against this state so
 // far. A nil receiver (no shared state configured) reports zero.
 func (s *ScanLimiterState) RecordsScanned() int {
