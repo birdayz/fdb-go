@@ -464,6 +464,46 @@ reworked to Java's shape before it becomes reachable.
   `TypeCodeRecord` operands with Java's error, and pin it — including the
   `IS NULL` case vector.yamsql keeps commented out. If Go currently accepts
   any of it, that is a conformance bug to close here.
+
+  **AMENDED — measured, and the bullet above is wrong on two counts.** The
+  measurement is `conformance/whole_struct_comparison_java_probe_test.go`,
+  both engines live against the 4.12.11.0 conformance server.
+
+  1. *There is no clean SQLSTATE to pin Go to.* Java's rejection comes from
+     `RelOpValue`'s primitive-comparand assert (`RelOpValue.java:333,:345,
+     :350` → `SemanticException.ErrorCode.
+     COMPARAND_TO_COMPARISON_IS_OF_COMPLEX_TYPE`, declared at
+     `SemanticException.java:45`), and `ExceptionUtil.translateErrorCode`'s
+     switch has **no case** for that code (`ExceptionUtil.java:88-103`), so it
+     falls through to `default: INTERNAL_ERROR` — `ErrorCode.java:177`,
+     `XX000`. What the probe MEASURES at the surface is weaker still: the raw
+     SemanticException text with an EMPTY sqlstate, not `XX000`. So the
+     original bullet's "reject with Java's error" describes an internal error
+     leaking to the client, and "pin it" would pin an artefact of a missing
+     switch case. Go rejects the same shapes today with `0AF00` "Cascades
+     planner could not plan query" — a different code for a shape both engines
+     refuse, which is the `engine-gap:error-class` family, not a silent-wrong.
+
+  2. *`IS NULL` on a whole struct must NOT be broken in Go.* vector.yamsql
+     keeps `where embedding is null` and `embeddingGrouped is null` commented
+     out against upstream issue 3700 — that is a Java **limitation filed as a
+     bug**, not a designed rejection, and Java answers those shapes with the
+     same internal error. Go answers them CORRECTLY (measured: `WHERE home IS
+     NULL` → the NULL-struct row, `IS NOT NULL` → the other, `SELECT home IS
+     NULL` → `true`). Deleting that to match an internal error would trade a
+     right answer for a wrong one, and the read-side reach rule is explicit
+     that a capability Java lacks entirely is an allowed extension so long as
+     wire compat holds — which it does; nothing here touches what is written.
+     The negative pin the original bullet asked for is therefore recorded as
+     what it is: the two commented-out vector.yamsql shapes are Java's
+     limitation, and the probe is the standing record of Go answering them.
+
+  One thing the probe DID surface that is a genuine Go defect, and it is
+  neither of the above: `SELECT id FROM T_S WHERE home = home` returns ZERO
+  rows in Go where the non-NULL row should match. Java errors on it. Go
+  neither errors nor answers correctly — it plans a whole-struct comparison
+  and silently evaluates it false. That is the one arm of this bullet that is
+  still open, and it is silent-wrong rather than an error-class difference.
 - The array-element landmine (§3 item 6) is closed at the type-system level:
   array types model their element type (Java `Type.Array` does; "7.6 does
   not model message element types" is the standing admission), retiring the

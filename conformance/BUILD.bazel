@@ -139,6 +139,7 @@ go_test(
         "vector_index_conformance_test.go",
         "version_conformance_test.go",
         "version_index_conformance_test.go",
+        "whole_struct_comparison_java_probe_test.go",
         "yamsql_cross_engine_conformance_test.go",
     ],
     data = [
