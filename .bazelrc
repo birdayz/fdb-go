@@ -22,6 +22,20 @@ test --build_event_json_file=.bazel-bep.jsonl
 # on first run after adding, then stays stable.
 test --test_arg="-test.v"
 
+# ...which makes a large suite's output exceed Bazel's default 1 MiB console
+# budget, and Bazel DISCARDS an over-budget stream rather than truncating it:
+#   stdout (...) 1181390 exceeds maximum size of
+#   --experimental_ui_max_stdouterr_bytes=1048576 bytes; skipping
+# A red then names nothing at all. The factory corpus already sits past that
+# default on a PASSING run — 5000 parallel subtests cost ~1.18 MB in -test.v
+# framing lines (RUN/PAUSE/CONT/result) before any failure detail exists — so
+# every failure of that target was unrecoverable from the log, and a retry
+# overwrites the on-disk test.log. Raise the budget well above the framing
+# floor. //pkg/relational/conformance/factorycorpus:factorycorpus_test's
+# TestSubtestFramingFitsLogCap reads the value below and fails when the corpus
+# grows into it, so this number cannot silently go stale.
+test --experimental_ui_max_stdouterr_bytes=16777216
+
 # Testcontainers need Docker socket and HOME for config
 test --test_env=HOME
 

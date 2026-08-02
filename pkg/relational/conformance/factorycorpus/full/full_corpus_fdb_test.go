@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,22 @@ func TestFDB_FactoryCorpusFull(t *testing.T) {
 	}
 	t.Logf("executing the full committed corpus: %d scenarios", len(files))
 
+	// A scenario's own failure text is printed where it happens, buried in one
+	// subtest among thousands. The summary below is what makes a red legible:
+	// it is written to stderr, unbuffered and last, after every parallel
+	// subtest has reported, so the scenario names land at the end of the stream
+	// no matter how much framing preceded them. Bounded by construction — see
+	// factorycorpus.FailureSummary.
+	var mu sync.Mutex
+	var failed []factorycorpus.ScenarioFailure
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if s := factorycorpus.FailureSummary(failed, len(files), 0); s != "" {
+			fmt.Fprint(os.Stderr, "\n"+s)
+		}
+	})
+
 	for _, f := range files {
 		f := f
 		t.Run(f.Header.Name, func(t *testing.T) {
@@ -95,6 +112,12 @@ func TestFDB_FactoryCorpusFull(t *testing.T) {
 			// failure wearing the quietest possible output. It demands every
 			// committed stanza actually asserted.
 			if err := factorycorpus.CheckResult(f, res); err != nil {
+				mu.Lock()
+				failed = append(failed, factorycorpus.ScenarioFailure{
+					Name: f.Header.Name, Path: f.Path,
+					Seed: f.Header.Seed, Date: f.Header.Date, Err: err,
+				})
+				mu.Unlock()
 				t.Fatal(err)
 			}
 		})
