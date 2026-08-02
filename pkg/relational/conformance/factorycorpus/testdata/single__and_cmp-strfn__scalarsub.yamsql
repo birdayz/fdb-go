@@ -18,7 +18,7 @@
 # family: single|and(cmp+strfn)|scalarsub
 #
 # scenario: fc_0000000559_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 559
 # query-index: 2
 # projection: 0
@@ -100,7 +100,7 @@ test_block:
           - {ID: 3, A: 4, B: 6, C: !null '', S: !null '', F: !null '', D: 9.007199254740992e+15, E: !f 5.0}
 #
 # scenario: fc_0000000559_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 559
 # query-index: 2
 # projection: 1
@@ -182,7 +182,7 @@ test_block:
           - {ID: 3}
 #
 # scenario: fc_0000000559_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 559
 # query-index: 2
 # projection: 2

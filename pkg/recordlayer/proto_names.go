@@ -11,12 +11,23 @@ import (
 //
 // A user identifier (table, struct type, or column name) becomes a protobuf
 // identifier by escaping the three character sequences protobuf cannot carry
-// in a name: "__" -> "__0", "$" -> "__1", "." -> "__2". The mapping is
-// reversible via ToUserIdentifier. These escaped names are WIRE: they are the
-// message and field names inside the persisted RecordMetaData descriptor, so
-// the escaping must match Java byte-for-byte (e.g. Java stores the struct
-// type "x$$" as message "x__1__1" and the table "foo.tableA" as
-// "foo__2tableA" — pinned by the RFC-204 descriptor byte-goldens).
+// in a name: "__" -> "__0", "$" -> "__1", "." -> "__2". ToUserIdentifier
+// decodes those escape tokens back — but the mapping is NOT injective:
+// a single leading underscore followed by a special character collides with
+// a literal triple-underscore name ("_$" and "___1" both escape to
+// "___1"; "_." and "___2" both escape to "___2"), because the escape scan
+// replaces the special character without noticing the preceding "_". This
+// is Java's OWN defect (INVALID_START_SEQUENCES guards only name STARTS,
+// ProtoUtils.java), reproduced faithfully — the escaped names are WIRE, so
+// diverging to fix it would make Go store different bytes than Java for
+// the same DDL. The collision witnesses are pinned as reproduced-upstream
+// in proto_names_test.go.
+//
+// These escaped names are WIRE: they are the message and field names inside
+// the persisted RecordMetaData descriptor, so the escaping must match Java
+// byte-for-byte (e.g. Java stores the struct type "x$$" as message
+// "x__1__1" and the table "foo.tableA" as "foo__2tableA" — pinned by the
+// RFC-204 descriptor byte-goldens).
 
 const (
 	doubleUnderscoreEscape = "__0"

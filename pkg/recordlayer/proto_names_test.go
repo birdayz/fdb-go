@@ -71,3 +71,32 @@ func TestCheckValidProtoBufCompliantName(t *testing.T) {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
+
+// TestToProtoBufCompliantName_CollisionWitnesses pins the two known
+// NON-injective pairs of the escaping — Java's own defect, reproduced
+// faithfully because the escaped names are wire: a leading "_" followed by
+// a special character produces the same escaped name as the literal
+// triple-underscore identifier. If either pair stops colliding, Go's
+// escaping has diverged from ProtoUtils and stores different bytes than
+// Java for the same DDL — that is a WIRE regression, not a fix; align with
+// upstream first.
+func TestToProtoBufCompliantName_CollisionWitnesses(t *testing.T) {
+	t.Parallel()
+	for _, pair := range [][2]string{
+		{"_$", "___1"},
+		{"_.", "___2"},
+	} {
+		a, errA := ToProtoBufCompliantName(pair[0])
+		if errA != nil {
+			t.Fatalf("escape(%q): %v", pair[0], errA)
+		}
+		b, errB := ToProtoBufCompliantName(pair[1])
+		if errB != nil {
+			t.Fatalf("escape(%q): %v", pair[1], errB)
+		}
+		if a != b {
+			t.Fatalf("escape(%q)=%q and escape(%q)=%q no longer collide — the escaping diverged from ProtoUtils",
+				pair[0], a, pair[1], b)
+		}
+	}
+}

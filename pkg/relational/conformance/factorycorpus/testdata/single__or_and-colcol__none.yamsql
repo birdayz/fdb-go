@@ -18,7 +18,7 @@
 # family: single|or(and+colcol)|none
 #
 # scenario: fc_0000000560_q6_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 560
 # query-index: 6
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 16, A: 3, B: 9, C: !null '', S: "b ", F: !null '', D: 5.0, E: !null ''}
 #
 # scenario: fc_0000000560_q6_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 560
 # query-index: 6
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 16}
 #
 # scenario: fc_0000000560_q6_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 560
 # query-index: 6
 # projection: 2
@@ -282,7 +282,7 @@ test_block:
           - {ID: 16, A: 3, C: !null '', F: !null '', E: !null ''}
 #
 # scenario: fc_0000000804_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 804
 # query-index: 3
 # projection: 0
@@ -370,7 +370,7 @@ test_block:
           - {ID: 2, A: 9, B: 7, C: !null '', S: !null '', F: true, D: 5.0, E: !f 2.0}
 #
 # scenario: fc_0000000804_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 804
 # query-index: 3
 # projection: 1
@@ -458,7 +458,7 @@ test_block:
           - {ID: 2}
 #
 # scenario: fc_0000000804_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 804
 # query-index: 3
 # projection: 2

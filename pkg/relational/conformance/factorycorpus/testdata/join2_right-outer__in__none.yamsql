@@ -18,7 +18,7 @@
 # family: join2.right-outer|in|none
 #
 # scenario: fc_0000000741_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 741
 # query-index: 1
 # projection: 0
@@ -122,7 +122,7 @@ test_block:
           - {L_ID: 23, L_A: 3, L_B: 8, L_C: !null '', L_S: "epsilon", L_F: false, L_D: 5.0, L_E: !null '', R_ID: 3, R_A: 4611686018427387904, R_B: 2, R_C: !null '', R_S: "alpha", R_F: false, R_D: 9.007199254740992e+15, R_E: !f 2.0}
 #
 # scenario: fc_0000000741_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 741
 # query-index: 1
 # projection: 1
@@ -226,7 +226,7 @@ test_block:
           - {L_ID: 23, R_ID: 3}
 #
 # scenario: fc_0000000741_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 741
 # query-index: 1
 # projection: 2
@@ -330,7 +330,7 @@ test_block:
           - {R_ID: 3, L_ID: 23, L_B: 8}
 #
 # scenario: fc_0000000999_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 999
 # query-index: 1
 # projection: 0
@@ -474,7 +474,7 @@ test_block:
           - {L_ID: 23, L_A: !null '', L_B: 7, L_C: 0, L_S: !null '', L_F: false, L_D: !null '', L_E: !f 1.0, R_ID: 15, R_A: 2, R_B: 0, R_C: 8, R_S: "gamma", R_F: false, R_D: 4.0, R_E: !f 4.0}
 #
 # scenario: fc_0000000999_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 999
 # query-index: 1
 # projection: 1
@@ -618,7 +618,7 @@ test_block:
           - {L_ID: 23, R_ID: 15}
 #
 # scenario: fc_0000000999_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 999
 # query-index: 1
 # projection: 2
@@ -762,7 +762,7 @@ test_block:
           - {R_ID: 15, L_ID: 23, L_B: 7}
 #
 # scenario: fc_0000001141_q6_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1141
 # query-index: 6
 # projection: 0
@@ -898,7 +898,7 @@ test_block:
           - {L_ID: 22, L_A: 1, L_B: 2, L_C: 6, L_S: " c ", L_F: true, L_D: !null '', L_E: !f 4.0, R_ID: 22, R_A: 1, R_B: 2, R_C: 6, R_S: " c ", R_F: true, R_D: !null '', R_E: !f 4.0}
 #
 # scenario: fc_0000001141_q6_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1141
 # query-index: 6
 # projection: 1
@@ -1034,7 +1034,7 @@ test_block:
           - {L_ID: 22, R_ID: 22}
 #
 # scenario: fc_0000001141_q6_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1141
 # query-index: 6
 # projection: 2

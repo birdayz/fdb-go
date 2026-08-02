@@ -18,7 +18,7 @@
 # family: single|and(bit+cast+cmp)|none
 #
 # scenario: fc_0000000846_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 846
 # query-index: 5
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 3, A: 5, B: 7, C: !null '', S: " a", F: !null '', D: !null '', E: !f 5.0}
 #
 # scenario: fc_0000000846_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 846
 # query-index: 5
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 3}
 #
 # scenario: fc_0000000846_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 846
 # query-index: 5
 # projection: 2

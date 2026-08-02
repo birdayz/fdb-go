@@ -18,7 +18,7 @@
 # family: single|and(between+bit)|none
 #
 # scenario: fc_0000000504_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 504
 # query-index: 4
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 15, A: !null '', B: 6, C: 1, S: "alpha", F: !null '', D: 9.007199254740992e+15, E: !f -1.6777216e+07}
 #
 # scenario: fc_0000000504_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 504
 # query-index: 4
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 15}
 #
 # scenario: fc_0000000504_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 504
 # query-index: 4
 # projection: 2

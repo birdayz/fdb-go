@@ -205,8 +205,9 @@ func TestStructDDL_NestedPrimaryKey(t *testing.T) {
 
 func TestStructDDL_NullabilityVariantsCollapse(t *testing.T) {
 	t.Parallel()
-	// One named struct used nullable, NULL-marked, and as an array element
-	// shares ONE descriptor — Java's nullability collapse
+	// One named struct used as two plain (nullable) columns across two
+	// tables AND as an array element shares ONE descriptor — Java's
+	// nullability collapse
 	// (RecordLayerTable.calculateDataType TODO), reproduced because the
 	// collapsed descriptor is the wire shape. If this starts emitting per-
 	// nullability descriptors, upstream fixed the TODO — re-measure before

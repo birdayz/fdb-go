@@ -18,7 +18,7 @@
 # family: single|or(and+bit)|none
 #
 # scenario: fc_0000000162_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 162
 # query-index: 1
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 2, A: !null '', B: 2, C: 2, S: " a", F: false, D: 7.0, E: !f 1.0}
 #
 # scenario: fc_0000000162_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 162
 # query-index: 1
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 2}
 #
 # scenario: fc_0000000162_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 162
 # query-index: 1
 # projection: 2

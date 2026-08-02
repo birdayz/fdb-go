@@ -18,7 +18,7 @@
 # family: join2.inner|and(arith+between+colcol)|none
 #
 # scenario: fc_0000000257_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 257
 # query-index: 1
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 24, L_A: !null '', L_B: 1, L_C: 8, L_S: "beta", L_F: false, L_D: 6.0, L_E: !f 0.1, R_ID: 24, R_A: !null '', R_B: 1, R_C: 8, R_S: "beta", R_F: false, R_D: 6.0, R_E: !f 0.1}
 #
 # scenario: fc_0000000257_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 257
 # query-index: 1
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 24, R_ID: 24}
 #
 # scenario: fc_0000000257_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 257
 # query-index: 1
 # projection: 2

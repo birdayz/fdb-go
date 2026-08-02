@@ -18,7 +18,7 @@
 # family: single|or(between+cmp)|none
 #
 # scenario: fc_0000000211_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 211
 # query-index: 3
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 8, A: !null '', B: 6, C: 4611686018427387904, S: !null '', F: true, D: 0.0, E: !f 8.0}
 #
 # scenario: fc_0000000211_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 211
 # query-index: 3
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 8}
 #
 # scenario: fc_0000000211_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 211
 # query-index: 3
 # projection: 2

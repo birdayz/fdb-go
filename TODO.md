@@ -13750,3 +13750,27 @@ None is speculative: each was re-verified against the tree before booking.
   extending the cross-engine corpus where Java's bit-identity `=` diverges by
   design, i.e. new divergence classifications — its own corpus lap. Their
   comments now say so.
+
+- [ ] **CQ-88 (MED/L, cost model — statistics source, RFC-204 fallout) — port
+  the Java-sanctioned per-type statistics source: COUNT-type index reads +
+  `CardinalitiesProperty`.** RFC-204 P1 removed the record count key from
+  relational templates (the stored bytes must match Java's
+  `RecordMetadataSerializer`, which never sets one; Java core marks
+  `getRecordCountKey` `@API(DEPRECATED)`, superseded by COUNT-type indexes).
+  That made `fetchTableStatistics` (cascades_generator.go) dead on every
+  SQL-created schema: the cost model now plans on its 1e6 default for every
+  table. Measured consequences, each pinned with a re-arm comment:
+  `multiway_join_order_probe_test.go` no longer proves driving from the 1-row
+  table (relaxed to "not from the 200-row one");
+  `pkg/simfdb/hunt/golden/testdata/joins.golden` re-blessed with the flipped
+  join order; `statistics_fdb_test.go` renamed to
+  `TestFDB_DefaultStatisticsPlanSelection` (it proves size-independent index
+  selection, NOT a stats pipeline). The replacement, exactly as Java does it:
+  (a) read per-type row counts from COUNT-type aggregate indexes when the
+  schema declares them (`IndexTypes.COUNT`, grouped by record type);
+  (b) port `CardinalitiesProperty` (fdb-record-layer-core
+  query/plan/cascades/properties/CardinalitiesProperty.java) so the planner
+  derives cardinality bounds structurally where no index exists.
+  DONE = the join-order probe's exact-driver assertion is restored
+  (drive from the 1-row table) with a COUNT index declared in its DDL, and
+  the joins golden decision is re-derived from real counts.

@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"errors"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -269,6 +271,18 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 			s.MetadataName(), tmpl.MetadataName(), tmpl.Version())
 	}
 
+	// A REBIND (an existing schema row moving to different template
+	// metadata) must pass the metadata-evolution validator before the row
+	// flips: the record type key is the LEADING element of every stored
+	// record key, so a key-changing evolution makes the store read old type
+	// A's rows as new type B's — silent data corruption, not an error. This
+	// is the same guard the frl CLI applies (the faithful
+	// MetaDataEvolutionValidator.java:418 port); RepairSchema funnels
+	// through here too.
+	if err := c.validateSchemaRebind(txn, s); err != nil {
+		return err
+	}
+
 	rec := &gen.Schemas{
 		DATABASE_ID:      proto.String(s.DatabaseName()),
 		SCHEMA_NAME:      proto.String(s.MetadataName()),
@@ -277,6 +291,45 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
 		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema")
+	}
+	return nil
+}
+
+// validateSchemaRebind runs the ported MetaDataEvolutionValidator over an
+// existing schema binding when SaveSchema would change which template
+// metadata the schema resolves to. A first-time save (no existing row) and a
+// no-op save (same template name + version) validate nothing. When the OLD
+// binding's template version no longer exists in the catalog, there is
+// nothing to diff against and the save proceeds — the guard protects live
+// data under a KNOWN old shape, it cannot resurrect a dropped one.
+func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s api.Schema) error {
+	existing, err := c.LoadSchema(txn, s.DatabaseName(), s.MetadataName())
+	if err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) &&
+			(apiErr.Code == api.ErrCodeUndefinedSchema || apiErr.Code == api.ErrCodeUnknownSchemaTemplate) {
+			return nil
+		}
+		return err
+	}
+	oldTmpl := existing.SchemaTemplate()
+	newTmpl := s.SchemaTemplate()
+	if oldTmpl.MetadataName() == newTmpl.MetadataName() && oldTmpl.Version() == newTmpl.Version() {
+		return nil
+	}
+	oldRL, oldOK := oldTmpl.(*metadata.RecordLayerSchemaTemplate)
+	newRL, newOK := newTmpl.(*metadata.RecordLayerSchemaTemplate)
+	if !oldOK || !newOK {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"schema rebind of %s/%s cannot be validated: template types %T -> %T",
+			s.DatabaseName(), s.MetadataName(), oldTmpl, newTmpl)
+	}
+	if verr := recordlayer.ValidateEvolution(oldRL.Underlying(), newRL.Underlying()); verr != nil {
+		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
+			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",
+			s.DatabaseName(), s.MetadataName(),
+			oldTmpl.MetadataName(), oldTmpl.Version(),
+			newTmpl.MetadataName(), newTmpl.Version())
 	}
 	return nil
 }

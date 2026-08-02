@@ -18,7 +18,7 @@
 # family: single|or(and+numfn)|exists
 #
 # scenario: fc_0000000654_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 654
 # query-index: 3
 # projection: 0
@@ -80,7 +80,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000654_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 654
 # query-index: 3
 # projection: 1
@@ -142,7 +142,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000654_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 654
 # query-index: 3
 # projection: 2
@@ -204,7 +204,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000001070_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1070
 # query-index: 0
 # projection: 0
@@ -260,7 +260,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001070_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1070
 # query-index: 0
 # projection: 1
@@ -316,7 +316,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001070_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1070
 # query-index: 0
 # projection: 2
@@ -372,7 +372,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001078_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1078
 # query-index: 0
 # projection: 0
@@ -416,7 +416,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001078_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1078
 # query-index: 0
 # projection: 1
@@ -460,7 +460,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001078_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1078
 # query-index: 0
 # projection: 2

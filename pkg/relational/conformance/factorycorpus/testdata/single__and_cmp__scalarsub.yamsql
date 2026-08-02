@@ -18,7 +18,7 @@
 # family: single|and(cmp)|scalarsub
 #
 # scenario: fc_0000000657_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 657
 # query-index: 1
 # projection: 0
@@ -102,7 +102,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000657_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 657
 # query-index: 1
 # projection: 1
@@ -186,7 +186,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000657_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 657
 # query-index: 1
 # projection: 2
@@ -270,7 +270,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001030_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1030
 # query-index: 1
 # projection: 0
@@ -352,7 +352,7 @@ test_block:
           - {ID: 22, A: 6, B: 9, C: !null '', S: "", F: false, D: 7.0, E: !f 7.0}
 #
 # scenario: fc_0000001030_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1030
 # query-index: 1
 # projection: 1
@@ -434,7 +434,7 @@ test_block:
           - {ID: 22}
 #
 # scenario: fc_0000001030_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1030
 # query-index: 1
 # projection: 2

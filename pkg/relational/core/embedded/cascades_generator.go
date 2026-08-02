@@ -1967,10 +1967,21 @@ func translateExecError(err error) error {
 // statistics are best-effort; a failed stats read should never prevent
 // query planning.
 //
+// DEAD ON EVERY PRODUCTION PATH for SQL-created schemas: relational
+// templates carry NO record count key — Java's RecordMetadataSerializer
+// never sets one (the stored bytes must match Java's, and Java core marks
+// getRecordCountKey @API(DEPRECATED), superseded by COUNT-type indexes) —
+// so the countKey==nil arm below returns nil and the cost model runs on
+// defaults. The function is kept because it is still live for metadata
+// that DOES carry a RecordTypeKeyExpression count key (hand-built stores,
+// Java-authored legacy metadata opened through this engine). The
+// Java-sanctioned replacement — COUNT-type index reads +
+// CardinalitiesProperty — is booked in TODO.md.
+//
 // Only returns real statistics when the metadata uses RecordTypeKeyExpression
-// as the count key (the default for multi-table SQL schemas). For intermingled
-// schemas (EmptyKey), per-type counts are unavailable — returns nil rather
-// than fabricating an equal distribution that would mislead the cost model.
+// as the count key. For an EmptyKey count key, per-type counts are
+// unavailable — returns nil rather than fabricating an equal distribution
+// that would mislead the cost model.
 func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *recordlayer.RecordMetaData) properties.StatisticsProvider {
 	c := g.c
 	if c.sess == nil || c.sess.DB == nil || md == nil {

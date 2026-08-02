@@ -18,7 +18,7 @@
 # family: single|and(bit)|exists
 #
 # scenario: fc_0000000995_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 995
 # query-index: 2
 # projection: 0
@@ -96,7 +96,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000995_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 995
 # query-index: 2
 # projection: 1
@@ -174,7 +174,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000995_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 995
 # query-index: 2
 # projection: 2

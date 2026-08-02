@@ -18,7 +18,7 @@
 # family: single|between|none
 #
 # scenario: fc_0000000250_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 250
 # query-index: 1
 # projection: 1
@@ -106,7 +106,7 @@ test_block:
           - {ID: 24}
 #
 # scenario: fc_0000000250_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 250
 # query-index: 1
 # projection: 2
@@ -194,7 +194,7 @@ test_block:
           - {ID: 24, A: 6, C: !null '', F: true, E: !f 2.0}
 #
 # scenario: fc_0000000956_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 956
 # query-index: 3
 # projection: 1
@@ -282,7 +282,7 @@ test_block:
           - {ID: 16}
 #
 # scenario: fc_0000000956_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 956
 # query-index: 3
 # projection: 2

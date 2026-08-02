@@ -18,7 +18,7 @@
 # family: single|and(cmp+numfn)|none
 #
 # scenario: fc_0000000007_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 7
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 19, A: !null '', B: 9, C: 9, S: " a", F: true, D: 3.0, E: !f 0.1}
 #
 # scenario: fc_0000000007_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 7
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 19}
 #
 # scenario: fc_0000000007_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 7
 # query-index: 2
 # projection: 2
@@ -282,7 +282,7 @@ test_block:
           - {ID: 19, A: !null '', C: 9, F: true, E: !f 0.1}
 #
 # scenario: fc_0000000378_q7_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 7
 # projection: 0
@@ -370,7 +370,7 @@ test_block:
           - {ID: 24, A: 4611686018427387904, B: 7, C: !null '', S: " a", F: true, D: 1.0, E: !null ''}
 #
 # scenario: fc_0000000378_q7_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 7
 # projection: 1
@@ -458,7 +458,7 @@ test_block:
           - {ID: 24}
 #
 # scenario: fc_0000000378_q7_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 7
 # projection: 2
@@ -546,7 +546,7 @@ test_block:
           - {ID: 24, A: 4611686018427387904, C: !null '', F: true, E: !null ''}
 #
 # scenario: fc_0000000388_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 388
 # query-index: 2
 # projection: 0
@@ -634,7 +634,7 @@ test_block:
           - {ID: 3, A: 5, B: 9, C: -1, S: !null '', F: false, D: 8.0, E: !f 3.0}
 #
 # scenario: fc_0000000388_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 388
 # query-index: 2
 # projection: 1
@@ -722,7 +722,7 @@ test_block:
           - {ID: 3}
 #
 # scenario: fc_0000000388_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 388
 # query-index: 2
 # projection: 2
@@ -810,7 +810,7 @@ test_block:
           - {ID: 3, A: 5, C: -1, F: false, E: !f 3.0}
 #
 # scenario: fc_0000000533_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 533
 # query-index: 0
 # projection: 0
@@ -898,7 +898,7 @@ test_block:
           - {ID: 22, A: !null '', B: 6, C: 0, S: !null '', F: !null '', D: 7.0, E: !f 1.0}
 #
 # scenario: fc_0000000533_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 533
 # query-index: 0
 # projection: 1
@@ -986,7 +986,7 @@ test_block:
           - {ID: 22}
 #
 # scenario: fc_0000000533_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 533
 # query-index: 0
 # projection: 2
@@ -1074,7 +1074,7 @@ test_block:
           - {ID: 22, A: !null '', C: 0, F: !null '', E: !f 1.0}
 #
 # scenario: fc_0000000633_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 633
 # query-index: 0
 # projection: 0
@@ -1162,7 +1162,7 @@ test_block:
           - {ID: 6, A: !null '', B: 0, C: !null '', S: "b ", F: !null '', D: 9.0, E: !f 7.0}
 #
 # scenario: fc_0000000633_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 633
 # query-index: 0
 # projection: 1
@@ -1250,7 +1250,7 @@ test_block:
           - {ID: 6}
 #
 # scenario: fc_0000000633_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 633
 # query-index: 0
 # projection: 2
@@ -1338,7 +1338,7 @@ test_block:
           - {ID: 6, A: !null '', C: !null '', F: !null '', E: !f 7.0}
 #
 # scenario: fc_0000000663_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 663
 # query-index: 1
 # projection: 0
@@ -1426,7 +1426,7 @@ test_block:
           - {ID: 15, A: 6, B: 5, C: 5, S: "beta", F: false, D: !null '', E: !f 6.0}
 #
 # scenario: fc_0000000663_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 663
 # query-index: 1
 # projection: 1
@@ -1514,7 +1514,7 @@ test_block:
           - {ID: 15}
 #
 # scenario: fc_0000000663_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 663
 # query-index: 1
 # projection: 2

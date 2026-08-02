@@ -18,7 +18,7 @@
 # family: single|and(!bit+!cast+bit+cmp+numfn)|none
 #
 # scenario: fc_0000001170_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1170
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 17, A: 3, B: 9, C: 1, S: "delta", F: !null '', D: !null '', E: !null ''}
 #
 # scenario: fc_0000001170_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1170
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 17}
 #
 # scenario: fc_0000001170_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1170
 # query-index: 2
 # projection: 2

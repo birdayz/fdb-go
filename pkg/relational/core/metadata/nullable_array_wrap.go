@@ -8,7 +8,7 @@ import (
 )
 
 // Port of Java's NullableArrayUtils.wrapArray (fdb-relational-core
-// com.apple.foundationdb.relational.util.NullableArrayUtils:79-190): a
+// com.apple.foundationdb.relational.util.NullableArrayUtils:79-219): a
 // descriptor-driven post-pass over a serialized key expression that inserts
 // the `values` hop wherever a referenced field is a NullableArrayWrapper
 // message (e.g. reviews.rating -> reviews.values.rating). The stored index

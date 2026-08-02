@@ -18,7 +18,7 @@
 # family: join2.inner|bit|none
 #
 # scenario: fc_0000001016_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1016
 # query-index: 1
 # projection: 0
@@ -96,7 +96,7 @@ test_block:
           - {L_ID: 1, L_A: 6, L_B: 4611686018427387904, L_C: -1, L_S: " c ", L_F: false, L_D: 3.0, L_E: !null '', R_ID: 21, R_A: 7, R_B: 1, R_C: !null '', R_S: "gamma", R_F: false, R_D: 8.0, R_E: !null ''}
 #
 # scenario: fc_0000001016_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1016
 # query-index: 1
 # projection: 1
@@ -174,7 +174,7 @@ test_block:
           - {L_ID: 1, R_ID: 21}
 #
 # scenario: fc_0000001016_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1016
 # query-index: 1
 # projection: 2

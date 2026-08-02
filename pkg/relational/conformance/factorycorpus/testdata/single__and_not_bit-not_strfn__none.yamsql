@@ -18,7 +18,7 @@
 # family: single|and(!bit+!strfn)|none
 #
 # scenario: fc_0000000156_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 156
 # query-index: 3
 # projection: 0

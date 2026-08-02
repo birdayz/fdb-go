@@ -18,7 +18,7 @@
 # family: single|or(cmp+in)|exists
 #
 # scenario: fc_0000000791_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 791
 # query-index: 5
 # projection: 0
@@ -68,7 +68,7 @@ test_block:
           - {ID: 23, A: !null '', B: 5, C: !null '', S: !null '', F: !null '', D: -9.007199254740992e+15, E: !f 0.1}
 #
 # scenario: fc_0000000791_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 791
 # query-index: 5
 # projection: 1
@@ -118,7 +118,7 @@ test_block:
           - {ID: 23}
 #
 # scenario: fc_0000000791_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 791
 # query-index: 5
 # projection: 2

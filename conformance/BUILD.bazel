@@ -146,7 +146,12 @@ go_test(
         # java_facts_conformance_test resolves it via runfiles and verifies each
         # tagged feature's roster Java? fact against the live Java server.
         "//pkg/relational/conformance/yamsql:testdata",
-    ],
+    ] + glob(
+        # keep: the RFC-204 committed template byte-goldens
+        # (rfc204_template_golden_test.go).
+        ["testdata/rfc204/*.binpb"],
+        allow_empty = True,
+    ),
     tags = [
         "conformance_java",
         "resources:memory:500",

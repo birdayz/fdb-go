@@ -18,7 +18,7 @@
 # family: single|and(cmp)|exists+scalarsub
 #
 # scenario: fc_0000000583_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 583
 # query-index: 0
 # projection: 0
@@ -90,7 +90,7 @@ test_block:
           - {ID: 11, A: !null '', B: 6, C: -1, S: "gamma", F: true, D: !null '', E: !f 5.0}
 #
 # scenario: fc_0000000583_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 583
 # query-index: 0
 # projection: 1
@@ -162,7 +162,7 @@ test_block:
           - {ID: 11}
 #
 # scenario: fc_0000000583_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 583
 # query-index: 0
 # projection: 2
@@ -234,7 +234,7 @@ test_block:
           - {ID: 11, A: !null '', C: -1, F: true, E: !f 5.0}
 #
 # scenario: fc_0000000590_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 590
 # query-index: 2
 # projection: 0
@@ -288,7 +288,7 @@ test_block:
           - {ID: 11, A: 3, B: 8, C: !null '', S: "delta", F: false, D: 6.0, E: !null ''}
 #
 # scenario: fc_0000000590_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 590
 # query-index: 2
 # projection: 1
@@ -342,7 +342,7 @@ test_block:
           - {ID: 11}
 #
 # scenario: fc_0000000590_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 590
 # query-index: 2
 # projection: 2

@@ -18,7 +18,7 @@
 # family: single|and(!arith+arith+cmp)|none
 #
 # scenario: fc_0000000202_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 202
 # query-index: 4
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000202_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 202
 # query-index: 4
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000202_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 202
 # query-index: 4
 # projection: 2

@@ -444,7 +444,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	}
 
 	// The union is Java's relational shape: a "RecordTypeUnion" message with
-	// the usage=UNION option (FileDescriptorSerializer.java:117-140). The
+	// the usage=UNION option (FileDescriptorSerializer.java:77-79). The
 	// ORIGINAL FileDescriptorProto is retained so RecordMetaData.ToProto()
 	// emits Java's exact bytes (relative type names, no json_name) instead of
 	// the protodesc.ToFileDescriptorProto normalization.
@@ -453,11 +453,13 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	mdBuilder.SetSplitLongRecords(b.enableLongRows)
 	mdBuilder.SetStoreRecordVersions(b.storeRowVersions)
 	mdBuilder.SetVersion(b.version)
-	// NO record count key: Java's RecordMetadataSerializer never sets one,
-	// so a relational template's store maintains no record-count subspace —
-	// and the count key is stored metadata, so setting one here was a wire
-	// divergence (a Go-created template counted records where Java's did
-	// not, and the bump inflated the metadata version). Byte-golden-pinned.
+	// NO record count key: the stored template bytes must match Java's, and
+	// Java's RecordMetadataSerializer never sets one — Java core marks
+	// getRecordCountKey @API(DEPRECATED), superseded by COUNT-type indexes.
+	// (Setting one here also bumped the metadata version past Java's.)
+	// Byte-golden-pinned. The cost model's per-type row counts went with
+	// it; the COUNT-index + CardinalitiesProperty replacement is booked in
+	// TODO.md.
 
 	for tableIdx, tbl := range b.tables {
 		// Record type names are STORAGE names (Java: the Type.Record storage

@@ -18,7 +18,7 @@
 # family: join2.right-outer|bit|none
 #
 # scenario: fc_0000000185_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 185
 # query-index: 5
 # projection: 0
@@ -152,7 +152,7 @@ test_block:
           - {L_ID: 24, L_A: 4, L_B: 4, L_C: !null '', L_S: "gamma", L_F: true, L_D: -9.007199254740992e+15, L_E: !f 2.0, R_ID: 24, R_A: 4, R_B: 4, R_C: !null '', R_S: "gamma", R_F: true, R_D: -9.007199254740992e+15, R_E: !f 2.0}
 #
 # scenario: fc_0000000185_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 185
 # query-index: 5
 # projection: 1
@@ -286,7 +286,7 @@ test_block:
           - {L_ID: 24, R_ID: 24}
 #
 # scenario: fc_0000000185_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 185
 # query-index: 5
 # projection: 2
@@ -420,7 +420,7 @@ test_block:
           - {R_ID: 24, L_ID: 24, L_B: 4}
 #
 # scenario: fc_0000000500_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 500
 # query-index: 1
 # projection: 0
@@ -584,7 +584,7 @@ test_block:
           - {L_ID: !null '', L_A: !null '', L_B: !null '', L_C: !null '', L_S: !null '', L_F: !null '', L_D: !null '', L_E: !null '', R_ID: 20, R_A: !null '', R_B: 3, R_C: 4, R_S: !null '', R_F: true, R_D: 9.0, R_E: !null ''}
 #
 # scenario: fc_0000000500_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 500
 # query-index: 1
 # projection: 1
@@ -748,7 +748,7 @@ test_block:
           - {L_ID: !null '', R_ID: 20}
 #
 # scenario: fc_0000000500_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 500
 # query-index: 1
 # projection: 2

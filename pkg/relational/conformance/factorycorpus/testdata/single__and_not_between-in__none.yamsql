@@ -18,7 +18,7 @@
 # family: single|and(!between+in)|none
 #
 # scenario: fc_0000000743_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 743
 # query-index: 4
 # projection: 0

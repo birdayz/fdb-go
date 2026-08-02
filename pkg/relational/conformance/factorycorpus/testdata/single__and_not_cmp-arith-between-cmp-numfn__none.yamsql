@@ -18,7 +18,7 @@
 # family: single|and(!cmp+arith+between+cmp+numfn)|none
 #
 # scenario: fc_0000000124_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 124
 # query-index: 5
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 14, A: 9, B: 8, C: 9, S: !null '', F: false, D: 4.0, E: !null ''}
 #
 # scenario: fc_0000000124_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 124
 # query-index: 5
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 14}
 #
 # scenario: fc_0000000124_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 124
 # query-index: 5
 # projection: 2

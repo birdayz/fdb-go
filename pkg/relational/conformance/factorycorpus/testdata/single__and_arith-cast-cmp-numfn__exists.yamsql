@@ -18,7 +18,7 @@
 # family: single|and(arith+cast+cmp+numfn)|exists
 #
 # scenario: fc_0000000182_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 182
 # query-index: 3
 # projection: 0
@@ -100,7 +100,7 @@ test_block:
           - {ID: 4, A: !null '', B: 6, C: 3, S: "", F: true, D: 0.0, E: !f 3.0}
 #
 # scenario: fc_0000000182_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 182
 # query-index: 3
 # projection: 1
@@ -182,7 +182,7 @@ test_block:
           - {ID: 4}
 #
 # scenario: fc_0000000182_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 182
 # query-index: 3
 # projection: 2

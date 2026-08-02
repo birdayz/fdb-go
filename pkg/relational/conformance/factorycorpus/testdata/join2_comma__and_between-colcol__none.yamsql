@@ -18,7 +18,7 @@
 # family: join2.comma|and(between+colcol)|none
 #
 # scenario: fc_0000000310_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 310
 # query-index: 3
 # projection: 0
@@ -98,7 +98,7 @@ test_block:
           - {L_ID: 9, L_A: 2, L_B: 4, L_C: !null '', L_S: "alpha", L_F: true, L_D: 6.0, L_E: !f 4.0, R_ID: 10, R_A: !null '', R_B: 9, R_C: 0, R_S: "", R_F: true, R_D: 9.0, R_E: !f 2.0}
 #
 # scenario: fc_0000000310_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 310
 # query-index: 3
 # projection: 1
@@ -178,7 +178,7 @@ test_block:
           - {L_ID: 9, R_ID: 10}
 #
 # scenario: fc_0000000310_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 310
 # query-index: 3
 # projection: 2
@@ -258,7 +258,7 @@ test_block:
           - {R_ID: 10, L_ID: 9, L_B: 4}
 #
 # scenario: fc_0000000576_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 576
 # query-index: 2
 # projection: 0
@@ -324,7 +324,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000576_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 576
 # query-index: 2
 # projection: 1
@@ -390,7 +390,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000576_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 576
 # query-index: 2
 # projection: 2

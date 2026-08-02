@@ -18,7 +18,7 @@
 # family: join2.left-outer|arith|none
 #
 # scenario: fc_0000000697_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 697
 # query-index: 4
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 21, L_A: 4611686018427387904, L_B: 4611686018427387904, L_C: !null '', L_S: !null '', L_F: true, L_D: 8.0, L_E: !f 6.0, R_ID: 21, R_A: 4611686018427387904, R_B: 4611686018427387904, R_C: !null '', R_S: !null '', R_F: true, R_D: 8.0, R_E: !f 6.0}
 #
 # scenario: fc_0000000697_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 697
 # query-index: 4
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 21, R_ID: 21}
 #
 # scenario: fc_0000000697_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 697
 # query-index: 4
 # projection: 2

@@ -18,7 +18,7 @@
 # family: single|and(bit+cmp)|exists
 #
 # scenario: fc_0000000023_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 23
 # query-index: 5
 # projection: 0
@@ -104,7 +104,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000023_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 23
 # query-index: 5
 # projection: 1
@@ -190,7 +190,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000023_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 23
 # query-index: 5
 # projection: 2
@@ -276,7 +276,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000001082_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1082
 # query-index: 0
 # projection: 0
@@ -364,7 +364,7 @@ test_block:
           - {ID: 10, A: !null '', B: 2, C: 0, S: "delta", F: true, D: !null '', E: !null ''}
 #
 # scenario: fc_0000001082_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1082
 # query-index: 0
 # projection: 1
@@ -452,7 +452,7 @@ test_block:
           - {ID: 10}
 #
 # scenario: fc_0000001082_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1082
 # query-index: 0
 # projection: 2

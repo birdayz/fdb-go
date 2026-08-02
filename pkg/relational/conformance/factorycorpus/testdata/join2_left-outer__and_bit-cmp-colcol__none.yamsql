@@ -18,7 +18,7 @@
 # family: join2.left-outer|and(bit+cmp+colcol)|none
 #
 # scenario: fc_0000000405_q7_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 405
 # query-index: 7
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 18, L_A: 2, L_B: 8, L_C: 4, L_S: "beta", L_F: true, L_D: !null '', L_E: !null '', R_ID: 2, R_A: 0, R_B: 4611686018427387904, R_C: 6, R_S: "gamma", R_F: true, R_D: !null '', R_E: !f 9.0}
 #
 # scenario: fc_0000000405_q7_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 405
 # query-index: 7
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 18, R_ID: 2}
 #
 # scenario: fc_0000000405_q7_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 405
 # query-index: 7
 # projection: 2
@@ -282,7 +282,7 @@ test_block:
           - {R_ID: 2, L_ID: 18, L_B: 8}
 #
 # scenario: fc_0000000689_q0_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 689
 # query-index: 0
 # projection: 0
@@ -396,7 +396,7 @@ test_block:
           - {L_ID: 6, L_A: 3, L_B: 0, L_C: !null '', L_S: "delta", L_F: true, L_D: !null '', L_E: !f 3.0, R_ID: 4, R_A: 6, R_B: 6, R_C: 4, R_S: "b ", R_F: true, R_D: 9.0, R_E: !f 0.0}
 #
 # scenario: fc_0000000689_q0_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 689
 # query-index: 0
 # projection: 1
@@ -510,7 +510,7 @@ test_block:
           - {L_ID: 6, R_ID: 4}
 #
 # scenario: fc_0000000689_q0_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 689
 # query-index: 0
 # projection: 2

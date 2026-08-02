@@ -18,7 +18,7 @@
 # family: single|and(!cmp+!in+!numfn)|exists+scalarsub
 #
 # scenario: fc_0000000621_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 621
 # query-index: 2
 # projection: 0
@@ -92,7 +92,7 @@ test_block:
           - {ID: 22, A: 0, B: 7, C: !null '', S: " a", F: true, D: 1.0, E: !f 1.0}
 #
 # scenario: fc_0000000621_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 621
 # query-index: 2
 # projection: 1
@@ -166,7 +166,7 @@ test_block:
           - {ID: 22}
 #
 # scenario: fc_0000000621_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 621
 # query-index: 2
 # projection: 2

@@ -18,7 +18,7 @@
 # family: single|and(between+bit+cmp)|exists
 #
 # scenario: fc_0000001029_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1029
 # query-index: 2
 # projection: 0
@@ -66,7 +66,7 @@ test_block:
           - {ID: 18, A: !null '', B: 2, C: !null '', S: " c ", F: !null '', D: 9.007199254740992e+15, E: !f 7.0}
 #
 # scenario: fc_0000001029_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1029
 # query-index: 2
 # projection: 1
@@ -114,7 +114,7 @@ test_block:
           - {ID: 18}
 #
 # scenario: fc_0000001029_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1029
 # query-index: 2
 # projection: 2

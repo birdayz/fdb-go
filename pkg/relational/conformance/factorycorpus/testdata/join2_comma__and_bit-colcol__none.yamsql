@@ -18,7 +18,7 @@
 # family: join2.comma|and(bit+colcol)|none
 #
 # scenario: fc_0000000735_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 735
 # query-index: 2
 # projection: 0
@@ -100,7 +100,7 @@ test_block:
           - {L_ID: 6, L_A: 3, L_B: 2, L_C: !null '', L_S: "alpha", L_F: !null '', L_D: -9.007199254740992e+15, L_E: !f 6.0, R_ID: 19, R_A: 9, R_B: 5, R_C: !null '', R_S: " c ", R_F: false, R_D: 3.0, R_E: !null ''}
 #
 # scenario: fc_0000000735_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 735
 # query-index: 2
 # projection: 1
@@ -182,7 +182,7 @@ test_block:
           - {L_ID: 6, R_ID: 19}
 #
 # scenario: fc_0000000735_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 735
 # query-index: 2
 # projection: 2

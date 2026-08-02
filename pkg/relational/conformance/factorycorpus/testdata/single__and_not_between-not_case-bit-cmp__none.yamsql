@@ -18,7 +18,7 @@
 # family: single|and(!between+!case+bit+cmp)|none
 #
 # scenario: fc_0000000856_q6_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 856
 # query-index: 6
 # projection: 1
@@ -106,7 +106,7 @@ test_block:
           - {ID: 19}
 #
 # scenario: fc_0000000856_q6_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 856
 # query-index: 6
 # projection: 2

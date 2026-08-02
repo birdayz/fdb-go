@@ -18,7 +18,7 @@
 # family: single|and(cast+in+numfn)|exists
 #
 # scenario: fc_0000000502_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 502
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 18, A: 2, B: 0, C: !null '', S: "alpha", F: true, D: 8.0, E: !f 9.0}
 #
 # scenario: fc_0000000502_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 502
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 18}
 #
 # scenario: fc_0000000502_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 502
 # query-index: 2
 # projection: 2

@@ -18,7 +18,7 @@
 # family: join2.comma|and(bit+cmp)|none
 #
 # scenario: fc_0000000051_q7_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 51
 # query-index: 7
 # projection: 0
@@ -126,7 +126,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000051_q7_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 51
 # query-index: 7
 # projection: 1
@@ -234,7 +234,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000051_q7_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 51
 # query-index: 7
 # projection: 2
@@ -342,7 +342,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000938_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 938
 # query-index: 3
 # projection: 0
@@ -424,7 +424,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000938_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 938
 # query-index: 3
 # projection: 1
@@ -506,7 +506,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000938_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 938
 # query-index: 3
 # projection: 2

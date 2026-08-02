@@ -18,7 +18,7 @@
 # family: single|!cmp|scalarsub
 #
 # scenario: fc_0000000756_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 756
 # query-index: 4
 # projection: 0
@@ -82,7 +82,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000756_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 756
 # query-index: 4
 # projection: 1
@@ -146,7 +146,7 @@ test_block:
       - result: []
 #
 # scenario: fc_0000000756_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 756
 # query-index: 4
 # projection: 2

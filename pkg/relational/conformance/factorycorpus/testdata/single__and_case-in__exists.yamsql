@@ -18,7 +18,7 @@
 # family: single|and(case+in)|exists
 #
 # scenario: fc_0000000378_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 5
 # projection: 0
@@ -92,7 +92,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000378_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 5
 # projection: 1
@@ -166,7 +166,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000378_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 378
 # query-index: 5
 # projection: 2

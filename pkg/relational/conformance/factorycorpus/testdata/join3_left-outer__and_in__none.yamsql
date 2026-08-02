@@ -18,7 +18,7 @@
 # family: join3.left-outer|and(in)|none
 #
 # scenario: fc_0000000556_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 556
 # query-index: 5
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 17, L_A: -1, L_B: 4, L_C: 8, L_S: "beta", L_F: false, L_D: 9.0, L_E: !f 3.0, M_ID: 17, M_A: -1, M_B: 4, M_C: 8, M_S: "beta", M_F: false, M_D: 9.0, M_E: !f 3.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
 #
 # scenario: fc_0000000556_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 556
 # query-index: 5
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 17, M_ID: 17, R_ID: !null ''}
 #
 # scenario: fc_0000000556_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 556
 # query-index: 5
 # projection: 2

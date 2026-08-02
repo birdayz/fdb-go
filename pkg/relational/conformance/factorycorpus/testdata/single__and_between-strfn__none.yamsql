@@ -18,7 +18,7 @@
 # family: single|and(between+strfn)|none
 #
 # scenario: fc_0000000057_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 57
 # query-index: 4
 # projection: 1
@@ -106,7 +106,7 @@ test_block:
           - {ID: 16}
 #
 # scenario: fc_0000000057_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 57
 # query-index: 4
 # projection: 2

@@ -7,13 +7,22 @@ import (
 	"testing"
 )
 
-// TestFDB_StatisticsDrivenPlanSelection verifies that fetchTableStatistics
-// reads real row counts from FDB via read-only snapshot transactions and
-// feeds them into the Cascades cost model. The test inserts known data,
-// runs EXPLAIN to verify plan shapes, and executes queries to verify
-// correct results — proving the full pipeline: count maintenance →
-// stats read → cost model → plan selection → execution.
-func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
+// TestFDB_DefaultStatisticsPlanSelection pins plan selection and execution
+// over SQL-created schemas, which run on DEFAULT statistics: relational
+// templates carry no record count key (the stored bytes must match Java's;
+// Java core deprecated the count key in favor of COUNT-type indexes), so
+// fetchTableStatistics returns nil on every path this test exercises and
+// the cost model sees its 1e6 default for every table.
+//
+// What this therefore proves: index-equality predicates pick the index and
+// results are correct regardless of actual table size (populated, empty,
+// post-delete) — plan shape here is size-INdependent by construction. What
+// it deliberately does NOT prove: any count→stats→cost→plan pipeline. When
+// the Java-sanctioned statistics source lands (COUNT-type index reads +
+// CardinalitiesProperty, booked in TODO.md), grow this into a real
+// stats-driven differential (small vs large table choosing different
+// plans).
+func TestFDB_DefaultStatisticsPlanSelection(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -31,8 +40,8 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 		t.Parallel()
 		db := setupPlanShapeDB(t, "stats_data", ddl)
 
-		// Insert 100 rows. Each INSERT goes through SaveRecord →
-		// addRecordCount, maintaining the count index atomically.
+		// Insert 100 rows. (No count subspace is maintained — the template
+		// has no record count key.)
 		for i := 0; i < 100; i++ {
 			if _, err := db.ExecContext(ctx, fmt.Sprintf(
 				"INSERT INTO orders VALUES (%d, %d, %d)", i, i%10, (i+1)*10)); err != nil {
@@ -57,9 +66,9 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 			t.Fatalf("expected 100 rows from full scan, got %d", count1)
 		}
 
-		// Index equality — plan should use IndexScan on idx_customer.
-		// fetchTableStatistics reads real count (100) instead of default
-		// 1e6. The cost model uses this for HintCost cardinality.
+		// Index equality — plan must use IndexScan on idx_customer under the
+		// DEFAULT (1e6) cardinality; the equality predicate makes the index
+		// win at any assumed size.
 		q2 := "SELECT id, amount FROM orders WHERE customer_id = 5"
 		plan2 := planExplainVia(t, ctx, db, q2)
 		t.Logf("index equality plan: %s", plan2)
@@ -85,9 +94,7 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 		t.Parallel()
 		db := setupPlanShapeDB(t, "stats_empty", ddl)
 
-		// No data inserted. The atomic-ADD count key was never written,
-		// so fetchTableStatistics gets empty bytes for all types →
-		// returns nil → planner uses DefaultStatistics (1e6).
+		// No data inserted; same default statistics as the populated case.
 		// Planning must still succeed without errors.
 		q := "SELECT id, amount FROM orders WHERE customer_id = 1"
 		plan := planExplainVia(t, ctx, db, q)
@@ -119,7 +126,7 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 			}
 		}
 
-		// Delete 25 rows — count maintenance fires on DELETE too.
+		// Delete 25 rows.
 		for i := 0; i < 25; i++ {
 			if _, err := db.ExecContext(ctx, fmt.Sprintf(
 				"DELETE FROM orders WHERE id = %d", i)); err != nil {
@@ -127,7 +134,7 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 			}
 		}
 
-		// Plan and query should work correctly with updated counts.
+		// Plan and query stay correct after deletes (still default stats).
 		q := "SELECT id, amount FROM orders WHERE customer_id = 0"
 		plan := planExplainVia(t, ctx, db, q)
 		t.Logf("post-delete plan: %s", plan)

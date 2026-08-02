@@ -18,7 +18,7 @@
 # family: join2.left-outer|and(bit+cmp)|none
 #
 # scenario: fc_0000000605_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 605
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 24, L_A: 8, L_B: 5, L_C: 0, L_S: !null '', L_F: true, L_D: 0.0, L_E: !f 7.0, R_ID: 8, R_A: 0, R_B: 8, R_C: !null '', R_S: " a", R_F: true, R_D: 2.0, R_E: !f 3.0}
 #
 # scenario: fc_0000000605_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 605
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 24, R_ID: 8}
 #
 # scenario: fc_0000000605_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 605
 # query-index: 2
 # projection: 2

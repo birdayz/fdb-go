@@ -18,7 +18,7 @@
 # family: single|or(and+cmp)|scalarsub
 #
 # scenario: fc_0000000459_q6_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 459
 # query-index: 6
 # projection: 0
@@ -88,7 +88,7 @@ test_block:
           - {ID: 4, A: 4, B: 4, C: 5, S: !null '', F: false, D: 1.0, E: !null ''}
 #
 # scenario: fc_0000000459_q6_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 459
 # query-index: 6
 # projection: 1
@@ -158,7 +158,7 @@ test_block:
           - {ID: 4}
 #
 # scenario: fc_0000000459_q6_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 459
 # query-index: 6
 # projection: 2

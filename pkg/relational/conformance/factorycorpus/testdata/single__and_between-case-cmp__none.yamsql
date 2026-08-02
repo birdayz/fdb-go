@@ -18,7 +18,7 @@
 # family: single|and(between+case+cmp)|none
 #
 # scenario: fc_0000000616_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 616
 # query-index: 5
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 7, A: 2, B: 4, C: !null '', S: "epsilon", F: false, D: 0.1, E: !f 5.0}
 #
 # scenario: fc_0000000616_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 616
 # query-index: 5
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 7}
 #
 # scenario: fc_0000000616_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 616
 # query-index: 5
 # projection: 2

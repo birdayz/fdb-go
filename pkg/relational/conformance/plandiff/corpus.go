@@ -16697,6 +16697,28 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, v FROM T_INS_09 ORDER BY id",
 		},
 		{
+			// NULL into a PRIMARY KEY column is ACCEPTED by both engines and
+			// stored as SQL NULL (a tuple null, not 0): a relational scalar
+			// column is never non-nullable (NOT NULL is forbidden on
+			// scalars, DdlVisitor.java:156-161), the NULL flows through
+			// parseRecordFieldsUnderReorderings as a NullValue
+			// (ExpressionVisitor.java:1053-1075), and the record store
+			// persists a real tuple null in the PK with no null validation
+			// (FDBRecordStore.java:552-558). The setup INSERT runs on the
+			// LIVE Java engine too, so acceptance stays Java-measured even
+			// while the upstream corpus files carrying this shape
+			// (functions.yamsql, inserts-updates-deletes.yamsql) skip on
+			// their struct inserts; the query proves the NULL-PK row
+			// answers IS NULL while a genuine 0 PK coexists.
+			Name:           "null_pk_reads_back_null",
+			SchemaTemplate: "CREATE TABLE T_NPK_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NPK_02 VALUES (0, 1)",
+				"INSERT INTO T_NPK_02 VALUES (NULL, 2)",
+			},
+			Query: "SELECT v FROM T_NPK_02 WHERE id IS NULL",
+		},
+		{
 			// INSERT with multi-row VALUES including mixed NULLs and
 			// non-NULLs in one statement.
 			Name:           "insert_multi_row_mixed_nulls",

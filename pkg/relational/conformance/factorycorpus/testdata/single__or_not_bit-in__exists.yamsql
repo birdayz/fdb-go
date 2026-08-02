@@ -18,7 +18,7 @@
 # family: single|or(!bit+in)|exists
 #
 # scenario: fc_0000000329_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 329
 # query-index: 2
 # projection: 0
@@ -70,7 +70,7 @@ test_block:
           - {ID: 8, A: 7, B: 4, C: !null '', S: "delta", F: false, D: 9.0, E: !f 9.0}
 #
 # scenario: fc_0000000329_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 329
 # query-index: 2
 # projection: 1
@@ -122,7 +122,7 @@ test_block:
           - {ID: 8}
 #
 # scenario: fc_0000000329_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 329
 # query-index: 2
 # projection: 2

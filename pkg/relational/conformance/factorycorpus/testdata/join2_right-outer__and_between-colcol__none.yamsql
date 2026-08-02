@@ -18,7 +18,7 @@
 # family: join2.right-outer|and(between+colcol)|none
 #
 # scenario: fc_0000000217_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 217
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: !null '', L_A: !null '', L_B: !null '', L_C: !null '', L_S: !null '', L_F: !null '', L_D: !null '', L_E: !null '', R_ID: 20, R_A: 0, R_B: 4611686018427387904, R_C: 5, R_S: !null '', R_F: false, R_D: 9.0, R_E: !null ''}
 #
 # scenario: fc_0000000217_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 217
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: !null '', R_ID: 20}
 #
 # scenario: fc_0000000217_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 217
 # query-index: 2
 # projection: 2

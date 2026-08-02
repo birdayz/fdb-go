@@ -18,7 +18,7 @@
 # family: join2.inner|and(between)|none
 #
 # scenario: fc_0000000882_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 882
 # query-index: 2
 # projection: 0
@@ -134,7 +134,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000882_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 882
 # query-index: 2
 # projection: 1
@@ -250,7 +250,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fc_0000000882_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 882
 # query-index: 2
 # projection: 2

@@ -18,7 +18,7 @@
 # family: single|!and(!cmp)|none
 #
 # scenario: fc_0000000676_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 676
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 22, A: 6, B: 4, C: 8, S: "alpha", F: true, D: -9.007199254740992e+15, E: !null ''}
 #
 # scenario: fc_0000000676_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 676
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 22}
 #
 # scenario: fc_0000000676_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 676
 # query-index: 2
 # projection: 2

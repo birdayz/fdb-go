@@ -18,7 +18,7 @@
 # family: single|or(and+case)|none
 #
 # scenario: fc_0000000197_q4_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 197
 # query-index: 4
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {ID: 21, A: 6, B: 7, C: 0, S: !null '', F: false, D: !null '', E: !f 6.0}
 #
 # scenario: fc_0000000197_q4_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 197
 # query-index: 4
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {ID: 21}
 #
 # scenario: fc_0000000197_q4_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 197
 # query-index: 4
 # projection: 2
