@@ -91,8 +91,12 @@ type runner struct {
 	name     string
 	slot     *slot
 	proc     runnerProc
-	busy     bool          // set true once the runner reports JobStarted
-	watching bool          // terminal watchdog goroutine started
+	busy     bool // set true once the runner reports JobStarted
+	watching bool // terminal watchdog goroutine started
+	// adopted marks a runner inherited from a previous incarnation. Its
+	// JobStarted was consumed by that incarnation, so busy==false says nothing
+	// about whether it is serving a job and must not be read as a failed launch.
+	adopted  bool
 	jobID    string        // the one job this JIT runner picked up (from JobStarted)
 	terminal chan struct{} // closed when GitHub reports the job terminal (JobCompleted)
 	termOnce sync.Once
@@ -332,10 +336,30 @@ func (p *localProc) signal(sig syscall.Signal) {
 	}
 }
 
-// wait reaps a runner, frees its slot, and sweeps orphaned FDB testcontainers
-// on the runner's box when no other runner remains THERE (so a concurrent job's
-// containers on that box are never touched; other boxes' runners are
-// irrelevant — Docker state is per-host).
+// wait reaps a runner, returns its slot to the pool, and sweeps orphaned FDB
+// testcontainers on the runner's box when no other runner remains THERE (so a
+// concurrent job's containers on that box are never touched; other boxes'
+// runners are irrelevant — Docker state is per-host).
+//
+// How the slot goes back matters as much as that it goes back. A runner that
+// exits having never reported JobStarted did not do the one thing it was
+// launched for, and the exit says nothing about why — the stock runner exits 0
+// after refusing to start (a work directory it cannot validate, a broken
+// install), so "exited cleanly" and "served a job" are indistinguishable from
+// the process alone. Treating both as success is what let four pool boxes whose
+// runners died in work-directory validation churn ~250 launches an hour, at
+// INFO, for hours, while the supervisor kept advertising their capacity and
+// every real job queued behind the one slot that worked. So a no-job exit
+// benches the slot on a growing backoff and is logged as the failure it is.
+//
+// Unlike watchJobStart, this is NOT gated on min-runners==0, and the asymmetry
+// is deliberate. With pre-warmed runners a no-job exit can be legitimate (a
+// warm runner told to stand down), so the gate would look consistent — but the
+// two errors cost wildly different amounts. Benching a healthy slot costs one
+// backoff period of warmth, recovers on its own, and is cleared outright by the
+// next job that runs. NOT benching a broken one costs unbounded churn and a
+// starved queue, which is the incident above. Cheap self-healing false positive
+// against an outage-shaped false negative: bench unconditionally.
 func (s *Scaler) wait(r *runner) {
 	defer s.wg.Done()
 
@@ -347,6 +371,10 @@ func (s *Scaler) wait(r *runner) {
 
 	s.mu.Lock()
 	delete(s.running, r.name)
+	// An adopted runner's JobStarted went to the incarnation that launched it,
+	// so its busy flag cannot distinguish a served job from a failed launch;
+	// only a runner this incarnation launched is judged.
+	servedNoJob := !r.busy && !r.adopted
 	remainingOnHost := 0
 	for _, other := range s.running {
 		if other.slot.host == r.slot.host {
@@ -354,13 +382,25 @@ func (s *Scaler) wait(r *runner) {
 		}
 	}
 	s.mu.Unlock()
-	s.pool.give(r.slot)
 
-	s.logger.Info("runner exited",
-		slog.String("name", r.name),
-		slog.Int("slot", r.slot.index),
-		slog.String("host", r.slot.host),
-		slog.Any("err", err))
+	switch {
+	case servedNoJob:
+		n, backoff := s.pool.markNoJobExit(r.slot)
+		s.logger.Warn("runner exited without ever taking a job; benching slot",
+			slog.String("name", r.name),
+			slog.Int("slot", r.slot.index),
+			slog.String("host", r.slot.host),
+			slog.Int("consecutive", n),
+			slog.Duration("backoff", backoff),
+			slog.Any("err", err))
+	default:
+		s.pool.markHealthy(r.slot)
+		s.logger.Info("runner exited",
+			slog.String("name", r.name),
+			slog.Int("slot", r.slot.index),
+			slog.String("host", r.slot.host),
+			slog.Any("err", err))
+	}
 
 	if s.sweepFDB && remainingOnHost == 0 {
 		s.sweepOrphanFDB(r.slot)
@@ -661,7 +701,7 @@ func (p *adoptedLocalProc) signal(sig syscall.Signal) {
 // killing it on that timer is precisely the restart-kills-jobs failure adoption
 // exists to prevent.
 func (s *Scaler) adopt(sl *slot, proc runnerProc, name string) {
-	r := &runner{name: name, slot: sl, proc: proc, terminal: make(chan struct{}), done: make(chan struct{})}
+	r := &runner{name: name, slot: sl, proc: proc, adopted: true, terminal: make(chan struct{}), done: make(chan struct{})}
 	s.mu.Lock()
 	s.running[name] = r
 	if s.jobTerminalGrace > 0 {

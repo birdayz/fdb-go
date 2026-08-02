@@ -303,15 +303,10 @@ sleep 0.2`)
 		t.Fatalf("remote pidfile name line = %q, want the runner name", name)
 	}
 
-	// Runner exits on its own; the liveness poll frees the slot.
-	waitFor(t, 10*time.Second, func() bool {
-		got := pool.take()
-		if got == nil {
-			return false
-		}
-		defer pool.give(got)
-		return got.index == 1
-	})
+	// Runner exits on its own; the liveness poll reaps it and returns its slot.
+	// This fake runner never took a job, so the slot comes back BENCHED — the
+	// remote path must account for a no-job exit exactly as the local one does.
+	waitFor(t, 10*time.Second, slotReturnedBenched(pool, 1))
 
 	// The idle sweep ran remotely on the runner's host.
 	waitFor(t, 5*time.Second, func() bool {
@@ -388,15 +383,9 @@ func TestRemoteKillSignalsSessionGroup(t *testing.T) {
 	r.proc.signal(syscall.SIGKILL)
 
 	waitFor(t, 5*time.Second, func() bool { return !alive(r.proc.pid()) })
-	// The liveness poll notices and frees the slot.
-	waitFor(t, 10*time.Second, func() bool {
-		got := pool.take()
-		if got == nil {
-			return false
-		}
-		defer pool.give(got)
-		return got.index == 1
-	})
+	// The liveness poll notices and returns the slot, benched: this runner was
+	// killed before it ever reported JobStarted, so its launch produced nothing.
+	waitFor(t, 10*time.Second, slotReturnedBenched(pool, 1))
 	// And the kill went over ssh as a process-group kill.
 	found := false
 	for _, l := range argvLines(t, argvLog) {
