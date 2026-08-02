@@ -10,17 +10,15 @@
 # incomplete copy MUST fail the convergence check, or the guard is decoration.
 #
 # Run it on a box whose slot is already out of rotation, one box at a time so
-# fleet capacity never drops below four.
+# fleet capacity never drops below four. Safe to re-run after a failure: the
+# rsync resumes and nothing is deleted until the swap has been verified.
 #
-# Provisioning attached the volumes AFTER cloud-init's mount wait expired, so
-# cloud-init's `ln -sfn "$VOL" /mnt/ci-data` ran when /mnt/ci-data already
-# existed as a real directory -- and ln put the link INSIDE it
+# How the fleet got here: provisioning attached the volumes AFTER cloud-init's
+# mount wait expired, so `ln -sfn "$VOL" /mnt/ci-data` ran when /mnt/ci-data
+# already existed as a real directory -- and ln put the link INSIDE it
 # (/mnt/ci-data/HC_Volume_<id> -> /mnt/HC_Volume_<id>). All CI work, Docker's
-# data-root and the bazel caches have been running on the 75G root disk ever
-# since, with the 100G volume sitting empty.
-#
-# Run with the box's slot already out of rotation. Idempotent enough to re-run
-# after a failure: the rsync resumes and nothing is deleted until verification.
+# data-root and the bazel caches ran on the 75G root disk (measured at 91-97%)
+# while each 100G volume sat at 1%.
 set -euo pipefail
 
 VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1)
@@ -35,9 +33,25 @@ if [ -L /mnt/ci-data ]; then
 fi
 [ -d /mnt/ci-data ] || { echo "FATAL: /mnt/ci-data is neither dir nor symlink"; exit 1; }
 
-# Refuse to run while a job is on the box.
-if pgrep -f "Runner.Worker|Runner.Listener" >/dev/null 2>&1; then
+# Refuse to run unless the box is QUIESCENT, which is a stronger condition than
+# "no runner". A canceled job tears down Runner.Worker but leaves the bazel test
+# processes it spawned running as orphans, still writing into
+# /mnt/ci-data/bazel/_race_output_base -- measured live: the runner-process check
+# passed, the copy started, and the convergence guard then caught the tree moving
+# underneath it. Checking for writers directly is the honest test; the runner
+# check alone is a proxy that a cancellation invalidates.
+if pgrep -f "Runner[.]Worker|Runner[.]Listener" >/dev/null 2>&1; then
   echo "FATAL: a runner is active on this box; migrate only when its slot is idle"
+  exit 1
+fi
+WRITERS=$(ls -l /proc/*/cwd 2>/dev/null | grep -c "ci-data" || true)
+if [ "${WRITERS:-0}" != "0" ]; then
+  echo "FATAL: $WRITERS process(es) still working inside /mnt/ci-data (orphans from a"
+  echo "       canceled job survive their runner). Let them finish or kill them first."
+  exit 1
+fi
+if [ "$(docker ps -q 2>/dev/null | wc -l)" != "0" ]; then
+  echo "FATAL: docker containers are still running; the box is not idle"
   exit 1
 fi
 
@@ -67,8 +81,7 @@ fi
 # layers; numeric ids keep ownership exact without relying on name lookup.
 # The swapfile and the nested bad symlink are deliberately left behind.
 echo "== rsync ci-data -> volume"
-rsync -aHAX --numeric-ids --info=progress2 \
-  --exclude=swapfile \
+rsync -aHAX --numeric-ids --delete --exclude=swapfile \
   --exclude="HC_Volume_*" \
   --exclude=lost+found \
   /mnt/ci-data/ "$VOL/"
