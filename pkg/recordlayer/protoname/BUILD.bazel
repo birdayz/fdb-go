@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "protoname",
+    srcs = ["protoname.go"],
+    importpath = "fdb.dev/pkg/recordlayer/protoname",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "protoname_test",
+    srcs = ["protoname_test.go"],
+    embed = [":protoname"],
+)

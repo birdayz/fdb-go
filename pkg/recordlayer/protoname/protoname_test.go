@@ -1,4 +1,4 @@
-package recordlayer
+package protoname
 
 import (
 	"errors"
