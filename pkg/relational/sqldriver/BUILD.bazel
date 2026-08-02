@@ -430,6 +430,7 @@ go_test(
         "star_expansion_join_probe_test.go",
         "statistics_fdb_test.go",
         "streaming_row_continuation_fdb_test.go",
+        "strict_leg_livelock_backstop_test.go",
         "string_funcs_boundary_probe_test.go",
         "string_functions_probe_test.go",
         "string_index_range_probe_test.go",
