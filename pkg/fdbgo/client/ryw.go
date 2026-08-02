@@ -1360,7 +1360,20 @@ func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation 
 	}
 	// Fold: combine the two operands with the op's own primitive, keeping the atomic type
 	// (C++ coalesce same-type branch, e.g. AddValue → doAdd(existing, new) → AddValue).
-	combined, _ := applyAtomic(top.typ, top.param, newMut.param)
+	//
+	// An OPERAND is always PRESENT, including a zero-length one: C++ RYWMutation.value for an
+	// atomic op is a present Optional, and the only not-present RYWMutation is the synthetic
+	// SetValue bottom pushed over a cleared range (WriteMap.cpp:105/143). Go spells not-present
+	// as a nil []byte and applyAtomic reads its BASE argument with that convention, so the
+	// operand handed to the base slot must be normalized — otherwise an empty operand is read
+	// as ABSENT and takes the absent→operand branch of doAndV2 (Atomic.h:71), doByteMin (:229)
+	// or doMinV2 (:222), returning the second operand verbatim instead of combining the two.
+	// Two sources produce such a nil: allocBytes(0) on a still-unallocated byteBuf (a
+	// zero-length operand arriving first in the transaction), and a fold that itself resolved
+	// to empty (ByteMin over ""), whose nil result is the next fold's base. Normalizing here
+	// covers both; downstream readers of param use it only in operand position, where the do*
+	// primitives test len() and nil is indistinguishable from empty.
+	combined, _ := applyAtomic(top.typ, existing(top.param), newMut.param)
 	top.param = combined
 	return stack
 }
