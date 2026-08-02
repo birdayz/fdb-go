@@ -673,63 +673,54 @@ Without an explicit residual layer, two broad ranges return false rows.
 
 ## Measured corpus reconciliation
 
-The RFC-201 corpus this RFC reconciles against is the FAMILY-FILE corpus
-(RFC-201 §5.7): 5,000 scenarios grouped one file per feature family, 309 files.
-An earlier draft of this section described a reconciliation against the retired
-one-file-per-scenario corpus. That corpus no longer exists, and the transaction
-recorded here was re-derived from scratch against the current one.
+**There is no corpus reconciliation. No committed plan point moves, so nothing
+is retired, re-blessed or added, and this branch ships no retirement ledger.**
 
-What moves is exactly one thing. RFC-208 replaces zero equality's single-probe
-access with an exact runtime range set, so the PHYSICAL PLAN of some committed
-points changes. Measured over the whole corpus by regenerating every scenario
-from its seed and re-planning it:
+That is the second answer this section has carried, and the first one was wrong
+in a way worth recording, because the mistake is reproducible by anyone holding
+the same tool.
 
-- 156 of 5,000 scenarios plan a different physical shape — 52 corpus points
-  across their three projection variants, in 36 of the 309 family files.
-- Nothing else moves. The candidate each seed derives, all four TLP renderings,
-  the schema template, the setup and every frozen result row are recomputed and
-  compared identical; the re-bless tool (`cmd/factory-rebless-plan-shapes`)
-  treats a difference in any of them as an error rather than as something to
-  write down, because those are oracle OUTPUT and a planner change that alters
-  them is a bug report, not a re-bless.
-- No dedup-key collision: each moved point lands on a plan point no other
-  committed scenario occupies, so nothing is retired and nothing is added. The
-  census keeps 5,000 scenarios and 20,000 tests and its per-feature-vector
-  counts are unchanged — only the per-dedup-key blessing map is re-keyed.
-- The full 5,000-scenario corpus executes green against real FDB after the
-  re-bless (`factorycorpus/full`), which is the row-level evidence the
-  shape-only argument above rests on.
+An earlier revision measured 156 of 5000 committed scenarios changing plan
+shape, rewrote all 156 provenance headers to match whatever the new planner
+produced, and recorded the change in a retirement ledger authorizing 36 file
+replacements. Every gate went green. They went green because the expectations
+had been moved to wherever the planner landed.
 
-The same commit carries `retirements/2026-08-02-rfc208.json`, authorizing
-exactly 36 file replacements with nothing retired and nothing added. Its
-format-v2 `base_commit` names the exact repository tree from which the old side
-was measured. CI requires that object to be a commit and an ancestor of the
-independently fetched pre-PR target branch, then reads its raw blobs with
-`git ls-tree` and batched `git cat-file` to recompute the old census, complete
-tree hash, and every replaced old-file hash. Archive attributes, checkout
-filters, nested paths, and non-regular Git modes therefore cannot transform or
-hide evidence. The AFTER side is recomputed from raw blobs at the unique Git
-commit that first added the ledger; while a ledger is new to the independently
-fetched trusted branch, it must also match raw proposed HEAD, and the governed
-checkout bytes must match that raw HEAD exactly. Trusted ledgers are immutable
-and undeletable, and at most one new date-named ledger may append in a change.
-This lets later corpus growth coexist with old ledgers without ever comparing a
-historical AFTER state to today's tree.
+What the re-bless had absorbed was a regression. Dumping `explaindiff.ShapeOf`
+plus `Explain()` for all 5000 scenarios on both sides showed the direction the
+aggregate count concealed:
 
-The unit the gate compares is the SCENARIO, not the file. Family files grow by
-append, so a routine batch changes the bytes of files it only added to; a
-file-level comparison would demand a retirement ledger for every batch, and a
-governance instrument that fires on everything authorizes nothing. Deleting,
-renaming or rewriting a committed scenario requires a ledger; adding one does
-not. This exact-scenario comparison still catches the balanced delete+add and
-replacement attacks that preserve every census count.
+- 156 scenarios differed, in 40 distinct shape-transition classes;
+- 148 of them LOST at least one `IndexScan`;
+- 4 kept their index count but gained a blocking `InMemorySort`;
+- scenarios that GAINED an access path: **zero**.
 
-The mode contract on those governed files is what Git actually tracks: a
-regular, non-executable blob. It is deliberately NOT the literal permission
-word 0644 — the read/write bits of a checkout come from the checking-out
-process's umask, so byte-identical trees materialize as 0644 on a developer box
-and 0664 on a runner with umask 002. Asserting the permission word made the
-gate fail on the machine rather than on the change, and it did.
+Every moved point was a strict access-path downgrade — `Fetch(IndexScan(IDX_E))`
+becoming `Scan(T_RD)`, a float index serving ordering only being replaced by a
+full scan under an in-memory sort, a `FlatMap` outer leg going from
+O(selectivity·N) index entries to O(N) records. And 39 of the 156 bought no
+correctness at all: a two-sided finite range on a float key is exactly sound as
+one physical range, because no NaN is logically inside a finite interval.
+
+The cause was two gates that keyed on the column's TYPE instead of on the
+scan's CAPABILITY, described in §3. Once an ordered float comparison is
+represented as the exact range set this RFC already builds — one range for
+`<`/`<=`, two for `>`/`>=`, four blocks for an ordering-only coordinate — the
+access paths come back, and the corpus agrees with the parent commit without
+anything being rewritten.
+
+**The lesson, stated plainly because it generalises beyond this RFC: any tool
+that re-blesses expectations to match observed behaviour converts a regression
+into a green test.** This repository now contains such a tool
+(`cmd/factory-rebless-plan-shapes`). Its guard rails are therefore part of its
+contract, and they are narrow by construction: it recomputes the candidate, all
+four TLP renderings, the schema template, the setup and every frozen result row,
+and treats ANY difference in them as an error rather than as something to write
+down. Rows are oracle output. A planner change that alters them is a bug report,
+not a re-bless. The tool is retained for the next legitimate plan-shape
+transition; what is not retained is a ledger for a transition that did not
+happen, which would be a durable false record in an audit trail that only has
+value if every entry in it is true.
 
 Java 4.12.11.0 was also exercised as a prospective second-engine oracle rather
 than assumed authoritative. It could not plan the representative

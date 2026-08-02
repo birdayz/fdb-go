@@ -138,12 +138,17 @@ func TestFDB_DynamicNaNCompositeIndexCorrectOrLoud(t *testing.T) {
 // raw NaN payloads are present. Predicate comparison canonicalizes every NaN
 // as one logical greatest value, while the tuple codec physically places
 // sign-set NaNs below -Inf and keeps every payload distinct. The planner must
-// therefore leave all four inequalities as residual predicates over an
-// unbounded access path. This test writes exact positive and negative payloads
+// therefore represent each inequality as an EXACT range set rather than one
+// raw range: an upper bound starts at -Inf so it cannot sweep in the sign-set
+// NaNs below it, and a lower bound adds a second range for them because every
+// NaN is logically greatest. Leaving the inequalities as residual predicates
+// over an unbounded scan — which this test used to require — cost the index
+// and fixed nothing, since both paths already returned the same rows.
+// This test writes exact positive and negative payloads
 // through the record-store API, verifies their bits in the real index, and
 // differentially compares the indexed table with an otherwise identical table
 // that has no secondary index.
-func TestFDB_FloatInequalitiesWithRawNaNPayloadsDeclineUnsafeIndexRanges(t *testing.T) {
+func TestFDB_FloatInequalitiesWithRawNaNPayloadsUseExactIndexRanges(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -355,28 +360,35 @@ func TestFDB_FloatInequalitiesWithRawNaNPayloadsDeclineUnsafeIndexRanges(t *test
 						t.Fatalf("plan baseline query: %v", baselinePlanErr)
 					}
 
-					hasResidual := false
+					// The float index MUST be used with a real bound. This
+					// test previously asserted the opposite — that the planner
+					// refused the index and fell back to a residual scan — and
+					// that refusal was a strict downgrade: it turned every
+					// float inequality into a full table scan without fixing a
+					// single wrong row. The safety property was never "decline
+					// the index"; it is "return the same rows as a full scan
+					// even with raw NaN payloads stored", which the baseline
+					// comparison below asserts directly.
+					usedBoundedIndex := false
 					plans.Walk(indexedPlan, func(node plans.RecordQueryPlan) bool {
-						switch concrete := node.(type) {
-						case *plans.RecordQueryFilterPlan, *plans.RecordQueryPredicatesFilterPlan:
-							hasResidual = true
-						case *plans.RecordQueryIndexPlan:
-							if concrete.GetIndexName() != indexName {
-								return true
-							}
-							for position, comparisonRange := range concrete.GetScanComparisons() {
-								if comparisonRange != nil && !comparisonRange.IsEmpty() {
-									t.Fatalf(
-										"%s planned unsafe bound at index component %d: %s",
-										indexedSQL, position, indexedPlan.Explain(),
-									)
-								}
+						concrete, ok := node.(*plans.RecordQueryIndexPlan)
+						if !ok || concrete.GetIndexName() != indexName {
+							return true
+						}
+						for _, comparisonRange := range concrete.GetScanComparisons() {
+							if comparisonRange != nil && !comparisonRange.IsEmpty() {
+								usedBoundedIndex = true
 							}
 						}
 						return true
 					})
-					if !hasResidual {
-						t.Fatalf("%s dropped its residual float predicate: %s", indexedSQL, indexedPlan.Explain())
+					if !usedBoundedIndex {
+						t.Fatalf(
+							"%s did not bind a bounded scan on %s: %s\n"+
+								"an ordered float comparison is representable as one or two exact ranges; "+
+								"falling back to an unbounded scan is the access-path regression this pins against",
+							indexedSQL, indexName, indexedPlan.Explain(),
+						)
 					}
 
 					indexedIDs := execute(t, indexedPlan)

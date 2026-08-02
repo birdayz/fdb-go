@@ -796,12 +796,6 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 		if !candidatePhysicalKeyTypeKnown(c.keyComponentTypes, i) {
 			return prefix
 		}
-		if candidateRangeHasUnsupportedPhysicalFloatOrdering(cr, c.keyComponentTypes, i) {
-			// Raw NaN payloads occupy physical tuple regions that do not agree
-			// with the comparator's canonical-NaN order. Keep every floating
-			// inequality as residual compensation over a non-SARGed scan.
-			return prefix
-		}
 		if candidateRangeHasUnsupportedPhysicalStartsWith(cr, c.keyComponentTypes, i) {
 			// PREFIX_STRING endpoints implement logical STARTS_WITH only for
 			// an authoritative STRING key. Reconciliation will preserve this

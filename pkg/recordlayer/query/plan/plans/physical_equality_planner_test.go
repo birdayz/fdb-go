@@ -93,21 +93,45 @@ func TestPhysicalFloatOrdering_RawNaNRegionsStopUnsafeClaims(t *testing.T) {
 			WithIndexMetadata([]string{"V", "W"}, []string{"ID"}, false).
 			WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 	}
+	// A KNOWN NaN comparand still claims nothing: no raw payload is an exact
+	// logical NaN bound, so the equality itself is unrepresentable.
+	nan := mkIndex([]*predicates.ComparisonRange{pkOrderingEq(t, math.NaN())})
+	if got := nan.HintOrdering(); len(got.Keys) != 0 {
+		t.Fatalf("known-NaN ordering = %#v, want no FLOAT key or PK suffix", got)
+	}
+	if got := nan.HintRichOrdering(); len(got.GetKeys()) != 0 {
+		t.Fatalf("known-NaN rich ordering keys = %#v, want none", got.GetKeys())
+	}
+
+	// An unbound or ordered FLOAT coordinate DOES claim its ordering on a
+	// value-index scan, because that plan enumerates a physical range set: it
+	// splits the coordinate into NULL, the numbers and the two NaN blocks and
+	// returns them in logical order. Claiming nothing here is what forced a
+	// full table scan plus a blocking in-memory sort.
 	for name, plan := range map[string]*RecordQueryIndexPlan{
 		"unbound":    mkIndex(nil),
 		"inequality": mkIndex([]*predicates.ComparisonRange{lessRange.Range}),
-		"known NaN":  mkIndex([]*predicates.ComparisonRange{pkOrderingEq(t, math.NaN())}),
 	} {
 		name, plan := name, plan
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := plan.HintOrdering(); len(got.Keys) != 0 {
-				t.Fatalf("plain ordering = %#v, want no FLOAT key or PK suffix", got)
+			if got := plan.HintOrdering(); len(got.Keys) == 0 {
+				t.Fatalf("%s ordering = %#v, want the FLOAT coordinate ordered; "+
+					"a range-set scan delivers it in logical order", name, got)
 			}
-			if got := plan.HintRichOrdering(); len(got.GetKeys()) != 0 {
-				t.Fatalf("rich ordering keys = %#v, want none", got.GetKeys())
+			if got := plan.HintRichOrdering(); len(got.GetKeys()) == 0 {
+				t.Fatalf("%s rich ordering keys = none, want the FLOAT coordinate ordered", name)
 			}
 		})
+	}
+
+	// The AGGREGATE control. The same plan type built as an aggregate-index
+	// scan reads a pre-aggregated stream and cannot enumerate those blocks, so
+	// it must still claim nothing across an unbound FLOAT coordinate. If this
+	// ever passes, the capability test has been replaced by a type test.
+	aggregate := mkIndex(nil).WithPhysicalGroupingPrefixCount(1)
+	if got := aggregate.HintOrdering(); len(got.Keys) != 0 {
+		t.Fatalf("aggregate-index ordering = %#v, want none across an unbound FLOAT coordinate", got)
 	}
 
 	nonzero := mkIndex([]*predicates.ComparisonRange{pkOrderingEq(t, float64(5))})
@@ -126,6 +150,17 @@ func TestPhysicalFloatOrdering_RawNaNRegionsStopUnsafeClaims(t *testing.T) {
 	primary := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey(pk).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NullableLong})
+	// A primary scan claims NOTHING across an unbound FLOAT primary-key
+	// coordinate, and the reason is capability, not type: the scan binds a
+	// range set only when it HAS scan comparisons — with none it is a plain
+	// full scan — so the coordinate is never split into NULL / numbers / NaN
+	// blocks and its raw order is not logical order. An index scan binds
+	// unconditionally, which is why RecordQueryIndexPlan may claim the
+	// ordering above and this may not.
+	//
+	// Asserting the opposite here is not academic: it made a real ORDER BY
+	// return the negative NaNs FIRST instead of last, caught by
+	// TestFDB_RawNaNPrimaryKeySuffixRetainsLogicalSort against real FDB.
 	if got := primary.HintOrdering(); len(got.Keys) != 0 {
 		t.Fatalf("unbound FLOAT primary ordering = %#v, want none", got)
 	}

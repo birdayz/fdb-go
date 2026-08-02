@@ -595,8 +595,59 @@ func PhysicalKeyOrderingCongruent(
 	if physicalEqualityTypeUnknown(physicalType) {
 		return false
 	}
-	return physicalType.Code() != values.TypeCodeFloat &&
-		physicalType.Code() != values.TypeCodeDouble
+	if physicalType.Code() != values.TypeCodeFloat &&
+		physicalType.Code() != values.TypeCodeDouble {
+		return true
+	}
+	// A float coordinate constrained by an ordered comparison IS congruent,
+	// because the scan does not emit one raw physical range for it: the binder
+	// decomposes it into ranges that are concatenated in LOGICAL order.
+	//
+	//   - an upper bound yields one range starting at -Inf, inside which
+	//     physical and logical order coincide (it contains no NaN at all);
+	//   - a lower bound yields the finite/+Inf/positive-NaN range followed by
+	//     the negative-NaN range, and since every NaN is logically equal, any
+	//     order among them is a valid logical order.
+	//
+	if cr != nil && cr.IsInequality() && !ComparisonRangeHasUnsupportedKnownNaN(cr, physicalType) {
+		return true
+	}
+	// An UNBOUND float coordinate is NOT congruent here. Making it so requires
+	// splitting the coordinate into NULL, [-Inf..+Inf] and the two NaN blocks
+	// and returning them in logical order, and only a leaf that enumerates a
+	// physical range set can do that. Aggregate indexes read a pre-aggregated
+	// stream and partitioned vector indexes are self-limiting per partition;
+	// neither can, so neither may claim the ordering.
+	// PhysicalKeyOrderingCongruentForRangeSet is the answer for the leaves that
+	// can.
+	return false
+}
+
+// PhysicalKeyOrderingCongruentForRangeSet is PhysicalKeyOrderingCongruent for a
+// leaf that binds through the physical RANGE SET, which is what a value index
+// and a primary scan do.
+//
+// The single difference is the unbound float coordinate. Such a leaf splits it
+// into NULL, the numbers, and the two NaN blocks and concatenates them in
+// logical order, so the ordering it reports is real. A leaf that cannot
+// enumerate several ranges must keep using PhysicalKeyOrderingCongruent, or it
+// will promise an ORDER BY it delivers with the negative NaNs in the wrong
+// place.
+func PhysicalKeyOrderingCongruentForRangeSet(
+	cr *predicates.ComparisonRange,
+	physicalType values.Type,
+) bool {
+	if PhysicalKeyOrderingCongruent(cr, physicalType) {
+		return true
+	}
+	if physicalEqualityTypeUnknown(physicalType) {
+		return false
+	}
+	if physicalType.Code() != values.TypeCodeFloat &&
+		physicalType.Code() != values.TypeCodeDouble {
+		return false
+	}
+	return cr == nil || cr.IsEmpty()
 }
 
 // PhysicalOrderingPrefixLength returns the largest leading key prefix whose
@@ -604,6 +655,33 @@ func PhysicalKeyOrderingCongruent(
 // float comparator, which distinguishes -0 from +0 in the same order as tuple
 // encoding; a signed-zero equality can therefore retain (v, suffix), while its
 // non-fixed shape still prevents deleting v and claiming suffix-only order.
+// PhysicalOrderingPrefixLengthForRangeSet is PhysicalOrderingPrefixLength for
+// a plan that scans through the physical RANGE SET — a value index scan or a
+// primary scan. Such a plan splits an unbound float coordinate into NULL, the
+// numbers and the two NaN blocks and returns them in logical order, so that
+// coordinate does not end its usable ordering prefix.
+//
+// An aggregate index plan reads a pre-aggregated stream and must keep using
+// PhysicalOrderingPrefixLength, or it will advertise an ordering it cannot
+// produce.
+func PhysicalOrderingPrefixLengthForRangeSet(
+	comps []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+	n int,
+) int {
+	for i := 0; i < n; i++ {
+		physicalType := physicalEqualityTypeAt(physicalTypes, i)
+		var cr *predicates.ComparisonRange
+		if i < len(comps) {
+			cr = comps[i]
+		}
+		if !PhysicalKeyOrderingCongruentForRangeSet(cr, physicalType) {
+			return i
+		}
+	}
+	return n
+}
+
 func PhysicalOrderingPrefixLength(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,

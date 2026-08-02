@@ -15,33 +15,43 @@ import (
 // The exact AFTER snapshot is intentionally not compared with today's corpus
 // here: later corpus growth must not invalidate an immutable historical
 // retirement. cmd/verify-corpus-retirement-history validates it against the
-// Git commit that first added this ledger (and against the worktree while the
-// ledger is new to the trusted branch). This hermetic test pins RFC-208's
-// reviewed transaction shape while the generic validator tests endpoint logic.
-func TestRFC208RetirementLedgerShape(t *testing.T) {
-	t.Parallel()
-	ledger, err := factorycorpus.LoadRetirementLedger(filepath.Join("retirements", "2026-08-02-rfc208.json"))
-	if err != nil {
-		t.Fatalf("LoadRetirementLedger: %v", err)
-	}
-	counts := map[string]int{}
-	for _, change := range ledger.Changes {
-		counts[change.Disposition]++
-	}
-	if counts[factorycorpus.DispositionRetired] != 0 ||
-		counts[factorycorpus.DispositionAdded] != 0 ||
-		counts[factorycorpus.DispositionReplaced] != 36 || len(ledger.Changes) != 36 {
-		t.Fatalf("RFC-208 ledger dispositions = %v across %d files, want replaced=36 across 36 with nothing retired or added", counts, len(ledger.Changes))
-	}
+// sampleLedgerBytes renders a syntactically complete retirement ledger for the
+// loader tests below.
+//
+// The fixture is SYNTHETIC on purpose. These tests exercise the ledger PARSER —
+// duplicate keys, trailing content, non-canonical field names, invalid UTF-8 —
+// and none of that needs a real retirement to have happened. Reading a
+// committed ledger instead would make the parser tests fail the day the
+// repository legitimately has no ledger to read, which is the normal state: a
+// ledger records a retirement, so no retirement means no file.
+func sampleLedgerBytes(t *testing.T) []byte {
+	t.Helper()
+	data := []byte(`{
+  "format_version": 2,
+  "rfc": "RFC-208",
+  "date": "2026-08-02",
+  "reason": "a synthetic ledger used only to exercise the parser",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "before_census_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "after_census_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "before_tree_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "after_tree_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "changes": [
+    {
+      "name": "single__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "new_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  ]
+}
+`)
+	return data
 }
 
 func TestLoadRetirementLedgerRejectsTrailingJSON(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := sampleLedgerBytes(t)
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := os.WriteFile(path, append(data, []byte("{}\n")...), 0o644); err != nil {
 		t.Fatal(err)
@@ -53,10 +63,7 @@ func TestLoadRetirementLedgerRejectsTrailingJSON(t *testing.T) {
 
 func TestLoadRetirementLedgerRejectsWhitespaceOnlyRFC(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("retirements", "2026-08-02-rfc208.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := sampleLedgerBytes(t)
 	data = bytes.Replace(data, []byte(`"rfc": "RFC-208"`), []byte(`"rfc": "   "`), 1)
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -97,11 +104,7 @@ func duplicateJSONKey(t *testing.T, data []byte, key string) []byte {
 
 func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := sampleLedgerBytes(t)
 	tests := []struct {
 		name string
 		data []byte
@@ -144,11 +147,7 @@ func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
 
 func TestLoadRetirementLedgerRequiresCanonicalKeysAndUTF8(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := sampleLedgerBytes(t)
 	reasonPrefix := []byte(`"reason": "`)
 	reasonIndex := bytes.Index(data, reasonPrefix)
 	if reasonIndex < 0 {

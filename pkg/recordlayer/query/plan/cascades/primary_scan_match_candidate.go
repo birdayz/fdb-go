@@ -341,9 +341,6 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 			// metadata shared across record types.
 			return prefix
 		}
-		if candidateRangeHasUnsupportedPhysicalFloatOrdering(cr, c.keyComponentTypes, i) {
-			return prefix
-		}
 		if candidateRangeHasUnsupportedPhysicalStartsWith(cr, c.keyComponentTypes, i) {
 			// STARTS_WITH is a tuple PREFIX_STRING range only for an
 			// authoritative STRING key. Leave every other physical type as a

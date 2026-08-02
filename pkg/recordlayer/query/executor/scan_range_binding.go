@@ -26,29 +26,6 @@ type UnsupportedPhysicalFloatEquivalenceError struct {
 	PhysicalType values.Type
 }
 
-// UnsupportedPhysicalFloatOrderingError reports an ordered FLOAT/DOUBLE scan
-// predicate that cannot be represented faithfully while stored tuple keys may
-// contain arbitrary NaN encodings. Logical comparison treats every NaN as one
-// greatest value, but FDB tuple order retains sign and payload: negative NaNs
-// sort below -Inf while positive NaNs sort above +Inf. Any ordinary one-range
-// endpoint can therefore include false negative-NaN rows or miss true ones.
-type UnsupportedPhysicalFloatOrderingError struct {
-	Component    int
-	Comparison   predicates.ComparisonType
-	PhysicalType values.Type
-}
-
-func (e *UnsupportedPhysicalFloatOrderingError) Error() string {
-	typ := "UNKNOWN"
-	if e.PhysicalType != nil {
-		typ = e.PhysicalType.Code().String()
-	}
-	return fmt.Sprintf(
-		"scan comparison %d (%v, physical %s) uses ordered floating-point access; exact indexed ordering with raw NaN keys is unsupported",
-		e.Component, e.Comparison, typ,
-	)
-}
-
 func (e *UnsupportedPhysicalFloatEquivalenceError) Error() string {
 	typ := "UNKNOWN"
 	if e.PhysicalType != nil {
@@ -207,6 +184,11 @@ const (
 type boundRangeTail struct {
 	kind boundRangeTailKind
 
+	// floatOrdered marks a tail built from an ordered comparison on a
+	// FLOAT/DOUBLE key coordinate, whose exact physical form may be more than
+	// one range. See decomposeOrderedFloatTail.
+	floatOrdered bool
+
 	startsWith any
 
 	hasLow            bool
@@ -217,6 +199,10 @@ type boundRangeTail struct {
 	hasHigh      bool
 	highItem     any
 	highEndpoint recordlayer.EndpointType
+	// highIsNullBoundary marks a high bound that is the NULL element itself,
+	// which cannot be expressed by highItem: a nil highItem is indistinguishable
+	// from "no high bound at all".
+	highIsNullBoundary bool
 }
 
 type boundRangeComponent struct {
@@ -254,7 +240,7 @@ type integerDomainProjection struct {
 // physical TupleRange.
 type boundScanRangeSet struct {
 	components        []boundRangeComponent
-	tail              boundRangeTail
+	tails             []boundRangeTail
 	terminalZeroIndex int
 	reverse           bool
 	empty             bool
@@ -296,7 +282,7 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 		return scanRangeSetSpec{}, err
 	}
 	bound := &boundScanRangeSet{
-		tail:              boundRangeTail{kind: boundRangeTailAllOf},
+		tails:             []boundRangeTail{{kind: boundRangeTailAllOf}},
 		terminalZeroIndex: -1,
 		reverse:           reverse,
 		fingerprintSalt:   fingerprintSalt,
@@ -429,7 +415,12 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 	if err != nil {
 		return scanRangeSetSpec{}, err
 	}
-	bound.tail = tail
+	tailPhysicalType := scanPhysicalTypeAt(keyTypes, equalityCount)
+	if tail.kind == boundRangeTailAllOf && scanBoundUsesFloatWire(tailPhysicalType) {
+		bound.tails = decomposeUnboundFloatTail(tailPhysicalType, reverse)
+	} else {
+		bound.tails = decomposeOrderedFloatTail(tail, tailPhysicalType, reverse)
+	}
 	if tail.kind == boundRangeTailEmpty {
 		bound.empty = true
 	}
@@ -791,6 +782,183 @@ func isNaNFloatBound(value any) bool {
 	}
 }
 
+// Physical tuple order for a FLOAT/DOUBLE key coordinate is IEEE total order,
+// measured against pkg/fdbgo/fdb/tuple and pinned by
+// TestFloatKeyTupleOrderIsIEEETotalOrder:
+//
+//	negNaN < -Inf < negative finite < -0.0 < +0.0 < positive finite < +Inf < posNaN
+//
+// The LOGICAL comparator (values.CompareFloat64, and Java's) instead treats
+// every NaN as one value that is GREATEST, and -0.0 as equal to +0.0. The two
+// orders therefore disagree in exactly one place: the negative-NaN region,
+// which sits below -Inf physically and above +Inf logically.
+//
+// That single disagreement is why an ordered comparison on a raw float key is
+// not one contiguous physical range — but it is always a SMALL, exactly
+// representable set of them, because the disagreeing region is a contiguous
+// block at each end of the coordinate's domain.
+//
+// floatWireLowestNaN and floatWireHighestNaN are the extreme encodings of the
+// coordinate's carrier: every negative NaN lies in [lowest, -Inf) and every
+// positive NaN in (+Inf, highest].
+func floatWireLowestNaN(physicalType values.Type) any {
+	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
+		return math.Float32frombits(0xFFFFFFFF)
+	}
+	return math.Float64frombits(0xFFFFFFFFFFFFFFFF)
+}
+
+func floatWireHighestNaN(physicalType values.Type) any {
+	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
+		return math.Float32frombits(0x7FFFFFFF)
+	}
+	return math.Float64frombits(0x7FFFFFFFFFFFFFFF)
+}
+
+func floatWireInfinity(physicalType values.Type, sign int) any {
+	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
+		return float32(math.Inf(sign))
+	}
+	return math.Inf(sign)
+}
+
+// decomposeOrderedFloatTail turns one logical ordered comparison on a float key
+// into the ordered, disjoint physical ranges that select EXACTLY its logical
+// row set. It is the access-path half of RFC-208: the same range-set machinery
+// that lets a zero equality keep its suffix lets an inequality keep its index.
+//
+// The returned ranges are in LOGICAL order for the scan direction, because the
+// range-set cursor concatenates them in the order given and a consumer may be
+// relying on the scan's ordering.
+//
+//   - `< x` / `<= x`: ONE range. No NaN satisfies it (NaN is logically
+//     greatest), and every non-NaN value from -Inf up is physically contiguous.
+//     The only correction needed is the LOW endpoint: it must start at -Inf,
+//     not at the coordinate's type start, or the range would sweep in the
+//     negative-NaN block that sorts below -Inf.
+//   - `> x` / `>= x`: TWO ranges. (x, END] already covers the finite tail,
+//     +Inf and the positive NaNs; the negative NaNs qualify logically (all NaNs
+//     are greatest) but sit at the very bottom physically, so they need their
+//     own range.
+//   - two-sided (`BETWEEN`, or both bounds present): ONE range, unchanged. No
+//     NaN is logically inside a finite two-sided interval, and the range as
+//     built already excludes both NaN blocks.
+//
+// A tail whose only bound is the exclusive-NULL boundary (IS NOT NULL) is
+// likewise unchanged: it is the exact non-null set for every carrier, NaNs
+// included.
+func decomposeOrderedFloatTail(
+	tail boundRangeTail,
+	physicalType values.Type,
+	reverse bool,
+) []boundRangeTail {
+	if tail.kind != boundRangeTailInequality || !tail.floatOrdered ||
+		!scanBoundUsesFloatWire(physicalType) {
+		return []boundRangeTail{tail}
+	}
+	hasRealLow := tail.hasLow && tail.lowItem != nil
+	hasRealHigh := tail.hasHigh && tail.highItem != nil
+	switch {
+	case hasRealHigh && !hasRealLow:
+		bounded := tail
+		bounded.hasLow = true
+		bounded.lowItem = floatWireInfinity(physicalType, -1)
+		bounded.lowEndpoint = recordlayer.EndpointTypeRangeInclusive
+		bounded.lowIsNullBoundary = false
+		return []boundRangeTail{bounded}
+	case hasRealLow && !hasRealHigh:
+		negativeNaNs := boundRangeTail{
+			kind:         boundRangeTailInequality,
+			floatOrdered: true,
+			hasLow:       true,
+			lowItem:      floatWireLowestNaN(physicalType),
+			lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+			hasHigh:      true,
+			highItem:     floatWireInfinity(physicalType, -1),
+			highEndpoint: recordlayer.EndpointTypeRangeExclusive,
+		}
+		if reverse {
+			// Descending, the logically greatest rows come first, and every
+			// NaN is logically greater than every number.
+			return []boundRangeTail{negativeNaNs, tail}
+		}
+		return []boundRangeTail{tail, negativeNaNs}
+	default:
+		return []boundRangeTail{tail}
+	}
+}
+
+// decomposeUnboundFloatTail orders an UNBOUND float coordinate.
+//
+// With no comparison on the coordinate the scan would open one range over the
+// whole subtree, which is the right ROW SET but the wrong ORDER: physically the
+// negative NaNs sit between the NULLs and -Inf, while logically every NaN is
+// greatest. A consumer relying on the scan's ordering — an ORDER BY that would
+// otherwise need a blocking in-memory sort over the whole table — therefore
+// cannot use the index at all unless the blocks are handed back in logical
+// order.
+//
+// Four blocks, emitted NULLs-first ascending to match the order an index scan
+// already reports for every other key type:
+//
+//	[NULL] [-Inf .. +Inf] [negative NaNs] [positive NaNs]
+//
+// The two NaN blocks are mutually tied logically, so their relative order is
+// free. Reversing the whole sequence gives the descending order.
+//
+// The row set is identical either way, so this is always safe; what it costs is
+// three extra range opens on a float-suffixed scan, against saving a full table
+// scan plus a blocking sort whenever the ordering is what the query wanted.
+func decomposeUnboundFloatTail(physicalType values.Type, reverse bool) []boundRangeTail {
+	nulls := boundRangeTail{
+		kind:               boundRangeTailInequality,
+		floatOrdered:       true,
+		hasLow:             true,
+		lowIsNullBoundary:  true,
+		lowEndpoint:        recordlayer.EndpointTypeRangeInclusive,
+		hasHigh:            true,
+		highIsNullBoundary: true,
+		highEndpoint:       recordlayer.EndpointTypeRangeInclusive,
+	}
+	numbers := boundRangeTail{
+		kind:         boundRangeTailInequality,
+		floatOrdered: true,
+		hasLow:       true,
+		lowItem:      floatWireInfinity(physicalType, -1),
+		lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+		hasHigh:      true,
+		highItem:     floatWireInfinity(physicalType, 1),
+		highEndpoint: recordlayer.EndpointTypeRangeInclusive,
+	}
+	negativeNaNs := boundRangeTail{
+		kind:         boundRangeTailInequality,
+		floatOrdered: true,
+		hasLow:       true,
+		lowItem:      floatWireLowestNaN(physicalType),
+		lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+		hasHigh:      true,
+		highItem:     floatWireInfinity(physicalType, -1),
+		highEndpoint: recordlayer.EndpointTypeRangeExclusive,
+	}
+	positiveNaNs := boundRangeTail{
+		kind:         boundRangeTailInequality,
+		floatOrdered: true,
+		hasLow:       true,
+		lowItem:      floatWireInfinity(physicalType, 1),
+		lowEndpoint:  recordlayer.EndpointTypeRangeExclusive,
+		hasHigh:      true,
+		highItem:     floatWireHighestNaN(physicalType),
+		highEndpoint: recordlayer.EndpointTypeRangeInclusive,
+	}
+	ordered := []boundRangeTail{nulls, numbers, negativeNaNs, positiveNaNs}
+	if reverse {
+		for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
+			ordered[i], ordered[j] = ordered[j], ordered[i]
+		}
+	}
+	return ordered
+}
+
 func scanBoundUsesFloatWire(physicalType values.Type) bool {
 	return physicalType != nil &&
 		(physicalType.Code() == values.TypeCodeFloat ||
@@ -895,10 +1063,13 @@ func bindRangeTail(
 				}
 				if scanBoundUsesFloatWire(physicalType) &&
 					isOrderedScanComparison(inequality.Type) {
-					return boundRangeTail{}, &UnsupportedPhysicalFloatOrderingError{
-						Component: equalityCount, Comparison: inequality.Type,
-						PhysicalType: physicalType,
-					}
+					// Not a bail: the disagreement between physical tuple order
+					// and the logical comparator is confined to the NaN blocks,
+					// and decomposeOrderedFloatTail below represents it exactly
+					// as one or two ranges. Withdrawing the access path here
+					// would trade an index range for a full scan and fix
+					// nothing.
+					tail.floatOrdered = true
 				}
 				if scanBoundUsesFloatWire(physicalType) &&
 					isNaNFloatBound(comparand) {
@@ -1182,6 +1353,11 @@ func (b *boundScanRangeSet) spec() scanRangeSetSpec {
 	for i := range b.components {
 		counts[i] = uint32(len(b.components[i].alternatives))
 	}
+	// A plural tail is one more odometer dimension, so the continuation stays
+	// flat and O(k) and the cursor needs no new concept to resume inside it.
+	if len(b.tails) > 1 {
+		counts = append(counts, uint32(len(b.tails)))
+	}
 	if b.empty {
 		return scanRangeSetSpec{
 			fingerprint:       b.fingerprint(),
@@ -1200,9 +1376,24 @@ func (b *boundScanRangeSet) materialize(choices []uint32) (recordlayer.TupleRang
 	if b.empty {
 		return recordlayer.TupleRange{}, fmt.Errorf("cannot materialize an empty scan range set")
 	}
-	if len(choices) != len(b.components) {
+	wantArity := len(b.components)
+	if len(b.tails) > 1 {
+		wantArity++
+	}
+	if len(choices) != wantArity {
 		return recordlayer.TupleRange{}, fmt.Errorf(
-			"scan range choices have arity %d, want %d", len(choices), len(b.components))
+			"scan range choices have arity %d, want %d", len(choices), wantArity)
+	}
+	tail := b.tails[0]
+	if len(b.tails) > 1 {
+		tailChoice := choices[len(b.components)]
+		if tailChoice >= uint32(len(b.tails)) {
+			return recordlayer.TupleRange{}, fmt.Errorf(
+				"scan range tail choice %d is out of bounds (tails=%d)",
+				tailChoice, len(b.tails))
+		}
+		tail = b.tails[tailChoice]
+		choices = choices[:len(b.components)]
 	}
 
 	prefix := make(tuple.Tuple, len(b.components))
@@ -1229,7 +1420,7 @@ func (b *boundScanRangeSet) materialize(choices []uint32) (recordlayer.TupleRang
 		}, nil
 	}
 
-	switch b.tail.kind {
+	switch tail.kind {
 	case boundRangeTailAllOf:
 		return recordlayer.TupleRangeAllOf(prefix), nil
 	case boundRangeTailEmpty:
@@ -1239,44 +1430,49 @@ func (b *boundScanRangeSet) materialize(choices []uint32) (recordlayer.TupleRang
 			HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
 		}, nil
 	case boundRangeTailStartsWith:
-		start := append(append(tuple.Tuple(nil), prefix...), b.tail.startsWith)
+		start := append(append(tuple.Tuple(nil), prefix...), tail.startsWith)
 		return recordlayer.TupleRange{
 			Low: start, High: start,
 			LowEndpoint:  recordlayer.EndpointTypePrefixString,
 			HighEndpoint: recordlayer.EndpointTypePrefixString,
 		}, nil
 	case boundRangeTailInequality:
-		return b.materializeInequality(prefix), nil
+		return b.materializeInequality(prefix, tail), nil
 	default:
-		return recordlayer.TupleRange{}, fmt.Errorf("unknown bound scan tail kind %d", b.tail.kind)
+		return recordlayer.TupleRange{}, fmt.Errorf("unknown bound scan tail kind %d", tail.kind)
 	}
 }
 
-func (b *boundScanRangeSet) materializeInequality(prefix tuple.Tuple) recordlayer.TupleRange {
+func (b *boundScanRangeSet) materializeInequality(
+	prefix tuple.Tuple,
+	tail boundRangeTail,
+) recordlayer.TupleRange {
 	lowEndpoint := recordlayer.EndpointTypeTreeStart
 	highEndpoint := recordlayer.EndpointTypeTreeEnd
 	if len(prefix) > 0 {
 		lowEndpoint = recordlayer.EndpointTypeRangeInclusive
 		highEndpoint = recordlayer.EndpointTypeRangeInclusive
 	}
-	if b.tail.hasLow {
-		lowEndpoint = b.tail.lowEndpoint
+	if tail.hasLow {
+		lowEndpoint = tail.lowEndpoint
 	}
-	if b.tail.hasHigh {
-		highEndpoint = b.tail.highEndpoint
+	if tail.hasHigh {
+		highEndpoint = tail.highEndpoint
 	}
 
 	var low, high tuple.Tuple
 	switch {
-	case b.tail.hasLow && b.tail.lowItem != nil:
-		low = append(append(tuple.Tuple(nil), prefix...), b.tail.lowItem)
-	case b.tail.hasLow && b.tail.lowIsNullBoundary:
+	case tail.hasLow && tail.lowItem != nil:
+		low = append(append(tuple.Tuple(nil), prefix...), tail.lowItem)
+	case tail.hasLow && tail.lowIsNullBoundary:
 		low = append(append(tuple.Tuple(nil), prefix...), nil)
 	case len(prefix) > 0:
 		low = append(tuple.Tuple(nil), prefix...)
 	}
-	if b.tail.hasHigh && b.tail.highItem != nil {
-		high = append(append(tuple.Tuple(nil), prefix...), b.tail.highItem)
+	if tail.hasHigh && tail.highItem != nil {
+		high = append(append(tuple.Tuple(nil), prefix...), tail.highItem)
+	} else if tail.hasHigh && tail.highIsNullBoundary {
+		high = append(append(tuple.Tuple(nil), prefix...), nil)
 	} else if len(prefix) > 0 {
 		high = append(tuple.Tuple(nil), prefix...)
 	}
@@ -1313,9 +1509,16 @@ func (b *boundScanRangeSet) fingerprint() []byte {
 			writeFingerprintBytes(h, tuple.Tuple{alternative}.Pack())
 		}
 	}
-	writeFingerprintUint32(h, uint32(b.tail.kind))
+	writeFingerprintUint32(h, uint32(len(b.tails)))
+	for _, t := range b.tails {
+		writeFingerprintUint32(h, uint32(t.kind))
+		writeFingerprintTailBounds(h, t)
+	}
 	if !b.empty {
 		choices := make([]uint32, len(b.components))
+		if len(b.tails) > 1 {
+			choices = append(choices, 0)
+		}
 		if materialized, err := b.materialize(choices); err == nil {
 			writeFingerprintBytes(h, materialized.Low.Pack())
 			writeFingerprintBytes(h, materialized.High.Pack())
@@ -1324,6 +1527,31 @@ func (b *boundScanRangeSet) fingerprint() []byte {
 		}
 	}
 	return h.Sum(nil)
+}
+
+// writeFingerprintTailBounds folds one tail's endpoints into the continuation
+// fingerprint. Every tail must contribute: a plural float tail differs from its
+// siblings only in these bounds, so hashing the kind alone would let a resumed
+// scan reopen a DIFFERENT range under a fingerprint it considers unchanged.
+func writeFingerprintTailBounds(h hash.Hash, t boundRangeTail) {
+	writeFingerprintBool(h, t.floatOrdered)
+	writeFingerprintBool(h, t.hasLow)
+	writeFingerprintBool(h, t.lowIsNullBoundary)
+	writeFingerprintUint32(h, uint32(t.lowEndpoint))
+	writeFingerprintBytes(h, tuple.Tuple{t.lowItem}.Pack())
+	writeFingerprintBool(h, t.hasHigh)
+	writeFingerprintBool(h, t.highIsNullBoundary)
+	writeFingerprintUint32(h, uint32(t.highEndpoint))
+	writeFingerprintBytes(h, tuple.Tuple{t.highItem}.Pack())
+	writeFingerprintBytes(h, tuple.Tuple{t.startsWith}.Pack())
+}
+
+func writeFingerprintBool(h hash.Hash, value bool) {
+	if value {
+		writeFingerprintBytes(h, []byte{1})
+		return
+	}
+	writeFingerprintBytes(h, []byte{0})
 }
 
 func writeFingerprintBytes(h hash.Hash, value []byte) {

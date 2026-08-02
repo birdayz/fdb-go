@@ -1014,7 +1014,16 @@ func TestBindScanComparisonsToRangeSet_ExactFloatProjectionStillSeeks(t *testing
 	}
 }
 
-func TestBindScanComparisonsToRangeSet_FloatOrderingIsLoudBeforeStorage(t *testing.T) {
+// TestBindScanComparisonsToRangeSet_FloatOrderingBindsARangeSet pins that an
+// ordered FLOAT/DOUBLE comparison BINDS, rather than refusing and sending the
+// query to a full scan. Exactness of what it binds is proved separately in
+// float_ordered_range_exactness_test.go against the engine's own predicate
+// evaluator; this test guards the ACCESS PATH, which is the property a refusal
+// silently destroys.
+//
+// A NaN threshold still refuses: no single raw payload is an exact logical NaN
+// bound, and that case is unchanged.
+func TestBindScanComparisonsToRangeSet_FloatOrderingBindsARangeSet(t *testing.T) {
 	t.Parallel()
 
 	comparisonTypes := []predicates.ComparisonType{
@@ -1025,23 +1034,34 @@ func TestBindScanComparisonsToRangeSet_FloatOrderingIsLoudBeforeStorage(t *testi
 	}
 	for _, physicalType := range []values.Type{values.NotNullFloat, values.NotNullDouble} {
 		for _, comparisonType := range comparisonTypes {
-			for _, threshold := range []float64{-1, math.Copysign(0, -1), 0, 1, math.Inf(1), math.NaN()} {
+			for _, threshold := range []float64{-1, math.Copysign(0, -1), 0, 1, math.Inf(1)} {
 				operand := &values.ConstantValue{Value: threshold, Typ: values.UnknownType}
-				_, err := bindScanComparisonsToRangeSet(
+				spec, err := bindScanComparisonsToRangeSet(
 					[]*predicates.ComparisonRange{
 						scanRangeTestComparison(t, comparisonType, operand),
 					},
-					[]values.Type{physicalType}, nil, false, "unsupported-float-ordering",
+					[]values.Type{physicalType}, nil, false, "float-ordering-range-set",
 				)
-				var unsupported *UnsupportedPhysicalFloatOrderingError
-				if !errors.As(err, &unsupported) {
-					t.Fatalf("physical %v, %v %v error = %T(%v), want UnsupportedPhysicalFloatOrderingError",
-						physicalType, comparisonType, threshold, err, err)
+				if err != nil {
+					t.Fatalf("physical %v, %v %v did not bind: %v — an ordered float predicate must keep its index access path",
+						physicalType, comparisonType, threshold, err)
 				}
-				if unsupported.Component != 0 || unsupported.Comparison != comparisonType ||
-					unsupported.PhysicalType.Code() != physicalType.Code() {
-					t.Fatalf("unsupported ordering error = %+v", unsupported)
+				if spec.empty {
+					t.Fatalf("physical %v, %v %v bound an EMPTY range set", physicalType, comparisonType, threshold)
 				}
+			}
+			// A NaN threshold has no exact raw-payload endpoint and still refuses.
+			nanOperand := &values.ConstantValue{Value: math.NaN(), Typ: values.UnknownType}
+			_, err := bindScanComparisonsToRangeSet(
+				[]*predicates.ComparisonRange{
+					scanRangeTestComparison(t, comparisonType, nanOperand),
+				},
+				[]values.Type{physicalType}, nil, false, "float-ordering-nan",
+			)
+			var unsupported *UnsupportedPhysicalFloatEquivalenceError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("physical %v, %v NaN error = %T(%v), want UnsupportedPhysicalFloatEquivalenceError",
+					physicalType, comparisonType, err, err)
 			}
 		}
 	}
@@ -1440,7 +1460,7 @@ func TestBindScanComparisonsToRangeSet_IntegerProjectedBoundsIntersectOrderIndep
 	}
 }
 
-func TestBindScanComparisonsToRangeSet_FloatingBoundsRejectAllInsertionOrders(t *testing.T) {
+func TestBindScanComparisonsToRangeSet_FloatingBoundsBindInAllInsertionOrders(t *testing.T) {
 	t.Parallel()
 
 	comparison := func(comparisonType predicates.ComparisonType, value float64) *predicates.Comparison {
@@ -1541,13 +1561,23 @@ func TestBindScanComparisonsToRangeSet_FloatingBoundsRejectAllInsertionOrders(t 
 				test := test
 				t.Run(test.name, func(t *testing.T) {
 					t.Parallel()
-					_, err := bindScanComparisonsToRangeSet(
+					// Combined float bounds bind rather than refuse. A two-sided
+					// range needs only ONE physical range (no NaN is logically
+					// inside a finite interval); a lower-bounded-only one needs
+					// two, because the negative NaNs qualify logically and sit
+					// at the bottom of the key space physically.
+					spec, err := bindScanComparisonsToRangeSet(
 						[]*predicates.ComparisonRange{build(t, test.comparisons...)},
 						[]values.Type{physical.typ}, nil, false, "floating-bound-intersection",
 					)
-					var unsupported *UnsupportedPhysicalFloatOrderingError
-					if !errors.As(err, &unsupported) {
-						t.Fatalf("error = %T(%v), want UnsupportedPhysicalFloatOrderingError", err, err)
+					if err != nil {
+						t.Fatalf("two-sided float bounds did not bind: %v", err)
+					}
+					// The exact ranges are proved in
+					// float_ordered_range_exactness_test.go; what matters here
+					// is that combined bounds still reach an index at all.
+					if spec.empty {
+						t.Fatalf("combined float bounds bound an EMPTY range set")
 					}
 				})
 			}
@@ -1566,14 +1596,18 @@ func TestBindScanComparisonsToRangeSet_FloatingBoundsRejectAllInsertionOrders(t 
 					comparison(predicates.ComparisonLessThanOrEq, 0),
 				},
 			} {
-				_, err := bindScanComparisonsToRangeSet(
+				// Contradictory bounds are EMPTY, not an error: the binder now
+				// intersects them and proves no key can qualify.
+				spec, err := bindScanComparisonsToRangeSet(
 					[]*predicates.ComparisonRange{build(t, constraints...)},
 					[]values.Type{physical.typ}, nil, false, "contradictory-floating-bounds",
 				)
-				var unsupported *UnsupportedPhysicalFloatOrderingError
-				if !errors.As(err, &unsupported) {
-					t.Fatalf("contradictory %s error = %T(%v), want UnsupportedPhysicalFloatOrderingError",
-						physical.name, err, err)
+				if err != nil {
+					t.Fatalf("contradictory %s bounds errored instead of proving emptiness: %v",
+						physical.name, err)
+				}
+				if !spec.empty {
+					t.Fatalf("contradictory %s bounds bound a NON-empty range set", physical.name)
 				}
 			}
 		})

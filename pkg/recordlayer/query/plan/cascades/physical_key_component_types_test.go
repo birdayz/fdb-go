@@ -279,7 +279,21 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 	}
 }
 
-func TestCandidatesDeclinePhysicalFloatInequalities(t *testing.T) {
+// TestCandidatesRetainPhysicalFloatInequalities pins WHICH leaves keep an
+// ordered FLOAT/DOUBLE bound and which decline it, and the split is by
+// CAPABILITY, not by type.
+//
+// A value index and a primary scan bind through the physical range set, which
+// represents an ordered float comparison exactly as one or two ranges, so they
+// retain the bound and keep their index. An aggregate index reads a
+// pre-aggregated stream and a partitioned vector index is self-limiting per
+// partition; neither can carry a residual or enumerate a second range, so both
+// still decline.
+//
+// Declining everywhere was the earlier behaviour and it was a strict
+// downgrade: it traded every float index range for a full scan without fixing
+// any wrong answer.
+func TestCandidatesRetainPhysicalFloatInequalities(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
@@ -291,15 +305,16 @@ func TestCandidatesDeclinePhysicalFloatInequalities(t *testing.T) {
 		"float_order", []string{"T"}, []string{"V"}, nil, []values.CorrelationIdentifier{alias},
 		values.UnknownType, false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableDouble})
-	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 0 {
-		t.Fatalf("value candidate SARGed FLOAT inequality: %v", prefix)
+	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
+		t.Fatalf("value candidate prefix = %v, want the FLOAT inequality retained; "+
+			"declining it withdraws the index access path and fixes nothing", prefix)
 	}
 	primaryCandidate := NewPrimaryScanMatchCandidate(
 		nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
 		[]string{"V"}, true, values.UnknownType,
 	).WithKeyComponentTypes([]values.Type{values.NullableFloat})
-	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 0 {
-		t.Fatalf("primary candidate SARGed FLOAT inequality: %v", prefix)
+	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
+		t.Fatalf("primary candidate prefix = %v, want the FLOAT inequality retained", prefix)
 	}
 
 	aggregate := NewAggregateIndexMatchCandidate(

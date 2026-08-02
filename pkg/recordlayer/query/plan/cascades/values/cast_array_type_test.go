@@ -61,6 +61,51 @@ func TestCastArrayPreservesSourceElementType(t *testing.T) {
 	})
 }
 
+// TestCastArrayIdentityRecordElementPassThrough pins the identical-element-type
+// pass-through in the array arm (Java CastValue.java:596-598 — `else if
+// (sourceElementType != null && sourceElementType.equals(targetElementType)) {
+// resultList.add(element); }`).
+//
+// The dimension this covers is an element type castEvaluated's switch has NO arm
+// for. Every sibling test uses a scalar element, so the pass-through is
+// indistinguishable there from re-entering the cast: both produce the right
+// answer. A RECORD element separates them — castEvaluated switches on
+// c.Target.Code() and has no TypeCodeRecord case, so an element that reaches the
+// recursive call falls off the end of the switch into `return nil, nil`.
+func TestCastArrayIdentityRecordElementPassThrough(t *testing.T) {
+	t.Parallel()
+
+	recordType := NewRecordType("", true, []Field{
+		{Name: "a", FieldType: NullableLong, Ordinal: 0},
+	})
+	arrayOfRecord := NewArrayType(false, recordType)
+	element := map[string]any{"a": int64(7)}
+
+	cast := NewCastValue(
+		&ConstantValue{Value: []any{element}, Typ: arrayOfRecord},
+		arrayOfRecord,
+	)
+	got, err := cast.Evaluate(nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	items, ok := got.([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("Evaluate = %#v (%T), want one-element array", got, got)
+	}
+	rec, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("RECORD element = %#v, want the record {a:7} passed through intact. "+
+			"A nil here means the identical-element-type pass-through is gone: the element "+
+			"re-enters castEvaluated, whose switch has no TypeCodeRecord arm, so it falls "+
+			"through to `return nil, nil` and the struct silently becomes NULL — data loss "+
+			"with a green suite", items[0])
+	}
+	if rec["a"] != int64(7) {
+		t.Fatalf("RECORD element = %#v, want {a:7} unchanged", rec)
+	}
+}
+
 // TestCastArrayWithoutSourceElementType pins WHERE the missing-source-element
 // guard may fire. Java raises only when a real element cast needs the type
 // (CastValue.java:599-602); an empty array returns early at :586-589 and a NULL

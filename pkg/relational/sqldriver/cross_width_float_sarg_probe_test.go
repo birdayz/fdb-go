@@ -186,7 +186,7 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		{"SELECT id FROM t WHERE f = 1.5", []int64{1}, "IndexScan(T_F", "exact literal narrows to the FLOAT column"},
 		// Row 3 (d = 0.1) is NOT > 1.0. A 0x20 bound against 0x21 entries sorts
 		// below everything and returned all three rows.
-		{"SELECT id FROM t WHERE d > CAST(1.0 AS FLOAT)", []int64{1, 2}, "PredicatesFilter(Scan(T)", "FLOAT bound on a DOUBLE index declines raw-NaN ordering"},
+		{"SELECT id FROM t WHERE d > CAST(1.0 AS FLOAT)", []int64{1, 2}, "IndexScan(T_D", "FLOAT bound on a DOUBLE index, kept as an exact range set"},
 
 		// binary32 0.1 != binary64 0.1 — the pair that only a real rounding fix
 		// gets right, and it must come out wrong in OPPOSITE directions.
@@ -198,10 +198,10 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		// A binary64 comparand against a binary32 index, across every ordering
 		// operator. f holds 1.5, 2.5 and binary32 0.1 (= 0.10000000149…, which
 		// IS greater than binary64 0.1).
-		{"SELECT id FROM t WHERE f > 0.1", []int64{1, 2, 3}, "PredicatesFilter(Scan(T)", "widened binary32 0.1 exceeds binary64 0.1 under a NaN-safe residual"},
-		{"SELECT id FROM t WHERE f < 2.0", []int64{1, 3}, "PredicatesFilter(Scan(T)", "binary64 upper bound declines raw-NaN ordering"},
-		{"SELECT id FROM t WHERE f >= 1.5", []int64{1, 2}, "PredicatesFilter(Scan(T)", "inclusive bound declines raw-NaN ordering"},
-		{"SELECT id FROM t WHERE f > 1.0", []int64{1, 2}, "PredicatesFilter(Scan(T)", "exclusive bound declines raw-NaN ordering"},
+		{"SELECT id FROM t WHERE f > 0.1", []int64{1, 2, 3}, "IndexScan(T_F", "widened binary32 0.1 exceeds binary64 0.1; still an exact range set"},
+		{"SELECT id FROM t WHERE f < 2.0", []int64{1, 3}, "IndexScan(T_F", "binary64 upper bound: ONE range starting at -Inf"},
+		{"SELECT id FROM t WHERE f >= 1.5", []int64{1, 2}, "IndexScan(T_F", "inclusive lower bound: TWO ranges, the tail plus the negative NaNs"},
+		{"SELECT id FROM t WHERE f > 1.0", []int64{1, 2}, "IndexScan(T_F", "exclusive lower bound: TWO ranges, the tail plus the negative NaNs"},
 
 		// Column-vs-column across widths. The comparand is promoted to the
 		// indexed column's type, so these stay index probes.
@@ -219,11 +219,6 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 				if !strings.Contains(plan, tc.plan) {
 					t.Fatalf("%s\nplan = %s\nwant it to contain %q — the rows may still be right via a\n"+
 						"different physical path, which would hide a planner-contract regression", tc.why, plan, tc.plan)
-				}
-				if strings.Contains(tc.plan, "PredicatesFilter(Scan(T)") &&
-					strings.Contains(plan, "IndexScan(T_") {
-					t.Fatalf("%s\nplan = %s\nordered FLOAT/DOUBLE access must not retain a bounded index scan: "+
-						"raw NaN keys violate the logical ordering", tc.why, plan)
 				}
 			}
 			rows, err := conn.QueryContext(ctx, tc.query)

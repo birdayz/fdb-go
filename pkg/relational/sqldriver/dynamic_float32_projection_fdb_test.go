@@ -7,7 +7,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -224,17 +223,11 @@ func TestFDB_DynamicFloat32IndexProjection(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Every case asserts ROWS, ordered comparisons included. They used
+			// to short-circuit into an "unsupported ordering" error assertion
+			// even though the expected row sets below were already written out
+			// — the answer was known and the engine was refusing to compute it.
 			got, err := run(t, tc.comparisonType, tc.parameter)
-			switch tc.comparisonType {
-			case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
-				predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
-				var unsupported *executor.UnsupportedPhysicalFloatOrderingError
-				if !errors.As(err, &unsupported) {
-					t.Fatalf("FLOAT index %v %T(%v) error = %v, want UnsupportedPhysicalFloatOrderingError",
-						tc.comparisonType, tc.parameter, tc.parameter, err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("execute %v %T(%v): %v", tc.comparisonType, tc.parameter, tc.parameter, err)
 			}

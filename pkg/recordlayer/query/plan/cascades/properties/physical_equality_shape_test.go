@@ -414,8 +414,21 @@ func TestPhysicalOrderingPrefixLength_FloatNaNCongruence(t *testing.T) {
 		types []values.Type
 		want  int
 	}{
-		{name: "unbound DOUBLE stops", types: []values.Type{values.NullableDouble, values.NullableLong}, want: 0},
-		{name: "ordered FLOAT stops", comps: []*predicates.ComparisonRange{inequality(float64(0))}, types: []values.Type{values.NullableFloat, values.NullableLong}, want: 0},
+		// An UNBOUND float coordinate is congruent because the scan splits it
+		// into NULL, the numbers, and the two NaN blocks and returns them in
+		// logical order. Before that split it was NOT congruent, and the cost
+		// of saying so was a blocking in-memory sort over the whole table.
+		{name: "unbound DOUBLE stops for a leaf that cannot split blocks", types: []values.Type{values.NullableDouble, values.NullableLong}, want: 0},
+		// An ordered FLOAT coordinate is congruent for the same reason an
+		// ordered LONG one is: the scan emits its ranges in logical order. The
+		// float case gets there by decomposition rather than by luck — an upper
+		// bound starts at -Inf and holds no NaN, a lower bound puts the
+		// negative-NaN range last, and all NaNs are logically equal. The
+		// INTEGER control below must stay identical; a float-only answer here
+		// means the congruence rule has drifted back to keying on TYPE instead
+		// of on what the scan actually emits.
+		{name: "ordered FLOAT is congruent", comps: []*predicates.ComparisonRange{inequality(float64(0))}, types: []values.Type{values.NullableFloat, values.NullableLong}, want: 2},
+		{name: "ordered LONG control", comps: []*predicates.ComparisonRange{inequality(int64(0))}, types: []values.Type{values.NullableLong, values.NullableLong}, want: 2},
 		{name: "nonzero equality excludes NaNs", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, float64(5))}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 2},
 		{name: "signed-zero equality preserves total ORDER BY", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, float64(0))}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 2},
 		{name: "known NaN equality stops", comps: []*predicates.ComparisonRange{physicalShapeLiteral(t, math.NaN())}, types: []values.Type{values.NullableDouble, values.NullableLong}, want: 0},

@@ -169,15 +169,26 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 			notEqProbe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v <> 0", tbl), []int64{2})
 			// IN-list: same as equality, via the per-element sub-probe.
 			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IN (0, 5)", tbl), []int64{1, 2}, true)
+			// The ordered comparisons below all take the INDEX. They used to
+			// expect a residual full scan; that refusal cost the index and
+			// fixed nothing, since the rows were already correct on both
+			// paths — which is exactly what probe() asserts by running each
+			// query on the index-eligible AND the full-scan connection and
+			// requiring both to equal want.
+			//
+			// The signed-zero boundary is the interesting part: the physical
+			// range endpoints are canonicalized per operator so that BOTH zero
+			// encodings fall on the same logical side.
+			//
 			// `<`: neither -0.0 nor +0.0 is strictly less than 0.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v < 0", tbl), nil, false)
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v < 0", tbl), nil, true)
 			// `<=`: both -0.0 and +0.0 satisfy <= 0, so the -0.0 row matches.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v <= 0", tbl), []int64{1}, false)
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v <= 0", tbl), []int64{1}, true)
 			// `>`: neither -0.0 nor +0.0 is strictly greater than 0.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v > 0", tbl), []int64{2}, false)
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v > 0", tbl), []int64{2}, true)
 			// `>=`: both -0.0 and +0.0 satisfy >= 0 (RFC-082), so the -0.0 row
 			// must NOT be dropped.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v >= 0", tbl), []int64{1, 2}, false)
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v >= 0", tbl), []int64{1, 2}, true)
 			// NULL interaction: IS [NOT] NULL around a zero-valued indexed
 			// column must be unaffected by the signed-zero widening.
 			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IS NULL", tbl), []int64{3}, true)
