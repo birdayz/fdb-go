@@ -5,9 +5,17 @@
 # Kept in-tree as the runbook for this class of failure, not because it runs
 # routinely: link-ci-volume.sh now aborts rather than nesting the link, and its
 # abort message tells the operator to run exactly this. infra/migrate_ci_volume_test.sh
-# exercises the data-moving core (rsync, the convergence guard, the symlink swap
-# and the swapfile rename) against fixtures, including the negative case -- an
-# incomplete copy MUST fail the convergence check, or the guard is decoration.
+# EXECUTES this script against fixtures -- rsync, the convergence guard, the symlink
+# swap and the swapfile rename -- including the negative case: an incomplete copy MUST
+# fail the convergence check, or the guard is decoration.
+#
+# usage: migrate-ci-volume.sh [ROOT]
+# ROOT defaults to "" (the real filesystem); the test passes a fixture prefix. Every
+# path below is relative to it, and the operations that need a real kernel (mountpoint,
+# mount) are skipped under a fixture. That prefix is the whole reason the test can run
+# the shipped code: the previous test re-typed the rsync invocations inline instead --
+# with DIFFERENT flags, missing --numeric-ids and --delete -- and stayed green with this
+# file deleted outright.
 #
 # Run it on a box whose slot is already out of rotation, one box at a time so
 # fleet capacity never drops below four. Safe to re-run after a failure: the
@@ -21,17 +29,20 @@
 # while each 100G volume sat at 1%.
 set -euo pipefail
 
-VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1)
-[ -n "$VOL" ] || { echo "FATAL: no /mnt/HC_Volume_* present"; exit 1; }
-mountpoint -q "$VOL" || { echo "FATAL: $VOL is not a mountpoint"; exit 1; }
+R="${1:-}"
+CI="$R/mnt/ci-data"
+
+VOL=$(ls -d "$R"/mnt/HC_Volume_* 2>/dev/null | head -1)
+[ -n "$VOL" ] || { echo "FATAL: no $R/mnt/HC_Volume_* present"; exit 1; }
+[ -n "$R" ] || mountpoint -q "$VOL" || { echo "FATAL: $VOL is not a mountpoint"; exit 1; }
 
 echo "== volume: $VOL"
 
-if [ -L /mnt/ci-data ]; then
-  echo "== /mnt/ci-data is already a symlink -> $(readlink /mnt/ci-data); nothing to migrate"
+if [ -L "$CI" ]; then
+  echo "== $CI is already a symlink -> $(readlink "$CI"); nothing to migrate"
   exit 0
 fi
-[ -d /mnt/ci-data ] || { echo "FATAL: /mnt/ci-data is neither dir nor symlink"; exit 1; }
+[ -d "$CI" ] || { echo "FATAL: $CI is neither dir nor symlink"; exit 1; }
 
 # Refuse to run unless the box is QUIESCENT, which is a stronger condition than
 # "no runner". A canceled job tears down Runner.Worker but leaves the bazel test
@@ -44,9 +55,9 @@ if pgrep -f "Runner[.]Worker|Runner[.]Listener" >/dev/null 2>&1; then
   echo "FATAL: a runner is active on this box; migrate only when its slot is idle"
   exit 1
 fi
-WRITERS=$(ls -l /proc/*/cwd 2>/dev/null | grep -c "ci-data" || true)
+WRITERS=$(ls -l "$R"/proc/*/cwd 2>/dev/null | grep -c "ci-data" || true)
 if [ "${WRITERS:-0}" != "0" ]; then
-  echo "FATAL: $WRITERS process(es) still working inside /mnt/ci-data (orphans from a"
+  echo "FATAL: $WRITERS process(es) still working inside $CI (orphans from a"
   echo "       canceled job survive their runner). Let them finish or kill them first."
   exit 1
 fi
@@ -56,17 +67,17 @@ if [ "$(docker ps -q 2>/dev/null | wc -l)" != "0" ]; then
 fi
 
 echo "== BEFORE"
-df -h / "$VOL" | tail -3
+df -h "$R/" "$VOL" | tail -3
 
 # The extra 8G swapfile under ci-data is runtime-only (not in fstab) and must not
 # follow the data onto network-attached storage: swap on a Hetzner volume turns
 # memory pressure into IO stalls. Take it offline here; a root-disk replacement
 # is armed at the end, once the migration has freed the space for it.
 SWAP_SIZE=""
-if swapon --show=NAME --noheadings | grep -qx /mnt/ci-data/swapfile; then
-  SWAP_SIZE=$(stat -c %s /mnt/ci-data/swapfile)
-  echo "== swapoff /mnt/ci-data/swapfile ($SWAP_SIZE bytes)"
-  swapoff /mnt/ci-data/swapfile
+if swapon --show=NAME --noheadings | grep -qx "$CI/swapfile"; then
+  SWAP_SIZE=$(stat -c %s "$CI/swapfile")
+  echo "== swapoff $CI/swapfile ($SWAP_SIZE bytes)"
+  swapoff "$CI/swapfile"
 fi
 
 echo "== stopping docker"
@@ -79,12 +90,15 @@ fi
 
 # -aHAX --numeric-ids: hardlinks, ACLs and xattrs matter for Docker's overlayfs
 # layers; numeric ids keep ownership exact without relying on name lookup.
+# --delete: the volume is not guaranteed empty (a failed earlier attempt, or a
+# stale tree from a previous box), and content the source no longer has must not
+# survive on the target as a mystery.
 # The swapfile and the nested bad symlink are deliberately left behind.
 echo "== rsync ci-data -> volume"
 rsync -aHAX --numeric-ids --delete --exclude=swapfile \
   --exclude="HC_Volume_*" \
   --exclude=lost+found \
-  /mnt/ci-data/ "$VOL/"
+  "$CI/" "$VOL/"
 
 # A converged second pass emits only "." lines (no update needed). Anything with
 # a transfer/create code in column 1 means the copy is incomplete, and swapping
@@ -92,7 +106,7 @@ rsync -aHAX --numeric-ids --delete --exclude=swapfile \
 echo "== verify: second pass must transfer nothing"
 CHANGED=$(rsync -aHAX --numeric-ids --dry-run --itemize-changes \
   --exclude=swapfile --exclude="HC_Volume_*" --exclude=lost+found \
-  /mnt/ci-data/ "$VOL/" | grep -v '^\.' | head -20 || true)
+  "$CI/" "$VOL/" | grep -v '^\.' | head -20 || true)
 if [ -n "$CHANGED" ]; then
   echo "FATAL: rsync not converged, outstanding transfers:"
   echo "$CHANGED"
@@ -106,19 +120,19 @@ fi
 # directory"), which is exactly how this fleet lost four of five slots.
 chmod 0755 "$VOL"
 
-echo "== swapping /mnt/ci-data -> symlink"
-mv /mnt/ci-data /mnt/ci-data.old
-ln -sfn "$VOL" /mnt/ci-data
+echo "== swapping $CI -> symlink"
+mv "$CI" "$CI.old"
+ln -sfn "$VOL" "$CI"
 
 # Prove the contract rather than assume it.
-[ -L /mnt/ci-data ] || { echo "FATAL: /mnt/ci-data is not a symlink"; exit 1; }
-[ "$(readlink /mnt/ci-data)" = "$VOL" ] || { echo "FATAL: symlink points at $(readlink /mnt/ci-data)"; exit 1; }
+[ -L "$CI" ] || { echo "FATAL: $CI is not a symlink"; exit 1; }
+[ "$(readlink "$CI")" = "$VOL" ] || { echo "FATAL: symlink points at $(readlink "$CI")"; exit 1; }
 for d in bazel bazel-disk-cache bazel-repo-cache bazelwork docker; do
-  [ -d "/mnt/ci-data/$d" ] || { echo "FATAL: /mnt/ci-data/$d missing after swap"; exit 1; }
+  [ -d "$CI/$d" ] || { echo "FATAL: $CI/$d missing after swap"; exit 1; }
 done
-sudo -u runner test -r /mnt/ci-data || { echo "FATAL: runner cannot read /mnt/ci-data"; exit 1; }
-sudo -u runner ls /mnt/ci-data >/dev/null || { echo "FATAL: runner cannot LIST /mnt/ci-data"; exit 1; }
-sudo -u runner test -w /mnt/ci-data/bazelwork || { echo "FATAL: runner cannot write bazelwork"; exit 1; }
+sudo -u runner test -r "$CI" || { echo "FATAL: runner cannot read $CI"; exit 1; }
+sudo -u runner ls "$CI" >/dev/null || { echo "FATAL: runner cannot LIST $CI"; exit 1; }
+sudo -u runner test -w "$CI/bazelwork" || { echo "FATAL: runner cannot write bazelwork"; exit 1; }
 
 echo "== starting docker"
 systemctl start docker.service
@@ -137,14 +151,14 @@ docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | head -10
 # yet -- a fallocate here would try to claim 8GB on a filesystem measured at 94%
 # with 4.7GB free, and fail. A rename within the same filesystem costs nothing
 # and preserves the already-formatted swap area, so no mkswap is needed either.
-if [ -n "$SWAP_SIZE" ] && [ ! -f /swapfile-ci ]; then
-  echo "== relocating CI swapfile to root (/swapfile-ci)"
-  mv /mnt/ci-data.old/swapfile /swapfile-ci
-  chmod 600 /swapfile-ci
-  swapon -p -3 /swapfile-ci
+if [ -n "$SWAP_SIZE" ] && [ ! -f "$R/swapfile-ci" ]; then
+  echo "== relocating CI swapfile to root ($R/swapfile-ci)"
+  mv "$CI.old/swapfile" "$R/swapfile-ci"
+  chmod 600 "$R/swapfile-ci"
+  swapon -p -3 "$R/swapfile-ci"
 fi
 
-echo "== AFTER (ci-data.old still present; delete after a job verifies)"
-df -h / "$VOL" | tail -3
+echo "== AFTER ($CI.old still present; delete after a job verifies)"
+df -h "$R/" "$VOL" | tail -3
 swapon --show
 echo "== MIGRATION OK"

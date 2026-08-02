@@ -25,7 +25,7 @@ name: Nightly Self-Checking Oracles
 on:
   schedule:
     # 13:00 UTC daily — outside the 00:00-05:30ish rowdiff/coverage/libfdbc/
-    # fuzz/stress cluster on the single hetzner-fdb-vm runner slot.
+    # fuzz/stress cluster on the hetzner-fdb-vm fleet.
     - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - name: Check nightly window
         # Same reasoning as nightly-rowdiff.yml: a `schedule` trigger fires
-        # the WORKFLOW, but the single self-hosted runner dispatches the JOB
+        # the WORKFLOW, but GitHub dispatches the JOB to a self-hosted box
         # whenever it frees up, which a backlog can delay by hours. The check
         # runs here, as the first step on the runner actually allocated.
         # `workflow_dispatch` always proceeds.
