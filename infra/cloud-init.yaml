@@ -10,9 +10,15 @@ bootcmd:
   - systemctl mask docker.service docker.socket
 
 package_update: true
+# clang is load-bearing, not a convenience. Bazel detects the C++ toolchain once and caches
+# it in @local_config_cc inside the output base, which lives on the CI volume and outlives
+# the box. That cache was built against clang, so a box with only gcc fails every C++ action
+# with `gcc: error: unrecognized command-line option '-Wthread-safety'`. It was installed by
+# hand on the old fleet, which is why nothing declared it.
 packages:
   - docker.io
   - build-essential
+  - clang
   - curl
   - git
   - jq
