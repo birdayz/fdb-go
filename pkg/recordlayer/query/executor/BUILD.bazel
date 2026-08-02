@@ -95,6 +95,7 @@ go_test(
         "name_oracle_test.go",
         "nlj_continuation_test.go",
         "nlj_hash_key_test.go",
+        "ordinal_join_clock_test.go",
         "ordinal_join_test.go",
         "ordinal_join_wiring_test.go",
         "orphan_index_entry_test.go",
@@ -212,6 +213,7 @@ go_test(
         "leg_column_owner_selection_test.go",
         "leg_type_channel_test.go",
         "zero_fork_scan_ranges_test.go",
+        "ordinal_join_clock_test.go",
     ],
     deps = [
         "//gen",

@@ -8997,7 +8997,16 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 
 ## SELECT-path CURRENT_* statement-stability (small, follow-up)
 
-- [ ] **Thread the statement clock through the executor's row eval contexts.** `values.StatementClock`
+- [x] **Thread the statement clock through the executor's row eval contexts. — DONE.** The executor's
+  `EvaluationContext` now carries `statementTime` (`WithStatementTime` / `StatementNow`, implementing
+  `values.StatementClock`); `cascades_generator.go` stamps it once per execution from the session
+  clock BEFORE scalar subqueries evaluate; every RowEvalContext construction site sets `Clock`; and
+  the bare-OrdinalRow frontier wraps exactly when the operator's values reference the CURRENT_*
+  family (`values.DependsOnStatementClock` over values, `predicates.DependsOnStatementClock` over the
+  shared predicate spine, plus the aggregate group-key/operand probe) — zero cost for the other
+  99.99% of plans. Pinned red→green by `sqldriver/current_timestamp_stability_test.go`
+  (boundary-straddling 10k-row loops on the projection AND predicates-filter shapes; cross-statement
+  control mutation-proven against a frozen session clock). Original booking follows. `values.StatementClock`
   (RFC-181 fold) makes CURRENT_TIMESTAMP / CURRENT_DATE statement-stable wherever the evalCtx carries
   a clock — the INSERT…VALUES fold passes one (`stmtClock`, insert_cascades.go). The SELECT path does
   NOT yet: a projection row evaluates against `*values.RowEvalContext` or (when no bindings exist) the
@@ -13417,17 +13426,21 @@ None is speculative: each was re-verified against the tree before booking.
   contract found four entries that break it. They are MARKED in the watch-list
   rather than removed — an unpinned divergence is more dangerous than a pinned
   one — and the code fixes are this item.
-  - **Entry 4, `CURRENT_TIMESTAMP` drifts across rows within one statement
-    (SELECT path) — NO TEST AT ALL. The worst of the four:** a wrong-data
-    divergence resting on prose. Booked open work already exists at the
-    "SELECT-path CURRENT_* statement-stability" section, whose closing line is
-    itself the instruction to pin it; the session-object half is done, the
-    SELECT path is not.
-  - **Entry 2, INSERT of NULL into a PRIMARY KEY column silently stores 0 — the
-    test cannot go red.** `sqldriver/embedded_fdb_errors_test.go` logs and
-    returns on both fix paths, disclaims asserting a row count in its own final
-    comment, and never checks the stored value is `0`. It passes whether or not
-    the divergence is fixed.
+  - [x] **Entry 4, `CURRENT_TIMESTAMP` drifts across rows within one statement
+    (SELECT path) — DONE.** Fixed via the "SELECT-path CURRENT_* statement-
+    stability" item above (statement clock stamped on the executor
+    EvaluationContext, clock-bearing frontier wrap). Pinned red→green by
+    `sqldriver/current_timestamp_stability_test.go`; the watch-list entry is
+    retired to RESOLVED.
+  - [x] **Entry 2, INSERT of NULL into a PRIMARY KEY column silently stores 0 —
+    DONE, and the divergence itself REFUTED.** Measurement showed Go already
+    stores Java's tuple null (duplicate-NULL collides 23505; `id=0` does NOT
+    collide; the row reads back NULL and is visible via IS NULL) — Java raises
+    no error for this shape (DdlVisitor.java:156-161,
+    ExpressionVisitor.java:1053-1075, functions.yamsql:34). The
+    log-and-return fake pin is deleted; the real Java-parity pins live in
+    `sqldriver/null_pk_java_parity_test.go`, red under both the stores-0 and
+    the rejects-NULL mutations. The watch-list entry is retired to REFUTED.
   - **Entry 8, `UNION ALL` + trailing `ORDER BY` — half-pinned.** Go's side is
     pinned (`yamsql/testdata/union_columns.yaml`); the Java side rests on a
     prose record of a live probe in `DIVERGENCES.md`, not a committed
@@ -13441,7 +13454,8 @@ None is speculative: each was re-verified against the tree before booking.
   **Booked 2026-08-01.** Deliberately not fixed in the pass that found them:
   that pass was docs-only, and four test fixes across three packages are a code
   lap with its own review. Recorded here in full so the next fixer does not have
-  to re-derive which four and why.
+  to re-derive which four and why. **Entries 2 and 4 landed 2026-08-01** (see
+  their bullets); 8 and 12 remain.
   DONE = each of the four has a committed test that goes RED with the
   divergence present, per "EVERY PROOF GETS COMMITTED AS A TEST"; entry 12's
   mixed-case residue is MEASURED before it is pinned (it may be closed already);

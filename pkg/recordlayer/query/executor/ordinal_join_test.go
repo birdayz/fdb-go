@@ -564,7 +564,7 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 
 	t.Run("both legs bound", func(t *testing.T) {
 		t.Parallel()
-		merged, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: rowB})
+		merged, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: rowB}, nil)
 		if err != nil {
 			t.Fatalf("evaluateOrdinalJoinRow: %v", err)
 		}
@@ -585,7 +585,7 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 		// nil (present!) — the baked nodes' `return bound, nil` arm yields nil
 		// and B's slots fall out NULL, A's intact. No per-row type, no
 		// special-case appendNullLeg arm.
-		merged, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: nil})
+		merged, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: nil}, nil)
 		if err != nil {
 			t.Fatalf("evaluateOrdinalJoinRow with null leg: %v", err)
 		}
@@ -611,7 +611,7 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 		// silent raw-object slot that would corrupt the merged row.
 		type garbage struct{ x int }
 		g := garbage{x: 9}
-		_, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: g})
+		_, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: g}, nil)
 		var bnce *values.BakedNameContextError
 		if !errors.As(err, &bnce) {
 			t.Fatalf("garbage leg binding = %v, want a loud *values.BakedNameContextError (frontier-contract violation)", err)
@@ -624,7 +624,7 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 		// the plan is malformed (a planner bug — the merged type must derive
 		// from this RC via ordinalJoinSpans): fail the QUERY with a loud
 		// error, never the process.
-		_, err := evaluateOrdinalJoinRow(rc, legA, stubBinder{corrA: rowA, corrB: rowB})
+		_, err := evaluateOrdinalJoinRow(rc, legA, stubBinder{corrA: rowA, corrB: rowB}, nil)
 		if err == nil {
 			t.Fatal("want a loud malformed-plan error, got nil — a malformed ordinal seed silently passed")
 		}

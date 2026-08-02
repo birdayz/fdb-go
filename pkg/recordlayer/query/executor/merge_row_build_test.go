@@ -180,7 +180,7 @@ func TestMergeBuild_MixedUpper(t *testing.T) {
 		outerID: innerQOV.Correlation, innerID: qovC.Correlation,
 		outer: innerRow, inner: cRow,
 	}
-	pos, err := evaluateOrdinalJoinRow(mixed, build.OutputType, binder)
+	pos, err := evaluateOrdinalJoinRow(mixed, build.OutputType, binder, nil)
 	if err != nil {
 		t.Fatalf("mixed-upper row build: %v", err)
 	}

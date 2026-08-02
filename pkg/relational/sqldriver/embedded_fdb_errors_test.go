@@ -104,49 +104,14 @@ func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 	}
 }
 
-// TestFDB_Errors_NotNullViolation_PKDoc documents the CURRENT engine
-// behaviour: NULL into a PK column does NOT raise NotNullViolation.
-//
-// This is a known gap. The engine's insert path checks `proto2 Required`
-// cardinality for NOT NULL enforcement (`pkg/relational/core/embedded/insert.go`),
-// but PK columns aren't marked Required by the metadata builder for
-// `CREATE TABLE ... PRIMARY KEY (id)` shapes — the NOT NULL implication
-// of being a PK column doesn't propagate to the proto descriptor.
-// Result: NULL into PK silently stores as the column's zero value
-// (or absent).
-//
-// This test pins the current behaviour so a future fix becomes
-// visible: when NotNullViolation starts firing on this case, the
-// test will go red, prompting the fix-side update.
-//
-// Fix-side: metadata builder needs to set proto Required on PK
-// columns (or alternatively the insert path needs a separate
-// PK-validation pass). Tracked as a known gap below.
-func TestFDB_Errors_NotNullViolation_PKDoc(t *testing.T) {
-	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_nn", "errs_nn",
-		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
-	_, err := db.ExecContext(context.Background(),
-		"INSERT INTO Item (id, name) VALUES (NULL, 'no-id')")
-	if err != nil {
-		// If THIS branch fires, NotNullViolation is now correctly
-		// enforced on PK columns — flip this test to assert positive.
-		t.Logf("ENGINE FIX OBSERVED: NULL-into-PK now errors (%v). Convert this test to a positive NotNullViolation assertion.", err)
-		return
-	}
-	// Current behaviour: succeeded. The row is there with id=zero-value.
-	rows, qerr := db.QueryContext(context.Background(), "SELECT name FROM Item WHERE id IS NULL")
-	if qerr != nil {
-		// SELECT failure also signals the contract changed — surface it.
-		t.Logf("INSERT silently accepted NULL into PK but SELECT WHERE id IS NULL errored: %v", qerr)
-		return
-	}
-	defer rows.Close()
-	// Pin the CURRENT contract: don't assert any specific row count;
-	// just confirm we can query without error. The test's purpose is
-	// to surface FUTURE behavioural change, not to assert correctness
-	// of the current behaviour.
-}
+// NULL into a PK column: pinned by null_pk_java_parity_test.go. A test
+// that lived here (TestFDB_Errors_NotNullViolation_PKDoc) claimed to pin
+// the shape but logged-and-returned on every path and asserted nothing —
+// it stayed green whether the engine errored, stored 0, or stored tuple
+// null, so it was deleted. Java raises NO error for this shape (a scalar
+// column is never non-nullable in the relational layer; the PK stores a
+// real tuple null), and Go matches — the parity file asserts each
+// observable that distinguishes the candidate behaviours.
 
 func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 	t.Parallel()

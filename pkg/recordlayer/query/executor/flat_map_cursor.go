@@ -155,6 +155,9 @@ func newFlatMapCursorWithOuterProperties(
 	if err != nil {
 		return nil, err
 	}
+	if build != nil {
+		build.Clock = evalCtx
+	}
 	// A TRANSLATED top RV (fused merge references) yields no spans from the RV
 	// alone — recover them through the leg subplans' result values (the merge
 	// RC is where the merged-away leg aliases survive), so the build's leg

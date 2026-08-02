@@ -1254,6 +1254,17 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		cols:             cols,
 		respectActiveTx:  p.IsUpdate(),
 		dryRun:           p.dryRun,
+		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
+		// ONCE here, while the statement is in flight (the driver entry
+		// point's session-clock stamp is still live). It must be captured on
+		// the result set, not read per page: page 1 is fetched eagerly below,
+		// but pages 2+ are fetched lazily from rows.Next() AFTER the driver
+		// call returned and its deferred clock-restore zeroed the session
+		// stamp — reading the session clock per page would fall back to wall
+		// clock and drift across page boundaries. Internal page resume
+		// therefore carries the ORIGINAL stamp; an external continuation
+		// resume is rejected before this point and stamps afresh by design.
+		statementTime: c.statementNow(),
 		// RFC-130: mint the statement-wide ExecuteState ONCE here (never nil),
 		// with the memory byte budget from OptMaxStatementMemoryBytes (0/unset
 		// → unlimited). It is held on paginatingRows so it survives across the
@@ -1348,6 +1359,13 @@ type paginatingRows struct {
 	// ExecuteProperties.DryRun. A fresh paginatingRows per statement means it can
 	// never leak to a subsequent plain DML on the same (pooled) connection.
 	dryRun bool
+
+	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
+	// instant, captured once in Execute while the statement's session-clock
+	// stamp is live. Every fetchPage (including lazy pages fetched from
+	// rows.Next after the driver call returned) builds its EvaluationContext
+	// from THIS field so all pages of one statement observe one instant.
+	statementTime time.Time
 
 	// execState is the statement-wide RFC-130 ExecuteState (the memory byte
 	// budget counter). Minted ONCE in Execute and shared across all pages —
@@ -1774,7 +1792,14 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, storeErr
 		}
 
-		evalCtx := executor.EmptyEvaluationContext()
+		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
+		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
+		// ONCE in Execute, from the session clock (Session.BeginStatement /
+		// StatementNow — the same authority the INSERT…VALUES fold reads),
+		// and is carried on paginatingRows: every row of every PAGE of the
+		// main plan AND of every subquery observes the same instant, per SQL.
+		// Never read the session clock here — lazy pages run after the
+		// driver call's deferred clock-restore.
 		// Compute the statement's execution props BEFORE evaluating scalar
 		// subqueries so the configured scan limits apply to them too
 		// (RFC-106a): an uncorrelated subquery must not scan past the statement

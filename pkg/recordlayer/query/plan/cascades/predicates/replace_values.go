@@ -37,6 +37,24 @@ func TranslateLeafPredicates(p QueryPredicate, m values.TranslationMap) QueryPre
 	})
 }
 
+// DependsOnStatementClock reports whether any Value tree embedded in the
+// predicate contains a CURRENT_TIMESTAMP-family function (see
+// values.DependsOnStatementClock). It probes through the SAME spine the
+// value-rewrite families walk (transformEmbeddedValues), so a predicate
+// shape that carries values cannot be visible to rewrites yet invisible
+// to the statement-clock need check. The probe transform returns every
+// value unchanged, so the pointer-stable spine rebuilds nothing.
+func DependsOnStatementClock(p QueryPredicate) bool {
+	found := false
+	transformEmbeddedValues(p, func(v values.Value) values.Value {
+		if !found && values.DependsOnStatementClock(v) {
+			found = true
+		}
+		return v
+	})
+	return found
+}
+
 // transformEmbeddedValues is the ONE predicate spine both value-rewrite
 // families walk: transform is applied to each embedded Value tree WHOLE
 // (operands, ValuePredicate value, Placeholder value), and only the changed

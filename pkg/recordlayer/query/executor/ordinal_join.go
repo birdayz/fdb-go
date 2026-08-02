@@ -1124,7 +1124,7 @@ func typeFieldNames(rt *values.RecordType) []string {
 // slots come out NULL (appendNullLeg ≡ evaluating the
 // merged RC with the leg QOV bound to nil; the null extension falls out, no
 // ad-hoc per-row types).
-func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *values.RecordType, bindings values.CorrelationBinder) (*PositionalRow, error) {
+func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *values.RecordType, bindings values.CorrelationBinder, clock values.StatementClock) (*PositionalRow, error) {
 	if len(rc.Fields) != len(mergedType.Fields) {
 		// The merged type is derived from this RC by ordinalJoinSpans — a
 		// mismatch means the plan is malformed (a planner bug), which must
@@ -1138,7 +1138,7 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	// resolves here (else ScalarSubqueryValue.Evaluate is loud: UnboundScalarSubquery).
 	// The pristine ordinal-join SEED (baked leg refs only) carries none, so this is
 	// nil for the NLJ path — harmless.
-	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings)}
+	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings), Clock: clock}
 	for i, f := range rc.Fields {
 		v, err := f.Value.Evaluate(evalCtx)
 		if err != nil {
@@ -1167,8 +1167,8 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 // A wrongly-shaped binding still fails LOUD inside Evaluate: a baked ordinal
 // read against a row that cannot serve it is an OrdinalResolutionError, so
 // dropping the RC-only construction check trades no silence for reach.
-func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinder) (*PositionalRow, error) {
-	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings)}
+func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinder, clock values.StatementClock) (*PositionalRow, error) {
+	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings), Clock: clock}
 	out, err := v.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
@@ -1358,6 +1358,12 @@ type ordinalJoinBuild struct {
 	// `_0`/`_1` is shape-identical but binds correctly by NAME
 	// (adaptLegPositional).
 	OrdinalityLegs map[values.CorrelationIdentifier]struct{}
+	// Clock supplies the statement-stable CURRENT_TIMESTAMP-family instant
+	// to the build's row evaluation, set from the constructing cursor's
+	// EvaluationContext. Without it a CURRENT_* value folded into the baked
+	// result value would evaluate against RowEvalContext's wall-clock
+	// fallback and drift across rows.
+	Clock values.StatementClock
 }
 
 // newOrdinalJoinBuild probes a join plan's result value at cursor
@@ -1794,9 +1800,9 @@ func (b *ordinalJoinBuild) evaluateLegs(legs map[values.CorrelationIdentifier]va
 // map, no per-pair re-adaptation).
 func (b *ordinalJoinBuild) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
 	if b.Bare != nil {
-		return evaluateOrdinalJoinBareRow(b.Bare, bindings)
+		return evaluateOrdinalJoinBareRow(b.Bare, bindings, b.Clock)
 	}
-	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
+	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings, b.Clock)
 }
 
 // twoLegBinder is the NLJ cursor's per-pair leg binder: exactly the join's
@@ -2134,6 +2140,7 @@ func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []l
 	if ec != nil {
 		rc.Binder = ec
 		rc.ScalarSubqueries = ec.scalarSubqueries
+		rc.Clock = ec
 	}
 	return rc
 }

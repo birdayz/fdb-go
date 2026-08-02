@@ -207,17 +207,23 @@ are a bare untyped QOV where Java types unconditionally. It carries a REOPEN TRI
 ## Watch-list — pinned divergences a prod user must be told about
 
 The section contract is that **every entry is a committed test asserting CURRENT behavior; red means
-fixed.** Verifying that contract for this revision found four entries that do not meet it. They are
-marked, not removed — an unpinned divergence is more dangerous than a pinned one, and hiding it
-would make the list read cleaner than the code is.
+fixed.** Verifying that contract for this revision found four entries that did not meet it. They
+were marked, not removed — an unpinned divergence is more dangerous than a pinned one, and hiding it
+would make the list read cleaner than the code is. Entries 2 and 4 have since been closed (entry 2
+refuted by measurement, entry 4 fixed and pinned — see the entries); 8 and 12 remain marked.
 
 Wrong rows / wrong data:
 1. No read-your-writes in `BeginTx` (= B2). IMPLEMENTATION IN FLIGHT (feat/rfc198-explicit-tx-isolation). Pinned —
    `sqldriver/tx_select_isolation_probe_test.go:62`.
-2. INSERT of NULL into a PRIMARY KEY column silently stores 0. **⚠ NOT PINNED.**
-   `sqldriver/embedded_fdb_errors_test.go:125` logs and returns on both fix paths and its own final
-   comment disclaims asserting a row count; it stays green whether or not the divergence is fixed,
-   and it never checks that the stored value is `0`. Booked.
+2. **REFUTED and retired: "INSERT of NULL into a PRIMARY KEY column silently stores 0."**
+   Measurement inverted the claim: Go stores the same REAL tuple null (0x00) Java does — Java raises
+   no error here (a relational scalar column is never non-nullable, DdlVisitor.java:156-161;
+   the null standin flows to the PK tuple, FieldKeyExpression.java:228-243 /
+   TupleTypeUtil.java:148-151; proven live by yaml-tests/functions.yamsql:34). The old "pin" could
+   not have seen this: it logged-and-returned on every path. Now REALLY pinned, Java-parity, by
+   `sqldriver/null_pk_java_parity_test.go` (explicit NULL, composite partial-NULL, omitted PK
+   column; each asserts the null key exists — duplicate-NULL collides 23505 — and that `id=0` does
+   NOT collide, i.e. nothing was stored as 0). No divergence remains.
 3. **RESOLVED 2026-08-01 (CQ-83, `fix/rfc196-correlated-zero-composite`, awaiting the Graefe
    lap).** Correlated float `=` no longer misses `-0.0`/`+0.0` on a non-terminal composite index
    column. The sentinel fired on its own terms and was flipped:
@@ -228,10 +234,19 @@ Wrong rows / wrong data:
    closed the way its own analysis prescribed: widening decided at execution time, where the
    correlated comparand's value is finally known — but as an exact two-range union, not a
    contract-changing internal filter).
-4. `CURRENT_TIMESTAMP` drifts across rows within one statement (SELECT path). **⚠ NOT PINNED — no
-   test exists.** It is booked open work at `TODO.md:8935-8947`, whose closing line is itself the
-   instruction to pin it. The session-object half (`session.go:80-133`) is done; the SELECT path is
-   not.
+4. **RESOLVED: `CURRENT_TIMESTAMP` drifted across rows within one statement (SELECT path),
+   including across PAGE boundaries.** The statement instant is captured ONCE per execution on the
+   result set (`paginatingRows.statementTime` in `cascades_generator.go`) while the driver call's
+   session-clock stamp is live — lazy pages fetched from `rows.Next()` after the driver call
+   returned reuse it, never re-reading the (already restored) session clock. Every frontier row
+   context exposes it as the `values.StatementClock`; operators wrap the bare frontier row exactly
+   when their values reference the CURRENT_TIMESTAMP family (`values.DependsOnStatementClock`),
+   and the ordinal join's baked result-value build carries it too (`ordinalJoinBuild.Clock`).
+   Pinned red→green by `sqldriver/current_timestamp_stability_test.go` (single-page projection and
+   predicates-filter shapes + cross-statement control),
+   `sqldriver/current_timestamp_crosspage_test.go` (~20-page statements looped across second
+   boundaries), `sqldriver/current_timestamp_join_shapes_test.go` (join/EXISTS/scalar-subquery
+   battery), and `executor/ordinal_join_clock_test.go` (baked-build clock threading).
 5. NaN comparisons follow Java's total order, not IEEE — `(v/z)=(v/z)` returns ALL rows. Pinned —
    `nan_comparison_semantics_test.go`. Matches Java; both diverge from the standard/PG/CRDB.
 6. Signed zero: Go is IEEE, Java is bit-identity — `WHERE d = 0.0` returns a stored `-0.0` row in
@@ -350,7 +365,7 @@ entry's pin goes red and the entry is retired with the fix cited.
 2. **The unpinned-or-unowned batch** (entries 2, 4, 3, 9) — INSERT-NULL-into-PK
    (measurement REFUTED the entry: Java allows NULL PKs and Go matches — real pins landed,
    fake pin deleted, on `fix/watchlist-insert-null-pk-timestamp`), CURRENT_TIMESTAMP drift
-   (fixed statement-scoped on the same branch; cross-page fold in review),
+   (fixed statement-scoped on the same branch; cross-page fold delta-ACK'd, PR #572),
    correlated-float signed-zero composite (RFC-196 — FIXED via execution-time probe fork,
    Graefe-ACK'd, PR #571), SUM overflow inconsistency (in flight — Java-behavior measurement
    first, then its own gated lap since it flips answers into errors).
@@ -453,12 +468,12 @@ stop. Three green runs are on record and they do not settle it.
 
 Booked by THIS revision, from defects the verification pass found:
 
-- **CQ-80** — watch-list entries 2, 4, 8 and 12 do not meet the contract this section states.
-  Entry 2's test cannot go red; **entry 4 has no test at all** and is the worst of the four (a
-  wrong-data divergence resting on prose); entry 8 pins only the Go half; entry 12 has no test and
-  its lowercase half was fixed without the entry being narrowed. This is a code/test lap,
-  deliberately not done in a docs-only pass, and booked in full so the next fixer does not re-derive
-  which four and why.
+- **CQ-80** — watch-list entries that do not meet the contract this section states. Entries 2 and 4
+  are DONE: entry 2's un-red-able test was replaced by the Java-parity pins (and the divergence
+  itself REFUTED — see the entry), entry 4's drift was fixed and pinned red→green. Remaining: entry
+  8 pins only the Go half; entry 12 has no test and its lowercase half was fixed without the entry
+  being narrowed. This is a code/test lap, deliberately not done in a docs-only pass, and booked so
+  the next fixer does not re-derive which and why.
 - **CQ-79** — CQ-53's surviving producer mint (`cascades_translator.go:3598`) is owned by no open
   item: CQ-53 is marked `[x]` as carrying no remainder while the ratchet pins the mint as "CQ-53's
   surviving producer". Checked and NOT owned by CQ-68, which is a different axis (untyped QOV, not a
@@ -474,8 +489,8 @@ Booked by THIS revision, from defects the verification pass found:
    turns on the first genuinely green reconcile. Watch it, do not assume it. Nothing to build.
 2. **B2 explicit-tx isolation.** The Tier-2 gate and the top item outright. RFC-198 is
    review-complete; implement it. L, plus its SimFDB acceptance harness.
-3. **CQ-80** — pin the four watch-list entries that claim a test they do not have. Small, and it is
-   what makes the list handable to an adopter.
+3. **CQ-80** — pin the watch-list entries that claim a test they do not have (entries 2 and 4 done;
+   8 and 12 remain). Small, and it is what makes the list handable to an adopter.
 4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
    then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out

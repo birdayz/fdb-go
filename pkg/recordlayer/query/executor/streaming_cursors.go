@@ -149,9 +149,14 @@ func newAggregateCursor(
 		scalarMode:        len(groupingKeys) == 0,
 		evalCtx:           evalCtx,
 		flatFrontierInput: aggregateInputIsFlatFrontier(innerPlan),
-		needsRowCtx:       hasBindingContext(evalCtx),
-		joinLegSpans:      legSpans,
-		joinWindowsOK:     windowsOK,
+		// A CURRENT_TIMESTAMP-family group key / aggregate operand needs the
+		// statement clock a RowEvalContext carries — a bare frontier row
+		// would drift per row.
+		needsRowCtx: hasBindingContext(evalCtx) ||
+			valuesDependOnStatementClock(groupingKeys) ||
+			aggregateOperandsDependOnStatementClock(aggregates),
+		joinLegSpans:  legSpans,
+		joinWindowsOK: windowsOK,
 		// Java: this.previousContinuationInGroup = continuation (the constructor
 		// param, START on a fresh cursor). executeAggregation overwrites it with
 		// the decoded inner position on a resume.
@@ -424,8 +429,10 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 	}
 	if valueReadsBakedOrdinal(v) {
 		// A baked ordinal operand reads plan-time-resolved slots directly off the
-		// positional row (evaluateOrdinal), so pass it as the bare ordinal row.
-		return &values.RowEvalContext{Positional: row.Positional}
+		// positional row (evaluateOrdinal), so pass it as the bare ordinal row —
+		// with the statement clock in reach for a CURRENT_TIMESTAMP-family
+		// subtree of the operand.
+		return &values.RowEvalContext{Positional: row.Positional, Clock: c.evalCtx}
 	}
 	if c.flatFrontierInput {
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
@@ -1104,6 +1111,9 @@ func newNLJCursor(
 	build, err := newOrdinalJoinBuild(resultValue, preds)
 	if err != nil {
 		return nil, err
+	}
+	if build != nil {
+		build.Clock = evalCtx
 	}
 	c := &nljCursor{
 		outerInner: outer,
