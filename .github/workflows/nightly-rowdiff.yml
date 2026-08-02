@@ -37,13 +37,13 @@ on:
 jobs:
   rowdiff:
     name: RowDiff deep sweep (row soundness vs the oracle)
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 300
 
     steps:
       - name: Check nightly window
         # Same reasoning as nightly-stress: a `schedule` trigger fires the
-        # WORKFLOW, but GitHub dispatches the JOB whenever hetzner-fdb (our
+        # WORKFLOW, but GitHub dispatches the JOB whenever hetzner-fdb-vm (our
         # single self-hosted slot) frees up, which a backlog can delay by
         # hours — landing a ~4h sweep in the middle of the workday. The check
         # MUST run here, as the first step on the runner actually allocated;

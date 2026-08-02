@@ -13,7 +13,7 @@ on:
 jobs:
   claude:
     # One live run per issue/PR, newest wins. This job shares the SINGLE-slot
-    # hetzner-fdb scale set with the real CI gates, so a wedged or superseded
+    # hetzner-fdb-vm scale set with the real CI gates, so a wedged or superseded
     # review run starves every PR's CI behind it (a 3h-wedged run + its queued
     # re-requests once held the slot while CI sat queued for an hour).
     #
@@ -44,7 +44,7 @@ jobs:
         (github.event.review.author_association == 'OWNER' || github.event.review.author_association == 'MEMBER' || github.event.review.author_association == 'COLLABORATOR')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
         (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER' || github.event.issue.author_association == 'COLLABORATOR'))
-    runs-on: hetzner-fdb
+    runs-on: hetzner-fdb-vm
     # Hard wall so a wedged run can never hold the single CI slot for hours
     # (a review normally completes in well under 15 minutes).
     timeout-minutes: 45
