@@ -1632,6 +1632,10 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 	case "BYTES":
 		// Real TypeCodeBytes, same reason as FLOAT/DOUBLE.
 		return values.NullableBytes
+	case "VERSION":
+		// The __ROW_VERSION pseudo-column's type — Java's
+		// Type.primitiveType(TypeCode.VERSION, true) (PseudoField.java:37).
+		return values.NullableVersion
 	case "RECORD":
 		// No struct/record Type in the seed enum yet — stays Unknown.
 		return values.TypeUnknown

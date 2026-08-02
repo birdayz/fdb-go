@@ -495,3 +495,67 @@ func TestAdjustMatchForSelect_RejectsMultiMemberLowerReference(t *testing.T) {
 		t.Fatal("multi-member lower reference selected an arbitrary result value")
 	}
 }
+
+// TestAdjustMatchForSelect_BailsOnNonTautologyPredicate pins Java's
+// SelectExpression.adjustMatch predicate walk (SelectExpression.java:612-621):
+// an unconstrained Placeholder is skippable and so is a TAUTOLOGY, but any
+// other predicate — a constant FALSE / NULL (a sparse index's `WHERE FALSE`
+// select) or a comparison — must refuse absorption. The pre-fix Go port
+// skipped EVERY ConstantPredicate, which let a scan-leaf match absorb an
+// empty sparse index's select and serve it as a full row source
+// (boolean-ddl.yamsql: 0 of 1 rows).
+func TestAdjustMatchForSelect_BailsOnNonTautologyPredicate(t *testing.T) {
+	t.Parallel()
+
+	build := func(preds []predicates.QueryPredicate) (*expressions.SelectExpression, *PartialMatchImpl) {
+		lower := expressions.NewSelectExpression(values.LiteralValue(int64(1)), nil, nil)
+		inner := expressions.ForEachQuantifier(expressions.InitialOf(lower))
+		upper := expressions.NewSelectExpression(
+			values.NewQuantifiedObjectValue(inner.GetAlias()),
+			[]expressions.Quantifier{inner},
+			preds,
+		)
+		matchedValue := values.LiteralValue(int64(7))
+		maxMatchMap := NewMaxMatchMap(
+			map[values.Value]values.Value{matchedValue: matchedValue},
+			matchedValue,
+			matchedValue,
+		)
+		matchInfo := NewRegularMatchInfo(
+			nil, EmptyAliasMap(), nil, nil, maxMatchMap,
+			EmptyGroupByMappings(), nil, nil,
+		)
+		queryExpression := expressions.NewSelectExpression(matchedValue, nil, nil)
+		pm := NewPartialMatch(
+			EmptyAliasMap(),
+			stubMatchCandidate{name: "adjust_select_tautology_guard"},
+			expressions.InitialOf(queryExpression),
+			queryExpression,
+			expressions.InitialOf(lower),
+			matchInfo,
+		)
+		return upper, pm
+	}
+
+	upperTrue, pmTrue := build([]predicates.QueryPredicate{
+		predicates.NewConstantPredicate(predicates.TriTrue),
+	})
+	if adjustMatchForSelect(upperTrue, pmTrue) == nil {
+		t.Error("a tautology (TRUE) candidate predicate must remain absorbable (SelectExpression.java:617)")
+	}
+
+	for name, pred := range map[string]predicates.QueryPredicate{
+		"constant_false": predicates.NewConstantPredicate(predicates.TriFalse),
+		"constant_null":  predicates.NewConstantPredicate(predicates.TriUnknown),
+		"comparison": predicates.NewComparisonPredicate(
+			values.LiteralValue(int64(3)),
+			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(200)),
+		),
+	} {
+		upper, pm := build([]predicates.QueryPredicate{pred})
+		if adjustMatchForSelect(upper, pm) != nil {
+			t.Errorf("%s: non-tautology candidate predicate absorbed — the filtered select's row "+
+				"elimination is silently discarded (SelectExpression.java:617-620)", name)
+		}
+	}
+}

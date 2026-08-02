@@ -60,6 +60,11 @@ type RecordQueryIndexPlan struct {
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
 	unique bool
+	// valueColumnNames are the covering-only columns of a KeyWithValue root —
+	// stored in the FDB VALUE, past the split point. They extend the covering
+	// surface (the executor reads them from the entry VALUE tuple) but are not
+	// key columns: they never order the scan and never bound its range.
+	valueColumnNames []string
 	// orderingKeyNamesKnown/orderingKeyNamesSafe state whether columnNames are
 	// semantic bare-field ordering keys. Function indexes retain leaf names for
 	// row layout, but CARDINALITY(TAGS) must not advertise ordering on TAGS.
@@ -176,6 +181,34 @@ func (p *RecordQueryIndexPlan) GetCommonPrimaryKeyValues() []values.Value {
 
 // GetColumnNames returns the index's key column names, in index-key order.
 func (p *RecordQueryIndexPlan) GetColumnNames() []string { return p.columnNames }
+
+// GetValueColumnNames returns the covering-only (FDB VALUE part) columns of a
+// KeyWithValue-rooted index, or nil.
+func (p *RecordQueryIndexPlan) GetValueColumnNames() []string { return p.valueColumnNames }
+
+// WithValueColumnNames returns a shallow copy carrying the covering-only
+// (FDB VALUE part) column names. Like the other index metadata, this is a
+// function of the index the plan names and stays out of the structural key.
+func (p *RecordQueryIndexPlan) WithValueColumnNames(names []string) *RecordQueryIndexPlan {
+	cp := *p
+	cp.valueColumnNames = make([]string, len(names))
+	copy(cp.valueColumnNames, names)
+	return &cp
+}
+
+// AllCoveredEntryColumns returns the entry's column names in ENTRY layout
+// order — key columns, then the KeyWithValue VALUE part — the list the
+// covering executor aligns positionally against (index key values ++ entry
+// value tuple).
+func (p *RecordQueryIndexPlan) AllCoveredEntryColumns() []string {
+	if len(p.valueColumnNames) == 0 {
+		return p.columnNames
+	}
+	out := make([]string, 0, len(p.columnNames)+len(p.valueColumnNames))
+	out = append(out, p.columnNames...)
+	out = append(out, p.valueColumnNames...)
+	return out
+}
 
 // GetPKColumnNames returns the record type's primary-key column names.
 func (p *RecordQueryIndexPlan) GetPKColumnNames() []string { return p.pkColumnNames }

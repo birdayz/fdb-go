@@ -12,7 +12,7 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 	t.Parallel()
 
 	const allNames = `
-		ABS BITAND BITOR BITXOR CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH
+		ABS BITAND BITMAP_BIT_POSITION BITMAP_BUCKET_OFFSET BITOR BITXOR CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH
 		COALESCE CONCAT CONCAT_WS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP
 		DAY DAYOFMONTH DAYOFWEEK DAYOFYEAR EXP FLOOR GREATEST HOUR IF IFNULL
 		IIF LEAST LEFT LEN LENGTH LN LOCALTIME LOG LOWER LTRIM MINUTE MOD MONTH
@@ -20,7 +20,7 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 		RTRIM SECOND SIGN SQRT SUBSTR SUBSTRING TRIM UPPER YEAR
 	`
 	const cascadesSafeNames = `
-		ABS BITAND BITOR BITXOR CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH
+		ABS BITAND BITMAP_BIT_POSITION BITMAP_BUCKET_OFFSET BITOR BITXOR CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH
 		COALESCE CONCAT CONCAT_WS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP
 		DAY DAYOFMONTH DAYOFWEEK DAYOFYEAR EXP FLOOR GREATEST HOUR IFNULL
 		LEAST LEFT LEN LENGTH LN LOCALTIME LOG LOWER LTRIM MINUTE MOD MONTH
@@ -28,7 +28,8 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 		SECOND SIGN SQRT SUBSTR SUBSTRING TRIM UPPER YEAR
 	`
 	const scalarCallNames = `
-		ABS CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS
+		ABS BITMAP_BIT_POSITION BITMAP_BUCKET_OFFSET
+		CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS
 		DAY DAYOFMONTH DAYOFWEEK DAYOFYEAR EXP FLOOR GREATEST HOUR IF IFNULL
 		IIF LEAST LEFT LEN LENGTH LN LOG LOWER LTRIM MINUTE MOD MONTH NULLIF
 		OCTET_LENGTH PI POSITION POW POWER REPLACE REVERSE RIGHT ROUND RTRIM
@@ -59,9 +60,9 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 			return definition.argumentStrategy == scalarFunctionCommonNumericArguments
 		}))
 
-	require.Len(t, scalarFunctionCatalog, 56)
-	require.Len(t, sortedWords(cascadesSafeNames), 53)
-	require.Len(t, sortedWords(scalarCallNames), 49)
+	require.Len(t, scalarFunctionCatalog, 58)
+	require.Len(t, sortedWords(cascadesSafeNames), 55)
+	require.Len(t, sortedWords(scalarCallNames), 51)
 	require.Len(t, sortedWords(legacyMapNames), 12)
 }
 
@@ -140,6 +141,8 @@ func TestScalarFunctionCatalogEveryOperatorDispatches(t *testing.T) {
 		{name: "LEFT", args: []any{"xy", int64(1)}},
 		{name: "RIGHT", args: []any{"xy", int64(1)}},
 		{name: "BITAND", args: []any{int64(3), int64(1)}},
+		{name: "BITMAP_BUCKET_OFFSET", args: []any{int64(12345), int64(10000)}},
+		{name: "BITMAP_BIT_POSITION", args: []any{int64(12345), int64(10000)}},
 		{name: "BITOR", args: []any{int64(2), int64(1)}},
 		{name: "BITXOR", args: []any{int64(3), int64(1)}},
 		{name: "YEAR", args: []any{"2020-01-02"}},
@@ -272,4 +275,29 @@ func sortedWords(input string) []string {
 	words := strings.Fields(input)
 	sort.Strings(words)
 	return words
+}
+
+// TestEvalScalarFunction_BitmapBucketing pins Java's floorDiv-based bitmap
+// bucketing semantics (ArithmeticValue.java:513-520), negative operands
+// included: floorDiv rounds toward negative infinity, so -3 lands in the
+// [-10000, 0) bucket at offset -10000 with bit position 9997.
+func TestEvalScalarFunction_BitmapBucketing(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		fn   string
+		x    int64
+		want int64
+	}{
+		{"BITMAP_BUCKET_OFFSET", 12345, 10000},
+		{"BITMAP_BIT_POSITION", 12345, 2345},
+		{"BITMAP_BUCKET_OFFSET", 0, 0},
+		{"BITMAP_BIT_POSITION", 0, 0},
+		{"BITMAP_BUCKET_OFFSET", -3, -10000},
+		{"BITMAP_BIT_POSITION", -3, 9997},
+	}
+	for _, tc := range cases {
+		got, err := evalScalarFunctionCtx(tc.fn, []any{tc.x, int64(10000)}, nil)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got, "%s(%d, 10000)", tc.fn, tc.x)
+	}
 }

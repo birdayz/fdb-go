@@ -23,29 +23,29 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**342 scenarios · 2740 query/assertion cases** across 18 feature areas — 2401 supported, 109 unsupported-feature pins, 230 error-path pins.
+**347 scenarios · 2760 query/assertion cases** across 18 feature areas — 2419 supported, 109 unsupported-feature pins, 232 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 50 | 322 | 289 | 19 | 14 |
+| Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
 | Joins | 62 | 273 | 264 | 3 | 6 |
 | Subqueries (EXISTS / IN / scalar) | 44 | 301 | 246 | 35 | 20 |
-| CTEs | 12 | 105 | 73 | 9 | 23 |
+| CTEs | 13 | 108 | 75 | 9 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 191 | 1 | 18 |
-| Ordering & pagination | 15 | 119 | 115 | 0 | 4 |
+| Ordering & pagination | 16 | 120 | 116 | 0 | 4 |
 | Scalar functions & expressions | 33 | 377 | 324 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 26 | 22 | 0 | 4 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 9 | 164 | 162 | 0 | 2 |
+| Index usage | 11 | 176 | 173 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **342** | **2740** | **2401** | **109** | **230** |
+| **Total** | **347** | **2760** | **2419** | **109** | **232** |
 
 ## Aggregates & GROUP BY
 
@@ -59,6 +59,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `aggregate_expr` | 21 | 19 | 2 | 0 | Aggregate functions accept arbitrary expressions as their argument |
 | `aggregate_expression_select` | 16 | 16 | 0 | 0 | SELECT-list expressions that wrap aggregate function calls — |
 | `aggregate_expressions_java` | 7 | 7 | 0 | 0 | Aggregates over expressions. |
+| `aggregate_index_as_select_composite` | 4 | 4 | 0 | 0 | RFC-202 S3: aggregate AS-SELECT |
 | `aggregate_index_count_not_null` | 6 | 6 | 0 | 0 | COUNT(col) aggregate index with NULLs |
 | `aggregate_index_count_star` | 2 | 2 | 0 | 0 | COUNT(*) aggregate index correctness |
 | `aggregate_index_ddl` | 2 | 2 | 0 | 0 | Aggregate indexes via CREATE INDEX ... |
@@ -228,6 +229,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
+| `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
 | `recursive_cte` | 26 | 18 | 5 | 3 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
 | `recursive_cte_advanced` | 2 | 2 | 0 | 0 | Advanced recursive CTE edge cases — regression guards for column alias |
@@ -300,6 +302,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
 | `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
+| `rfc202_version_index_ordered` | 1 | 1 | 0 | 0 | — |
 
 ## Scalar functions & expressions
 
@@ -396,8 +399,10 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
 | `multi_column_index_java` | 7 | 7 | 0 | 0 | Multi-column (composite) index patterns. |
+| `rfc202_generated_index_plans` | 7 | 7 | 0 | 0 | RFC-202 gate (d): the generator's index |
 | `secondary_index_pushdown` | 80 | 80 | 0 | 0 | Secondary-index pushdown: `SELECT ... |
 | `unique_index_violation` | 5 | 3 | 0 | 2 | Tests that unique index constraints are enforced. |
+| `value_index_as_select` | 5 | 4 | 0 | 1 | RFC-202 S2: the VALUE index written in |
 
 ## Types
 

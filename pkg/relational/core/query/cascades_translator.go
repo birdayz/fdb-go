@@ -244,13 +244,28 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 		return nil
 	}
 	protoFields := rt.Descriptor.Fields()
-	fields := make([]values.Field, 0, protoFields.Len())
+	fields := make([]values.Field, 0, protoFields.Len()+1)
 	for i := 0; i < protoFields.Len(); i++ {
 		fd := protoFields.Get(i)
 		fields = append(fields, values.Field{
 			Name:      strings.ToUpper(string(fd.Name())),
-			FieldType: fieldTypeForFD(fd),
+			FieldType: FieldTypeForFD(fd),
 			Ordinal:   i,
+		})
+	}
+	// The __ROW_VERSION pseudo-field extends every planner-facing base-table
+	// layout when the metadata stores row versions and the descriptor does
+	// not declare a REAL field of that name (Java:
+	// RecordMetaData.getPlannerType → Type.Record.addPseudoFields,
+	// RecordMetaData.java:732-739). The runtime row carries the matching
+	// trailing slot (executor.FromStoredRecord), so a plan-time ordinal bound
+	// here reads the version bytes at run time.
+	if t.md.IsStoreRecordVersions() &&
+		protoFields.ByName(protoreflect.Name(values.PseudoFieldRowVersion)) == nil {
+		fields = append(fields, values.Field{
+			Name:      values.PseudoFieldRowVersion,
+			FieldType: values.NullableVersion,
+			Ordinal:   protoFields.Len(),
 		})
 	}
 	return fields
@@ -283,12 +298,12 @@ func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.Record
 	return best
 }
 
-// fieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
+// FieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
 // jdbcTypeNameForFD (pkg/relational/core/embedded/select_helpers.go). Repeated/map
 // and non-UUID message fields collapse to values.UnknownType — 7.6 doesn't model
 // nested/array element types for the anchored leg columns. Columns are nullable
 // (the flowed leg row doesn't carry per-column NOT NULL constraints).
-func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
+func FieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 	if fd.IsList() || fd.IsMap() {
 		return values.UnknownType
 	}
@@ -1504,7 +1519,7 @@ func containsLateralUnnest(op logical.LogicalOperator) bool {
 }
 
 // arrayFieldElementType returns the element type of a repeated proto field.
-// fieldTypeForFD collapses list fields to UnknownType, so the element kind is
+// FieldTypeForFD collapses list fields to UnknownType, so the element kind is
 // read directly from the field descriptor's scalar Kind (a struct/message
 // element stays UnknownType — the runtime flows the raw struct map). RFC-142.
 func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
@@ -8733,6 +8748,18 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	body := c.Body
 	if len(c.ColumnAliases) > 0 {
 		origCols := extractOutputColumns(body)
+		starBodied := false
+		if len(origCols) == 0 {
+			// A star-bodied CTE (`WITH c1(x, y, z) AS (SELECT * FROM t)`)
+			// has NO final projection — the plan bottoms at the scan — so
+			// extractOutputColumns sees nothing and the aliases were
+			// silently dropped: `SELECT * FROM c1` came back labeled with
+			// the TABLE's column names where Java labels X, Y, Z
+			// (SemanticAnalyzer expands the star before the alias check;
+			// cte.yamsql pins the labels). Expand the star from metadata
+			// here, exactly like the executor will.
+			origCols, starBodied = t.starBodyColumns(body)
+		}
 		switch {
 		case len(origCols) == len(c.ColumnAliases):
 			// The re-aliasing projection reads POSITIONALLY (baked
@@ -8753,7 +8780,7 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 					strings.ToUpper(col), i, values.UnknownType, domain)
 			}
 			body = proj
-		case len(origCols) > 0 && cteBodyWidthIsExact(body):
+		case len(origCols) > 0 && (starBodied || cteBodyWidthIsExact(body)):
 			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
 			// validateCteColumnAliases): the body is BUILT here, so its
 			// output width is the real one — every shape (nested WITH,
@@ -8833,6 +8860,38 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 		// restore reinstates (scope chains share their prefix), so the write
 		// is idempotent by construction.
 		t.cteShadowStack[key] = st
+	}
+}
+
+// starBodyColumns expands the output columns of a projection-less CTE body —
+// one that bottoms at a table scan through width-transparent operators — from
+// the table's metadata, in declaration order. Returns (nil, false) when the
+// body's bottom is not a resolvable scan (set operations, unnests, …), which
+// keeps those shapes on the lenient no-rename path.
+func (t *cascadesTranslator) starBodyColumns(op logical.LogicalOperator) ([]string, bool) {
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalDistinct:
+			op = o.Input
+		case *logical.LogicalSort:
+			op = o.Input
+		case *logical.LogicalLimit:
+			op = o.Input
+		case *logical.LogicalFilter:
+			op = o.Input
+		case *logical.LogicalScan:
+			fields := t.tableColumns(o.Table)
+			if len(fields) == 0 {
+				return nil, false
+			}
+			cols := make([]string, len(fields))
+			for i, f := range fields {
+				cols[i] = f.Name
+			}
+			return cols, true
+		default:
+			return nil, false
+		}
 	}
 }
 

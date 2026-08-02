@@ -42,6 +42,8 @@ const (
 	scalarFunctionBitAnd
 	scalarFunctionBitOr
 	scalarFunctionBitXor
+	scalarFunctionBitmapBucketOffset
+	scalarFunctionBitmapBitPosition
 	scalarFunctionDatePart
 	scalarFunctionStatementDate
 	scalarFunctionStatementTimestamp
@@ -246,6 +248,17 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"BITAND": routedScalarFunction(scalarFunctionBitAnd, NullableLong),
 	"BITOR":  routedScalarFunction(scalarFunctionBitOr, NullableLong),
 	"BITXOR": routedScalarFunction(scalarFunctionBitXor, NullableLong),
+
+	// Bitmap bucketing functions (Java ArithmeticValue.java:513-520): binary
+	// under the hood — the SQL surface is unary and the walker appends the
+	// default entry size 10000 (SemanticAnalyzer.java:988-990). floorDiv
+	// semantics, exactly Java's physical operators. These enter through the
+	// generic ScalarFunctionCall grammar route (keyword functionName), so
+	// scalarCall is set. bitmap_bucket_number is deliberately absent: Java's
+	// SQL catalog registers only these two plus bitmap_construct_agg
+	// (SqlFunctionCatalogImpl.java:126-128).
+	"BITMAP_BUCKET_OFFSET": scalarCallFunction(scalarFunctionBitmapBucketOffset, NullableLong),
+	"BITMAP_BIT_POSITION":  scalarCallFunction(scalarFunctionBitmapBitPosition, NullableLong),
 
 	// Date/time functions.
 	"YEAR": legacyMapScalarCall(

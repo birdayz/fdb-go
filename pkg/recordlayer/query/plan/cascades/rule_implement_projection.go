@@ -66,7 +66,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if idxPlan := findIndexScanPlan(fetchInnerRef); idxPlan != nil {
 			// The covering index scan is its own cascades expression (RFC-184 W2);
 			// WithCovering preserves the metadata already on the plan (struct copy).
-			coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
+			coveredPlan := idxPlan.WithCovering(idxPlan.AllCoveredEntryColumns())
 			cq := expressions.ForEachQuantifier(call.MemoizeExpression(coveredPlan))
 			// The projection is its own cascades expression carrying the live cq
 			// edge (RFC-184 W2).

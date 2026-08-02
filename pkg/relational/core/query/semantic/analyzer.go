@@ -119,7 +119,21 @@ func (a *Analyzer) ExpandStar(table Table) []Column {
 	if table == nil {
 		return nil
 	}
-	return table.Columns()
+	return NonEphemeral(table.Columns())
+}
+
+// NonEphemeral filters ephemeral columns out of a column list — the star
+// visibility rule (Java's Expressions.nonEphemeralVisible, consumed by
+// SemanticAnalyzer.expandStar at SemanticAnalyzer.java:346-348). Resolution
+// by NAME keeps seeing ephemeral columns (LookupColumn is unfiltered).
+func NonEphemeral(cols []Column) []Column {
+	out := cols[:0:0]
+	for _, c := range cols {
+		if !c.Ephemeral {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ExpandedColumn pairs a Column with the ScopeSource it came from.
@@ -144,7 +158,7 @@ func (a *Analyzer) ExpandScopeStar(scope *Scope) []ExpandedColumn {
 	}
 	var out []ExpandedColumn
 	for _, src := range scope.Sources() {
-		for _, c := range src.Table.Columns() {
+		for _, c := range NonEphemeral(src.Table.Columns()) {
 			out = append(out, ExpandedColumn{Column: c, Source: src})
 		}
 	}
@@ -165,7 +179,7 @@ func (a *Analyzer) ExpandQualifiedStar(scope *Scope, qualifier Identifier) ([]Ex
 	for cur := scope; cur != nil; cur = cur.Parent() {
 		for _, src := range cur.sources {
 			if src.Alias.EqualsIgnoreQuoting(qualifier) {
-				cols := src.Table.Columns()
+				cols := NonEphemeral(src.Table.Columns())
 				out := make([]ExpandedColumn, len(cols))
 				for i, c := range cols {
 					out[i] = ExpandedColumn{Column: c, Source: src}

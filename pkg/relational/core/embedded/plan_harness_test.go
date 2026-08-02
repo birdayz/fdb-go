@@ -761,8 +761,10 @@ CREATE INDEX avg_idx AS SELECT AVG(amount) FROM ORDERS GROUP BY status
 	if err == nil {
 		t.Fatal("expected error: AVG is not an indexable aggregate function")
 	}
-	if !strings.Contains(err.Error(), "unsupported aggregate function") {
-		t.Fatalf("expected 'unsupported aggregate function' error, got: %v", err)
+	// Java: MaterializedViewIndexGenerator.java:176-178 — AVG is streamable
+	// but not IndexableAggregateValue.
+	if !strings.Contains(err.Error(), "non-indexable aggregation") {
+		t.Fatalf("expected 'non-indexable aggregation' error, got: %v", err)
 	}
 	t.Logf("got expected error: %v", err)
 }
@@ -782,8 +784,10 @@ CREATE INDEX multi_idx AS SELECT COUNT(*), SUM(amount) FROM ORDERS GROUP BY stat
 	if err == nil {
 		t.Fatal("expected error: only one aggregate per index definition allowed")
 	}
-	if !strings.Contains(err.Error(), "exactly one aggregate") {
-		t.Fatalf("expected 'exactly one aggregate' error, got: %v", err)
+	// Java: checkValidity (MaterializedViewIndexGenerator.java:619-623),
+	// pinned by IndexTest.java:773-779.
+	if !strings.Contains(err.Error(), "found group by expression with more than one aggregation") {
+		t.Fatalf("expected 'more than one aggregation' error, got: %v", err)
 	}
 	t.Logf("got expected error: %v", err)
 }
@@ -1578,11 +1582,13 @@ CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
 	assertAtOrdinalityRejected(t, err)
 }
 
-// TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL pins the aggregate-index DDL path
-// (ddl.go parseAggregateIndexDefinition), a separate AtomTableItem consumer from the query
-// planner. `ga` HAS a column `p`, and the index body embeds `FROM ga AT p GROUP BY p`:
-// ignoring the AT clause would build an index grouped by the real column p (wrong semantics).
-// The guard rejects it.
+// TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL pins the AS-SELECT index DDL path
+// (ddl.go parseAsSelectIndexDefinition → runFromResolutionPostPasses' AT-ordinality
+// rejection — parseAggregateIndexDefinition is deleted, RFC-202 D1; the generator plans
+// the index's SELECT through the ordinary front end), a separate AtomTableItem consumer
+// from the query planner. `ga` HAS a column `p`, and the index body embeds
+// `FROM ga AT p GROUP BY p`: ignoring the AT clause would build an index grouped by the
+// real column p (wrong semantics). The guard rejects it.
 func TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -1609,9 +1615,29 @@ CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb AT p ON ga.id = gb.id GROUP BY
 	if err == nil {
 		t.Fatal("aggregate index with a JOIN (AT on the joined source) must be rejected, got nil")
 	}
+	// The index SELECT plans through the ordinary front end and its
+	// post-passes (RFC-202 D4), so AT on a non-array source lands on the
+	// converged 42809 WRONG_OBJECT_TYPE rejection — the same code the query
+	// path uses (assertAtOrdinalityRejected).
 	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate {
-		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeInvalidSchemaTemplate}", err, err)
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeWrongObjectType {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeWrongObjectType}", err, err)
+	}
+
+	// A plain JOIN (no AT) fails record-type resolution in the generator with
+	// Java's message (MaterializedViewIndexGenerator.java:791-801;
+	// IndexTest.java:511-520).
+	schemaPlainJoin := `
+CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE gb (id BIGINT NOT NULL, p BIGINT, PRIMARY KEY (id))
+CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb ON ga.id = gb.id GROUP BY ga.p
+`
+	_, err = PlanQueryForTest("SELECT id FROM ga", schemaPlainJoin, nil)
+	if err == nil {
+		t.Fatal("aggregate index over a JOIN must be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected to find exactly one type filter operator") {
+		t.Fatalf("plain-JOIN rejection must carry Java's record-type-resolution message, got: %v", err)
 	}
 }
 

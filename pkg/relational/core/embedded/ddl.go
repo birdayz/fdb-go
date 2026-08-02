@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	queryddl "fdb.dev/pkg/relational/core/query/ddl"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -145,6 +147,10 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		}
 	}
 
+	if err := rejectUnsupportedTemplateClauses(s.AllTemplateClause()); err != nil {
+		return 0, err
+	}
+
 	// First pass: register tables (indexes reference them by name).
 	for _, clause := range s.AllTemplateClause() {
 		td := clause.TableDefinition()
@@ -201,44 +207,42 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	return 0, nil
 }
 
+// rejectUnsupportedTemplateClauses fails closed on schema-template clause
+// kinds the builder below does not read. Silently skipping one builds a
+// DIFFERENT template than the DDL declared — a view or SQL function would
+// simply vanish, and every later reference to it surfaces as a misleading
+// "table does not exist" — the accept-and-drop failure mode this file bans.
+// Java supports all four (DdlVisitor visitStructDefinition /
+// visitEnumDefinition / visitSqlInvokedFunction / visitViewDefinition), so
+// each rejection is a named parity gap, not a divergence: struct types are
+// RFC-201 Phase 3, SQL functions Phase 4.
+func rejectUnsupportedTemplateClauses(clauses []antlrgen.ITemplateClauseContext) error {
+	for _, clause := range clauses {
+		switch {
+		case clause.StructDefinition() != nil:
+			return api.NewError(api.ErrCodeUnsupportedOperation,
+				"struct types (CREATE TYPE AS STRUCT) are not yet supported in a schema template")
+		case clause.EnumDefinition() != nil:
+			return api.NewError(api.ErrCodeUnsupportedOperation,
+				"enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template")
+		case clause.SqlInvokedFunction() != nil:
+			return api.NewError(api.ErrCodeUnsupportedOperation,
+				"SQL functions (CREATE FUNCTION) are not yet supported in a schema template")
+		case clause.ViewDefinition() != nil:
+			return api.NewError(api.ErrCodeUnsupportedOperation,
+				"views (CREATE VIEW) are not yet supported in a schema template")
+		}
+	}
+	return nil
+}
+
 // parseIndexDefinition handles a single CREATE INDEX clause within a schema template.
 func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.Builder) error {
 	switch def := idxDef.(type) {
 	case *antlrgen.IndexOnSourceDefinitionContext:
-		indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
-		tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
-		unique := def.UNIQUE() != nil
-		// INCLUDE (covering index) is not yet wired through the SQL DDL layer. Java
-		// SUPPORTS it (DdlVisitor.java:249 → addValueColumn, building a KeyWithValue
-		// covering index), and Go's record layer HAS the machinery
-		// (KeyWithValueExpression; index_maintainer.go), but Builder.AddIndex doesn't
-		// carry included columns yet. Silently dropping INCLUDE would create a PLAIN
-		// index where Java creates a COVERING one — a wire/DDL-portability divergence
-		// (the same CREATE INDEX yields different index structures across engines). Fail
-		// closed until covering-index DDL is implemented (TODO.md), matching the vector
-		// path's own INCLUDE rejection above. ErrCodeUnsupportedOperation mirrors Java's
-		// UNSUPPORTED_OPERATION used for unsupported INCLUDE (DdlVisitor.java:297).
-		if def.IncludeClause() != nil {
-			return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"index %q: INCLUDE clause (covering index) is not yet supported", indexName)
-		}
-		var cols []string
-		if cl := def.IndexColumnList(); cl != nil {
-			if err := rejectIndexOrderClause(cl.AllIndexColumnSpec(), "index", indexName); err != nil {
-				return err
-			}
-			for _, spec := range cl.AllIndexColumnSpec() {
-				cols = append(cols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
-			}
-		}
-		if len(cols) == 0 {
-			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-				"index %q has no columns", indexName)
-		}
-		b.AddIndex(tableName, indexName, cols, unique)
-		return nil
+		return parseOnSourceIndexDefinition(def, b)
 	case *antlrgen.IndexAsSelectDefinitionContext:
-		return parseAggregateIndexDefinition(def, b)
+		return parseAsSelectIndexDefinition(def, b)
 	case *antlrgen.VectorIndexDefinitionContext:
 		return parseVectorIndexDefinition(def, b)
 	default:
@@ -248,28 +252,20 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 }
 
 // rejectIndexOrderClause fails closed on a per-column ASC/DESC/NULLS clause in
-// an index column list.
+// a VECTOR index column list (indexed column and PARTITION BY alike).
 //
-// The grammar admits `indexColumnSpec: columnName=uid orderClause?`, and every
-// caller here reads only columnName. Dropping the orderClause is a WIRE
-// divergence, not a cosmetic one: Java wraps an ordered column in an
-// OrderFunctionKeyExpression — `CREATE INDEX i ON t(a DESC)` builds
-// function("order_desc_nulls_last", field("a")), whose entries are the
-// order-inverted encoding of the value — while dropping it here builds a plain
-// ascending field index. A Go app and a Java app issuing the identical DDL
-// against the same cluster would then disagree on the index's entry bytes, and
-// neither could read the other's index.
-//
-// A column with NO order clause is genuinely ascending in both engines (Java
-// maps ASCENDING to a null ordering function and emits the bare field), so
-// only an explicit clause is refused. Explicit ASC / ASC NULLS FIRST are
+// The ordinary ON-source path honours the clause through the generator front
+// end (index_onsource.go — Java wraps an ordered column in an
+// OrderFunctionKeyExpression, and dropping the clause would be a WIRE
+// divergence: a plain ascending field index where Java writes the
+// order-inverted encoding). The vector path keeps its own construction
+// (RFC-202 §10) and reads only columnName, so an order clause there would
+// still be silently dropped; Java's vector path parses it through the same
+// IndexedColumn.parseColSpec and honours it. Fail closed until the vector
+// path routes through the generator too — explicit ASC / ASC NULLS FIRST are
 // wire-identical to no clause in Java and are knowingly swept into the
-// rejection anyway: narrowing the guard would duplicate Java's
-// default-resolution logic inside throwaway code, and refusing work is safe
-// where doing it wrong is not.
-//
-// Fail closed until the ordered-index generator lands (RFC-202), at which
-// point this rejection is deleted rather than relaxed.
+// rejection, since narrowing the guard would duplicate Java's
+// default-resolution logic inside throwaway code.
 func rejectIndexOrderClause(specs []antlrgen.IIndexColumnSpecContext, kind, indexName string) error {
 	for _, spec := range specs {
 		sc, ok := spec.(*antlrgen.IndexColumnSpecContext)
@@ -430,307 +426,83 @@ func vectorMetricName(m antlrgen.IHnswMetricContext) (string, error) {
 	}
 }
 
-// parseAggregateIndexDefinition handles CREATE INDEX name AS SELECT AGG(col) FROM table GROUP BY cols.
-// Matches Java's MaterializedViewIndexGenerator: extracts the aggregate function,
-// column, table, and grouping columns, then registers via Builder.AddAggregateIndex.
-func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, b *metadata.Builder) error {
+// parseAsSelectIndexDefinition handles CREATE INDEX name AS SELECT … — the
+// materialized-view index form (RFC-202).
+//
+// Mirrors Java's DdlVisitor.visitIndexAsSelectDefinition
+// (DdlVisitor.java:205-219): build the metadata registered so far, plan the
+// index's SELECT with the ordinary query front end against it, and hand the
+// logical plan to the MaterializedViewIndexGenerator port
+// (pkg/relational/core/query/ddl) — value and aggregate forms alike; the
+// value/aggregate split is the generator's (RFC-202 D1, the internal branch
+// at MaterializedViewIndexGenerator.java:187).
+func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, b *metadata.Builder) error {
 	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
-
 	qt := def.QueryTerm()
 	if qt == nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: missing query term", indexName)
+			"index %q: missing query term", indexName)
 	}
-	st, ok := qt.(*antlrgen.SimpleTableContext)
-	if !ok {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: only simple SELECT queries are supported", indexName)
-	}
-
-	fc := st.FromClause()
-	if fc == nil {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: FROM clause required", indexName)
-	}
-	ts := fc.TableSources()
-	if ts == nil {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: no table source", indexName)
-	}
-	sources := ts.AllTableSource()
-	if len(sources) != 1 {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: exactly one table source required", indexName)
-	}
-	tsb, ok := sources[0].(*antlrgen.TableSourceBaseContext)
-	if !ok {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: unsupported table source type", indexName)
-	}
-	// An aggregate index is over a single table; parseAggregateIndexDefinition reads only the
-	// leading table source and would otherwise silently drop any JOIN (and any AT-ordinality
-	// clause on a joined source). Reject JOINs explicitly rather than ignore them.
-	if len(tsb.AllJoinPart()) > 0 {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: JOIN is not supported in an aggregate index definition", indexName)
-	}
-	ati, ok := tsb.TableSourceItem().(*antlrgen.AtomTableItemContext)
-	if !ok {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: table source must be a simple table reference", indexName)
-	}
-	// The grammar parses `AT atAlias` here too (RFC-140 / R3); reject it rather than silently
-	// ignore the ordinal clause, which would otherwise build an index grouped by a same-named
-	// real column instead. Removed in R5 when the ordinal is bound.
-	if err := rejectAtOrdinality(ati); err != nil {
-		return err
-	}
-	tableName := functions.FullIdToName(ati.TableName().FullId())
-
-	selElems := st.SelectElements()
-	if selElems == nil {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: SELECT clause required", indexName)
-	}
-	allElems := selElems.AllSelectElement()
-	if len(allElems) != 1 {
-		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q: exactly one aggregate expression required in SELECT", indexName)
-	}
-
-	// CARDINALITY() index: `CREATE INDEX … AS SELECT CARDINALITY(arr) AS c …
-	// ORDER BY c`. This is a VALUE index whose key is a function over the
-	// array column (not a GROUP BY aggregate), so it routes to its own builder
-	// entry. Mirrors Java's MaterializedViewIndexGenerator recognising a
-	// CardinalityValue select element and emitting
-	// function("cardinality", field("arr", …)).
-	if cardColumn, ok := extractCardinalityColumnFromSelectElement(allElems[0]); ok {
-		// GROUP BY is not meaningful for a cardinality value index (Java emits
-		// a plain value index); reject it rather than silently drop it.
-		if gb := st.GroupByClause(); gb != nil {
-			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-				"cardinality index %q: GROUP BY is not supported", indexName)
+	// WITH ATTRIBUTES: the grammar's only attribute is LEGACY_EXTREMUM_EVER
+	// (RelationalParser.g4:233-235); Java reads it as a presence flag
+	// selecting the LONG-based extremum-ever maintainer (DdlVisitor.java:214).
+	useLegacyExtremum := false
+	if ia, ok := def.IndexAttributes().(*antlrgen.IndexAttributesContext); ok {
+		for _, attr := range ia.AllIndexAttribute() {
+			if ac, ok := attr.(*antlrgen.IndexAttributeContext); ok && ac.LEGACY_EXTREMUM_EVER() != nil {
+				useLegacyExtremum = true
+			}
 		}
-		if err := rejectDroppedAsSelectClauses(def, fc, indexName); err != nil {
-			return err
-		}
-		b.AddCardinalityIndex(tableName, indexName, cardColumn)
-		return nil
 	}
+	unique := def.UNIQUE() != nil
+	// A WHERE clause makes the index SPARSE: the plan visitor installs the
+	// resolved predicate on the plan's LogicalFilter, and the generator's
+	// predicate arm (RFC-202 S5) serializes it into the index metadata
+	// exactly as Java does (MaterializedViewIndexGenerator.java:169-172).
 
-	// The non-aggregate select element is refused HERE, ahead of the dropped-clause
-	// guard below, so a value index written in AS-SELECT form keeps reporting the
-	// value-index gap as its cause rather than a UNIQUE/WHERE it also happens to carry.
-	aggType, aggColumn, err := extractAggregateFromSelectElement(allElems[0])
+	// Plan the index's SELECT against the metadata built so far — Java's
+	// metadataBuilder.build() + replaceSchemaTemplate (DdlVisitor.java:208-210).
+	tmpl, err := b.Build()
 	if err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-			"aggregate index %q", indexName)
-	}
-	if err := rejectDroppedAsSelectClauses(def, fc, indexName); err != nil {
 		return err
 	}
-
-	var groupColumns []string
-	if gb := st.GroupByClause(); gb != nil {
-		for _, item := range gb.AllGroupByItem() {
-			colName, err := extractColumnNameFromExpression(item.Expression())
-			if err != nil {
-				return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
-					"aggregate index %q GROUP BY", indexName)
-			}
-			groupColumns = append(groupColumns, colName)
-		}
+	md := tmpl.Underlying()
+	if md == nil {
+		// The generator over a metadata-less plan would build from unresolved
+		// names (the catalog-less visitor fallback) — fail loudly (RFC-202 D4).
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"index %q: schema template built without metadata", indexName)
 	}
-
-	b.AddAggregateIndex(tableName, indexName, groupColumns, aggType, aggColumn)
-	return nil
-}
-
-// rejectDroppedAsSelectClauses fails closed on the clauses an AS-SELECT index
-// definition may carry that the builder below does not read.
-//
-// Each would otherwise build an index that differs from Java's for the SAME
-// DDL, which is a wire divergence rather than a missing convenience:
-//
-//   - `WITH ATTRIBUTES LEGACY_EXTREMUM_EVER` selects Java's LONG-based extremum
-//     maintainer — MIN_EVER_LONG / MAX_EVER_LONG instead of the TUPLE variants
-//     this builder always emits. That is a different index type with a
-//     different maintainer writing a different value encoding (a packed long,
-//     not a tuple), so the two engines' entries are mutually unreadable.
-//   - `UNIQUE` is carried by Java into the index's options map, where it both
-//     records the constraint in metadata and arms duplicate detection. Dropping
-//     it yields an index Java would consider a different object, and silently
-//     stops enforcing a constraint the DDL asked for.
-//   - `WHERE` makes the index SPARSE in Java, which stores the predicate on the
-//     index and maintains entries only for matching records. Dropping it builds
-//     a FULL index — it contains entries for rows Java's index deliberately
-//     omits, so a shared cluster sees two different key sets under one name.
-//
-// Fail closed until the AS-SELECT generator carries these through (RFC-202);
-// the rejections are deleted then, not relaxed.
-func rejectDroppedAsSelectClauses(def *antlrgen.IndexAsSelectDefinitionContext, fc antlrgen.IFromClauseContext, indexName string) error {
-	if def.IndexAttributes() != nil {
+	// The same front-end pre-pass the production query path runs before it
+	// lowers anything (planQuery, planDML). An index definition is a query, so
+	// it is subject to the identical correct-or-loud boundary; without this the
+	// generator would build a bare aggregate index from a windowed declaration
+	// and persist it.
+	if err := rejectWindowedAggregate(qt); err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
+	}
+	op, err := NewPlanVisitor(md).VisitQueryTerm(qt)
+	if err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
+	}
+	if op == nil {
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"index %q: WITH ATTRIBUTES is not yet supported", indexName)
+			"index %q: unsupported index definition query", indexName)
 	}
-	if def.UNIQUE() != nil {
-		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"index %q: UNIQUE on an AS-SELECT index is not yet supported", indexName)
-	}
-	if fcc, ok := fc.(*antlrgen.FromClauseContext); ok && fcc.WhereExpr() != nil {
-		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"index %q: a WHERE clause (sparse index) is not yet supported", indexName)
-	}
-	return nil
-}
-
-// extractCardinalityColumnFromSelectElement detects a `CARDINALITY(field)`
-// select element and returns the array column name (possibly dotted, e.g.
-// "struct.int_arr"). CARDINALITY has no grammar token, so it parses as a
-// bare-ID UserDefinedScalarFunctionCall — the SAME node walkUserDefinedScalarFunction
-// matches for queries — and we detect it by typed node, never by GetText() on
-// the SQL. Returns (col, true) on a match, ("", false) otherwise (the caller
-// then tries the aggregate path).
-func extractCardinalityColumnFromSelectElement(elem antlrgen.ISelectElementContext) (string, bool) {
-	see, ok := elem.(*antlrgen.SelectExpressionElementContext)
-	if !ok {
-		return "", false
-	}
-	udf := findCardinalityCall(see.Expression())
-	if udf == nil {
-		return "", false
-	}
-	// The single argument is the array field reference; reuse the column-name
-	// extractor (which walks for a FullColumnName), matching how the query
-	// path resolves the CARDINALITY argument.
-	fa := udf.FunctionArgs()
-	if fa == nil {
-		return "", false
-	}
-	fac, ok := fa.(*antlrgen.FunctionArgsContext)
-	if !ok || len(fac.AllFunctionArg()) != 1 {
-		return "", false
-	}
-	argCtx, ok := fac.AllFunctionArg()[0].(*antlrgen.FunctionArgContext)
-	if !ok || argCtx.Expression() == nil {
-		return "", false
-	}
-	fcn := findFullColumnName(argCtx.Expression())
-	if fcn == nil {
-		return "", false
-	}
-	return functions.FullIdToName(fcn.FullId()), true
-}
-
-// findCardinalityCall walks an expression tree for a bare-ID
-// UserDefinedScalarFunctionCall whose name is CARDINALITY (the way the function
-// parses, lacking a grammar token). Detection is by typed node + the resolved
-// name, never by string-matching the SQL text.
-func findCardinalityCall(node antlr.Tree) *antlrgen.UserDefinedScalarFunctionCallContext {
-	if node == nil {
-		return nil
-	}
-	if udf, ok := node.(*antlrgen.UserDefinedScalarFunctionCallContext); ok {
-		if nameCtx, ok := udf.UserDefinedScalarFunctionName().(*antlrgen.UserDefinedScalarFunctionNameContext); ok &&
-			nameCtx.ID() != nil &&
-			strings.EqualFold(nameCtx.ID().GetText(), "CARDINALITY") {
-			return udf
-		}
-	}
-	for i := 0; i < node.GetChildCount(); i++ {
-		if result := findCardinalityCall(node.GetChild(i)); result != nil {
-			return result
-		}
-	}
-	return nil
-}
-
-// extractAggregateFromSelectElement walks a select element's expression tree to find
-// the aggregate function call and returns (aggType, aggColumn). aggColumn is empty for COUNT(*).
-func extractAggregateFromSelectElement(elem antlrgen.ISelectElementContext) (string, string, error) {
-	see, ok := elem.(*antlrgen.SelectExpressionElementContext)
-	if !ok {
-		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-			"select element must be an expression")
-	}
-	awf := findAggregateWindowedFunction(see.Expression())
-	if awf == nil {
-		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-			"select element must contain an aggregate function (SUM, COUNT, MIN, MAX)")
+	// The mandatory FROM-resolution post-passes, the ONE sequence the
+	// production query path also runs (runFromResolutionPostPasses,
+	// cascades_generator.go) — column validation there is the source of
+	// UNDEFINED_COLUMN for `AS SELECT nonexistent_col` (Java pin:
+	// IndexTest.java:702-708). RFC-202 D4.
+	if err := runFromResolutionPostPasses(op, defaultEmbeddedSchema, md, md); err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
 	}
 
-	fnName := strings.ToUpper(awf.GetFunctionName().GetText())
-
-	switch fnName {
-	case "COUNT":
-		if awf.GetStarArg() != nil {
-			return "COUNT", "", nil
-		}
-		if fa := awf.FunctionArg(); fa != nil {
-			col, err := extractColumnNameFromExpression(fa.Expression())
-			if err != nil {
-				return "", "", err
-			}
-			return "COUNT_NOT_NULL", col, nil
-		}
-		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-			"COUNT requires * or a column argument")
-	case "SUM", "MIN", "MAX":
-		fa := awf.FunctionArg()
-		if fa == nil {
-			return "", "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-				"%s requires a column argument", fnName)
-		}
-		col, err := extractColumnNameFromExpression(fa.Expression())
-		if err != nil {
-			return "", "", err
-		}
-		return fnName, col, nil
-	case "MIN_EVER":
-		fa := awf.FunctionArg()
-		if fa == nil {
-			return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-				"MIN_EVER requires a column argument")
-		}
-		col, err := extractColumnNameFromExpression(fa.Expression())
-		if err != nil {
-			return "", "", err
-		}
-		return "MIN_EVER_TUPLE", col, nil
-	case "MAX_EVER":
-		fa := awf.FunctionArg()
-		if fa == nil {
-			return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
-				"MAX_EVER requires a column argument")
-		}
-		col, err := extractColumnNameFromExpression(fa.Expression())
-		if err != nil {
-			return "", "", err
-		}
-		return "MAX_EVER_TUPLE", col, nil
-	default:
-		return "", "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"unsupported aggregate function %q; supported: SUM, COUNT, MIN, MAX, MIN_EVER, MAX_EVER", fnName)
+	gi, err := queryddl.Generate(op, md, queryddl.Options{UseLegacyExtremumEver: useLegacyExtremum})
+	if err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
 	}
-}
-
-// findAggregateWindowedFunction walks an expression tree to find an AggregateWindowedFunctionContext.
-func findAggregateWindowedFunction(expr antlrgen.IExpressionContext) *antlrgen.AggregateWindowedFunctionContext {
-	if expr == nil {
-		return nil
-	}
-	return findAggregateInTree(expr)
-}
-
-func findAggregateInTree(node antlr.Tree) *antlrgen.AggregateWindowedFunctionContext {
-	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok {
-		return awf
-	}
-	for i := 0; i < node.GetChildCount(); i++ {
-		if result := findAggregateInTree(node.GetChild(i)); result != nil {
-			return result
-		}
-	}
+	b.AddGeneratedIndex(gi.TableName, indexName, gi.Root, gi.IndexType, unique, gi.Options, gi.Predicate)
 	return nil
 }
 
@@ -741,6 +513,22 @@ func findAggregateInTree(node antlr.Tree) *antlrgen.AggregateWindowedFunctionCon
 // check the aggregate planner silently DROPS the OVER clause and computes a bare
 // aggregate, returning WRONG results (a single SUM instead of per-partition
 // window values), so the query is rejected up front.
+// rejectWindowedAggregate is the front-end pre-pass every surface that lowers a
+// parse tree into a logical plan must run. It exists as one function rather
+// than as an `if` repeated per call site because the OVER clause is destroyed
+// by lowering: a surface that forgets the check cannot recover the distinction
+// later, it can only produce a silently wrong plan. Index DDL is exactly that
+// case — `CREATE INDEX i AS SELECT SUM(v) OVER (PARTITION BY g) FROM t` used to
+// drop the OVER and PERSIST a global SUM index whose semantics are unrelated to
+// the declaration.
+func rejectWindowedAggregate(node antlr.Tree) error {
+	if windowedAggregateInTree(node) {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+	return nil
+}
+
 func windowedAggregateInTree(node antlr.Tree) bool {
 	if node == nil {
 		return false
@@ -754,32 +542,6 @@ func windowedAggregateInTree(node antlr.Tree) bool {
 		}
 	}
 	return false
-}
-
-// extractColumnNameFromExpression extracts a simple column name from an expression
-// that is a bare column reference (fullColumnName).
-func extractColumnNameFromExpression(expr antlrgen.IExpressionContext) (string, error) {
-	if expr == nil {
-		return "", api.NewError(api.ErrCodeInvalidSchemaTemplate, "expression is nil")
-	}
-	fcn := findFullColumnName(expr)
-	if fcn == nil {
-		return "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-			"expected a column reference, got %q", expr.GetText())
-	}
-	return functions.FullIdToName(fcn.FullId()), nil
-}
-
-func findFullColumnName(node antlr.Tree) *antlrgen.FullColumnNameContext {
-	if fcn, ok := node.(*antlrgen.FullColumnNameContext); ok {
-		return fcn
-	}
-	for i := 0; i < node.GetChildCount(); i++ {
-		if result := findFullColumnName(node.GetChild(i)); result != nil {
-			return result
-		}
-	}
-	return nil
 }
 
 // parseTableDefinition extracts column specs and primary key column

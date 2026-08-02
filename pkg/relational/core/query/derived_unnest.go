@@ -11,7 +11,7 @@ import (
 // (SELECT ...) AS d, d.arr AS x`, `WITH c AS (...) SELECT ... FROM c, c.arr AS
 // x`). Java resolves the array field against the derived quantifier's flowed
 // OUTPUT type, which carries a real Type.Array. Go's type-flow model erases
-// array-ness twice (fieldTypeForFD collapses repeated fields to UnknownType
+// array-ness twice (FieldTypeForFD collapses repeated fields to UnknownType
 // at the scan leaf; a projection's flowed result is a typeless QOV), so the
 // translated leg's flowed type is UnknownType and cannot classify the array
 // directly.

@@ -179,19 +179,13 @@ func cnfSize(pred predicates.QueryPredicate) int64 {
 	case *predicates.AndPredicate:
 		var sum int64
 		for _, child := range p.SubPredicates {
-			sum += cnfSize(child)
-			if sum < 0 { // overflow
-				return int64(cnfSizeLimit) + 1
-			}
+			sum = saturatingAddSize(sum, cnfSize(child))
 		}
 		return sum
 	case *predicates.OrPredicate:
 		var product int64 = 1
 		for _, child := range p.SubPredicates {
-			product *= cnfSize(child)
-			if product < 0 { // overflow
-				return int64(cnfSizeLimit) + 1
-			}
+			product = saturatingMulSize(product, cnfSize(child))
 		}
 		return product
 	case *predicates.NotPredicate:
@@ -420,19 +414,13 @@ func dnfSize(pred predicates.QueryPredicate) int64 {
 	case *predicates.OrPredicate:
 		var sum int64
 		for _, child := range p.SubPredicates {
-			sum += dnfSize(child)
-			if sum < 0 {
-				return int64(cnfSizeLimit) + 1
-			}
+			sum = saturatingAddSize(sum, dnfSize(child))
 		}
 		return sum
 	case *predicates.AndPredicate:
 		var product int64 = 1
 		for _, child := range p.SubPredicates {
-			product *= dnfSize(child)
-			if product < 0 {
-				return int64(cnfSizeLimit) + 1
-			}
+			product = saturatingMulSize(product, dnfSize(child))
 		}
 		return product
 	case *predicates.NotPredicate:

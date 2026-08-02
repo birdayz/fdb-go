@@ -306,9 +306,8 @@ func planPhysicalDMLForTest(
 	// Mirror planDML's parse-tree guard. OVER is lost during aggregate lowering,
 	// so the metadata-only harness must reject it before building the logical
 	// plan just like production does.
-	if windowedAggregateInTree(dml) {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	if err := rejectWindowedAggregate(dml); err != nil {
+		return nil, err
 	}
 
 	// Route DELETE→delete-build, UPDATE→update-build against the schema catalog,

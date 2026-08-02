@@ -333,9 +333,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// front-end pre-pass (before building a soon-discarded logical plan). Detected
 	// on the parse tree because the OVER clause is dropped during lowering, so the
 	// logical plan provably cannot carry it (mirrors findAggregateInTree).
-	if windowedAggregateInTree(q) {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	if err := rejectWindowedAggregate(q); err != nil {
+		return nil, err
 	}
 
 	visitor := NewPlanVisitorWithSchema(md, g.c.sess.Schema)
@@ -352,37 +351,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			"Unsupported operator "+fn)
 	}
 
-	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
-	// function BEFORE treating it as a correlated array field. The parser, which
-	// has no metadata, may classify a schema-qualified table (`FROM PA AS s,
-	// s.PB`, where the alias `s` also equals the schema name) as a lateral
-	// unnest; demote it back to a table scan so the table branch wins (or reject
-	// AT-on-a-table with WRONG_OBJECT_TYPE). RFC-142.
-	if err := demoteSchemaQualifiedUnnest(logicalOp, g.c.sess.Schema, md); err != nil {
-		return nil, err
-	}
-	// Backstop for AT-on-a-table sources (`FROM t, U AT O`, present-scalar field,
-	// …) that the per-FROM-scope early pass in VisitQuery cannot reach — namely an
-	// AT-on-table inside an EXISTS / scalar subquery, whose plan is attached to the
-	// tree only after VisitQuery returns. Run before validateTablesAndColumns so the
-	// WRONG_OBJECT_TYPE is not masked by a column-validation error. RFC-142.
-	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
-		return nil, err
-	}
-	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
-	// alias (earlier OR later) in the same scope — the later-source collision the
-	// translator's bottom-up lowering cannot see (`FROM T1, T1.arr AS V, U AS V`).
-	// Run before column resolution so the duplicate-alias error is not masked.
-	// RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp, g.c.cachedMetaData()); err != nil {
-		return nil, err
-	}
-
-	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
-		return nil, err
-	}
-
-	if err := validateTablesAndColumns(logicalOp, md); err != nil {
+	if err := runFromResolutionPostPasses(logicalOp, g.c.sess.Schema, md, g.c.cachedMetaData()); err != nil {
 		return nil, err
 	}
 
@@ -820,9 +789,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// unsupported construct while its parse-tree distinction is still present.
 	// This runs before the explain-only split so every DML planning surface has
 	// identical correct-or-loud semantics.
-	if windowedAggregateInTree(dml) {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	if err := rejectWindowedAggregate(dml); err != nil {
+		return nil, err
 	}
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
@@ -2128,7 +2096,10 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// intersection), and the primary scan serves exactly one type.
 		flowed := values.Type(values.UnknownType)
 		if rt.Descriptor != nil {
-			flowed = executor.PositionalTypeForDescriptor(rt.Descriptor)
+			// Metadata-aware layout: version-storing stores extend every row
+			// with the trailing __ROW_VERSION pseudo-slot (Java's
+			// RecordMetaData.getPlannerType, RecordMetaData.java:732-739).
+			flowed = executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions())
 		}
 		candidates = append(candidates, cascades.NewPrimaryScanMatchCandidate(
 			nil,
@@ -2160,13 +2131,26 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if idx.RootExpression == nil {
 			continue
 		}
-		if aggCand := tryAggregateIndexCandidate(idx, c.md); aggCand != nil {
-			candidates = append(candidates, aggCand)
-			continue
-		}
-		if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
-			candidates = append(candidates, vecCand)
-			continue
+		sparse := idx.GetPredicateProto() != nil
+		if !sparse {
+			// A SPARSE aggregate/vector index must not become a candidate that
+			// ignores its predicate: the maintained aggregates cover only the
+			// predicate-matching records, so serving a whole-table aggregate
+			// from them returns wrong values. The aggregate/vector candidate
+			// builders carry no predicate arm yet, so a sparse index of those
+			// families gets NO candidate and the query falls back to the
+			// base-scan aggregate — correct, if slower. The value-index path
+			// below DOES thread the predicate (IndexDefWithPredicate), where
+			// the expansion attaches it to the candidate graph
+			// (ValueIndexExpansionVisitor.java:138-162).
+			if aggCand := tryAggregateIndexCandidate(idx, c.md); aggCand != nil {
+				candidates = append(candidates, aggCand)
+				continue
+			}
+			if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
+				candidates = append(candidates, vecCand)
+				continue
+			}
 		}
 		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
 		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
@@ -2184,6 +2168,12 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if idx.IsAtomicMutationIndex() {
 			continue
 		}
+		if sparse && idx.Type != recordlayer.IndexTypeValue && idx.Type != recordlayer.IndexTypeVersion {
+			// A sparse non-value index (e.g. a filtered PERMUTED_MIN/MAX)
+			// must not degrade into a value-scan candidate either — no
+			// candidate at all is the safe failure mode.
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {
@@ -2192,6 +2182,50 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	}
 
 	return candidates
+}
+
+// runFromResolutionPostPasses is the SINGLE ordered sequence of mandatory
+// FROM-resolution post-passes over a freshly built logical plan. It has
+// exactly two callers — the production query path (buildCascadesPlan) and the
+// AS-SELECT index DDL front end (parseAsSelectIndexDefinition), which must
+// stay behaviourally identical (RFC-202 D4: the index's SELECT is planned by
+// the ordinary front end). Add a sixth pass HERE, never at one call site —
+// a pass added to only one side silently forks the two pipelines.
+//
+// schema is the resolution schema (the session's for queries,
+// defaultEmbeddedSchema for template DDL); md the metadata the plan was built
+// against; unnestMD the metadata for unnest-alias validation (the session's
+// cached metadata in production; the same md for DDL).
+func runFromResolutionPostPasses(logicalOp logical.LogicalOperator, schema string, md, unnestMD *recordlayer.RecordMetaData) error {
+	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
+	// function BEFORE treating it as a correlated array field. The parser, which
+	// has no metadata, may classify a schema-qualified table (`FROM PA AS s,
+	// s.PB`, where the alias `s` also equals the schema name) as a lateral
+	// unnest; demote it back to a table scan so the table branch wins (or reject
+	// AT-on-a-table with WRONG_OBJECT_TYPE). RFC-142.
+	if err := demoteSchemaQualifiedUnnest(logicalOp, schema, md); err != nil {
+		return err
+	}
+	// Backstop for AT-on-a-table sources (`FROM t, U AT O`, present-scalar field,
+	// …) that the per-FROM-scope early pass in VisitQuery cannot reach — namely an
+	// AT-on-table inside an EXISTS / scalar subquery, whose plan is attached to the
+	// tree only after VisitQuery returns. Run before validateTablesAndColumns so the
+	// WRONG_OBJECT_TYPE is not masked by a column-validation error. RFC-142.
+	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
+		return err
+	}
+	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
+	// alias (earlier OR later) in the same scope — the later-source collision the
+	// translator's bottom-up lowering cannot see (`FROM T1, T1.arr AS V, U AS V`).
+	// Run before column resolution so the duplicate-alias error is not masked.
+	// RFC-142.
+	if err := rejectDuplicateUnnestAlias(logicalOp, unnestMD); err != nil {
+		return err
+	}
+	if err := resolveQualifiedTableNames(logicalOp, schema); err != nil {
+		return err
+	}
+	return validateTablesAndColumns(logicalOp, md)
 }
 
 type metadataIndexDef struct {
@@ -2213,10 +2247,57 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 			return names
 		}
 	}
-	return d.idx.RootExpression.FieldNames()
+	// The fallback must respect the covering split too: FieldNames delegates
+	// through a KeyWithValue root into the FULL inner key, so an unguarded
+	// fallback re-arms the wrong-column-set defect (RFC-202 D10(a)) for
+	// exactly the roots the structured walk declined. ColumnSize() IS the
+	// split point for a KeyWithValueExpression; nested leaves make the name
+	// count exceed the column count, in which case truncation would be a
+	// guess — return the untruncated list and let the candidate's
+	// flat-descriptor check decline it (NewPlanContextFromIndexDefs refuses
+	// nested-leaf roots outright before that).
+	names := d.idx.RootExpression.FieldNames()
+	if kwv, ok := d.idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
+		inner := kwv.InnerKey()
+		if len(names) == inner.ColumnSize() && kwv.SplitPoint() <= len(names) {
+			return names[:kwv.SplitPoint()]
+		}
+	}
+	return names
+}
+
+// IndexValueColumnNames returns the covering-only (FDB VALUE part) column
+// names of a KeyWithValue root — inner columns past the split point — and nil
+// for every other root. Implements cascades.IndexDefWithValueColumns: these
+// columns are available to covering translation but are never sargable and
+// never order the scan (the entry key ends at the split point + primary key).
+// Java models the same split as the expansion's valueValues list
+// (ValueIndexExpansionVisitor.java:109-121).
+func (d *metadataIndexDef) IndexValueColumnNames() []string {
+	kwv, ok := d.idx.RootExpression.(*recordlayer.KeyWithValueExpression)
+	if !ok {
+		return nil
+	}
+	root := d.idx.RootExpression.ToKeyExpression()
+	if root == nil || root.KeyWithValue == nil {
+		return nil
+	}
+	names, okNames := indexKeyColumnNames(root.KeyWithValue.GetInnerKey())
+	if !okNames || kwv.SplitPoint() > len(names) {
+		return nil
+	}
+	return names[kwv.SplitPoint():]
 }
 
 func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
+
+// IndexPredicateProto exposes the sparse-index predicate to the candidate
+// builder (cascades.IndexDefWithPredicate): the expansion attaches it to the
+// candidate graph so a query never matches the filtered index as if it were
+// full (ValueIndexExpansionVisitor.java:138-162). Nil for a full index.
+func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
+	return d.idx.GetPredicateProto()
+}
 
 // IndexCreatesDuplicates reports whether the index's root key expression fans
 // out (Java index.getRootExpression().createsDuplicates()) — satisfies
@@ -2269,6 +2350,30 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		tags := make([]string, n)
 		tags[0] = cascades.FunctionKindCardinality
 		return tags
+	case *recordlayer.FunctionKeyExpression:
+		// An order-function wrapper (order_desc_nulls_last, …) is a
+		// single-column key whose entry bytes are the TupleOrdering encoding;
+		// the tag tells the candidate its Value is
+		// ToOrderedBytesValue(field, direction) rather than a plain field
+		// (Java: OrderFunctionKeyExpression.toValue,
+		// OrderFunctionKeyExpression.java:99-103). An unrecognized function
+		// stays "" — reported as a plain field, and the candidate's
+		// flat-descriptor check declines the mismatch fail-closed.
+		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder {
+			return []string{e.Name()}
+		}
+		n := e.ColumnSize()
+		if n == 0 {
+			n = 1
+		}
+		return make([]string, n)
+	case *recordlayer.KeyWithValueExpression:
+		// Tags stay parallel to IndexColumnNames — the KEY part only.
+		tags := indexColumnFunctionTags(e.InnerKey())
+		if e.SplitPoint() <= len(tags) {
+			return tags[:e.SplitPoint()]
+		}
+		return tags
 	case *recordlayer.CompositeKeyExpression:
 		var tags []string
 		for _, child := range e.SubKeyExpressions() {
@@ -2314,7 +2419,33 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 	case expression.Grouping != nil:
 		return indexKeyColumnNames(expression.Grouping.GetWholeKey())
 	case expression.KeyWithValue != nil:
-		return indexKeyColumnNames(expression.KeyWithValue.GetInnerKey())
+		// Only the KEY part of a covering (KeyWithValue) root names key
+		// columns: the split point is the key/value boundary
+		// (KeyWithValueExpression.getColumnSize() returns it, and Java's
+		// expansion visits the inner key under exactly that split —
+		// ValueIndexExpansionVisitor.java:109-115). Recursing without the
+		// truncation reported every VALUE column as a key column, which is
+		// the wrong-column-set defect RFC-202 D10(a) names: sargable aliases
+		// and scan-prefix positions past the split would address entry
+		// columns that live in the FDB VALUE, not the key.
+		names, ok := indexKeyColumnNames(expression.KeyWithValue.GetInnerKey())
+		if !ok {
+			return nil, false
+		}
+		split := int(expression.KeyWithValue.GetSplitPoint())
+		if split < 0 || split > len(names) {
+			return nil, false
+		}
+		return names[:split], true
+	case expression.Version != nil:
+		// A VERSION index's version key column IS the __ROW_VERSION
+		// pseudo-column of the (extended) base record type — Java's
+		// VersionKeyExpression.toValue resolves it as
+		// FieldValue.ofFieldName(base, PseudoField.ROW_VERSION.getFieldName())
+		// (VersionKeyExpression.java:119-121), so the match candidate's
+		// column list carries the pseudo-field name at the key's version
+		// position and stays parallel to ColumnSize.
+		return []string{values.PseudoFieldRowVersion}, true
 	default:
 		return nil, false
 	}
@@ -2331,7 +2462,7 @@ func (d *metadataIndexDef) IndexRowType() values.Type {
 	if len(rts) != 1 || rts[0].Descriptor == nil {
 		return values.UnknownType
 	}
-	return executor.PositionalTypeForDescriptor(rts[0].Descriptor)
+	return executor.PositionalTypeForRecordLayout(rts[0].Descriptor, d.md.IsStoreRecordVersions())
 }
 
 // IndexRecordTypeRowTypes flows ONE descriptor-shaped positional type per
@@ -2346,7 +2477,7 @@ func (d *metadataIndexDef) IndexRecordTypeRowTypes() []values.Type {
 		if rt.Descriptor == nil {
 			continue
 		}
-		out = append(out, executor.PositionalTypeForDescriptor(rt.Descriptor))
+		out = append(out, executor.PositionalTypeForRecordLayout(rt.Descriptor, d.md.IsStoreRecordVersions()))
 	}
 	return out
 }
@@ -5317,6 +5448,19 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						}
 						upper = ref.bare()
 					}
+					// The __ROW_VERSION pseudo-column resolves whenever the
+					// metadata stores row versions (Java appends it to every
+					// planner-facing type — RecordMetaData.getPlannerType,
+					// RecordMetaData.java:732-739); when the descriptor
+					// declares a REAL field of that name the descriptor check
+					// below accepts it anyway (real-column-wins). With
+					// store_row_versions=false the pseudo-column does not
+					// exist and the ordinary 42703 below fires — Java:
+					// "Attempting to query non existing column __ROW_VERSION"
+					// (IndexTest.java:952-960).
+					if upper == values.PseudoFieldRowVersion && md.IsStoreRecordVersions() {
+						continue
+					}
 					// Try the VERBATIM name before the folded one: a quoted
 					// lowercase column ("x") declares a lower-case proto
 					// field, and folding it here mis-rejected a legal
@@ -5635,6 +5779,16 @@ func startsWithCreateSchemaTemplate(ddl string) bool {
 	return strings.EqualFold(t[:len("CREATE SCHEMA TEMPLATE")], "CREATE SCHEMA TEMPLATE")
 }
 
+// BuildSchemaTemplateFromDDL parses schemaDDL as a single CREATE SCHEMA
+// TEMPLATE statement (auto-wrapping bare CREATE TABLE/INDEX clauses) and
+// builds the RecordLayerSchemaTemplate without any catalog write. It is the
+// programmatic entry to the exact metadata the DDL path produces — used by
+// wire-level index tests that need the DDL-generated metadata against a real
+// record store.
+func BuildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
+	return buildSchemaTemplateFromDDL(schemaDDL)
+}
+
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
 // RecordLayerSchemaTemplate without performing any catalog write.
@@ -5670,6 +5824,29 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 
 	templateID := stCtx.SchemaTemplateId().GetText()
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
+	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
+	// applies, parsed BEFORE the table/index passes because they change how
+	// Build() compiles primary keys (intermingle) and whether the
+	// __ROW_VERSION pseudo-column exists for index planning
+	// (store_row_versions). Silently dropping them here built metadata that
+	// DIVERGED from what the production DDL path builds for the same text.
+	if oc := stCtx.OptionsClause(); oc != nil {
+		for _, opt := range oc.AllOption() {
+			switch {
+			case opt.ENABLE_LONG_ROWS() != nil:
+				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
+			case opt.INTERMINGLE_TABLES() != nil:
+				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
+			case opt.STORE_ROW_VERSIONS() != nil:
+				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
+			default:
+				return nil, fmt.Errorf("unknown option in schema template creation: %s", opt.GetText())
+			}
+		}
+	}
+	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
+		return nil, rejErr
+	}
 	for _, clause := range stCtx.AllTemplateClause() {
 		td := clause.TableDefinition()
 		if td == nil {

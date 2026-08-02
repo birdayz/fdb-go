@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=342 queries=2485 dml=158 non_query=97 plan_errors=258 unexpected_errors=4
+# files=347 queries=2502 dml=158 non_query=100 plan_errors=259 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -500,6 +500,21 @@ plan:  Project([SUM(QTY)#0, SUM(UNIT_PRICE)#1, SUM(QTY*UNIT_PRICE)#2, SUM(DISCOU
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
+=== aggregate_index_as_select_composite.yaml#0
+sql:   SELECT category, SUM(amount) FROM sales GROUP BY category ORDER BY category
+plan:  Project([CATEGORY#0, SUM(AMOUNT)#1], AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_as_select_composite.yaml#1
+sql:   SELECT category, region, SUM(amount) FROM sales GROUP BY category, region ORDER BY category, region
+plan:  Project([CATEGORY#0, REGION#1, SUM(AMOUNT)#2], AggregateIndex(SUM, SUM_BY_CAT_REGION, [CATEGORY REGION], SALES))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryAggregateIndexPlan
+=== aggregate_index_as_select_composite.yaml#3
+sql:   SELECT category, SUM(amount) FROM sales WHERE category = 'b' GROUP BY category
+plan:  Project([CATEGORY#0, SUM(AMOUNT)#1], AggregateIndex(SUM, SUM_BY_CAT, [CATEGORY], SALES))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_count_not_null.yaml#0
 sql:   SELECT sensor, COUNT(reading) FROM measurements GROUP BY sensor ORDER BY sensor
 plan:  Project([SENSOR#0, COUNT(READING)#1], AggregateIndex(COUNT, COUNT_READINGS_BY_SENSOR, [SENSOR], MEASUREMENTS))
@@ -3950,6 +3965,22 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
+=== cte_star_column_aliases.yaml#0
+sql:   WITH c1(x, y, z) AS (SELECT * FROM t1) SELECT * FROM c1 ORDER BY x
+plan:  InMemorySort([X ASC], Project([ID#0, COL1#1, COL2#2], Scan(T1)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte_star_column_aliases.yaml#1
+sql:   WITH c1(x, y, z) AS (SELECT * FROM t1) SELECT z, x FROM c1 WHERE y = 20
+plan:  Project([Z#2, X#0], PredicatesFilter(Project([ID#0, COL1#1, COL2#2], Scan(T1)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_star_column_aliases.yaml#2 expect-error=42F10
+sql:   WITH c1(x, y) AS (SELECT * FROM t1) SELECT * FROM c1
+plan:  <PLAN-ERROR: 42F10: cte query has 3 column(s), however 2 aliases defined>
 === cte_with_insert.yaml#0 expect-error=42601
 sql:   WITH doubled AS (SELECT id, val * 2 AS dval FROM source) INSERT INTO dest SELECT id, dval FROM doubled
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: WITH doubled AS (SELECT id, val * 2 AS dval FROM source) INSERT INTO dest SELECT id, dval FROM doubled ^^^^^^>
@@ -8561,19 +8592,22 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === intermingle_type_filter.yaml#0
 sql:   SELECT id, name FROM t WHERE id > 2 ORDER BY id
-plan:  Project([ID#0, NAME#1], Scan(T, [<>]))
+plan:  Project([ID#0, NAME#1], TypeFilter([T], Scan(T, [<>])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
 === intermingle_type_filter.yaml#1
 sql:   SELECT id, tag FROM u WHERE id > 0 ORDER BY id
-plan:  Project([ID#0, TAG#1], Scan(U, [<>]))
+plan:  Project([ID#0, TAG#1], TypeFilter([U], Scan(U, [<>])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
 === intermingle_type_filter.yaml#2
 sql:   SELECT name FROM t WHERE id = 3
-plan:  Project([NAME#1], Scan(T, [=]))
+plan:  Project([NAME#1], TypeFilter([T], Scan(T, [=])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
 === is_distinct_from.yaml#0
 sql:   SELECT id FROM t WHERE label = 'alpha' ORDER BY id
 plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
@@ -13921,6 +13955,49 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryFlatMapPlan
 shape:             RecordQueryTempTableScanPlan
 shape:             RecordQueryScanPlan
+=== rfc202_generated_index_plans.yaml#0
+sql:   SELECT a, b, c FROM t_cover WHERE a = 5
+plan:  Project([A#1, B#2, C#3], IndexScan(COVER_IDX, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== rfc202_generated_index_plans.yaml#1
+sql:   SELECT b, c FROM t_cover WHERE a = 3
+plan:  Project([B#2, C#3], IndexScan(COVER_IDX, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== rfc202_generated_index_plans.yaml#2
+sql:   SELECT a, d FROM t_cover WHERE a = 5
+plan:  Project([A#1, D#4], Fetch(IndexScan(COVER_IDX, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryIndexPlan
+=== rfc202_generated_index_plans.yaml#3
+sql:   SELECT id FROM t_desc ORDER BY a DESC
+plan:  Project([ID#0], IndexScan(DESC_IDX, [*]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== rfc202_generated_index_plans.yaml#4
+sql:   SELECT id FROM t_desc ORDER BY a ASC
+plan:  Project([ID#0], IndexScan(DESC_IDX, [*]) REVERSE)
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== rfc202_generated_index_plans.yaml#5
+sql:   SELECT id FROM t_desc WHERE a = 5
+plan:  Project([ID#0], PredicatesFilter(Scan(T_DESC), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== rfc202_generated_index_plans.yaml#6
+sql:   SELECT a, COUNT(*) FROM t_cover GROUP BY a
+plan:  Project([A#0, COUNT(*)#1], StreamingAgg(keys=[A#1], IndexScan(COVER_IDX, [*] COVERING)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryIndexPlan
+=== rfc202_version_index_ordered.yaml#0
+sql:   SELECT id FROM t_ver WHERE a = 20 ORDER BY "__ROW_VERSION"
+plan:  Project([ID#0], IndexScan(VER_IDX, [=, *] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
 === scalar_functions_java.yaml#0
 sql:   SELECT COALESCE(null, null, 42) FROM vals WHERE id = 1
 plan:  Project([COALESCE(NULL, NULL, 42)], Scan(VALS, [=]))
@@ -16561,6 +16638,21 @@ shape:     RecordQueryScanPlan
 === uuid_column.yaml#5 expect-error=22F3H
 sql:   SELECT CAST(id AS UUID) FROM Sessions
 plan:  <PLAN-ERROR: 22F3H: No cast defined from LONG to UUID>
+=== value_index_as_select.yaml#0
+sql:   SELECT id, category FROM items WHERE category = 'fruit' ORDER BY id
+plan:  Project([ID#0, CATEGORY#1], IndexScan(CAT_IDX, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== value_index_as_select.yaml#1
+sql:   SELECT category, price FROM items WHERE category = 'fruit' ORDER BY price
+plan:  Project([CATEGORY#1, PRICE#2], IndexScan(CAT_PRICE_IDX, [=, *] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
+=== value_index_as_select.yaml#2
+sql:   SELECT name, price FROM items WHERE price > 15 ORDER BY price
+plan:  Project([NAME#3, PRICE#2], IndexScan(PRICE_REORDER_IDX, [<>, *] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
 === where_complex_predicates.yaml#0
 sql:   SELECT id FROM t WHERE a > 20 AND b = 'x' OR c = 200 ORDER BY id
 plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))

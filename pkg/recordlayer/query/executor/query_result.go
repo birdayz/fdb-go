@@ -40,9 +40,32 @@ type QueryResult struct {
 // FromStoredRecord builds a QueryResult from a stored record. The row is the
 // ordinal PositionalRow built from the proto message (protoToPositional — one
 // slot per descriptor field in declaration order; FieldValue reads it by ordinal).
+//
+// When the record's store stores row versions, the row is extended with the
+// trailing __ROW_VERSION pseudo-slot carrying the record version's 12 bytes
+// (nil when the record has no version) — the runtime half of Java's
+// PseudoField.fillInIfApplicable (PseudoField.java:72-100), keyed on the same
+// two gates: the metadata stores versions, and the descriptor does not define
+// a REAL field of that name (real-column-wins).
 func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+	positional := protoToPositional(rec.Record)
+	if positional != nil && rec.Store != nil {
+		if md := rec.Store.GetRecordMetaData(); md != nil && md.IsStoreRecordVersions() {
+			desc := rec.Record.ProtoReflect().Descriptor()
+			if desc.Fields().ByName(protoreflect.Name(values.PseudoFieldRowVersion)) == nil {
+				var verBytes any
+				if rec.Version != nil {
+					verBytes = rec.Version.ToBytes()
+				}
+				positional = &PositionalRow{
+					Type:  positionalTypeWithRowVersion(desc),
+					Slots: append(positional.Slots, verBytes),
+				}
+			}
+		}
+	}
 	return QueryResult{
-		Positional: protoToPositional(rec.Record),
+		Positional: positional,
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
 	}
@@ -60,7 +83,17 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 // is BOUNDED (wipe-at-cap in protoToPositional): entries are pure derivations,
 // a rare wipe just re-warms. A racy duplicate Store is harmless: both values
 // are structurally equal.
-var positionalTypeCache sync.Map // protoreflect.MessageDescriptor -> *values.RecordType
+// positionalTypeKey distinguishes the plain row shape from the
+// __ROW_VERSION-extended one. Both live in ONE cache under ONE counter so the
+// bound below actually covers both: a second sync.Map "with the same lifecycle"
+// shares nothing — the wipe never reaches it, and descriptor churn in a
+// version-storing store grows it forever.
+type positionalTypeKey struct {
+	desc           protoreflect.MessageDescriptor
+	withRowVersion bool
+}
+
+var positionalTypeCache sync.Map // positionalTypeKey -> *values.RecordType
 
 // positionalTypeCacheMu serializes the MISS path (build + wipe-at-cap +
 // store) so the bound is exact: without it, misses racing a wipe re-stored
@@ -115,37 +148,87 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 // descriptor-shaped partial record for exactly this reason). Cached per
 // descriptor (see positionalTypeCache).
 func PositionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {
-	if v, ok := positionalTypeCache.Load(desc); ok {
+	return cachedPositionalType(positionalTypeKey{desc: desc}, func() *values.RecordType {
+		fields := desc.Fields()
+		n := fields.Len()
+		rtFields := make([]values.Field, n)
+		for i := 0; i < n; i++ {
+			rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+		}
+		return values.NewRecordType("", false, rtFields)
+	})
+}
+
+// cachedPositionalType is the SINGLE miss path for every cached row shape: one
+// lock, one counter, one wipe. Hits stay lock-free on the sync.Map; misses are
+// first-sight-of-a-key rare, so the lock is off the hot path.
+//
+// Every shape must come through here. A separate map "with the same lifecycle"
+// shares nothing in practice — the wipe below cannot reach it, and under
+// descriptor churn (dynamicpb across repeated schema loads in a long-lived
+// multi-tenant process) it grows without bound.
+func cachedPositionalType(key positionalTypeKey, build func() *values.RecordType) *values.RecordType {
+	if v, ok := positionalTypeCache.Load(key); ok {
 		return v.(*values.RecordType)
 	}
 	positionalTypeCacheMu.Lock()
 	defer positionalTypeCacheMu.Unlock()
-	// Re-check under the lock: a racing miss on the same descriptor may
-	// have stored while we waited.
-	if v, ok := positionalTypeCache.Load(desc); ok {
+	// Re-check under the lock: a racing miss on the same key may have stored
+	// while we waited.
+	if v, ok := positionalTypeCache.Load(key); ok {
 		return v.(*values.RecordType)
 	}
-	fields := desc.Fields()
-	n := fields.Len()
-	rtFields := make([]values.Field, n)
-	for i := 0; i < n; i++ {
-		rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
-	}
-	rt := values.NewRecordType("", false, rtFields)
+	rt := build()
 	if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
-		// Descriptor churn (dynamicpb across many schema loads) must
-		// not grow the cache without bound: wipe and re-warm. Under
-		// the miss lock the bound is EXACT — no racing store can
-		// land after the reset (review finding: the lock-free wipe
-		// let concurrent misses transiently overshoot the cap).
+		// Descriptor churn must not grow the cache without bound: wipe and
+		// re-warm. Under the miss lock the bound is EXACT — no racing store
+		// can land after the reset (a lock-free wipe let concurrent misses
+		// transiently overshoot the cap).
 		positionalTypeCache.Range(func(k, _ any) bool {
 			positionalTypeCache.Delete(k)
 			return true
 		})
 		positionalTypeCacheSize.Store(1)
 	}
-	positionalTypeCache.Store(desc, rt)
+	positionalTypeCache.Store(key, rt)
 	return rt
+}
+
+// positionalTypeWithRowVersion is PositionalTypeForDescriptor plus the
+// trailing __ROW_VERSION pseudo-slot — the runtime row shape for a record
+// type in a version-storing store (Java: RecordMetaData.getPlannerType →
+// addPseudoFields, RecordMetaData.java:732-739). Callers must have checked
+// that the descriptor does not define a REAL field of that name.
+func positionalTypeWithRowVersion(desc protoreflect.MessageDescriptor) *values.RecordType {
+	// The base type is resolved BEFORE cachedPositionalType is entered: the
+	// miss lock is not reentrant, so a build closure must never call back into
+	// the cache.
+	base := PositionalTypeForDescriptor(desc)
+	return cachedPositionalType(positionalTypeKey{desc: desc, withRowVersion: true}, func() *values.RecordType {
+		fields := make([]values.Field, 0, len(base.Fields)+1)
+		fields = append(fields, base.Fields...)
+		fields = append(fields, values.Field{
+			Name:      values.PseudoFieldRowVersion,
+			FieldType: values.NullableVersion,
+			Ordinal:   len(base.Fields),
+		})
+		return values.NewRecordType("", false, fields)
+	})
+}
+
+// PositionalTypeForRecordLayout is the metadata-aware row-shape authority:
+// the descriptor's positional type, extended with the __ROW_VERSION
+// pseudo-slot when the store's metadata stores row versions and the
+// descriptor does not declare a REAL field of that name (real-column-wins,
+// Java Type.Record.addPseudoFields, Type.java:2358-2368). Every planner- or
+// runtime-facing derivation of a stored record's row layout must go through
+// this so plan-time ordinals and runtime slots agree on version-storing
+// stores.
+func PositionalTypeForRecordLayout(desc protoreflect.MessageDescriptor, storeRowVersions bool) *values.RecordType {
+	if !storeRowVersions || desc.Fields().ByName(protoreflect.Name(values.PseudoFieldRowVersion)) != nil {
+		return PositionalTypeForDescriptor(desc)
+	}
+	return positionalTypeWithRowVersion(desc)
 }
 
 // protoFieldToGo converts a protoreflect.Value to a native Go value suitable

@@ -59,6 +59,16 @@ func ExpandValueIndex(candidate MatchCandidate) *Traversal {
 			return nil
 		}
 		if keyExpressionContainsFanOut(root) {
+			if vc, isValue := candidate.(*ValueIndexScanMatchCandidate); isValue && vc.predicateProto != nil {
+				// A SPARSE fan-out index: the fan-out expansion does not yet
+				// carry the candidate-side predicate, and matching without it
+				// would treat the filtered index as full — silently missing
+				// rows. Go DDL cannot author this shape today (the generator
+				// rejects non-unnested arrays), so it is reachable only from
+				// Java-authored metadata; excluding the candidate is the safe
+				// failure mode (the query falls back to a scan).
+				return nil
+			}
 			traversal, expanded := expandFanOutValueIndex(candidate, root)
 			if !expanded {
 				// A flat fallback would turn an unsupported repeated-field key
@@ -115,6 +125,32 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 		ph := predicates.NewPlaceholder(alias, colValue)
 		builder.AddPredicate(ph)
 		builder.AddPlaceholder(ph)
+	}
+
+	// A SPARSE index carries its stored predicate into the candidate graph
+	// (ValueIndexExpansionVisitor.java:138-162): the filtered predicate,
+	// rooted at the base quantifier's flowed value, becomes a candidate-side
+	// predicate unless it is a tautology (:141). The matcher refuses to match
+	// a candidate predicate it cannot account for
+	// (MatchIntermediateRule's candidate-predicate walk), so a query can
+	// never treat the filtered index as full — the wrong-results direction.
+	// Java's ranges arm (:146-158) additionally re-expresses a DNF-of-ranges
+	// predicate as extra placeholder ranges so IMPLIED queries still match;
+	// Go's Placeholder carries no candidate-side ranges yet, so every
+	// non-tautological sparse candidate is conservatively unmatchable —
+	// correct results, narrower plan reach than Java (sparse-index-tests
+	// .yamsql's COVERING expectations are the re-arm witness).
+	if vc, isValue := candidate.(*ValueIndexScanMatchCandidate); isValue && vc.predicateProto != nil {
+		converted, convErr := indexPredicateToQueryPredicate(
+			vc.predicateProto, values.NewQuantifiedObjectValue(baseAlias))
+		if convErr != nil {
+			// An unconvertible stored predicate (unknown proto arm) leaves
+			// the candidate's entry set unknowable — exclude the candidate.
+			return nil
+		}
+		if !predicates.IsTautology(converted) {
+			builder.AddPredicate(converted)
+		}
 	}
 
 	expansion := builder.Build()
@@ -758,6 +794,35 @@ func keyExpressionTopLevelScalarFieldNames(
 		}
 		return names, true
 	}
+	if expression.Version != nil {
+		// A VERSION index's version key column behaves exactly like a
+		// top-level scalar field of the pseudo-field-extended base type —
+		// Java's VersionKeyExpression.toValue is
+		// FieldValue.ofFieldName(base, "__ROW_VERSION")
+		// (VersionKeyExpression.java:119-121).
+		return []string{values.PseudoFieldRowVersion}, true
+	}
+	if expression.KeyWithValue != nil {
+		// A covering root's PHYSICAL entry key is its inner key up to the
+		// split point (then the primary key) — plain scalar key columns
+		// order the scan exactly as a non-covering index's do; the VALUE
+		// part rides in the FDB value and contributes no key ordering. The
+		// truncation matches ColumnSize semantics
+		// (KeyWithValueExpression.getColumnSize() == split point) at any
+		// depth, keeping this list parallel to the column count everywhere
+		// the two are compared.
+		names, ok := keyExpressionTopLevelScalarFieldNames(
+			expression.KeyWithValue.GetInnerKey(),
+		)
+		if !ok {
+			return nil, false
+		}
+		split := int(expression.KeyWithValue.GetSplitPoint())
+		if split < 0 || split > len(names) {
+			return nil, false
+		}
+		return names[:split], true
+	}
 	return nil, false
 }
 
@@ -801,24 +866,82 @@ func keyExpressionFlatColumnDescriptors(
 	}
 	if expression.Function != nil {
 		function := expression.Function
-		if function.Name == nil ||
-			!strings.EqualFold(function.GetName(), FunctionKindCardinality) {
+		if function.Name == nil {
 			return nil, false
 		}
 		arguments := function.GetArguments()
-		if keyExpressionShapeCount(arguments) != 1 ||
-			arguments.Field == nil ||
-			arguments.Field.FieldName == nil ||
-			arguments.Field.FanType == nil ||
-			arguments.Field.GetFanType() != gen.Field_CONCATENATE {
-			return nil, false
+		if strings.EqualFold(function.GetName(), FunctionKindCardinality) {
+			if keyExpressionShapeCount(arguments) != 1 ||
+				arguments.Field == nil ||
+				arguments.Field.FieldName == nil ||
+				arguments.Field.FanType == nil ||
+				arguments.Field.GetFanType() != gen.Field_CONCATENATE {
+				return nil, false
+			}
+			return []flatKeyColumnDescriptor{{
+				name:     arguments.Field.GetFieldName(),
+				function: FunctionKindCardinality,
+			}}, true
 		}
-		return []flatKeyColumnDescriptor{{
-			name:     arguments.Field.GetFieldName(),
-			function: FunctionKindCardinality,
-		}}, true
+		if _, isOrder := OrderFunctionDirection(function.GetName()); isOrder {
+			// An order-function wrapper over one direct SCALAR field — the
+			// shape the index generator emits
+			// (OrderFunctionKeyExpressionFactory.java:44-48; single argument,
+			// getColumnSize() == 1). Anything else under the wrapper declines.
+			if keyExpressionShapeCount(arguments) != 1 ||
+				arguments.Field == nil ||
+				arguments.Field.FieldName == nil ||
+				arguments.Field.FanType == nil ||
+				arguments.Field.GetFanType() != gen.Field_SCALAR {
+				return nil, false
+			}
+			return []flatKeyColumnDescriptor{{
+				name:     arguments.Field.GetFieldName(),
+				function: strings.ToLower(function.GetName()),
+			}}, true
+		}
+		return nil, false
+	}
+	if expression.Version != nil {
+		// The version key column IS the __ROW_VERSION pseudo-field of the
+		// extended base type (VersionKeyExpression.toValue,
+		// VersionKeyExpression.java:119-121) — a plain scalar column to the
+		// flat candidate bridge; the executor materializes it from the
+		// Versionstamp key element / the record's version.
+		return []flatKeyColumnDescriptor{{name: values.PseudoFieldRowVersion}}, true
 	}
 	return nil, false
+}
+
+// keyExpressionKeyValueColumnDescriptors is keyExpressionFlatColumnDescriptors
+// with the covering split applied: a TOP-LEVEL KeyWithValue root yields its
+// inner key's descriptors partitioned at the split point into (key, value);
+// every other root yields (descriptors, nil). This is the flat-bridge form of
+// Java's expansion split (ValueIndexExpansionVisitor.java:109-121: the split
+// point partitions the visited columns into keyValues and valueValues).
+// A nested KeyWithValue (under Then etc.) is not a shape Java can produce and
+// declines through the inner walk having no KeyWithValue arm.
+func keyExpressionKeyValueColumnDescriptors(
+	expression *gen.KeyExpression,
+) (keyPart, valuePart []flatKeyColumnDescriptor, ok bool) {
+	if expression != nil && keyExpressionShapeCount(expression) == 1 &&
+		expression.KeyWithValue != nil {
+		inner := expression.KeyWithValue.GetInnerKey()
+		descriptors, innerOK := keyExpressionFlatColumnDescriptors(inner)
+		if !innerOK {
+			return nil, nil, false
+		}
+		split := int(expression.KeyWithValue.GetSplitPoint())
+		if split < 0 || split > len(descriptors) {
+			return nil, nil, false
+		}
+		return descriptors[:split], descriptors[split:], true
+	}
+	descriptors, flatOK := keyExpressionFlatColumnDescriptors(expression)
+	if !flatOK {
+		return nil, nil, false
+	}
+	return descriptors, nil, true
 }
 
 func keyExpressionShapeCount(expression *gen.KeyExpression) int {

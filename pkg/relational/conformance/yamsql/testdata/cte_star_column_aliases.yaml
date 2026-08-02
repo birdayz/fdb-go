@@ -1,0 +1,38 @@
+# cte_star_column_aliases.yaml — a CTE column-alias list over a STAR body.
+#
+# `WITH c1(x, y, z) AS (SELECT * FROM t)` has no final projection (the star
+# plans to the bare scan), so the re-aliasing projection translateCTE builds
+# from extractOutputColumns had nothing to rename and the aliases were
+# silently dropped: SELECT * FROM c1 came back labeled ID/COL1/COL2 where
+# Java labels X/Y/Z (corpus pin: cte.yamsql line 63). The translator now
+# expands the star body's columns from metadata (starBodyColumns) before the
+# alias check — this scenario is the local regression for that exact shape,
+# including the arity rejection the expansion arms.
+name: cte_star_column_aliases
+schema_template: |
+  CREATE TABLE t1 (
+    id BIGINT,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100)
+  - INSERT INTO t1 VALUES (2, 20, 200)
+tests:
+  # The alias list renames the star-expanded columns positionally.
+  - query: WITH c1(x, y, z) AS (SELECT * FROM t1) SELECT * FROM c1 ORDER BY x
+    columns: [X, Y, Z]
+    rows:
+      - [1, 10, 100]
+      - [2, 20, 200]
+
+  # And the aliases resolve as real columns.
+  - query: WITH c1(x, y, z) AS (SELECT * FROM t1) SELECT z, x FROM c1 WHERE y = 20
+    rows:
+      - [200, 2]
+
+  # Arity mismatch over a star body is REJECTED (Java
+  # SemanticAnalyzer.validateCteColumnAliases), not silently ignored.
+  - query: WITH c1(x, y) AS (SELECT * FROM t1) SELECT * FROM c1
+    error_code: "42F10"

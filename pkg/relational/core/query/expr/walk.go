@@ -949,6 +949,29 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		}
 		return values.NewDistanceValue(op, args[0], args[1]), nil
 	}
+	// The bitmap bucketing functions are unary at the SQL surface but binary
+	// underneath: Java's SemanticAnalyzer appends the default entry size
+	// 10000 as a literal second argument (SemanticAnalyzer.java:110,
+	// :988-990) before resolving the two-argument built-in
+	// (ArithmeticValue.java BITMAP_BUCKET_OFFSET / BITMAP_BIT_POSITION).
+	//
+	// The arity is EXACTLY one and must be enforced here. Java resolves these
+	// through `argumentsCount -> BuiltInFunctionCatalog.resolve(name, 1 +
+	// argumentsCount)` (SqlFunctionCatalogImpl.java:126-127), and the only
+	// registered built-in is the binary one — so zero user arguments resolve
+	// arity 1 and two resolve arity 3, both of which fail to resolve and reject
+	// the query. Go's catalogue entry carries a FIXED result type and no arity,
+	// so without this check `BITMAP_BUCKET_OFFSET()` admitted and evaluated to
+	// NULL, and `BITMAP_BUCKET_OFFSET(id, 5)` admitted with the caller's 5
+	// silently replacing the entry size the index was built with.
+	if name == "BITMAP_BUCKET_OFFSET" || name == "BITMAP_BIT_POSITION" {
+		if len(args) != 1 {
+			return nil, &UnsupportedExpressionShapeError{
+				Shape: fmt.Sprintf("%s requires exactly 1 argument, got %d", name, len(args)),
+			}
+		}
+		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableLong})
+	}
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}

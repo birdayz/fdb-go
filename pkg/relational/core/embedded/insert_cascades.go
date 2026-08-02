@@ -11,6 +11,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -67,18 +68,6 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 		}
 	}
 
-	// A NOT NULL column absent from the (explicit) column list gets no value
-	// in any row — reject once up front (constant across rows), matching
-	// naive execInsert.
-	fds := desc.Fields()
-	for i := 0; i < fds.Len(); i++ {
-		fd := fds.Get(i)
-		if fd.Cardinality() == protoreflect.Required && !colsContainFold(cols, string(fd.Name())) {
-			return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
-				"column %q has NOT NULL constraint but no value was provided", fd.Name())
-		}
-	}
-
 	// One resolver for the whole statement: an EMPTY scope (a VALUES cell
 	// has no FROM — a column reference resolves nowhere and dies 42703)
 	// over the schema catalog, lowering each cell with the SAME walk the
@@ -93,29 +82,90 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 	var rows []values.Value
 	for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 		exprs := rowCtx.AllExpressionWithOptionalName()
-		// Arity mismatch: explicit column list → 42601 SYNTAX_ERROR
-		// (the user named the columns); implicit → 22000 the partial
-		// tuple can't be coerced to the full row. Matches naive execInsert.
-		if len(exprs) != len(cols) {
-			if explicitCols != nil {
-				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
-					"INSERT column list has %d columns but VALUES has %d", len(cols), len(exprs))
+		// Arity and column-list semantics follow Java's
+		// parseRecordFieldsUnderReorderings (ExpressionVisitor.java:1040-1078):
+		//
+		//   - explicit list: more VALUES than named columns → 42601 "Too many
+		//     parameters" (:1055). The row is then built by iterating the
+		//     TARGET fields and looking each up in the named list — a named
+		//     column that is NOT a target field is silently ignored, its
+		//     value with it (indexOf never finds it; the corpus's
+		//     composite-aggregates.yamsql inserts into T2(…, COL3) on a
+		//     3-column T2 and Java accepts). A target field named past the
+		//     provided values → 42601 "Value of column X is not provided"
+		//     (:1064); an unnamed non-nullable target field → 23502
+		//     (:1068); an unnamed nullable one gets NULL.
+		//   - implicit: the tuple must cover every field → 22000 (:1080-1082).
+		if explicitCols != nil {
+			if len(exprs) > len(cols) {
+				return nil, api.NewError(api.ErrCodeSyntaxError, "Too many parameters")
 			}
+		} else if len(exprs) != len(cols) {
 			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"provided record cannot be assigned as its type is incompatible with the target type")
 		}
 
-		fields := make([]values.RecordConstructorField, 0, len(cols))
-		for i, col := range cols {
-			fd := desc.Fields().ByName(protoreflect.Name(col))
-			if fd == nil {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q not found in table %q", col, tableName)
+		type slot struct {
+			fd   protoreflect.FieldDescriptor
+			expr antlrgen.IExpressionWithOptionalNameContext // nil → NULL fill
+		}
+		var slots []slot
+		if explicitCols != nil {
+			fds := desc.Fields()
+			for i := 0; i < fds.Len(); i++ {
+				fd := fds.Get(i)
+				idx := -1
+				for j, col := range cols {
+					if col == string(fd.Name()) {
+						idx = j
+						break
+					}
+				}
+				switch {
+				case idx >= 0 && idx < len(exprs):
+					slots = append(slots, slot{fd: fd, expr: exprs[idx]})
+				case idx >= len(exprs):
+					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+						"Value of column \"%s\" is not provided", fd.Name())
+				case fd.Cardinality() == protoreflect.Required:
+					return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+						"null value in column \"%s\" violates not-null constraint", fd.Name())
+				default:
+					slots = append(slots, slot{fd: fd})
+				}
 			}
+		} else {
+			for i, col := range cols {
+				fd := desc.Fields().ByName(protoreflect.Name(col))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"column %q not found in table %q", col, tableName)
+				}
+				slots = append(slots, slot{fd: fd, expr: exprs[i]})
+			}
+		}
+
+		fields := make([]values.RecordConstructorField, 0, len(slots))
+		for _, s := range slots {
+			fd := s.fd
+			col := string(fd.Name())
+			if s.expr == nil {
+				// Unnamed nullable target field → a TYPED NULL, exactly
+				// Java's `new NullValue(fieldType)` (ExpressionVisitor
+				// parseRecordFieldsUnderReorderings): the column's type is
+				// known from the descriptor, so the NULL states it instead
+				// of entering the tree untyped.
+				fields = append(fields, values.RecordConstructorField{
+					Name:  col,
+					Value: values.NewNullValue(query.FieldTypeForFD(fd)),
+				})
+				continue
+			}
+			cellExpr := s.expr
 			// A parenthesized record-constructor at a scalar slot —
 			// `VALUES (1, (2, 3))` — is a structural type error; Java
 			// rejects with byte-equal "expected Record but got Primitive".
-			if pred, ok := exprs[i].Expression().(*antlrgen.PredicatedExpressionContext); ok && pred.Predicate() == nil {
+			if pred, ok := cellExpr.Expression().(*antlrgen.PredicatedExpressionContext); ok && pred.Predicate() == nil {
 				if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"expected Record but got Primitive")
@@ -124,7 +174,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 			// The pre-scan mirrors the SELECT path's registry gate: a
 			// function outside the Cascades-safe set rejects with Java's
 			// byte-equal "Unsupported operator <name>" before the walk.
-			if fn := findUnsupportedFunctionInParseTree(exprs[i].Expression()); fn != "" {
+			if fn := findUnsupportedFunctionInParseTree(cellExpr.Expression()); fn != "" {
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 			}
 			// Severed arms (RFC-145): a scalar subquery or EXISTS inside a
@@ -132,11 +182,11 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 			// atom is a Go-only grammar extension Java does not parse in this
 			// position, and the fold has no SubqueryPlanner. Typed-node scan,
 			// message contract pinned by TestFDB_RFC145_SeveredArms_InsertValues.
-			if atom := firstSubqueryOrExistsAtom(exprs[i].Expression()); atom != "" {
+			if atom := firstSubqueryOrExistsAtom(cellExpr.Expression()); atom != "" {
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"%s is not supported in this context", atom)
 			}
-			cell, walkErr := resolver.WalkExpressionForProjection(exprs[i].Expression())
+			cell, walkErr := resolver.WalkExpressionForProjection(cellExpr.Expression())
 			if walkErr != nil {
 				if mapped := mapPredicateWalkError(walkErr); mapped != nil {
 					return nil, mapped
@@ -168,9 +218,11 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				}
 				fieldVal = pv
 			}
+			// The conversion just proved the value IS of the column's type,
+			// so the constant carries that type rather than discarding it.
 			fields = append(fields, values.RecordConstructorField{
 				Name:  string(fd.Name()),
-				Value: &values.ConstantValue{Value: fieldVal, Typ: values.UnknownType},
+				Value: &values.ConstantValue{Value: fieldVal, Typ: query.FieldTypeForFD(fd)},
 			})
 		}
 

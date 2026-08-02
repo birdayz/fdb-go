@@ -58,6 +58,11 @@ type ValueIndexScanMatchCandidate struct {
 	// indexes). Ports Java's index.getRootExpression().createsDuplicates().
 	// When the optional signal is missing or stale, a structured FAN_OUT root
 	// remains authoritative through CreatesDuplicates.
+	// predicateProto is the stored sparse-index predicate
+	// (RecordMetaDataProto.Index.predicate) when the index is filtered;
+	// nil for a full index. See WithPredicateProto.
+	predicateProto *gen.Predicate
+
 	createsDuplicates bool
 	// createsDuplicatesKnown reports whether the fan-out status was supplied
 	// by the IndexDef. When false (no signal), the DistinctRecords property
@@ -73,6 +78,15 @@ type ValueIndexScanMatchCandidate struct {
 	// regardless of fan-out (index entries always carry the PK); nil when the
 	// def supplies no structural PK (the property then abstains).
 	commonPrimaryKeyValues []values.Value
+
+	// valueColumnNames are the covering-only columns of a KeyWithValue root —
+	// the inner key's columns past the split point, stored in the FDB VALUE.
+	// They are never sargable and never order the scan (the physical entry key
+	// is key columns + primary key); their sole role is covering translation.
+	// Java's candidate carries them as indexValueValues, populated by the
+	// expansion's valueValues list (ValueIndexExpansionVisitor.java:109-121).
+	// Nil for a non-covering root.
+	valueColumnNames []string
 
 	// rootKeyExpression is the record-layer key-expression AST when metadata
 	// exposes it. Fan-out expansion needs the tree topology (Then/Nesting and
@@ -181,6 +195,15 @@ func bakeOrderingColumnIn(layout *values.RecordType, name string) values.Value {
 // structurally equal pair unequal.
 func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 	if i < len(c.columnFunctions) && c.columnFunctions[i] != "" {
+		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
+			// An order-wrapped column ORDERS BY its underlying field — the
+			// wrapper only changes the physical encoding and the direction,
+			// which columnMatchedSortOrder carries separately. Java derives the
+			// same split by simplifying ToOrderedBytesValue(fv) to (fv,
+			// direction) when minting ordering parts
+			// (OrderingValueComputationRuleSet's ToOrderedBytes rule).
+			return c.bakeOrderingColumn(c.columnNames[i])
+		}
 		return c.ColumnValue(i, nil)
 	}
 	return c.bakeOrderingColumn(c.columnNames[i])
@@ -190,6 +213,29 @@ func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 // layout the index serves — see buildCoveredOrdinalSets.
 func (c *ValueIndexScanMatchCandidate) coveredOrdinalSets(coveredColumns map[string]struct{}) []coveredOrdinalSet {
 	return buildCoveredOrdinalSets(c.rowLayouts(), coveredColumns)
+}
+
+// WithValueColumns attaches the covering-only (FDB VALUE part) column names of
+// a KeyWithValue-rooted index to a freshly constructed candidate. Names are
+// upper-cased for the SQL-convention case-insensitive covering match, exactly
+// like columnNames. Nil/empty clears the value part.
+func (c *ValueIndexScanMatchCandidate) WithValueColumns(names []string) *ValueIndexScanMatchCandidate {
+	if len(names) == 0 {
+		c.valueColumnNames = nil
+		return c
+	}
+	upper := make([]string, len(names))
+	for i, n := range names {
+		upper[i] = strings.ToUpper(n)
+	}
+	c.valueColumnNames = upper
+	return c
+}
+
+// GetValueColumnNames returns the covering-only (FDB VALUE part) column names,
+// or nil for a non-covering root.
+func (c *ValueIndexScanMatchCandidate) GetValueColumnNames() []string {
+	return c.valueColumnNames
 }
 
 // WithCommonPrimaryKey sets the index's structural common primary key on the
@@ -212,6 +258,30 @@ func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpres
 	return c
 }
 
+// WithPredicateProto marks the candidate as a SPARSE (filtered) index by
+// attaching the stored index predicate (RecordMetaDataProto.Index.predicate).
+// The expansion converts it into a candidate-side QueryPredicate
+// (ValueIndexExpansionVisitor.java:138-162), so a query matches the candidate
+// only when the matcher can account for the predicate — never as if the index
+// held every record.
+func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *ValueIndexScanMatchCandidate {
+	if pred == nil {
+		c.predicateProto = nil
+		return c
+	}
+	c.predicateProto = proto.Clone(pred).(*gen.Predicate)
+	return c
+}
+
+// GetPredicateProto returns a defensive copy of the sparse-index predicate, or
+// nil for a full index.
+func (c *ValueIndexScanMatchCandidate) GetPredicateProto() *gen.Predicate {
+	if c.predicateProto == nil {
+		return nil
+	}
+	return proto.Clone(c.predicateProto).(*gen.Predicate)
+}
+
 // GetRootKeyExpression returns a defensive copy of the record-layer
 // key-expression AST, or nil when the candidate was built from flat metadata.
 func (c *ValueIndexScanMatchCandidate) GetRootKeyExpression() *gen.KeyExpression {
@@ -231,6 +301,87 @@ func (c *ValueIndexScanMatchCandidate) GetCommonPrimaryKeyValues() []values.Valu
 // CARDINALITY(field). Matches the "cardinality" function-key name on the
 // record-layer side so the bridge is name-stable across the two layers.
 const FunctionKindCardinality = "cardinality"
+
+// Order-function column tags — the four OrderFunctionKeyExpression names
+// (OrderFunctionKeyExpressionFactory.java:44-48: "order_" + Direction
+// lowercased). A key column carrying one stores the TupleOrdering encoding of
+// its field, so its candidate-side Value is ToOrderedBytesValue(field,
+// direction) (OrderFunctionKeyExpression.toValue,
+// OrderFunctionKeyExpression.java:99-103) and its matched ordering direction
+// is the function's, not the tuple-natural ascending.
+const (
+	FunctionKindOrderAscNullsFirst  = "order_asc_nulls_first"
+	FunctionKindOrderAscNullsLast   = "order_asc_nulls_last"
+	FunctionKindOrderDescNullsFirst = "order_desc_nulls_first"
+	FunctionKindOrderDescNullsLast  = "order_desc_nulls_last"
+)
+
+// OrderFunctionDirection maps an order-function name to its TupleOrdering
+// direction; ok=false for any other function name.
+func OrderFunctionDirection(name string) (values.OrderedBytesDirection, bool) {
+	switch strings.ToLower(name) {
+	case FunctionKindOrderAscNullsFirst:
+		return values.OrderedBytesAscNullsFirst, true
+	case FunctionKindOrderAscNullsLast:
+		return values.OrderedBytesAscNullsLast, true
+	case FunctionKindOrderDescNullsFirst:
+		return values.OrderedBytesDescNullsFirst, true
+	case FunctionKindOrderDescNullsLast:
+		return values.OrderedBytesDescNullsLast, true
+	default:
+		return 0, false
+	}
+}
+
+// matchedSortOrderForDirection maps a TupleOrdering direction to the matched
+// sort order of a FORWARD scan over entries encoded in that direction — the
+// entry bytes ARE the direction's ordering, so a forward scan yields it
+// directly and a reverse scan yields its polar opposite (Java: TupleOrdering
+// .Direction ↔ OrderingPart sort-order mapping in OrderingValueComputationRuleSet).
+func matchedSortOrderForDirection(dir values.OrderedBytesDirection) MatchedSortOrder {
+	switch dir {
+	case values.OrderedBytesAscNullsLast:
+		return MatchedSortOrderAscendingNullsLast
+	case values.OrderedBytesDescNullsFirst:
+		return MatchedSortOrderDescendingNullsFirst
+	case values.OrderedBytesDescNullsLast:
+		return MatchedSortOrderDescending
+	default:
+		return MatchedSortOrderAscending
+	}
+}
+
+// flipMatchedSortOrder is the polar opposite (reverse scan) of a matched sort
+// order: ASC_NULLS_FIRST ↔ DESC_NULLS_LAST, ASC_NULLS_LAST ↔ DESC_NULLS_FIRST
+// — byte-order reversal flips direction AND null placement together.
+func flipMatchedSortOrder(s MatchedSortOrder) MatchedSortOrder {
+	switch s {
+	case MatchedSortOrderAscending:
+		return MatchedSortOrderDescending
+	case MatchedSortOrderDescending:
+		return MatchedSortOrderAscending
+	case MatchedSortOrderAscendingNullsLast:
+		return MatchedSortOrderDescendingNullsFirst
+	default:
+		return MatchedSortOrderAscendingNullsLast
+	}
+}
+
+// columnMatchedSortOrder returns the matched sort order of column i for a scan
+// in the given direction: tuple-natural ascending for a plain column, the
+// order function's direction for an order-wrapped one.
+func (c *ValueIndexScanMatchCandidate) columnMatchedSortOrder(i int, isReverse bool) MatchedSortOrder {
+	order := MatchedSortOrderAscending
+	if i < len(c.columnFunctions) {
+		if dir, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
+			order = matchedSortOrderForDirection(dir)
+		}
+	}
+	if isReverse {
+		return flipMatchedSortOrder(order)
+	}
+	return order
+}
 
 // NewValueIndexScanMatchCandidate constructs a match candidate for a
 // secondary index. columnNames and sargableAliases must be parallel
@@ -309,8 +460,20 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 // Value-tree equality (Java: the match candidate carries the column's Value).
 func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) values.Value {
 	fv := values.NewFieldValue(base, c.columnNames[i], values.UnknownType)
-	if i < len(c.columnFunctions) && c.columnFunctions[i] == FunctionKindCardinality {
-		return values.NewCardinalityValue(fv)
+	if i < len(c.columnFunctions) {
+		if c.columnFunctions[i] == FunctionKindCardinality {
+			return values.NewCardinalityValue(fv)
+		}
+		if dir, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
+			// The column's stored bytes are the TupleOrdering encoding, so the
+			// candidate-side Value is ToOrderedBytesValue(field, direction)
+			// (OrderFunctionKeyExpression.toValue). A query comparison on the
+			// BARE field does not structurally equal this Value, so it never
+			// binds the placeholder — the order-wrapped column is not sargable
+			// through the flat bridge, exactly Java's placeholder behaviour
+			// absent a comparand-conversion simplification.
+			return values.NewToOrderedBytesValue(fv, dir)
+		}
 	}
 	return fv
 }
@@ -492,10 +655,10 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// a column identity rather than a display name.
 		colValue := c.orderingColumnValue(idx)
 
-		sortOrder := MatchedSortOrderAscending
-		if isReverse {
-			sortOrder = MatchedSortOrderDescending
-		}
+		// A plain column orders tuple-naturally; an order-wrapped column
+		// orders in its function's direction (forward scan), flipped whole —
+		// direction and null placement together — under a reverse scan.
+		sortOrder := c.columnMatchedSortOrder(idx, isReverse)
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
 	}
@@ -715,7 +878,9 @@ func (c *ValueIndexScanMatchCandidate) metadataSufficientForPlanning() bool {
 	}
 	for _, function := range c.columnFunctions {
 		if function != "" && function != FunctionKindCardinality {
-			return false
+			if _, isOrder := OrderFunctionDirection(function); !isOrder {
+				return false
+			}
 		}
 	}
 	if c.rootKeyExpression == nil {
@@ -723,19 +888,30 @@ func (c *ValueIndexScanMatchCandidate) metadataSufficientForPlanning() bool {
 		// function tags are the caller's semantic authority.
 		return true
 	}
-	descriptors, ok := keyExpressionFlatColumnDescriptors(
+	keyDescriptors, valueDescriptors, ok := keyExpressionKeyValueColumnDescriptors(
 		c.rootKeyExpression,
 	)
-	if !ok || len(descriptors) != len(c.columnNames) {
+	if !ok || len(keyDescriptors) != len(c.columnNames) ||
+		len(valueDescriptors) != len(c.valueColumnNames) {
 		return false
 	}
-	for i, descriptor := range descriptors {
+	for i, descriptor := range keyDescriptors {
 		function := ""
 		if i < len(c.columnFunctions) {
 			function = c.columnFunctions[i]
 		}
 		if !strings.EqualFold(descriptor.name, c.columnNames[i]) ||
 			descriptor.function != function {
+			return false
+		}
+	}
+	// Value-part columns are covering-only: a function-valued value column
+	// (e.g. a CARDINALITY in the VALUE part) cannot be translated by covered
+	// name, so the whole candidate declines fail-closed rather than serve a
+	// mis-translated covering row.
+	for i, descriptor := range valueDescriptors {
+		if descriptor.function != "" ||
+			!strings.EqualFold(descriptor.name, c.valueColumnNames[i]) {
 			return false
 		}
 	}
@@ -870,6 +1046,16 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			}
 			coveredColumns[strings.ToUpper(col)] = struct{}{}
 		}
+	}
+	// The VALUE part of a KeyWithValue root is stored RAW in the FDB value
+	// (only key columns can carry an order-function encoding, and the
+	// admission check declines a function-valued value column), so covering
+	// translation of these columns is safe even when a key column is
+	// function-wrapped. This is the whole point of the covering split
+	// (KeyWithValueExpression: "additional query-relevant columns can be read
+	// without fetching the record").
+	for _, col := range c.valueColumnNames {
+		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
 	for _, col := range c.pkColumnNames {
 		upperColumn := strings.ToUpper(col)

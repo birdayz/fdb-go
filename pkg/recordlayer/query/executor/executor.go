@@ -352,8 +352,11 @@ func executeIndexScan(
 				// The record's LOGICAL row shape — only authoritative when the
 				// scan serves a single record type (a multi-type covering scan
 				// has no single logical shape and keeps the index layout).
+				// Metadata-aware: a version-storing store's rows carry the
+				// trailing __ROW_VERSION pseudo-slot.
 				if len(rts) == 1 && rt.Descriptor != nil {
-					logicalType = PositionalTypeForDescriptor(rt.Descriptor)
+					logicalType = PositionalTypeForRecordLayout(rt.Descriptor,
+						store.GetMetaData().IsStoreRecordVersions())
 				}
 			}
 		}
@@ -756,6 +759,15 @@ func tupleElementToRowValue(v any) any {
 		return [16]byte(tv)
 	case float32:
 		return float64(tv)
+	case tuple.Versionstamp:
+		// A VERSION index's key carries the record version as a Versionstamp
+		// tuple element; the row-value form of the __ROW_VERSION pseudo-field
+		// is the version's 12 raw bytes (FDBRecordVersion.toBytes — the same
+		// carrier FromStoredRecord fills on the base-scan path, so covering
+		// and fetching reads agree byte-for-byte).
+		out := make([]byte, 0, len(tv.TransactionVersion)+2)
+		out = append(out, tv.TransactionVersion[:]...)
+		return append(out, byte(tv.UserVersion>>8), byte(tv.UserVersion))
 	}
 	return v
 }
@@ -1418,7 +1430,16 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	// logicalOrds is guaranteed non-nil (executeIndexScan refuses a non-conforming
 	// covering scan LOUD at construction), so the row is always LOGICAL-shaped.
 	primaryKey := entry.PrimaryKey()
-	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), primaryKey, c.logicalType, c.logicalOrds)
+	// The entry's covered values in ENTRY layout order: the key part
+	// (IndexValues ends at the KeyWithValue split point — ColumnSize), then
+	// the VALUE-part columns from the entry's FDB value tuple. For a
+	// non-covering-split index entry.Value is empty and this is IndexValues
+	// alone. Positionally parallel to the plan's AllCoveredEntryColumns.
+	vals := entry.IndexValues()
+	if len(entry.Value) > 0 {
+		vals = append(append(tuple.Tuple{}, vals...), entry.Value...)
+	}
+	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, vals, primaryKey, c.logicalType, c.logicalOrds)
 	return recordlayer.NewResultWithValue(
 		QueryResult{
 			Positional: pos,

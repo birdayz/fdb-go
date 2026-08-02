@@ -89,25 +89,61 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		// bare FieldValue. Candidates without a provider (primary scan) keep
 		// the historical FieldValue-name string comparison.
 		provider, _ := cand.(columnValueProvider)
+		valueCand, _ := cand.(*ValueIndexScanMatchCandidate)
 		matches := true
 		reverse := false
 		for i, sk := range sortKeys {
-			if !sortKeyMatchesColumn(sk.Value, provider, i, colNames[i]) {
+			// The column's PHYSICAL entry direction under a forward scan:
+			// tuple-natural ascending (nulls first) for a plain column, the
+			// wrapper's direction for an order-function column — whose entry
+			// bytes ARE that direction's encoding
+			// (OrderFunctionKeyExpression.evaluateFunction → TupleOrdering.pack).
+			colDir := values.OrderedBytesAscNullsFirst
+			isOrderColumn := false
+			if valueCand != nil && i < len(valueCand.columnFunctions) {
+				if dir, isOrder := OrderFunctionDirection(valueCand.columnFunctions[i]); isOrder {
+					colDir = dir
+					isOrderColumn = true
+				}
+			}
+			// An order-wrapped column ORDERS BY its underlying field; the
+			// wrapper carries only encoding + direction, which colDir accounts
+			// for — so the sort key matches the BARE field, never the
+			// ToOrderedBytes value (Java: OrderingValueComputationRuleSet
+			// simplifies ToOrderedBytesValue(fv) to (fv, direction)).
+			matchProvider := provider
+			if isOrderColumn {
+				matchProvider = nil
+			}
+			if !sortKeyMatchesColumn(sk.Value, matchProvider, i, colNames[i]) {
 				matches = false
+				break
+			}
+			// The requested direction for this key: DESC defaults NULLS LAST,
+			// ASC defaults NULLS FIRST; an explicit NULLS choice may run
+			// counterflow.
+			reqDir := requestedOrderedBytesDirection(sk.Reverse, sk.NullsFirst)
+			// One scan direction must serve every key: forward when the
+			// request equals the column's physical direction, reverse when it
+			// equals its byte-order flip (direction AND null placement flip
+			// together), no match otherwise.
+			var needReverse bool
+			switch reqDir {
+			case colDir:
+				needReverse = false
+			case flipOrderedBytesDirection(colDir):
+				needReverse = true
+			default:
+				matches = false
+			}
+			if !matches {
 				break
 			}
 			if i == 0 {
-				reverse = sk.Reverse
-			} else if sk.Reverse != reverse {
+				reverse = needReverse
+			} else if needReverse != reverse {
 				matches = false
 				break
-			}
-			if sk.NullsFirst != nil {
-				defaultNF := !reverse
-				if *sk.NullsFirst != defaultNF {
-					matches = false
-					break
-				}
 			}
 		}
 		if !matches {
@@ -146,6 +182,45 @@ func sortKeyMatchesColumn(skValue values.Value, provider columnValueProvider, i 
 		colValue = values.NewFieldValue(base, colName, values.UnknownType)
 	}
 	return valuesMatchColumn(skValue, colValue)
+}
+
+// requestedOrderedBytesDirection expresses a sort key's requested direction in
+// TupleOrdering terms: DESC defaults NULLS LAST and ASC defaults NULLS FIRST
+// (SQL's defaults, ParseHelpers.isNullsLast); an explicit NULLS choice may run
+// counterflow.
+func requestedOrderedBytesDirection(reverse bool, nullsFirst *bool) values.OrderedBytesDirection {
+	nf := !reverse
+	if nullsFirst != nil {
+		nf = *nullsFirst
+	}
+	switch {
+	case !reverse && nf:
+		return values.OrderedBytesAscNullsFirst
+	case !reverse && !nf:
+		return values.OrderedBytesAscNullsLast
+	case reverse && !nf:
+		return values.OrderedBytesDescNullsLast
+	default:
+		return values.OrderedBytesDescNullsFirst
+	}
+}
+
+// flipOrderedBytesDirection is the byte-order reversal of a direction:
+// reading the encoded entries backwards flips the direction AND the null
+// placement together (ASC_NULLS_FIRST ↔ DESC_NULLS_LAST,
+// ASC_NULLS_LAST ↔ DESC_NULLS_FIRST) — Java TupleOrdering.Direction's
+// reverseDirection pairing.
+func flipOrderedBytesDirection(d values.OrderedBytesDirection) values.OrderedBytesDirection {
+	switch d {
+	case values.OrderedBytesAscNullsFirst:
+		return values.OrderedBytesDescNullsLast
+	case values.OrderedBytesAscNullsLast:
+		return values.OrderedBytesDescNullsFirst
+	case values.OrderedBytesDescNullsFirst:
+		return values.OrderedBytesAscNullsLast
+	default:
+		return values.OrderedBytesAscNullsFirst
+	}
 }
 
 // orderedFullScanAlternatives applies the existing ordered-secondary-index and

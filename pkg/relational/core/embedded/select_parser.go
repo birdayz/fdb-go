@@ -443,6 +443,23 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	case awf.AVG() != nil:
 		funcName = "AVG"
 		resolveArg(awf.FunctionArg())
+	case awf.MAX_EVER() != nil:
+		// MAX_EVER / MIN_EVER are index-only aggregates (Java's monotone
+		// extremum family): the grammar admits them beside AVG/MAX/MIN/SUM
+		// (RelationalParser.g4 aggregateWindowedFunction) and the AS-SELECT
+		// index generator consumes them (RFC-202 S3). As QUERY aggregates the
+		// translator declines them typed (aggregateFunctionByName), matching
+		// Java where an extremum query is only ever served by its index.
+		funcName = "MAX_EVER"
+		resolveArg(awf.FunctionArg())
+	case awf.MIN_EVER() != nil:
+		funcName = "MIN_EVER"
+		resolveArg(awf.FunctionArg())
+	case awf.BITMAP_CONSTRUCT_AGG() != nil:
+		// Own grammar alternative: BITMAP_CONSTRUCT_AGG '(' functionArg ')'
+		// — no ALL/DISTINCT aggregator. Index-only, like the extremum family.
+		funcName = "BITMAP_CONSTRUCT_AGG"
+		resolveArg(awf.FunctionArg())
 	default:
 		return "", "", nil, "", false, false, "", "", false
 	}
@@ -2542,10 +2559,25 @@ func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAli
 	if len(uids) == 0 {
 		return nil, api.NewErrorf(api.ErrCodeSyntaxError, "JOIN ... USING requires at least one column")
 	}
+	// The alias values are NORMALIZED (StripIdentifierQuotes: unquoted folded
+	// UPPER, quoted verbatim with quotes removed). Splicing one back into SQL
+	// text bare would re-normalize it — a quoted-DDL alias `"e"` (stored `e`)
+	// would fold to `E` and resolve nothing (join-tests-outer.yamsql's USING
+	// rows). Double-quoting the stored value round-trips exactly: `"e"` stays
+	// `e`, an unquoted alias's stored `D` stays `D`.
+	quoteAlias := func(alias string) string {
+		if strings.Contains(alias, ".") {
+			// A schema-qualified table name standing in for a missing alias
+			// (`JOIN s.t USING (…)`) is a dotted PATH, not one identifier —
+			// splice it as before; its segments were already normalized.
+			return alias
+		}
+		return `"` + strings.ReplaceAll(alias, `"`, `""`) + `"`
+	}
 	terms := make([]string, len(uids))
 	for i, u := range uids {
 		col := u.GetText()
-		terms[i] = fmt.Sprintf("%s.%s = %s.%s", leftAlias, col, rightAlias, col)
+		terms[i] = fmt.Sprintf("%s.%s = %s.%s", quoteAlias(leftAlias), col, quoteAlias(rightAlias), col)
 	}
 	onText := strings.Join(terms, " AND ")
 	onExpr, err := parser.ParseExpression(onText)

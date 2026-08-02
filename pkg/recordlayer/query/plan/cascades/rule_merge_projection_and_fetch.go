@@ -91,7 +91,7 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if idxPlan, ok := fetchInnerExpr.(*plans.RecordQueryIndexPlan); ok && !idxPlan.IsCovering() {
 		// The covering index scan is its own cascades expression (RFC-184 W2);
 		// WithCovering preserves the metadata already on the plan (struct copy).
-		coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
+		coveredPlan := idxPlan.WithCovering(idxPlan.AllCoveredEntryColumns())
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(coveredPlan))
 		// The projection is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2).

@@ -65,6 +65,28 @@ func PrepareMatchesAndCompensations(
 
 	result := make([]*SingleMatchedAccess, 0, len(partialMatches))
 	for _, pm := range partialMatches {
+		// A SPARSE candidate's stored predicate lives in its candidate
+		// SELECT (ValueIndexExpansionVisitor.java:138-162 → Go's
+		// expandFlatValueIndex). A match that has not absorbed that select
+		// treats the filtered index as a FULL row source, and no compensation
+		// can restore the records the index deliberately omits — so a sparse
+		// candidate's match must sit at the traversal root (predicate
+		// accounted) to become a scan. Today this arm is SHADOWED (measured):
+		// a sparse candidate can only hold scan-leaf matches, because both
+		// the select-level subsumption and adjustMatchForSelect refuse a
+		// non-tautology candidate predicate, and a leaf match dies at the
+		// zero-prefix skip below. It stands because Go's data access —
+		// unlike Java's — consumes non-root matches, and any future path
+		// that lets a leaf match satisfy an ordering here would otherwise
+		// serve the filtered index as the whole table.
+		if pmi, isImpl := pm.(*PartialMatchImpl); isImpl {
+			if vc, isSparse := pm.GetMatchCandidate().(*ValueIndexScanMatchCandidate); isSparse && vc.predicateProto != nil {
+				tr := vc.GetTraversal()
+				if tr == nil || pmi.GetCandidateRef() != tr.GetRootReference() {
+					continue
+				}
+			}
+		}
 		topToTopTranslationMap, ok := computeTopToTopTranslationMapMaybe(pm)
 		if !ok {
 			// Java skips a match whose result cannot be expressed at the
@@ -518,6 +540,12 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 	}
 	stamped := idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
 	if valueCandidate, ok := cand.(*ValueIndexScanMatchCandidate); ok {
+		if valueCols := valueCandidate.GetValueColumnNames(); len(valueCols) > 0 {
+			// The KeyWithValue VALUE part rides onto the plan so the covering
+			// rules can extend the covered surface and the executor knows to
+			// read these columns from the entry VALUE tuple.
+			stamped = stamped.WithValueColumnNames(valueCols)
+		}
 		if _, safe := valueCandidate.plainFieldColumnsForShortcut(); !safe {
 			// RecordQueryIndexPlan currently carries only flat column names,
 			// not semantic key Values. Keep expression-key names for physical

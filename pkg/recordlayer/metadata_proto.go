@@ -353,6 +353,15 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 	return fi, nil
 }
 
+// LiteralToProtoValue serializes a Go literal into the key-expression Value
+// proto encoding — Java's LiteralKeyExpression.toProtoValue
+// (LiteralKeyExpression.java:176-197). Exported for the index-predicate
+// producer (RFC-202 S5): a SimpleComparison's operand is stored in exactly
+// this encoding (IndexComparison.java:253).
+func LiteralToProtoValue(v any) (*gen.Value, error) {
+	return valueToProto(v)
+}
+
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
 func valueToProto(v any) (*gen.Value, error) {

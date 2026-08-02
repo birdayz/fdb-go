@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -39,38 +42,87 @@ func requireUnsupported(t *testing.T, ddl, wantSubstr string) {
 	}
 }
 
-// TestDDLRejectsOnSourceOrderClause pins the ON-source per-column ASC/DESC/NULLS
-// rejection.
-//
-// Java wraps an ordered column in an OrderFunctionKeyExpression —
-// `on t(a desc)` becomes function("order_desc_nulls_last", field("a")), whose
-// entry bytes are the order-inverted encoding — while this layer read only the
-// column name and built a plain ASCENDING index. Sixteen corpus statements
-// carry the shape; the sub-tests below are verbatim from three of them.
-func TestDDLRejectsOnSourceOrderClause(t *testing.T) {
+// TestDDLHonorsOnSourceOrderClause is the RETIRED form of the S0 ON-source
+// per-column ASC/DESC/NULLS rejection: the ON-source front end (RFC-202 S6)
+// now routes through the generator, which wraps an ordered column in an
+// OrderFunctionKeyExpression exactly as Java does — `on t(a desc)` builds
+// function("order_desc_nulls_last", field("a")), whose entry bytes are the
+// order-inverted encoding (OrderFunctionKeyExpressionFactory.java:44-48).
+// Sixteen corpus statements carry the shape; the sub-tests below are verbatim
+// from three of them, and each pins the exact root key expression.
+func TestDDLHonorsOnSourceOrderClause(t *testing.T) {
 	t.Parallel()
 	const table = `CREATE TABLE products (pk integer, category string, price integer, rating integer,
 		supplier string, stock integer, name string, PRIMARY KEY (pk))
 		`
-	cases := []struct{ name, index string }{
+	cases := []struct {
+		name, indexName, index string
+		want                   recordlayer.KeyExpression
+	}{
 		// documentation-queries/index-documentation-queries.yamsql:19-23
-		{"desc_and_asc", `CREATE INDEX idx_on_category_desc ON products(category desc, price asc)`},
-		{"asc_nulls_last", `CREATE INDEX idx_on_rating_nulls_last ON products(rating asc nulls last)`},
-		{"desc_nulls_first", `CREATE INDEX idx_on_supplier_desc_nulls_first ON products(supplier desc nulls first)`},
-		// A bare NULLS clause with no ASC/DESC is still an orderClause: Java maps
-		// it to ASCENDING_NULLS_LAST and emits order_asc_nulls_last, so dropping
-		// it diverges exactly as DESC does.
-		{"bare_nulls_last", `CREATE INDEX idx_on_stock_nulls_last ON products(stock nulls last)`},
-		{"mixed_three_columns", `CREATE INDEX idx_on_complex ON products(category asc nulls first, price desc nulls last, name asc)`},
-		// index-ddl.yamsql:62 — the order clause on a NON-leading column must be
-		// caught too. A guard that inspected only the first column would pass
-		// this while still building the wrong index.
-		{"order_on_trailing_column", `CREATE INDEX idx_iot_asc_desc ON products(price, category desc)`},
+		{
+			"desc_and_asc", "IDX_ON_CATEGORY_DESC",
+			`CREATE INDEX idx_on_category_desc ON products(category desc, price asc)`,
+			recordlayer.Concat(
+				recordlayer.FunctionExpr(recordlayer.OrderFuncDescNullsLast, recordlayer.Field("CATEGORY")),
+				recordlayer.Field("PRICE")),
+		},
+		{
+			"asc_nulls_last", "IDX_ON_RATING_NULLS_LAST",
+			`CREATE INDEX idx_on_rating_nulls_last ON products(rating asc nulls last)`,
+			recordlayer.FunctionExpr(recordlayer.OrderFuncAscNullsLast, recordlayer.Field("RATING")),
+		},
+		{
+			"desc_nulls_first", "IDX_ON_SUPPLIER_DESC_NULLS_FIRST",
+			`CREATE INDEX idx_on_supplier_desc_nulls_first ON products(supplier desc nulls first)`,
+			recordlayer.FunctionExpr(recordlayer.OrderFuncDescNullsFirst, recordlayer.Field("SUPPLIER")),
+		},
+		// A bare NULLS clause with no ASC/DESC is still an orderClause: Java
+		// maps it to ASCENDING_NULLS_LAST (parseColSpec's DESC() is null, the
+		// NULLS token decides) and emits order_asc_nulls_last.
+		{
+			"bare_nulls_last", "IDX_ON_STOCK_NULLS_LAST",
+			`CREATE INDEX idx_on_stock_nulls_last ON products(stock nulls last)`,
+			recordlayer.FunctionExpr(recordlayer.OrderFuncAscNullsLast, recordlayer.Field("STOCK")),
+		},
+		// Explicit ASC NULLS FIRST is the default — no wrapper, exactly like
+		// no clause (Java maps ASCENDING to a null ordering function).
+		{
+			"mixed_three_columns", "IDX_ON_COMPLEX",
+			`CREATE INDEX idx_on_complex ON products(category asc nulls first, price desc nulls last, name asc)`,
+			recordlayer.Concat(
+				recordlayer.Field("CATEGORY"),
+				recordlayer.FunctionExpr(recordlayer.OrderFuncDescNullsLast, recordlayer.Field("PRICE")),
+				recordlayer.Field("NAME")),
+		},
+		// index-ddl.yamsql:62 — the order clause on a NON-leading column: a
+		// front end that read only the first column's clause would build a
+		// plain trailing field here.
+		{
+			"order_on_trailing_column", "IDX_IOT_ASC_DESC",
+			`CREATE INDEX idx_iot_asc_desc ON products(price, category desc)`,
+			recordlayer.Concat(
+				recordlayer.Field("PRICE"),
+				recordlayer.FunctionExpr(recordlayer.OrderFuncDescNullsLast, recordlayer.Field("CATEGORY"))),
+		},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			requireUnsupported(t, table+c.index, "per-column ordering")
+			tmpl, err := buildSchemaTemplateFromDDL(table + c.index)
+			if err != nil {
+				t.Fatalf("an ordered ON-source index must build through the generator: %v", err)
+			}
+			idx := tmpl.Underlying().GetIndex(c.indexName)
+			if idx == nil {
+				t.Fatalf("%s was not built", c.indexName)
+			}
+			if !proto.Equal(idx.RootExpression.ToKeyExpression(), c.want.ToKeyExpression()) {
+				t.Errorf("%s root = %v, want %v — the order clause selects the exact "+
+					"OrderFunctionKeyExpression wrapper Java stores", c.indexName,
+					idx.RootExpression.ToKeyExpression(), c.want.ToKeyExpression())
+			}
 		})
 	}
 }
@@ -118,30 +170,42 @@ func TestDDLRejectsVectorIndexOrderClause(t *testing.T) {
 	})
 }
 
-// TestDDLRejectsAsSelectIndexAttributes pins the LEGACY_EXTREMUM_EVER rejection.
-//
-// Java reads the attribute and emits MIN_EVER_LONG / MAX_EVER_LONG — a
-// different index type with a different maintainer writing a packed long rather
-// than a tuple — while this layer mapped MIN_EVER/MAX_EVER unconditionally to
-// the TUPLE variants, so the attribute changed nothing. Four corpus statements
-// carry the shape and all four were accepted and mis-built; the sub-tests are
-// verbatim from them, including the lower-case spelling.
-func TestDDLRejectsAsSelectIndexAttributes(t *testing.T) {
+// TestDDLHonorsAsSelectIndexAttributes is the RETIRED form of the S0
+// LEGACY_EXTREMUM_EVER rejection: the aggregate arm (RFC-202 S3) now reads
+// the attribute and emits MIN_EVER_LONG / MAX_EVER_LONG — the different index
+// type with the different maintainer writing a packed long rather than a
+// tuple (MaterializedViewIndexGenerator.java:449-465). Four corpus statements
+// carry the shape; the sub-tests are verbatim from them, including the
+// lower-case spelling.
+func TestDDLHonorsAsSelectIndexAttributes(t *testing.T) {
 	t.Parallel()
 	const table = `CREATE TABLE t1 (pk integer, col1 integer, col2 integer, PRIMARY KEY (pk))
 		`
-	cases := []struct{ name, index string }{
+	cases := []struct{ name, indexName, wantType, index string }{
 		// aggregate-index-tests.yamsql:39-40
-		{"min_ever_upper", `CREATE INDEX mv12 AS SELECT min_ever(col2) FROM t1 GROUP BY col1 with attributes LEGACY_EXTREMUM_EVER`},
-		{"max_ever_upper", `CREATE INDEX mv13 AS SELECT max_ever(col2) FROM t1 GROUP BY col1 with attributes LEGACY_EXTREMUM_EVER`},
+		{"min_ever_upper", "MV12", "min_ever_long", `CREATE INDEX mv12 AS SELECT min_ever(col2) FROM t1 GROUP BY col1 with attributes LEGACY_EXTREMUM_EVER`},
+		{"max_ever_upper", "MV13", "max_ever_long", `CREATE INDEX mv13 AS SELECT max_ever(col2) FROM t1 GROUP BY col1 with attributes LEGACY_EXTREMUM_EVER`},
 		// index-ddl.yamsql:82-83 spell the attribute in lower case.
-		{"min_ever_lower", `CREATE INDEX idx_mv_age_min_extremum AS SELECT min_ever(col2) FROM t1 GROUP BY col1 with attributes legacy_extremum_ever`},
-		{"max_ever_lower", `CREATE INDEX idx_mv_age_max_extremum AS SELECT max_ever(col2) FROM t1 GROUP BY col1 with attributes legacy_extremum_ever`},
+		{"min_ever_lower", "IDX_MV_AGE_MIN_EXTREMUM", "min_ever_long", `CREATE INDEX idx_mv_age_min_extremum AS SELECT min_ever(col2) FROM t1 GROUP BY col1 with attributes legacy_extremum_ever`},
+		{"max_ever_lower", "IDX_MV_AGE_MAX_EXTREMUM", "max_ever_long", `CREATE INDEX idx_mv_age_max_extremum AS SELECT max_ever(col2) FROM t1 GROUP BY col1 with attributes legacy_extremum_ever`},
 	}
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			requireUnsupported(t, table+c.index, "WITH ATTRIBUTES")
+			tmpl, err := buildSchemaTemplateFromDDL(table + c.index)
+			if err != nil {
+				t.Fatalf("LEGACY_EXTREMUM_EVER must be honored by the aggregate arm: %v", err)
+			}
+			idx := tmpl.Underlying().GetIndex(c.indexName)
+			if idx == nil {
+				t.Fatalf("%s was not built", c.indexName)
+			}
+			if idx.Type != c.wantType {
+				t.Errorf("index type = %q, want %q — the attribute selects the LONG-based "+
+					"extremum maintainer; the tuple type here means the attribute was silently dropped",
+					idx.Type, c.wantType)
+			}
 		})
 	}
 }
@@ -189,61 +253,122 @@ func TestDDLRejectsAsSelectUniqueAndWhere(t *testing.T) {
 	const table = `CREATE TABLE t1 (pk integer, col1 integer, col2 integer, PRIMARY KEY (pk))
 		`
 	t.Run("unique_on_aggregate", func(t *testing.T) {
+		// RETIRED rejection: the aggregate arm (RFC-202 S3) routes the
+		// definition through the generator, and UNIQUE is the caller's flag
+		// exactly as in Java (DdlVisitor.java:215 → generate(…, isUnique, …)).
 		t.Parallel()
-		requireUnsupported(t, table+
-			`CREATE UNIQUE INDEX mvu AS SELECT min_ever(col2) FROM t1 GROUP BY col1`,
-			"UNIQUE")
+		tmpl, err := buildSchemaTemplateFromDDL(table +
+			`CREATE UNIQUE INDEX mvu AS SELECT min_ever(col2) FROM t1 GROUP BY col1`)
+		if err != nil {
+			t.Fatalf("UNIQUE on an aggregate AS-SELECT index must be supported by the generator: %v", err)
+		}
+		idx := tmpl.Underlying().GetIndex("MVU")
+		if idx == nil {
+			t.Fatal("MVU was not built")
+		}
+		if !idx.IsUnique() {
+			t.Error("UNIQUE dropped — the exact silent drop this test was born to prevent")
+		}
+		if idx.Type != "min_ever_tuple" {
+			t.Errorf("index type = %q, want min_ever_tuple", idx.Type)
+		}
 	})
 	t.Run("where_on_aggregate", func(t *testing.T) {
+		// RETIRED rejection: the predicate arm (RFC-202 S5) attaches the
+		// WHERE before the value/aggregate split, exactly as Java does
+		// (MaterializedViewIndexGenerator.java:169-174) — a sparse aggregate
+		// index stores its predicate.
 		t.Parallel()
-		requireUnsupported(t, table+
-			`CREATE INDEX mvw AS SELECT min_ever(col2) FROM t1 WHERE col1 > 3 GROUP BY col1`,
-			"WHERE clause")
+		tmpl, err := buildSchemaTemplateFromDDL(table +
+			`CREATE INDEX mvw AS SELECT min_ever(col2) FROM t1 WHERE col1 > 3 GROUP BY col1`)
+		if err != nil {
+			t.Fatalf("WHERE on an aggregate AS-SELECT index must build through the predicate arm: %v", err)
+		}
+		idx := tmpl.Underlying().GetIndex("MVW")
+		if idx == nil {
+			t.Fatal("MVW was not built")
+		}
+		if idx.GetPredicateProto() == nil {
+			t.Error("WHERE dropped from the aggregate index — a FULL aggregate maintained where Java maintains a sparse one")
+		}
 	})
 	t.Run("unique_on_cardinality", func(t *testing.T) {
+		// RETIRED rejection: the AS-SELECT value arm (RFC-202 S2) routes a
+		// cardinality index through the generator, which carries UNIQUE into
+		// the index options exactly as Java does (DdlVisitor.java:215). The
+		// pin flips from "fail closed" to "supported and honored".
 		t.Parallel()
-		requireUnsupported(t,
+		tmpl, err := buildSchemaTemplateFromDDL(
 			`CREATE TABLE tab (id integer, int_arr integer array null, PRIMARY KEY (id))
-			 CREATE UNIQUE INDEX tab_card AS SELECT CARDINALITY(int_arr) AS card FROM tab ORDER BY card`,
-			"UNIQUE")
+			 CREATE UNIQUE INDEX tab_card AS SELECT CARDINALITY(int_arr) AS card FROM tab ORDER BY card`)
+		if err != nil {
+			t.Fatalf("UNIQUE on a cardinality value index must be supported by the generator: %v", err)
+		}
+		idx := tmpl.Underlying().GetIndex("TAB_CARD")
+		if idx == nil {
+			t.Fatal("TAB_CARD was not built")
+		}
+		if !idx.IsUnique() {
+			t.Error("UNIQUE dropped — the exact silent drop this test was born to prevent")
+		}
 	})
 	t.Run("where_on_cardinality", func(t *testing.T) {
+		// RETIRED rejection: the predicate arm (RFC-202 S5) serializes the
+		// WHERE into the index metadata (MaterializedViewIndexGenerator.java:169-172)
+		// — the pin flips from "fail closed" to "supported and stored".
 		t.Parallel()
-		requireUnsupported(t,
+		tmpl, err := buildSchemaTemplateFromDDL(
 			`CREATE TABLE tab (id integer, x integer, int_arr integer array null, PRIMARY KEY (id))
-			 CREATE INDEX tab_card AS SELECT CARDINALITY(int_arr) AS card FROM tab WHERE x > 3 ORDER BY card`,
-			"WHERE clause")
+			 CREATE INDEX tab_card AS SELECT CARDINALITY(int_arr) AS card FROM tab WHERE x > 3 ORDER BY card`)
+		if err != nil {
+			t.Fatalf("WHERE on a cardinality value index must build through the predicate arm: %v", err)
+		}
+		idx := tmpl.Underlying().GetIndex("TAB_CARD")
+		if idx == nil {
+			t.Fatal("TAB_CARD was not built")
+		}
+		if idx.GetPredicateProto() == nil {
+			t.Error("WHERE dropped — a FULL index built where Java builds a sparse one")
+		}
 	})
 }
 
-// TestDDLValueIndexGapPrecedesDroppedClauseGuard pins the ORDER the two
-// rejections fire in, which is what keeps the corpus ledger meaningful.
-//
-// A value index written in AS-SELECT form that ALSO carries UNIQUE or WHERE has
-// two reasons to be refused. It must report the value-index gap, because that
-// is the capability whose absence blocks the file — the corpus books ~42 files
-// under that class, and several carry a WHERE. Were the dropped-clause guard to
-// run first, those files would silently re-bucket and the gap's measured size
-// would shrink for no reason anyone had changed.
-func TestDDLValueIndexGapPrecedesDroppedClauseGuard(t *testing.T) {
+// TestDDLValueIndexUniqueAndSparseAfterGenerator pins the S2-era successors
+// of the S0 ordering pin. The value-index gap this test used to bucket by is
+// CLOSED (RFC-202 S2): a non-aggregate AS-SELECT index now builds through the
+// generator, so the two shapes that used to share one rejection diverge —
+// UNIQUE is honored (index-ddl.yamsql IDX_MV_UNIQUE_PROFESSION), and WHERE —
+// fail-closed until the predicate arm landed (RFC-202 S5) — now builds a
+// sparse index whose predicate is stored (sparse-index-tests.yamsql shapes).
+func TestDDLValueIndexUniqueAndSparseAfterGenerator(t *testing.T) {
 	t.Parallel()
-	// index-ddl.yamsql:70 and sparse-index-tests.yamsql shapes: non-aggregate
-	// AS-SELECT carrying UNIQUE / WHERE respectively.
-	for _, ddl := range []string{
+	tmpl, err := buildSchemaTemplateFromDDL(
 		`CREATE TABLE t1 (pk integer, profession string, PRIMARY KEY (pk))
-		 CREATE UNIQUE INDEX idx_mv_unique_profession AS SELECT profession FROM t1 ORDER BY profession`,
+		 CREATE UNIQUE INDEX idx_mv_unique_profession AS SELECT profession FROM t1 ORDER BY profession`)
+	if err != nil {
+		t.Fatalf("a UNIQUE value AS-SELECT index must build through the generator: %v", err)
+	}
+	idx := tmpl.Underlying().GetIndex("IDX_MV_UNIQUE_PROFESSION")
+	if idx == nil {
+		t.Fatal("IDX_MV_UNIQUE_PROFESSION was not built")
+	}
+	if !idx.IsUnique() {
+		t.Error("UNIQUE dropped from the generated value index")
+	}
+
+	// RETIRED rejection (RFC-202 S5): the WHERE now builds a SPARSE index —
+	// the predicate is stored in the metadata, never silently dropped.
+	tmpl2, err := buildSchemaTemplateFromDDL(
 		`CREATE TABLE t1 (pk integer, p integer, PRIMARY KEY (pk))
-		 CREATE INDEX mv1 AS SELECT p FROM t1 WHERE p > 10 ORDER BY p`,
-	} {
-		_, err := buildSchemaTemplateFromDDL(ddl)
-		if err == nil {
-			t.Fatalf("expected a rejection\nDDL: %s", ddl)
-		}
-		const want = "select element must contain an aggregate function"
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("rejection must name the value-index gap, not the dropped clause — the corpus "+
-				"ledger buckets these files by this message and re-bucketing them would silently "+
-				"shrink unsupported-DDL:value-index-as-select.\n got: %v\nwant substring: %q", err, want)
-		}
+		 CREATE INDEX mv1 AS SELECT p FROM t1 WHERE p > 10 ORDER BY p`)
+	if err != nil {
+		t.Fatalf("a WHERE (sparse) value index must build through the predicate arm: %v", err)
+	}
+	sparse := tmpl2.Underlying().GetIndex("MV1")
+	if sparse == nil {
+		t.Fatal("MV1 was not built")
+	}
+	if sparse.GetPredicateProto() == nil {
+		t.Error("WHERE dropped — a FULL index built holding entries Java's sparse index deliberately omits")
 	}
 }

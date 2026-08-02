@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ddl",
+    srcs = [
+        "generator.go",
+        "generator_aggregate.go",
+        "generator_predicate.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/core/query/ddl",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+        "//pkg/relational/core/query/logical",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
+
+go_test(
+    name = "ddl_test",
+    srcs = ["generator_guard_test.go"],
+    embed = [":ddl"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/query/logical",
+    ],
+)

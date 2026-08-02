@@ -213,3 +213,33 @@ func (e *PartlyBuiltError) Error() string {
 	return fmt.Sprintf("index %q: %s (saved=%s, expected=%s)",
 		e.IndexName, e.Message, e.SavedStamp, e.ExpectedStamp)
 }
+
+// IncompleteVersionstampError is returned when a tuple carrying an INCOMPLETE
+// versionstamp reaches an encoder that can only write a complete one.
+//
+// The Java counterpart is the IllegalArgumentException thrown by
+// TupleOrdering.packNullsLast (TupleOrdering.java:178) and by Tuple.pack, whose
+// message this reproduces verbatim. Java THROWS; the Go port used to reach the
+// same condition through tuple.Pack, which PANICS — a library-boundary crash
+// where Java hands the caller a recoverable failure. Every site that can put a
+// versionstamp in front of a vanilla pack returns this instead.
+//
+// Reachable from ordinary DDL: an index whose version column lands in the VALUE
+// portion of a KeyWithValue split, or one that wraps the version in an ordering
+// function. Both metadata shapes are what Java's own index generator emits (see
+// IndexTest.java createVersionIndexWithVersionInValue), so the shapes cannot be
+// rejected at DDL without diverging on index metadata — the failure belongs at
+// the write, exactly where Java puts it.
+type IncompleteVersionstampError struct {
+	// Context names the encoder that refused, e.g. the index whose entry was
+	// being written.
+	Context string
+}
+
+func (e *IncompleteVersionstampError) Error() string {
+	const msg = "Incomplete Versionstamp included in vanilla tuple pack"
+	if e.Context == "" {
+		return msg
+	}
+	return e.Context + ": " + msg
+}
