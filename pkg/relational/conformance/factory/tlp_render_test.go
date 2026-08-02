@@ -2,8 +2,10 @@ package factory_test
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/factory"
@@ -26,28 +28,60 @@ import (
 func TestTLPRenderingsPlan(t *testing.T) {
 	t.Parallel()
 
+	// Seeds are planned concurrently. Each rendering is an independent planner
+	// call — the entry point's package state was removed so parallel tests
+	// could share it — and planning ~1600 of them serially under -race put this
+	// target at the edge of its Bazel budget, where box variance alone decided
+	// whether the lane was red.
 	perLabel := map[string]int{}
 	failures := map[string]int{}
 	var samples []string
-	for seed := uint64(1); seed <= 40; seed++ {
-		for _, cand := range factory.Candidates(seed) {
-			ddl := cand.Case.DDL()
-			for i, q := range cand.TLPQueries() {
-				sqlText := cand.Case.SQL(q, cand.Projection)
-				label := factory.TLPLabels[i]
-				perLabel[label]++
-				if i == 3 && !strings.Contains(sqlText, ") IS NULL") {
-					t.Fatalf("seed %d %s: the p-is-null rendering lacks `) IS NULL`: %s", seed, cand.Name(), sqlText)
-				}
-				if _, err := embedded.PlanPhysicalForTest(sqlText, ddl, nil); err != nil {
-					failures[label]++
-					if len(samples) < 3 {
-						samples = append(samples, fmt.Sprintf("seed %d %s: %v\n  SQL: %s", seed, label, err, sqlText))
+	var mu sync.Mutex
+
+	workers := min(runtime.GOMAXPROCS(0), 4)
+	seeds := make(chan uint64)
+	go func() {
+		defer close(seeds)
+		for seed := uint64(1); seed <= 40; seed++ {
+			seeds <- seed
+		}
+	}()
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for seed := range seeds {
+				for _, cand := range factory.Candidates(seed) {
+					ddl := cand.Case.DDL()
+					for i, q := range cand.TLPQueries() {
+						sqlText := cand.Case.SQL(q, cand.Projection)
+						label := factory.TLPLabels[i]
+						// A Fatal here would exit only this goroutine and let
+						// the run report a pass on renderings never checked.
+						missingIsNull := i == 3 && !strings.Contains(sqlText, ") IS NULL")
+						_, planErr := embedded.PlanPhysicalForTest(sqlText, ddl, nil)
+
+						mu.Lock()
+						perLabel[label]++
+						if missingIsNull {
+							t.Errorf("seed %d %s: the p-is-null rendering lacks `) IS NULL`: %s",
+								seed, cand.Name(), sqlText)
+						}
+						if planErr != nil {
+							failures[label]++
+							if len(samples) < 3 {
+								samples = append(samples,
+									fmt.Sprintf("seed %d %s: %v\n  SQL: %s", seed, label, planErr, sqlText))
+							}
+						}
+						mu.Unlock()
 					}
 				}
 			}
-		}
+		}()
 	}
+	wg.Wait()
 
 	labels := make([]string, 0, len(perLabel))
 	for l := range perLabel {

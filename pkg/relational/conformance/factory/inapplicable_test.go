@@ -78,6 +78,33 @@ func TestUnpinnedFamiliesAreRefused(t *testing.T) {
 	if got := inapplicableForIn(predicateless, cand); got != nil {
 		t.Fatalf("an entry with no predicate matched (family %q)", got.Family)
 	}
+
+	// The gate the pipeline calls must be the SAME gate, or the two checks
+	// above prove nothing about the execute path — they would pass just as
+	// happily if secondPlanInapplicableFor had grown its own copy of the rules.
+	//
+	// Comparing on a candidate the ledger does not claim would agree vacuously,
+	// both sides nil, so this insists on one it does. Seed 1's first candidate
+	// is not such a candidate, which is exactly how a vacuous version of this
+	// check reads as passing.
+	var matching Candidate
+	var found bool
+	for seed := uint64(1); seed <= 80 && !found; seed++ {
+		for _, c := range Candidates(seed) {
+			if inapplicableForIn(secondPlanInapplicable, c) != nil {
+				matching, found = c, true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no candidate in 80 seeds is claimed by the committed ledger; this check would have compared " +
+			"two nils and proved nothing about the execute path")
+	}
+	if got, want := secondPlanInapplicableFor(matching), inapplicableForIn(secondPlanInapplicable, matching); got != want {
+		t.Fatalf("secondPlanInapplicableFor(%s) = %v, but the gate under test says %v; the execute path does "+
+			"not consult the ledger through the gate these checks exercise", matching.Name(), got, want)
+	}
 }
 
 // TestInapplicabilityMatchesOnTheSpecNotTheRun pins that membership is decided

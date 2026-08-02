@@ -3,6 +3,9 @@ package factory_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/explaindiff"
@@ -36,19 +39,64 @@ func TestFactoryDeterminism(t *testing.T) {
 	// Candidates() is called once per seed and the result reused, both because
 	// it is the expensive part and because doing it that way proves the
 	// per-seed derivation is stable across the candidates that share it.
-	bySeed := map[uint64][]factory.Candidate{}
-	checked := 0
+	//
+	// Bucketing by seed is what lets the check run concurrently while KEEPING
+	// that property: a seed's files all land in one bucket, so they still share
+	// one Candidates() call, and no cache is shared across workers. The work is
+	// a plan per committed file, which is why this target used to sit at ~99%
+	// of its Bazel budget under -race and time out on any box variance; the
+	// planning entry point is safe to call concurrently, its package state
+	// having been removed precisely so parallel tests could share it.
+	bySeed := map[uint64][]*factorycorpus.Scenario{}
+	order := make([]uint64, 0, len(files))
 	for _, f := range files {
+		s := f.Header.Seed
+		if _, ok := bySeed[s]; !ok {
+			order = append(order, s)
+		}
+		bySeed[s] = append(bySeed[s], f)
+	}
+
+	var checkedN atomic.Int64
+	workers := min(runtime.GOMAXPROCS(0), 4)
+	next := make(chan uint64)
+	go func() {
+		defer close(next)
+		for _, s := range order {
+			next <- s
+		}
+	}()
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for seed := range next {
+				checkSeed(t, factory.Candidates(seed), bySeed[seed], &checkedN)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if checkedN.Load() == 0 {
+		t.Fatal("zero committed files were regenerated — this gate is vacuous")
+	}
+	t.Logf("regenerated %d committed files from %d seeds", checkedN.Load(), len(bySeed))
+}
+
+// checkSeed regenerates every committed file derived from one seed.
+//
+// It reports with t.Errorf and never t.Fatalf: it runs on a worker goroutine,
+// where a Fatal would exit only that goroutine and let the run report a pass
+// on a check that never finished.
+func checkSeed(t *testing.T, cands []factory.Candidate, group []*factorycorpus.Scenario, checked *atomic.Int64) {
+	t.Helper()
+	for _, f := range group {
 		h := f.Header
 		if h.Generator != factory.GeneratorVersion {
 			t.Errorf("%s: generator %q, this build is %q. A generator version bump must come with a re-blessed batch, "+
 				"or the committed reproduction recipes no longer reproduce", f.Path, h.Generator, factory.GeneratorVersion)
 			continue
-		}
-		cands, ok := bySeed[h.Seed]
-		if !ok {
-			cands = factory.Candidates(h.Seed)
-			bySeed[h.Seed] = cands
 		}
 		var cand *factory.Candidate
 		for i := range cands {
@@ -104,13 +152,8 @@ func TestFactoryDeterminism(t *testing.T) {
 		if key := factorycorpus.DedupKeyOf(cand.FeatureVector, shape); key != h.DedupKey {
 			t.Errorf("%s: dedup key drifted (header %s, now %s)", f.Path, h.DedupKey, key)
 		}
-		checked++
+		checked.Add(1)
 	}
-
-	if checked == 0 {
-		t.Fatal("zero committed files were regenerated — this gate is vacuous")
-	}
-	t.Logf("regenerated %d committed files from %d seeds", checked, len(bySeed))
 }
 
 // TestCommittedFilesAreCanonical pins that every committed file is exactly
