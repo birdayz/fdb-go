@@ -288,7 +288,21 @@ type stoppedCursor[T any] struct {
 // NoNextReason and continuation. reason must be a genuine stop reason and, per
 // RecordCursor's contract (RecordCursor.java:212-215), anything other than
 // SourceExhausted must carry a NON-end continuation so the caller can resume.
+//
+// The precondition is checked HERE and not left to NewResultNoNext at pull time.
+// Java validates in RecordCursorResult.withoutNextValue (RecordCursorResult.java:252-258),
+// where deciding the stop and reporting it are the same instant. A cursor splits
+// those apart: a violation built here would otherwise surface as a panic from
+// whichever parent happened to pull it, naming a stack that does not contain the
+// mistake. A misbuilt stop is a programming error either way — this only decides
+// whether the failure names its author.
 func Stopped[T any](reason NoNextReason, continuation RecordCursorContinuation) RecordCursor[T] {
+	if continuation == nil {
+		panic("Stopped requires a resumable continuation, got nil")
+	}
+	// Delegating rather than re-deriving keeps the two checks from drifting:
+	// this is the same validation the result will run on every pull.
+	_ = NewResultNoNext[T](reason, continuation)
 	return &stoppedCursor[T]{reason: reason, continuation: continuation}
 }
 
