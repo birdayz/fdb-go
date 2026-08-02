@@ -11,7 +11,7 @@ require (
 	// Local dev still builds the working tree via the repo-root go.work; the frl
 	// pin-bump bot advances this nightly, and the GOWORK=off release build fails
 	// loudly on a stale pin, so it can never ship broken.
-	fdb.dev v0.0.0-20260731235229-723c2ea2f9d5
+	fdb.dev v0.0.0-20260801211157-51d9e9701bbc
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/chzyer/readline v1.5.1
