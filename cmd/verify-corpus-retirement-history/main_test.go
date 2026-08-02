@@ -795,6 +795,60 @@ func TestAdditiveFamilyAppendNeedsNoLedger(t *testing.T) {
 	}
 }
 
+// TestRunToleratesTheBaseBranchMovingAfterTheMergeCommit pins the gate against
+// a RACE, not against a malformed change.
+//
+// CI evaluates a pull request on a merge commit that GitHub builds at trigger
+// time. The base branch keeps moving afterwards, so by the time this gate runs
+// the base TIP is frequently no longer an ancestor of that merge commit. A gate
+// anchored to the tip therefore rejects changes that did nothing wrong, at
+// random, depending on how busy the base branch is — which is worse than no
+// gate, because a check that fails for unrelated reasons trains everyone to
+// re-run it without reading it.
+//
+// The anchor is the merge base: the base AS THIS CHANGE SEES IT. Nothing is
+// lost. Ledgers present at the fork point are still immutable here; ledgers
+// added to the base afterwards are not in this change's history, so this change
+// cannot have touched them.
+func TestRunToleratesTheBaseBranchMovingAfterTheMergeCommit(t *testing.T) {
+	t.Parallel()
+	repo := newHistoryTestRepo(t)
+	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000001_q0_p0")),
+		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "base")
+	baseBranch := gitForTest(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	forkPoint := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	// The change: a purely additive corpus growth on its own branch.
+	gitForTest(t, repo, "checkout", "--quiet", "-b", "change")
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000002_q0_p0")),
+		historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=added"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "add a scenario")
+
+	// The merge commit CI actually evaluates, built against the fork point.
+	gitForTest(t, repo, "checkout", "--quiet", forkPoint)
+	gitForTest(t, repo, "merge", "--quiet", "--no-ff", "-m", "Merge change into base", "change")
+	mergeCommit := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	// The base branch moves on, exactly as a busy trunk does.
+	gitForTest(t, repo, "checkout", "--quiet", baseBranch)
+	writeHistoryFile(t, filepath.Join(repo, "unrelated.txt"), []byte("later base work\n"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "unrelated base movement")
+	movedTip := gitForTest(t, repo, "rev-parse", "HEAD")
+	gitForTest(t, repo, "checkout", "--quiet", mergeCommit)
+
+	if err := verifyBaseCommit(repo, movedTip, mergeCommit); err == nil {
+		t.Fatal("fixture is not exercising the race: the moved tip is still an ancestor of the merge commit")
+	}
+	if err := runAtRepo(repo, baseBranch); err != nil {
+		t.Fatalf("gate rejected an innocent change because the base branch moved: %v", err)
+	}
+}
+
 func newHistoryTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

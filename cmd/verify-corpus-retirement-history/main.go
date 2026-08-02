@@ -96,6 +96,24 @@ func runAtRepo(repoRoot, trustedRef string) error {
 	if err != nil {
 		return fmt.Errorf("resolve proposed HEAD: %w", err)
 	}
+	// The trusted commit is the base AS THIS CHANGE SEES IT, not the live tip
+	// of the base branch.
+	//
+	// Using the tip is a race, and it fires on innocent changes: CI evaluates a
+	// pull request against a merge commit built at trigger time, and the base
+	// branch keeps moving afterwards. Minutes later the tip is no longer an
+	// ancestor of that merge commit, and the gate rejects a change that did
+	// nothing wrong. Observed exactly that way — the base gained three commits
+	// between the merge ref being built and this step running.
+	//
+	// The merge base is the right anchor and loses nothing. Ledgers that exist
+	// on the base at the fork point are still immutable and undeletable here;
+	// ledgers added to the base AFTER the fork point are not in this change's
+	// history at all, so this change cannot have altered them.
+	trustedCommit, err = mergeBaseCommit(repoRoot, trustedCommit, headCommit)
+	if err != nil {
+		return fmt.Errorf("locate the base this change forked from: %w", err)
+	}
 	if ancestryErr := verifyBaseCommit(repoRoot, trustedCommit, headCommit); ancestryErr != nil {
 		return fmt.Errorf("trusted commit must be an ancestor of proposed HEAD: %w", ancestryErr)
 	}
@@ -636,6 +654,23 @@ func resolveCommit(repoRoot, ref string) (string, error) {
 		return "", fmt.Errorf("git rev-parse: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// mergeBaseCommit returns the best common ancestor of the base branch and the
+// proposed HEAD. When HEAD already descends from the base tip this is the tip
+// itself, so the ordinary case is unchanged.
+func mergeBaseCommit(repoRoot, trustedCommit, headCommit string) (string, error) {
+	output, err := exec.Command(
+		"git", "-C", repoRoot, "merge-base", trustedCommit, headCommit,
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git merge-base: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	base := strings.TrimSpace(string(output))
+	if base == "" {
+		return "", fmt.Errorf("no common ancestor of %s and %s", trustedCommit, headCommit)
+	}
+	return base, nil
 }
 
 func verifyBaseCommit(repoRoot, baseCommit, trustedCommit string) error {
