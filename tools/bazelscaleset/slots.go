@@ -43,13 +43,41 @@ type remoteSlotConfig struct {
 
 // slotPool hands out a fixed pool of warm work-slots, one per concurrent runner.
 // At maxRunners=1 there is a single, always-warm slot. A slot marked unhealthy
-// (its host failed at launch) is skipped by take until its cooldown expires, so
-// a dead pool box shrinks capacity instead of black-holing every acquisition.
+// (its host failed at launch, or its runners keep exiting without ever taking a
+// job) is skipped by take until its cooldown expires, so a dead pool box shrinks
+// capacity instead of black-holing every acquisition.
 type slotPool struct {
 	mu             sync.Mutex
 	free           []*slot
 	all            []*slot
 	unhealthyUntil map[int]time.Time // slot index -> earliest revival time
+	noJobExits     map[int]int       // slot index -> consecutive runners that exited without a job
+}
+
+// Backoff bounds for a slot whose runners keep exiting without ever taking a
+// job. The first bench must outlast one idle long-poll (~50s), or the slot is
+// handed straight back on the very next HandleDesiredRunnerCount and the churn
+// continues at full rate; the cap keeps a permanently broken box at a trickle
+// while still letting it recover on its own once repaired.
+const (
+	noJobBackoffBase = time.Minute
+	noJobBackoffCap  = 10 * time.Minute
+)
+
+// noJobBackoff is the bench duration for the nth consecutive no-job exit on a
+// slot (n >= 1): exponential from noJobBackoffBase, clamped at noJobBackoffCap.
+func noJobBackoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	d := noJobBackoffBase
+	for range n - 1 {
+		d *= 2
+		if d >= noJobBackoffCap {
+			return noJobBackoffCap
+		}
+	}
+	return min(d, noJobBackoffCap)
 }
 
 // newSlotPool creates n slots under baseDir. Slot 0 (and any further slot beyond the
@@ -64,7 +92,7 @@ func newSlotPool(baseDir, runnerBase string, n int, remote remoteSlotConfig) (*s
 	// template (".../actions-runner/-slot0") — which would also make the clone recurse
 	// into the source. We want a sibling (".../actions-runner-slot0").
 	runnerBase = filepath.Clean(runnerBase)
-	p := &slotPool{unhealthyUntil: make(map[int]time.Time)}
+	p := &slotPool{unhealthyUntil: make(map[int]time.Time), noJobExits: make(map[int]int)}
 	for i := range n {
 		var s *slot
 		if i > 0 && i-1 < len(remote.hosts) {
@@ -237,6 +265,38 @@ func (p *slotPool) markUnhealthy(s *slot, until time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.unhealthyUntil[s.index] = until
+	p.free = append(p.free, s)
+}
+
+// markNoJobExit returns a slot whose runner exited without ever taking a job.
+// That is a launch that produced nothing — the runner reached exec but died
+// before it could serve work — so the slot is benched exactly as a launch
+// failure is, with the bench growing on each consecutive occurrence. Without
+// this the slot is handed straight back and relaunched identically, which is
+// how a box whose runner cannot start (an unreadable work-directory ancestor,
+// a corrupt runner install, an expired host credential) burns hundreds of
+// launches an hour while advertising capacity it does not have. It returns the
+// consecutive count and the bench duration so the caller can log both.
+func (p *slotPool) markNoJobExit(s *slot) (int, time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.noJobExits[s.index]++
+	n := p.noJobExits[s.index]
+	d := noJobBackoff(n)
+	p.unhealthyUntil[s.index] = time.Now().Add(d)
+	p.free = append(p.free, s)
+	return n, d
+}
+
+// markHealthy returns a slot to the pool and clears its accumulated failure
+// state — used when its runner actually served a job, which is the only proof
+// the slot works. Without the reset a slot that fails a few times and then
+// recovers would keep its escalated backoff forever.
+func (p *slotPool) markHealthy(s *slot) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.noJobExits, s.index)
+	delete(p.unhealthyUntil, s.index)
 	p.free = append(p.free, s)
 }
 
