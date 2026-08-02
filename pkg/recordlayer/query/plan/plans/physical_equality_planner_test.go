@@ -103,35 +103,33 @@ func TestPhysicalFloatOrdering_RawNaNRegionsStopUnsafeClaims(t *testing.T) {
 		t.Fatalf("known-NaN rich ordering keys = %#v, want none", got.GetKeys())
 	}
 
-	// An unbound or ordered FLOAT coordinate DOES claim its ordering on a
-	// value-index scan, because that plan enumerates a physical range set: it
-	// splits the coordinate into NULL, the numbers and the two NaN blocks and
-	// returns them in logical order. Claiming nothing here is what forced a
-	// full table scan plus a blocking in-memory sort.
-	for name, plan := range map[string]*RecordQueryIndexPlan{
-		"unbound":    mkIndex(nil),
-		"inequality": mkIndex([]*predicates.ComparisonRange{lessRange.Range}),
-	} {
-		name, plan := name, plan
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			if got := plan.HintOrdering(); len(got.Keys) == 0 {
-				t.Fatalf("%s ordering = %#v, want the FLOAT coordinate ordered; "+
-					"a range-set scan delivers it in logical order", name, got)
-			}
-			if got := plan.HintRichOrdering(); len(got.GetKeys()) == 0 {
-				t.Fatalf("%s rich ordering keys = none, want the FLOAT coordinate ordered", name)
-			}
-		})
+	// A BOUND ordered FLOAT coordinate claims its ordering: the comparison binds
+	// an exact physical range set, so the scan enumerates the qualifying blocks
+	// and returns them in logical order.
+	inequality := mkIndex([]*predicates.ComparisonRange{lessRange.Range})
+	if got := inequality.HintOrdering(); len(got.Keys) == 0 {
+		t.Fatalf("inequality ordering = %#v, want the FLOAT coordinate ordered; "+
+			"a bound range-set scan delivers it in logical order", got)
+	}
+	if got := inequality.HintRichOrdering(); len(got.GetKeys()) == 0 {
+		t.Fatalf("inequality rich ordering keys = none, want the FLOAT coordinate ordered")
 	}
 
-	// The AGGREGATE control. The same plan type built as an aggregate-index
-	// scan reads a pre-aggregated stream and cannot enumerate those blocks, so
-	// it must still claim nothing across an unbound FLOAT coordinate. If this
-	// ever passes, the capability test has been replaced by a type test.
-	aggregate := mkIndex(nil).WithPhysicalGroupingPrefixCount(1)
-	if got := aggregate.HintOrdering(); len(got.Keys) != 0 {
-		t.Fatalf("aggregate-index ordering = %#v, want none across an unbound FLOAT coordinate", got)
+	// An UNBOUND FLOAT coordinate claims nothing. Splitting an unbound
+	// coordinate into NULL / numbers / the two NaN blocks is representable, and
+	// was implemented, but it opened four ranges instead of one to buy an
+	// ordering that measurably nothing consumed: with the terminal-prefix rule
+	// in place the split changed no plan in the corpus, because an ordering that
+	// stops AT the float coordinate cannot carry a primary-key tie-breaker past
+	// it and a single-column float ORDER BY is satisfied without it. The cost
+	// was real and the benefit was zero, so the split is gone and the strict
+	// rule applies.
+	unbound := mkIndex(nil)
+	if got := unbound.HintOrdering(); len(got.Keys) != 0 {
+		t.Fatalf("unbound FLOAT ordering = %#v, want none", got)
+	}
+	if got := unbound.HintRichOrdering(); len(got.GetKeys()) != 0 {
+		t.Fatalf("unbound FLOAT rich ordering keys = %#v, want none", got.GetKeys())
 	}
 
 	nonzero := mkIndex([]*predicates.ComparisonRange{pkOrderingEq(t, float64(5))})

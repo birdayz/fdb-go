@@ -22,11 +22,11 @@ import (
 // and the sort has to stay. Every existing raw-NaN ordering test was
 // predicated, so this case looked covered while being wrong.
 //
-// The second dimension is MULTI-COLUMN. A float coordinate that is ordered
-// only because all NaNs are logically tied orders itself and scrambles its
-// successors: within the tie the next column comes back in NaN-payload order.
-// So `ORDER BY v` over a float index may drop its sort, while `ORDER BY v, w`
-// may not.
+// The second dimension is MULTI-COLUMN, and it is why the single-column case
+// below is no longer worth buying: a float coordinate ordered only because all
+// NaNs are logically tied orders itself and scrambles its successors, so
+// splitting the coordinate could never help `ORDER BY v, w` — only the narrow
+// `ORDER BY v`, which nothing measured.
 func TestUnpredicatedFloatOrderByRetainsItsSort(t *testing.T) {
 	t.Parallel()
 
@@ -55,8 +55,12 @@ func TestUnpredicatedFloatOrderByRetainsItsSort(t *testing.T) {
 			name:     "double index, single column",
 			ddl:      "CREATE TABLE TI (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) CREATE INDEX IDXV ON TI (v)",
 			sql:      "SELECT v FROM TI ORDER BY v",
-			wantSort: false,
-			why:      "an index scan binds a range set unconditionally and returns NULL/numbers/NaN blocks in logical order",
+			wantSort: true,
+			why: "the DELIBERATE loss. The scan could split this coordinate into NULL/numbers/" +
+				"the two NaN blocks and drop the sort, and briefly did; that cost four range " +
+				"opens on every float-suffixed scan and changed 0 of 2489 golden plans, so it " +
+				"was removed. Master does not elide it either. If this ever flips to false, the " +
+				"split is back and needs a measurable benefit to justify its cost",
 		},
 		{
 			name:     "double index, two columns",

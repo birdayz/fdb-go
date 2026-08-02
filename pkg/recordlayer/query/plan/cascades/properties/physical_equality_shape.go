@@ -624,7 +624,6 @@ func floatOrderedBounds(cr *predicates.ComparisonRange) (hasLow, hasHigh bool) {
 func keyOrderingCongruenceAt(
 	cr *predicates.ComparisonRange,
 	physicalType values.Type,
-	rangeSetCapable bool,
 ) keyOrderingCongruence {
 	if cr != nil && cr.IsEquality() {
 		component := PhysicalEqualityShapeForComponent(cr, physicalType, false)
@@ -662,12 +661,11 @@ func keyOrderingCongruenceAt(
 			return keyOrderingCongruence{}
 		}
 	}
-	// UNBOUND. Only a leaf that enumerates a physical range set splits the
-	// coordinate into NULL / numbers / the two NaN blocks and returns them in
-	// logical order, and even then the claim stops here.
-	if rangeSetCapable && (cr == nil || cr.IsEmpty()) {
-		return keyOrderingCongruence{Congruent: true, Terminal: true}
-	}
+	// UNBOUND: congruent for nobody. Nothing splits the negative-NaN block off
+	// the bottom of the key space, so a raw scan delivers logically-greatest
+	// rows first. The scan used to split it precisely so this could be claimed;
+	// that split was removed because it changed no plan anyone could measure
+	// and charged four range opens to every float-suffixed scan.
 	return keyOrderingCongruence{}
 }
 
@@ -679,46 +677,38 @@ func PhysicalKeyOrderingCongruent(
 	cr *predicates.ComparisonRange,
 	physicalType values.Type,
 ) bool {
-	return keyOrderingCongruenceAt(cr, physicalType, false).Congruent
+	return keyOrderingCongruenceAt(cr, physicalType).Congruent
 }
 
-// PhysicalKeyOrderingCongruentForRangeSet is PhysicalKeyOrderingCongruent for a
-// leaf that binds through the physical RANGE SET, which is what a value index
-// and a primary scan do.
+// PhysicalOrderingPrefixEndsTerminal reports whether the usable ordering prefix
+// stops because a coordinate was TERMINAL rather than because it ran out of
+// key.
 //
-// The single difference is the unbound float coordinate. Such a leaf splits it
-// into NULL, the numbers, and the two NaN blocks and concatenates them in
-// logical order, so the ordering it reports is real. A leaf that cannot
-// enumerate several ranges must keep using PhysicalKeyOrderingCongruent, or it
-// will promise an ORDER BY it delivers with the negative NaNs in the wrong
-// place.
-func PhysicalKeyOrderingCongruentForRangeSet(
-	cr *predicates.ComparisonRange,
-	physicalType values.Type,
-) bool {
-	return keyOrderingCongruenceAt(cr, physicalType, true).Congruent
-}
-
-// PhysicalOrderingPrefixLength returns the largest leading key prefix whose
-// physical tuple order is a valid ORDER BY ordering. ORDER BY uses the total
-// float comparator, which distinguishes -0 from +0 in the same order as tuple
-// encoding; a signed-zero equality can therefore retain (v, suffix), while its
-// non-fixed shape still prevents deleting v and claiming suffix-only order.
-// PhysicalOrderingPrefixLengthForRangeSet is PhysicalOrderingPrefixLength for
-// a plan that scans through the physical RANGE SET — a value index scan or a
-// primary scan. Such a plan splits an unbound float coordinate into NULL, the
-// numbers and the two NaN blocks and returns them in logical order, so that
-// coordinate does not end its usable ordering prefix.
-//
-// An aggregate index plan reads a pre-aggregated stream and must keep using
-// PhysicalOrderingPrefixLength, or it will advertise an ordering it cannot
-// produce.
-func PhysicalOrderingPrefixLengthForRangeSet(
+// Callers that extend an ordering PAST the key — an index scan appending its
+// trimmed primary-key suffix, say — must consult this. "I used every index
+// column" is not the same as "the ordering continues": a float coordinate
+// relaxed through the NaN tie class is usable AND final, so a suffix appended
+// after it is inside the tie and comes back in NaN-payload order.
+func PhysicalOrderingPrefixEndsTerminal(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,
 	n int,
-) int {
-	return physicalOrderingPrefixLength(comps, physicalTypes, n, true)
+) bool {
+	for i := 0; i < n; i++ {
+		physicalType := physicalEqualityTypeAt(physicalTypes, i)
+		var cr *predicates.ComparisonRange
+		if i < len(comps) {
+			cr = comps[i]
+		}
+		congruence := keyOrderingCongruenceAt(cr, physicalType)
+		if !congruence.Congruent {
+			return false
+		}
+		if congruence.Terminal {
+			return true
+		}
+	}
+	return false
 }
 
 func PhysicalOrderingPrefixLength(
@@ -726,7 +716,7 @@ func PhysicalOrderingPrefixLength(
 	physicalTypes []values.Type,
 	n int,
 ) int {
-	return physicalOrderingPrefixLength(comps, physicalTypes, n, false)
+	return physicalOrderingPrefixLength(comps, physicalTypes, n)
 }
 
 // physicalOrderingPrefixLength walks the key and stops at the FIRST coordinate
@@ -738,7 +728,6 @@ func physicalOrderingPrefixLength(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,
 	n int,
-	rangeSetCapable bool,
 ) int {
 	for i := 0; i < n; i++ {
 		physicalType := physicalEqualityTypeAt(physicalTypes, i)
@@ -746,7 +735,7 @@ func physicalOrderingPrefixLength(
 		if i < len(comps) {
 			cr = comps[i]
 		}
-		congruence := keyOrderingCongruenceAt(cr, physicalType, rangeSetCapable)
+		congruence := keyOrderingCongruenceAt(cr, physicalType)
 		if !congruence.Congruent {
 			return i
 		}

@@ -432,32 +432,28 @@ func TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name         string
-		comps        func(*testing.T) *predicates.ComparisonRange
-		wantStrict   int
-		wantRangeSet int
-		why          string
+		name  string
+		comps func(*testing.T) *predicates.ComparisonRange
+		want  int
+		why   string
 	}{
 		{
-			name:         "one-sided inequality stops after the float",
-			comps:        oneSided,
-			wantStrict:   1,
-			wantRangeSet: 1,
-			why:          "the negative-NaN block is a tie class; the next column is in payload order inside it",
+			name:  "one-sided inequality stops after the float",
+			comps: oneSided,
+			want:  1,
+			why:   "the negative-NaN block is a tie class; the next column is in payload order inside it",
 		},
 		{
-			name:         "two-sided finite range continues past the float",
-			comps:        twoSided,
-			wantStrict:   2,
-			wantRangeSet: 2,
-			why:          "a finite interval holds no NaN, so there is no tie class to scramble the next column",
+			name:  "two-sided finite range continues past the float",
+			comps: twoSided,
+			want:  2,
+			why:   "a finite interval holds no NaN, so there is no tie class to scramble the next column",
 		},
 		{
-			name:         "unbound float stops after the float, and only for a range-set leaf",
-			comps:        nil,
-			wantStrict:   0,
-			wantRangeSet: 1,
-			why:          "only a range-set leaf splits the blocks at all, and even then the claim ends there",
+			name:  "unbound float stops after the float, and only for a range-set leaf",
+			comps: nil,
+			want:  0,
+			why:   "only a range-set leaf splits the blocks at all, and even then the claim ends there",
 		},
 	} {
 		test := test
@@ -467,11 +463,8 @@ func TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal(t *testing.T) {
 			if test.comps != nil {
 				comps = []*predicates.ComparisonRange{test.comps(t)}
 			}
-			if got := PhysicalOrderingPrefixLength(comps, floatThenLong, 2); got != test.wantStrict {
-				t.Fatalf("PhysicalOrderingPrefixLength = %d, want %d — %s", got, test.wantStrict, test.why)
-			}
-			if got := PhysicalOrderingPrefixLengthForRangeSet(comps, floatThenLong, 2); got != test.wantRangeSet {
-				t.Fatalf("PhysicalOrderingPrefixLengthForRangeSet = %d, want %d — %s", got, test.wantRangeSet, test.why)
+			if got := PhysicalOrderingPrefixLength(comps, floatThenLong, 2); got != test.want {
+				t.Fatalf("PhysicalOrderingPrefixLength = %d, want %d — %s", got, test.want, test.why)
 			}
 		})
 	}

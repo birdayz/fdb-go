@@ -415,12 +415,22 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 	if err != nil {
 		return scanRangeSetSpec{}, err
 	}
-	tailPhysicalType := scanPhysicalTypeAt(keyTypes, equalityCount)
-	if tail.kind == boundRangeTailAllOf && scanBoundUsesFloatWire(tailPhysicalType) {
-		bound.tails = decomposeUnboundFloatTail(tailPhysicalType, reverse)
-	} else {
-		bound.tails = decomposeOrderedFloatTail(tail, tailPhysicalType, reverse)
-	}
+	// An UNBOUND float coordinate is deliberately NOT split here.
+	//
+	// It used to be, into NULL / [-Inf..+Inf] / the two NaN blocks, so that a
+	// single-column float ORDER BY could drop its sort. That bought nothing
+	// measurable — it changed 0 of the 2489 plans in the plan-shape golden —
+	// and it could not help the multi-column case it was introduced for,
+	// because an ordering claim stops AT a coordinate relaxed through the NaN
+	// tie class (see keyOrderingCongruence). Against that it charged FOUR range
+	// opens instead of one to every scan whose first unbound coordinate is a
+	// float, ordering-consuming or not.
+	//
+	// A pure optimisation that no test can detect, paid for on every such scan,
+	// is not worth its cost. Reinstating it needs a way to split only when the
+	// ordering is actually consumed, plus a benefit someone can measure.
+	bound.tails = decomposeOrderedFloatTail(
+		tail, scanPhysicalTypeAt(keyTypes, equalityCount), reverse)
 	if tail.kind == boundRangeTailEmpty {
 		bound.empty = true
 	}
@@ -886,77 +896,6 @@ func decomposeOrderedFloatTail(
 	default:
 		return []boundRangeTail{tail}
 	}
-}
-
-// decomposeUnboundFloatTail orders an UNBOUND float coordinate.
-//
-// With no comparison on the coordinate the scan would open one range over the
-// whole subtree, which is the right ROW SET but the wrong ORDER: physically the
-// negative NaNs sit between the NULLs and -Inf, while logically every NaN is
-// greatest. A consumer relying on the scan's ordering — an ORDER BY that would
-// otherwise need a blocking in-memory sort over the whole table — therefore
-// cannot use the index at all unless the blocks are handed back in logical
-// order.
-//
-// Four blocks, emitted NULLs-first ascending to match the order an index scan
-// already reports for every other key type:
-//
-//	[NULL] [-Inf .. +Inf] [negative NaNs] [positive NaNs]
-//
-// The two NaN blocks are mutually tied logically, so their relative order is
-// free. Reversing the whole sequence gives the descending order.
-//
-// The row set is identical either way, so this is always safe; what it costs is
-// three extra range opens on a float-suffixed scan, against saving a full table
-// scan plus a blocking sort whenever the ordering is what the query wanted.
-func decomposeUnboundFloatTail(physicalType values.Type, reverse bool) []boundRangeTail {
-	nulls := boundRangeTail{
-		kind:               boundRangeTailInequality,
-		floatOrdered:       true,
-		hasLow:             true,
-		lowIsNullBoundary:  true,
-		lowEndpoint:        recordlayer.EndpointTypeRangeInclusive,
-		hasHigh:            true,
-		highIsNullBoundary: true,
-		highEndpoint:       recordlayer.EndpointTypeRangeInclusive,
-	}
-	numbers := boundRangeTail{
-		kind:         boundRangeTailInequality,
-		floatOrdered: true,
-		hasLow:       true,
-		lowItem:      floatWireInfinity(physicalType, -1),
-		lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-		hasHigh:      true,
-		highItem:     floatWireInfinity(physicalType, 1),
-		highEndpoint: recordlayer.EndpointTypeRangeInclusive,
-	}
-	negativeNaNs := boundRangeTail{
-		kind:         boundRangeTailInequality,
-		floatOrdered: true,
-		hasLow:       true,
-		lowItem:      floatWireLowestNaN(physicalType),
-		lowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-		hasHigh:      true,
-		highItem:     floatWireInfinity(physicalType, -1),
-		highEndpoint: recordlayer.EndpointTypeRangeExclusive,
-	}
-	positiveNaNs := boundRangeTail{
-		kind:         boundRangeTailInequality,
-		floatOrdered: true,
-		hasLow:       true,
-		lowItem:      floatWireInfinity(physicalType, 1),
-		lowEndpoint:  recordlayer.EndpointTypeRangeExclusive,
-		hasHigh:      true,
-		highItem:     floatWireHighestNaN(physicalType),
-		highEndpoint: recordlayer.EndpointTypeRangeInclusive,
-	}
-	ordered := []boundRangeTail{nulls, numbers, negativeNaNs, positiveNaNs}
-	if reverse {
-		for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
-			ordered[i], ordered[j] = ordered[j], ordered[i]
-		}
-	}
-	return ordered
 }
 
 func scanBoundUsesFloatWire(physicalType values.Type) bool {

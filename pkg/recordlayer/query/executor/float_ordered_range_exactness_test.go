@@ -225,84 +225,56 @@ func TestOrderedFloatRangeSetKeepsIndexAccess(t *testing.T) {
 	}
 }
 
-// TestUnboundFloatRangeSetIsCompleteAndLogicallyOrdered pins the ordering-only
-// decomposition. An unbound float coordinate has no predicate to be exact
-// about, so the two properties that matter are:
+// TestFloatSuffixedScanOpensOneRange pins the COST of a float coordinate that
+// nothing constrains, as a structural fact rather than a wall clock.
 //
-//  1. COMPLETENESS — every stored key is still returned exactly once. Splitting
-//     a scan into blocks is the easiest possible way to silently drop rows, and
-//     an ORDER BY that loses the NaN rows would look perfectly healthy.
-//  2. LOGICAL ORDER — the blocks come back in the order the query comparator
-//     would sort them, NULLs first, every NaN last. That is the whole reason
-//     the split exists: without it the index cannot serve an ORDER BY and the
-//     query pays a full scan plus a blocking sort.
-func TestUnboundFloatRangeSetIsCompleteAndLogicallyOrdered(t *testing.T) {
+// An unbound float coordinate used to be split into NULL / [-Inf..+Inf] / the
+// two NaN blocks so a single-column float ORDER BY could drop its sort. That
+// charged FOUR range opens to every scan whose first unbound coordinate is a
+// float — ordering-consuming or not — and bought a plan change no test could
+// observe (0 of 2489 in the plan-shape golden). It was removed.
+//
+// A wall-clock budget tells you THAT something regressed, weeks later and on a
+// contended machine. This tells you WHAT: reinstating the split turns this red
+// immediately, next to the comment explaining what it would have to earn.
+func TestFloatSuffixedScanOpensOneRange(t *testing.T) {
 	t.Parallel()
-	spec, err := bindScanComparisonsToRangeSet(
-		nil, []values.Type{values.NullableDouble}, nil, false, "unbound-float-order",
-	)
-	if err != nil {
-		t.Fatalf("bind unbound float coordinate: %v", err)
-	}
-	ranges := materializeAllRanges(t, spec)
-	if len(ranges) < 2 {
-		t.Fatalf("unbound float coordinate produced %d range(s); one raw range puts the "+
-			"negative NaNs between the NULLs and -Inf and cannot serve an ORDER BY", len(ranges))
-	}
-
-	// Completeness, including the NULL key, which lives below every float.
-	domain := floatKeyDomain()
-	for _, stored := range append([]any{nil}, float64SliceToAny(domain)...) {
-		key := tuple.Tuple{stored}.Pack()
-		hits := 0
-		for _, r := range ranges {
-			if physicallySelected(r, key) {
-				hits++
+	for _, test := range []struct {
+		name  string
+		comps []*predicates.ComparisonRange
+		types []values.Type
+	}{
+		{
+			name:  "unbound DOUBLE coordinate",
+			types: []values.Type{values.NullableDouble},
+		},
+		{
+			name:  "unbound FLOAT coordinate",
+			types: []values.Type{values.NullableFloat},
+		},
+		{
+			name:  "equality prefix then an unbound DOUBLE suffix",
+			comps: []*predicates.ComparisonRange{scanRangeTestComparison(t, predicates.ComparisonEquals, &values.ConstantValue{Value: int64(1), Typ: values.UnknownType})},
+			types: []values.Type{values.NullableLong, values.NullableDouble},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			spec, err := bindScanComparisonsToRangeSet(
+				test.comps, test.types, nil, false, "float-suffix-cost",
+			)
+			if err != nil {
+				t.Fatalf("bind: %v", err)
 			}
-		}
-		if hits != 1 {
-			t.Fatalf("stored %v is covered by %d ranges, want exactly 1 — the block split must "+
-				"partition the coordinate, or an unbounded scan drops or duplicates rows", stored, hits)
-		}
-	}
-
-	// Logical order: walking the ranges in order must visit the keys in the
-	// order the SORT comparator would put them. NULLs come first; all NaNs are
-	// logically tied and come last.
-	var visited []any
-	for _, r := range ranges {
-		for _, stored := range append([]any{nil}, float64SliceToAny(domain)...) {
-			if physicallySelected(r, tuple.Tuple{stored}.Pack()) {
-				visited = append(visited, stored)
+			ranges := materializeAllRanges(t, spec)
+			if len(ranges) != 1 {
+				t.Fatalf("opened %d ranges, want 1 — an unconstrained float coordinate must not "+
+					"be split into NaN blocks; that costs a round trip per block on every such "+
+					"scan and buys an ordering claim nothing measured", len(ranges))
 			}
-		}
+		})
 	}
-	rank := func(v any) int {
-		f, ok := v.(float64)
-		switch {
-		case !ok:
-			return 0 // NULL sorts first
-		case math.IsNaN(f):
-			return 2 // every NaN is logically greatest, and mutually tied
-		default:
-			return 1
-		}
-	}
-	for i := 1; i < len(visited); i++ {
-		if rank(visited[i-1]) > rank(visited[i]) {
-			t.Fatalf("range order visits %v before %v, which the sort comparator orders the other way; "+
-				"the blocks must be concatenated in LOGICAL order or the scan cannot claim an ordering",
-				visited[i-1], visited[i])
-		}
-	}
-}
-
-func float64SliceToAny(in []float64) []any {
-	out := make([]any, 0, len(in))
-	for _, v := range in {
-		out = append(out, v)
-	}
-	return out
 }
 
 // materializeAllRanges walks the spec's odometer and returns every physical
