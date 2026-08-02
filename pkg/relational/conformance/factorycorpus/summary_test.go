@@ -167,13 +167,29 @@ func TestSubtestFramingFitsLogCap(t *testing.T) {
 	t.Logf("%d scenarios cost %d bytes of -test.v framing against a %d-byte console budget",
 		len(scenarios), framing, capBytes)
 
-	// Half the budget: the other half is headroom for the failure detail the
-	// framing exists to surround. A floor that eats the whole budget leaves no
-	// room for the thing anyone actually reads.
-	if framing*2 > capBytes {
-		t.Errorf("the corpus's -test.v framing floor is %d bytes, over half the %d-byte console "+
-			"budget in .bazelrc. Raise --experimental_ui_max_stdouterr_bytes: past the budget Bazel "+
-			"discards the stream entirely and a corpus red names no scenario.", framing, capBytes)
+	// The framing floor is not the quantity that has to fit — the log a RED
+	// produces is, and that is the only log anyone ever needs to read. A run in
+	// which every scenario fails carries each one's failure detail on top of
+	// its framing, and that whole log is measured against the same budget.
+	//
+	// Measured on a run where all 5000 committed scenarios fail: 4985971 bytes
+	// against a 1180000-byte framing floor, i.e. the detail costs a little over
+	// three times the framing that surrounds it. Budgeting for the framing
+	// alone, with the rest nominally "headroom", is what leaves a corpus red
+	// discarded while this check is still green: at a floor of half the current
+	// 16 MiB budget the all-fail log would be ~35 MB, over the cap by 2x.
+	//
+	// So require room for the amplified log, not for the floor. The multiplier
+	// is the measured ratio rounded UP — an all-fail run is the worst case this
+	// budget exists to survive, and rounding it down is how the check goes
+	// quietly under-specified again.
+	const allFailAmplification = 5 // measured 4985971/1180000 = 4.22x, rounded up
+	if framing*allFailAmplification > capBytes {
+		t.Errorf("the corpus's -test.v framing floor is %d bytes; a run in which every scenario "+
+			"fails costs about %dx that (%d bytes), over the %d-byte console budget in .bazelrc. "+
+			"Raise --experimental_ui_max_stdouterr_bytes: past the budget Bazel discards the stream "+
+			"entirely and a corpus red names no scenario.",
+			framing, allFailAmplification, framing*allFailAmplification, capBytes)
 	}
 	// The default is what bit; assert we are actually clear of it, so a future
 	// edit that "restores the default" is caught here rather than in a CI red
