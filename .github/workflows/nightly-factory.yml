@@ -227,7 +227,15 @@ jobs:
         # longer equals the corpus, which TestCensusBaselineIsMeasured rejects.
         run: |
           set -o pipefail
-          go run ./cmd/factory-run \
+          # bazelisk, not `go run`: the runner image has no Go toolchain (every
+          # batch died in 12s with exit 127 `go: command not found` — measured
+          # 2026-08-02, twice: the first fix commit staged only .gitignore and
+          # this hunk never landed). `bazelisk run` executes from the runfiles
+          # tree, so every path flag must be absolute into the workspace.
+          bazelisk run //cmd/factory-run -- \
+            -out "$GITHUB_WORKSPACE/pkg/relational/conformance/factorycorpus/testdata" \
+            -findings "$GITHUB_WORKSPACE/factory-findings" \
+            -manifest "$GITHUB_WORKSPACE/factory-manifest.json" \
             -seeds ${{ steps.params.outputs.seeds }} \
             -seed-start ${{ steps.params.outputs.start }} \
             -quota ${{ steps.params.outputs.quota }} \
