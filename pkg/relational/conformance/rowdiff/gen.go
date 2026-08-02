@@ -988,7 +988,7 @@ func genTable(rng *rand.Rand) TableDef {
 	// (DOUBLE/FLOAT) are ONLY ever single-column indexes here — the one
 	// composite index, IDX_AB, is BIGINT-only. genRows seeds -0.0 into the
 	// D/E domains. The Go-side non-terminal signed-zero gaps this once
-	// guarded are CLOSED by RFC-205's typed physical range-set binder, so the
+	// guarded are CLOSED by RFC-208's typed physical range-set binder, so the
 	// restriction no longer hides a Go bug. It stays because this is a
 	// CROSS-ENGINE corpus: Java and Go do not share one signed-zero equality
 	// contract on a leading-float composite shape. Lifting the restriction

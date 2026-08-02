@@ -1238,19 +1238,19 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// architecture.
 
 	pr := &paginatingRows{
-		ctx:              ctx,
-		cancel:           cancel,
-		conn:             c,
-		ss:               ss,
-		plan:             p.physicalPlan,
-		md:               p.md,
-		scalarSubqueries: p.scalarSubqueries,
+		ctx:                 ctx,
+		cancel:              cancel,
+		conn:                c,
+		ss:                  ss,
+		plan:                p.physicalPlan,
+		md:                  p.md,
+		scalarSubqueries:    p.scalarSubqueries,
 		indexStateSignature: p.indexStateSignature,
-		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
-		maxResultBytes:   c.maxResultBytes,
-		cols:             cols,
-		respectActiveTx:  p.IsUpdate(),
-		dryRun:           p.dryRun,
+		maxRows:             optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
+		maxResultBytes:      c.maxResultBytes,
+		cols:                cols,
+		respectActiveTx:     p.IsUpdate(),
+		dryRun:              p.dryRun,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on

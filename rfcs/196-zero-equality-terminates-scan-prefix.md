@@ -1,7 +1,7 @@
 # RFC-196 — A zero-valued float equality terminates the scan prefix
 
-Status: **historical interim design; landed after review and superseded by RFC-205 on 2026-08-01.**
-Closes: TODO CQ-28 historically; RFC-205 is the current complete design.
+Status: **historical interim design; landed after review and superseded by RFC-208 on 2026-08-01.**
+Closes: TODO CQ-28 historically; RFC-208 is the current complete design.
 
 ## Process note, stated up front
 
@@ -10,7 +10,7 @@ matching/data-access change, and CQ-28's own TODO entry repeated that. The
 implementation was written first and this document after. That ordering was
 wrong. At the time, the change remained unmerged so review could still function
 as a gate. Review later completed and the interim design landed; this note is
-retained as the process record, while the postscript below records RFC-205's
+retained as the process record, while the postscript below records RFC-208's
 superseding design.
 
 ## The defect
@@ -104,10 +104,10 @@ where the comparand value is finally known. That changes the index scan's
 contract — it would return more rows than its range implies and filter
 internally — and belongs behind its own gate.
 
-**POSTSCRIPT (2026-08-01, CQ-83; generalized by RFC-205): the gap is CLOSED at
+**POSTSCRIPT (2026-08-01, CQ-83; generalized by RFC-208): the gap is CLOSED at
 execution time, but without the contract change this section anticipated.**
 PR #571 first closed the correlated case with executor-local probe splitting.
-RFC-205 supersedes that narrow mechanism: the binder uses authoritative
+RFC-208 supersedes that narrow mechanism: the binder uses authoritative
 physical key-component types to represent non-terminal zero equality as an
 exact lazy range set, and the range-set cursor scans it with fingerprinted
 continuations and shared resource/limit accounting. The full composite prefix

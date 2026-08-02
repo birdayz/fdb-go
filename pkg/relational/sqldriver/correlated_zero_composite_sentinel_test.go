@@ -8,7 +8,7 @@ package sqldriver_test
 // The shape: `t.v = o.k AND t.w = 5` against composite index (v, w), where
 // the comparand o.k is CORRELATED — supplied per-probe by an outer row and
 // therefore opaque at plan time. When the runtime value is a signed zero,
-// IEEE `=` (this engine's ruled semantics — see DIVERGENCES.md and RFC-205)
+// IEEE `=` (this engine's ruled semantics — see DIVERGENCES.md and RFC-208)
 // requires matching BOTH stored zeros, but -0.0 and +0.0
 // are distinct adjacent index keys and the two wanted keys
 // (-0.0, 5) / (+0.0, 5) are NOT a contiguous interval: the span between
@@ -305,7 +305,7 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 		}
 	})
 
-	// RFC-205 makes the REVERSE range-set path SQL-reachable: ORDER BY t.v DESC
+	// RFC-208 makes the REVERSE range-set path SQL-reachable: ORDER BY t.v DESC
 	// is satisfied directly by a reverse composite-index probe. Pin both its
 	// physical order (+0 branch before -0) and transparent statement pagination
 	// under budgets that stop inside and between the two signed-zero branches.

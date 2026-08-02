@@ -207,7 +207,7 @@ func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats prop
 		}
 	}
 	if p.GetPhysicalGroupingPrefixCount() < len(p.GetGroupCols()) {
-		// Positive PERMUTED_MIN/MAX is ineligible under RFC-205. Saturation
+		// Positive PERMUTED_MIN/MAX is ineligible under RFC-208. Saturation
 		// makes a hand-built survivor maximally unattractive without injecting
 		// infinity into the total cost preorder.
 		return properties.Cost{

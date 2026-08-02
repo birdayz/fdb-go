@@ -7,6 +7,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -24,7 +26,31 @@ import (
 const (
 	corpusRepoPath = "pkg/relational/conformance/factorycorpus/testdata"
 	ledgerRepoPath = "pkg/relational/conformance/factorycorpus/retirements"
+	// corpusFileExt is the committed corpus's file extension. The corpus is
+	// genuine yamsql grouped one file per feature family (RFC-201 §5.7), not
+	// one file per scenario.
+	corpusFileExt = factorycorpus.FileExt
 )
+
+// requireCommittableFileMode rejects anything Git could not have produced as a
+// regular non-executable blob: a directory, a symlink, a device, or a file
+// carrying an execute bit.
+//
+// It deliberately does NOT demand the exact permission word 0644. Git tracks
+// only the execute bit (100644 vs 100755); the read/write bits of a checkout
+// come from the checking-out process's umask, so a runner with umask 002
+// materializes every tracked file as 0664. Asserting 0644 would make the gate
+// pass or fail on the environment rather than on the tree. The Git-side mode is
+// asserted where it is authoritative — against `git ls-tree` output.
+func requireCommittableFileMode(info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file (mode %s)", info.Mode())
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		return fmt.Errorf("carries an execute bit (mode %s)", info.Mode())
+	}
+	return nil
+}
 
 func main() {
 	trustedRef := flag.String(
@@ -56,7 +82,7 @@ func run(trustedRef string) error {
 }
 
 func runAtRepo(repoRoot, trustedRef string) error {
-	if err := requireRealDirectoryPath(repoRoot, ledgerRepoPath); err != nil {
+	if _, err := realDirectoryPath(repoRoot, ledgerRepoPath); err != nil {
 		return fmt.Errorf("retirement-ledger directory: %w", err)
 	}
 	if err := requireRealDirectoryPath(repoRoot, corpusRepoPath); err != nil {
@@ -141,10 +167,6 @@ func runAtRepo(repoRoot, trustedRef string) error {
 			return fmt.Errorf("trusted retirement ledger %s was deleted; ledgers are immutable history", trustedPath)
 		}
 	}
-	if len(ledgerPaths) == 0 {
-		return fmt.Errorf("no retirement ledgers under %s", ledgerRepoPath)
-	}
-
 	newLedgerCount := 0
 	for _, ledgerPath := range ledgerPaths {
 		repoPath, relErr := filepath.Rel(repoRoot, ledgerPath)
@@ -156,8 +178,8 @@ func runAtRepo(repoRoot, trustedRef string) error {
 		if statErr != nil {
 			return fmt.Errorf("stat retirement ledger %s: %w", ledgerPath, statErr)
 		}
-		if !ledgerInfo.Mode().IsRegular() || ledgerInfo.Mode().Perm() != 0o644 {
-			return fmt.Errorf("retirement ledger %s must be a regular 0644 file (mode %s)", ledgerPath, ledgerInfo.Mode())
+		if modeErr := requireCommittableFileMode(ledgerInfo); modeErr != nil {
+			return fmt.Errorf("retirement ledger %s: %w", ledgerPath, modeErr)
 		}
 		currentLedgerBytes, readErr := os.ReadFile(ledgerPath)
 		if readErr != nil {
@@ -246,22 +268,42 @@ func runAtRepo(repoRoot, trustedRef string) error {
 }
 
 func requireRealDirectoryPath(repoRoot, repoPath string) error {
+	exists, err := realDirectoryPath(repoRoot, repoPath)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("directory %s does not exist", repoPath)
+	}
+	return nil
+}
+
+// realDirectoryPath reports whether repoPath resolves to a real directory
+// without traversing a symlink at any component. A directory that is simply
+// absent is not an error: Git cannot track an empty directory, so the
+// retirement-ledger directory disappears from a checkout the moment its last
+// ledger is retired from history — which is the state of a repository that has
+// never had to retire a corpus scenario.
+func realDirectoryPath(repoRoot, repoPath string) (bool, error) {
 	clean := path.Clean(repoPath)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("invalid repository path %q", repoPath)
+		return false, fmt.Errorf("invalid repository path %q", repoPath)
 	}
 	current := repoRoot
 	for _, component := range strings.Split(clean, "/") {
 		current = filepath.Join(current, filepath.FromSlash(component))
 		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
 		if err != nil {
-			return fmt.Errorf("stat path component %s: %w", current, err)
+			return false, fmt.Errorf("stat path component %s: %w", current, err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("path component %s is not a real directory (mode %s)", current, info.Mode())
+			return false, fmt.Errorf("path component %s is not a real directory (mode %s)", current, info.Mode())
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func validateCurrentCorpusEntries(repoRoot string) error {
@@ -274,18 +316,18 @@ func validateCurrentCorpusEntries(repoRoot string) error {
 		if entry.IsDir() {
 			return fmt.Errorf("proposed corpus must be flat; nested entry %q is not allowed", entry.Name())
 		}
-		if filepath.Ext(entry.Name()) != ".yaml" {
-			return fmt.Errorf("proposed corpus entry %q is not a .yaml scenario", entry.Name())
+		if filepath.Ext(entry.Name()) != corpusFileExt {
+			return fmt.Errorf("proposed corpus entry %q is not a %s family file", entry.Name(), corpusFileExt)
 		}
 		if !safeArchivedCorpusName(entry.Name()) {
-			return fmt.Errorf("proposed corpus filename %q is not a portable flat .yaml name", entry.Name())
+			return fmt.Errorf("proposed corpus filename %q is not a portable flat %s name", entry.Name(), corpusFileExt)
 		}
 		info, statErr := os.Lstat(filepath.Join(currentDir, entry.Name()))
 		if statErr != nil {
 			return fmt.Errorf("stat proposed corpus file %s: %w", entry.Name(), statErr)
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o644 {
-			return fmt.Errorf("proposed corpus file %s is not a regular file with mode 0644 (mode %s)", entry.Name(), info.Mode())
+		if modeErr := requireCommittableFileMode(info); modeErr != nil {
+			return fmt.Errorf("proposed corpus file %s: %w", entry.Name(), modeErr)
 		}
 	}
 	if len(entries) == 0 {
@@ -331,7 +373,7 @@ func loadExactCorpusBytes(dir string) (map[string][]byte, error) {
 	}
 	files := make(map[string][]byte, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != corpusFileExt {
 			return nil, fmt.Errorf("unexpected corpus entry %q", entry.Name())
 		}
 		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -346,6 +388,9 @@ func loadExactCorpusBytes(dir string) (map[string][]byte, error) {
 func currentLedgerPaths(repoRoot string) ([]string, error) {
 	ledgerDir := filepath.Join(repoRoot, ledgerRepoPath)
 	entries, err := os.ReadDir(ledgerDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read retirement-ledger directory: %w", err)
 	}
@@ -359,8 +404,8 @@ func currentLedgerPaths(repoRoot string) ([]string, error) {
 		if statErr != nil {
 			return nil, fmt.Errorf("stat retirement ledger %s: %w", ledgerPath, statErr)
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o644 {
-			return nil, fmt.Errorf("retirement ledger %s must be a regular 0644 file (mode %s)", ledgerPath, info.Mode())
+		if modeErr := requireCommittableFileMode(info); modeErr != nil {
+			return nil, fmt.Errorf("retirement ledger %s: %w", ledgerPath, modeErr)
 		}
 		paths = append(paths, ledgerPath)
 	}
@@ -369,43 +414,68 @@ func currentLedgerPaths(repoRoot string) ([]string, error) {
 }
 
 // trustedCorpusChanges lists every non-additive proposed corpus edit. A
-// committed scenario is a frozen reproduction point: deletion, renaming, or
-// byte replacement requires a retirement ledger even when aggregate census
-// counts remain flat (the balanced delete+add bypass). New files are allowed
-// without a ledger because they can only raise the coverage floor.
+// committed scenario is a frozen reproduction point: dropping one, renaming it,
+// or rewriting its bytes requires a retirement ledger even when aggregate
+// census counts remain flat (the balanced delete+add bypass). New scenarios are
+// allowed without a ledger because they can only raise the coverage floor.
+//
+// The unit compared is the SCENARIO, not the file. Since RFC-201 §5.7 the
+// corpus is grouped one file per feature family, and a batch appends its new
+// scenarios into the families they belong to — so a family file's bytes change
+// on a purely additive batch. A file-level byte comparison would demand a
+// retirement ledger for every routine append, which is both wrong and the
+// fastest way to teach everyone to write a meaningless ledger.
 func trustedCorpusChanges(repoRoot, trustedCommit string) ([]string, error) {
 	trustedDir, cleanup, err := materializeCorpusAtCommit(repoRoot, trustedCommit)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
-	entries, err := os.ReadDir(trustedDir)
+	trusted, err := corpusScenarioDigests(trustedDir)
 	if err != nil {
 		return nil, fmt.Errorf("read trusted corpus: %w", err)
 	}
-	currentDir := filepath.Join(repoRoot, corpusRepoPath)
+	current, err := corpusScenarioDigests(filepath.Join(repoRoot, corpusRepoPath))
+	if err != nil {
+		return nil, fmt.Errorf("read proposed corpus: %w", err)
+	}
 	var changes []string
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
-			continue
-		}
-		trustedBytes, readErr := os.ReadFile(filepath.Join(trustedDir, entry.Name()))
-		if readErr != nil {
-			return nil, fmt.Errorf("read trusted corpus file %s: %w", entry.Name(), readErr)
-		}
-		currentBytes, readErr := os.ReadFile(filepath.Join(currentDir, entry.Name()))
-		if os.IsNotExist(readErr) {
-			changes = append(changes, entry.Name()+" (deleted or renamed)")
-			continue
-		}
-		if readErr != nil {
-			return nil, fmt.Errorf("read proposed corpus file %s: %w", entry.Name(), readErr)
-		}
-		if !bytes.Equal(trustedBytes, currentBytes) {
-			changes = append(changes, entry.Name()+" (bytes changed)")
+	for name, trustedDigest := range trusted {
+		currentDigest, exists := current[name]
+		switch {
+		case !exists:
+			changes = append(changes, name+" (deleted or renamed)")
+		case currentDigest != trustedDigest:
+			changes = append(changes, name+" (scenario rewritten)")
 		}
 	}
+	sort.Strings(changes)
 	return changes, nil
+}
+
+// corpusScenarioDigests fingerprints every committed scenario by its canonical
+// marshalled form. Reading through the loader and re-marshalling — rather than
+// hashing the raw family-file bytes — makes the fingerprint independent of
+// which family file a scenario sits in and of where in that file it sits, so
+// moving a scenario between families is not mistaken for rewriting it.
+func corpusScenarioDigests(dir string) (map[string]string, error) {
+	scenarios, err := factorycorpus.LoadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	digests := make(map[string]string, len(scenarios))
+	for _, scenario := range scenarios {
+		canonical, marshalErr := factorycorpus.MarshalFamily([]*factorycorpus.Scenario{scenario})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("re-marshal scenario %s: %w", scenario.Header.Name, marshalErr)
+		}
+		if _, duplicate := digests[scenario.Header.Name]; duplicate {
+			return nil, fmt.Errorf("scenario name %q appears twice in the corpus", scenario.Header.Name)
+		}
+		sum := sha256.Sum256(canonical)
+		digests[scenario.Header.Name] = hex.EncodeToString(sum[:])
+	}
+	return digests, nil
 }
 
 type gitTreeEntry struct {
@@ -607,7 +677,7 @@ func materializeCorpusAtCommit(repoRoot, commit string) (string, func(), error) 
 			continue
 		}
 		relative := strings.TrimPrefix(cleanName, prefix)
-		if path.Ext(relative) != ".yaml" || !safeArchivedCorpusName(relative) {
+		if path.Ext(relative) != corpusFileExt || !safeArchivedCorpusName(relative) {
 			return "", func() {}, fmt.Errorf("unexpected corpus tree path %q", entry.name)
 		}
 		if entry.mode != "100644" || entry.objectType != "blob" {

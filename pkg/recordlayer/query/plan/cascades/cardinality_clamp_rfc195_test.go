@@ -1418,7 +1418,7 @@ func TestRFC195_StampedPKZeroFloatIsNotAtMostOne(t *testing.T) {
 	if zero.Max.IsUnknown() || zero.Max.Value() != 2 {
 		t.Fatalf("stamped-PK scan, ZERO float equality: max = %s, want the exact physical multiplicity 2.\n"+
 			"The executor covers -0.0 and +0.0, which are IEEE-equal but distinct tuple keys; "+
-			"RFC-205 replaces both the false max=1 proof and the overly-weak UNKNOWN fallback with max=2.",
+			"RFC-208 replaces both the false max=1 proof and the overly-weak UNKNOWN fallback with max=2.",
 			fmtBound(zero.Max))
 	}
 }

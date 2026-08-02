@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 func TestVerifyBaseCommitRequiresTrustedCommitHistory(t *testing.T) {
@@ -59,12 +60,12 @@ func TestSafeArchivedCorpusNameIsCrossPlatformFlat(t *testing.T) {
 		name string
 		want bool
 	}{
-		{name: "fc_0001.yaml", want: true},
-		{name: "nested/file.yaml"},
+		{name: "single__cmp__none.yamsql", want: true},
+		{name: "nested/file.yamsql"},
 		{name: `..\escape.yaml`},
-		{name: `C:\escape.yaml`},
-		{name: "../escape.yaml"},
-		{name: "not-yaml.json"},
+		{name: `C:\escape.yamsql`},
+		{name: "../escape.yamsql"},
+		{name: "not-yamsql.json"},
 		{name: ""},
 	} {
 		if got := safeArchivedCorpusName(test.name); got != test.want {
@@ -79,7 +80,7 @@ func TestLedgerHistoryDiscoveryPinsFirstAddition(t *testing.T) {
 	gitForTest(t, repo, "init", "--quiet")
 	gitForTest(t, repo, "config", "user.name", "Corpus Gate Test")
 	gitForTest(t, repo, "config", "user.email", "corpus-gate@example.invalid")
-	ledgerPath := filepath.Join(repo, filepath.FromSlash(ledgerRepoPath), "2026-08-01-rfc205.json")
+	ledgerPath := filepath.Join(repo, filepath.FromSlash(ledgerRepoPath), "2026-08-01-rfc208.json")
 	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestLedgerHistoryDiscoveryPinsFirstAddition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRepoPath := ledgerRepoPath + "/2026-08-01-rfc205.json"
+	wantRepoPath := ledgerRepoPath + "/2026-08-01-rfc208.json"
 	if len(paths) != 1 || paths[0] != wantRepoPath {
 		t.Fatalf("ledger paths = %v, want [%s]", paths, wantRepoPath)
 	}
@@ -145,7 +146,7 @@ func TestLedgerFirstAddRejectsIndependentMergeAdditions(t *testing.T) {
 	gitForTest(t, repo, "config", "user.email", "corpus-gate@example.invalid")
 	gitForTest(t, repo, "commit", "--quiet", "--allow-empty", "-m", "root")
 	root := gitForTest(t, repo, "rev-parse", "HEAD")
-	repoPath := ledgerRepoPath + "/2026-08-01-rfc205.json"
+	repoPath := ledgerRepoPath + "/2026-08-01-rfc208.json"
 	absPath := filepath.Join(repo, filepath.FromSlash(repoPath))
 
 	gitForTest(t, repo, "switch", "--quiet", "-c", "branch-a", root)
@@ -230,7 +231,7 @@ func TestRunRejectsNewLedgerBasedBeforeTrustedCorpusGrowth(t *testing.T) {
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
 	beforeDir := t.TempDir()
-	oldName := "fc_0000000001_q0_p0.yaml"
+	oldName := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	oldBefore := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=before")
 	writeHistoryFile(t, filepath.Join(corpusDir, oldName), oldBefore)
 	writeHistoryFile(t, filepath.Join(beforeDir, oldName), oldBefore)
@@ -238,7 +239,7 @@ func TestRunRejectsNewLedgerBasedBeforeTrustedCorpusGrowth(t *testing.T) {
 	gitForTest(t, repo, "commit", "--quiet", "-m", "stale ledger base")
 	baseCommit := gitForTest(t, repo, "rev-parse", "HEAD")
 
-	targetName := "fc_0000000002_q0_p0.yaml"
+	targetName := historyCorpusFileName(t, "fc_0000000002_q0_p0")
 	writeHistoryFile(t, filepath.Join(corpusDir, targetName),
 		historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=target-addition"))
 	gitForTest(t, repo, "add", ".")
@@ -269,7 +270,7 @@ func TestRunRejectsAdditionOnlyRetirementLedger(t *testing.T) {
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
 	beforeDir := t.TempDir()
-	beforeName := "fc_0000000001_q0_p0.yaml"
+	beforeName := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	beforeBytes := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=before")
 	writeHistoryFile(t, filepath.Join(corpusDir, beforeName), beforeBytes)
 	writeHistoryFile(t, filepath.Join(beforeDir, beforeName), beforeBytes)
@@ -277,7 +278,7 @@ func TestRunRejectsAdditionOnlyRetirementLedger(t *testing.T) {
 	gitForTest(t, repo, "commit", "--quiet", "-m", "trusted base")
 	trustedCommit := gitForTest(t, repo, "rev-parse", "HEAD")
 
-	addedName := "fc_0000000002_q0_p0.yaml"
+	addedName := historyCorpusFileName(t, "fc_0000000002_q0_p0")
 	addedBytes := historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=pure-addition")
 	writeHistoryFile(t, filepath.Join(corpusDir, addedName), addedBytes)
 	ledger := historyTestLedger(t, trustedCommit, beforeDir, corpusDir, factorycorpus.RetirementChange{
@@ -299,7 +300,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
 	beforeDir := t.TempDir()
-	name := "fc_0000000001_q0_p0.yaml"
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	beforeBytes := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=before")
 	writeHistoryFile(t, filepath.Join(corpusDir, name), beforeBytes)
 	writeHistoryFile(t, filepath.Join(beforeDir, name), beforeBytes)
@@ -328,7 +329,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	}
 	writeHistoryFile(t, filepath.Join(corpusDir, name), afterBytes)
 
-	growthName := "fc_0000000002_q0_p0.yaml"
+	growthName := historyCorpusFileName(t, "fc_0000000002_q0_p0")
 	writeHistoryFile(t, filepath.Join(corpusDir, growthName),
 		historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=later-growth"))
 	gitForTest(t, repo, "add", ".")
@@ -355,7 +356,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Remove(filepath.Join(corpusDir, name)); err != nil {
 		t.Fatal(err)
 	}
-	swapName := "fc_0000000003_q0_p0.yaml"
+	swapName := historyCorpusFileName(t, "fc_0000000003_q0_p0")
 	writeHistoryFile(t, filepath.Join(corpusDir, swapName),
 		historyCorpusScenario(t, "fc_0000000003_q0_p0", "shape=balanced-swap"))
 	gitForTest(t, repo, "add", ".")
@@ -384,7 +385,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeHistoryFile(t, filepath.Join(corpusDir, name), afterBytes)
-	addedSymlink := filepath.Join(corpusDir, "fc_0000000004_q0_p0.yaml")
+	addedSymlink := filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000004_q0_p0"))
 	if err := os.Symlink(corpusSymlinkTarget, addedSymlink); err != nil {
 		t.Fatal(err)
 	}
@@ -394,10 +395,10 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Remove(addedSymlink); err != nil {
 		t.Fatal(err)
 	}
-	weirdName := filepath.Join(corpusDir, `C:\x.yaml`)
+	weirdName := filepath.Join(corpusDir, `C:\x.yamsql`)
 	writeHistoryFile(t, weirdName,
 		historyCorpusScenario(t, "fc_0000000004_q0_p0", "shape=nonportable-name"))
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "portable flat .yaml name") {
+	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "portable flat .yamsql name") {
 		t.Fatalf("nonportable corpus filename error = %v, want path-policy rejection", err)
 	}
 	if err := os.Remove(weirdName); err != nil {
@@ -445,7 +446,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Chmod(ledgerPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "regular 0644 file") {
+	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
 		t.Fatalf("executable ledger error = %v, want mode rejection", err)
 	}
 	if err := os.Chmod(ledgerPath, 0o644); err != nil {
@@ -459,7 +460,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(symlinkTarget, ledgerPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "regular 0644 file") {
+	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("symlink ledger error = %v, want non-regular-file rejection", err)
 	}
 	if err := os.Remove(ledgerPath); err != nil {
@@ -492,7 +493,7 @@ func TestMaterializeCorpusRejectsSymlinkScenario(t *testing.T) {
 	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(corpusDir, "fc_0000000001_q0_p0.yaml")); err != nil {
+	if err := os.Symlink(target, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000001_q0_p0"))); err != nil {
 		t.Fatal(err)
 	}
 	gitForTest(t, repo, "add", ".")
@@ -507,10 +508,10 @@ func TestMaterializeCorpusReadsRawBlobsDespiteExportAttributes(t *testing.T) {
 	t.Parallel()
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
-	name := "fc_0000000001_q0_p0.yaml"
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	data := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=$Format:%H$")
 	writeHistoryFile(t, filepath.Join(corpusDir, name), data)
-	attributes := fmt.Sprintf("%s/*.yaml export-ignore export-subst\n", corpusRepoPath)
+	attributes := fmt.Sprintf("%s/*.yamsql export-ignore export-subst\n", corpusRepoPath)
 	writeHistoryFile(t, filepath.Join(repo, ".gitattributes"), []byte(attributes))
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "attributes must not rewrite corpus evidence")
@@ -533,7 +534,7 @@ func TestRunRejectsNestedProposedHeadCorpus(t *testing.T) {
 	t.Parallel()
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
-	writeHistoryFile(t, filepath.Join(corpusDir, "fc_0000000001_q0_p0.yaml"),
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000001_q0_p0")),
 		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
 	if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(ledgerRepoPath)), 0o755); err != nil {
 		t.Fatal(err)
@@ -543,7 +544,7 @@ func TestRunRejectsNestedProposedHeadCorpus(t *testing.T) {
 	trusted := gitForTest(t, repo, "rev-parse", "HEAD")
 
 	nestedDir := filepath.Join(corpusDir, "nested")
-	nestedPath := filepath.Join(nestedDir, "fc_0000000002_q0_p0.yaml")
+	nestedPath := filepath.Join(nestedDir, historyCorpusFileName(t, "fc_0000000002_q0_p0"))
 	writeHistoryFile(t, nestedPath,
 		historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=nested"))
 	gitForTest(t, repo, "add", ".")
@@ -563,7 +564,7 @@ func TestRunRejectsCheckoutTransformedCorpusBytes(t *testing.T) {
 	t.Parallel()
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
-	name := "fc_0000000001_q0_p0.yaml"
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	data := append(historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"), []byte("\n# $Id$\n")...)
 	writeHistoryFile(t, filepath.Join(corpusDir, name), data)
 	if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(ledgerRepoPath)), 0o755); err != nil {
@@ -573,7 +574,7 @@ func TestRunRejectsCheckoutTransformedCorpusBytes(t *testing.T) {
 	gitForTest(t, repo, "commit", "--quiet", "-m", "trusted raw corpus")
 	trusted := gitForTest(t, repo, "rev-parse", "HEAD")
 
-	attributes := fmt.Sprintf("%s/*.yaml ident\n", corpusRepoPath)
+	attributes := fmt.Sprintf("%s/*.yamsql ident\n", corpusRepoPath)
 	writeHistoryFile(t, filepath.Join(repo, ".gitattributes"), []byte(attributes))
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "attempt checkout corpus transform")
@@ -599,7 +600,7 @@ func TestRunRejectsCheckoutTransformedNewLedgerBytes(t *testing.T) {
 	repo := newHistoryTestRepo(t)
 	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
 	beforeDir := t.TempDir()
-	name := "fc_0000000001_q0_p0.yaml"
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
 	beforeBytes := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=before")
 	writeHistoryFile(t, filepath.Join(corpusDir, name), beforeBytes)
 	writeHistoryFile(t, filepath.Join(beforeDir, name), beforeBytes)
@@ -648,12 +649,12 @@ func TestValidateNewLedgerOrdering(t *testing.T) {
 	}{
 		{
 			name:     "append",
-			repoPath: ledgerRepoPath + "/2026-08-01-rfc205.json",
+			repoPath: ledgerRepoPath + "/2026-08-01-rfc208.json",
 			date:     "2026-08-01",
 		},
 		{
 			name:      "filename date mismatch",
-			repoPath:  ledgerRepoPath + "/2026-08-01-rfc205.json",
+			repoPath:  ledgerRepoPath + "/2026-08-01-rfc208.json",
 			date:      "2026-08-02",
 			wantError: "must use <date>-<lowercase-slug>.json",
 		},
@@ -665,7 +666,7 @@ func TestValidateNewLedgerOrdering(t *testing.T) {
 		},
 		{
 			name:      "does not append",
-			repoPath:  ledgerRepoPath + "/2026-06-01-rfc205.json",
+			repoPath:  ledgerRepoPath + "/2026-06-01-rfc208.json",
 			date:      "2026-06-01",
 			wantError: "must sort after trusted ledger",
 		},
@@ -682,6 +683,118 @@ func TestValidateNewLedgerOrdering(t *testing.T) {
 	}
 }
 
+// TestRunAcceptsGroupWritableCheckoutModes pins the gate to what Git actually
+// tracks. Git records only the execute bit; the read/write bits a checkout
+// lands with come from the checking-out process's umask, so a CI runner with
+// umask 002 materializes every tracked corpus file and ledger as 0664 and a
+// developer with umask 022 gets 0644 — from byte-identical trees. A gate that
+// demanded the literal permission word 0644 therefore passed or failed on the
+// machine rather than on the change, and did fail, on a corpus file this branch
+// never touched.
+//
+// Both endpoints of that environment range are asserted here, together with the
+// two properties that ARE tree properties and must still be rejected.
+func TestRunAcceptsGroupWritableCheckoutModes(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []os.FileMode{0o644, 0o664, 0o600, 0o666} {
+		repo := newHistoryTestRepo(t)
+		corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+		corpusName := historyCorpusFileName(t, "fc_0000000001_q0_p0")
+		corpusPath := filepath.Join(corpusDir, corpusName)
+		writeHistoryFile(t, corpusPath, historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
+		gitForTest(t, repo, "add", ".")
+		gitForTest(t, repo, "commit", "--quiet", "-m", "trusted corpus")
+		trusted := gitForTest(t, repo, "rev-parse", "HEAD")
+		if err := os.Chmod(corpusPath, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := runAtRepo(repo, trusted); err != nil {
+			t.Fatalf("corpus file checked out with mode %v was rejected: %v", mode, err)
+		}
+		if err := os.Chmod(corpusPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
+			t.Fatalf("executable corpus file error = %v, want execute-bit rejection", err)
+		}
+		if err := os.Chmod(corpusPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(repo, "corpus-target"+factorycorpus.FileExt)
+		writeHistoryFile(t, target, historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
+		if err := os.Remove(corpusPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, corpusPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("symlinked corpus file error = %v, want non-regular-file rejection", err)
+		}
+	}
+}
+
+// TestRunAcceptsAnAbsentRetirementLedgerDirectory pins that a repository which
+// has never had to retire a corpus point is not in violation. Git cannot track
+// an empty directory, so `retirements/` simply does not exist until the first
+// ledger lands; requiring one would force the first person who needs the gate
+// to invent a ledger for a retirement that never happened.
+func TestRunAcceptsAnAbsentRetirementLedgerDirectory(t *testing.T) {
+	t.Parallel()
+	repo := newHistoryTestRepo(t)
+	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000001_q0_p0")),
+		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "corpus without any retirement ledger")
+	trusted := gitForTest(t, repo, "rev-parse", "HEAD")
+	if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(ledgerRepoPath))); !os.IsNotExist(err) {
+		t.Fatalf("fixture unexpectedly has a retirement-ledger directory: %v", err)
+	}
+	if err := runAtRepo(repo, trusted); err != nil {
+		t.Fatalf("ledger-free repository was rejected: %v", err)
+	}
+}
+
+// TestAdditiveFamilyAppendNeedsNoLedger pins the granularity of the gate.
+// Since RFC-201 §5.7 the corpus is grouped one file per feature family, so a
+// routine batch APPENDS its scenarios into existing family files and those
+// files' bytes change. Comparing files would demand a retirement ledger for
+// every batch — a governance instrument that fires on everything authorizes
+// nothing. The unit compared is the scenario.
+func TestAdditiveFamilyAppendNeedsNoLedger(t *testing.T) {
+	t.Parallel()
+	repo := newHistoryTestRepo(t)
+	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
+	first := historyCorpusScenarios(t, []string{"fc_0000000001_q0_p0"}, "shape=base")
+	writeHistoryFile(t, filepath.Join(corpusDir, name), first)
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "trusted corpus")
+	trusted := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	grown := historyCorpusScenarios(t, []string{"fc_0000000001_q0_p0", "fc_0000000001_q1_p0"}, "shape=base")
+	if bytes.Equal(first, grown) {
+		t.Fatal("appending a scenario did not change the family file's bytes")
+	}
+	writeHistoryFile(t, filepath.Join(corpusDir, name), grown)
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "append a scenario into an existing family")
+	if err := runAtRepo(repo, trusted); err != nil {
+		t.Fatalf("additive append into an existing family file was rejected: %v", err)
+	}
+
+	rewritten := historyCorpusScenarios(t, []string{"fc_0000000001_q0_p0", "fc_0000000001_q1_p0"}, "shape=re-blessed")
+	writeHistoryFile(t, filepath.Join(corpusDir, name), rewritten)
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "rewrite a committed scenario without a ledger")
+	if err := runAtRepo(repo, trusted); err == nil ||
+		!strings.Contains(err.Error(), "changed without one new retirement ledger") ||
+		!strings.Contains(err.Error(), "fc_0000000001_q0_p0 (scenario rewritten)") {
+		t.Fatalf("unledgered scenario rewrite error = %v, want a scenario-level rejection", err)
+	}
+}
+
 func newHistoryTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -691,37 +804,88 @@ func newHistoryTestRepo(t *testing.T) string {
 	return repo
 }
 
-func historyCorpusScenario(t *testing.T, name, feature string) []byte {
-	t.Helper()
-	shape := "0123456789abcdef"
-	dedup := factorycorpus.DedupKeyOf(feature, shape)
-	data := []byte(fmt.Sprintf(`# %s
-#
-# format-version: 1
-# generator: history-gate-test/1
-# seed: 1
-# query-index: 0
-# projection: 0
-# date: 2026-08-01
-# blessing: metamorphic
-# oracles: test
-# feature-vector: %s
-# plan-shape: %s
-# dedup-key: %s
+// historyFamilyVectors are four feature vectors that land in four DISTINCT
+// families, hence four distinct committed family files. The gate compares
+// SCENARIOS parsed out of family files, so a fixture has to be a real one: it
+// goes through the writer and comes back through the loader, which is also
+// what keeps these tests honest if the committed format moves again.
+var historyFamilyVectors = map[string]string{
+	"fc_0000000001_q0_p0": "shape=single;idx=A;proj=star;where=cmp.gt;order=none",
+	"fc_0000000002_q0_p0": "shape=single;idx=A;proj=star;where=in.in;order=none",
+	"fc_0000000003_q0_p0": "shape=single;idx=A;proj=star;where=between.ge;order=none",
+	"fc_0000000004_q0_p0": "shape=single;idx=A;proj=star;where=colcol.le;order=none",
+	// A second point in the SAME family as fc_0000000001_q0_p0: a family file
+	// holds many scenarios, and an append into one is the routine batch shape.
+	"fc_0000000001_q1_p0": "shape=single;idx=A;proj=star;where=cmp.gt;order=none",
+}
 
-name: %q
-schema_template: |-
-  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
-setup:
-  - |-
-    INSERT INTO t VALUES (1)
-tests:
-  - query: |-
-      SELECT id FROM t
-    unordered: true
-    rows:
-      - [1]
-`, name, feature, shape, dedup, name))
+func historyFeatureVector(t *testing.T, key string) string {
+	t.Helper()
+	fv, ok := historyFamilyVectors[key]
+	if !ok {
+		t.Fatalf("no fixture feature vector for %q", key)
+	}
+	return fv
+}
+
+// historyCorpusFileName is the family file a fixture scenario belongs in. The
+// loader re-derives it and rejects a scenario sitting in the wrong file, so the
+// name cannot be chosen freely.
+func historyCorpusFileName(t *testing.T, key string) string {
+	t.Helper()
+	return factorycorpus.FamilyFileName(factorycorpus.FamilyOf(historyFeatureVector(t, key)))
+}
+
+// historyCorpusScenario renders one scenario as a whole family file. label
+// varies the committed PLAN SHAPE, which is how a fixture expresses "the same
+// corpus point, re-blessed" — the bytes differ, the family file does not.
+func historyCorpusScenario(t *testing.T, key, label string) []byte {
+	t.Helper()
+	return historyCorpusScenarios(t, []string{key}, label)
+}
+
+// historyCorpusScenarios renders several scenarios as ONE family file, which is
+// how the committed corpus is actually shaped. Every key must belong to the
+// same family; the loader re-derives the family per scenario and rejects a file
+// that mixes them.
+func historyCorpusScenarios(t *testing.T, keys []string, label string) []byte {
+	t.Helper()
+	entries := make([]*factorycorpus.Scenario, 0, len(keys))
+	for i, key := range keys {
+		fv := historyFeatureVector(t, key)
+		sum := sha256.Sum256([]byte(label + "|" + key))
+		shape := hex.EncodeToString(sum[:8])
+		entries = append(entries, &factorycorpus.Scenario{
+			Header: factorycorpus.Header{
+				Name:          key,
+				Generator:     "history-gate-test/1",
+				Seed:          1,
+				QueryIndex:    i,
+				Projection:    0,
+				Date:          "2026-08-01",
+				Blessing:      factorycorpus.BlessingMetamorphic,
+				Oracles:       []string{"test"},
+				FeatureVector: fv,
+				PlanShape:     shape,
+				DedupKey:      factorycorpus.DedupKeyOf(fv, shape),
+			},
+			Doc: &yamsql.Scenario{
+				Name:           key,
+				SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))",
+				Setup:          []string{"INSERT INTO t VALUES (1)"},
+				Tests: []yamsql.Test{{
+					Query:     "SELECT id FROM t",
+					Unordered: true,
+					Columns:   []string{"ID"},
+					Rows:      [][]any{{int64(1)}},
+				}},
+			},
+		})
+	}
+	data, err := factorycorpus.MarshalFamily(entries)
+	if err != nil {
+		t.Fatalf("marshal fixture family file: %v", err)
+	}
 	return data
 }
 

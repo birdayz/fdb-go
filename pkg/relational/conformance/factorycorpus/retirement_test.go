@@ -16,11 +16,11 @@ import (
 // here: later corpus growth must not invalidate an immutable historical
 // retirement. cmd/verify-corpus-retirement-history validates it against the
 // Git commit that first added this ledger (and against the worktree while the
-// ledger is new to the trusted branch). This hermetic test pins RFC-205's
+// ledger is new to the trusted branch). This hermetic test pins RFC-208's
 // reviewed transaction shape while the generic validator tests endpoint logic.
-func TestRFC205RetirementLedgerShape(t *testing.T) {
+func TestRFC208RetirementLedgerShape(t *testing.T) {
 	t.Parallel()
-	ledger, err := factorycorpus.LoadRetirementLedger(filepath.Join("retirements", "2026-08-01-rfc205.json"))
+	ledger, err := factorycorpus.LoadRetirementLedger(filepath.Join("retirements", "2026-08-02-rfc208.json"))
 	if err != nil {
 		t.Fatalf("LoadRetirementLedger: %v", err)
 	}
@@ -28,16 +28,16 @@ func TestRFC205RetirementLedgerShape(t *testing.T) {
 	for _, change := range ledger.Changes {
 		counts[change.Disposition]++
 	}
-	if counts[factorycorpus.DispositionRetired] != 24 ||
-		counts[factorycorpus.DispositionReplaced] != 27 ||
-		counts[factorycorpus.DispositionAdded] != 3 || len(ledger.Changes) != 54 {
-		t.Fatalf("RFC-205 ledger dispositions = %v across %d files, want retired=24 replaced=27 added=3 across 54", counts, len(ledger.Changes))
+	if counts[factorycorpus.DispositionRetired] != 0 ||
+		counts[factorycorpus.DispositionAdded] != 0 ||
+		counts[factorycorpus.DispositionReplaced] != 36 || len(ledger.Changes) != 36 {
+		t.Fatalf("RFC-208 ledger dispositions = %v across %d files, want replaced=36 across 36 with nothing retired or added", counts, len(ledger.Changes))
 	}
 }
 
 func TestLoadRetirementLedgerRejectsTrailingJSON(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-01-rfc205.json")
+	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
@@ -53,11 +53,11 @@ func TestLoadRetirementLedgerRejectsTrailingJSON(t *testing.T) {
 
 func TestLoadRetirementLedgerRejectsWhitespaceOnlyRFC(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("retirements", "2026-08-01-rfc205.json"))
+	data, err := os.ReadFile(filepath.Join("retirements", "2026-08-02-rfc208.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = bytes.Replace(data, []byte(`"rfc": "RFC-205"`), []byte(`"rfc": "   "`), 1)
+	data = bytes.Replace(data, []byte(`"rfc": "RFC-208"`), []byte(`"rfc": "   "`), 1)
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
@@ -67,9 +67,37 @@ func TestLoadRetirementLedgerRejectsWhitespaceOnlyRFC(t *testing.T) {
 	}
 }
 
+// duplicateJSONKey repeats one object key verbatim wherever it first appears.
+// Keying the mutation on the FIELD NAME rather than on its committed value is
+// what lets these fixtures survive the next ledger: a hard-coded commit hash
+// silently stops mutating anything, and the test then asserts that unmutated
+// bytes are rejected — which they are not, so it fails for the wrong reason.
+func duplicateJSONKey(t *testing.T, data []byte, key string) []byte {
+	t.Helper()
+	needle := []byte(`"` + key + `": `)
+	at := bytes.Index(data, needle)
+	if at < 0 {
+		t.Fatalf("ledger fixture has no %q field", key)
+	}
+	rest := data[at+len(needle):]
+	end := bytes.IndexByte(rest, 0x0a)
+	if end < 0 {
+		t.Fatalf("ledger fixture field %q is not line-terminated", key)
+	}
+	line := append([]byte(nil), data[at:at+len(needle)+end]...)
+	if !bytes.HasSuffix(line, []byte(",")) {
+		line = append(line, ',')
+	}
+	out := append([]byte(nil), data[:at]...)
+	out = append(out, line...)
+	out = append(out, ' ')
+	out = append(out, data[at:]...)
+	return out
+}
+
 func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-01-rfc205.json")
+	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
@@ -81,18 +109,17 @@ func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
 	}{
 		{
 			name: "top-level endpoint",
-			data: bytes.Replace(data,
-				[]byte(`"base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169",`),
-				[]byte(`"base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169", "base_commit": "51d9e9701bbcb959ae09e472fa9e6bb2c9e84169",`),
-				1,
-			),
-			key: "base_commit",
+			data: duplicateJSONKey(t, data, "base_commit"),
+			key:  "base_commit",
 		},
 		{
 			name: "nested change name",
 			data: bytes.Replace(data,
-				[]byte(`{"name":`),
-				[]byte(`{"name":"duplicate.yaml","name":`),
+				[]byte(`{
+      "name":`),
+				[]byte(`{
+      "name": "duplicate.yamsql",
+      "name":`),
 				1,
 			),
 			key: "name",
@@ -117,7 +144,7 @@ func TestLoadRetirementLedgerRejectsDuplicateJSONKeysRecursively(t *testing.T) {
 
 func TestLoadRetirementLedgerRequiresCanonicalKeysAndUTF8(t *testing.T) {
 	t.Parallel()
-	source := filepath.Join("retirements", "2026-08-01-rfc205.json")
+	source := filepath.Join("retirements", "2026-08-02-rfc208.json")
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
@@ -136,8 +163,8 @@ func TestLoadRetirementLedgerRequiresCanonicalKeysAndUTF8(t *testing.T) {
 	}{
 		{
 			name: "case-variant top-level field",
-			data: bytes.Replace(data, []byte(`"rfc": "RFC-205"`),
-				[]byte(`"RFC": "RFC-205"`), 1),
+			data: bytes.Replace(data, []byte(`"rfc": "RFC-208"`),
+				[]byte(`"RFC": "RFC-208"`), 1),
 			want: `non-canonical JSON object key "RFC" at $`,
 		},
 		{
@@ -170,24 +197,24 @@ func TestPortableCorpusFilename(t *testing.T) {
 		name string
 		want bool
 	}{
-		{name: "fc_0000000001_q0_p0.yaml", want: true},
-		{name: "nested/file.yaml"},
-		{name: `nested\file.yaml`},
-		{name: `C:\file.yaml`},
-		{name: "../file.yaml"},
-		{name: "CON.yaml"},
-		{name: "lpt9.anything.yaml"},
-		{name: "trailing.yaml "},
-		{name: "control\x1f.yaml"},
-		{name: "less<than.yaml"},
-		{name: "greater>than.yaml"},
-		{name: `quote"name.yaml`},
-		{name: "pipe|name.yaml"},
-		{name: "question?.yaml"},
-		{name: "star*.yaml"},
-		{name: "café.yaml"},
-		{name: "upper.YAML"},
-		{name: "Upper.yaml"},
+		{name: "single__cmp__none.yamsql", want: true},
+		{name: "nested/file.yamsql"},
+		{name: `nested\file.yamsql`},
+		{name: `C:\file.yamsql`},
+		{name: "../file.yamsql"},
+		{name: "CON.yamsql"},
+		{name: "lpt9.anything.yamsql"},
+		{name: "trailing.yamsql "},
+		{name: "control\x1f.yamsql"},
+		{name: "less<than.yamsql"},
+		{name: "greater>than.yamsql"},
+		{name: `quote"name.yamsql`},
+		{name: "pipe|name.yamsql"},
+		{name: "question?.yamsql"},
+		{name: "star*.yamsql"},
+		{name: "café.yamsql"},
+		{name: "upper.YAMSQL"},
+		{name: "Upper.yamsql"},
 	} {
 		if got := factorycorpus.IsPortableCorpusFilename(test.name); got != test.want {
 			t.Errorf("IsPortableCorpusFilename(%q) = %v, want %v", test.name, got, test.want)
@@ -199,17 +226,17 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	beforeDir := t.TempDir()
-	path := filepath.Join(dir, "replacement.yaml")
+	path := filepath.Join(dir, "replacement.yamsql")
 	if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "stable.yaml"), []byte("stable"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "stable.yamsql"), []byte("stable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(beforeDir, "replacement.yaml"), []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(beforeDir, "replacement.yamsql"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(beforeDir, "stable.yaml"), []byte("stable"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(beforeDir, "stable.yamsql"), []byte("stable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	before := factorycorpus.Census{Scenarios: 2, Tests: 8, ByFeature: map[string]int{"old": 2}, ByBlessing: map[string]int{"metamorphic": 2}, ByKeyBlessing: map[string]string{"a": "metamorphic", "b": "metamorphic"}}
@@ -242,7 +269,7 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 		BeforeTreeSHA256:   beforeTreeDigest,
 		AfterTreeSHA256:    afterTreeDigest,
 		Changes: []factorycorpus.RetirementChange{{
-			Name: "replacement.yaml", Disposition: factorycorpus.DispositionReplaced,
+			Name: "replacement.yamsql", Disposition: factorycorpus.DispositionReplaced,
 			OldSHA256: digest([]byte("old")), NewSHA256: fileDigest,
 		}},
 	}
@@ -273,13 +300,13 @@ func TestRetirementLedgerRejectsWrongEndpointAndFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "stable.yaml"), []byte("unlisted edit"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "stable.yamsql"), []byte("unlisted edit"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := factorycorpus.ValidateRetirementTransition(ledger, before, after, dir); err == nil {
 		t.Fatal("unlisted corpus edit was accepted")
 	}
-	if err := os.WriteFile(filepath.Join(beforeDir, "replacement.yaml"), []byte("invented old bytes"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(beforeDir, "replacement.yamsql"), []byte("invented old bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := factorycorpus.ValidateRetirementLedgerBefore(ledger, before, beforeDir); err == nil {

@@ -1,6 +1,6 @@
 package sqldriver_test
 
-// End-to-end coverage for RFC-205's runtime physical range sets. These cases
+// End-to-end coverage for RFC-208's runtime physical range sets. These cases
 // deliberately constrain a suffix after one or more float equalities: a
 // terminal signed-zero widening or a residual-only/base-scan answer would not
 // exercise the changed contract.

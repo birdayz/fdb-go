@@ -1,12 +1,12 @@
 package sqldriver_test
 
 // A zero-valued float equality must find BOTH signed zeros even when it is NOT
-// the terminal column of a composite index's equality prefix (RFC-205,
+// the terminal column of a composite index's equality prefix (RFC-208,
 // superseding TODO CQ-28's terminal-only stopgap).
 //
 // IEEE says -0.0 == +0.0 and this engine's `=` follows IEEE, but FDB tuple
 // encoding preserves the sign bit, so the two zeros are distinct adjacent index
-// keys and a logical probe must cover both. Before RFC-205, `v = 0 AND w = 5`
+// keys and a logical probe must cover both. Before RFC-208, `v = 0 AND w = 5`
 // consumed both columns, so the zero was not terminal and the single physical
 // probe returned NOTHING for a stored (-0.0, 5).
 //
@@ -15,7 +15,7 @@ package sqldriver_test
 // and (+0.0, w<5) — so a single TupleRange spanning both would return WRONG
 // rows rather than missing ones.
 //
-// RFC-205 keeps the full `[=,=]` comparison prefix and binds one exact range for
+// RFC-208 keeps the full `[=,=]` comparison prefix and binds one exact range for
 // each physical zero sign at runtime. No broad interval or residualized suffix
 // is needed, and parameters/correlations use the same binder. The correlated
 // case is pinned separately by TestFDB_CorrelatedZeroCompositeSentinel.

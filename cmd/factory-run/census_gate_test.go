@@ -155,19 +155,28 @@ func TestPersistAllowsOnlyTheExactLedgeredRetirement(t *testing.T) {
 	// Add a second, distinct point, then retire exactly that point. Keeping the
 	// first scenario makes the post-transaction corpus non-empty while the
 	// scenario/test/feature census genuinely shrinks.
+	//
+	// The retired point takes a feature vector in a DIFFERENT family, so it
+	// lands in its own family file and retiring it is a file removal. A vector
+	// in the same family would share the seeded scenario's file, and deleting
+	// that file would retire both.
 	retiredHeader := files[0].Header
 	retiredHeader.Name = "fc_0000000002_q0_p0"
 	retiredHeader.Seed = 2
 	retiredHeader.PlanShape = "fedcba9876543210"
-	retiredHeader.DedupKey = factorycorpus.DedupKeyOf(retiredHeader.FeatureVector+";retired=1", retiredHeader.PlanShape)
-	retiredHeader.FeatureVector += ";retired=1"
-	retiredScenario := *files[0].Scenario
-	retiredScenario.Name = retiredHeader.Name
-	oldBytes, err := factorycorpus.Marshal(retiredHeader, &retiredScenario)
+	retiredHeader.FeatureVector = "shape=single;idx=A;proj=star;where=in.in;order=none"
+	retiredHeader.DedupKey = factorycorpus.DedupKeyOf(retiredHeader.FeatureVector, retiredHeader.PlanShape)
+	retiredDoc := *files[0].Doc
+	retiredDoc.Name = retiredHeader.Name
+	oldBytes, err := factorycorpus.MarshalFamily([]*factorycorpus.Scenario{{
+		Header: retiredHeader,
+		Doc:    &retiredDoc,
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	retiredPath := filepath.Join(corpus, retiredHeader.Name+".yaml")
+	retiredPath := filepath.Join(corpus,
+		factorycorpus.FamilyFileName(factorycorpus.FamilyOf(retiredHeader.FeatureVector)))
 	if err := os.WriteFile(retiredPath, oldBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +426,7 @@ func TestPersistRejectsAdditionOnlyRetirementAuthorization(t *testing.T) {
 		BeforeCensusSHA256: strings.Repeat("1", 64), AfterCensusSHA256: strings.Repeat("2", 64),
 		BeforeTreeSHA256: strings.Repeat("3", 64), AfterTreeSHA256: strings.Repeat("4", 64),
 		Changes: []factorycorpus.RetirementChange{{
-			Name: "fc_0000000002_q0_p0.yaml", Disposition: factorycorpus.DispositionAdded,
+			Name: "single__in__none.yamsql", Disposition: factorycorpus.DispositionAdded,
 			NewSHA256: strings.Repeat("5", 64),
 		}},
 	}

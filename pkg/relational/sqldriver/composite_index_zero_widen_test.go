@@ -24,10 +24,10 @@ package sqldriver_test
 //
 // The original terminal-only fix could not safely widen `v = 0 AND w = 5`:
 // the span between (-0.0,5) and (+0.0,5) also admits (-0.0,w>5) and
-// (+0.0,w<5). RFC-205 superseded that CQ-28 limitation with a lazy physical
+// (+0.0,w<5). RFC-208 superseded that CQ-28 limitation with a lazy physical
 // range set, retaining the suffix and opening one exact range per sign. This
 // file keeps the terminal/IN regression; the constrained-suffix and correlated
-// paths are pinned by the RFC-205 range-set integration tests.
+// paths are pinned by the RFC-208 range-set integration tests.
 
 import (
 	"context"
@@ -105,7 +105,7 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	}
 
 	// CQ-75: IN-list value dedup intentionally collapses the two IEEE-equal
-	// zeros to one logical probe. RFC-205 expands that surviving probe into its
+	// zeros to one logical probe. RFC-208 expands that surviving probe into its
 	// two physical signed-zero ranges. Pin the exact plan as well as results for
 	// both element orders; the unindexed twin additionally guards against the
 	// rejected bit-identity-dedup fix, which duplicated every matching row.

@@ -1,4 +1,4 @@
-# RFC-205 — Runtime signed-zero equality is an ordered physical range set
+# RFC-208 — Runtime signed-zero equality is an ordered physical range set
 
 Status: **ACCEPTED AND IMPLEMENTED — 2026-08-01.**
 
@@ -673,70 +673,63 @@ Without an explicit residual layer, two broad ranges return false rows.
 
 ## Measured corpus reconciliation
 
-The implementation was replayed through the RFC-201 factory against real FDB,
-not re-blessed from planner output alone. This was a replacement transaction,
-not a clean-checkout append: in an isolated copy of the parent corpus, the 51
-old-side paths enumerated by the ledger (27 replacements plus 24 retirements)
-were first hash-verified and removed. That preparation is required because the
-factory correctly refuses to overwrite an existing scenario name with changed
-content. The generation step was:
+The RFC-201 corpus this RFC reconciles against is the FAMILY-FILE corpus
+(RFC-201 §5.7): 5,000 scenarios grouped one file per feature family, 309 files.
+An earlier draft of this section described a reconciliation against the retired
+one-file-per-scenario corpus. That corpus no longer exists, and the transaction
+recorded here was re-derived from scratch against the current one.
 
-~~~text
-go run ./cmd/factory-run -seed-start 19 -seeds 443 -quota 200 \
-  -date 2026-08-01 \
-  -out pkg/relational/conformance/factorycorpus/testdata \
-  -manifest /tmp/rfc205-final-factory-manifest.json \
-  -findings /tmp/rfc205-final-factory-findings
-~~~
+What moves is exactly one thing. RFC-208 replaces zero equality's single-probe
+access with an exact runtime range set, so the PHYSICAL PLAN of some committed
+points changes. Measured over the whole corpus by regenerating every scenario
+from its seed and re-planning it:
 
-As designed, that step wrote the candidate files and then refused to lower the
-old census. The manifest and zero-file findings directory were reviewed first;
-only then were the content-exact retirement ledger and matching census update
-added. The permanent gate exercises the paired
-`-update-census -retirement-ledger` path, including wrong endpoint, wrong date,
-unlisted edit, stale old hash, trailing JSON, and unused/mispaired flag cases.
+- 156 of 5,000 scenarios plan a different physical shape — 52 corpus points
+  across their three projection variants, in 36 of the 309 family files.
+- Nothing else moves. The candidate each seed derives, all four TLP renderings,
+  the schema template, the setup and every frozen result row are recomputed and
+  compared identical; the re-bless tool (`cmd/factory-rebless-plan-shapes`)
+  treats a difference in any of them as an error rather than as something to
+  write down, because those are oracle OUTPUT and a planner change that alters
+  them is a bug report, not a re-bless.
+- No dedup-key collision: each moved point lands on a plan point no other
+  committed scenario occupies, so nothing is retired and nothing is added. The
+  census keeps 5,000 scenarios and 20,000 tests and its per-feature-vector
+  counts are unchanged — only the per-dedup-key blessing map is re-keyed.
+- The full 5,000-scenario corpus executes green against real FDB after the
+  re-bless (`factorycorpus/full`), which is the row-level evidence the
+  shape-only argument above rests on.
 
-The run generated and executed 4,337 candidates. It blessed 2,072, rejected
-2,042 as already-covered deduplicates, wrote 30 files (27 exact replacements
-and 3 additions), recorded 2,265 counted skips, and found zero oracle
-violations, zero findings, and zero name collisions. The 27 replaced scenarios
-retain the same schema, setup, four queries, flags, and row semantics; only the
-planner-dependent provenance/expectations changed.
-
-Eight old query points — seeds/query slots 19/0, 39/1, 137/5, 176/3, 202/4,
-256/2, 307/2, and 388/2 — no longer admit a distinct MatchLeaf-disabled
-physical plan after this RFC rejects unsafe ordered FLOAT/DOUBLE range access
-and stops treating zero equality as one physically fixed probe. Their three
-projection variants account for 24 retired files. Keeping their old recipes
-would falsely claim a second physical plan still exists.
-The signed-zero behavior they once happened to exercise is covered directly by
-the hand-authored range, planner, continuation, and real-FDB proofs below.
-
-The reconciled corpus contains 1,979 scenarios, 7,916 tests, and 1,961 feature
-vectors: 1,763 metamorphic and 216 explicitly TLP-only. The same commit carries
-`retirements/2026-08-01-rfc205.json`, which authorizes exactly 24 retirements,
-27 replacements, and 3 additions. Its format-v2 `base_commit` names the exact
-repository tree from which the old side was measured. CI requires that object
-to be a commit and an ancestor of the independently fetched pre-PR target
-branch, then reads its raw blobs with `git ls-tree` and batched `git cat-file`
-to recompute the old census, complete tree hash, and every retired/replaced
-old-file hash. Archive attributes, checkout filters, nested paths, and
-non-regular Git modes therefore cannot transform or hide evidence. The AFTER
-side is recomputed from raw blobs at the unique Git
+The same commit carries `retirements/2026-08-02-rfc208.json`, authorizing
+exactly 36 file replacements with nothing retired and nothing added. Its
+format-v2 `base_commit` names the exact repository tree from which the old side
+was measured. CI requires that object to be a commit and an ancestor of the
+independently fetched pre-PR target branch, then reads its raw blobs with
+`git ls-tree` and batched `git cat-file` to recompute the old census, complete
+tree hash, and every replaced old-file hash. Archive attributes, checkout
+filters, nested paths, and non-regular Git modes therefore cannot transform or
+hide evidence. The AFTER side is recomputed from raw blobs at the unique Git
 commit that first added the ledger; while a ledger is new to the independently
 fetched trusted branch, it must also match raw proposed HEAD, and the governed
 checkout bytes must match that raw HEAD exactly. Trusted ledgers are immutable
 and undeletable, and at most one new date-named ledger may append in a change.
-This lets later corpus growth coexist
-with old ledgers without ever comparing a historical AFTER state to today's
-tree. A new ledger's BEFORE must also exactly match the fetched target corpus,
-and without a new ledger every trusted YAML must remain present and byte-for-
-byte unchanged; pure additions remain allowed. This exact-tree comparison
-catches balanced delete+add or replacement attacks that preserve every census
-count. Together with every new-file hash, those gates make the transaction
-content- and history-exact; a synthetic side commit, rewritten/deleted ledger,
-invented old hash, missing historical file, pre-existing "addition", re-added
-ledger, or unlisted byte change invalidates the transaction.
+This lets later corpus growth coexist with old ledgers without ever comparing a
+historical AFTER state to today's tree.
+
+The unit the gate compares is the SCENARIO, not the file. Family files grow by
+append, so a routine batch changes the bytes of files it only added to; a
+file-level comparison would demand a retirement ledger for every batch, and a
+governance instrument that fires on everything authorizes nothing. Deleting,
+renaming or rewriting a committed scenario requires a ledger; adding one does
+not. This exact-scenario comparison still catches the balanced delete+add and
+replacement attacks that preserve every census count.
+
+The mode contract on those governed files is what Git actually tracks: a
+regular, non-executable blob. It is deliberately NOT the literal permission
+word 0644 — the read/write bits of a checkout come from the checking-out
+process's umask, so byte-identical trees materialize as 0644 on a developer box
+and 0664 on a runner with umask 002. Asserting the permission word made the
+gate fail on the machine rather than on the change, and it did.
 
 Java 4.12.11.0 was also exercised as a prospective second-engine oracle rather
 than assumed authoritative. It could not plan the representative
@@ -886,7 +879,7 @@ not the final-tree claim; the source-frozen verification is recorded below:
 - four 60-second continuation/range-set fuzzers with 1,250,688 aggregate
   executions: 262,945 branch advances, 235,640 malformed-token parses, 385,882
   continuation round trips, and 366,221 paged sweeps;
-- the factory determinism/canonical audit over all 1,979 committed scenarios,
+- the factory determinism/canonical audit over all 5,000 committed scenarios,
   plus the content-exact retirement-ledger Go and Bazel runfiles gates and the
   Git-history gate that verifies the ledger's old side at `base_commit`; and
 - the 1M-row FDB stress scale. The pre-change run took 224.48s (100k customer

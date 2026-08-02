@@ -94,7 +94,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
-| Generation factory corpus (NEW, #555) | **1979** scenarios · **7916** tests · **1961** feature vectors; blessings **1763 `metamorphic` + 216 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
+| Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
 | `.Field`-decides ratchet (RFC-197) | **52** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition` |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
@@ -224,7 +224,7 @@ Wrong rows / wrong data:
    `sqldriver/null_pk_java_parity_test.go` (explicit NULL, composite partial-NULL, omitted PK
    column; each asserts the null key exists — duplicate-NULL collides 23505 — and that `id=0` does
    NOT collide, i.e. nothing was stored as 0). No divergence remains.
-3. **FIXED by CQ-83 and generalized by RFC-205.** Correlated FLOAT/DOUBLE `=` on a non-terminal composite-index column now
+3. **FIXED by CQ-83 and generalized by RFC-208.** Correlated FLOAT/DOUBLE `=` on a non-terminal composite-index column now
    binds an exact runtime range set for both zero signs while retaining the suffix. Pinned positive
    by `correlated_zero_composite_sentinel_test.go` and
    `runtime_signed_zero_range_set_fdb_test.go`; this is retained in the numbered history but is no
@@ -412,7 +412,7 @@ is the one known committed-byte divergence (deliberate, reviewed).
 Both merged while this revision was being written, and both are re-verified at `a1d281a63`.
 
 **The generation factory (#555, `491e02a7c`).** `pkg/relational/conformance/factorycorpus` exists
-with **1979 committed scenarios / 7916 tests / 1961 feature vectors** (`census_baseline.json`),
+with **5000 committed scenarios / 20000 tests / 4952 feature vectors** (`census_baseline.json`),
 generated → executed → blessed → deduped → committed. The census ratchet gates scenario/test
 totals and every feature vector; authority is compared per scenario by dedup key so promotion is
 allowed and downgrade is rejected. Aggregate `ByBlessing` counts are report-only, because a floor
@@ -521,7 +521,7 @@ Booked by THIS revision, from defects the verification pass found:
    then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
-6. **CQ-75 — DONE via RFC-205.** `v IN (-0.0, 0.0)` now returns both signs in either element order;
+6. **CQ-75 — DONE via RFC-208.** `v IN (-0.0, 0.0)` now returns both signs in either element order;
    the exact plan/result regression is in `composite_index_zero_widen_test.go`. CQ-76's general
    nonzero `IN` + trailing-equality SARGability gap remains open.
 7. **CQ-30**, B3's residual: criterion 2's data-access maxima are still forked.

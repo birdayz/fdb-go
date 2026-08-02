@@ -354,7 +354,7 @@ func validateRetirementLedgerMetadata(ledger RetirementLedger) error {
 	seen := make(map[string]struct{}, len(ledger.Changes))
 	for i, change := range ledger.Changes {
 		if !IsPortableCorpusFilename(change.Name) {
-			return fmt.Errorf("changes[%d] name %q is not a portable flat .yaml corpus name", i, change.Name)
+			return fmt.Errorf("changes[%d] name %q is not a portable flat %s corpus name", i, change.Name, FileExt)
 		}
 		if _, duplicate := seen[change.Name]; duplicate {
 			return fmt.Errorf("changes[%d] duplicates %s", i, change.Name)
@@ -388,7 +388,7 @@ func IsPortableCorpusFilename(name string) bool {
 	if name == "" || !utf8.ValidString(name) || strings.TrimSpace(name) != name ||
 		path.Base(name) != name || filepath.Base(name) != name ||
 		strings.ContainsAny(name, `/\:`) || filepath.IsAbs(name) ||
-		filepath.VolumeName(name) != "" || path.Ext(name) != ".yaml" {
+		filepath.VolumeName(name) != "" || path.Ext(name) != FileExt {
 		return false
 	}
 	for _, r := range name {
@@ -396,7 +396,7 @@ func IsPortableCorpusFilename(name string) bool {
 			return false
 		}
 	}
-	stem := strings.TrimSuffix(name, ".yaml")
+	stem := strings.TrimSuffix(name, FileExt)
 	deviceStem := strings.ToUpper(strings.SplitN(stem, ".", 2)[0])
 	switch deviceStem {
 	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
@@ -421,7 +421,7 @@ func loadCorpusTree(corpusDir string) (map[string]string, error) {
 	}
 	tree := make(map[string]string)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != FileExt {
 			continue
 		}
 		digest, err := fileSHA256(filepath.Join(corpusDir, entry.Name()))

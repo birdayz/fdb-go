@@ -4004,10 +4004,6 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		if !ok || at.ElementType == nil {
 			return nil, &InvalidCastError{Message: "Target array element type cannot be null"}
 		}
-		sourceArray, ok := source.(*ArrayType)
-		if !ok || sourceArray.ElementType == nil {
-			return nil, &InvalidCastError{Message: "Source array element type cannot be null"}
-		}
 		list, ok := v.([]any)
 		if !ok {
 			// A non-list carrier under an ARRAY target — degrade to
@@ -4015,13 +4011,39 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			// non-array sources; this arm only sees array-typed children).
 			return nil, nil
 		}
+		// An EMPTY array casts to an empty array of the target type without
+		// consulting the source element type at all — Java returns here
+		// (CastValue.java:586-589) before anything reads it. It has to: the
+		// only type an empty array literal can carry is an unknown element
+		// type, so demanding a source element type up front would reject
+		// `CAST([] AS INTEGER ARRAY)`, which is legal in both engines.
+		if len(list) == 0 {
+			return []any{}, nil
+		}
+		var sourceElement Type
+		if sourceArray, isArray := source.(*ArrayType); isArray {
+			sourceElement = sourceArray.ElementType
+		}
 		out := make([]any, 0, len(list))
 		for _, e := range list {
 			if e == nil {
+				// A NULL element stays NULL and is never cast, so it never
+				// needs a source element type either.
 				out = append(out, nil)
 				continue
 			}
-			ev, eerr := (&CastValue{Target: at.ElementType}).castEvaluated(e, sourceArray.ElementType)
+			if sourceElement != nil && sourceElement.Equals(at.ElementType) {
+				// Identical element types: Java passes the element through
+				// rather than re-entering the cast machinery.
+				out = append(out, e)
+				continue
+			}
+			if sourceElement == nil {
+				// Only a REAL element cast needs the source type, which is
+				// where Java raises (CastValue.java:599-602).
+				return nil, &InvalidCastError{Message: "Source array element type cannot be null"}
+			}
+			ev, eerr := (&CastValue{Target: at.ElementType}).castEvaluated(e, sourceElement)
 			if eerr != nil {
 				return nil, eerr
 			}

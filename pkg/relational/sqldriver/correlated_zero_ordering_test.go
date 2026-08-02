@@ -15,7 +15,7 @@ package sqldriver_test
 // conservatively: it might bind to zero, so nothing after it claims an order.
 // That costs a sort and nothing else.
 //
-// RFC-205 subsequently fixed SARGABILITY for this shape with a runtime range
+// RFC-208 subsequently fixed SARGABILITY for this shape with a runtime range
 // set that retains the suffix. The ordering decision remains conservative: two
 // individually suffix-ordered signed-zero branches, concatenated in tuple
 // order, do not provide one global suffix order. The explicit sort is still the

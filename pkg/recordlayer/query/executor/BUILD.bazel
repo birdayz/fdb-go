@@ -218,7 +218,6 @@ go_test(
         "merged_leg_wrong_window_test.go",
         "leg_column_owner_selection_test.go",
         "leg_type_channel_test.go",
-        "zero_fork_scan_ranges_test.go",
         "ordinal_join_clock_test.go",
         "positional_type_cache_bound_test.go",
         "frontier_context_carrier_test.go",
