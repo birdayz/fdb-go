@@ -116,12 +116,6 @@ const (
 	// RFC-201 Phase 4.
 	SkipDDLFunction SkipClass = "unsupported-DDL:function"
 
-	// SkipDDLValueIndexAsSelect is a value index written in materialized-view
-	// syntax — `CREATE INDEX x AS SELECT cols FROM t [ORDER BY cols]` with no
-	// aggregate. Go's DDL routes every AS-SELECT index to the aggregate
-	// builder, which requires an aggregate function. Booked as CQ-71.
-	SkipDDLValueIndexAsSelect SkipClass = "unsupported-DDL:value-index-as-select"
-
 	// SkipDDLOther is a schema template the engine rejects for a reason that
 	// is not struct or function — the residual DDL gap, kept separate so it
 	// cannot hide inside the two named ones.
@@ -167,8 +161,7 @@ const (
 	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
-	// SkipGapRowVersion is the `__ROW_VERSION` pseudo-column.
-	SkipGapRowVersion SkipClass = "engine-gap:row-version-pseudocolumn"
+
 	// SkipGapTableValuedFunction is a table-valued function in FROM.
 	SkipGapTableValuedFunction SkipClass = "engine-gap:table-valued-function"
 	// SkipGapInlineValues is `FROM VALUES (…)` as a table source.
@@ -191,6 +184,14 @@ const (
 	// widening of the shared surface, tracked because the conformance
 	// principle governs that surface in both directions.
 	SkipConformanceGoAccepts SkipClass = "conformance:go-accepts-what-java-rejects"
+	// SkipGapResultMetadata is a `resultMetadata:` assertion the engine fails
+	// because the result-set metadata pipeline truncates a column's type to
+	// one flat string (CQ-74).
+	SkipGapResultMetadata SkipClass = "engine-gap:result-metadata"
+	// SkipGapSerializationOptions is a schema template serialization option
+	// (compression/encryption) the store layer does not implement, so reads
+	// that Java rejects (wrong key, missing encryption) succeed in Go.
+	SkipGapSerializationOptions SkipClass = "engine-gap:serialization-options"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -217,13 +218,12 @@ func AllSkipClasses() []SkipClass {
 		SkipDebugger,
 		SkipDDLStruct,
 		SkipDDLFunction,
-		SkipDDLValueIndexAsSelect,
 		SkipDDLOther,
 		SkipGapNullableArrayWrapper,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
-		SkipGapRowVersion,
+
 		SkipGapTableValuedFunction,
 		SkipGapInlineValues,
 		SkipGapCorrelatedExistsSetOp,
@@ -233,6 +233,8 @@ func AllSkipClasses() []SkipClass {
 		SkipGapPlannerDeclines,
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
+		SkipGapResultMetadata,
+		SkipGapSerializationOptions,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,

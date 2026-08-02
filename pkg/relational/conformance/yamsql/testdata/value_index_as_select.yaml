@@ -1,0 +1,66 @@
+# value_index_as_select.yaml — RFC-202 S2: the VALUE index written in
+# materialized-view syntax (CREATE INDEX … AS SELECT cols FROM t [ORDER BY]).
+#
+# Proves end-to-end that the generator's indexes are not just created but
+# CHOSEN: each query asserts the plan uses the AS-SELECT index rather than a
+# fallback scan, and that the rows coming back through it are correct.
+#
+# Key-expression semantics are pinned byte-exactly in
+# pkg/relational/core/embedded/index_asselect_generator_test.go; this file is
+# the execution-side proof.
+name: value_index_as_select
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT,
+    category STRING,
+    price BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX cat_idx AS SELECT category FROM items
+  CREATE INDEX cat_price_idx AS SELECT category, price FROM items ORDER BY category, price
+  CREATE INDEX price_reorder_idx AS SELECT name, price FROM items ORDER BY price, name
+  CREATE UNIQUE INDEX name_unique_idx AS SELECT name FROM items ORDER BY name
+setup:
+  - INSERT INTO items VALUES (1, 'fruit', 30, 'apple')
+  - INSERT INTO items VALUES (2, 'fruit', 10, 'banana')
+  - INSERT INTO items VALUES (3, 'veg', 20, 'carrot')
+  - INSERT INTO items VALUES (4, 'veg', 40, 'daikon')
+  - INSERT INTO items VALUES (5, 'fruit', 20, 'elderberry')
+tests:
+  # Single-column AS-SELECT value index serves an equality predicate.
+  - query: SELECT id, category FROM items WHERE category = 'fruit' ORDER BY id
+    plan_contains: IndexScan(CAT_IDX
+    rows:
+      - [1, "fruit"]
+      - [2, "fruit"]
+      - [5, "fruit"]
+
+  # Multi-column index: equality on the first column, range order on the
+  # second — the ORDER BY is satisfied by the index, no in-memory sort.
+  - query: SELECT category, price FROM items WHERE category = 'fruit' ORDER BY price
+    plan_contains: IndexScan(CAT_PRICE_IDX
+    rows:
+      - ["fruit", 10]
+      - ["fruit", 20]
+      - ["fruit", 30]
+
+  # The ORDER BY (not the SELECT order) fixed the key: price is the leading
+  # column of price_reorder_idx, so a price range scan binds to it.
+  - query: SELECT name, price FROM items WHERE price > 15 ORDER BY price
+    plan_contains: IndexScan(PRICE_REORDER_IDX
+    rows:
+      - ["carrot", 20]
+      - ["elderberry", 20]
+      - ["apple", 30]
+      - ["daikon", 40]
+
+  # UNIQUE on the AS-SELECT form is enforced, not just recorded: a duplicate
+  # name must be refused with the unique-violation SQLSTATE.
+  - query: INSERT INTO items VALUES (6, 'fruit', 99, 'apple')
+    error: "23505"
+
+  # And a non-duplicate insert still goes through (the constraint is not
+  # blanket-rejecting writes).
+  - query: INSERT INTO items VALUES (7, 'fruit', 25, 'fig')
+    rowcount: 1

@@ -71,7 +71,6 @@ var knownUnknownTypeMints = map[string]int{
 	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go": 1,
 	"pkg/recordlayer/query/plan/plans/ordering.go":                          2,
 	"pkg/recordlayer/query/plan/plans/streaming_aggregation.go":             1,
-	"pkg/relational/core/embedded/insert_cascades.go":                       1,
 	"pkg/relational/core/embedded/logical_predicate.go":                     2,
 	"pkg/relational/core/query/cascades_translator.go":                      18,
 	"pkg/relational/core/query/clustered_outer_scalar.go":                   2,

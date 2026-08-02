@@ -100,6 +100,24 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 		// For KeyWithValueExpression indexes, store the value portion in the FDB value.
 		valueBytes := emptyValue
 		if newEntries[i].value != nil {
+			// The VALUE portion is always a vanilla pack — the versionstamp
+			// mutation substitutes into the KEY only, so an incomplete
+			// versionstamp here has nothing that could ever complete it. Java
+			// reaches the same dead end (VersionIndexMaintainer.java:107 calls
+			// value.pack() after testing only the entry KEY for incompleteness,
+			// :90) and throws from Tuple.pack; Go's tuple.Pack panics, so the
+			// condition is tested here and returned as Java's exception.
+			//
+			// The shape is `keyWithValue(concat(..., version, ...), split)` with
+			// the split BEFORE the version — which Java's index generator emits
+			// and Java's own DDL tests pin (IndexTest.java:897-905
+			// createVersionIndexWithVersionInValue). The metadata is therefore
+			// not the thing to change; only the crash is.
+			if tupleHasIncompleteVersionstamp(newEntries[i].value) {
+				return &IncompleteVersionstampError{
+					Context: fmt.Sprintf("index %q: version column lies in the value portion of the key-with-value split", m.index.Name),
+				}
+			}
 			valueBytes = newEntries[i].value.Pack()
 		}
 

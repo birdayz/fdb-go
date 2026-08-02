@@ -29,6 +29,7 @@ go_test(
     name = "metadata_test",
     srcs = [
         "benchmark_test.go",
+        "generated_index_test.go",
         "index_test.go",
         "proto_types_test.go",
         "schema_template_test.go",

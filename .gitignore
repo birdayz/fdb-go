@@ -94,3 +94,6 @@ scratchpad/
 /factory-run
 /factory-migrate
 /test-budget
+
+# scratch build dir used by local test tooling
+.tmpbuild/

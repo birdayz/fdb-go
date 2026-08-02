@@ -1,0 +1,103 @@
+# rfc202_generated_index_plans.yaml — RFC-202 gate (d): the generator's index
+# shapes are PLANNABLE, with EXPLAIN-asserted plan shapes, not merely correct
+# via a slower fallback. One block per shape family:
+#   - a covering (KeyWithValue) index serves a covered projection with a
+#     COVERING scan and NO fetch;
+#   - a DESC (order-function) index satisfies ORDER BY ... DESC with no
+#     in-memory sort — forward scan of the order-encoded entries — and its
+#     reverse scan serves the opposite direction;
+#   - a VERSION index is chosen for an ordered __ROW_VERSION query.
+# The ON-source/AS-SELECT twin-plan equality lives in
+# sqldriver's TestFDB_OnSourceIndexPlans (a two-template comparison the
+# single-template scenario format cannot express).
+name: rfc202_generated_index_plans
+schema_template: |
+  CREATE TABLE t_cover (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    c BIGINT,
+    d BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX cover_idx ON t_cover (a) INCLUDE (b, c)
+  CREATE TABLE t_desc (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX desc_idx ON t_desc (a DESC)
+setup:
+  - INSERT INTO t_cover VALUES
+      (1, 5, 50, 500, 5000),
+      (2, 3, 30, 300, 3000),
+      (3, 7, 70, 700, 7000)
+  - INSERT INTO t_desc VALUES (1, 5), (2, 3), (3, 7), (4, NULL)
+tests:
+  # Covering (KeyWithValue) scan: the projection needs only key + INCLUDE
+  # columns, so the fetch is eliminated (MergeProjectionAndFetch) and the
+  # INCLUDE columns are read from the entry VALUE tuple.
+  - query: SELECT a, b, c FROM t_cover WHERE a = 5
+    plan_contains: COVERING
+    rows:
+      - [5, 50, 500]
+
+  # The INCLUDE columns really carry data through the covering path (b, c
+  # come from the FDB value, not the key).
+  - query: SELECT b, c FROM t_cover WHERE a = 3
+    plan_contains: COVERING
+    rows:
+      - [30, 300]
+
+  # A projection needing a NON-included column keeps the fetch — the
+  # covering surface must not overclaim.
+  - query: SELECT a, d FROM t_cover WHERE a = 5
+    plan_not_contains: COVERING
+    rows:
+      - [5, 5000]
+
+  # DESC order-function index: ORDER BY a DESC is the index's FORWARD entry
+  # order (order_desc_nulls_last encoding) — no in-memory sort. DESC defaults
+  # NULLS LAST.
+  - query: SELECT id FROM t_desc ORDER BY a DESC
+    plan_contains: DESC_IDX
+    plan_not_contains: InMemorySort
+    rows:
+      - [3]
+      - [1]
+      - [2]
+      - [4]
+
+  # The same index serves ASC by reverse scan (byte-order flip:
+  # DESC_NULLS_LAST read backwards is ASC_NULLS_FIRST — SQL's ASC default).
+  - query: SELECT id FROM t_desc ORDER BY a ASC
+    plan_contains: DESC_IDX
+    plan_not_contains: InMemorySort
+    rows:
+      - [4]
+      - [2]
+      - [1]
+      - [3]
+
+  # A bounded query on the wrapped column must NOT claim the order-encoded
+  # index as a scan prefix (the stored bytes are the TupleOrdering encoding,
+  # not the raw value) — correctness pin for the non-sargable direction.
+  - query: SELECT id FROM t_desc WHERE a = 5
+    plan_not_contains: DESC_IDX
+    rows:
+      - [1]
+
+  # The KWV split's KEY part is what the direct shortcut rules consume: the
+  # streaming-agg shortcut groups on the index's KEY columns ([A], never the
+  # INCLUDE columns). If the flat candidate bridge reported VALUE columns as
+  # key columns (keyExpressionTopLevelScalarFieldNames ignoring the split),
+  # the shortcut's column-count guard would decline fail-safe and the GROUP
+  # BY would silently degrade to StreamingAgg over an InMemorySort — correct
+  # rows via the slow path. This pin fails on that degradation; group keys
+  # arrive in the index's key order.
+  - query: SELECT a, COUNT(*) FROM t_cover GROUP BY a
+    plan_not_contains: InMemorySort
+    rows:
+      - [3, 1]
+      - [5, 1]
+      - [7, 1]

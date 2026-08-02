@@ -45,7 +45,19 @@ const nullLastByte = byte(0xFE)
 
 // tupleOrderingPack encodes a tuple according to the given direction.
 // Matches Java's TupleOrdering.pack(Tuple, Direction).
-func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) []byte {
+//
+// Both packing branches are VANILLA packs and therefore cannot represent an
+// incomplete versionstamp: Java's packNullsLast raises
+// IllegalArgumentException("Incomplete Versionstamp included in vanilla tuple
+// pack") when one reaches it (TupleOrdering.java:174-180) and Tuple.pack does
+// the same. Go's tuple.Pack PANICS in that situation, so the check happens here
+// and the caller gets Java's exception as a Go error. An ordering wrapper over
+// the __ROW_VERSION pseudo-field (`ORDER BY "__ROW_VERSION" DESC`) is the shape
+// that reaches this from ordinary DDL.
+func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) ([]byte, error) {
+	if tupleHasIncompleteVersionstamp(t) {
+		return nil, &IncompleteVersionstampError{Context: "tuple ordering"}
+	}
 	var packed []byte
 	if dir.counterflowNulls {
 		packed = packNullsLast(t)
@@ -55,7 +67,7 @@ func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) []byte {
 	if dir.inverted {
 		packed = invertBytes(packed)
 	}
-	return packed
+	return packed, nil
 }
 
 // tupleOrderingUnpack decodes bytes back into a tuple according to the given direction.

@@ -41,6 +41,12 @@ type indexSummary struct {
 	SubspaceKey         string `json:"subspaceKey"`
 	AddedVersion        int    `json:"addedVersion"`
 	LastModifiedVersion int    `json:"lastModifiedVersion"`
+	// Options and Predicate ride the comparison (RFC-202 D11): UNIQUE lives
+	// in the options map (IndexOptions.UNIQUE_OPTION) and a sparse index's
+	// WHERE lives in the predicate — omitting either lets an index that
+	// silently dropped them compare equal to Java's.
+	Options   map[string]string `json:"options,omitempty"`
+	Predicate string            `json:"predicate,omitempty"`
 }
 
 type formerIndexSummary struct {
@@ -258,6 +264,16 @@ func extractGoSummary(md *recordlayer.RecordMetaData) metaDataSummary {
 			AddedVersion:        idx.AddedVersion,
 			LastModifiedVersion: idx.LastModifiedVersion,
 		}
+		if len(idx.Options) > 0 {
+			is.Options = idx.Options
+		}
+		if pred := idx.GetPredicateProto(); pred != nil {
+			if b, err := protoJSONOpts.Marshal(pred); err == nil {
+				is.Predicate = string(b)
+			} else {
+				is.Predicate = fmt.Sprintf("<error: %v>", err)
+			}
+		}
 		s.Indexes = append(s.Indexes, is)
 	}
 
@@ -431,7 +447,40 @@ func compareMDIndexes(actual, expected []indexSummary) {
 		Expect(actual[i].SubspaceKey).To(Equal(expected[i].SubspaceKey), "index subspace key mismatch for %s", actual[i].Name)
 		Expect(actual[i].AddedVersion).To(Equal(expected[i].AddedVersion), "index added version mismatch for %s", actual[i].Name)
 		Expect(actual[i].LastModifiedVersion).To(Equal(expected[i].LastModifiedVersion), "index last modified version mismatch for %s", actual[i].Name)
+		// RFC-202 D11: options carry UNIQUE; the predicate carries a sparse
+		// index's WHERE. Both compare, or a dropped clause reads as equal.
+		Expect(normalizedOptionsMap(actual[i].Options)).To(Equal(normalizedOptionsMap(expected[i].Options)),
+			"index options mismatch for %s", actual[i].Name)
+		Expect(normalizePredicateJSON(actual[i].Predicate)).To(Equal(normalizePredicateJSON(expected[i].Predicate)),
+			"index predicate mismatch for %s", actual[i].Name)
 	}
+}
+
+// normalizedOptionsMap treats nil and empty as the same absent-options state.
+func normalizedOptionsMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return map[string]string{}
+	}
+	return m
+}
+
+// normalizePredicateJSON re-marshals a Predicate JSON through Go's proto
+// binary layer, normalizing proto2 field presence exactly like
+// normalizeKeyExprJSON does for key expressions. "" (no predicate) maps to "".
+func normalizePredicateJSON(s string) string {
+	if s == "" {
+		return ""
+	}
+	pred := &gen.Predicate{}
+	if err := protojson.Unmarshal([]byte(s), pred); err != nil {
+		return s
+	}
+	clearProto2Defaults(pred.ProtoReflect())
+	b, err := protoJSONOpts.Marshal(pred)
+	if err != nil {
+		return s
+	}
+	return string(b)
 }
 
 func compareFormerIndexes(actual, expected []formerIndexSummary) {

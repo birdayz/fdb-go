@@ -13179,7 +13179,7 @@ None is speculative: each was re-verified against the tree before booking.
   latent reader arm and is unaffected by this item. Executor + NLJ rule, so:
   Graefe-gated.
 
-- [ ] **CQ-71 (HIGH/L, L, DDL + wire-compat, query-engine review gate) — the
+- [x] **CQ-71 (HIGH/L, L, DDL + wire-compat, query-engine review gate) — the
   VALUE index written in materialized-view syntax (`CREATE INDEX x AS SELECT
   cols FROM t [ORDER BY cols]`) is unimplemented.** Measured by the RFC-201
   Phase-1 corpus run (CQ-69.1): **42 of 238 vendored files — the single largest
@@ -13211,6 +13211,111 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = the 42 files move out of `unsupported-DDL:value-index-as-select` in the
   CQ-69.1 ledger, the index key expression is asserted byte-identical to Java's
   for each corpus shape, and the pinned ledger is updated in the same commit.
+
+  PROGRESS (RFC-202 S1-S3 landed): the value/version AND aggregate arms of
+  the generator are live — `pkg/relational/core/query/ddl` consumes the
+  logical plan for every AS-SELECT form; `parseAggregateIndexDefinition` and
+  its parse-tree extractors are DELETED. The
+  `unsupported-DDL:value-index-as-select` class (once 42 files, the corpus's
+  largest) is DELETED from the ledger: corpus pass 32 → 46 (S2) → 47 (S3,
+  composite-aggregates passes), fail stays 0. S3 also closed, measured and
+  pinned: the COUNT GroupBy(EmptyKey(), …) stored-metadata byte divergence
+  (GroupAll — no Empty child, Java
+  MaterializedViewIndexGenerator.java:408-412), LEGACY_EXTREMUM_EVER honored
+  (min/max_ever_long), UNIQUE on aggregate AS-SELECT honored, permuted
+  min/max with ORDER-BY-derived permutedSize, bitmap_construct_agg index
+  metadata, MIN_EVER/MAX_EVER/BITMAP_CONSTRUCT_AGG recognized by the
+  aggregate front end, BITMAP_BUCKET_OFFSET/BITMAP_BIT_POSITION scalar
+  functions (walker injects Java's 10000 entry-size literal), and Java's
+  INSERT column-list reordering semantics
+  (parseRecordFieldsUnderReorderings — unknown named columns silently
+  ignored; armed by composite-aggregates' setup the moment its DDL passed).
+  bitmap-aggregate-index.yamsql is booked engine-gap:planner-declines (the
+  bitmap aggregate QUERY surface, out of RFC-202 scope);
+  index-ddl-aggregates-only.yamsql waits on CREATE VIEW
+  (unsupported-DDL:other).
+
+  S4 landed `__ROW_VERSION` (the version-storing catalog, the VERSION index
+  arm, the runtime read; engine-gap:row-version-pseudocolumn deleted). S5
+  landed the predicate/sparse arm: getTopLevelPredicate ported end to end —
+  DNF normalization WITHOUT simplification (Java normalize(), not
+  normalizeAndSimplify: absorption is wire-visible), IndexPredicate.isSupported,
+  the dnf-yields-no-ranges fallback to the conjunction, and the
+  IndexPredicate/IndexComparison PoJo serialization with Java's Integer
+  narrowing at the literal boundary (ParseHelpers.parseDecimal) — plus the
+  RangeConstraints canBeUsedInScanPrefix admission gate the Go builder was
+  missing. Corpus pass 47 → 52, fail 0. Fixed in the same stage, each
+  mutation-checked RED: the planner treating a sparse index as full (the
+  candidate now carries its predicate — ValueIndexExpansionVisitor.java:138-162's
+  conservative arm; candidatePreservesBaseRecordCardinality blocks the
+  compensation-free shortcuts; adjustMatchForSelect bails on non-tautology
+  constants per SelectExpression.java:617-620 — boolean-ddl's empty WHERE NULL
+  index was served as the whole table); the generator rendering FOLDED
+  display names into stored metadata for quoted-DDL columns (storageNames:
+  descriptor-by-ordinal, both arms + predicate paths); and the USING-join
+  desugar re-folding normalized quoted aliases (join-tests-outer). Booked
+  with pinned signatures: USE INDEX hints parsed-and-ignored
+  (sparse-index-tests → go-accepts; Java threads AccessHints,
+  QueryVisitor.java:679-681 — closing it = porting AccessHints into the
+  candidate matcher), ORDER BY on a LEFT JOIN's null-extended side
+  (join-tests-outer → go-accepts; Go's sanctioned in-memory-sort fallback
+  answers what Java 0AF00s), recursive-cte progressed to
+  engine-gap:nested-recursive-with. NOT ported (negative pin
+  TestSparseIndexCandidate_ImpliedQueryFallsBack names the re-arm): Java's
+  placeholder extra-ranges arm (:146-158) that lets an IMPLIED query still
+  match a sparse index — Go conservatively falls back to a scan (correct
+  rows, narrower reach; sparse-index-tests' COVERING explains are the
+  witness).
+
+  S6 landed the ON-source front end: `CREATE INDEX i ON t(cols…) INCLUDE
+  (cols…)` is a FRONT END over the same generator
+  (OnSourceIndexGenerator.java:172-229 — projection = keys ++ (INCLUDE \
+  keys), ORDER BY from the per-column order clauses, delegate). The S0
+  fail-closed ON-source orderClause and INCLUDE rejections retired; wire
+  gate TestFDB_OnSourceIndex_WireEntries pins the covering key/value split
+  and the DESC column's hand-derived TupleOrdering bytes; the twin test
+  pins byte-identical roots for the two DDL forms.
+  documentation-queries/index-documentation-queries PASSES (52→53); the
+  three index-ddl* files progressed to CREATE VIEW (unsupported-DDL:other).
+
+  S7 landed planner D10, both live defects: the KeyWithValue split now
+  bounds the sargable/ordering surface (key part) while the VALUE part
+  covers (candidate valueColumnNames → plan → executor reads the entry
+  VALUE tuple; the wrong-column-set defect pinned from Java-authored proto
+  bytes), and order-function columns carry ToOrderedBytesValue with the
+  wrapper's direction (createsDuplicates delegates through the wrapper —
+  Java's OrderFunctionKeyExpression override :83-86). EXPLAIN-pinned in
+  rfc202_generated_index_plans.yaml + rfc202_version_index_ordered.yaml:
+  covering INCLUDE scan with NO fetch, ORDER BY DESC as the DESC index's
+  forward scan (ASC as its reverse) with no InMemorySort, WHERE on the
+  wrapped column NOT claiming the encoded index, VERSION index COVERING for
+  the ordered pseudo-field query, and twin-plan EXPLAIN equality. Still
+  open (measured, results-only pin in row_version_index_plan_fdb_test.go):
+  the unfiltered-unordered covering preference (Go Scan, Java COVERING) — a
+  data-access enumeration gap independent of D10.
+
+  S8 landed D11 at the STORED bytes: the live JVM persists each shape into
+  the shared catalog and Go compares the raw MetaData proto per index —
+  root_expression, type, OPTIONS, PREDICATE
+  (conformance/index_ddl_metadata_conformance_test.go; the summary route
+  gained options+predicate too). It caught and fixed TWO wire divergences:
+  Go omitted `unique=false` (Java's setUnique stores both polarities,
+  RecordLayerIndex.java:216-218), and the sparse comparand's stored type
+  follows the COMPARISON's promoted type — the COLUMN's — refuting S5's
+  ParseHelpers-narrowing model (BIGINT long_value / INTEGER int_value /
+  DOUBLE double_value; a strictly-wider literal is Java's promote(col)
+  shape and REJECTS in both engines — measured live). All 6 shapes
+  byte-identical across engines.
+
+  S9: ledger stands at pass=53 fail=0 skip=185 (re-pinned in S6; S7/S8
+  moved no files), full conformance_java suite green. DONE: the
+  value-index-as-select class is deleted, every corpus shape's stored
+  metadata is asserted byte-identical against the live JVM, and the
+  generated indexes are PLANNABLE with EXPLAIN pins. Booked elsewhere, not
+  regressions: AccessHints/USE INDEX (signature-pinned),
+  nested-recursive-with, CREATE VIEW (holds the three index-ddl* files),
+  the sparse implied-query placeholder ranges (negative pin), and the
+  unfiltered covering preference (results-only pin).
 
 - [ ] **CQ-72 (M/L per item, L in aggregate) — the measured Go-engine divergence
   ledger from the RFC-201 Phase-1 corpus run.** Every entry below was found by
@@ -13264,6 +13369,19 @@ None is speculative: each was re-verified against the tree before booking.
     to find. Decide deliberately whether this is a sanctioned read-side
     extension or a missing rejection — do not leave it undecided.
 
+  - **`SELECT *` over JOIN … USING does not hide the right-side USING columns
+    (1 file).** Newly reached when RFC-202 S2 unblocked join-tests.yamsql:
+    `select * from ja join jb using(c1) join jd using(c1)` returns 6 columns
+    where Java returns 4 (QueryVisitor.resolveJoinUsingClause hides the
+    right-side USING columns from the star; the synthesized ON equality is
+    correct on both engines — see synthesizeUsingOnExpr's divergence note).
+    The fix is in the star expansion over join legs, not the join semantics.
+  - **width-suffixed FLOAT literal `1.0f` (1 file, union.yamsql)** — the
+    floating sibling of the `1I`/`2L` gap, same constant-folder family.
+  - **schema-template serialization options / encryption (1 file)** —
+    serialization-options.yamsql expects XXF01 on reads without the
+    encryption key; Go's store layer has no encrypted serialization, so the
+    read succeeds.
   - **the enum matcher arm is not ported (0 files today, but unbooked until
     now).** Java's `Matchers.matchField` has an arm comparing a String
     expectation to a protobuf `EnumValueDescriptor` by NAME. Go omits it,

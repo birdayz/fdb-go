@@ -423,14 +423,11 @@ func (e *ddlError) Unwrap() error { return e.err }
 // show up as the named, separately-sized gaps RFC-201 phases 3 and 4 close
 // rather than as one anonymous pile.
 func classifyDDLGap(f *javayamsql.File, ddl *ddlError) SkipClass {
-	// The engine's own rejection is the better signal where it is specific:
-	// routing every `AS SELECT` index to the aggregate builder is one named
-	// gap (CQ-71), and it must not disappear into the residual bucket.
-	if msg := ddl.Error(); strings.Contains(msg, "select element must contain an aggregate function") ||
-		strings.Contains(msg, "exactly one aggregate expression required in SELECT") ||
-		strings.Contains(msg, "select element must be an expression") {
-		return SkipDDLValueIndexAsSelect
-	}
+	// The value-index-as-select class (CQ-71, once the corpus's largest at 42
+	// files) is DELETED: RFC-202 routed both AS-SELECT arms through the
+	// MaterializedViewIndexGenerator port, its three classifier messages no
+	// longer exist in the engine, and every former carrier lands in pass or a
+	// narrower named class.
 	return classifyDDLByDeclaration(f)
 }
 

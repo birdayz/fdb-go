@@ -286,8 +286,13 @@ func sanitizeName(p string) string {
 // class shrinks, these should start appearing, and this table is where someone
 // checks that they did.
 var maskedClasses = map[javacorpus.SkipClass]string{
-	javacorpus.SkipDDLFunction: "every corpus template declaring `create function` also declares an " +
-		"AS-SELECT value index, so unsupported-DDL:value-index-as-select claims the file first",
+	javacorpus.SkipGapTableValuedFunction: "the TVF-in-FROM witness (versions-with-single-type-tests.yamsql) " +
+		"declares its functions in the schema template, which now fails closed as unsupported-DDL:function " +
+		"instead of silently dropping the declarations and running against a template missing them. The gap " +
+		"re-arms when template function DDL lands (RFC-201 Phase 4)",
+	javacorpus.SkipGapReturningDryRun: "the RETURNING-DRY-RUN witness (update-delete-returning.yamsql) declares " +
+		"struct types, which now fail closed as unsupported-DDL:struct instead of being silently dropped from " +
+		"the template. The gap re-arms with struct DDL (RFC-201 Phase 3)",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

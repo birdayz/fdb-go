@@ -1,0 +1,53 @@
+# aggregate_index_as_select_composite.yaml — RFC-202 S3: aggregate AS-SELECT
+# shapes the legacy parse-tree arm REJECTED ("exactly one aggregate expression
+# required in SELECT") and the generator's aggregate arm now builds — the
+# grouping columns projected beside the aggregate (corpus
+# composite-aggregates.yamsql t1_i2/t1_i4, index-ddl-aggregates-only.yamsql
+# IDX_MV_CAT_REGION_SUM).
+#
+# Key-expression bytes are pinned in
+# pkg/relational/core/embedded/index_asselect_aggregate_test.go; this file is
+# the execution-side proof that the planner CHOOSES the index and the
+# atomic-mutation entries read back correctly.
+name: aggregate_index_as_select_composite
+schema_template: |
+  CREATE TABLE sales (
+    id BIGINT NOT NULL,
+    category STRING,
+    region STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX sum_by_cat AS SELECT category, SUM(amount) FROM sales GROUP BY category
+  CREATE INDEX sum_by_cat_region AS SELECT category, region, SUM(amount) FROM sales GROUP BY category, region
+setup:
+  - INSERT INTO sales VALUES (1, 'a', 'US', 100)
+  - INSERT INTO sales VALUES (2, 'a', 'EU', 200)
+  - INSERT INTO sales VALUES (3, 'b', 'US', 300)
+  - INSERT INTO sales VALUES (4, 'b', 'EU', 400)
+  - INSERT INTO sales VALUES (5, 'a', 'US', 50)
+tests:
+  # The multi-element declaration built a real SUM aggregate index and the
+  # planner serves the GROUP BY from it — not a scan-side StreamingAgg.
+  - query: SELECT category, SUM(amount) FROM sales GROUP BY category ORDER BY category
+    plan_contains: AggregateIndex
+    rows:
+      - ["a", 350]
+      - ["b", 700]
+
+  # The two-column grouping declaration too.
+  - query: SELECT category, region, SUM(amount) FROM sales GROUP BY category, region ORDER BY category, region
+    plan_contains: AggregateIndex
+    rows:
+      - ["a", "EU", 200]
+      - ["a", "US", 150]
+      - ["b", "EU", 400]
+      - ["b", "US", 300]
+
+  # The index is MAINTAINED, not just built: a write after the initial load
+  # shows up in the aggregate read.
+  - query: INSERT INTO sales VALUES (6, 'b', 'US', 1)
+    rowcount: 1
+  - query: SELECT category, SUM(amount) FROM sales WHERE category = 'b' GROUP BY category
+    rows:
+      - ["b", 701]

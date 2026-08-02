@@ -2938,6 +2938,49 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return a ^ b, nil
+	case scalarFunctionBitmapBucketOffset:
+		// Java ArithmeticValue BITMAP_BUCKET_OFFSET_* (:513-514):
+		// floorDiv(l, r) * r.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil, nil
+		}
+		a, aok := scalarFnInt64Arg(args[0])
+		b, bok := scalarFnInt64Arg(args[1])
+		if !aok || !bok || b == 0 {
+			return nil, nil
+		}
+		// Math.multiplyExact, not `*`: for the minimum BIGINT with the default
+		// entry size 10000 the floor-divided quotient times 10000 falls below
+		// MinInt64, and an unchecked multiply wraps it to a bogus POSITIVE
+		// bucket offset. Java raises ArithmeticException here.
+		prod, ok := mulInt64Checked(floorDivInt64(a, b), b)
+		if !ok {
+			return nil, &ArithmeticOverflowError{}
+		}
+		return prod, nil
+	case scalarFunctionBitmapBitPosition:
+		// Java ArithmeticValue BITMAP_BIT_POSITION_* (:519-520):
+		// l - floorDiv(l, r) * r (a floor-mod).
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil, nil
+		}
+		a, aok := scalarFnInt64Arg(args[0])
+		b, bok := scalarFnInt64Arg(args[1])
+		if !aok || !bok || b == 0 {
+			return nil, nil
+		}
+		// Java composes subtractExact over multiplyExact
+		// (ArithmeticValue.java:519-520); the INTERMEDIATE product overflows
+		// first, so both steps are checked.
+		prod, ok := mulInt64Checked(floorDivInt64(a, b), b)
+		if !ok {
+			return nil, &ArithmeticOverflowError{}
+		}
+		diff, ok := subInt64Checked(a, prod)
+		if !ok {
+			return nil, &ArithmeticOverflowError{}
+		}
+		return diff, nil
 	case scalarFunctionDatePart:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
@@ -3151,6 +3194,17 @@ func roundFloat64DecimalPlaces(value float64, decimals int64) float64 {
 // floats decline so the fold path returns nil and the runtime
 // evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
 // the conversion error.
+// floorDivInt64 matches Java's Math.floorDiv: the largest int64 less than or
+// equal to the algebraic quotient (truncating division adjusted toward
+// negative infinity when the signs differ and there is a remainder).
+func floorDivInt64(a, b int64) int64 {
+	q := a / b
+	if (a%b != 0) && ((a < 0) != (b < 0)) {
+		q--
+	}
+	return q
+}
+
 func scalarFnInt64Arg(v any) (int64, bool) {
 	if i, ok := ToInt64(v); ok {
 		return i, true

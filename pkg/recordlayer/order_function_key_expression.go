@@ -21,6 +21,20 @@ func init() {
 	RegisterFunction(OrderFuncDescNullsLast, makeOrderEvaluator(OrderDescNullsLast))
 }
 
+// isOrderFunctionName reports whether name is one of the four
+// OrderFunctionKeyExpression names — the dispatch key for Java-subclass
+// behaviour (createsDuplicates delegation) that Go's generic
+// FunctionKeyExpression carries by name instead of by type.
+func isOrderFunctionName(name string) bool {
+	switch name {
+	case OrderFuncAscNullsFirst, OrderFuncAscNullsLast,
+		OrderFuncDescNullsFirst, OrderFuncDescNullsLast:
+		return true
+	default:
+		return false
+	}
+}
+
 // OrderFuncExpr creates a FunctionKeyExpression for ordering with the given
 // direction name and arguments. Convenience wrapper matching Java's
 // OrderFunctionKeyExpression constructor.
@@ -45,7 +59,10 @@ func makeOrderEvaluator(dir OrderDirection) FunctionEvaluator {
 			for i, a := range args {
 				t[i] = a
 			}
-			packed := tupleOrderingPack(t, dir)
+			packed, err := tupleOrderingPack(t, dir)
+			if err != nil {
+				return nil, err
+			}
 			results = append(results, []any{packed})
 		}
 		return results, nil

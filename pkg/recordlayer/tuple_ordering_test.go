@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"math/big"
 	"testing"
@@ -303,7 +304,7 @@ func TestTupleOrderingPackUnpackRoundTrip(t *testing.T) {
 		for _, tc := range tuples {
 			t.Run(dir.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
-				packed := tupleOrderingPack(tc.t, dir.dir)
+				packed := tupleOrderingPackOK(tc.t, dir.dir)
 				unpacked, err := tupleOrderingUnpack(packed, dir.dir)
 				if err != nil {
 					t.Fatalf("unpack failed: %v", err)
@@ -342,7 +343,7 @@ func TestAscNullsFirstMatchesStandardPack(t *testing.T) {
 
 	for _, tup := range tuples {
 		standard := tup.Pack()
-		ordered := tupleOrderingPack(tup, OrderAscNullsFirst)
+		ordered := tupleOrderingPackOK(tup, OrderAscNullsFirst)
 		if !bytes.Equal(standard, ordered) {
 			t.Errorf("ASC_NULLS_FIRST should match standard Pack for %v: standard=%x, ordered=%x",
 				tup, standard, ordered)
@@ -380,8 +381,8 @@ func TestOrderingCorrectnessASC(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			packedSmall := tupleOrderingPack(tc.small, tc.dir)
-			packedBig := tupleOrderingPack(tc.big, tc.dir)
+			packedSmall := tupleOrderingPackOK(tc.small, tc.dir)
+			packedBig := tupleOrderingPackOK(tc.big, tc.dir)
 			cmp := bytes.Compare(packedSmall, packedBig)
 			if tc.expect < 0 && cmp >= 0 {
 				t.Fatalf("expected small < big in bytes, got cmp=%d (small=%x, big=%x)",
@@ -399,32 +400,32 @@ func TestOrderingCorrectnessNulls(t *testing.T) {
 	t.Parallel()
 
 	// NULLS_FIRST: null sorts before non-null
-	packedNull := tupleOrderingPack(tuple.Tuple{nil}, OrderAscNullsFirst)
-	packedVal := tupleOrderingPack(tuple.Tuple{int64(0)}, OrderAscNullsFirst)
+	packedNull := tupleOrderingPackOK(tuple.Tuple{nil}, OrderAscNullsFirst)
+	packedVal := tupleOrderingPackOK(tuple.Tuple{int64(0)}, OrderAscNullsFirst)
 	if bytes.Compare(packedNull, packedVal) >= 0 {
 		t.Errorf("NULLS_FIRST: null should sort before value: null=%x, val=%x",
 			packedNull, packedVal)
 	}
 
 	// NULLS_LAST: null sorts after non-null
-	packedNullLast := tupleOrderingPack(tuple.Tuple{nil}, OrderAscNullsLast)
-	packedValLast := tupleOrderingPack(tuple.Tuple{int64(0)}, OrderAscNullsLast)
+	packedNullLast := tupleOrderingPackOK(tuple.Tuple{nil}, OrderAscNullsLast)
+	packedValLast := tupleOrderingPackOK(tuple.Tuple{int64(0)}, OrderAscNullsLast)
 	if bytes.Compare(packedNullLast, packedValLast) <= 0 {
 		t.Errorf("NULLS_LAST: null should sort after value: null=%x, val=%x",
 			packedNullLast, packedValLast)
 	}
 
 	// DESC_NULLS_FIRST: null sorts before non-null values (in DESC byte space)
-	packedNullDescFirst := tupleOrderingPack(tuple.Tuple{nil}, OrderDescNullsFirst)
-	packedValDescFirst := tupleOrderingPack(tuple.Tuple{int64(0)}, OrderDescNullsFirst)
+	packedNullDescFirst := tupleOrderingPackOK(tuple.Tuple{nil}, OrderDescNullsFirst)
+	packedValDescFirst := tupleOrderingPackOK(tuple.Tuple{int64(0)}, OrderDescNullsFirst)
 	if bytes.Compare(packedNullDescFirst, packedValDescFirst) >= 0 {
 		t.Errorf("DESC_NULLS_FIRST: null should sort before value: null=%x, val=%x",
 			packedNullDescFirst, packedValDescFirst)
 	}
 
 	// DESC_NULLS_LAST: null sorts after non-null values (in DESC byte space)
-	packedNullDescLast := tupleOrderingPack(tuple.Tuple{nil}, OrderDescNullsLast)
-	packedValDescLast := tupleOrderingPack(tuple.Tuple{int64(0)}, OrderDescNullsLast)
+	packedNullDescLast := tupleOrderingPackOK(tuple.Tuple{nil}, OrderDescNullsLast)
+	packedValDescLast := tupleOrderingPackOK(tuple.Tuple{int64(0)}, OrderDescNullsLast)
 	if bytes.Compare(packedNullDescLast, packedValDescLast) <= 0 {
 		t.Errorf("DESC_NULLS_LAST: null should sort after value: null=%x, val=%x",
 			packedNullDescLast, packedValDescLast)
@@ -449,9 +450,9 @@ func TestNullsLastSortsAfterAllTypes(t *testing.T) {
 		{float64(math.MaxFloat64)},
 	}
 
-	packedNull := tupleOrderingPack(tuple.Tuple{nil}, OrderAscNullsLast)
+	packedNull := tupleOrderingPackOK(tuple.Tuple{nil}, OrderAscNullsLast)
 	for _, tup := range nonNullTuples {
-		packed := tupleOrderingPack(tup, OrderAscNullsLast)
+		packed := tupleOrderingPackOK(tup, OrderAscNullsLast)
 		if bytes.Compare(packedNull, packed) <= 0 {
 			t.Errorf("ASC_NULLS_LAST: null should sort after %v: null=%x, val=%x",
 				tup, packedNull, packed)
@@ -1088,7 +1089,7 @@ func TestTupleOrderingPackEmptyTuple(t *testing.T) {
 		OrderAscNullsFirst, OrderAscNullsLast,
 		OrderDescNullsFirst, OrderDescNullsLast,
 	} {
-		packed := tupleOrderingPack(tuple.Tuple{}, dir)
+		packed := tupleOrderingPackOK(tuple.Tuple{}, dir)
 		unpacked, err := tupleOrderingUnpack(packed, dir)
 		if err != nil {
 			t.Fatalf("dir=%+v: unpack empty tuple error: %v", dir, err)
@@ -1111,9 +1112,9 @@ func TestTupleOrderingPackDeterministic(t *testing.T) {
 		OrderAscNullsFirst, OrderAscNullsLast,
 		OrderDescNullsFirst, OrderDescNullsLast,
 	} {
-		first := tupleOrderingPack(tup, dir)
+		first := tupleOrderingPackOK(tup, dir)
 		for i := 0; i < 100; i++ {
-			again := tupleOrderingPack(tup, dir)
+			again := tupleOrderingPackOK(tup, dir)
 			if !bytes.Equal(first, again) {
 				t.Fatalf("non-deterministic packing on iteration %d for dir=%+v", i, dir)
 			}
@@ -1131,7 +1132,7 @@ func TestDescIntSequenceOrdering(t *testing.T) {
 	values := []int64{-100, -1, 0, 1, 50, 100, 1000, math.MaxInt64}
 	packed := make([][]byte, len(values))
 	for i, v := range values {
-		packed[i] = tupleOrderingPack(tuple.Tuple{v}, OrderDescNullsLast)
+		packed[i] = tupleOrderingPackOK(tuple.Tuple{v}, OrderDescNullsLast)
 	}
 	// In DESC: larger values should have smaller bytes.
 	for i := 0; i < len(packed)-1; i++ {
@@ -1152,7 +1153,7 @@ func TestAscStringSequenceOrdering(t *testing.T) {
 	values := []string{"", "a", "aa", "ab", "b", "z", "zz"}
 	packed := make([][]byte, len(values))
 	for i, v := range values {
-		packed[i] = tupleOrderingPack(tuple.Tuple{v}, OrderAscNullsFirst)
+		packed[i] = tupleOrderingPackOK(tuple.Tuple{v}, OrderAscNullsFirst)
 	}
 	for i := 0; i < len(packed)-1; i++ {
 		if bytes.Compare(packed[i], packed[i+1]) >= 0 {
@@ -1294,4 +1295,66 @@ func TestTupleElementEndPosBigInt(t *testing.T) {
 			t.Errorf("got %d, want %d", end, len(packed))
 		}
 	})
+}
+
+// tupleOrderingPackOK is tupleOrderingPack for the cases below, none of which
+// carries an incomplete versionstamp. The error return exists only for that one
+// condition (see IncompleteVersionstampError); a failure here means a test
+// grew a versionstamp, not that the encoding changed.
+func tupleOrderingPackOK(t tuple.Tuple, dir OrderDirection) []byte {
+	packed, err := tupleOrderingPack(t, dir)
+	if err != nil {
+		panic(err)
+	}
+	return packed
+}
+
+// TestTupleOrderingPack_IncompleteVersionstampErrorsNotPanics pins the encoder
+// half directly. Java's TupleOrdering.packNullsLast THROWS
+// IllegalArgumentException here (TupleOrdering.java:174-180); Go's tuple.Pack
+// PANICS, so without an explicit check the failure crosses the library boundary
+// as a crash. All four directions must refuse, both packing branches
+// (counterflow-nulls and vanilla) and both inversions.
+func TestTupleOrderingPack_IncompleteVersionstampErrorsNotPanics(t *testing.T) {
+	t.Parallel()
+	incomplete := tuple.Versionstamp{
+		TransactionVersion: [10]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+	}
+	for name, dir := range map[string]OrderDirection{
+		"asc_nulls_first":  OrderAscNullsFirst,
+		"asc_nulls_last":   OrderAscNullsLast,
+		"desc_nulls_first": OrderDescNullsFirst,
+		"desc_nulls_last":  OrderDescNullsLast,
+	} {
+		for shape, tup := range map[string]tuple.Tuple{
+			"alone":         {incomplete},
+			"after_a_field": {int64(7), incomplete},
+			"before_a_null": {incomplete, nil},
+		} {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s/%s: PANICKED (%v); Java throws here, so Go must "+
+							"return an error", name, shape, r)
+					}
+				}()
+				if _, err := tupleOrderingPack(tup, dir); err == nil {
+					t.Errorf("%s/%s: packed an incomplete versionstamp; a vanilla pack "+
+						"cannot represent one", name, shape)
+				} else {
+					var ive *IncompleteVersionstampError
+					if !errors.As(err, &ive) {
+						t.Errorf("%s/%s: want *IncompleteVersionstampError, got %T", name, shape, err)
+					}
+				}
+			}()
+		}
+	}
+
+	// A COMPLETE versionstamp still packs — the guard keys on incompleteness,
+	// not on the presence of a versionstamp.
+	complete := tuple.Versionstamp{TransactionVersion: [10]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, UserVersion: 3}
+	if _, err := tupleOrderingPack(tuple.Tuple{complete}, OrderDescNullsLast); err != nil {
+		t.Errorf("a COMPLETE versionstamp must still pack: %v", err)
+	}
 }

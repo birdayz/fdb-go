@@ -82,6 +82,15 @@ type Column struct {
 	// column Value as an ArrayType — e.g. CARDINALITY()'s isArray() check.
 	// When true, Type is the ELEMENT type string.
 	IsArray bool
+
+	// Ephemeral marks a column that is resolvable BY NAME but invisible to
+	// star expansion — Java's Expression.asEphemeral() attribute, applied to
+	// the __ROW_VERSION pseudo-field appended by generateTableAccess
+	// (LogicalOperator.java:296-301); star expansion consumes
+	// nonEphemeralVisible() (SemanticAnalyzer.java:346-348). An ephemeral
+	// column still occupies its trailing slot in the flowed row layout, so
+	// ordinal binding (sourceRowType) keeps it.
+	Ephemeral bool
 }
 
 // InMemoryCatalog is a test-friendly Catalog built from a fixed list

@@ -295,8 +295,13 @@ CREATE TABLE w (
 	var found bool
 	for e := err; e != nil; e = errors.Unwrap(e) {
 		var apiErr *api.Error
+		// Two gates stand in front of the multi-segment path, either is the
+		// pin: the template-clause fail-closed rejection (CREATE TYPE AS
+		// STRUCT itself), and — for templates built programmatically without
+		// the clause — the column-type rejection.
 		if errors.As(e, &apiErr) && apiErr.Code == api.ErrCodeUnsupportedOperation &&
-			strings.Contains(apiErr.Message, "only primitive column types") {
+			(strings.Contains(apiErr.Message, "only primitive column types") ||
+				strings.Contains(apiErr.Message, "struct types (CREATE TYPE AS STRUCT) are not yet supported")) {
 			found = true
 			break
 		}

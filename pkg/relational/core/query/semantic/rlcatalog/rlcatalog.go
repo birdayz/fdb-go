@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
@@ -26,6 +27,7 @@ import (
 func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 	c := &wrappedCatalog{md: md}
 	if md != nil {
+		c.storeRowVersions = md.IsStoreRecordVersions()
 		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
 		for rtName, rt := range md.RecordTypes() {
 			c.byFoldedName[semantic.NewUnquoted(rtName).Name()] = rt
@@ -47,6 +49,11 @@ type wrappedCatalog struct {
 	// byFoldedName indexes RecordTypes by case-folded key for O(1)
 	// LookupTable — computed once at Wrap time.
 	byFoldedName map[string]*recordlayer.RecordType
+	// storeRowVersions mirrors md.IsStoreRecordVersions(): when set, every
+	// table exposes the trailing __ROW_VERSION pseudo-column (Java:
+	// RecordMetaData.getPlannerType appends Type.Record.addPseudoFields,
+	// RecordMetaData.java:732-739).
+	storeRowVersions bool
 }
 
 // LookupTable implements semantic.Catalog. RecordMetaData has no
@@ -63,7 +70,7 @@ func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Tabl
 	if !ok {
 		return nil, false
 	}
-	return &recordTypeTable{rt: rt, name: name}, true
+	return &recordTypeTable{rt: rt, name: name, storeRowVersions: w.storeRowVersions}, true
 }
 
 // TableExists implements semantic.Catalog.
@@ -102,6 +109,9 @@ func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
 type recordTypeTable struct {
 	rt   *recordlayer.RecordType
 	name semantic.QualifiedName
+	// storeRowVersions: the table appends the ephemeral __ROW_VERSION
+	// pseudo-column (see wrappedCatalog.storeRowVersions).
+	storeRowVersions bool
 
 	// Column cache: built once per table on first access. colIndex is
 	// keyed by the EXACT proto field name (the DDL-normalized spelling:
@@ -150,6 +160,29 @@ func (t *recordTypeTable) ensureColumnIndex() {
 			t.colIndex[string(f.Name())] = col
 			t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 			t.colOrdered = append(t.colOrdered, col)
+		}
+		// The __ROW_VERSION pseudo-column: appended as one trailing EPHEMERAL
+		// column when the metadata stores row versions and no REAL descriptor
+		// field of that exact name exists (real-column-wins — Java's
+		// Type.Record.addPseudoFields skip, Type.java:2358-2368, and
+		// generateTableAccess's noneMatch gate, LogicalOperator.java:296-301).
+		// Ephemeral keeps it out of star expansion while name resolution and
+		// the flowed row layout (sourceRowType's trailing slot) still see it.
+		if t.storeRowVersions {
+			if _, exists := t.colIndex[values.PseudoFieldRowVersion]; !exists {
+				id := semantic.NewUnquoted(values.PseudoFieldRowVersion)
+				col := semantic.Column{
+					Id: id,
+					// Java: Type.primitiveType(TypeCode.VERSION, true)
+					// (PseudoField.java:37).
+					Type:      "VERSION",
+					Nullable:  true,
+					Ephemeral: true,
+				}
+				t.colIndex[values.PseudoFieldRowVersion] = col
+				t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
+				t.colOrdered = append(t.colOrdered, col)
+			}
 		}
 	})
 }

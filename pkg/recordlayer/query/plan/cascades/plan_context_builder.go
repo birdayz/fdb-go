@@ -88,6 +88,30 @@ type IndexDefWithCommonPrimaryKey interface {
 	IndexCommonPrimaryKeyValues() []values.Value
 }
 
+// IndexDefWithValueColumns is an optional extension of IndexDef for covering
+// (KeyWithValue-rooted) indexes. IndexValueColumnNames returns the columns
+// stored in the FDB VALUE — past the split point — which are available for
+// covering translation but are NOT sargable and do NOT order the scan (the
+// physical entry key ends at the split point followed by the primary key).
+// Java models the same split as the expansion's separate valueValues list
+// (ValueIndexExpansionVisitor.java:109-121). Nil/empty means no value part.
+type IndexDefWithValueColumns interface {
+	IndexDef
+	IndexValueColumnNames() []string
+}
+
+// IndexDefWithPredicate is an optional extension of IndexDef for SPARSE
+// (filtered) indexes — indexes whose metadata carries a WHERE predicate
+// (RecordMetaDataProto.Index.predicate). The candidate must know it: a sparse
+// index holds entries only for records matching the predicate, so matching a
+// query against it as if it were a full index returns silently missing rows.
+// Java attaches the predicate to the candidate graph at expansion
+// (ValueIndexExpansionVisitor.java:138-162). A nil return means a full index.
+type IndexDefWithPredicate interface {
+	IndexDef
+	IndexPredicateProto() *gen.Predicate
+}
+
 // NewPlanContextFromIndexDefs builds a PlanContext with one
 // ValueIndexScanMatchCandidate per index definition. Column names
 // are upper-cased for SQL-convention case-insensitive matching
@@ -171,8 +195,16 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if perType, ok := def.(IndexDefWithRecordTypeRowTypes); ok {
 			candidate.WithRecordTypeRowTypes(perType.IndexRecordTypeRowTypes())
 		}
+		if withVals, ok := def.(IndexDefWithValueColumns); ok {
+			candidate.WithValueColumns(withVals.IndexValueColumnNames())
+		}
 		if rootKeyExpression != nil {
 			candidate.WithRootKeyExpression(rootKeyExpression)
+		}
+		if withPred, ok := def.(IndexDefWithPredicate); ok {
+			if pred := withPred.IndexPredicateProto(); pred != nil {
+				candidate.WithPredicateProto(pred)
+			}
 		}
 		candidates = append(candidates, candidate)
 	}

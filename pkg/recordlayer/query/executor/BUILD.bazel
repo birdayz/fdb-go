@@ -104,6 +104,7 @@ go_test(
         "positional_authority_test.go",
         "positional_row_test.go",
         "positional_test_helpers_test.go",
+        "positional_type_cache_bound_test.go",
         "positional_type_cache_test.go",
         "projection_output_names_test.go",
         "recursive_cursor_resume_test.go",
@@ -214,6 +215,7 @@ go_test(
         "leg_type_channel_test.go",
         "zero_fork_scan_ranges_test.go",
         "ordinal_join_clock_test.go",
+        "positional_type_cache_bound_test.go",
     ],
     deps = [
         "//gen",

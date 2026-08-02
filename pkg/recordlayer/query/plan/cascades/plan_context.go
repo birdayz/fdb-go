@@ -175,13 +175,26 @@ type MatchCandidate interface {
 // make the same guarantee directly. A candidate exposing neither contract is
 // unknown and therefore unsafe for cardinality-sensitive shortcuts.
 func candidatePreservesBaseRecordCardinality(candidate MatchCandidate) bool {
-	if valueCandidate, ok := candidate.(*ValueIndexScanMatchCandidate); ok &&
-		!valueCandidate.canProduceScanPlan() {
-		// A false duplicate signal is not enough when the candidate's actual
-		// traversal was rejected (scalar nesting, unsupported FAN_OUT shape,
-		// or inconsistent metadata). Direct shortcuts bypass traversal-based
-		// matching, so they must honor the same admission authority.
-		return false
+	if valueCandidate, ok := candidate.(*ValueIndexScanMatchCandidate); ok {
+		if !valueCandidate.canProduceScanPlan() {
+			// A false duplicate signal is not enough when the candidate's actual
+			// traversal was rejected (scalar nesting, unsupported FAN_OUT shape,
+			// or inconsistent metadata). Direct shortcuts bypass traversal-based
+			// matching, so they must honor the same admission authority.
+			return false
+		}
+		if valueCandidate.predicateProto != nil {
+			// A SPARSE (WHERE-filtered) index OMITS every record its stored
+			// predicate rejects (RecordMetaDataProto.Index.predicate; the
+			// maintainer's shouldIndexThisRecord gate). A compensation-free
+			// shortcut that swaps the base-record scan for this index loses
+			// those records — boolean-ddl.yamsql's `WHERE NULL` index is an
+			// EMPTY index, and OrderedIndexScanRule served it as the whole
+			// table. Sparse candidates may only be reached through
+			// traversal-based matching, where the candidate-side predicate
+			// is accounted for.
+			return false
+		}
 	}
 	if signaler, ok := candidate.(interface{ DistinctRecordsSignal() *bool }); ok {
 		signal := signaler.DistinctRecordsSignal()

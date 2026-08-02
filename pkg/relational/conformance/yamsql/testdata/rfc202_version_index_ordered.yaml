@@ -1,0 +1,23 @@
+name: rfc202_version_index_ordered
+schema_template: |
+  CREATE TABLE t_ver (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX ver_idx ON t_ver (a, "__ROW_VERSION")
+  WITH OPTIONS(store_row_versions=true)
+setup:
+  - INSERT INTO t_ver VALUES (1, 10), (3, 10), (5, 10)
+  - INSERT INTO t_ver VALUES (2, 20), (4, 20), (6, 20)
+tests:
+  # The ON-source VERSION index (RFC-202 S6 front end + S4 version arm)
+  # serves an ordered pseudo-field query: equality on the leading column,
+  # version order from the index — no in-memory sort.
+  - query: SELECT id FROM t_ver WHERE a = 20 ORDER BY "__ROW_VERSION"
+    plan_contains: VER_IDX
+    plan_not_contains: InMemorySort
+    rows:
+      - [2]
+      - [4]
+      - [6]

@@ -902,6 +902,16 @@ func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 		// single-valued (getColumnSize()==1, one entry per record).
 		return false
 	case *FunctionKeyExpression:
+		// Java's OrderFunctionKeyExpression overrides the FunctionKeyExpression
+		// default and DELEGATES to its argument
+		// (OrderFunctionKeyExpression.java:83-86: createsDuplicates() {
+		// return getArguments().createsDuplicates(); }) — an order wrapper is
+		// one entry per argument tuple. Go dispatches the same override by the
+		// registered function name, since the factory-built Java subclass is a
+		// plain FunctionKeyExpression here.
+		if isOrderFunctionName(e.name) {
+			return createsDuplicatesRec(e.arguments, unrecognized)
+		}
 		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.
 		// Functions can potentially produce multiple values.
 		return true
@@ -1131,8 +1141,19 @@ type GroupingKeyExpression struct {
 func GroupBy(grouped KeyExpression, groupBy ...KeyExpression) *GroupingKeyExpression {
 	groupedColCount := grouped.ColumnSize()
 	allExprs := make([]KeyExpression, 0, len(groupBy)+1)
-	allExprs = append(allExprs, groupBy...)
-	allExprs = append(allExprs, grouped)
+	// Java's groupBy goes through Key.Expressions.concat, whose
+	// ThenKeyExpression constructor FLATTENS a nested Then into its children
+	// (ThenKeyExpression.java:264-270). Go's Concat stores children verbatim,
+	// so a composite grouping (e.g. a multi-column GROUP BY already built as a
+	// concat) must be flattened here or the stored proto carries a nested Then
+	// node Java can never produce for the same declaration.
+	for _, e := range append(append([]KeyExpression{}, groupBy...), grouped) {
+		if then, ok := e.(*CompositeKeyExpression); ok {
+			allExprs = append(allExprs, then.SubKeyExpressions()...)
+			continue
+		}
+		allExprs = append(allExprs, e)
+	}
 
 	var wholeKey KeyExpression
 	if len(allExprs) == 1 {

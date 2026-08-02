@@ -423,7 +423,25 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if !ok {
 		return nil, nil
 	}
+	return v.visitSimpleTableBody(simpleTable)
+}
 
+// VisitQueryTerm plans a bare queryTerm parse node — the shape a
+// `CREATE INDEX … AS <queryTerm>` definition carries (RFC-202). It is the
+// same planning path as VisitSimpleTable, entered without the enclosing
+// queryExpressionBody wrapper a full query has. Mirrors Java's
+// DdlVisitor.visitIndexAsSelectDefinition, where
+// `indexDefinitionContext.queryTerm().accept(this)` reaches the ordinary
+// query visitor (DdlVisitor.java:211).
+func (v *PlanVisitor) VisitQueryTerm(qt antlrgen.IQueryTermContext) (logical.LogicalOperator, error) {
+	simpleTable, ok := qt.(*antlrgen.SimpleTableContext)
+	if !ok {
+		return nil, nil
+	}
+	return v.visitSimpleTableBody(simpleTable)
+}
+
+func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
 	// Step 1: FROM → parse the source first. Java's QueryVisitor
 	// rejects FROM-less SELECTs before any function dispatch, so
 	// parseFromSource must run before classification/validation.
@@ -562,6 +580,13 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// right-side USING copies drop out (Java hides them; expandStar
 	// filters hidden).
 	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, v.cteScopes) {
+		needRebuild = true
+	}
+	// A bare `SELECT *` over version-storing base tables expands into an
+	// explicit non-ephemeral projection (the __ROW_VERSION pseudo-field must
+	// not surface through the star — Java's nonEphemeralVisible star over the
+	// ephemeral table-access attribute).
+	if expandBareStarForRowVersion(sq, v.md, v.schemaName, v.cteScopes) {
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {

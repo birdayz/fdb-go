@@ -64,7 +64,7 @@ func TestPartitionCorrelatedScalarWherePredicate_OnlyTopLevelAndMoves(t *testing
 }
 
 // TestTableColumns_FromMetadata pins the md→columns derivation (tableColumns +
-// fieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
+// FieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
 // does NOT type the scan leaf (that was NAK'd — the scan stays AnyRecord; see
 // RFC-077 v3). Columns are upper-cased; proto Kind maps to values.Type; repeated
 // and message (non-UUID) fields collapse to UnknownType.

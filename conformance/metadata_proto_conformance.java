@@ -188,6 +188,20 @@ class MetaDataProtoSteps extends ConformanceBase {
             }
             idxMap.put("addedVersion", idx.getAddedVersion());
             idxMap.put("lastModifiedVersion", idx.getLastModifiedVersion());
+            // Options and predicate ride the comparison too: UNIQUE lives in
+            // the options map (IndexOptions.UNIQUE_OPTION), and a sparse
+            // index's WHERE lives in the predicate — omitting either lets an
+            // index that silently dropped them compare equal.
+            idxMap.put("options", new java.util.TreeMap<>(idx.getOptions()));
+            if (idx.hasPredicate()) {
+                try {
+                    idxMap.put("predicate", JsonFormat.printer()
+                        .omittingInsignificantWhitespace()
+                        .print(java.util.Objects.requireNonNull(idx.getPredicate()).toProto()));
+                } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+                    idxMap.put("predicate", String.valueOf(idx.getPredicate()));
+                }
+            }
             indexes.add(idxMap);
         }
         summary.put("indexes", indexes);

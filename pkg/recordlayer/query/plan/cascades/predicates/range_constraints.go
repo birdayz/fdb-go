@@ -136,8 +136,13 @@ func NewRangeConstraintsBuilder() *RangeConstraintsBuilder {
 }
 
 // AddComparisonMaybe adds a comparison to the builder. Returns true
-// if the comparison was added successfully.
+// if the comparison was added successfully; false when the comparison
+// kind cannot bound a scan prefix (Java's Builder.addComparisonMaybe,
+// RangeConstraints.java:787-797, gated on canBeUsedInScanPrefix).
 func (b *RangeConstraintsBuilder) AddComparisonMaybe(c Comparison) bool {
+	if !canBeUsedInScanPrefix(c.Type) {
+		return false
+	}
 	corr := c.GetCorrelatedTo()
 	if len(corr) > 0 {
 		b.deferred = append(b.deferred, c)
@@ -145,6 +150,26 @@ func (b *RangeConstraintsBuilder) AddComparisonMaybe(c Comparison) bool {
 		b.compilable = append(b.compilable, c)
 	}
 	return true
+}
+
+// canBeUsedInScanPrefix ports RangeConstraints.Builder.canBeUsedInScanPrefix
+// (RangeConstraints.java:754-784): the comparison kinds that can bound an
+// index scan prefix. NOT_EQUALS, IN, LIKE, SORT and the TEXT_* family cannot
+// (Java returns false for them); Java's throw on an unexpected type is
+// unreachable here because Go's ComparisonType enum is closed, so the
+// default arm conservatively answers false.
+func canBeUsedInScanPrefix(t ComparisonType) bool {
+	switch t {
+	case ComparisonEquals, ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq, ComparisonStartsWith,
+		ComparisonIsNull, ComparisonIsNotNull,
+		ComparisonNotDistinctFrom, ComparisonIsDistinctFrom,
+		ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan,
+		ComparisonDistanceRankLessThanOrEq:
+		return true
+	default:
+		return false
+	}
 }
 
 // Build creates the RangeConstraints from accumulated comparisons.

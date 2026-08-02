@@ -484,8 +484,8 @@ var _ = Describe("Order function and predicate integration", func() {
 
 			// Scan with range: only the encoded bytes for price=300
 			// Since ASC_NULLS_FIRST = standard tuple.Pack(), we can use AllOf.
-			encoded300 := tupleOrderingPack(tuple.Tuple{int64(300)}, OrderAscNullsFirst)
-			encoded700 := tupleOrderingPack(tuple.Tuple{int64(700)}, OrderAscNullsFirst)
+			encoded300 := tupleOrderingPackOK(tuple.Tuple{int64(300)}, OrderAscNullsFirst)
+			encoded700 := tupleOrderingPackOK(tuple.Tuple{int64(700)}, OrderAscNullsFirst)
 			scanRange := TupleRangeBetween(
 				tuple.Tuple{encoded300},
 				tuple.Tuple{encoded700},

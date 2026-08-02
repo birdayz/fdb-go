@@ -340,10 +340,16 @@ func adjustMatchForSelect(sel *expressions.SelectExpression, pm *PartialMatchImp
 			}
 			continue
 		}
-		if _, ok := pred.(*predicates.ConstantPredicate); ok {
-			continue
+		// Java: any non-tautology predicate bails
+		// (SelectExpression.adjustMatch, SelectExpression.java:617-620).
+		// A constant FALSE / NULL is NOT skippable: a sparse index whose
+		// stored predicate is `WHERE FALSE` holds no entries, and absorbing
+		// its select as if it filtered nothing serves an EMPTY index as a
+		// full row source (boolean-ddl.yamsql's idx_null returned 0 of 1
+		// rows through exactly this arm).
+		if !predicates.IsTautology(pred) {
+			return nil
 		}
-		return nil
 	}
 
 	qs := sel.GetQuantifiers()

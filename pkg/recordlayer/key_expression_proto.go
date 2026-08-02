@@ -258,8 +258,15 @@ func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 }
 
 // thenFromProto reconstructs a CompositeKeyExpression from a proto Then.
-// Java flattens nested Then children; Go's CompositeKeyExpression naturally
-// handles this since Concat doesn't nest.
+//
+// NOTE a Java-parity asymmetry: Java's ThenKeyExpression CONSTRUCTOR flattens
+// nested thens (ThenKeyExpression.java:264-270), so Java can neither build
+// nor — after a round-trip — retain a nested Then. Go's Concat stores its
+// children VERBATIM: a caller that passes a Then child produces a nested
+// proto Java would never emit. Producers of wire-visible expressions must
+// therefore pass flat child lists (the RFC-202 index generator does this via
+// its concatFlat helper). Java-authored protos are always flat, so this
+// reader preserves shape for everything Java writes.
 func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
 	if len(t.Child) < 2 {
 		return nil, fmt.Errorf("then expression requires at least 2 children, got %d", len(t.Child))

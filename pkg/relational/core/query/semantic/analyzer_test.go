@@ -334,3 +334,45 @@ func TestAnalyzer_AccessorsReturnInputs(t *testing.T) {
 		t.Fatal("CaseSensitive accessor should return true")
 	}
 }
+
+// TestAnalyzer_ExpandStar_SkipsEphemeral pins the star visibility rule the
+// __ROW_VERSION pseudo-column relies on (RFC-202 S4): an EPHEMERAL column
+// (Java's Expression.asEphemeral, consumed via nonEphemeralVisible at
+// SemanticAnalyzer.java:346-348) resolves BY NAME but never surfaces through
+// star expansion — on the single-table, scope-star, and qualified-star arms.
+func TestAnalyzer_ExpandStar_SkipsEphemeral(t *testing.T) {
+	t.Parallel()
+	tbl := &StaticTable{
+		TableName: ParseQualifiedName("t", false),
+		TableColumns: []Column{
+			{Id: NewUnquoted("id"), Type: "BIGINT"},
+			{Id: NewUnquoted("__ROW_VERSION"), Type: "VERSION", Nullable: true, Ephemeral: true},
+		},
+	}
+	cat := NewInMemoryCatalog(tbl)
+	a := NewAnalyzer(cat, false)
+
+	if cols := a.ExpandStar(tbl); len(cols) != 1 || cols[0].Id.Name() != "ID" {
+		t.Fatalf("ExpandStar = %v, want just ID (ephemeral hidden)", cols)
+	}
+
+	scope := NewScope(nil)
+	if err := scope.AddSource(ScopeSource{Table: tbl, Alias: NewUnquoted("t")}); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	if cols := a.ExpandScopeStar(scope); len(cols) != 1 || cols[0].Column.Id.Name() != "ID" {
+		t.Fatalf("ExpandScopeStar = %v, want just ID (ephemeral hidden)", cols)
+	}
+	qcols, err := a.ExpandQualifiedStar(scope, NewUnquoted("t"))
+	if err != nil {
+		t.Fatalf("ExpandQualifiedStar: %v", err)
+	}
+	if len(qcols) != 1 || qcols[0].Column.Id.Name() != "ID" {
+		t.Fatalf("ExpandQualifiedStar = %v, want just ID (ephemeral hidden)", qcols)
+	}
+
+	// Resolution by NAME still sees the ephemeral column.
+	if _, ok := tbl.LookupColumn(NewUnquoted("__ROW_VERSION")); !ok {
+		t.Fatal("LookupColumn must still resolve the ephemeral column by name")
+	}
+}

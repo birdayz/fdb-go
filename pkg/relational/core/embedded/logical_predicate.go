@@ -482,7 +482,9 @@ func buildDerivedTableSourceFromTerm(
 	projCols := innerSQ.projCols
 	if projCols == nil {
 		// SELECT * — use all columns from the inner table in schema order.
-		allCols := innerTbl.Columns()
+		// Star semantics: ephemeral columns (the __ROW_VERSION pseudo-column)
+		// stay hidden (Java's nonEphemeralVisible).
+		allCols := semantic.NonEphemeral(innerTbl.Columns())
 		projCols = make([]projCol, len(allCols))
 		for i, c := range allCols {
 			projCols[i] = projCol{name: c.Id.Name(), bare: c.Id.Name()}
@@ -1163,7 +1165,9 @@ func buildCTEColumnSource(
 
 	var columns []semantic.Column
 	if innerSQ.projCols == nil {
-		allCols := innerTbl.Columns()
+		// Star semantics: ephemeral columns (the __ROW_VERSION
+		// pseudo-column) stay hidden (Java's nonEphemeralVisible).
+		allCols := semantic.NonEphemeral(innerTbl.Columns())
 		columns = make([]semantic.Column, len(allCols))
 		copy(columns, allCols)
 	} else {
@@ -6969,6 +6973,199 @@ func expandBareStarOverUsingJoins(sq *selectQuery, md *recordlayer.RecordMetaDat
 // Without this the qualifier resolves to nothing and the query falls through to
 // the nil-projCols path → returns the ENTIRE FlatMap row instead of just the
 // unnest source's columns (silent-wrong). RFC-142.
+// expandBareStarForRowVersion rewrites a bare `SELECT *` into an EXPLICIT
+// projection of the non-ephemeral columns when any FROM source's
+// planner-facing layout carries the appended __ROW_VERSION pseudo-field —
+// the Go form of Java's flow, where the table access always exposes the
+// ephemeral attribute (LogicalOperator.generateTableAccess,
+// LogicalOperator.java:296-301) and star expansion projects
+// nonEphemeralVisible() (SemanticAnalyzer.java:346-348), so the plan gets an
+// explicit MAP dropping the pseudo-field (the yaml-tests pin:
+// pseudo-field-clash.yamsql explains `SELECT * FROM t3` as
+// `… | MAP (_.ID AS ID, _.COL1 AS COL1, _.COL2 AS COL2)`).
+//
+// Without the rewrite the projection-less scan/join row (which carries the
+// trailing version slot at run time) would flow as the statement's output
+// row, and the result-set alignment guard would fail loud on the extra slot.
+//
+// Applies ONLY when every FROM source is a plain base table (no derived
+// tables, no CTE shadows, no lateral unnests): a table that declares a REAL
+// "__ROW_VERSION" column gets no pseudo-field (real-column-wins) and its
+// bare star stays projection-less, exactly like every non-version template.
+// Non-base-table shapes keep their existing star machinery — their star
+// output derives from explicit body projections that already exclude the
+// ephemeral.
+//
+// Returns true when the projection list was rewritten (the caller rebuilds
+// the logical plan, same contract as the qualified-star expanders).
+// scopeSourceColumnNames returns a scope source's output column names EXACTLY
+// as the scope carries them.
+//
+// The names arrive already normalized — buildDerivedTableSource and
+// unnestVirtualScopeSource both went through identifier normalization, which
+// upper-cases an unquoted name and leaves a QUOTED one alone because SQL makes
+// it case-sensitive. Re-folding them to upper case here renamed exactly the
+// quoted ones, and the qualified projection this function writes then named a
+// column that does not exist: `(SELECT id AS "did" FROM t4) d` failed with
+// 42703 `column "D.DID" does not exist`, and `t5.arr AS "x"` with `column
+// "x.X" does not exist` — the latter showing the asymmetry plainly, since the
+// ALIAS was already being preserved verbatim while the column was not.
+func scopeSourceColumnNames(src semantic.ScopeSource) []string {
+	cols := make([]string, 0, len(src.Table.Columns()))
+	for _, c := range src.Table.Columns() {
+		cols = append(cols, c.Id.String())
+	}
+	return cols
+}
+
+func expandBareStarForRowVersion(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) bool {
+	if sq == nil || md == nil || !md.IsStoreRecordVersions() {
+		return false
+	}
+	if sq.projCols != nil || sq.projQualifier != "" || sq.countStar || len(sq.aggCols) > 0 {
+		return false
+	}
+	if sq.derivedQuery != nil || sq.tableName == "" {
+		return false
+	}
+	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	stripSchema := func(name string) string {
+		if segs := strings.Split(name, "."); len(segs) == 2 && resolvesToTable(segs) {
+			return segs[1]
+		}
+		return name
+	}
+	// A source is either a base table (its columns come from the record
+	// descriptor, and it is the only kind that can carry the ephemeral version
+	// slot) or a derived table (its columns are the explicit output names of
+	// its body). Both must contribute to the rewritten projection: bailing out
+	// because ONE leg is derived leaves the whole star projection-less, and the
+	// BASE leg's scan row still carries the appended pseudo-slot — which is
+	// then exactly what `SELECT *` returns.
+	type starSource struct {
+		table string
+		alias string
+		// cols is nil for a base table (use the descriptor) and holds the
+		// derived body's output column names otherwise.
+		cols []string
+	}
+	primaryAlias := sq.tableAlias
+	if primaryAlias == "" {
+		primaryAlias = stripSchema(sq.tableName)
+	}
+	sources := []starSource{{table: stripSchema(sq.tableName), alias: primaryAlias}}
+	for i, j := range sq.joins {
+		alias := j.alias
+		if alias == "" {
+			alias = stripSchema(j.tableName)
+		}
+		if j.derivedQuery != nil {
+			src, ok := buildDerivedTableSource(md, alias, j.derivedQuery)
+			if !ok || src.Table == nil {
+				// The derived body's output names could not be derived, so the
+				// projection cannot be written. Declining here still leaks the
+				// pseudo-slot, but inventing column names would be worse; the
+				// star machinery has no other source of truth.
+				return false
+			}
+			sources = append(sources, starSource{
+				table: alias, alias: alias, cols: scopeSourceColumnNames(src),
+			})
+			continue
+		}
+		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
+		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+			// A lateral unnest contributes its element (and, with AT, its
+			// ordinal) column. Those names come from unnestVirtualScopeSource,
+			// the declared single source of truth for the unnest binding, so
+			// the star cannot name the leg differently from the scope that
+			// resolves it.
+			src, ok := unnestVirtualScopeSource(j)
+			if !ok || src.Table == nil {
+				return false
+			}
+			unnestAlias := src.Alias.String()
+			sources = append(sources, starSource{
+				table: unnestAlias, alias: unnestAlias, cols: scopeSourceColumnNames(src),
+			})
+			continue
+		}
+		sources = append(sources, starSource{table: stripSchema(j.tableName), alias: alias})
+	}
+	if cteScopes != nil {
+		for _, s := range sources {
+			if s.cols != nil {
+				continue
+			}
+			if _, isCTE := cteScopes[strings.ToUpper(s.table)]; isCTE {
+				return false
+			}
+		}
+	}
+	carriesPseudo := false
+	descs := make([]protoreflect.MessageDescriptor, len(sources))
+	for i, s := range sources {
+		if s.cols != nil {
+			// A derived body emits an explicit projection, so it never carries
+			// the ephemeral slot — but it also cannot be the reason to skip the
+			// rewrite, because a BASE leg beside it still does.
+			continue
+		}
+		rt := md.GetRecordType(s.table)
+		if rt == nil || rt.Descriptor == nil {
+			return false
+		}
+		descs[i] = rt.Descriptor
+		if rt.Descriptor.Fields().ByName(protoreflect.Name(values.PseudoFieldRowVersion)) == nil {
+			carriesPseudo = true
+		}
+	}
+	if !carriesPseudo {
+		// Every source declares a REAL "__ROW_VERSION" column — no ephemeral
+		// exists and the projection-less star stays as-is (real-column-wins).
+		return false
+	}
+	single := len(sources) == 1
+	var cols []projCol
+	for i, s := range sources {
+		var bareNames []string
+		if s.cols != nil {
+			bareNames = s.cols
+		} else {
+			// Descriptor field names are the STORED spelling and are used
+			// verbatim for the same reason the derived and unnest names are:
+			// case-folding here would rename a column the resolver knows under
+			// its stored spelling. Unquoted names are already upper-cased by
+			// the DDL, so this is a no-op for them and correct for a field that
+			// genuinely is not.
+			fields := descs[i].Fields()
+			bareNames = make([]string, 0, fields.Len())
+			for k := 0; k < fields.Len(); k++ {
+				bareNames = append(bareNames, string(fields.Get(k).Name()))
+			}
+		}
+		for _, bare := range bareNames {
+			if single {
+				cols = append(cols, projCol{name: bare, bare: bare})
+				continue
+			}
+			// The alias is used VERBATIM. Source aliases arrive already
+			// normalized — an unquoted `AS l` is uppercased by the parser, a
+			// QUOTED `AS "l"` is case-sensitive and stays lower-case by SQL
+			// rules. Uppercasing here turned `"l"` into `L`, and the qualified
+			// projection this function writes then referenced a qualifier that
+			// does not exist, failing a valid query with 42703.
+			qual := s.alias
+			cols = append(cols, projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true})
+		}
+	}
+	sq.projCols = cols
+	sq.projAliases = make([]string, len(cols))
+	sq.projExprs = make([]antlrgen.IExpressionContext, len(cols))
+	sq.projStarQualifiers = make([]string, len(cols))
+	return true
+}
+
 func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) {
 	if sq == nil || md == nil || sq.projQualifier == "" {
 		return

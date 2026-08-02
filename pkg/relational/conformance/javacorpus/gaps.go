@@ -70,11 +70,27 @@ var engineGaps = []EngineGap{
 	// still DDL-blocked here (AS-SELECT value indexes) and re-arms on PR
 	// #577's branch.
 
-	// The `__ROW_VERSION` pseudo-column is not exposed to name resolution.
-	{"join-tests-row-version.yamsql", SkipGapRowVersion, `column "__ROW_VERSION" does not exist`, "CQ-72"},
-
-	// A table-valued function in FROM (`select * from t1_v(10)`).
-	{"versions-with-single-type-tests.yamsql", SkipGapTableValuedFunction, "TableValuedFunctionContext", "CQ-72"},
+	// The `__ROW_VERSION` pseudo-column gap (engine-gap:row-version-
+	// pseudocolumn) is CLOSED by RFC-202 S4: the version-storing catalog
+	// exposes the ephemeral pseudo-column, VERSION indexes generate/plan/
+	// execute, and join-tests-row-version.yamsql (JOIN USING on the
+	// pseudo-field) passes outright. pseudo-field-clash.yamsql progressed to
+	// a DIFFERENT, pre-existing decline, re-measured below at its exact new
+	// rejection.
+	//
+	// pseudo-field-clash's last query projects EXPLICIT-COLUMN struct
+	// constructors — `SELECT (t1.id, t1.col1, t1."__ROW_VERSION"), … FROM
+	// t1, t2, t3` — and the expression walker supports only the
+	// single-element unwrap (walkRecordConstructor); a multi-element record
+	// constructor in a projection has no Value lowering. NOT a row-version
+	// gap: `SELECT (t3.id, t3.col1) FROM t1, t3 WHERE t3.id = t1.id` fails
+	// with the same 0AF00 on a template with no store_row_versions option at
+	// all. Every other query in the file (real-column-wins, version ISCAN /
+	// COVERING reads, qualified stars over the 3-way join) passes.
+	// (The signature stops before the quoted pseudo-field name: the runner's
+	// failure text carries the query %q-quoted, so inner quotes appear
+	// escaped.)
+	{"pseudo-field-clash.yamsql", SkipGapPlannerDeclines, `SELECT (t1.id, t1.col1, t1.`, "CQ-72"},
 
 	// `FROM VALUES (42)` — an inline table as a FROM source.
 	{"table-functions.yamsql", SkipGapInlineValues, "InlineTableItemContext", "CQ-72"},
@@ -84,17 +100,22 @@ var engineGaps = []EngineGap{
 
 	// A WITH nested inside a recursive CTE's body.
 	{"documentation-queries/with-documentation-queries.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
+	// recursive-cte.yamsql ran its schema DDL for the first time when the
+	// sparse-index predicate arm landed (RFC-202 S5 — its CHILDIDXNONULLS
+	// declares `where parent is not null`); the file then progresses to its
+	// line-185 statement, a WITH nested inside a recursive CTE body — the
+	// same gap as the entry above, reached from a second carrier.
+	{"recursive-cte.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
 
 	// A JOIN-bodied derived table whose ON clause cannot be resolved back to
 	// its sources. The engine declines rather than silently returning the
 	// cross product, which is the right failure mode — but Java plans it.
 	{"documentation-queries/joins-documentation-queries.yamsql", SkipGapDerivedJoinOn, "unsupported FROM shape", "CQ-72"},
 
-	// `UPDATE … RETURNING … OPTIONS(DRY RUN)` produces no result set.
-	{"update-delete-returning.yamsql", SkipGapReturningDryRun, "actual result set is NULL", "CQ-72"},
-
-	// An EXISTS over a view inside a temporary-table-valued-function block.
-	{"alias-tests.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
+	// alias-tests.yamsql's EXISTS-over-a-view decline is masked now: the
+	// template's CREATE VIEW fails closed (unsupported-DDL:other) instead of
+	// being silently dropped, so the file never reaches the planner. The
+	// planner-declines class stays witnessed by exists-in-select.yamsql.
 
 	// An oversized record surfaces a raw executor error rather than a mapped
 	// SQLSTATE, so the corpus's error-class assertion has nothing to compare.
@@ -107,11 +128,90 @@ var engineGaps = []EngineGap{
 	// the silent divergence the cross-engine harness exists to catch.
 	{"maxRows.yamsql", SkipConformanceGoAccepts, `"select * from ta limit 5": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
+	// `USE INDEX (i1)` where i1 is SPARSE: Java threads the hint as
+	// AccessHints on the scan (QueryVisitor.visitAtomTableItem:679-681 →
+	// LogicalOperator.generateTableAccess), the hint excludes every
+	// non-hinted access path including the full scan, the sparse index
+	// cannot serve the unfiltered query, and planning fails 0AF00. Go
+	// PARSES the hint and silently ignores it — a pre-existing
+	// accept-and-ignore divergence with 13 corpus carriers, exposed here for
+	// the first time because the sparse-index predicate arm (RFC-202 S5) let
+	// this file's DDL through. The other 11 carriers pass because their
+	// hinted plans return the same rows either way; only this file asserts
+	// the hint's REJECTION semantics. Closing it = porting AccessHints into
+	// the Go candidate matcher.
+	{"sparse-index-tests.yamsql", SkipConformanceGoAccepts, `"select id from t1 use index (i1)": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
+
+	// ORDER BY on the null-extended (right) side of a LEFT JOIN: Java's
+	// Cascades cannot satisfy the ordering from any access path and, having
+	// no physical sort, fails to plan (0AF00 — RemoveSortRule must eliminate
+	// the sort or planning fails). Go answers the same query through its
+	// SANCTIONED in-memory sort fallback (RecordQueryInMemorySortPlan) — a
+	// deliberate read-side capability beyond Java, wire-neutral. Reached for
+	// the first time when the quoted-alias USING fix let this file's later
+	// blocks run.
+	// The %q-formatted statement text escapes the embedded quotes, so the
+	// signature matches the escaped form.
+	{"join-tests-outer.yamsql", SkipConformanceGoAccepts, `ORDER BY \"d\".\"name\";": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
+
 	// A `create schema template` issued as a SETUP STEP rather than as a
 	// schema_template block, declaring struct types. Same Phase-3 gap as the
 	// block form, reached by a different route, so it is classed with it.
-	{"showcasing-tests.yamsql", SkipDDLStruct, "only primitive column types are supported", "CQ-73"},
-	{"create-drop-create-template.yamsql", SkipDDLStruct, "only primitive column types are supported", "CQ-73"},
+	// The rejection moved from the column-type check to the fail-closed
+	// template-clause guard (the CREATE TYPE AS STRUCT clause itself) when
+	// silently-skipped template clauses were banned.
+	{"showcasing-tests.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
+	{"create-drop-create-template.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
+
+	// ---- Gaps armed by RFC-202 S2: these files' index DDL now succeeds, so
+	// their queries run for the first time and each reaches its own
+	// pre-existing engine gap. Every entry pins the exact statement so an
+	// unrelated new failure in the same file stays a hard failure.
+
+	// The width-suffixed literal gaps and the JOIN … USING star gap that used
+	// to pin union.yamsql, null-extraction-tests.yamsql and join-tests.yamsql
+	// are CLOSED on master (the error-class batch). Each file therefore runs
+	// further than it used to and stops at its own next pre-existing decline,
+	// re-measured here:
+	//
+	//   - null-extraction-tests.yamsql now passes OUTRIGHT — its entry is gone
+	//     and it is counted in `pass`.
+	//   - union.yamsql reaches a bare `select * from t1` as a UNION ALL branch.
+	//   - join-tests.yamsql reaches a comma join whose right side is a table
+	//     and whose left is a derived table the predicate references by alias.
+	//
+	// Both remaining signatures pin the exact statement, so a DIFFERENT failure
+	// in either file stays a hard failure rather than hiding under the entry.
+	{"union.yamsql", SkipGapPlannerDeclines, "select id as W, col1 as X, col2 as Y from t1 union all (select * from t1)", "CQ-72"},
+	{"join-tests.yamsql", SkipGapPlannerDeclines, "select sq.name, project.name from (select dept.name, emp.id from emp, dept where emp.dept_id = dept.id) as sq, project", "CQ-72"},
+	// Schema-template serialization options (encryption): Go's store layer
+	// does not implement encrypted serialization, so a read that Java fails
+	// with XXF01 (missing/wrong key) succeeds.
+	{"serialization-options.yamsql", SkipGapSerializationOptions, "expecting statement to throw an error XXF01, however it succeeded", "CQ-72"},
+	// A correlated EXISTS in the SELECT projection combined with a WHERE
+	// EXISTS — Cascades declines the double-EXISTS shape.
+	{"exists-in-select.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
+	// The result-set metadata pipeline truncates column types to one flat
+	// string (CQ-74), so `resultMetadata:` assertions on aggregate outputs
+	// mismatch.
+	{"aggregate-empty-table.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
+	{"aggregate-index-tests-count.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
+	{"aggregate-index-tests-count-empty.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
+
+	// The bitmap aggregate QUERY surface: RFC-202 S3 builds the BITMAP_VALUE
+	// index metadata (the file's DDL now succeeds and the key expression is
+	// pinned byte-exact), but the translator has no bitmap_construct_agg
+	// aggregate — every query over it declines with 0AF00.
+	//
+	// The pin used to sit on a duplicate-grouping NEGATIVE, where the decline
+	// surfaced as "expecting '42702', got '0AF00'". Master's error-class batch
+	// now raises that 42702 correctly BEFORE planning (Expressions.pullUp,
+	// Expressions.java:112), so those negatives pass and the file advances to
+	// its first POSITIVE query — which is where the missing aggregate actually
+	// bites. Re-pinned there. Measured to be independent of the bitmap arity
+	// check landed alongside it: reverting that check reproduces this exact
+	// statement and error.
+	{"bitmap-aggregate-index.yamsql", SkipGapPlannerDeclines, "SELECT bitmap_construct_agg(bitmap_bit_position(id)) as bitmap, bitmap_bucket_offset(id) as offset FROM T2 GROUP BY bitmap_bucket_offset(id)", "CQ-72"},
 }
 
 // SetupNegatives are the execution-level negatives whose upstream-asserted

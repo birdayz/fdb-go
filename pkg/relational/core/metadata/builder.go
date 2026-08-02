@@ -3,6 +3,7 @@ package metadata
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -65,6 +66,18 @@ type indexSpec struct {
 	partitionColumns []string          // HNSW partition prefix (independent graph per partition)
 	numDimensions    int               // derived from the column's VECTOR type
 	options          map[string]string // HNSW tuning options (metric, ef_construction, m, ...)
+
+	// rootExpression, when non-nil, makes this an EXPLICIT index: the key
+	// expression, type, options and predicate were produced by an index
+	// generator (RFC-202's MaterializedViewIndexGenerator port) rather than
+	// re-derived from column names at Build() time. Build() short-circuits to
+	// recordlayer.NewIndex(name, rootExpression) plus indexType / options /
+	// predicate / unique. Mirrors Java, where RecordLayerIndex always carries
+	// the generator's KeyExpression verbatim and the builder never re-derives
+	// shape from names.
+	rootExpression recordlayer.KeyExpression
+	indexType      string
+	predicate      *gen.Predicate
 }
 
 // ColumnSpec describes a single column within a table.
@@ -148,6 +161,41 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 			name:    indexName,
 			columns: columns,
 			unique:  unique,
+		})
+		return b
+	}
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
+// AddGeneratedIndex registers an index whose key expression, type, options and
+// predicate were fully determined by an index generator (RFC-202). The builder
+// stores the description verbatim and Build() materialises it without any
+// name-based re-derivation — mirroring Java, where the DdlVisitor hands the
+// generator's RecordLayerIndex straight to the schema-template builder.
+//
+// rootExpression must be non-nil. indexType "" means VALUE. options may be
+// nil. predicate may be nil (a full, non-sparse index).
+func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression recordlayer.KeyExpression,
+	indexType string, unique bool, options map[string]string, predicate *gen.Predicate,
+) *Builder {
+	if rootExpression == nil {
+		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInternalError,
+			"generated index %q on table %q: nil root expression", indexName, tableName))
+		return b
+	}
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:           indexName,
+			unique:         unique,
+			rootExpression: rootExpression,
+			indexType:      indexType,
+			options:        options,
+			predicate:      predicate,
 		})
 		return b
 	}
@@ -408,6 +456,32 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 		rt.SetPrimaryKey(pkExpr)
 
 		for _, idx := range tbl.indexes {
+			if idx.rootExpression != nil {
+				rl := recordlayer.NewIndex(idx.name, idx.rootExpression)
+				if idx.indexType != "" {
+					rl.Type = idx.indexType
+				}
+				for k, v := range idx.options {
+					rl.Options[k] = v
+				}
+				// Java's generator builder ALWAYS writes the unique option —
+				// setUnique(isUnique) stores "true"/"false" alike
+				// (RecordLayerIndex.java:216-218, called unconditionally by
+				// both generators, MaterializedViewIndexGenerator.java:157 /
+				// OnSourceIndexGenerator's builder). An omitted-when-false
+				// option is a stored-metadata divergence the D11 cross-engine
+				// comparison catches: Java's index carries unique=false where
+				// Go's carried nothing.
+				rl.Options[recordlayer.IndexOptionUnique] = strconv.FormatBool(idx.unique)
+				if idx.predicate != nil {
+					if perr := rl.SetPredicateProto(idx.predicate); perr != nil {
+						return nil, api.WrapErrorf(perr, api.ErrCodeInvalidSchemaTemplate,
+							"table %q index %q predicate", tbl.name, idx.name)
+					}
+				}
+				mdBuilder.AddIndex(tbl.name, rl)
+				continue
+			}
 			if idx.vector {
 				rl, idxErr := buildVectorIndex(idx)
 				if idxErr != nil {
@@ -768,14 +842,20 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 		groupByExprs[i] = recordlayer.Field(col)
 	}
 
-	var aggExpr recordlayer.KeyExpression
+	var gke *recordlayer.GroupingKeyExpression
 	if idx.aggColumn != "" {
-		aggExpr = recordlayer.Field(idx.aggColumn)
+		gke = recordlayer.GroupBy(recordlayer.Field(idx.aggColumn), groupByExprs...)
+	} else if len(groupByExprs) == 0 {
+		gke = recordlayer.GroupAll(recordlayer.EmptyKey())
+	} else if len(groupByExprs) == 1 {
+		// COUNT(*): GroupingKeyExpression(grouping, 0) with the grouping AS
+		// the whole key — Java never stores an Empty child inside the concat
+		// (MaterializedViewIndexGenerator.java:408-412; the generated-index
+		// golden count_star_grouped pins the byte shape).
+		gke = recordlayer.GroupAll(groupByExprs[0])
 	} else {
-		aggExpr = recordlayer.EmptyKey()
+		gke = recordlayer.GroupAll(recordlayer.Concat(groupByExprs...))
 	}
-
-	gke := recordlayer.GroupBy(aggExpr, groupByExprs...)
 
 	switch strings.ToUpper(idx.aggType) {
 	case "SUM":
