@@ -392,6 +392,19 @@ jobs:
         if: steps.window.outputs.ok == 'true'
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
 
+      - name: Upload binding stress logs on failure
+        # The harness writes each seed's tester output, FDB trace logs and docker
+        # logs under binding-stress-out/. Without this they die with the runner and
+        # triage has only the one-line console summary — which is how a whole red
+        # lane once had to be reproduced locally before anyone could read the error.
+        if: ${{ failure() && steps.window.outputs.ok == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: binding-stress-failure
+          path: binding-stress-out/
+          retention-days: 14
+          if-no-files-found: warn
+
       - name: Record genuine-run heartbeat
         # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
         # heartbeat because the five jobs serialize on the one runner and so miss

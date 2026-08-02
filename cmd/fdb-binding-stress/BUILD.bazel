@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "fdb-binding-stress_lib",
@@ -12,4 +12,27 @@ go_binary(
     name = "fdb-binding-stress",
     embed = [":fdb-binding-stress_lib"],
     visibility = ["//visibility:public"],
+)
+
+# The FDB Python client, packaged for the harness to unpack next to the binding
+# tester. It is a tar rather than a filegroup of loose files so the output path
+# stays a single stable main-repo path (bazel-bin/cmd/fdb-binding-stress/) that
+# does not move when the pinned sdist's file list changes.
+genrule(
+    name = "python_fdb_tar",
+    srcs = ["@fdb_python//:fdb_srcs"],
+    outs = ["python-fdb.tar"],
+    cmd = "set -e; " +
+          "first=$$(echo $(locations @fdb_python//:fdb_srcs) | cut -d' ' -f1); " +
+          "pkg=$$(dirname $$first); " +
+          "tar cf $@ --sort=name --mtime='UTC 1980-01-01' --owner=0 --group=0 " +
+          "--numeric-owner -C $$(dirname $$pkg) $$(basename $$pkg)",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "fdb-binding-stress_test",
+    srcs = ["main_test.go"],
+    data = [":python_fdb_tar"],
+    embed = [":fdb-binding-stress_lib"],
 )
