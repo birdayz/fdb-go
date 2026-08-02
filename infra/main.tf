@@ -101,12 +101,6 @@ locals {
     # GitHub Actions runner (was releases/latest — now pinned). SHA from the release body.
     runner_version = "2.335.1"
     runner_sha256  = "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
-    # bazelscaleset supervisor (RFC-155). TODO: build the tools/bazelscaleset nested module in a
-    # GitHub-hosted CI step and publish a pinned release artifact, then set these to its
-    # version+sha (consistent with every other tool here). Until that release exists the binary
-    # is placed out-of-band (the live deploy scp'd a locally-built `GOOS=linux go build`).
-    bazelscaleset_version = "TODO-release"
-    bazelscaleset_sha256  = "TODO-sha256"
     # Go toolchain. MUST match go.mod's `go` directive: the workflows that do not go
     # through Bazel run the system `go` directly (the libfdbc cgo build hardcodes
     # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on
@@ -164,7 +158,7 @@ resource "hcloud_server" "runner" {
   # The live grandfathered box is in nbg1, NOT var.location (fsn1) — discovered
   # 2026-08-01 when a plan wanted to replace it over the drift. Hard-pinned to
   # reality; var.location remains the default for everything else.
-  location    = "nbg1"
+  location = "nbg1"
   # Rolling Hetzner system-image label (RFC-108 §3): Hetzner refreshes the 24.04 image
   # over time, so the base OS point-release can drift between provisions. Every TOOL the
   # tests use (runner, bazelisk, just, mc, FDB client) is pinned + checksummed on top of
@@ -193,8 +187,6 @@ resource "hcloud_server" "runner" {
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
     # bazelscaleset (RFC-155)
     runner_mode                       = var.runner_mode
-    bazelscaleset_version             = local.versions.bazelscaleset_version
-    bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
     bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
     bazelscaleset_app_installation_id = var.bazelscaleset_app_installation_id
     bazelscaleset_app_private_key     = var.bazelscaleset_app_private_key
@@ -211,7 +203,13 @@ resource "hcloud_server" "runner" {
     # each re-apply would ForceNew a live box. A template change therefore reaches this
     # box the same way it reaches the pool: an explicit `tofu apply -replace=...`, which
     # provisions from the current template.
-    ignore_changes = [user_data]
+    #
+    # ssh_keys for the same reason and it is not hypothetical: it is ForceNew in the
+    # provider, and hcloud_ssh_key.runner reads `~/.ssh/id_rsa.pub` off whatever machine
+    # runs the apply — so an operator with a different default key silently plans a
+    # destroy+create of EVERY box in the fleet. The key only matters at first boot
+    # anyway; Hetzner cannot change it on a live server.
+    ignore_changes = [user_data, ssh_keys]
   }
 }
 
@@ -264,26 +262,24 @@ resource "hcloud_server" "runner_pool" {
   ssh_keys    = [hcloud_ssh_key.runner.id]
 
   user_data = templatefile("${path.module}/cloud-init.yaml", {
-    fdb_version         = local.versions.fdb_version
-    github_repo         = var.github_repo
-    github_runner_token = var.runner_registration_token
-    runner_name         = "gh-runner-drain-${count.index}"
-    runner_labels       = var.runner_labels
-    runner_ephemeral    = false
-    runner_version      = local.versions.runner_version
-    runner_sha256       = local.versions.runner_sha256
-    go_version          = local.versions.go_version
-    go_sha256           = local.versions.go_sha256
-    bazelisk_version    = local.versions.bazelisk_version
-    bazelisk_sha256     = local.versions.bazelisk_sha256
-    just_version        = local.versions.just_version
-    just_sha256         = local.versions.just_sha256
-    mc_release          = local.versions.mc_release
-    mc_sha256           = local.versions.mc_sha256
-    fdb_clients_sha256  = local.versions.fdb_clients_sha256
+    fdb_version                       = local.versions.fdb_version
+    github_repo                       = var.github_repo
+    github_runner_token               = var.runner_registration_token
+    runner_name                       = "gh-runner-drain-${count.index}"
+    runner_labels                     = var.runner_labels
+    runner_ephemeral                  = false
+    runner_version                    = local.versions.runner_version
+    runner_sha256                     = local.versions.runner_sha256
+    go_version                        = local.versions.go_version
+    go_sha256                         = local.versions.go_sha256
+    bazelisk_version                  = local.versions.bazelisk_version
+    bazelisk_sha256                   = local.versions.bazelisk_sha256
+    just_version                      = local.versions.just_version
+    just_sha256                       = local.versions.just_sha256
+    mc_release                        = local.versions.mc_release
+    mc_sha256                         = local.versions.mc_sha256
+    fdb_clients_sha256                = local.versions.fdb_clients_sha256
     runner_mode                       = var.runner_mode
-    bazelscaleset_version             = local.versions.bazelscaleset_version
-    bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
     bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
     bazelscaleset_app_installation_id = var.bazelscaleset_app_installation_id
     bazelscaleset_app_private_key     = ""
@@ -291,8 +287,9 @@ resource "hcloud_server" "runner_pool" {
 
   lifecycle {
     # Registration tokens expire and rotate per apply; without this every re-apply
-    # would ForceNew the whole live pool.
-    ignore_changes = [user_data]
+    # would ForceNew the whole live pool. ssh_keys is here for the same reason: it is
+    # ForceNew, and it is derived from the applying operator's own default public key.
+    ignore_changes = [user_data, ssh_keys]
   }
 }
 
@@ -326,8 +323,12 @@ output "runner_pool_ips" {
 # idle and the build would still fill the root disk.
 #
 # server_id references the managed hcloud_server.runner (NOT a data lookup) so a fresh
-# `tofu apply` provisions server-then-volume in ONE graph; the server's prevent_destroy
-# makes that reference safe (a token/user_data ForceNew can't silently replace the box+volume).
+# `tofu apply` provisions server-then-volume in ONE graph. Nothing declares that reference
+# safe any more: the prevent_destroy that used to guard it was removed to move the fleet
+# off the scale set, so replacing the server destroys and re-creates this volume with it.
+# What keeps a routine apply from doing that is the servers' ignore_changes on the two
+# ForceNew inputs that drift on their own (user_data, ssh_keys) — an explicit
+# `tofu apply -replace=...` is still, deliberately, able to replace the pair.
 # ext4 (not xfs): the Bazel cache + Docker layers are millions of small files, ext4's
 # conservative sweet spot; xfs's large-file/parallelism edge isn't the bottleneck here.
 resource "hcloud_volume" "runner_data" {
