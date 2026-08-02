@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "test-budget_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/test-budget",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "test-budget",
+    embed = [":test-budget_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "test-budget_test",
+    srcs = ["main_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":test-budget_lib"],
+)

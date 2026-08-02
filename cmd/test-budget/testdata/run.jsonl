@@ -1,0 +1,10 @@
+{"id":{"progress":{"opaqueCount":1}},"progress":{}}
+{"id":{"testResult":{"label":"//pkg/a:a_test","run":1,"shard":1,"attempt":1}},"testResult":{"cachedLocally":false,"testAttemptDurationMillis":"700000","status":"PASSED"}}
+{"id":{"testSummary":{"label":"//pkg/a:a_test"}},"testSummary":{"overallStatus":"PASSED","totalRunDurationMillis":"700000"}}
+{"id":{"testResult":{"label":"//pkg/b:b_test","run":1,"shard":1,"attempt":1}},"testResult":{"cachedLocally":true,"testAttemptDurationMillis":"880000","status":"PASSED"}}
+{"id":{"testSummary":{"label":"//pkg/b:b_test"}},"testSummary":{"overallStatus":"PASSED","totalRunDurationMillis":"880000"}}
+{"id":{"testResult":{"label":"//pkg/c:c_test","run":1,"shard":1,"attempt":1}},"testResult":{"cachedLocally":true,"testAttemptDurationMillis":"30000","status":"PASSED"}}
+{"id":{"testResult":{"label":"//pkg/c:c_test","run":1,"shard":2,"attempt":1}},"testResult":{"cachedLocally":false,"testAttemptDurationMillis":"250000","status":"PASSED"}}
+{"id":{"testSummary":{"label":"//pkg/c:c_test"}},"testSummary":{"overallStatus":"PASSED","totalRunDurationMillis":"250000"}}
+{"id":{"testResult":{"label":"//pkg/d:d_test","run":1,"shard":1,"attempt":1}},"testResult":{"cachedLocally":false,"testAttemptDurationMillis":"600000","status":"PASSED"}}
+{"id":{"testSummary":{"label":"//pkg/d:d_test"}},"testSummary":{"overallStatus":"PASSED","totalRunDurationMillis":"600000"}}

@@ -22,12 +22,21 @@ go_library(
 
 go_test(
     name = "sqldriver_test",
-    # size="large" => 900s bazel timeout. The suite holds ~55 FDB-container
-    # test files; the default medium 300s is only safe when the suite runs
-    # ALONE on the runner — CI schedules container-heavy targets
-    # concurrently (one shared Docker daemon), and a contended run starved
-    # past 300s while the same suite runs in ~25s locally and ~65s solo on
-    # CI. Same rationale as the conformance and chaos targets.
+    # size="large" => 900s bazel timeout. The suite holds 432 FDB-container
+    # test files with 1292 top-level test functions; the default medium 300s
+    # is only safe when the suite runs ALONE on the runner — CI schedules
+    # container-heavy targets concurrently (one shared Docker daemon), and a
+    # contended run starved past 300s while the same suite runs in ~25s
+    # locally and ~65s solo on CI. Same rationale as the conformance and
+    # chaos targets.
+    #
+    # Under the race detector on four cores (the CI runner is a 4-vCPU cx33)
+    # the same suite takes 277s solo — 31% of the budget, comfortable. It has
+    # nonetheless TIMED OUT at 913s in the race lane (PR #577), because it was
+    # co-scheduled with the 5000-scenario corpus target, which holds ~5 GB RSS
+    # on a 7.6 GB box. That was a scheduling defect, fixed in ci.yml by scoping
+    # the lane, NOT a budget defect here: raising this budget would have hidden
+    # a starving runner behind a bigger number.
     size = "large",
     srcs = [
         "agg_continuation_straddle_fdb_test.go",

@@ -1,16 +1,32 @@
 load("@rules_go//go:def.bzl", "go_test")
 
 # The FULL committed RFC-201 factory corpus, run as ORDINARY suite content —
-# every `just test`, every CI run (owner ruling 2026-08-01, recorded in
+# every `just test`, every non-race CI run (owner ruling 2026-08-01, recorded in
 # rfcs/201-layered-test-corpus.md §7). The nightly corpus job re-runs the same
 # target on master as the scheduled heartbeat nightly-reconcile.yml checks.
 #
 # One container, one top-level test function, a t.Parallel() subtest per
-# scenario: the 2000-scenario corpus executes in well under a minute, which is
-# what makes it affordable as a default-suite target.
+# scenario.
+#
+# What it costs, measured, because an earlier version of this comment claimed
+# "well under a minute at 2000 scenarios" and the corpus is now 5000:
+#
+#   514s   non-race, alone on the CI runner (nightly-factory run 30747534073)
+#   1328s  -race, four cores, all 5000 scenarios passing
+#   1830s  -race on the CI runner while co-scheduled with three other targets
+#   3612s  the same, on a run where it hit the wall and TIMED OUT (PR #590)
+#
+# That last line is why the corpus targets are no longer in the PR race lane
+# (ci.yml's REL_SCOPE subtracts them; nightly-coverage races them instead). The
+# eternal budget is not the problem and raising it further would not help: the
+# spread between 1328s and 3612s is contention on a 7.6 GB box, not work.
 go_test(
     name = "full_test",
-    timeout = "eternal",  # keep: 3600s via .bazelrc's --test_timeout override — headroom for corpus growth, not present need (~40s at 2000 scenarios)
+    # keep: eternal => 3600s via .bazelrc's --test_timeout override. At 5000
+    # scenarios the measured -race cost is ~1328s (37%); the headroom is for
+    # corpus growth, and cmd/test-budget now reports the utilisation every run
+    # so the growth is visible before it is a timeout.
+    timeout = "eternal",
     srcs = ["full_corpus_fdb_test.go"],
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
     # keep at 1: Bazel shards by TOP-LEVEL TEST FUNCTION, and this package has

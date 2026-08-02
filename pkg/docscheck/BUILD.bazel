@@ -24,6 +24,7 @@ go_test(
         "nightly_window_landing_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",
+        "race_lane_scope_test.go",
         "source_hygiene_test.go",
         "unknown_type_mint_census_test.go",
     ],

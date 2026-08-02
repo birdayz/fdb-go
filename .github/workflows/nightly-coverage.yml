@@ -15,7 +15,13 @@ jobs:
   coverage:
     name: Coverage + Race + Bench
     runs-on: hetzner-fdb-vm
-    timeout-minutes: 60
+    # 150, not 60: this job took on the SQL conformance corpora under -race when
+    # ci.yml's race lane gave them up (they starved the PR lane on an 8 GB box).
+    # Measured, four cores: the corpus execution target alone is 1328s, and the
+    # corpora step runs one target at a time on purpose. A 60-minute cap would
+    # cancel the job mid-race and report it as infrastructure noise rather than
+    # as the coverage it is.
+    timeout-minutes: 150
 
     steps:
       - name: Check nightly window
@@ -107,6 +113,53 @@ jobs:
             --local_resources=memory=HOST_RAM*0.6 \
             --test_timeout=900 \
             --test_summary=detailed
+
+      - name: Race detector (SQL conformance corpora)
+        if: steps.window.outputs.ok == 'true'
+        # These are the targets the PR race lane deliberately does NOT carry
+        # (ci.yml's REL_SCOPE subtracts them, per RFC-107 §3's rule that
+        # Docker-backed conformance suites must not dominate PR latency). Nightly
+        # is where they still get the detector, so the exclusion moves the cost off
+        # the merge queue rather than dropping the coverage.
+        #
+        # --local_test_jobs=1, not the .bazelrc default of 4: measured under -race
+        # on four cores, the corpus execution target alone holds ~5 GB RSS while
+        # running 5000 scenarios. Four of these at once on a 7.6 GB box is what put
+        # a 31s target (plandiff) past its 900s timeout on PR #577 — the box ran
+        # out of memory and everything starved. One at a time, each target gets the
+        # machine and reports its own runtime rather than the queue's.
+        #
+        # Timeouts come from the same four slots .bazelrc declares, NOT the flat
+        # --test_timeout=900 the step above uses: the corpus target is `eternal` on
+        # purpose and a flat 900 would fail it by fiat, which is a budget lie, not
+        # a budget.
+        run: |
+          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
+            --host_jvm_args=-Xmx3g \
+            test //pkg/relational/conformance/... \
+            --@rules_go//go/config:race \
+            --build_event_json_file=.bazel-bep.race-corpora.jsonl \
+            --local_resources=memory=HOST_RAM*0.6 \
+            --local_test_jobs=1 \
+            --test_timeout=60,300,900,3600 \
+            --test_summary=detailed
+
+      - name: Corpora race budgets
+        # This lane is now the corpora's only instrumented run, so it is where
+        # their growth has to be visible. Measured on four cores at 5000
+        # scenarios, the worst target here sits at 37% of its budget; the gate
+        # annotates at 70% and fails at 90%, which is the last point at which
+        # failing is cheaper than timing out. Same slot values as the run above,
+        # or the tool would judge against budgets Bazel did not enforce.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() }}
+        run: |
+          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base --host_jvm_args=-Xmx3g \
+            query 'tests(//pkg/relational/conformance/...)' --output=xml --xml:default_values \
+            > .bazel-targets.race-corpora.xml
+          go run ./cmd/test-budget -lane nightly/corpora \
+            -bep .bazel-bep.race-corpora.jsonl \
+            -targets .bazel-targets.race-corpora.xml \
+            -timeouts 60,300,900,3600 -warn 0.70 -threshold 0.90
 
       - name: Generate coverage report
         if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
