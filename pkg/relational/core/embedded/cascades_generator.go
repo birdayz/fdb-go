@@ -2359,8 +2359,17 @@ func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 // builder (cascades.IndexDefWithPredicate): the expansion attaches it to the
 // candidate graph so a query never matches the filtered index as if it were
 // full (ValueIndexExpansionVisitor.java:138-162). Nil for a full index.
+//
+// The predicate is normalized on the way in, which is exactly where Java
+// normalizes it: the planner only ever sees an index predicate through
+// IndexPredicate.toPredicate, whose And arm delegates to the folding
+// constructor AndPredicate.and (IndexPredicate.java:344-345). So a conjunction
+// of tautologies arrives already collapsed to the constant and the expansion's
+// existing tautology check leaves the index as matchable as any full one.
+// Sharing NormalizePredicateProto with the executor's completeness backstop is
+// what stops the two from classifying the same stored predicate differently.
 func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
-	return d.idx.GetPredicateProto()
+	return recordlayer.NormalizePredicateProto(d.idx.GetPredicateProto())
 }
 
 // IndexKeyComponentTypes derives one authoritative physical tuple type per

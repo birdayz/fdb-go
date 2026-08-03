@@ -1296,22 +1296,119 @@ func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
 		},
 		{"value comparison", valueArm, false},
 		{
-			// Java's QueryPredicate.isTautology() is overridden only by
-			// ConstantPredicate (ConstantPredicate.java:98); AndPredicate does
-			// not override it, so TRUE AND TRUE is not a tautology to Java
-			// either. Go matches that narrowness deliberately.
-			"AND of tautologies is not itself a proved tautology",
+			// AndPredicate.and drops tautological conjuncts and returns
+			// ConstantPredicate.TRUE when none remain (AndPredicate.java:188-206),
+			// so Java never holds an AndPredicate of TRUEs to classify — it holds
+			// the constant. Normalizing the same way is what makes
+			// `WHERE TRUE AND TRUE` a complete index here too.
+			"AND of EXPLICIT tautologies folds to the constant",
 			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
 				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
 				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
 			}}},
+			true,
+		},
+		{
+			// A child that carries the constant ARM with no value set folds like
+			// any other TRUE, and must: proto2 declares TRUE as that field's
+			// default, so constantPredicateFromProto compiles it to an
+			// always-true evaluator and the index really does hold every record.
+			// The classifier has to agree with the evaluator that built the
+			// index, not be stricter than it.
+			"AND of value-defaulted constant children folds like explicit TRUEs",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{}},
+				{ConstantPredicate: &gen.ConstantPredicate{}},
+			}}},
+			true,
+		},
+		{
+			// THIS is the proto2 trap, and the fold must not re-open it: these
+			// children carry NO constant arm at all, and the nil-safe getter
+			// chain GetConstantPredicate().GetValue() would still answer TRUE for
+			// them. Only a child whose constant arm is PRESENT may be folded out;
+			// an armless child is unknowable and keeps the conjunction filtering.
+			"AND of children with NO constant arm stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{}, {},
+			}}},
 			false,
 		},
 		{
-			"OR containing a tautology is not a proved tautology",
+			"AND mixing a real TRUE with an armless child stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				{},
+			}}},
+			false,
+		},
+		{
+			// A surviving conjunct keeps the conjunction filtering: TRUE AND x
+			// folds to x, which is a real comparison.
+			"AND of a tautology and a real comparison folds to the comparison",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				valueArm,
+			}}},
+			false,
+		},
+		{
+			"AND of two real comparisons stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{valueArm, valueArm}}},
+			false,
+		},
+		{
+			// Nested: AND(AND(TRUE, TRUE), TRUE) collapses all the way down,
+			// because the fold is recursive exactly as construction is.
+			"nested AND of tautologies folds recursively",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				}}},
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			true,
+		},
+		{
+			// OR IS NOT THE DUAL. OrPredicate.or -> of (OrPredicate.java:417-445)
+			// does no tautology folding, and OrPredicate never overrides
+			// isTautology, so TRUE OR x is filtering to Java. Folding it would
+			// make Go scan an index Java treats as incomplete.
+			"OR containing a tautology is NOT a proved tautology",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				valueArm,
+			}}},
+			false,
+		},
+		{
+			// A SINGLETON disjunction is different, and this is Java too: of()
+			// collapses a one-element list to that element, which here is the
+			// constant itself. The narrow test then answers about a constant,
+			// not about an Or.
+			"singleton OR collapses to its only child",
 			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
 				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
 			}}},
+			true,
+		},
+		{
+			"singleton OR of a real comparison collapses and stays filtering",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{valueArm}}},
+			false,
+		},
+		{
+			"empty AND has no surviving conjunct and is vacuously complete",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{}},
+			true,
+		},
+		{
+			// An empty disjunction is what Java's of() refuses outright
+			// (Verify.verify(!disjuncts.isEmpty())). Unreconstructable, so it is
+			// handed back untouched and fails closed.
+			"empty OR fails closed",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{}},
 			false,
 		},
 		{
