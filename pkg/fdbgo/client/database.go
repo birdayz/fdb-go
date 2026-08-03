@@ -256,10 +256,13 @@ type database struct {
 	// therefore untestable by racing. Always nil in production.
 	beforeCommitProxySelect atomic.Pointer[func()]
 	// duringProxyInstall runs inside installProxySet, on both sides of the dbInfo
-	// publication, so a test can observe the instant the fence and the published
-	// epoch are permitted to disagree. The reversed order's window is two
-	// instructions wide; a spinning observer never wins it. Always nil in
+	// publication. It exists so a test can hold an installer inside the critical
+	// section (see installMu) and observe the fence at publication. Always nil in
 	// production.
+	//
+	// IT RUNS UNDER installMu, which is not reentrant: a hook that calls back into
+	// installProxySet deadlocks the calling goroutine against itself. Hooks here
+	// may observe and block; they may not install.
 	duringProxyInstall atomic.Pointer[func()]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send

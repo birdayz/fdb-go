@@ -154,22 +154,22 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 //     floor mechanism exists to hold.
 //   - grvCache's fence word is what a PUBLICATION is judged against.
 //
-// The two are kept coherent by ORDER: the fences move FIRST, and only then is
-// the DBInfo carrying the new epoch published. So DBInfo.Epoch <= fence epoch at
-// every instant, and the single reachable disagreement is (new fence, old
-// proxies) — a request binding there carries the OLD epoch, talks to the OLD
-// cluster, and is refused, which is the correct outcome rather than a
-// conservative approximation of one.
+// The two are kept coherent by DERIVATION, not by the order of two statements:
+// the published epoch is read from the fence at publication (see below), so
+// DBInfo.Epoch <= fence epoch holds at every instant no matter where the bump
+// sits. The only reachable disagreement is (new fence, old proxies) — a request
+// binding there carries the OLD epoch, talks to the OLD cluster, and is refused,
+// which is the correct outcome rather than a conservative approximation of one,
+// and the next install republishes from the fence and heals it.
 //
-// The reversed order does NOT let a request bind the new epoch while holding the
-// old proxies — that became unreachable when the epoch moved into the snapshot,
-// since the two now travel together. Its reachable harm is narrower and lands on
-// the commit path: in the (fence-old, DBInfo-new) window a commit binds epoch
-// N+1 from the freshly published snapshot, replies while the fence still reads
-// N, fails sameEpoch, and loses its DURABLE FLOOR — after which a lower GRV
-// repopulates the cache underneath a write the caller was told had committed.
-// Same loss the epoch-before-proxies sampling used to cause, reached from the
-// other side.
+// The disagreement in the other direction is what must never occur, and it is
+// worth naming precisely because an earlier version of this function guarded it
+// with statement order and a test that only appeared to check it. A snapshot
+// published AHEAD of the fence lets a commit bind epoch N+1, reply while the
+// fence still reads N, fail sameEpoch and lose its DURABLE FLOOR — the same loss
+// the epoch-before-proxies sampling used to cause, reached from the other side.
+// Deriving the published value from the fence removes the state rather than
+// forbidding it.
 //
 // C++ reaches the same observable state by a different mechanism: switchConnectionRecord
 // clears commitProxies and grvProxies inside the same block as its cluster-state
@@ -184,12 +184,12 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 	defer db.installMu.Unlock()
 
 	old := db.dbInfo.Load()
-	epoch := int64(0)
-	if old != nil {
-		epoch = old.Epoch
-	}
 	if db.clusterSwitchPending.CompareAndSwap(true, false) {
-		epoch = db.grvCache.resetForNewCoordinators()
+		// The returned epoch is deliberately DISCARDED. Using it would make the
+		// published value a fact about when the bump happened; reading the fence
+		// below makes it a fact about what the fence holds at publication, which
+		// is the property that has to be true.
+		db.grvCache.resetForNewCoordinators()
 		// C++ resets minAcceptableReadVersion in the same block
 		// (switchConnectionRecord, NativeAPI.actor.cpp:2201) and re-derives it
 		// from the new cluster's first GRV. Go's floor is the SMALLEST version
@@ -199,15 +199,32 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 		// handle's own first GRV happens to lower it.
 		db.minAcceptableReadVersion.Store(0)
 	}
-	newInfo.Epoch = epoch
+
+	// THE ORDER INVARIANT, held BY CONSTRUCTION rather than by a check or by the
+	// order of two statements: the published epoch is READ FROM THE FENCE, so it
+	// is whatever the fence holds at publication and cannot be ahead of it. Not
+	// carried from the old snapshot, not taken from the bump's return value —
+	// either of those is a value from an earlier instant, and publishing an
+	// earlier instant's epoch is precisely how a snapshot gets ahead of the fence.
+	//
+	// This is what makes the guarantee independent of where the bump sits. Move
+	// the bump anywhere after this read and the publication simply does not carry
+	// the new epoch: the fence ends up AHEAD of the published snapshot, which is
+	// the safe disagreement (requests bind the old epoch, talk to the old cluster,
+	// and are refused), and the next install republishes from the fence and heals
+	// it. The harmful direction — a snapshot ahead of the fence, where a commit
+	// binds an epoch the fence has not reached, replies, fails sameEpoch and loses
+	// its durable floor — has no way to arise.
+	newInfo.Epoch = db.grvCache.epochNow()
 
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
-	// Observed on BOTH sides of the publication. One call site would be enough
-	// only if the order were fixed, which is exactly what is under test: whichever
-	// way the two statements are arranged, one of these two observations falls
-	// inside the window where the fence and the published epoch disagree.
+	// The seam is belt-and-braces for the invariant above and load-bearing for
+	// installMu's serialisation test; it is NOT what enforces the order. A pin
+	// that depends on where a hook sits relative to the publication tests the
+	// hook's position, not the property — the reason the ordering pin this
+	// replaced was green against a bump moved inside the bracket.
 	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
 	db.observeProxyInstall()
@@ -311,6 +328,10 @@ func (db *database) onCoordinatorSetAdopted() {
 
 // observeProxyInstall runs the duringProxyInstall seam when one is installed.
 // Nil in production, so this is a load and a branch on the topology path.
+//
+// Both call sites are INSIDE installMu, which is not reentrant: a hook that
+// calls back into installProxySet deadlocks the calling goroutine against
+// itself. Hooks may observe and block; they may not install.
 func (db *database) observeProxyInstall() {
 	if hook := db.duringProxyInstall.Load(); hook != nil {
 		(*hook)()

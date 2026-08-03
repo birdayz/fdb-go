@@ -60,7 +60,7 @@ func TestFences_MayInstallImpliesSameEpoch(t *testing.T) {
 // the version passes with the stamp wrong.
 //
 // Three cells, not four: the fourth (mayInstall without sameEpoch) has no
-// (obs, tok) pair that produces it, which is the R1 invariant above.
+// (obs, tok) pair that produces it, which is the one-fence-word invariant above.
 func TestMergeReply_FenceTable(t *testing.T) {
 	t.Parallel()
 

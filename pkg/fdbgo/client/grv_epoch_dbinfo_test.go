@@ -231,62 +231,6 @@ func TestEpoch_IdenticalProxySetUnderANewEpochIsStillPublished(t *testing.T) {
 	}
 }
 
-// TestEpoch_FenceMovesBeforeThePublication is the DETERMINISTIC pin for the
-// order. It replaces a spinning observer that could not win a two-instruction
-// window: under the reversed order that observer stayed green run after run
-// while the defect was fully present, which is the exact shape of a test that
-// reads as coverage and is not. Nothing was kept from it except its
-// post-condition, folded in below — a probe that provably cannot see the defect
-// is worse than no probe, because it makes the property look guarded.
-//
-// The seam runs on BOTH sides of the publication, which is what makes it robust
-// to how the order is broken: whichever of the two statements moves, one of the
-// two observations falls inside the window where the published epoch is ahead of
-// the fence.
-func TestEpoch_FenceMovesBeforeThePublication(t *testing.T) {
-	t.Parallel()
-
-	db := &database{proxiesChanged: make(chan struct{})}
-	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
-
-	type observation struct{ published, fence int64 }
-	var seen []observation
-	hook := func() {
-		published := int64(-1)
-		if info := db.dbInfo.Load(); info != nil {
-			published = info.Epoch
-		}
-		seen = append(seen, observation{published, db.grvCache.epochNow()})
-	}
-	db.duringProxyInstall.Store(&hook)
-	defer db.duringProxyInstall.Store(nil)
-
-	db.onCoordinatorSetAdopted()
-	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
-
-	if len(seen) != 2 {
-		t.Fatalf("the seam ran %d times, want 2 (either side of the publication): a "+
-			"single observation cannot catch the order breaking in both directions",
-			len(seen))
-	}
-	for i, o := range seen {
-		if o.published > o.fence {
-			t.Fatalf("observation %d inside installProxySet: published epoch %d is AHEAD "+
-				"of the fence %d.\n"+
-				"The fence must move first. In this window a commit binds epoch %d from "+
-				"the freshly published snapshot, replies while the fence still reads %d, "+
-				"fails sameEpoch and loses its DURABLE FLOOR — after which a lower GRV "+
-				"repopulates the cache underneath a write the caller was told had "+
-				"committed", i, o.published, o.fence, o.published, o.fence)
-		}
-	}
-	if got, want := db.dbInfo.Load().Epoch, db.grvCache.epochNow(); got != want {
-		t.Fatalf("after the handoff the published epoch is %d and the fence %d: outside "+
-			"the publication instant they must agree, or every publication is refused",
-			got, want)
-	}
-}
-
 // TestEpoch_InstallIsSerialised pins the read-modify-write. installProxySet
 // loads dbInfo, derives the next epoch from it, may bump the fence, and stores:
 // atomic.Pointer makes each step atomic and the SEQUENCE not.
@@ -356,7 +300,8 @@ func TestEpoch_InstallIsSerialised(t *testing.T) {
 }
 
 // TestEpoch_CommitEpochIsTheValueProxySelectionReturned closes the sibling of
-// the window R3 fixed. Reading the fence again next to getCommitProxy — rather
+// the window the epoch-from-the-snapshot fix closed. Reading the fence again
+// next to getCommitProxy — rather
 // than using the epoch it RETURNED — passes every test that fires the handoff
 // completely before proxy selection, because there the two agree.
 //
@@ -422,5 +367,86 @@ func TestEpoch_CommitEpochIsTheValueProxySelectionReturned(t *testing.T) {
 			"floor to the current epoch attributes a durable fact to a cluster it never "+
 			"talked to, which is exactly the confusion the epoch exists to prevent",
 			f, cv)
+	}
+}
+
+// TestEpoch_PublishedEpochIsTheFenceAtPublication is the PLACEMENT-INDEPENDENT
+// pin for the order invariant, and it is deliberately anchored to the ACT rather
+// than to any seam.
+//
+// Two pins have now failed on this property, both the same way. A spinning
+// observer could not win a two-instruction window. Its replacement bracketed the
+// publication with a hook and claimed that "whichever statement moves, one
+// observation falls inside the window" — which is false: a bump moved to just
+// after the store, still inside the bracket, left both observations consistent
+// and the window fully live. Both tested an artifact of where the observer sat.
+//
+// So this asserts a property of the RESULT, which no placement can dodge: after
+// a handoff the published epoch equals the fence. The published value is read
+// FROM the fence at publication, so any bump that happens after that read leaves
+// the snapshot carrying the older epoch — the fence ends up ahead of the
+// snapshot, which is the safe direction, and this equality catches it.
+//
+// Verified against four mutants: the bump moved to immediately after the store
+// (inside the seam bracket, the placement that defeated the previous pin), after
+// the trailing hook, after the broadcast, and — the one case an end-state
+// equality alone cannot see — a computed epoch combined with a displaced bump,
+// caught by the second assertion below.
+func TestEpoch_PublishedEpochIsTheFenceAtPublication(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+	if got, want := db.dbInfo.Load().Epoch, db.grvCache.epochNow(); got != want {
+		t.Fatalf("precondition: published %d, fence %d", got, want)
+	}
+
+	// The SECOND assertion, and load-bearing rather than decorative — the two
+	// cover different mutant classes and neither subsumes the other:
+	//
+	//   - the equality below catches every DISPLACEMENT of the bump while the
+	//     derivation stands (after the store, after the trailing hook, after the
+	//     broadcast): the published value was read before the bump, so the handle
+	//     ends up with the fence ahead of the snapshot.
+	//   - this one catches the bump displaced together with a REVERTED derivation
+	//     (a computed old+1 rather than a read of the fence). That combination
+	//     lands published == fence at the end, so the equality alone is green,
+	//     while a snapshot really was published ahead of the fence in between.
+	//
+	// This one is hook-relative, which is why it is the secondary: it is the
+	// weaker of the two and must never be the only pin.
+	var fenceOnEntry int64 = -1
+	hook := func() {
+		if fenceOnEntry < 0 {
+			fenceOnEntry = db.grvCache.epochNow()
+		}
+	}
+	db.duringProxyInstall.Store(&hook)
+	defer db.duringProxyInstall.Store(nil)
+
+	db.onCoordinatorSetAdopted()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+
+	published := db.dbInfo.Load().Epoch
+	fence := db.grvCache.epochNow()
+
+	if published != fence {
+		t.Fatalf("after a coordinator handoff the published epoch is %d and the fence "+
+			"%d.\n"+
+			"The published value must be READ FROM the fence at publication. Derived "+
+			"from anything earlier — the old snapshot, the bump's return value, a fence "+
+			"read taken before a bump that has since been displaced — the snapshot "+
+			"carries an epoch from another instant. Ahead of the fence it costs a "+
+			"commit its durable floor; behind it, as here, the handle publishes an "+
+			"epoch the fence has already passed with clusterSwitchPending spent",
+			published, fence)
+	}
+	if fenceOnEntry != fence {
+		t.Fatalf("the fence read on entry to the publication was %d but the handle "+
+			"settled at %d: the bump did not happen before the value that gets "+
+			"published was determined", fenceOnEntry, fence)
+	}
+	if published == 0 {
+		t.Fatal("the handoff did not move the epoch at all")
 	}
 }

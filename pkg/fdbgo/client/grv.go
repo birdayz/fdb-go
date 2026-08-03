@@ -668,7 +668,7 @@ type grvResult struct {
 	// client can know it: the PRE-RPC request time, never the reply time. It
 	// is a lower bound — the proxy assigned the version at or after we asked —
 	// and erring early is the safe direction, because a budget built on it
-	// then expires sooner than FDB.s window rather than later.
+	// then expires sooner than FDB's window rather than later.
 	instant time.Time
 	err     error
 }
@@ -1067,17 +1067,33 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// same reason with sharper consequences: it is a claim about a VERSION SPACE,
 	// and a straggler from the previous cluster writes that cluster's numbers into
 	// this one's floor. validateVersion then rejects every user-set version below
-	// the previous cluster's space with transaction_too_old — and the pollution
-	// DISARMS its own recovery, because the bootstrap GRV that would re-derive the
-	// floor fires only while it reads 0 (transaction.go, ensureReadVersion). The
-	// handoff resets it to 0 precisely to arm that path; a straggler landing
-	// afterwards closes it again, and nothing reopens it.
+	// the previous cluster's space with transaction_too_old. The pollution also
+	// closes the path that would fix it FASTEST: the bootstrap GRV in
+	// ensureReadVersion fires only while the floor reads 0, and the handoff resets
+	// it to 0 precisely to arm that.
+	//
+	// The narrower true statement, since the floor is a MIN: any real GRV on this
+	// handle heals it, because the new cluster's smaller version replaces the
+	// straggler's. What stays broken is the handle that never takes one — one
+	// using SetReadVersion exclusively, whose only GRV was the bootstrap the
+	// straggler just disarmed. That is a narrow shape, not a general wedge, and
+	// worth stating as such rather than overclaiming.
 	//
 	// Gated on sameEpoch and NOT on mayInstall: an invalidation does not change
 	// whose version space a reply came from, so a generation-blocked reply from
 	// THIS cluster still describes this cluster's numbers. Same asymmetry the
 	// floor and the cooldowns are built on — and this is one more arm the epoch
 	// gate had not covered.
+	//
+	// THE RESIDUAL, named rather than papered over: sameEpoch is decided inside
+	// publishReplyAt and consumed here, a few instructions later. A handoff in
+	// that gap lets a straggler's contact instant and minimum-acceptable store
+	// land after the reset that was meant to clear them. It is not the wedge above
+	// — the min semantics heal the floor on the next GRV, and the contact instant
+	// costs at most one delayed refresh — but it is a real gap, and the gate is
+	// therefore very-nearly-total rather than total. Closing it needs these two
+	// stores inside the publication's CAS, which is a larger change than the bug
+	// it would fix.
 	if sameEpoch {
 		db.grvCache.lastProxyContact.Store(requestTime.UnixNano())
 		updateMinAcceptable(&db.minAcceptableReadVersion, version)
@@ -1378,10 +1394,11 @@ func (c *grvCache) entryFloor() int64 {
 // versions with transaction_too_old until this handle's own first GRV happens to
 // lower it. That direction — the new cluster being lower — is the whole reason
 // the epoch exists, so it is precisely the case not to leave to chance.
-// It returns the epoch it installed, because that epoch is what the DBInfo
-// published immediately afterwards must carry: the fence word and the DBInfo
-// are two views of one fact, and the caller is the only place that can keep
-// them coherent (see database.installProxySet).
+// It returns the epoch it installed, for callers that want to assert on the
+// bump. installProxySet deliberately does NOT use it: it re-reads the fence at
+// publication instead, so the epoch it publishes is a fact about the fence at
+// that instant rather than about when this bump happened. That is what makes the
+// coherence rule hold however the two are arranged — see database.installProxySet.
 func (c *grvCache) resetForNewCoordinators() int64 {
 	// Bumping the fences is the WHOLE reset. The entry is deliberately NOT
 	// cleared: every entry records the epoch it was published under, so one
