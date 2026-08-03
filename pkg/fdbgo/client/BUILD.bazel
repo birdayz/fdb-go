@@ -96,6 +96,7 @@ go_test(
         "grv_fences_test.go",
         "grv_invalidate_generation_test.go",
         "grv_panic_test.go",
+        "grv_seam_test.go",
         "grv_test.go",
         "grv_throttle_ordering_test.go",
         "grv_unit_test.go",

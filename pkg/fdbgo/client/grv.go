@@ -232,7 +232,12 @@ func (c *grvCache) publish(tok cacheToken, at time.Time, v int64) {
 // replyTime, NativeAPI.actor.cpp:7411-7416). Cooldowns only ever advance, and
 // they SURVIVE a version that is rejected as stale — a throttle signal is
 // about the cluster, not about the version that happened to carry it.
-func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
+//
+// It returns whether the publication belonged to the CURRENT epoch. That is the
+// same predicate mergeReply gates the floor and the cooldowns on, handed back
+// rather than recomputed by the caller: a second comparison against a fence that
+// may have moved in between is a second answer, and the two would drift.
+func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) (sameEpoch bool) {
 	for {
 		cur := c.entry.Load()
 		// Re-read per iteration, and as ONE word: an invalidation that lands
@@ -241,7 +246,9 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 		// the invalidation installed. Both fence predicates come from this single
 		// Load, so no publication can ever mix a pre-switch generation with a
 		// post-switch epoch.
-		next := mergeReply(cur, c.fences.Load(), tok, durable, at, v, replyTime, rkDefault, rkBatch)
+		obs := c.fences.Load()
+		sameEpoch = fenceEpoch(obs) == tok.epoch()
+		next := mergeReply(cur, obs, tok, durable, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -1031,8 +1038,26 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// ordering it cannot be undone by an innocent-looking edit to this
 	// function.
 	replyTime := time.Now()
-	db.grvCache.publishReplyAt(tok, false, requestTime, version, replyTime, rkDefault, rkBatch)
-	db.grvCache.lastProxyContact.Store(replyTime.UnixNano())
+	sameEpoch := db.grvCache.publishReplyAt(tok, false, requestTime, version, replyTime, rkDefault, rkBatch)
+	// The REQUEST instant, not the reply instant: C++ sets
+	// lastProxyRequestTime = trState->startTime (NativeAPI.actor.cpp:7408) while
+	// the reply instant is reserved for the ratekeeper cooldowns (:7411-7416).
+	// The refresher subtracts this from MAX_PROXY_CONTACT_LAG, so dating it at the
+	// reply understates how long the proxy has gone uncontacted by a whole round
+	// trip and lets the contact budget run over.
+	//
+	// Gated on the epoch, like the cooldowns: "when we last reached the proxies"
+	// is a fact about a CLUSTER, and a reply from the previous one says nothing
+	// about this one — it would suppress the very refresh that repopulates the
+	// cache under the new epoch. The predicate comes back from the publication
+	// rather than being recomputed here, so there is exactly one answer.
+	//
+	// It stays a separate atomic rather than joining the entry: nothing tryCache
+	// consults reads it, so it is not part of the serve decision that has to be
+	// observed as one value. It only paces the background refresher.
+	if sameEpoch {
+		db.grvCache.lastProxyContact.Store(requestTime.UnixNano())
+	}
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 
 	if len(tagThrottleInfoBytes) > 0 {
