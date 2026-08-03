@@ -758,7 +758,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
-		// clears it and the retry.s GRV opens a new 5-second window.
+		// clears it and the retry's GRV opens a new 5-second window.
 		//
 		// The instant comes FROM the GRV, not from now(): for a proxy round
 		// trip it is the pre-RPC request time, and for a USE_GRV_CACHE hit it is
@@ -1954,7 +1954,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// of USE_GRV_CACHE; only cache READS are opt-in (RFC-104).
 	//
 	// Stamped with commitStart, the instant BEFORE the commit was dispatched,
-	// never with now(): this version.s MVCC window opened when the proxy
+	// never with now(): this version's MVCC window opened when the proxy
 	// assigned it, which is somewhere inside the round trip that just
 	// finished. Dating it now() would claim the window opened after it closed
 	// on the far side, and an opted-in reader served this entry would then

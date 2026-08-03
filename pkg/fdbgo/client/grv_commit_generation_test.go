@@ -185,7 +185,7 @@ func TestCommitWarming_BlockedCommitLeavesNoStaleEntryServable(t *testing.T) {
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Fatalf("the cache is still serving version %d after a commit at 7000 RETURNED.\n"+
 			"7000 is durable, so 6000 provably predates it and every read served from "+
-			"it misses the caller.s own just-committed write. The blocked commit may "+
+			"it misses the caller's own just-committed write. The blocked commit may "+
 			"not INSTALL its version — its anchor belongs to a pre-invalidation "+
 			"dispatch — but it must still raise the FLOOR, which needs no generation "+
 			"because it is a version comparison", v)
@@ -676,7 +676,7 @@ func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
 	base := time.Now()
 	db := &database{proxiesChanged: make(chan struct{})}
 	db.grvCache.now = func() time.Time { return base }
-	// Cluster A.s proxies are installed and its version cached.
+	// Cluster A's proxies are installed and its version cached.
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
 	db.grvCache.publish(db.grvCache.token(), base, 9_000_000)
 
@@ -688,7 +688,7 @@ func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
 	// it captures must not survive the handoff.
 	inWindowGen := db.grvCache.token()
 
-	// The handoff: B.s proxies arrive, and the epoch changes inside the same act
+	// The handoff: B's proxies arrive, and the epoch changes inside the same act
 	// that publishes them.
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
 
@@ -723,7 +723,7 @@ func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t 
 	// A commit dispatched against cluster A, long before any switch.
 	commitTok := db.grvCache.token()
 
-	// The handle adopts B.s coordinators, then receives B.s proxies.
+	// The handle adopts B's coordinators, then receives B's proxies.
 	db.onCoordinatorSetAdopted()
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
 

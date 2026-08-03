@@ -17,6 +17,7 @@ package client
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -154,62 +155,6 @@ func TestEpoch_ProxyAndEpochComeFromOneLoad(t *testing.T) {
 	}
 }
 
-// TestEpoch_PublishedEpochNeverExceedsTheFence states the ORDER invariant, which
-// is what makes the only reachable disagreement the safe one.
-//
-// Bumped first, the single window is (new fence, old proxies): a request binding
-// there carries the OLD epoch, talks to the OLD cluster, and is refused —
-// correct, not merely conservative. Reversed, the window becomes (old fence, new
-// proxies): a request binds the NEW epoch while still holding the previous
-// cluster's proxies, and its reply installs another cluster's version as current.
-//
-// The final equality is the deterministic pin. The spinning observer is a PROBE
-// in the sense this package uses the word: the reversed order's window is a
-// couple of instructions wide, so a green run is weak evidence while a red one
-// is proof. It is kept for the red case and deliberately not relied on.
-func TestEpoch_PublishedEpochNeverExceedsTheFence(t *testing.T) {
-	t.Parallel()
-
-	db := &database{proxiesChanged: make(chan struct{})}
-	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
-
-	// Observe the fence from inside the publication, at the instant the new
-	// DBInfo is being installed: the entry accessor below runs while the store is
-	// still ahead of us in installProxySet only if the fence already moved.
-	db.onCoordinatorSetAdopted()
-	fenceDuringPublish := int64(-1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// Nothing to synchronise against without a second seam, so assert the
-		// invariant that must hold at EVERY instant instead: the published epoch
-		// never exceeds the fence.
-		for i := 0; i < 10000; i++ {
-			f := db.grvCache.epochNow()
-			if info := db.dbInfo.Load(); info != nil && info.Epoch > f {
-				fenceDuringPublish = info.Epoch
-				return
-			}
-		}
-	}()
-	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
-	<-done
-
-	if fenceDuringPublish >= 0 {
-		t.Fatalf("observed a published DBInfo at epoch %d while the fence was still "+
-			"behind it.\n"+
-			"That is the reversed order, and its window is the harmful one: a request "+
-			"binding there carries the NEW epoch while holding the PREVIOUS cluster's "+
-			"proxies, so its reply installs another cluster's version as current",
-			fenceDuringPublish)
-	}
-	if got, want := db.dbInfo.Load().Epoch, db.grvCache.epochNow(); got != want {
-		t.Fatalf("after the handoff the published epoch is %d and the fence %d: outside "+
-			"the handoff instant they must agree, or every publication is refused",
-			got, want)
-	}
-}
-
 // TestEpoch_HandoffResetsMinAcceptableReadVersion covers the database-level fact
 // C++ resets in the same block as its cache reset (switchConnectionRecord,
 // NativeAPI.actor.cpp:2201, to max() — its "unset"), and that Go was carrying
@@ -283,5 +228,199 @@ func TestEpoch_IdenticalProxySetUnderANewEpochIsStillPublished(t *testing.T) {
 	if db.installProxySet(&DBInfo{GRVProxies: same, CommitProxies: same}) {
 		t.Fatal("an identical proxy set at the SAME epoch was republished: every " +
 			"topology poll would broadcast a proxy change and fail in-flight commits")
+	}
+}
+
+// TestEpoch_FenceMovesBeforeThePublication is the DETERMINISTIC pin for the
+// order. It replaces a spinning observer that could not win a two-instruction
+// window: under the reversed order that observer stayed green run after run
+// while the defect was fully present, which is the exact shape of a test that
+// reads as coverage and is not. Nothing was kept from it except its
+// post-condition, folded in below — a probe that provably cannot see the defect
+// is worse than no probe, because it makes the property look guarded.
+//
+// The seam runs on BOTH sides of the publication, which is what makes it robust
+// to how the order is broken: whichever of the two statements moves, one of the
+// two observations falls inside the window where the published epoch is ahead of
+// the fence.
+func TestEpoch_FenceMovesBeforeThePublication(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	type observation struct{ published, fence int64 }
+	var seen []observation
+	hook := func() {
+		published := int64(-1)
+		if info := db.dbInfo.Load(); info != nil {
+			published = info.Epoch
+		}
+		seen = append(seen, observation{published, db.grvCache.epochNow()})
+	}
+	db.duringProxyInstall.Store(&hook)
+	defer db.duringProxyInstall.Store(nil)
+
+	db.onCoordinatorSetAdopted()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+
+	if len(seen) != 2 {
+		t.Fatalf("the seam ran %d times, want 2 (either side of the publication): a "+
+			"single observation cannot catch the order breaking in both directions",
+			len(seen))
+	}
+	for i, o := range seen {
+		if o.published > o.fence {
+			t.Fatalf("observation %d inside installProxySet: published epoch %d is AHEAD "+
+				"of the fence %d.\n"+
+				"The fence must move first. In this window a commit binds epoch %d from "+
+				"the freshly published snapshot, replies while the fence still reads %d, "+
+				"fails sameEpoch and loses its DURABLE FLOOR — after which a lower GRV "+
+				"repopulates the cache underneath a write the caller was told had "+
+				"committed", i, o.published, o.fence, o.published, o.fence)
+		}
+	}
+	if got, want := db.dbInfo.Load().Epoch, db.grvCache.epochNow(); got != want {
+		t.Fatalf("after the handoff the published epoch is %d and the fence %d: outside "+
+			"the publication instant they must agree, or every publication is refused",
+			got, want)
+	}
+}
+
+// TestEpoch_InstallIsSerialised pins the read-modify-write. installProxySet
+// loads dbInfo, derives the next epoch from it, may bump the fence, and stores:
+// atomic.Pointer makes each step atomic and the SEQUENCE not.
+//
+// A lost update here does not self-correct on the next poll. The losing writer
+// publishes DBInfo.Epoch=N after the fence moved to N+1 with
+// clusterSwitchPending already consumed, so nothing will ever bump DBInfo.Epoch
+// again: every request binds an epoch the fence has passed, every publication is
+// refused, and the refresher pins at its 1ms clamp for the life of the handle.
+//
+// Asserted by holding one installer inside the critical section and requiring
+// the second to block — deterministic, where racing two installers would only
+// occasionally interleave.
+func TestEpoch_InstallIsSerialised(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	hook := func() {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	db.duringProxyInstall.Store(&hook)
+	defer db.duringProxyInstall.Store(nil)
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		db.onCoordinatorSetAdopted()
+		db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+	}()
+	<-entered // the first installer is mid-publication
+
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "c:4500"}}})
+	}()
+
+	select {
+	case <-secondDone:
+		t.Fatal("a second installProxySet completed while the first was mid-publication.\n" +
+			"The sequence is a read-modify-write on dbInfo: interleaved, the loser " +
+			"publishes an epoch the fence has already passed with clusterSwitchPending " +
+			"spent, and nothing ever republishes. That is a permanent wedge, not a " +
+			"stale read — every request binds a dead epoch and the cache never serves " +
+			"again")
+	case <-time.After(200 * time.Millisecond):
+		// Blocked on installMu, as required.
+	}
+
+	close(release)
+	<-firstDone
+	<-secondDone
+
+	if got, want := db.dbInfo.Load().Epoch, db.grvCache.epochNow(); got != want {
+		t.Fatalf("after two concurrent installations the published epoch is %d and the "+
+			"fence %d: a lost update left the handle permanently unable to publish",
+			got, want)
+	}
+}
+
+// TestEpoch_CommitEpochIsTheValueProxySelectionReturned closes the sibling of
+// the window R3 fixed. Reading the fence again next to getCommitProxy — rather
+// than using the epoch it RETURNED — passes every test that fires the handoff
+// completely before proxy selection, because there the two agree.
+//
+// They disagree exactly during a handoff: the fence moves first, so there is a
+// window where it is ahead of the published snapshot. A commit binding there
+// uses the PREVIOUS cluster's proxies, so it must carry the previous cluster's
+// epoch and be refused — a re-read of the fence would hand it the new epoch, and
+// its floor would be credited to a cluster it never talked to.
+func TestEpoch_CommitEpochIsTheValueProxySelectionReturned(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("epoch-commit-returned-" + t.Name())
+
+	// Move the fence WITHOUT publishing a new snapshot: the state mid-handoff.
+	// The commit below therefore binds the proxies — and the epoch — of the set
+	// still published, which is the previous cluster's.
+	var fired bool
+	hook := func() {
+		if fired {
+			return
+		}
+		fired = true
+		db.db.grvCache.resetForNewCoordinators()
+	}
+	db.db.beforeCommitProxySelect.Store(&hook)
+	defer db.db.beforeCommitProxySelect.Store(nil)
+
+	boundEpoch := db.db.dbInfo.Load().Epoch
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.Set(key, []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	cv, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("committed version: %v", err)
+	}
+	if !fired {
+		t.Fatal("the seam never ran")
+	}
+	if db.db.grvCache.epochNow() == boundEpoch {
+		t.Fatal("precondition: the fence did not move ahead of the published snapshot")
+	}
+
+	if got := tx.commitEpoch.Load(); got != boundEpoch {
+		t.Fatalf("commitEpoch = %d, want %d — the epoch getCommitProxy RETURNED.\n"+
+			"Re-reading the fence beside the proxy selection instead hands the commit "+
+			"the epoch of a cluster whose proxies it did not use. Every test that fires "+
+			"the handoff cleanly before proxy selection passes either way, because there "+
+			"the two agree; they disagree only inside the handoff, which is the case "+
+			"that matters", got, boundEpoch)
+	}
+	if f := db.db.grvCache.entryFloor(); f >= cv {
+		t.Fatalf("floor = %d after a commit at %d that used the PREVIOUS snapshot's "+
+			"proxies.\n"+
+			"That commit bound the old epoch, so it must be refused — crediting its "+
+			"floor to the current epoch attributes a durable fact to a cluster it never "+
+			"talked to, which is exactly the confusion the epoch exists to prevent",
+			f, cv)
 	}
 }

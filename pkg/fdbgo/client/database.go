@@ -235,11 +235,32 @@ type database struct {
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
 	dbInfo atomic.Pointer[DBInfo]
+	// installMu serialises installProxySet's read-modify-write of dbInfo. The
+	// sequence loads dbInfo, derives the next epoch from it, possibly bumps the
+	// fence, and stores — and atomic.Pointer gives atomicity of each step, never
+	// of the sequence. A lost update here is not a stale read that self-corrects
+	// on the next poll: the losing writer publishes DBInfo.Epoch=N after the fence
+	// moved to N+1 with clusterSwitchPending ALREADY consumed, so nothing will
+	// ever bump DBInfo.Epoch again. Every request from then on binds an epoch the
+	// fence has passed, every publication is refused, and the refresher pins at
+	// its 1ms clamp — permanently, on a handle that merely polled topology twice.
+	//
+	// Production has one writer today (bootstrap completes before topologyMonitor
+	// starts), but that is an emergent property of the startup order rather than
+	// anything this function can rely on, and tests already call it from a second
+	// goroutine while the monitor is live.
+	installMu sync.Mutex
 	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
 	// before it binds to a commit proxy. A deterministic seam for the
 	// handoff-inside-the-commit-window case, which is a few instructions wide and
 	// therefore untestable by racing. Always nil in production.
 	beforeCommitProxySelect atomic.Pointer[func()]
+	// duringProxyInstall runs inside installProxySet, on both sides of the dbInfo
+	// publication, so a test can observe the instant the fence and the published
+	// epoch are permitted to disagree. The reversed order's window is two
+	// instructions wide; a spinning observer never wins it. Always nil in
+	// production.
+	duringProxyInstall atomic.Pointer[func()]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send
 	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.

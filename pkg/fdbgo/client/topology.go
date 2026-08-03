@@ -155,19 +155,34 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 //   - grvCache's fence word is what a PUBLICATION is judged against.
 //
 // The two are kept coherent by ORDER: the fences move FIRST, and only then is
-// the DBInfo carrying the new epoch published. So DBInfo.Epoch <= fence epoch
-// always, and the single reachable disagreement is (new fence, old proxies) — a
-// request binding there carries the OLD epoch, talks to the OLD cluster, and is
-// refused, which is the correct outcome rather than a conservative
-// approximation of one. The reverse order would permit the inverse — a request
-// binding the NEW epoch while still holding the old cluster's proxies — and that
-// one installs another cluster's version.
+// the DBInfo carrying the new epoch published. So DBInfo.Epoch <= fence epoch at
+// every instant, and the single reachable disagreement is (new fence, old
+// proxies) — a request binding there carries the OLD epoch, talks to the OLD
+// cluster, and is refused, which is the correct outcome rather than a
+// conservative approximation of one.
+//
+// The reversed order does NOT let a request bind the new epoch while holding the
+// old proxies — that became unreachable when the epoch moved into the snapshot,
+// since the two now travel together. Its reachable harm is narrower and lands on
+// the commit path: in the (fence-old, DBInfo-new) window a commit binds epoch
+// N+1 from the freshly published snapshot, replies while the fence still reads
+// N, fails sameEpoch, and loses its DURABLE FLOOR — after which a lower GRV
+// repopulates the cache underneath a write the caller was told had committed.
+// Same loss the epoch-before-proxies sampling used to cause, reached from the
+// other side.
 //
 // C++ reaches the same observable state by a different mechanism: switchConnectionRecord
 // clears commitProxies and grvProxies inside the same block as its cluster-state
 // reset (NativeAPI.actor.cpp:2196-2197, and again on the published clientInfo at
 // :2206-2209), so nothing can be dispatched to the previous cluster at all.
 func (db *database) installProxySet(newInfo *DBInfo) bool {
+	// The whole load-derive-bump-store sequence, not each step: see installMu.
+	// Two concurrent installers that interleave here publish an epoch the fence
+	// has already passed, with clusterSwitchPending spent, and nothing ever
+	// republishes — a permanent wedge rather than a stale read.
+	db.installMu.Lock()
+	defer db.installMu.Unlock()
+
 	old := db.dbInfo.Load()
 	epoch := int64(0)
 	if old != nil {
@@ -189,7 +204,13 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
+	// Observed on BOTH sides of the publication. One call site would be enough
+	// only if the order were fixed, which is exactly what is under test: whichever
+	// way the two statements are arranged, one of these two observations falls
+	// inside the window where the fence and the published epoch disagree.
+	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
+	db.observeProxyInstall()
 
 	// Broadcast proxy change to in-flight commits. Close the old channel
 	// to wake all waiters, create a fresh one for the next change.
@@ -275,7 +296,7 @@ func dbInfoEqual(a, b *DBInfo) bool {
 // successful refresh installs new ones, so a request dispatched in this window
 // still goes to the OLD cluster. Bumping the epoch here would stamp those
 // in-flight requests as belonging to the new one, and their replies would
-// install the old cluster.s versions into the new epoch — with no second reset
+// install the old cluster's versions into the new epoch — with no second reset
 // when the real proxies arrive.
 //
 // C++ closes the same window from the other side, clearing commitProxies and
@@ -286,6 +307,14 @@ func dbInfoEqual(a, b *DBInfo) bool {
 // installed carries the old fences and is refused the moment they change.
 func (db *database) onCoordinatorSetAdopted() {
 	db.clusterSwitchPending.Store(true)
+}
+
+// observeProxyInstall runs the duringProxyInstall seam when one is installed.
+// Nil in production, so this is a load and a branch on the topology path.
+func (db *database) observeProxyInstall() {
+	if hook := db.duringProxyInstall.Load(); hook != nil {
+		(*hook)()
+	}
 }
 
 // The handoff itself lives in installProxySet: the instant the handle starts

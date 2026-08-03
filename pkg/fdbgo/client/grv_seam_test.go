@@ -266,3 +266,109 @@ func TestSeam_ProxyContactFromAPreviousEpochIsIgnored(t *testing.T) {
 			"cache under the new epoch", time.Unix(0, got))
 	}
 }
+
+// TestSeam_MinAcceptableFromAPreviousEpochIsIgnored is the third arm of the same
+// cluster-scoping rule, and the one the gate did not cover.
+//
+// minAcceptableReadVersion is a claim about a VERSION SPACE. A straggler from the
+// previous cluster writes that cluster's numbers into this one's floor, and
+// validateVersion then rejects every user-set version below the previous
+// cluster's space with transaction_too_old.
+//
+// What makes it worse than the cooldowns or the contact instant is that the
+// pollution DISARMS ITS OWN RECOVERY. The handoff resets the floor to 0 exactly
+// so ensureReadVersion's bootstrap GRV fires and re-derives it from this
+// cluster; that path is gated on the floor reading 0, so a straggler landing
+// afterwards closes it again and nothing reopens it. Same shape as the durable
+// arm the epoch gate originally missed.
+func TestSeam_MinAcceptableFromAPreviousEpochIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	b := &grvBatcher{priority: grvPriorityDefault}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	// A GRV dispatched against cluster A, whose version space is high.
+	straggler := db.grvCache.token()
+
+	db.onCoordinatorSetAdopted()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+	if got := db.minAcceptableReadVersion.Load(); got != 0 {
+		t.Fatalf("precondition: the handoff must reset the floor to 0, got %d", got)
+	}
+
+	// A's reply lands after the handoff.
+	b.applyGRVReply(db, straggler, time.Now(), 9_000_000, false, false, nil)
+
+	if got := db.minAcceptableReadVersion.Load(); got != 0 {
+		t.Fatalf("a reply from the PREVIOUS cluster set the minimum-acceptable floor "+
+			"to %d.\n"+
+			"That is cluster A's version space written into cluster B's floor. Every "+
+			"user-set read version on B below it now fails with transaction_too_old — "+
+			"and the pollution disarms its own recovery, because the bootstrap GRV that "+
+			"would re-derive the floor fires only while it reads 0", got)
+	}
+	if err := db.validateVersion(500); err != nil {
+		t.Fatalf("validateVersion(500) = %v on the new cluster after a straggler from "+
+			"the previous one. A version this cluster mints must not be rejected on the "+
+			"strength of a version space it has nothing to do with", err)
+	}
+}
+
+// TestSeam_ResetClearsTheProxyContactInstant closes the gap between what
+// resetForNewCoordinators claims and what it did. Every other cluster-scoped
+// fact rides the entry and is made inert by the epoch stamp; the contact instant
+// is a bare atomic, so nothing about the new epoch retires it. Carried across, it
+// grants a proxy-contact budget that was never earned against the cluster now
+// being served, delaying the refresh that repopulates the cache under the new
+// epoch.
+func TestSeam_ResetClearsTheProxyContactInstant(t *testing.T) {
+	t.Parallel()
+
+	c := &grvCache{}
+	c.lastProxyContact.Store(time.Now().UnixNano())
+
+	c.resetForNewCoordinators()
+
+	if got := c.lastProxyContact.Load(); got != 0 {
+		t.Fatalf("the proxy-contact instant survived a coordinator handoff (%v).\n"+
+			"It records when the PREVIOUS cluster's proxies were last reached. The "+
+			"refresher subtracts it from MAX_PROXY_CONTACT_LAG, so carrying it grants a "+
+			"contact budget never earned against this cluster and delays the very "+
+			"refresh that would repopulate the cache under the new epoch",
+			time.Unix(0, got))
+	}
+}
+
+// TestSeam_StaleEpochStragglerAtAnEmptyCacheIsNotAPublication keeps the
+// publication counter EXACT. The counter is not a metric here — it is the proof
+// that everything tryCache consults arrives in one publication, a property
+// otherwise observable only by catching a window nanoseconds wide. A count that
+// is approximately right cannot carry that proof.
+//
+// A stale-epoch straggler against an empty cache merges nothing, so the entry it
+// would install is the zero value: no observable changes, and every accessor
+// still reads empty — but the counter moved.
+func TestSeam_StaleEpochStragglerAtAnEmptyCacheIsNotAPublication(t *testing.T) {
+	t.Parallel()
+
+	c := &grvCache{}
+	straggler := c.token()
+	c.resetForNewCoordinators()
+
+	before := c.publications.Load()
+	c.publish(straggler, time.Now(), 9_000_000)
+
+	if got := c.publications.Load(); got != before {
+		t.Fatalf("publications advanced %d -> %d for a stale-epoch reply that changed "+
+			"nothing.\n"+
+			"The counter is the exact-accounting proof that everything tryCache "+
+			"consults arrives in ONE publication; a straggler installing a zero entry "+
+			"where there was none makes that accounting approximate, and an approximate "+
+			"count cannot carry the proof", before, got)
+	}
+	if c.cachedVersion() != 0 || c.entryFloor() != 0 {
+		t.Fatalf("the straggler left state behind: version %d, floor %d",
+			c.cachedVersion(), c.entryFloor())
+	}
+}

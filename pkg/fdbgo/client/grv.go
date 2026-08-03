@@ -252,6 +252,16 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
+		if cur == nil && next == (grvCacheEntry{}) {
+			// An empty cache and a publication that contributed nothing — a
+			// stale-epoch straggler is the case that gets here. Installing a zero
+			// entry where there was none is not a publication: it changes no
+			// observable (every accessor treats it as empty) but it advances the
+			// counter, and that counter is the exact-accounting proof that
+			// everything tryCache consults arrives in ONE publication. A count that
+			// is only approximately right cannot carry that proof.
+			return
+		}
 		if c.entry.CompareAndSwap(cur, &next) {
 			c.publications.Add(1)
 			return
@@ -376,7 +386,7 @@ func mergeReply(cur *grvCacheEntry, obs uint64, tok cacheToken, durable bool, at
 		}
 	}
 	// Cooldowns are cluster-scoped too: a ratekeeper stamp from the previous
-	// cluster describes THAT cluster.s ratekeeper and says nothing about this
+	// cluster describes THAT cluster's ratekeeper and says nothing about this
 	// one. Within an epoch they still merge from a generation-blocked reply —
 	// an invalidation does not change which ratekeeper is throttling us.
 	if sameEpoch && rkDefault && replyTime.After(next.rkDefault) {
@@ -397,7 +407,7 @@ func mergeReply(cur *grvCacheEntry, obs uint64, tok cacheToken, durable bool, at
 	//
 	// The epoch-0 sentinel bug this looks like it should fix lives in
 	// invalidate(), not here: that path builds a fresh entry from a struct
-	// literal and must carry cur.s epoch across explicitly.
+	// literal and must carry cur's epoch across explicitly.
 	if sameEpoch {
 		next.epoch = obsEpoch
 	}
@@ -412,16 +422,13 @@ func mergeReply(cur *grvCacheEntry, obs uint64, tok cacheToken, durable bool, at
 // opt-in gate (USE_GRV_CACHE) is enforced by the CALLER (getReadVersion);
 // reaching here already implies the transaction opted in (RFC-104).
 func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
-	// ONE load: version and instant come from the same immutable entry, so the
-	// pair handed back is always one that actually occurred.
-	e := c.entry.Load()
+	// ONE load, through the shared accessor: version and instant come from the
+	// same immutable entry, so the pair handed back is always one that actually
+	// occurred, and the previous-cluster guard is the SAME guard every other
+	// accessor applies rather than a copy of it that can drift. An entry from a
+	// previous cluster is not merely stale here — its version is meaningless.
+	e := c.currentEntry()
 	if e == nil || e.version == 0 {
-		return 0, time.Time{}, false
-	}
-	// Never serve an entry from a previous cluster. The handle may already be
-	// talking to a different cluster whose proxies were installed before this
-	// entry was retired; its version is not merely stale but meaningless here.
-	if e.epoch != c.epochNow() {
 		return 0, time.Time{}, false
 	}
 	// Never below the last version this client committed. Checked HERE and not
@@ -533,7 +540,7 @@ func (c *grvCache) invalidate() {
 		// (what is old enough to be wrong). Clearing it would let the next low
 		// publication become servable again and re-open the stale read a
 		// committed version had already ruled out.
-		// The sentinel inherits cur.s EPOCH along with the floor and cooldowns.
+		// The sentinel inherits cur's EPOCH along with the floor and cooldowns.
 		// Without it the sentinel reads as epoch 0 while the cache is at epoch N,
 		// and the next publication discards it as a previous-epoch entry —
 		// losing the committed floor and the cooldowns an invalidation is
@@ -1055,10 +1062,26 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// It stays a separate atomic rather than joining the entry: nothing tryCache
 	// consults reads it, so it is not part of the serve decision that has to be
 	// observed as one value. It only paces the background refresher.
+	//
+	// The minimum-acceptable floor is gated on the SAME predicate, and for the
+	// same reason with sharper consequences: it is a claim about a VERSION SPACE,
+	// and a straggler from the previous cluster writes that cluster's numbers into
+	// this one's floor. validateVersion then rejects every user-set version below
+	// the previous cluster's space with transaction_too_old — and the pollution
+	// DISARMS its own recovery, because the bootstrap GRV that would re-derive the
+	// floor fires only while it reads 0 (transaction.go, ensureReadVersion). The
+	// handoff resets it to 0 precisely to arm that path; a straggler landing
+	// afterwards closes it again, and nothing reopens it.
+	//
+	// Gated on sameEpoch and NOT on mayInstall: an invalidation does not change
+	// whose version space a reply came from, so a generation-blocked reply from
+	// THIS cluster still describes this cluster's numbers. Same asymmetry the
+	// floor and the cooldowns are built on — and this is one more arm the epoch
+	// gate had not covered.
 	if sameEpoch {
 		db.grvCache.lastProxyContact.Store(requestTime.UnixNano())
+		updateMinAcceptable(&db.minAcceptableReadVersion, version)
 	}
-	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 
 	if len(tagThrottleInfoBytes) > 0 {
 		parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
@@ -1369,7 +1392,21 @@ func (c *grvCache) resetForNewCoordinators() int64 {
 	// landed under the NEW epoch between the fence bump and the clear would
 	// have its perfectly valid version and floor erased by a reset that was
 	// never about it.
-	return fenceEpoch(c.bumpFences(true))
+	epoch := fenceEpoch(c.bumpFences(true))
+
+	// lastProxyContact is the one cluster-scoped fact NOT carried on the entry,
+	// so nothing about the new epoch makes it inert — it is a bare instant and
+	// would keep describing when the PREVIOUS cluster's proxies were last
+	// reached. The refresher subtracts it from MAX_PROXY_CONTACT_LAG, so a
+	// carried-over instant grants a contact budget that was never earned against
+	// the cluster now being served, delaying the very refresh that repopulates
+	// the cache under the new epoch. Zeroing it means the next refresh is due
+	// immediately, which is exactly right after a cluster change.
+	//
+	// The publication path gates its stores on the epoch, so this cannot be
+	// re-polluted by a straggler; this clears what was already there.
+	c.lastProxyContact.Store(0)
+	return epoch
 }
 
 // bumpFences advances the generation, and the epoch too when newCluster.
@@ -1431,6 +1468,15 @@ func (t cacheToken) gen() int64   { return fenceGen(t.f) }
 // A rebound token whose epoch is older than the observed fence fails `obs ==
 // tok.f` and is refused: the request talked to the previous cluster, so refusing
 // it is the correct outcome, not a conservative approximation of one.
+//
+// THE PREMISE this rests on: every epoch bump also bumps the generation
+// (bumpFences). Rebinding replaces one half of a word whose halves are otherwise
+// only ever set together, so it could in principle synthesise a pair the fence
+// never held — and `obs == tok.f` would then accept it. It cannot, because a
+// fence word at epoch E only ever exists with the generation that arrived
+// alongside E or later: matching the whole word means matching a pair that
+// really occurred. An epoch bump that left the generation alone would break
+// exactly this, which is why it is pinned rather than assumed.
 func (t cacheToken) withEpoch(epoch int64) cacheToken {
 	return cacheToken{f: packFences(epoch, t.gen())}
 }
