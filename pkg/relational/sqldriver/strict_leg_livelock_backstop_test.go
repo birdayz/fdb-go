@@ -41,8 +41,8 @@ func TestSim_StrictLegTinyBudget_FailsLoudNeverHangs(t *testing.T) {
 	defer setup.Close()
 	mustExecSQL(t, setup, ctx, "CREATE DATABASE /strictp")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE strictp_tmpl "+
-		"CREATE TABLE t_rd (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE uniq (id BIGINT NOT NULL, k BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE uniq (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /strictp/s WITH TEMPLATE strictp_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///strictp?cluster_file=%s&schema=s", key))
