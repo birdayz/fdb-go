@@ -278,10 +278,80 @@ streams: the group set comes from the companion, and each aggregate stream
 independently contributes either its stored value or its identity. Group
 existence is decided once, not per aggregate.
 
+**Compensation under outer semantics.** Java's method is
+`createIntersectionAndCompensation`, and changing the merge to outer changes what
+compensation sits above. A compensating filter now sees **identity rows** that
+did not previously exist: a group present in the companion but absent from the
+aggregate index arrives as `SUM(v) = NULL` or `COUNT(col) = 0` rather than not
+arriving at all. Two predicates change answers as a direct result:
+
+- `HAVING SUM(v) IS NULL` begins returning all-NULL groups, which previously had
+  no row to test.
+- `HAVING COUNT(col) = 0` likewise begins returning them.
+
+**Both are the intended fix, not collateral.** They are the `g=5` row of §2's
+table seen through a filter — the oracle returns those groups, so a `HAVING` over
+the oracle already returns them, and index-backed and unindexed answers converge.
+This is called out because "the compensating filter now sees rows it never saw"
+is exactly the kind of change that looks like a regression in review; it must be
+recognised as the under-approximation repair reaching `HAVING`, and pinned by
+tests on both predicates (§7).
+
+Compensation is otherwise unaffected: it operates per surviving group on the
+merged row, and the merged row's shape is unchanged — only the set of groups
+reaching it grows.
+
+**`aggInnerFilterFullyConsumable` is UNCHANGED** (`rule_aggregate_data_access.go:87`).
+It gates whether a residual predicate filters the aggregation **input**, in which
+case the candidate must be declined because no post-hoc compensation can
+reconstruct the aggregate. The companion merge changes the group **set**, not the
+input to aggregation. The two are orthogonal and the guard keeps its existing
+semantics and its existing decline. Recorded explicitly so the implementer does
+not stall deciding whether outer semantics relax it: they do not.
+
 **(c) No readable companion.** The match candidate does not match, and planning
 falls back to a streaming aggregation over base rows — correct, slower, and the
 status quo for any store whose schema predates this change or was created by
 Java.
+
+### 5.3.1 Cost: this is a cost-model change
+
+The operator is visible to the cost model (§5.3), which is only worth anything if
+it is **priced**. The companion-joined plan is not a cheaper spelling of the
+aggregate-index plan — it is a second index scan, and the RFC must say so.
+
+**What it costs.** The companion scan is a `BY_GROUP` scan over the `COUNT(*)`
+index, which has one entry per group that has ever existed. So the plan's index
+I/O is roughly **twice** the single-aggregate-index plan's, plus the merge. The
+cost model must charge the companion scan as a real scan child, not fold it in as
+a constant.
+
+**The near-unique grouping key is the case that decides correctness of the
+choice.** As the grouping key approaches uniqueness, the number of groups
+approaches base-table cardinality, so the companion scan approaches a full scan
+of one entry per row — and the aggregate index scan does too. The companion-joined
+plan then reads about twice the base-table cardinality in index entries to
+produce about that many rows, while streaming aggregation reads the base table
+once. **The companion-joined plan can therefore be slower than the plan it is
+supposed to beat, and a cost model that prices the companion scan at zero would
+pick it anyway.** That is the concrete regression this subsection exists to
+prevent.
+
+**When streaming aggregation should win.** Once the estimated group count
+approaches base-table cardinality, the aggregate-index path loses its entire
+premise — that there are far fewer groups than rows — and streaming aggregation
+should win on cost. This is not a new special case: it is the existing
+aggregate-index-vs-streaming trade-off with the companion's scan added to the
+correct side of the comparison. The change is that the companion's cardinality
+must enter the estimate, and the group-count estimate that drives it comes from
+the same cardinality machinery the aggregate-index path already relies on.
+
+**Consequence to state plainly:** on a near-unique grouping key this design can
+*lose* the index acceleration that today's (wrong) plan enjoys. That is the
+correct outcome — today's plan is fast and wrong — but it is a performance change
+on real queries and must be reviewed as a cost-model change, not smuggled in as a
+correctness fix. Acceptance requires a stress comparison on both a low-cardinality
+and a near-unique grouping key (§7).
 
 **Fail-closed by construction.** 5.3(c) is not a check that can be forgotten:
 the resolved, readable companion is a **constructor precondition** of the
@@ -393,6 +463,21 @@ behaviour; without it, §5.3(c) is an assertion rather than a property.
 
 **Companion present but not readable.** Same assertions as companion-absent, for
 an index in `WRITE_ONLY` / disabled / mid-backfill.
+
+**`HAVING` over identity rows (§5.3, compensation).** `HAVING SUM(v) IS NULL` and
+`HAVING COUNT(col) = 0` must each return the all-NULL group and must agree with
+the oracle. These are the predicates whose answers change because compensation
+now sees identity rows, so they are the tests that distinguish "the
+under-approximation repair reached `HAVING`" from "a filter regressed".
+
+**Cost (§5.3.1).** A stress comparison on **two** grouping keys, before and
+after: one low-cardinality (few groups, many rows) where the companion-joined
+plan must win, and one **near-unique** (groups ≈ rows) where streaming
+aggregation must win. A run where the planner picks the companion-joined plan on
+the near-unique key is a failure of this RFC even if every row is correct —
+that is the specific regression §5.3.1 exists to prevent. Both must live on the
+same filesystem with headroom, per the repo's stress-comparison rule; a run taken
+above ~95% disk utilisation measures the disk, not the plan.
 
 Dimension coverage, chosen from what actually let this survive: the cancelling
 group and the all-zero group (a fix that drops them passes every other test in
