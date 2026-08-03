@@ -630,4 +630,43 @@ var _ = Describe("SumIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// The same guard on the other route. The grouped spelling above is served by
+	// the inline fast path in updateInsertOnlyGrouped, so it pins clearIfZero and
+	// nothing else; an ungrouped SUM has no fast path (updateInsertOnlyGrouped
+	// returns false for gc=0 SUM) and reaches sumMutation.applyMutation instead.
+	// Those are two separate guards on two separate lines, and covering either
+	// one leaves the other free to be dropped silently -- which is the state this
+	// file was in: with the guard removed from applyMutation alone, all 3002
+	// specs in the package passed.
+	It("without ClearWhenZero leaves a zero-valued ungrouped sum entry in place", func() {
+		ks := specSubspace()
+
+		sumIdx := NewSumIndex("sum_price_unguarded_ungrouped", Ungrouped(Field("price")))
+		// Deliberately NOT SetClearWhenZero: this is the SQL default.
+		builder := baseMetaData()
+		builder.AddIndex("Order", sumIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(-42)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1),
+				"clearWhenZero is NOT set, so the ungrouped entry must survive at 0 rather "+
+					"than be cleared. This is the applyMutation guard, not the fast-path one.")
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(0)}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
