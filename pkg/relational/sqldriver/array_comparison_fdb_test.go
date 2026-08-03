@@ -136,6 +136,30 @@ func TestFDB_ArrayComparison(t *testing.T) {
 			{`[1, NULL] = [1, NULL]`, "t"},
 			// Size mismatch is FALSE, not UNKNOWN.
 			{`[1] = [1, 2]`, "f"},
+			// An array of TUPLES compares element-wise on the struct
+			// elements. Java gets here via EQ_ARRAY_ARRAY
+			// (RelOpValue.java:1149) → Comparisons.evalComparison →
+			// compareEquals (Comparisons.java:242): toClassWithRealEquals
+			// applies to the two top-level LISTS only (its `instanceof
+			// List` arm returns them unchanged), so the elements are
+			// compared by plain Object.equals — protobuf's structural
+			// AbstractMessage.equals for the DynamicMessage a tuple
+			// evaluates to. Go compares the stamped record messages
+			// field-wise for the same reason. Before that arm existed the
+			// tuple elements fell through to the scalar comparator, which
+			// has no message case, and every array-of-struct equality
+			// answered FALSE.
+			{`[(1, 'a'), (2, 'b')] = [(1, 'a'), (2, 'b')]`, "t"},
+			{`[(1, 'a')] = [(1, 'b')]`, "f"},
+			{`[(1, 'a')] <> [(2, 'a')]`, "t"},
+			{`[(1, 'a')] IS NOT DISTINCT FROM [(1, 'a')]`, "t"},
+			// Order-sensitive and size-sensitive over struct elements too.
+			{`[(1, 'a'), (2, 'b')] = [(2, 'b'), (1, 'a')]`, "f"},
+			{`[(1, 'a')] = [(1, 'a'), (2, 'b')]`, "f"},
+			// A struct element carrying a nested ARRAY recurses through
+			// the same rules.
+			{`[(1, [2, 3])] = [(1, [2, 3])]`, "t"},
+			{`[(1, [2, 3])] = [(1, [3, 2])]`, "f"},
 		}
 		for _, c := range cases {
 			got, isNull := boolQuery(t, "SELECT "+c.expr+" FROM dummy")
@@ -193,16 +217,23 @@ func TestFDB_ArrayComparison(t *testing.T) {
 			// is UNKNOWN, so both returned no rows.
 			{`SELECT pk FROM t1 WHERE arr = CAST([] AS INTEGER ARRAY)`, []int64{0}},
 			{`SELECT pk FROM t1 WHERE arr = []`, []int64{0}},
-			// MEASURED DIVERGENCE PIN, and a DIFFERENT mechanism from the
-			// two above — the wrapper cannot close it. `arr_nn` is NOT
-			// NULL, so it is stored as a FLAT repeated field with no
-			// wrapper at all, and a flat repeated field that is empty is
-			// indistinguishable on the wire from one that was never set.
-			// Java answers pk 0 here too (same file, `"arr_nn" = [] AND
-			// "pk" != -1` → `result: [{pk: 0}]`). Closing it needs the
-			// empty/absent distinction for non-nullable arrays, not the
-			// nullable wrapper. A failure here is that fix landing.
-			{`SELECT pk FROM t1 WHERE arr_nn = [] AND pk != -1`, nil},
+			// `arr_nn` is NOT NULL, so it is stored as a FLAT repeated
+			// field with no wrapper at all, and an empty flat repeated
+			// field is indistinguishable ON THE WIRE from one never set.
+			// The distinction is therefore made on READ from the TYPE:
+			// the row builder reads a repeated field before any presence
+			// test, so absent materializes as [] on a column whose type
+			// forbids NULL. Java answers pk 0 here (same file,
+			// `"arr_nn" = [] AND "pk" != -1` → `result: [{pk: 0}]`).
+			{`SELECT pk FROM t1 WHERE arr_nn = [] AND pk != -1`, []int64{0}},
+			// The NOT NULL column is never NULL — not for the empty row,
+			// not for any row. The nullable sibling still is, for the row
+			// stored NULL: the wrapper's presence is real, so the fix
+			// must not flatten the two.
+			{`SELECT pk FROM t1 WHERE arr_nn IS NULL`, nil},
+			{`SELECT pk FROM t1 WHERE arr_nn IS NOT NULL`, []int64{-1, 0, 1}},
+			{`SELECT pk FROM t1 WHERE arr IS NULL`, []int64{-1}},
+			{`SELECT pk FROM t1 WHERE arr_nn IS NOT DISTINCT FROM []`, []int64{-1, 0}},
 		} {
 			got := pks(t, c.q)
 			if len(got) != len(c.want) {

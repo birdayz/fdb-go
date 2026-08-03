@@ -59,10 +59,16 @@ func buildCardTestMessage(t *testing.T) (protoreflect.MessageDescriptor, func(ar
 }
 
 // TestCardinalityKeyExpression_PlainRepeated pins the evaluator over a plain
-// repeated array field (Go's write shape): populated arrays count their
-// elements, while an empty/unset array yields a NULL key (empty ==
-// wire-indistinguishable from NULL on Go-written records, RFC-143 §3a) —
-// consistent with the scalar CardinalityValue.
+// repeated array field — the NOT NULL array's storage shape. Every case keys
+// the element COUNT, zero included: a repeated field is always an array, and
+// an empty one is [] whose cardinality is 0. Java has no zero special-case
+// either (CardinalityFunctionKeyExpression.java:115-117 returns
+// Key.Evaluated.scalar(getRepeatedFieldCount(...)) unconditionally).
+//
+// Empty and unset are wire-indistinguishable here, so BOTH key 0 — and that is
+// the point: the column's type forbids NULL, the read path materializes the
+// absent field as [], and a NULL key would put the index at odds with the base
+// table (and with Java's bytes).
 func TestCardinalityKeyExpression_PlainRepeated(t *testing.T) {
 	t.Parallel()
 	_, mk := buildCardTestMessage(t)
@@ -76,8 +82,8 @@ func TestCardinalityKeyExpression_PlainRepeated(t *testing.T) {
 	}{
 		{"two elements", []int32{10, 20}, true, int64(2)},
 		{"one element", []int32{10}, true, int64(1)},
-		{"empty array → NULL (§3a)", []int32{}, true, nil},
-		{"unset array → NULL", nil, false, nil},
+		{"empty array → 0, not NULL", []int32{}, true, int64(0)},
+		{"unset array → 0 (indistinguishable from empty, and NOT NULL)", nil, false, int64(0)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

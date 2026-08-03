@@ -28,6 +28,8 @@ go_library(
     deps = [
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/functions",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 

@@ -1,7 +1,9 @@
 package sqldriver_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -38,7 +40,12 @@ import (
 // column stores the NullableArrayWrapper, so an empty array (present wrapper,
 // empty list) stays distinct from NULL/unset — cardinality 0 vs NULL. A NOT
 // NULL array column stays a flat repeated field, where empty is wire-
-// indistinguishable from unset (NULL key). The index key agrees.
+// indistinguishable from unset — and BOTH key 0, never NULL: the count is a
+// property of the array, a repeated field is always an array, and an empty one
+// is [] whose cardinality is 0 (Java: CardinalityFunctionKeyExpression.java
+// :115-117 returns scalar(getRepeatedFieldCount(...)) with no zero case). A
+// NULL key on that column would put the index at odds with the base table,
+// which materializes the same absent field as [].
 //
 // Array literals are not expressible in SQL INSERT here, so rows are written
 // via the record-store API (dynamicpb repeated fields), and the cardinality
@@ -244,6 +251,183 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 			[]string{"ID=3"},
 			[]string{"IndexScan(TAB_IDX_NN_CARD"},
 			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+
+	// --- The EMPTY array on the NOT NULL column, through the INDEX. ---
+	//
+	// This is the axis where the index and the base table can silently
+	// disagree. id1's array is EMPTY, so nothing is written for the repeated
+	// field and the stored bytes are identical to an unset one. The WRITE side
+	// derives the cardinality key from the array; the READ side materializes
+	// the absent repeated field as [] because the column's type forbids NULL.
+	// Both must land on 0 — an index that keyed NULL here would answer these
+	// two queries differently from the same queries over a full scan, and the
+	// covering variant would differ from the fetching one.
+	t.Run("empty array on NOT NULL column counts 0 through the index", func(t *testing.T) {
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") = 0`,
+			[]string{"ID=1"},
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+	t.Run("NOT NULL column has no NULL cardinality in the index", func(t *testing.T) {
+		// The column cannot be NULL, so the index holds no NULL key at all.
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") IS NULL`,
+			nil,
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+	t.Run("NOT NULL column is entirely NOT NULL through the index", func(t *testing.T) {
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") IS NOT NULL`,
+			[]string{"ID=1", "ID=2", "ID=3"},
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+
+	// --- WIRE: the raw BYTES of the cardinality index entries. ---
+	//
+	// Every assertion above runs through the planner and the executor, and both
+	// sides derive the key from the SAME key expression. A write path that keyed
+	// NULL for the empty array paired with a reader that looked for NULL would
+	// agree with itself and pass — the logical value cannot catch a wire
+	// divergence, because there is only one engine in the loop.
+	//
+	// The bytes are the thing that has to be right for a reason outside this
+	// process: Go and Java apps share a cluster and read each other's index
+	// entries, so the KV an empty NOT NULL array writes must be the KV Java
+	// writes. Java has no zero case —
+	// CardinalityFunctionKeyExpression.java:115-117 returns
+	// Key.Evaluated.scalar(getRepeatedFieldCount(...)) unconditionally — so the
+	// key element is the integer 0, tuple code 0x14. Keying NULL instead emits
+	// tuple code 0x00 at the same offset: a cross-engine split where neither
+	// engine errors, they simply index the same record under different keys and
+	// answer CARDINALITY(a) = 0 differently.
+	//
+	// All three cardinalities present in TAB_IDX_NN are pinned, not just the
+	// zero, so the byte mapping is fixed across values rather than at the one
+	// point that happened to be wrong.
+	//
+	// CAVEAT — what this test does and does not prove. The Go bytes below are
+	// MEASURED: they are read back out of FDB. The Java bytes they are claimed
+	// to match are INFERRED FROM JAVA SOURCE
+	// (CardinalityFunctionKeyExpression.java:115-117 plus the tuple codec's
+	// integer encoding); no JVM ran in this test. That is strictly weaker than
+	// the live-JVM byte conformance the repo uses elsewhere, and it is weaker
+	// exactly where it matters, since the whole point is cross-engine agreement.
+	// A live-JVM cardinality_index_conformance pair is booked to close it; until
+	// that lands, treat this as "Go emits the bytes Java's source says it emits",
+	// not "Go and Java were observed to emit the same bytes".
+	t.Run("wire bytes of the NOT NULL cardinality index entries", func(t *testing.T) {
+		// The primary key as the store itself evaluates it, through the
+		// metadata's own primary key expression — the entry key carries the
+		// trimmed PK after the index columns.
+		nnPK := func(id int32) tuple.Tuple {
+			stored := &recordlayer.FDBStoredRecord[proto.Message]{Record: arrRec(nnDesc, id, nil, true)}
+			pkVals, evalErr := md.GetRecordType("TAB_IDX_NN").PrimaryKey.Evaluate(stored, stored.Record)
+			if evalErr != nil {
+				t.Fatalf("pk eval for id %d: %v", id, evalErr)
+			}
+			if len(pkVals) != 1 {
+				t.Fatalf("pk eval for id %d produced %d tuples, want 1", id, len(pkVals))
+			}
+			out := make(tuple.Tuple, len(pkVals[0]))
+			for i, v := range pkVals[0] {
+				out[i] = v
+			}
+			return out
+		}
+
+		// The key elements, encoded by the repo's own tuple codec rather than
+		// spelled as literals — but their encodings are then asserted against
+		// the literal FDB tuple codes, because those codes are the wire contract
+		// and a codec change that silently moved them would otherwise make this
+		// test agree with itself too.
+		cardKey := func(n int64) []byte { return tuple.Tuple{n}.Pack() }
+		nullTupleCode := tuple.Tuple{nil}.Pack()
+		for _, tc := range []struct {
+			what string
+			got  []byte
+			want []byte
+		}{
+			{"cardinality 0", cardKey(0), []byte{0x14}},
+			{"cardinality 1", cardKey(1), []byte{0x15, 0x01}},
+			{"cardinality 2", cardKey(2), []byte{0x15, 0x02}},
+			{"the NULL tuple code", nullTupleCode, []byte{0x00}},
+		} {
+			if !bytes.Equal(tc.got, tc.want) {
+				t.Fatalf("tuple encoding of %s is %x, want %x — the FDB tuple codes are the wire contract", tc.what, tc.got, tc.want)
+			}
+		}
+
+		_, wErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if sErr != nil {
+				return nil, sErr
+			}
+			idx := md.GetIndex("TAB_IDX_NN_CARD")
+			if idx == nil {
+				return nil, fmt.Errorf("index TAB_IDX_NN_CARD not in metadata")
+			}
+			sub := store.IndexSubspace(idx)
+			prefix := sub.Bytes()
+			kvs, rErr := rtx.Transaction().GetRange(fdb.KeyRange{
+				Begin: fdb.Key(prefix),
+				End:   fdb.Key(append(append([]byte{}, prefix...), 0xFF)),
+			}, fdb.RangeOptions{}).GetSliceWithError()
+			if rErr != nil {
+				return nil, fmt.Errorf("scan TAB_IDX_NN_CARD: %w", rErr)
+			}
+
+			// id1 keys card 0, id2 card 1, id3 card 2. Byte order over the
+			// index subspace is the cardinality order: 0x14 < 0x15 0x01 <
+			// 0x15 0x02.
+			want := make([][]byte, 0, 3)
+			for _, e := range []struct {
+				id   int32
+				card int64
+			}{{1, 0}, {2, 1}, {3, 2}} {
+				k := append([]byte{}, prefix...)
+				k = append(k, cardKey(e.card)...)
+				k = append(k, nnPK(e.id).Pack()...)
+				want = append(want, k)
+			}
+			if len(kvs) != len(want) {
+				return nil, fmt.Errorf("TAB_IDX_NN_CARD holds %d entries, want %d", len(kvs), len(want))
+			}
+
+			// The divergence, stated on its own terms and checked FIRST so it is
+			// the diagnostic that fires: nothing in this subspace may key NULL.
+			// The empty NOT NULL array is the only row that could, and a 0x00
+			// immediately after the subspace prefix is exactly the byte a
+			// NULL-keying write path emits.
+			for i, kv := range kvs {
+				if len(kv.Key) <= len(prefix) {
+					return nil, fmt.Errorf("TAB_IDX_NN_CARD entry %d key %x is not longer than the subspace prefix", i, []byte(kv.Key))
+				}
+				if bytes.HasPrefix(kv.Key[len(prefix):], nullTupleCode) {
+					return nil, fmt.Errorf(
+						"TAB_IDX_NN_CARD entry %d starts with the NULL tuple code 0x00 after the subspace prefix (key %x). "+
+							"That is the pre-fix wire divergence: an empty NOT NULL array keyed NULL where Java keys the integer 0 (0x14), "+
+							"so the same record landed under different index bytes in the two engines", i, []byte(kv.Key))
+				}
+			}
+
+			for i, kv := range kvs {
+				if !bytes.Equal(kv.Key, want[i]) {
+					return nil, fmt.Errorf("TAB_IDX_NN_CARD entry %d key mismatch:\n got %x\nwant %x\n(prefix %x)", i, []byte(kv.Key), want[i], prefix)
+				}
+				if len(kv.Value) != 0 {
+					return nil, fmt.Errorf("TAB_IDX_NN_CARD entry %d has non-empty value %x — a cardinality index is a plain VALUE index and stores the empty tuple", i, []byte(kv.Value))
+				}
+			}
+			return nil, nil
+		})
+		if wErr != nil {
+			t.Fatal(wErr)
+		}
 	})
 
 	// --- WHERE CARDINALITY(arr) IS [NOT] NULL → null-range index scan. ---

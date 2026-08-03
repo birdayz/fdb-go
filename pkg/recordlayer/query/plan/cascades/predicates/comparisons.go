@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"fdb.dev/pkg/relational/core/functions"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -736,9 +739,36 @@ func isCompositeOperand(v any) bool {
 //   - []any (arrays, and array elements that are themselves arrays)
 //     compare by length then pairwise recursion — size mismatch is
 //     FALSE (compareListEquals's size check), order is significant.
-//   - map[string]any (a RecordConstructorValue element, e.g. an array
-//     of tuples) compares by key set and pairwise recursion (Java's
-//     List.equals over the tuple's field values).
+//   - A proto message element — the STAMPED form of a
+//     RecordConstructorValue, i.e. an array of tuples on the plan path —
+//     compares field-wise by ordinal. Java reaches the same place: the
+//     EQ_ARRAY_ARRAY operator (RelOpValue.java:1149) delegates to
+//     Comparisons.evalComparison → compareEquals (Comparisons.java:242),
+//     whose `toClassWithRealEquals` applies to the two top-level LISTS
+//     only and returns them unchanged (the `instanceof List` arm), so
+//     the elements are compared by plain Object.equals — which for the
+//     DynamicMessage a tuple evaluates to is protobuf's structural
+//     AbstractMessage.equals. Go compares structurally for the same
+//     reason, and deliberately does not require descriptor IDENTITY the
+//     way proto equality does: two structurally identical tuple types
+//     can be baked against distinct descriptor instances here. That
+//     relaxation is Java's own, not an invention — MessageHelpers
+//     .compareMessageEquals:185-203 uses reference equality on the
+//     descriptors only as a FAST PATH, and otherwise falls back to a
+//     field-by-field loop keyed on ORDINAL, exactly as below.
+//     Go is deliberately WIDER than that fallback in one respect: Java
+//     verifies the ordinal loop never sees a repeated, map or nested
+//     message field (:197-198) and throws if it does, because it only
+//     ever reaches that loop for a flat top-level record. Go recurses
+//     instead, so a struct element holding a nested array or a nested
+//     record compares by the same rules as everywhere else. Wire format
+//     is untouched by this — it is a read-side comparison only.
+//     Presence is honoured, so a field that is NULL (absent — a nil child
+//     is left unset by buildRecordMessage) does not compare equal to one
+//     explicitly set to the zero value.
+//   - map[string]any (an UNSTAMPED RecordConstructorValue: constant
+//     folding before any plan exists, and hand-built test values)
+//     compares by key set and pairwise recursion.
 //   - Scalar leaves delegate to cmpAny — the same comparator scalar
 //     predicates use — so numeric width noise (int32 vs int64 carriers
 //     of the same INTEGER element) cannot fabricate inequality. Java
@@ -774,8 +804,77 @@ func deepValueEqual(a, b any) bool {
 		}
 		return true
 	}
+	if am, ok := asProtoMessage(a); ok {
+		bm, ok2 := asProtoMessage(b)
+		if !ok2 {
+			return false
+		}
+		return recordMessageEqual(am, bm)
+	}
 	cmp, ok := cmpAny(a, b)
 	return ok && cmp == 0
+}
+
+// asProtoMessage views a row value as a proto message when it is one. A
+// stamped RecordConstructorValue evaluates to a dynamicpb message, and a
+// nested non-UUID message field stays raw through ProtoFieldToRowValue, so
+// both reach deepValueEqual in this form.
+//
+// A TYPED-nil message is rejected rather than dereferenced: the interface is
+// non-nil so the caller's `a == nil` guard does not catch it, and reading a
+// descriptor off it would panic. Rejecting drops such a value to the scalar
+// comparator, which declines it — the same not-equal answer this arm gave
+// before it existed, and never a crash in library code.
+func asProtoMessage(v any) (protoreflect.Message, bool) {
+	m, ok := v.(proto.Message)
+	if !ok || m == nil {
+		return nil, false
+	}
+	refl := m.ProtoReflect()
+	if !refl.IsValid() {
+		return nil, false
+	}
+	return refl, true
+}
+
+// recordMessageEqual is structural, presence-aware equality over two record
+// messages, compared by ORDINAL. Ordinal is the only sound key here for the
+// same reason buildRecordMessage binds positionally: the descriptor's field
+// names are the ESCAPED forms, so a name-keyed match would miss any field
+// whose identifier the escaper rewrote.
+//
+// Field values are converted through the same ProtoFieldToRowValue every other
+// read uses and then compared by deepValueEqual, so a nested array, a nested
+// record and a scalar leaf all follow the rules already established above
+// rather than a second, drifting set.
+func recordMessageEqual(a, b protoreflect.Message) bool {
+	af, bf := a.Descriptor().Fields(), b.Descriptor().Fields()
+	if af.Len() != bf.Len() {
+		return false
+	}
+	for i := 0; i < af.Len(); i++ {
+		av, aSet := messageFieldRowValue(a, af.Get(i))
+		bv, bSet := messageFieldRowValue(b, bf.Get(i))
+		if aSet != bSet {
+			return false
+		}
+		if aSet && !deepValueEqual(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// messageFieldRowValue reads one field as a row value, reporting whether it is
+// present at all. A REPEATED field is read before the presence test — an empty
+// repeated field is the empty array, not absence — which is the same
+// repeated-first rule the row builder applies (Java's
+// MessageHelpers.getFieldOnMessage:125).
+func messageFieldRowValue(m protoreflect.Message, fd protoreflect.FieldDescriptor) (any, bool) {
+	if !fd.IsList() && !fd.IsMap() && !m.Has(fd) {
+		return nil, false
+	}
+	return values.ProtoFieldToRowValue(fd, m.Get(fd)), true
 }
 
 // promoteFloat returns (a,b) as float64 when at least one side is

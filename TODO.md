@@ -6246,7 +6246,10 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
          proto, field 9, wire-compatible) and overrides `Evaluate` with Java's two protobuf fast paths
          (plain repeated field; nullable-array WRAPPER descent for Java-written records) plus the
          materialize-and-count fallback. `createsDuplicates()==false` (Java override), `ColumnSize()==1`.
-         Empty/unset Go array → NULL key (§3a-consistent with the scalar).
+         An empty/unset plain repeated array keys 0, not NULL — a repeated field is always an array and
+         an empty one is `[]` (Java: `Key.Evaluated.scalar(getRepeatedFieldCount(...))`, no zero case).
+         A NULL key arises only where the array can be ABSENT: an absent wrapper, or a null parent on a
+         deeper nesting, both of which reach the fallback.
        - **Step 6a — KeyExpression→Value bridge:** `ValueIndexScanMatchCandidate` carries a parallel
          `columnFunctions []string` + a `ColumnValue(i, base)` producing `CardinalityValue(FieldValue(col))`
          for a cardinality column (plain `FieldValue` otherwise). `ExpandValueIndex` (via the
@@ -6277,11 +6280,13 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
          deterministic. **Note:** nested-struct array (`tab2_index` in the yamsql) is blocked on STRUCT
          column support in the metadata builder (`buildCardinalityIndex` already builds the dotted-column
          nesting); lands with struct columns.
-     - **[ ] §3a follow-up — nullable-array-wrapper WRITE.** Go's metadata builder emits a plain repeated
-       field for both nullable and NOT-NULL arrays; it does not write Java's `message{ repeated values }`
-       wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
-       `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
-       (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
+     - **[x] §3a follow-up — nullable-array-wrapper WRITE.** Closed in two halves. RFC-204 P1 landed the
+       wrapper write side, so a Go-written NULLABLE array now distinguishes a stored NULL (absent wrapper)
+       from a stored `[]` (present wrapper, empty list). The CARDINALITY half is closed too, but NOT by the
+       wrapper — this item mis-framed it. A NOT NULL array is FLAT repeated in Java as well, so no wrapper
+       was ever coming; `CARDINALITY([])` was 0-not-NULL all along and Go simply special-cased zero into a
+       NULL key on both the count and the read. Both special cases are gone (CQ-89): the row builder reads
+       a repeated field before any presence test, and the key evaluator keys the count verbatim.
    - **[x] R6 follow-up — BITAND/BITOR/BITXOR registry drift.** The "unreachable" diagnosis became stale:
      all three dedicated bit-expression routes execute and are covered by `bitwise.yaml`. RFC-190.8 closes
      the real maintainability gap by moving their admission, evaluator operator, and declared result type
@@ -13814,32 +13819,108 @@ None is speculative: each was re-verified against the tree before booking.
   (drive from the 1-row table) with a COUNT index declared in its DDL, and
   the joins golden decision is re-derived from real counts.
 
-- [ ] **CQ-89 (MED, wrong rows) — a stored NOT NULL array that is EMPTY reads
-  back as NULL, so `IS NULL` is true and `= []` is UNKNOWN on a column the
-  type forbids to be NULL.** Newly VISIBLE, not newly broken: while the
-  NULLABLE arm was a wire divergence (RFC-143 §3a — Go wrote a plain repeated
-  field where Java writes the `message{ repeated values }` wrapper) it failed
-  first and claimed `arrays-operators.yamsql`. RFC-204 P1 landed the wrapper
-  write side, the nullable arm now matches Java, and the file progresses to
-  its NOT NULL column.
-  **This one is NOT a wire bug — the bytes already match Java.** A NOT NULL
-  array is stored as a FLAT repeated field in both engines, and that is
-  correct; on the wire an empty repeated field is indistinguishable from an
-  absent one. The distinction has to be made on READ, from the type: a field
-  whose type forbids NULL must materialize absent as an EMPTY ARRAY. Java
-  does; Go yields NULL.
-  **Java's answer, measured, not inferred** (`arrays-operators.yamsql`):
-  `SELECT "pk" FROM T1 WHERE "arr_nn" = [] AND "pk" != -1` → `result:
-  [{pk: 0}]`, and the same for the CAST variant.
-  **Currently pinned, both sides:** the corpus file is booked
-  `engine-gap:non-nullable-array-empty` in
-  `pkg/relational/conformance/javacorpus/gaps.go` at its exact row
-  (`{ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}`),
-  and `TestFDB_ArrayComparison/field_comparisons`
-  (`array_comparison_fdb_test.go`) pins the wrong answer with a comment
-  naming this item. DONE = both flip to Java's answer together; the sqldriver
-  pin becomes `[]int64{0}` and the gap entry is deleted with the corpus pass
-  count raised.
+- [ ] **CQ-90 (OWNER DECISION — on-disk migration for the CQ-89 cardinality
+  key change).** CQ-89 changed the CARDINALITY() index key for an EMPTY
+  non-nullable (flat repeated) array from a NULL key to the integer key 0.
+  MEASURED, with the repo's own tuple codec: the entry key went from
+  `indexSubspace ‖ 0x00 ‖ pk` to `indexSubspace ‖ 0x14 ‖ pk`. The write path
+  (`index_maintainer.go:217-223`) suppresses neither, so BOTH forms are real
+  KVs on disk.
+  **Consequence on an existing store.** Records written by a Go binary
+  PREDATING that commit carry the `0x00` entry. After upgrade nothing rewrites
+  them, so an index-backed `CARDINALITY(a) = 0` misses those rows while a full
+  scan returns them, and `CARDINALITY(a) IS NULL` returns rows on a column
+  whose type forbids NULL — the index/base-table split CQ-89 set out to
+  remove, re-created in the opposite direction until the index is rebuilt.
+  **Scope is narrow, and one direction is strictly improved.** Only a
+  CARDINALITY index over a NOT NULL array column with empty arrays is
+  affected; the base-table read change stores nothing and needs no migration.
+  Java-written data was always keyed 0, so Go-vs-Java divergence is REDUCED by
+  the fix — the stale entries are Go-vs-Go.
+  **A second, sharper hazard on UNIQUE cardinality indexes.** The maintainer
+  skips the uniqueness check when the entry key contains a NULL
+  (`index_maintainer.go`'s `!indexKeyContainsNull` guard; Java:
+  `StandardIndexMaintainer.java:471`). Under the OLD key, two records with
+  empty NOT NULL arrays both keyed NULL and were therefore never checked — so
+  an existing store may already hold two such records. Under the NEW key both
+  key 0, a state the unique index considers impossible; a rebuild would fail,
+  and until then the invariant is silently false. Reachable only
+  programmatically today (`builder.go:606-608` honours `unique` for the
+  cardinality arm, but its only producer, `AddCardinalityIndex`, never sets
+  the flag and no SQL DDL route reaches it), so this is latent rather than
+  shipped — pinned by `TestFDB_ArrayCardinalityUniqueIndex`. It becomes live
+  the moment a UNIQUE cardinality DDL form lands.
+  **RULING (owner, made — DOCUMENT, DO NOT FORCE).** No
+  `LastModifiedVersion` bump. Rationale: the product is pre-production —
+  road-to-prod is still open — so every existing cluster carrying
+  old-Go-written data is dev/test. Forcing metadata churn on every schema
+  with a cardinality index is the heavier tool for a hazard whose blast
+  radius today is internal. The migration is published instead: the PR body
+  and `road-to-prod.md`'s watch-list both carry the note that old Go-written
+  cardinality entries are stale under the new key, that an index rebuild
+  (`OnlineIndexer`) clears them, and that until rebuilt an index-backed
+  `CARDINALITY(a) = 0` may disagree with a full scan on rows written by
+  pre-fix Go. The uniqueness sub-hazard above is published with it: a rebuild
+  can surface a pair the old NULL key let bypass the check, and that
+  surfacing is the CORRECT loud outcome, not a rebuild bug.
+  **WHAT REMAINS BOOKED, and its trigger.** This item stays open as a
+  CONDITIONAL go/no-go, not as a filed-and-forgotten note: **if this ships to
+  a real (non-dev) cluster before the affected indexes have been rebuilt, the
+  forced-rebuild mechanism has to be reconsidered** — the ruling above rests
+  entirely on "every affected store is dev/test", and that premise expires on
+  first production deployment. DONE = either (a) road-to-prod closes with the
+  affected indexes rebuilt and this is struck, or (b) a production deployment
+  is scheduled while stale entries can still exist, in which case the
+  `LastModifiedVersion` bump lands with a test
+  (`metadata_evolution_validator.go:488-504` already implements Java's
+  `allowIndexRebuilds` contract, so the mechanism exists — only the decision
+  to use it is pending).
+
+- [ ] **CQ-91 (query-engine — needs its own RFC + Graefe ACK): Go has THREE
+  independent implementations of Java's ONE field-read helper; consolidate
+  them.** Java funnels every proto field read through
+  `MessageHelpers.getFieldOnMessage` (MessageHelpers.java:124-143), whose
+  first branch is `if (field.isRepeated())`. Go re-implements that rule three
+  times, and the three sites are:
+    1. `executor.protoToPositional` — `pkg/recordlayer/query/executor/query_result.go`
+       (the base-scan positional row);
+    2. `values.protoFieldByName` — `pkg/recordlayer/query/plan/cascades/values/values.go`
+       (struct descent / `FieldValue` over a message context);
+    3. `rowstruct.MessageStruct.fieldValue` — `pkg/relational/core/rowstruct/rowstruct.go`
+       (the driver-visible STRUCT).
+  This is not hypothetical drift: CQ-89 WAS that drift. Sites 2 and 3 already
+  applied the repeated-first rule (`HasPresence()` is false for a repeated
+  field) while site 1 tested presence first, so an empty NOT NULL array read
+  back as `[]` or as NULL **depending on which path the plan happened to
+  take**. `TestReadPathAgreement_EmptyArrayAndAbsence`
+  (`read_path_agreement_test.go`) now gates the three against each other and
+  against Java's answer, and a mutation to any ONE of them turns it red naming
+  that site — but a gate is a smoke alarm, not a fix. Java's structure is one
+  helper; Go's should be too.
+  Explicitly NOT folded into the CQ-89 PR: collapsing three read paths onto a
+  shared helper touches the executor row builder, the values layer and the
+  driver struct surface at once, and the three legitimately differ in
+  REPRESENTATION (rowstruct materializes driver values — a UUID as its
+  canonical string — where the engine layers keep `[16]byte`), so the shared
+  helper has to be parameterized on the leaf conversion rather than merely
+  extracted. That is a design with a real choice in it. DONE = an RFC with a
+  Graefe ACK, the three sites reduced to one rule with per-layer leaf
+  conversion, and the agreement test kept as the regression gate.
+
+- [ ] **CQ-92 (conformance): live-JVM byte conformance for the CARDINALITY()
+  index key.** `TestFDB_ArrayCardinalityIndex/"wire bytes of the NOT NULL
+  cardinality index entries"` asserts the raw index KVs an empty / populated
+  NOT NULL array writes (`0x14` for cardinality 0, `0x15 0x01`, `0x15 0x02`),
+  and it MEASURES the Go side by reading it back out of FDB. The Java side it
+  claims to match is INFERRED FROM SOURCE
+  (`CardinalityFunctionKeyExpression.java:115-117` + the tuple codec), with no
+  JVM in the loop — the caveat is stated in the test. For a wire-compat
+  assertion that is the weak half, and it is weak precisely where the claim
+  lives. DONE = a `cardinality_index_conformance` pair in the live-JVM
+  conformance harness (the same shape the existing byte-conformance pairs
+  use) that writes the three-row `tab1_nn` fixture from BOTH engines and
+  asserts the index subspace is byte-identical, at which point the caveat
+  comment comes out.
 
 - [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
   qualified star in a SELECT list that also carries GROUP BY is rejected

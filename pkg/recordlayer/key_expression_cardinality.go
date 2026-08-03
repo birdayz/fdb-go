@@ -75,9 +75,11 @@ func CardinalityExpr(arguments KeyExpression) *CardinalityFunctionKeyExpression 
 //
 // Fast path 2 — plain repeated field: the argument is
 // field("arr", Concatenate). Count the repeated field directly
-// (Message.getRepeatedFieldCount). A zero count maps to a NULL key, because on
-// Go-written records an empty array is wire-indistinguishable from NULL/unset —
-// consistent with the scalar CardinalityValue (RFC-143 §3a).
+// (Message.getRepeatedFieldCount). A zero count keys 0, NOT NULL: a plain
+// repeated field is the NOT NULL array's storage shape, and an empty one is
+// [] whose cardinality is 0. NULL keys arise only where the array itself can
+// be absent — an absent wrapper, or a null parent on a deeper nesting — both
+// of which reach the materialized fallback.
 func (c *CardinalityFunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg != nil {
 		if result, handled := c.evaluateFast(msg); handled {
@@ -116,7 +118,7 @@ func (c *CardinalityFunctionKeyExpression) evaluateFast(msg proto.Message) ([][]
 				valuesFD := wrapper.Descriptor().Fields().ByName(wrappedArrayValuesFieldName)
 				if valuesFD != nil && valuesFD.IsList() {
 					// Present wrapper → non-null array; zero elements is a valid 0.
-					return cardinalityCountRepeated(wrapper, valuesFD, true), true
+					return cardinalityCountRepeated(wrapper, valuesFD), true
 				}
 			}
 		}
@@ -127,8 +129,9 @@ func (c *CardinalityFunctionKeyExpression) evaluateFast(msg proto.Message) ([][]
 	if field, ok := c.arguments.(*FieldKeyExpression); ok && field.fanType == FanTypeConcatenate {
 		fd := desc.Fields().ByName(protoreflect.Name(field.fieldName))
 		if fd != nil && fd.IsList() {
-			// Plain repeated: empty == NULL on Go-written records (§3a).
-			return cardinalityCountRepeated(m, fd, false), true
+			// A repeated field is always an array; an empty one is []
+			// and counts 0. The column is NOT NULL by construction here.
+			return cardinalityCountRepeated(m, fd), true
 		}
 	}
 
@@ -136,36 +139,49 @@ func (c *CardinalityFunctionKeyExpression) evaluateFast(msg proto.Message) ([][]
 }
 
 // cardinalityCountRepeated counts a repeated proto field directly —
-// Message.getRepeatedFieldCount. count==0 maps to a NULL key when allowZero is
-// false (plain repeated: empty == NULL on Go-written records, §3a); the wrapped
-// path passes allowZero=true because a present wrapper with zero elements is a
-// non-null empty array.
-func cardinalityCountRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor, allowZero bool) [][]any {
-	count := m.Get(fd).List().Len()
-	if count == 0 && !allowZero {
-		return nilKeyResult
-	}
-	return [][]any{{int64(count)}}
+// Message.getRepeatedFieldCount — and keys that count VERBATIM, zero included.
+// Java does the same in both fast paths with no zero special-case
+// (CardinalityFunctionKeyExpression.java:115-117 and :132-133 both end in
+// Key.Evaluated.scalar(cardinality)).
+//
+// A zero must NOT become a NULL key. The count is a property of the ARRAY, and
+// a repeated field is always present as an array — an empty one is [], whose
+// cardinality is 0. Keying NULL there would put the index at odds with the base
+// table, which materializes the same absent repeated field as [] and counts 0,
+// so an index-backed `CARDINALITY(a) = 0` and a full-scan one would disagree.
+// It would also diverge on the WIRE: Java writes the 0 key for this record.
+func cardinalityCountRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) [][]any {
+	return [][]any{{int64(m.Get(fd).List().Len())}}
 }
 
 // evaluateCardinalityMaterialized counts the materialized argument list — Java's
 // evaluateFunction over a single-element Key.Evaluated. arguments is the
 // pre-evaluated argument-expression result ([][]any): one row whose single
 // element is either a tuple.Tuple of the array's elements (FanType.Concatenate)
-// or nil (the array was NULL/unset). An empty/absent array → NULL; a populated
-// array → its element count. This is also the bare-registry evaluator for any
+// or nil (the array was NULL/unset).
+//
+// Only a NULL ARGUMENT yields a NULL key; a present-but-EMPTY list counts 0.
+// Java draws the line in exactly that place
+// (CardinalityFunctionKeyExpression.java:146-152): `arg == null` returns
+// Key.Evaluated.NULL, everything else returns scalar(argList.size()), and an
+// empty list's size is 0. Collapsing empty into NULL here would contradict the
+// read path, which materializes an empty repeated field as [].
+//
+// This is also the bare-registry evaluator for any
 // FunctionExpr("cardinality", …) that is not a CardinalityFunctionKeyExpression.
 func evaluateCardinalityMaterialized(_ *FDBStoredRecord[proto.Message], _ proto.Message, arguments [][]any) ([][]any, error) {
 	if len(arguments) == 0 || len(arguments[0]) == 0 {
 		return nilKeyResult, nil
 	}
 	n, ok := materializedArrayLen(arguments[0][0])
-	if !ok || n == 0 {
-		// nil argument (NULL array) or empty materialized array. On Go-written
-		// records an empty array is wire-indistinguishable from NULL, so both
-		// map to a NULL key — consistent with the scalar CardinalityValue (§3a).
+	if !ok {
+		// The argument itself is nil — a NULL array (an absent wrapper, or a
+		// null parent on a deeper nesting like struct.arr). Java: `arg == null`
+		// → Key.Evaluated.NULL.
 		return nilKeyResult, nil
 	}
+	// Present list, possibly EMPTY: Java returns scalar(argList.size()), and 0
+	// is a real cardinality — not NULL.
 	return [][]any{{int64(n)}}, nil
 }
 

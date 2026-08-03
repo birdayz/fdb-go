@@ -1121,11 +1121,14 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 // Mirrors Java's function("cardinality", field("arr", Concatenate)) /
 // field("struct").nest(field("int_arr", Concatenate)).
 //
-// Go writes plain repeated array fields (no nullable-array wrapper — RFC-143
-// §3a), so the argument is always field(col, Concatenate), never the Java
-// wrapper shape field(col).nest(field("values", Concatenate)). The evaluator
-// (CardinalityFunctionKeyExpression) still descends the wrapper for
-// Java-written records on the read side.
+// The argument built HERE is always field(col, Concatenate). That is not the
+// final shape for a NULLABLE array column: Go now writes those wrapped, and
+// wrapArrayKeyExpression (NullableArrayUtils.wrapArray) rewrites the argument
+// through its function arm into the Java wrapper shape
+// field(col).nest(field("values", Concatenate)) before the template is built.
+// A NOT NULL array column is a flat repeated field in both engines, so its
+// argument survives that pass unchanged — and an empty one keys 0, not NULL,
+// because a repeated field is always an array.
 func buildCardinalityIndex(idx indexSpec) (*recordlayer.Index, error) {
 	segments := strings.Split(idx.cardinalityColumn, ".")
 	if len(segments) == 0 || segments[len(segments)-1] == "" {
