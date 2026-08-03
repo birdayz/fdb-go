@@ -77,11 +77,18 @@ var leafIsolationDeclaration = map[string]leafIsolationVerdict{
 
 	// The two vector families. Neither reaches a keyValueCursor — each walks
 	// its own structure (HNSW graph / SPANN postings) — so each resolves the
-	// read transaction itself through standardIndexMaintainer.readTx, and the
-	// vector leaf exercises that end to end. This is the entry that was
-	// missing when the leaf shipped snapshot-only.
-	"IndexTypeVector":        {coveredBy: "vector_scan_by_distance"},
-	"IndexTypeVectorSPFresh": {coveredBy: "vector_scan_by_distance"},
+	// read transaction itself through standardIndexMaintainer.readTx.
+	//
+	// They name DIFFERENT subtests, and that is the point. Pointing both at
+	// the HNSW leaf was a false coverage claim: that subtest builds an HNSW
+	// index and never constructs an SPFresh one, so a regression in SPFresh's
+	// isolation left the entire suite green — measured, by reverting the
+	// SPFresh reads to snapshot and watching only the HNSW arm stay passing.
+	// A declaration is only worth what the named subtest actually executes.
+	"IndexTypeVector": {coveredBy: "vector_scan_by_distance"},
+	// Two entries, because SPFresh serves BY_DISTANCE through two independent
+	// read paths: the one-shot top-k and the demand-widening ordered stream.
+	"IndexTypeVectorSPFresh": {coveredBy: "spfresh_scan_by_distance + spfresh_ordered_stream"},
 }
 
 // TestQueryLeafIsolationDeclarationIsExhaustive fails when an index type is
@@ -111,6 +118,25 @@ func TestQueryLeafIsolationDeclarationIsExhaustive(t *testing.T) {
 		if verdict.coveredBy == "" && verdict.reason == "" {
 			t.Errorf("index type %s has an EMPTY classification: it must name either the "+
 				"leaf subtest that covers it or the reason no plan can reach its scan", name)
+			continue
+		}
+		// A coverage claim must name a leaf that EXISTS. Without this the
+		// declaration is prose: SPFresh was once declared covered by the HNSW
+		// leaf, which builds no SPFresh index at all, so a regression there
+		// left the suite green. A name nobody resolves is how false coverage
+		// gets written down and believed.
+		for _, leafName := range strings.Split(verdict.coveredBy, "+") {
+			leafName = strings.TrimSpace(leafName)
+			if leafName == "" {
+				continue
+			}
+			if !leafScanExists(leafName) {
+				t.Errorf("index type %s claims coverage by leaf subtest %q, which is not in "+
+					"queryLeafScans(). Either the leaf was renamed or removed and this "+
+					"claim is now false, or the claim never matched a real leaf — and a "+
+					"coverage claim that resolves to nothing is worse than none, because "+
+					"it reads as tested", name, leafName)
+			}
 		}
 	}
 
@@ -153,4 +179,15 @@ func indexTypeConstNames(t *testing.T) []string {
 		return true
 	})
 	return names
+}
+
+// leafScanExists reports whether name is one of the leaves
+// TestQueryLeavesConsultIsolationLevel actually runs.
+func leafScanExists(name string) bool {
+	for _, l := range queryLeafScans() {
+		if l.name == name {
+			return true
+		}
+	}
+	return false
 }
