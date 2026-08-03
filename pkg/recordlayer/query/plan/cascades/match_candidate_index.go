@@ -723,10 +723,15 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		//
 		// A zero-valued float equality spans BOTH signed zeros. It therefore
 		// pins no single key and cannot carry the suffix (a later column
-		// restarts at the block boundary), yet every row it admits shares one
-		// logical value at this coordinate, and the executor's range set opens
-		// the two zero blocks in key order — reversed wholesale under a reverse
+		// restarts at the block boundary), yet the executor's range set opens
+		// the two zero blocks in KEY ORDER — reversed wholesale under a reverse
 		// scan. So it claims its own order while terminating the suffix.
+		//
+		// That enumeration order is the WHOLE ground. Do not reason instead that
+		// the admitted rows share one logical value and so satisfy any ORDER BY:
+		// the predicate comparator and the sort comparator disagree on signed
+		// zeros by design (see plans.EqualityBoundCoordinateClaimsOwnOrder), so
+		// the claim is directional and a DESC request is not free.
 		canExtend := values.ColumnCanExtendOrderingClaim(
 			c.orderingKeyLayout(), c.columnNames[idx],
 		)
@@ -748,8 +753,11 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// Emitted, but nothing may claim order THROUGH it. Breaking AFTER the
 		// append rather than before is the whole point of the split: the
 		// coordinate keeps its own claim. The PK suffix, however, must still be
-		// refused — the tie class spans two physical ranges, so no later column
-		// is ordered within it — and breaking alone does not refuse it: the
+		// refused — the equality spans two physical blocks, so a later column
+		// restarts at the boundary and is not ordered across them (do not call
+		// this a "tie class": for signed zeros the two comparators disagree, so
+		// the admitted rows are two sort values, not one) — and breaking alone
+		// does not refuse it: the
 		// gate below counts emitted parts against the key length, and this
 		// coordinate has now been counted. Record the refusal explicitly.
 		if !carriesTheSuffix {

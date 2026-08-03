@@ -221,6 +221,7 @@ go_test(
         "abstract_data_access_rule_test.go",
         "aggregate_column_identity_test.go",
         "aggregate_index_shortcut_gate_test.go",
+        "aggregate_index_unknown_key_type_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
@@ -1022,6 +1023,7 @@ go_test(
         "physical_key_component_types_test.go",
         "physical_key_types.go",
         "signed_zero_pk_suffix_ordering_test.go",
+        "aggregate_index_unknown_key_type_test.go",
     ],
     deps = [
         "//gen",

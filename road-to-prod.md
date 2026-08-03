@@ -246,7 +246,10 @@ Wrong rows / wrong data:
    `(v/z)=(v/z)` returns ALL rows. Pinned — `nan_comparison_semantics_test.go`. PostgreSQL agrees
    exactly (NaNs equal and greatest); CockroachDB makes NaNs equal/canonical but sorts them least;
    Java's direct `RelOpValue` primitive `==` instead makes NaN unequal to itself. Raw FDB NaN
-   sign/payload order is a separate indexed-access gap tracked by CQ-84.
+   sign/payload order is a separate indexed-access gap tracked by **CQ-93** (raw NaN primary-key
+   identity vs logical DISTINCT / ORDER BY). It was previously cited here as CQ-84, which is a
+   different item entirely (qualified star with GROUP BY) — the gap was unfindable under that
+   reference.
 6. Signed zero: Go is IEEE; Java's boxed predicate is bit-identity, while its direct
    `RelOpValue` primitive `==` agrees with Go — `WHERE d = 0.0` returns a stored `-0.0` row in Go,
    not through Java's boxed predicate path. Pinned — `plandiff/corpus.go:4726`

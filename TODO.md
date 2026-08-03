@@ -13922,6 +13922,33 @@ None is speculative: each was re-verified against the tree before booking.
   asserts the index subspace is byte-identical, at which point the caveat
   comment comes out.
 
+- [ ] **CQ-93 (MED, query-engine — needs its own RFC + Graefe ACK): a raw NaN
+  primary key is finer than logical equality, so PK-coverage DISTINCT elision
+  and storage-order sort elision are both unsound over FLOAT/DOUBLE keys.**
+  FDB storage preserves NaN sign and payload, so `0xfff8000000000001` and
+  `0x7ff8000000000001` are two DISTINCT primary tuple keys packing on opposite
+  sides of every finite value, while `values.CompareFloat64` (faithful to
+  `java.lang.Double.compare`) canonicalizes both to ONE value ranked greatest.
+  Two planner shortcuts assume storage identity == logical equality and storage
+  order == comparator order, and neither holds here: `SELECT DISTINCT id, status
+  FROM t WHERE status = 'x'` drops the distinct operator on PK coverage and
+  returns the two NaN records as two rows, and `ORDER BY id` (in both
+  directions, and before `LIMIT`) is answered from an index whose PK suffix is
+  not in comparator order. MEASURED on a real cluster: with the fix reverted the
+  DISTINCT arm fails as `raw NaN primary keys incorrectly eliminated DISTINCT:
+  Project([ID#0, STATUS#1], IndexScan(STATUS_IDX, [=] COVERING))`.
+  The fix and its end-to-end test are WRITTEN and CARVED OUT of PR #575
+  (branch `agent/correlated-signed-zero-probes`), which is scoped to signed
+  zeros: `/tmp/claude-1000/carveouts/logical_distinctness_proof.patch` +
+  `.note`, carrying `logical_distinctness_proof.go`, the two rule changes
+  (`rule_implement_distinct_final`, `rule_implement_sort`) and
+  `sqldriver/rawnan_pk_suffix_fdb_test.go`. It applies cleanly to that head and
+  passes; it is held out only because it changes when two general-purpose
+  Cascades rules fire and so needs its own RFC + Graefe ACK. DONE = that RFC
+  lands, the patch is submitted on its own terms, and the test runs in CI.
+  (This gap was previously mis-cited in `road-to-prod.md` as CQ-84, which is the
+  unrelated qualified-star-with-GROUP-BY item.)
+
 - [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
   qualified star in a SELECT list that also carries GROUP BY is rejected
   unconditionally, where Java expands the star FIRST and only then applies the
