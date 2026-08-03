@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/binary"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,21 +101,22 @@ func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 // one is ignored (the floor must not rise past a pinned version).
 func TestUpdateMinAcceptable_TracksMinimum(t *testing.T) {
 	t.Parallel()
-	var min atomic.Int64
-	updateMinAcceptable(&min, 100) // first → sets the floor
-	if v := min.Load(); v != 100 {
+	db := &database{}
+	ep := db.grvCache.epochNow()
+	db.updateMinAcceptable(ep, 100) // first → sets the floor
+	if v := db.minAcceptable(); v != 100 {
 		t.Errorf("got %d, want 100", v)
 	}
-	updateMinAcceptable(&min, 200) // larger → ignored
-	if v := min.Load(); v != 100 {
+	db.updateMinAcceptable(ep, 200) // larger → ignored
+	if v := db.minAcceptable(); v != 100 {
 		t.Errorf("got %d, want 100 (a larger version must not raise the floor)", v)
 	}
-	updateMinAcceptable(&min, 50) // smaller → lowers the floor
-	if v := min.Load(); v != 50 {
+	db.updateMinAcceptable(ep, 50) // smaller → lowers the floor
+	if v := db.minAcceptable(); v != 50 {
 		t.Errorf("got %d, want 50 (a smaller version lowers the floor)", v)
 	}
-	updateMinAcceptable(&min, 0) // unset/invalid → ignored
-	if v := min.Load(); v != 50 {
+	db.updateMinAcceptable(ep, 0) // unset/invalid → ignored
+	if v := db.minAcceptable(); v != 50 {
 		t.Errorf("got %d, want 50 (v<=0 ignored)", v)
 	}
 }
@@ -132,7 +132,7 @@ func TestUpdateMinAcceptable_TracksMinimum(t *testing.T) {
 func TestValidateVersion_BelowMinReturnsTooOld(t *testing.T) {
 	t.Parallel()
 	db := &database{}
-	db.minAcceptableReadVersion.Store(1000)
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1000})
 	err := db.validateVersion(500)
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTooOld {
@@ -143,7 +143,7 @@ func TestValidateVersion_BelowMinReturnsTooOld(t *testing.T) {
 func TestValidateVersion_AtMinIsAccepted(t *testing.T) {
 	t.Parallel()
 	db := &database{}
-	db.minAcceptableReadVersion.Store(1000)
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1000})
 	if err := db.validateVersion(1000); err != nil {
 		t.Errorf("got %v, want nil at exactly min", err)
 	}
@@ -151,7 +151,7 @@ func TestValidateVersion_AtMinIsAccepted(t *testing.T) {
 
 func TestValidateVersion_NoMinAcceptsAnyReasonable(t *testing.T) {
 	t.Parallel()
-	db := &database{} // minAcceptableReadVersion = 0 → no floor check
+	db := &database{} // no stamp → floor reads unset
 	if err := db.validateVersion(1); err != nil {
 		t.Errorf("got %v, want nil when no min set", err)
 	}

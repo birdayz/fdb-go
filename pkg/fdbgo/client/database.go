@@ -255,7 +255,7 @@ type database struct {
 	// handoff-inside-the-commit-window case, which is a few instructions wide and
 	// therefore untestable by racing. Always nil in production.
 	beforeCommitProxySelect atomic.Pointer[func()]
-	// duringProxyInstall runs inside installProxySet, on both sides of the dbInfo
+	// duringProxyInstall runs inside installProxySet, immediately before the dbInfo
 	// publication. It exists so a test can hold an installer inside the critical
 	// section (see installMu) and observe the fence at publication. Always nil in
 	// production.
@@ -299,7 +299,14 @@ type database struct {
 	// minAcceptableReadVersion tracks the minimum version this client has seen
 	// from the cluster. SetReadVersion below this throws transaction_too_old
 	// client-side, matching C++ DatabaseContext::validateVersion().
-	minAcceptableReadVersion atomic.Int64
+	//
+	// It carries the EPOCH it was observed in, in the same value, for the reason
+	// grvCacheEntry does: a floor is a claim about a VERSION SPACE, and the two
+	// clusters' spaces are unrelated. Stamped, a value written just before a
+	// handoff becomes inert the moment the fence moves — a reader validates the
+	// epoch in the same load that produced the version, so there is no window in
+	// which the two disagree, and no reliance on anyone remembering to clear it.
+	minAcceptableReadVersion atomic.Pointer[minAcceptableStamp]
 
 	// clusterSwitchPending is set when a coordinator set is adopted and cleared
 	// at the proxy handoff that completes it. See onCoordinatorSetAdopted.

@@ -552,26 +552,65 @@ func (c *grvCache) invalidate() {
 	}
 }
 
-// updateMinAcceptable lowers minAcceptableReadVersion toward the SMALLEST read
-// version this client has seen. C++ DatabaseContext::minAcceptableReadVersion is
+// minAcceptableStamp is the seen-version floor together with the cluster epoch
+// it was observed in. One value, for the reason grvCacheEntry carries its epoch:
+// a floor is a claim about a VERSION SPACE, and a reader must decide whether the
+// claim applies to the cluster it is serving from the SAME load that produced the
+// version. Zero version means unset.
+type minAcceptableStamp struct {
+	epoch   int64
+	version int64
+}
+
+// minAcceptable is the seen-version floor for the epoch currently being served,
+// or 0 when there is none. A stamp from a previous cluster reads as unset, which
+// is the fail-open direction and, more importantly, the direction that RE-ARMS
+// the bootstrap GRV in ensureReadVersion — the repair that re-derives the floor
+// from the cluster now being served.
+func (db *database) minAcceptable() int64 {
+	s := db.minAcceptableReadVersion.Load()
+	if s == nil || s.epoch != db.grvCache.epochNow() {
+		return 0
+	}
+	return s.version
+}
+
+// updateMinAcceptable lowers the floor toward the SMALLEST read version this
+// client has seen IN THIS EPOCH. C++ DatabaseContext::minAcceptableReadVersion is
 // a std::min over GRV reply versions (NativeAPI.actor.cpp:3871,:7287), inited to
-// max(). Go inits the atomic to 0, so 0 means "unset": the first version sets it
-// and later (necessarily ≥) versions leave it at the smallest. This is the floor
+// max(). Go treats version 0 as "unset": the first version sets the floor and
+// later (necessarily ≥) versions leave it at the smallest. This is what
 // validateVersion compares against — keeping it the smallest-seen (NOT a rising
 // max) means only a genuinely-ancient pinned version is rejected, never a recent
 // one that merely predates a later GRV. (Previously this ratcheted UPWARD, so
 // RFC-104's fresh-GRV default raced it past pinned versions libfdb_c accepted —
 // the root of the spurious 1007s in the snapshot/conflict/getKey differentials.)
-func updateMinAcceptable(min *atomic.Int64, v int64) {
+//
+// THE EPOCH CHECK IS ON THE STORE ITSELF, and that placement is the point. The
+// caller already knows whether the reply's epoch was current — but it learned
+// that a few instructions earlier, and a handoff in between would let a reply
+// from the previous cluster write that cluster's version space into this one's
+// floor. Re-reading the epoch inside the loop means the decision is made where
+// the write happens: replyEpoch is compared against the epoch observed at the
+// CAS, so a handoff anywhere before it refuses the write instead of racing it.
+//
+// Refusing costs nothing, which is why the check can be this strict: a refused
+// floor reads as unset, and unset re-arms the bootstrap GRV that establishes the
+// floor properly from the current cluster.
+func (db *database) updateMinAcceptable(replyEpoch, v int64) {
 	if v <= 0 {
 		return
 	}
 	for {
-		cur := min.Load()
-		if cur != 0 && v >= cur {
-			return // already hold a smaller-or-equal floor
+		curEpoch := db.grvCache.epochNow()
+		if replyEpoch != curEpoch {
+			return // a previous cluster's version space; not this cluster's floor
 		}
-		if min.CompareAndSwap(cur, v) {
+		cur := db.minAcceptableReadVersion.Load()
+		if cur != nil && cur.epoch == curEpoch && cur.version != 0 && v >= cur.version {
+			return // already hold a smaller-or-equal floor for this epoch
+		}
+		if db.minAcceptableReadVersion.CompareAndSwap(cur, &minAcceptableStamp{epoch: curEpoch, version: v}) {
 			return
 		}
 	}
@@ -594,7 +633,9 @@ func updateMinAcceptable(min *atomic.Int64, v int64) {
 // block the storage server indefinitely, and our RPC timeout races the server's
 // own future_version, so detecting it client-side is more reliable.
 func (db *database) validateVersion(version int64) error {
-	min := db.minAcceptableReadVersion.Load()
+	// Read through the stamp: a floor observed under a previous cluster reads as
+	// unset here, because its version space says nothing about this one.
+	min := db.minAcceptable()
 	if min > 0 && version < min {
 		return &wire.FDBError{Code: ErrTransactionTooOld}
 	}
@@ -1070,14 +1111,16 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// the previous cluster's space with transaction_too_old. The pollution also
 	// closes the path that would fix it FASTEST: the bootstrap GRV in
 	// ensureReadVersion fires only while the floor reads 0, and the handoff resets
-	// it to 0 precisely to arm that.
+	// it to 0 precisely to arm that. A handle that only ever uses SetReadVersion
+	// takes no other GRV, so for it the straggler's write is not a delay — it is
+	// permanent.
 	//
-	// The narrower true statement, since the floor is a MIN: any real GRV on this
-	// handle heals it, because the new cluster's smaller version replaces the
-	// straggler's. What stays broken is the handle that never takes one — one
-	// using SetReadVersion exclusively, whose only GRV was the bootstrap the
-	// straggler just disarmed. That is a narrow shape, not a general wedge, and
-	// worth stating as such rather than overclaiming.
+	// So the floor does NOT rely on this sameEpoch verdict, which is decided in
+	// publishReplyAt a few instructions earlier and can be overtaken by a handoff
+	// in between. updateMinAcceptable re-reads the epoch AT ITS OWN CAS and stamps
+	// what it writes, so a straggler is refused at the write rather than racing
+	// it, and a value written just before a handoff goes inert on its own. The
+	// sameEpoch gate here is the outer of two checks, not the only one.
 	//
 	// Gated on sameEpoch and NOT on mayInstall: an invalidation does not change
 	// whose version space a reply came from, so a generation-blocked reply from
@@ -1085,19 +1128,25 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// floor and the cooldowns are built on — and this is one more arm the epoch
 	// gate had not covered.
 	//
-	// THE RESIDUAL, named rather than papered over: sameEpoch is decided inside
-	// publishReplyAt and consumed here, a few instructions later. A handoff in
-	// that gap lets a straggler's contact instant and minimum-acceptable store
-	// land after the reset that was meant to clear them. It is not the wedge above
-	// — the min semantics heal the floor on the next GRV, and the contact instant
-	// costs at most one delayed refresh — but it is a real gap, and the gate is
-	// therefore very-nearly-total rather than total. Closing it needs these two
-	// stores inside the publication's CAS, which is a larger change than the bug
-	// it would fix.
+	// C++ does not gate this at all: its minAcceptableReadVersion is an
+	// unconditional std::min at NativeAPI.actor.cpp:7287 and :3871, and
+	// switchConnectionRecord is equally exposed to a reply in flight across its
+	// own switch. Go is stricter than the spec here, deliberately, because Go's
+	// bootstrap-GRV repair is what a polluted floor suppresses.
+	//
+	// THE REMAINING RESIDUAL, and it is only the contact instant: it is a bare
+	// atomic with no stamp, so a handoff between the verdict above and this store
+	// can still leave a previous cluster's instant behind. That costs at most one
+	// delayed refresh — the refresher re-derives it on its next contact and the
+	// lag is bounded by MAX_PROXY_CONTACT_LAG — and it can wedge nothing, because
+	// nothing gates a repair on it. Stamping it too, or moving it inside the
+	// publication's CAS, is real work for a bounded, self-healing skew; the floor
+	// got the treatment because the floor could wedge a handle and this cannot.
 	if sameEpoch {
 		db.grvCache.lastProxyContact.Store(requestTime.UnixNano())
-		updateMinAcceptable(&db.minAcceptableReadVersion, version)
 	}
+	// Outside the gate above ON PURPOSE — it carries its own, applied at the CAS.
+	db.updateMinAcceptable(tok.epoch(), version)
 
 	if len(tagThrottleInfoBytes) > 0 {
 		parsed := parseTagThrottleInfo(tagThrottleInfoBytes)

@@ -173,7 +173,7 @@ func TestEpoch_HandoffResetsMinAcceptableReadVersion(t *testing.T) {
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
 
 	// Cluster A's version space is high.
-	updateMinAcceptable(&db.minAcceptableReadVersion, 9_000_000)
+	db.updateMinAcceptable(db.grvCache.epochNow(), 9_000_000)
 	if err := db.validateVersion(500); err == nil {
 		t.Fatal("precondition: 500 must be rejected against cluster A's floor")
 	}
@@ -181,8 +181,8 @@ func TestEpoch_HandoffResetsMinAcceptableReadVersion(t *testing.T) {
 	db.onCoordinatorSetAdopted()
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
 
-	if got := db.minAcceptableReadVersion.Load(); got != 0 {
-		t.Fatalf("minAcceptableReadVersion = %d after a coordinator handoff, want 0 "+
+	if got := db.minAcceptable(); got != 0 {
+		t.Fatalf("minAcceptable() = %d after a coordinator handoff, want 0 "+
 			"(unset).\n"+
 			"It is the smallest version seen on the PREVIOUS cluster. Against a cluster "+
 			"whose versions are lower it rejects current versions as transaction_too_old "+

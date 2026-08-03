@@ -193,11 +193,15 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 		// C++ resets minAcceptableReadVersion in the same block
 		// (switchConnectionRecord, NativeAPI.actor.cpp:2201) and re-derives it
 		// from the new cluster's first GRV. Go's floor is the SMALLEST version
-		// seen and 0 means unset, so 0 is the faithful reset: carried across, the
-		// previous cluster's smallest rejects a perfectly current user-set
-		// version from a cluster whose version space sits lower, until this
-		// handle's own first GRV happens to lower it.
-		db.minAcceptableReadVersion.Store(0)
+		// seen and 0 means unset, so an empty stamp is the faithful reset:
+		// carried across, the previous cluster's smallest rejects a perfectly
+		// current user-set version from a cluster whose version space sits lower.
+		//
+		// Publishing it AT THE NEW EPOCH is belt-and-braces rather than the
+		// mechanism — a previous epoch's stamp already reads as unset, because
+		// every reader validates the stamp's epoch in the load that produced it.
+		// This makes the reset explicit rather than relying on that alone.
+		db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow()})
 	}
 
 	// THE ORDER INVARIANT, held BY CONSTRUCTION rather than by a check or by the
@@ -209,25 +213,32 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 	//
 	// This is what makes the guarantee independent of where the bump sits. Move
 	// the bump anywhere after this read and the publication simply does not carry
-	// the new epoch: the fence ends up AHEAD of the published snapshot, which is
-	// the safe disagreement (requests bind the old epoch, talk to the old cluster,
-	// and are refused), and the next install republishes from the fence and heals
-	// it. The harmful direction — a snapshot ahead of the fence, where a commit
-	// binds an epoch the fence has not reached, replies, fails sameEpoch and loses
-	// its durable floor — has no way to arise.
+	// the new epoch: the fence ends up AHEAD of the published snapshot. That is
+	// the safe disagreement — a request binding there does reach the NEW cluster
+	// (the snapshot carries the new proxies), but it binds an epoch the fence has
+	// passed, so nothing it brings back can install and nothing can be served from
+	// it. Refused, not misapplied. The next install republishes from the fence and
+	// heals it.
+	//
+	// The harmful direction — a snapshot ahead of the fence, where a commit binds
+	// an epoch the fence has not reached, replies, fails sameEpoch and loses its
+	// durable floor — has no way to arise.
 	newInfo.Epoch = db.grvCache.epochNow()
 
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
-	// The seam is belt-and-braces for the invariant above and load-bearing for
-	// installMu's serialisation test; it is NOT what enforces the order. A pin
-	// that depends on where a hook sits relative to the publication tests the
-	// hook's position, not the property — the reason the ordering pin this
-	// replaced was green against a bump moved inside the bracket.
+	// ONE seam, immediately before the publication. It exists to let a test hold
+	// an installer inside installMu and to read the fence at publication; it is
+	// NOT what enforces the order, which the derivation above does.
+	//
+	// It used to bracket the publication, on a theory — that a hook on each side
+	// catches the bump wherever it moves — which was simply false: a bump landing
+	// between the two left both observations consistent. A pin that depends on
+	// where a hook sits tests the hook's position, not the property, and that
+	// theory cost two failed pins before the invariant was made structural.
 	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
-	db.observeProxyInstall()
 
 	// Broadcast proxy change to in-flight commits. Close the old channel
 	// to wake all waiters, create a fresh one for the next change.
@@ -329,7 +340,7 @@ func (db *database) onCoordinatorSetAdopted() {
 // observeProxyInstall runs the duringProxyInstall seam when one is installed.
 // Nil in production, so this is a load and a branch on the topology path.
 //
-// Both call sites are INSIDE installMu, which is not reentrant: a hook that
+// The call site is INSIDE installMu, which is not reentrant: a hook that
 // calls back into installProxySet deadlocks the calling goroutine against
 // itself. Hooks may observe and block; they may not install.
 func (db *database) observeProxyInstall() {

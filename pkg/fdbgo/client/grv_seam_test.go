@@ -293,14 +293,14 @@ func TestSeam_MinAcceptableFromAPreviousEpochIsIgnored(t *testing.T) {
 
 	db.onCoordinatorSetAdopted()
 	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
-	if got := db.minAcceptableReadVersion.Load(); got != 0 {
+	if got := db.minAcceptable(); got != 0 {
 		t.Fatalf("precondition: the handoff must reset the floor to 0, got %d", got)
 	}
 
 	// A's reply lands after the handoff.
 	b.applyGRVReply(db, straggler, time.Now(), 9_000_000, false, false, nil)
 
-	if got := db.minAcceptableReadVersion.Load(); got != 0 {
+	if got := db.minAcceptable(); got != 0 {
 		t.Fatalf("a reply from the PREVIOUS cluster set the minimum-acceptable floor "+
 			"to %d.\n"+
 			"That is cluster A's version space written into cluster B's floor. Every "+
@@ -370,5 +370,152 @@ func TestSeam_StaleEpochStragglerAtAnEmptyCacheIsNotAPublication(t *testing.T) {
 	if c.cachedVersion() != 0 || c.entryFloor() != 0 {
 		t.Fatalf("the straggler left state behind: version %d, floor %d",
 			c.cachedVersion(), c.entryFloor())
+	}
+}
+
+// TestSeam_FloorRefusesAStragglerWritingAfterTheHandoff is the interleaving the
+// outer sameEpoch gate cannot cover, because that gate's verdict is reached in
+// publishReplyAt and acted on a few instructions later in applyGRVReply.
+//
+// A reply from the previous cluster is judged current, the handoff lands in the
+// gap, and the store then writes the previous cluster's version space into this
+// one's floor. That is not a delay: the write restores a non-zero floor after the
+// reset deliberately cleared it, and ensureReadVersion's bootstrap GRV — the
+// repair that would re-derive the floor from the cluster now being served —
+// fires only while the floor reads unset. A handle that only ever uses
+// SetReadVersion takes no other GRV, so for it the suppression is permanent.
+//
+// The close is that the STORE carries its own check: updateMinAcceptable
+// re-reads the epoch at its own CAS and stamps what it writes, so the decision
+// is made where the write happens rather than inherited from an earlier instant.
+func TestSeam_FloorRefusesAStragglerWritingAfterTheHandoff(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	// A reply dispatched against cluster A, whose version space is high.
+	straggler := db.grvCache.token()
+
+	// The reply is judged SAME-EPOCH here, exactly as publishReplyAt would judge
+	// it a few instructions before the store.
+	verdict := straggler.epoch() == db.grvCache.epochNow()
+	if !verdict {
+		t.Fatal("precondition: the straggler must be judged current, or this test " +
+			"reproduces the wrong interleaving")
+	}
+
+	// THE WINDOW: the handoff lands between that verdict and the store below.
+	db.onCoordinatorSetAdopted()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+	if got := db.minAcceptable(); got != 0 {
+		t.Fatalf("precondition: the handoff must leave the floor unset, got %d", got)
+	}
+
+	// The store proceeds on the stale verdict, as applyGRVReply's would.
+	db.updateMinAcceptable(straggler.epoch(), 9_000_000)
+
+	if got := db.minAcceptable(); got != 0 {
+		t.Fatalf("a reply from the PREVIOUS cluster wrote %d into this cluster's floor "+
+			"through the gap between the epoch verdict and the store.\n"+
+			"The store must carry its own epoch check and stamp what it writes. "+
+			"Inheriting a verdict reached a few instructions earlier lets the previous "+
+			"cluster's version space land after the reset that cleared it", got)
+	}
+	if err := db.validateVersion(500); err != nil {
+		t.Fatalf("validateVersion(500) = %v: a version this cluster mints is rejected "+
+			"on the strength of the previous cluster's space", err)
+	}
+
+	// And the repair the suppression targeted is armed again: a floor reading
+	// unset is exactly what makes ensureReadVersion take its bootstrap GRV.
+	if db.minAcceptable() != 0 {
+		t.Fatal("the floor must read unset so the bootstrap GRV re-derives it from " +
+			"the cluster now being served — the repair a polluted floor suppresses")
+	}
+}
+
+// TestSeam_FloorStampIsInertAfterAHandoff is the other half of the stamp: a
+// value written legitimately, BEFORE any handoff, must stop applying the moment
+// the fence moves. Nothing has to clear it — the reader validates the epoch in
+// the same load that produced the version, so a floor from another version space
+// simply reads as unset.
+func TestSeam_FloorStampIsInertAfterAHandoff(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	db.updateMinAcceptable(db.grvCache.epochNow(), 9_000_000)
+	if got := db.minAcceptable(); got != 9_000_000 {
+		t.Fatalf("precondition: floor = %d, want 9000000", got)
+	}
+
+	// The fence alone — no installProxySet, so nothing republishes the stamp.
+	// The stamp must go inert on its own.
+	db.grvCache.resetForNewCoordinators()
+
+	if got := db.minAcceptable(); got != 0 {
+		t.Fatalf("a floor stamped in the previous epoch still reads as %d.\n"+
+			"The stamp exists so a reader validates the epoch in the same load that "+
+			"produced the version. Relying on someone republishing an empty stamp "+
+			"instead leaves a window — between the fence moving and that republish — "+
+			"in which another cluster's version space is still enforced", got)
+	}
+	if err := db.validateVersion(500); err != nil {
+		t.Fatalf("validateVersion(500) = %v after the fence moved", err)
+	}
+}
+
+// TestSeam_StragglerCannotDestroyTheCurrentFloor pins what the epoch check ON
+// THE STORE defends, which is NOT what the reader's stamp check defends. The two
+// are independent and neither substitutes for the other:
+//
+//   - the READER's check stops a foreign-epoch floor being ENFORCED. A straggler's
+//     value is stamped with its own epoch, so it never rejects anything.
+//   - the STORE's check stops a foreign-epoch reply DESTROYING the floor this
+//     cluster legitimately established. Without it the straggler's CAS succeeds,
+//     the current epoch's stamp is overwritten with an inert one, and a floor that
+//     was doing real work is silently gone.
+//
+// Losing it fails open — validateVersion stops rejecting genuinely ancient
+// pinned versions, and the handle pays an unnecessary bootstrap GRV to rebuild
+// what it already knew.
+func TestSeam_StragglerCannotDestroyTheCurrentFloor(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	straggler := db.grvCache.token() // dispatched against cluster A
+
+	db.onCoordinatorSetAdopted()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
+
+	// Cluster B establishes a real floor, and it does real work.
+	db.updateMinAcceptable(db.grvCache.epochNow(), 500)
+	if got := db.minAcceptable(); got != 500 {
+		t.Fatalf("precondition: floor = %d, want 500", got)
+	}
+	if err := db.validateVersion(100); err == nil {
+		t.Fatal("precondition: 100 must be rejected against B's floor of 500")
+	}
+
+	// A's reply lands late and attempts the write.
+	db.updateMinAcceptable(straggler.epoch(), 9_000_000)
+
+	if got := db.minAcceptable(); got != 500 {
+		t.Fatalf("floor = %d after a PREVIOUS cluster's reply attempted a write, want "+
+			"500 preserved.\n"+
+			"The straggler's value is inert to readers because it carries its own "+
+			"epoch — but the write still landed and overwrote the floor this cluster "+
+			"established. The epoch check belongs ON THE STORE as well: a reply from "+
+			"another version space must not be able to destroy this one's floor, or "+
+			"validateVersion silently stops rejecting the ancient versions it exists "+
+			"to reject", got)
+	}
+	if err := db.validateVersion(100); err == nil {
+		t.Fatal("100 is accepted again: the floor that was rejecting it was destroyed " +
+			"by a reply from a cluster whose version space is unrelated")
 	}
 }
