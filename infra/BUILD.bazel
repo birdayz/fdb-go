@@ -18,6 +18,7 @@ go_test(
         "template_model_test.go",
     ],
     data = [
+        "README.md",
         "cloud-init.yaml",
         "link_ci_volume_test.sh",
         "main.tf",

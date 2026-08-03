@@ -19,9 +19,13 @@ reproducibility/supply-chain rationale.
   - `HCLOUD_TOKEN` — Hetzner Cloud API token (provider auth).
   - `MINIO_USER` / `MINIO_PASSWORD` — Hetzner Object Storage S3 credentials (for report upload).
   - `-var github_runner_token=<TOKEN>` — a **short-lived (~1 h)** runner registration token:
-    `gh api -X POST repos/birdayz/fdb-record-layer-go/actions/runners/registration-token --jq .token`.
+    `gh api -X POST repos/birdayz/fdb-go/actions/runners/registration-token --jq .token`.
     It is consumed once by `config.sh` at first boot and is useless afterward; nothing secret
-    is baked into a persisted image layer.
+    is baked into a persisted image layer. This one token registers **every** box: the pool
+    falls back to it (`local.pool_registration_token`), and `runner_registration_token` is
+    only for the case where the pool must register on a *different* token from the
+    grandfathered box. Both defaulting to `""` independently is how a fresh apply once
+    rendered `config.sh --token ` on all four pool boxes; `//infra:infra_test` now pins it.
 
 ## Stand up / update the runner
 
@@ -56,13 +60,109 @@ FDB the tests run against).
 
 ## Self-healing (cloud-init)
 
-- **`runner-watchdog`** (every 10 min): restarts the runner only when GitHub has **queued
-  runs** AND either the listener has been silent > 8 min (a wedged connection) OR the 1-min
-  load has exceeded `4×ncpu` for two consecutive checks (a *thrash*-wedge that keeps the box
-  busy, not silent — the failure mode that took the runner down under rapid-push
-  concurrency-cancel churn). A 15-min cooldown prevents restart storms mid-spike.
+- **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**, and
+  nothing else. It reads `/etc/runner-watchdog.conf`, which the mode branch writes — no
+  config, no action (hardcoding a unit name once burned `NRestarts` of 1143/94/4115/2141 on
+  a binary that was never installed). It skips a **masked** unit, because a mask is a
+  deliberate "never run this here" and a watchdog that restarts through one defeats the
+  enforcement.
 - **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min (orphans
   whose parent test died) and pins Ryuk's OOM score so the kernel reaps it last.
+
+### The wedged-listener gap (open, deliberately)
+
+The watchdog recovers a **dead** listener. It does not recover a listener that is *active
+but wedged* — process up, connection dead, claiming nothing. Classic mode therefore sets
+`WATCH_UNIT` and **no** `WATCH_HEARTBEAT`; only `bazelscaleset` sets one, because that
+supervisor is ours and stamps a heartbeat on every successful poll.
+
+This is a decline, not an oversight, and the reason is that every available substitute
+restarts runners **mid-job** — which has already taken live CI down twice:
+
+- The stock `actions/runner` publishes no heartbeat and cannot be made to.
+- Staleness of the listener's own `_diag/Runner_*.log` is the only local signal, and it
+  does not separate the two states. Measured on `gh-runner-drain-0`: an **idle healthy**
+  listener writes nothing between credential refreshes (~30 min observed, an undocumented
+  implementation detail, so a safe threshold has to be far above it), while a job in
+  progress writes to `Worker_*.log` and leaves `Runner_*.log` untouched for its whole
+  duration — the nightly batch lane runs 2h+. Any threshold high enough to avoid false
+  positives on an idle box is also inside the silent window of a long job.
+- A queue-aware check (queued runs fleet-wide + this listener idle for N minutes) *would*
+  separate them, but it needs a GitHub token with repo scope sitting on every box. Not
+  worth it for this failure mode.
+
+`-var runner_ephemeral=true` closes the gap from the other end (a fresh process per job, so
+no wedge survives a job) at the cost of a cold cache; see below for why it is not the
+default yet. `//infra:infra_test` pins the absence of a heartbeat arm in classic mode, with
+the failure message stating what a future one must land alongside: a job-in-progress guard.
+
+## The boot path (why Docker is masked, and what unmasks it)
+
+`cloud-init.yaml` points to this section. The whole sequence exists because three things
+that look independent are not: cloud-init's stage order, `nofail` fstab semantics, and the
+fact that the runner registers itself whether or not the box can run containers.
+
+1. **`packages:` starts `docker.io` before `runcmd` links the volume.** An unmasked daemon
+   creates its data-root as a mode-0711 dir on the **root disk**; the volume link then
+   cannot nest inside it (100 GB idle while caches fill 75 GB), and the traverse-only
+   ancestor makes the runner refuse to start with *"Fail to create and validate runner's
+   work directory"*. `bootcmd` is the only hook before package install, so the mask lives
+   there.
+2. **The mask must be lifted every boot, not once.** `bootcmd` is `PER_ALWAYS` and `runcmd`
+   is `PER_INSTANCE`: mask-in-`bootcmd` + unmask-in-`runcmd` left every boot after the
+   first with no container runtime on a box that still registered a runner and claimed
+   testcontainers jobs. Making `bootcmd` conditional does not work either — it runs
+   `Before=sysinit.target`, so no mount it inspects has happened yet and it reports
+   "absent" on every boot. `ci-docker-gate.service` owns the decision instead.
+3. **`After=local-fs.target` does not order the gate after the CI volume.** The fstab entry
+   is `nofail`, and `nofail` is exactly the option that *removes* the generated mount
+   unit's `Before=local-fs.target` — `systemd.mount(5)`: a local mount gains that
+   dependency *"unless one or more mount options among **nofail**, `x-systemd.wanted-by=`,
+   and `x-systemd.required-by=` is set"*. The mount is still `Wants=`-pulled by
+   `local-fs.target`, just unordered against it, so the gate could run mid-mount, see a
+   dangling `/mnt/ci-data`, mask Docker and never re-decide (it is a `oneshot`; nothing
+   runs it again). The fix is in the fstab options `link-ci-volume.sh` writes:
+   `x-systemd.before=ci-docker-gate.service`, the mechanism `systemd.mount(5)` documents
+   for precisely this shape. Ordering-only on purpose: a mount that *genuinely* fails must
+   still let the gate run and fail closed, which `RequiresMountsFor=`/`x-systemd.requires=`
+   would prevent. (`RequiresMountsFor=/mnt/ci-data` is also a no-op here — that path is a
+   symlink on the root fs, not a mount point.)
+4. **The gate fails closed, and takes the listener with it.** No volume ⇒ Docker stays
+   masked *and* the gate exits non-zero *and* stops `WATCH_UNIT`. `svc.sh`'s unit depends
+   on nothing but `network-online.target`, so a drop-in written at provision time adds
+   `Requires=`/`After=ci-docker-gate.service`. Without that the box stays in the pool and
+   fails every Docker-dependent job it claims, one after another — worse for the fleet than
+   one box visibly missing. `Requires=` also means the watchdog's `systemctl restart`
+   re-runs the gate rather than routing around it.
+
+`infra/link_ci_volume_test.sh` executes the shipped `link-ci-volume.sh` and
+`ci-docker-gate.sh` against fixtures and asserts each of these, including the fstab option
+and the gate's exit status.
+
+Two things a fixture cannot show, both measured on a real box (`cpx32`/fsn1, provisioned
+from this template, three reboots):
+
+- **The ordering option has to be applied to whatever entry is already there.** Hetzner's
+  attach-time automount writes the volume's fstab line *itself*, byte-for-byte in the same
+  `by-id` format `persist()` writes, so the "does this entry exist" guard skips and an
+  option appended only on the write path lands on almost no box. On the first real boot the
+  entry came back `discard,nofail,defaults` — no ordering at all — while the fixture suite
+  was green. `persist()` now adds the option in place. Before: the generated mount unit's
+  `Before=` was `umount.target`. After: `ci-docker-gate.service umount.target`.
+- **A box with no volume takes ~90 s longer to decide.** The gate is now ordered after a
+  mount whose backing device never appears, so it waits out systemd's device timeout
+  (measured: boot 11:33:56, gate 11:35:26) and only then masks Docker and fails. That delay
+  is the ordering working — deciding *earlier* is exactly the bug — and it is bounded by
+  `x-systemd.device-timeout` (90 s default), not unbounded. The listener is held by
+  `Requires=` for the whole window, so nothing claims a job in it. Recovery is automatic:
+  re-attach the volume, reboot, and the gate passes, Docker comes back with its data-root
+  on the volume, and the listener starts.
+
+> **The live fleet does not have any of this yet.** All five boxes predate
+> `ci-docker-gate.service` entirely (checked: no gate unit, no fstab ordering, no drop-in),
+> so they still have the reboot-with-no-Docker failure this section describes. `user_data`
+> is pinned by `ignore_changes`, so the fix reaches a box only via
+> `tofu apply -replace=hcloud_server.runner_pool[N]`, one at a time, on an idle box.
 
 ## The 32 KiB `user_data` budget
 

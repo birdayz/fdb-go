@@ -98,8 +98,12 @@ fresh() {
 run()  { "$SCRIPT" "$1" >/dev/null 2>&1; }
 # The exact line a box must end up with. by-id, because /dev/sdX renumbers across boots
 # and a renumbered `nofail` entry silently does not mount; nofail, because a missing
-# volume must not drop the box to an emergency shell.
-FSTAB_LINE="/dev/disk/by-id/scsi-0HC_Volume_999 /mnt/HC_Volume_999 ext4 discard,nofail,defaults 0 0"
+# volume must not drop the box to an emergency shell; x-systemd.before, because `nofail`
+# is precisely what REMOVES the mount unit's Before=local-fs.target (systemd.mount(5):
+# a local mount gains that dependency "unless one or more mount options among nofail
+# [...] is set"). Without it the gate's After=local-fs.target is ordered against nothing
+# and the reboot path can mask Docker on a box whose volume was merely still mounting.
+FSTAB_LINE="/dev/disk/by-id/scsi-0HC_Volume_999 /mnt/HC_Volume_999 ext4 discard,nofail,defaults,x-systemd.before=ci-docker-gate.service 0 0"
 
 # 1. Virgin box: no /mnt/ci-data yet -> the symlink is created.
 R=$(fresh a)
@@ -187,6 +191,32 @@ R=$(fresh h); echo "/dev/sdb /mnt/HC_Volume_999 ext4 defaults 0 0" > "$R/etc/fst
 run "$R"
 [ "$(wc -l < "$R/etc/fstab")" = 1 ] && ok "pre-existing fstab entry not duplicated" \
   || bad "pre-existing fstab entry duplicated: $(cat "$R/etc/fstab")"
+
+# 11b. THE MAJORITY CASE, and the one an empty-fstab fixture cannot express. Hetzner's
+#      automount writes this entry itself, byte-for-byte in the by-id format the script
+#      writes -- verified on a real boot: the entry was already there, so the write path
+#      was skipped and the box came up with `discard,nofail,defaults` and no ordering at
+#      all. The ordering option therefore has to be applied to whatever entry is present,
+#      not only to the one this script authors. Other fstab lines must be untouched.
+R=$(fresh i2)
+{ echo "# comment"; echo "/dev/disk/by-uuid/deadbeef / ext4 defaults 0 1"
+  echo "/dev/disk/by-id/scsi-0HC_Volume_999 /mnt/HC_Volume_999 ext4 discard,nofail,defaults 0 0"
+  echo "/swapfile none swap sw 0 0"; } > "$R/etc/fstab"
+run "$R"
+if grep -q "^/dev/disk/by-id/scsi-0HC_Volume_999 /mnt/HC_Volume_999 ext4 discard,nofail,defaults,x-systemd.before=ci-docker-gate.service 0 0$" "$R/etc/fstab"; then
+  ok "an entry Hetzner already wrote gains the gate ordering option"
+else
+  bad "Hetzner-authored entry left unordered: [$(grep HC_Volume_999 "$R/etc/fstab")]"
+fi
+[ "$(grep -c HC_Volume_999 "$R/etc/fstab")" = 1 ] && ok "upgrading in place does not duplicate the entry" \
+  || bad "upgrade duplicated the entry: $(cat "$R/etc/fstab")"
+grep -q "^/dev/disk/by-uuid/deadbeef / ext4 defaults 0 1$" "$R/etc/fstab" \
+  && grep -q "^/swapfile none swap sw 0 0$" "$R/etc/fstab" \
+  && grep -q "^# comment$" "$R/etc/fstab" \
+  && ok "other fstab lines are untouched" || bad "rewrite damaged unrelated fstab lines: $(cat "$R/etc/fstab")"
+run "$R"; run "$R"
+[ "$(grep -c 'x-systemd.before' "$R/etc/fstab")" = 1 ] && ok "the option is added exactly once" \
+  || bad "option accumulated: $(grep HC_Volume_999 "$R/etc/fstab")"
 
 # 12. No by-id device for the mounted volume: the mount CANNOT be persisted, and a box
 #     that provisions anyway is a box that silently reverts to the root disk on its next
@@ -279,6 +309,78 @@ case "$(gate "$R")" in
   *unmask*) bad "root-disk ci-data dir unmasked docker: $(gate "$R")" ;;
   *mask*) ok "root-disk ci-data dir: gate masks docker" ;;
   *) bad "root-disk ci-data dir did not mask docker: $(gate "$R")" ;;
+esac
+
+# --- a box that cannot run containers must LEAVE the pool, not serve from it ---
+
+# The gate is invoked directly here (not through gate()) because what is under test is its
+# EXIT STATUS, which gate() discards in favour of the systemctl log.
+run_gate() {
+  SYSTEMCTL_LOG="$T/systemctl.log"; : > "$SYSTEMCTL_LOG"
+  SYSTEMCTL_LOG="$SYSTEMCTL_LOG" PATH="$BIN:$PATH" "$GATE" "$1" >/dev/null 2>&1
+}
+
+# 19. The fail branch must EXIT NON-ZERO. That exit is the whole mechanism behind the
+#     listener's Requires=ci-docker-gate.service: a gate that masks Docker and then
+#     returns 0 is a SUCCESSFUL dependency, and the listener starts beside it anyway.
+#     This fixture also has no watchdog config, so it covers the unset-WATCH_UNIT path.
+R=$(fresh n); ln -s "$R/mnt/HC_Volume_missing" "$R/mnt/ci-data"
+if run_gate "$R"; then
+  bad "gate fail branch exited 0; Requires= reads that as a pass and the listener serves jobs on a box with masked Docker"
+else
+  ok "gate fail branch exits non-zero"
+fi
+case "$(cat "$T/systemctl.log")" in
+  *"mask docker.service"*) ok "fail branch still masks docker when no WATCH_UNIT is configured" ;;
+  *) bad "fail branch with no watchdog config did not mask docker" ;;
+esac
+
+# 20. ...and it takes the job listener down with it. Otherwise the box keeps claiming
+#     hetzner-fdb-vm jobs it cannot run and fails them one after another, which is worse
+#     for the fleet than one box visibly missing.
+echo "WATCH_UNIT=actions.runner.acme-repo.box.service" > "$R/etc/runner-watchdog.conf"
+run_gate "$R"
+case "$(cat "$T/systemctl.log")" in
+  *"stop actions.runner.acme-repo.box.service"*) ok "fail branch stops the job listener" ;;
+  *) bad "fail branch left the listener running: $(cat "$T/systemctl.log")" ;;
+esac
+
+# 21. The healthy branch must still exit 0, or the Requires= added for 19 blocks the
+#     listener on every boot instead of only the broken ones.
+R=$(fresh o); ln -s "$R/mnt/HC_Volume_999" "$R/mnt/ci-data"; mkdir -p "$R/mnt/ci-data/docker"
+run_gate "$R" && ok "gate healthy branch exits 0" \
+  || bad "gate healthy branch exited non-zero; the listener's Requires= would never be satisfied"
+
+# 22. svc.sh writes a unit that depends on nothing but network-online.target, so the
+#     binding to the gate is a drop-in — and it must exist BEFORE the listener is started,
+#     or first boot serves jobs ungated.
+classic=$(sed -n '/if \[ "\$RUNNER_MODE" = "classic" \]/,/^    else$/p' infra/cloud-init.yaml)
+[ -n "$classic" ] || { echo "FATAL: could not extract the classic runner_mode branch"; exit 1; }
+case "$classic" in
+  *"Requires=ci-docker-gate.service"*) ok "classic branch binds the listener to the gate" ;;
+  *) bad "classic branch installs no Requires=ci-docker-gate.service drop-in" ;;
+esac
+dropin_at=$(printf '%s\n' "$classic" | grep -n 'ci-docker-gate.conf' | tail -1 | cut -d: -f1)
+start_at=$(printf '%s\n' "$classic" | grep -n 'svc.sh start' | head -1 | cut -d: -f1)
+if [ -n "$dropin_at" ] && [ -n "$start_at" ] && [ "$dropin_at" -lt "$start_at" ]; then
+  ok "gate drop-in is installed before the listener is started"
+else
+  bad "listener started before the gate drop-in exists (drop-in $dropin_at, start $start_at)"
+fi
+
+# 23. Classic mode deliberately configures NO heartbeat arm, so the watchdog's only signal
+#     is the unit being dead. The stock actions/runner publishes no heartbeat, and the one
+#     local substitute — staleness of the listener's own _diag log — is silent for the
+#     whole length of a job (measured on a live box: an IDLE healthy listener logs only on
+#     credential refresh, ~30 min apart, while a 2h+ job produces nothing on that file at
+#     all). Any threshold above the healthy idle gap is therefore also a threshold that
+#     fires mid-job, which has already killed live CI twice. A heartbeat arm here needs a
+#     job-in-progress guard landed with it.
+#     Comments are stripped first: the branch documents the decision by name, and matching
+#     the prose that explains it would make this pass for the wrong reason.
+case "$(printf '%s\n' "$classic" | grep -v '^ *#')" in
+  *WATCH_HEARTBEAT=*) bad "classic mode configures a heartbeat arm without a job-in-progress guard; the watchdog will restart a listener mid-job" ;;
+  *) ok "classic mode configures no heartbeat arm (deliberate — see infra/README.md)" ;;
 esac
 
 [ "$fail" = 0 ] && echo "ALL OK" || { echo "FAILURES"; exit 1; }
