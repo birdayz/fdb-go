@@ -431,6 +431,7 @@ go_test(
         "setops_null_probe_test.go",
         "signed_zero_pk_suffix_fdb_test.go",
         "sim_not_exists_time_limit_test.go",
+        "sim_sql_autocommit_1021_exhaustion_test.go",
         "sim_sql_explicit_tx_fault_test.go",
         "sim_sql_fault_test.go",
         "sim_sql_test.go",
