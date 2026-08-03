@@ -81,7 +81,7 @@ func (db *database) refreshTopology() {
 	if err != nil {
 		// Path B: all coordinators unreachable — adopt a rotated set from the file.
 		if db.connRecord.adoptStoredIfChanged() {
-			db.onCoordinatorSetChanged()
+			db.onCoordinatorSetAdopted()
 			db.kickTopology()
 		}
 		return
@@ -89,7 +89,7 @@ func (db *database) refreshTopology() {
 	if newInfo.Forward != "" {
 		// Path A: a coordinator forwarded us to a new set. Adopt + re-poll now.
 		if db.followForward(snap, newInfo.Forward) {
-			db.onCoordinatorSetChanged()
+			db.onCoordinatorSetAdopted()
 			db.kickTopology()
 		}
 		return
@@ -99,6 +99,9 @@ func (db *database) refreshTopology() {
 	// forward we adopted in memory on a previous round (deferred-persist, Path A).
 	db.connRecord.persistIfDirty()
 	db.applyDBInfo(newInfo)
+	// The proxies are installed — if a coordinator-set adoption was pending,
+	// this is the handoff and the epoch changes here.
+	db.onProxySetInstalled()
 }
 
 // followForward adopts a forwarded connection string (RFC-111 Path A). Returns
@@ -208,10 +211,32 @@ func dbInfoEqual(a, b *DBInfo) bool {
 	return true
 }
 
-// onCoordinatorSetChanged runs when the handle adopts a coordinator set it did
-// not previously have. The adopted set may belong to a different cluster —
-// nothing on either adoption path checks — so every version-scoped cache fact
-// is discarded. See grvCache.resetForNewCoordinators.
-func (db *database) onCoordinatorSetChanged() {
-	db.grvCache.resetForNewCoordinators()
+// onCoordinatorSetAdopted records that the handle has adopted a coordinator set
+// it did not previously have. It does NOT reset the cache yet, and that timing
+// is the point: adoption only changes which COORDINATORS we will ask. The
+// proxies in db.dbInfo still belong to the previous cluster until a later
+// successful refresh installs new ones, so a request dispatched in this window
+// still goes to the OLD cluster. Bumping the epoch here would stamp those
+// in-flight requests as belonging to the new one, and their replies would
+// install the old cluster.s versions into the new epoch — with no second reset
+// when the real proxies arrive.
+//
+// C++ closes the same window from the other side, clearing commitProxies and
+// grvProxies in the same block as its cache reset (switchConnectionRecord,
+// NativeAPI.actor.cpp:2196-2207) so nothing can be dispatched to the old
+// cluster at all. Go reaches the same OBSERVABLE state by moving the epoch
+// change to the handoff instead: anything dispatched while the old proxies are
+// installed carries the old fences and is refused the moment they change.
+func (db *database) onCoordinatorSetAdopted() {
+	db.clusterSwitchPending.Store(true)
+}
+
+// onProxySetInstalled runs where a refresh installs a proxy set. When it
+// completes a pending coordinator-set adoption, this is the instant the handle
+// actually starts talking to the new cluster — so this is where the epoch
+// changes and every cluster-scoped cache fact is discarded.
+func (db *database) onProxySetInstalled() {
+	if db.clusterSwitchPending.CompareAndSwap(true, false) {
+		db.grvCache.resetForNewCoordinators()
+	}
 }

@@ -58,14 +58,14 @@ func TestGRVReply_ThrottleAndFreshnessArePublishedTogether(t *testing.T) {
 			b := &grvBatcher{priority: grvPriorityDefault}
 
 			// Expired entry, no cooldown yet: unservable only because it is stale.
-			db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), 9000)
+			db.grvCache.publish(db.grvCache.token(), base.Add(-2*maxVersionCacheLag), 9000)
 			before := db.grvCache.entry.Load()
 			if !before.rkDefault.IsZero() {
 				t.Fatal("precondition: a cooldown is already recorded")
 			}
 
 			publishedBefore := db.grvCache.publications.Load()
-			b.applyGRVReply(db, db.grvCache.generation.Load(), base, tc.replyVersion, true, false, nil)
+			b.applyGRVReply(db, db.grvCache.token(), base, tc.replyVersion, true, false, nil)
 
 			// ONE publication, and this is the assertion that makes the window
 			// unrepresentable rather than merely unlikely. Two publications —
@@ -121,8 +121,8 @@ func TestGRVReply_UnthrottledReplyStillServes(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), 9000)
-	b.applyGRVReply(db, db.grvCache.generation.Load(), base, 9000, false, false, nil)
+	db.grvCache.publish(db.grvCache.token(), base.Add(-2*maxVersionCacheLag), 9000)
+	b.applyGRVReply(db, db.grvCache.token(), base, 9000, false, false, nil)
 
 	v, _, ok := db.grvCache.tryCache(grvPriorityDefault)
 	if !ok {
@@ -158,7 +158,7 @@ func throttleOrderingProbe(t *testing.T, replyVersion int64) {
 		b := &grvBatcher{priority: grvPriorityDefault}
 
 		const cachedVersion = 9000
-		db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), cachedVersion)
+		db.grvCache.publish(db.grvCache.token(), base.Add(-2*maxVersionCacheLag), cachedVersion)
 		if _, _, ok := db.grvCache.tryCache(grvPriorityDefault); ok {
 			t.Fatalf("precondition: the expired entry is servable before the reply — this "+
 				"probe can only detect the window if every state EXCEPT the intermediate "+
@@ -192,7 +192,7 @@ func throttleOrderingProbe(t *testing.T, replyVersion int64) {
 			}
 		}()
 
-		b.applyGRVReply(db, db.grvCache.generation.Load(), base, replyVersion, true, false, nil)
+		b.applyGRVReply(db, db.grvCache.token(), base, replyVersion, true, false, nil)
 
 		close(stop)
 		wg.Wait()

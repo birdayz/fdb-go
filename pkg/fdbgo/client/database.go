@@ -262,6 +262,10 @@ type database struct {
 	// client-side, matching C++ DatabaseContext::validateVersion().
 	minAcceptableReadVersion atomic.Int64
 
+	// clusterSwitchPending is set when a coordinator set is adopted and cleared
+	// at the proxy handoff that completes it. See onCoordinatorSetAdopted.
+	clusterSwitchPending atomic.Bool
+
 	// Tag throttle state — updated from GRV reply tagThrottleInfo.
 	// Maps priority -> (tag -> throttle limits). Matches C++ cx->throttledTags.
 	tagThrottles tagThrottleState
@@ -597,7 +601,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 		case err == nil && info.Forward != "":
 			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
 			if db.followForward(snap, info.Forward) {
-				db.onCoordinatorSetChanged()
+				db.onCoordinatorSetAdopted()
 				continue
 			}
 			// self/empty/over-bound forward → fall through to backoff.
@@ -608,13 +612,14 @@ func (db *database) bootstrap(ctx context.Context) error {
 			// previous iteration now that the set is confirmed reachable (Path A).
 			db.connRecord.persistIfDirty()
 			db.dbInfo.Store(info)
+			db.onProxySetInstalled()
 			close(db.connected)
 			return nil
 		default:
 			// Path B: all coordinators unreachable — another process may have
 			// rotated the set and rewritten the cluster file. Re-read it.
 			if db.connRecord.adoptStoredIfChanged() {
-				db.onCoordinatorSetChanged()
+				db.onCoordinatorSetAdopted()
 				continue
 			}
 		}

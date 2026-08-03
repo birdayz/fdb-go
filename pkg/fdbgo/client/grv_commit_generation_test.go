@@ -38,7 +38,7 @@ func TestMergeReply_CommitAgainstSentinelWithOldGeneration(t *testing.T) {
 	base := time.Now()
 	sentinel := &grvCacheEntry{} // what invalidate() leaves behind
 
-	got := mergeReply(sentinel, false /* generation moved */, true /* durable */, base, 7000,
+	got := mergeReply(sentinel, false /* generation moved */, true /* same epoch */, true /* durable */, base, 7000,
 		time.Time{}, false, false)
 
 	if got.version != 0 {
@@ -65,11 +65,11 @@ func TestCommitWarming_DispatchedBeforeInvalidateCannotRepopulate(t *testing.T) 
 
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
-	c.publish(c.generation.Load(), base, 5000)
+	c.publish(c.token(), base, 5000)
 
 	// The commit is dispatched: the generation is captured here, beside
 	// commitStart, before the RPC goes out.
-	commitGen := c.generation.Load()
+	commitGen := c.token()
 
 	// While it is in flight, the application invalidates after an external
 	// write it needs subsequent reads to observe.
@@ -96,10 +96,10 @@ func TestCommitWarming_DispatchedAfterInvalidatePopulates(t *testing.T) {
 
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
-	c.publish(c.generation.Load(), base, 5000)
+	c.publish(c.token(), base, 5000)
 	c.invalidate()
 
-	commitGen := c.generation.Load() // dispatched after the invalidation
+	commitGen := c.token() // dispatched after the invalidation
 	c.update(commitGen, base, 7000)
 
 	v, _, ok := c.tryCache(grvPriorityDefault)
@@ -126,7 +126,7 @@ func TestGRVCachePublishersAllRequireAGeneration(t *testing.T) {
 
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
-	gen := c.generation.Load()
+	gen := c.token()
 
 	// Each of these is a publication entry point, and each takes the
 	// generation explicitly. If one of them ever regains an internally-loading
@@ -169,11 +169,11 @@ func TestCommitWarming_BlockedCommitLeavesNoStaleEntryServable(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return base }}
 
 	// The commit is dispatched under the current generation.
-	commitGen := c.generation.Load()
+	commitGen := c.token()
 	// An invalidation overtakes it.
 	c.invalidate()
 	// A GRV dispatched AFTER the invalidation caches an older version.
-	c.publish(c.generation.Load(), base, 6000)
+	c.publish(c.token(), base, 6000)
 	if v, _, ok := c.tryCache(grvPriorityDefault); !ok || v != 6000 {
 		t.Fatalf("precondition: expected 6000 cached and servable, got (%d, %v)", v, ok)
 	}
@@ -210,9 +210,9 @@ func TestCommitWarming_BlockedCommitLeavesANewerEntryAlone(t *testing.T) {
 			base := time.Now()
 			c := &grvCache{now: func() time.Time { return base }}
 
-			commitGen := c.generation.Load()
+			commitGen := c.token()
 			c.invalidate()
-			c.publish(c.generation.Load(), base, tc.cached)
+			c.publish(c.token(), base, tc.cached)
 
 			c.update(commitGen, base, 7000)
 
@@ -331,9 +331,9 @@ func TestCommitFloor_InFlightLowGRVCannotRepopulateAfterACommit(t *testing.T) {
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
 
-	commitGen := c.generation.Load() // commit dispatched
-	c.invalidate()                   // overtaken by an invalidation
-	grvGen := c.generation.Load()    // a GRV dispatched after it, now in flight
+	commitGen := c.token() // commit dispatched
+	c.invalidate()         // overtaken by an invalidation
+	grvGen := c.token()    // a GRV dispatched after it, now in flight
 
 	c.update(commitGen, base, 7000) // the commit lands: durable at 7000
 
@@ -366,7 +366,7 @@ func TestCommitFloor_FreshGRVAtOrAboveTheFloorStillInstalls(t *testing.T) {
 			t.Parallel()
 			base := time.Now()
 			c := &grvCache{now: func() time.Time { return base }}
-			gen := c.generation.Load()
+			gen := c.token()
 
 			c.update(gen, base, 7000) // floor := 7000
 			c.publish(gen, base, tc.grv)
@@ -392,12 +392,12 @@ func TestCommitFloor_SurvivesInvalidation(t *testing.T) {
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
 
-	c.update(c.generation.Load(), base, 7000) // floor := 7000
+	c.update(c.token(), base, 7000) // floor := 7000
 	c.invalidate()
 
 	// A GRV dispatched after the invalidation — generation-current, so only
 	// the floor can refuse it.
-	c.publish(c.generation.Load(), base, 6000)
+	c.publish(c.token(), base, 6000)
 
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Fatalf("the cache is serving version %d after an invalidation, below the "+
@@ -417,7 +417,7 @@ func TestCommitFloor_DoesNotWedgeTheCacheForever(t *testing.T) {
 
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
-	gen := c.generation.Load()
+	gen := c.token()
 
 	c.update(gen, base, 7000)
 
@@ -537,7 +537,7 @@ func TestClusterSwitch_ResetsVersionScopedCacheState(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return base }}
 
 	// Cluster A: a commit raises the floor high.
-	c.update(c.generation.Load(), base, 9_000_000)
+	c.update(c.token(), base, 9_000_000)
 	if c.entryFloor() != 9_000_000 {
 		t.Fatalf("precondition: floor = %d, want 9000000", c.entryFloor())
 	}
@@ -555,7 +555,7 @@ func TestClusterSwitch_ResetsVersionScopedCacheState(t *testing.T) {
 	}
 
 	// Cluster B's versions are far lower, and must cache normally.
-	bGen := c.generation.Load()
+	bGen := c.token()
 	c.publish(bGen, base, 500)
 	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 500 {
@@ -575,9 +575,9 @@ func TestClusterSwitch_LateReplyFromTheOldClusterIsRefused(t *testing.T) {
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
 
-	aGen := c.generation.Load() // dispatched against cluster A
+	aGen := c.token()           // dispatched against cluster A
 	c.resetForNewCoordinators() // the handle moves to cluster B
-	c.publish(c.generation.Load(), base, 500)
+	c.publish(c.token(), base, 500)
 
 	// A's reply lands late, carrying a version from an unrelated version space.
 	c.publish(aGen, base, 9_000_000)
@@ -603,12 +603,139 @@ func TestClusterSwitch_SameClusterInvalidationStillPreservesTheFloor(t *testing.
 	base := time.Now()
 	c := &grvCache{now: func() time.Time { return base }}
 
-	c.update(c.generation.Load(), base, 7000)
+	c.update(c.token(), base, 7000)
 	c.invalidate()
 
 	if f := c.entryFloor(); f != 7000 {
 		t.Fatalf("floor = %d after invalidate(), want 7000 preserved: invalidation is about "+
 			"freshness within one cluster, and a version this client committed stays "+
 			"committed across it. Only a cluster-identity change may drop the floor", f)
+	}
+}
+
+// TestClusterSwitch_LateCommitFromOldClusterCannotRaiseTheFloor is the durable
+// arm of the cross-epoch fence, and the arm the first late-reply test missed by
+// exercising publish() instead of update().
+//
+// The order-claim/time-claim split — a durable version may raise the floor
+// without the generation, because it is a version comparison — is correct
+// WITHIN one cluster. Across a cluster switch it is meaningless: A's versions
+// and B's are unrelated numbers, so "9,000,000 > 500" proves nothing about
+// order and everything about which cluster minted them. A late A commit that
+// raises B's floor to 9M refuses every B publication forever, which is the
+// exact wedge the epoch exists to prevent — reached through the one arm the
+// epoch did not gate.
+func TestClusterSwitch_LateCommitFromOldClusterCannotRaiseTheFloor(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	aGen := c.token()           // a commit dispatched against cluster A
+	c.resetForNewCoordinators() // the handle moves to cluster B
+	bGen := c.token()
+	c.publish(bGen, base, 500) // B caches normally
+
+	// A's commit lands late, carrying a version from A's unrelated space.
+	c.update(aGen, base, 9_000_000)
+
+	if f := c.entryFloor(); f != 0 {
+		t.Fatalf("a commit from the PREVIOUS cluster raised this cluster's floor to %d.\n"+
+			"Across an epoch boundary a version comparison proves nothing: A's 9000000 "+
+			"and B's 500 are unrelated numbers. That floor now refuses every B "+
+			"publication permanently — the wedge the epoch was built to prevent, "+
+			"reached through the durable arm it did not gate", f)
+	}
+	v, _, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 500 {
+		t.Fatalf("tryCache = (%d, %v), want (500, true): the late commit must leave B's "+
+			"cache entirely alone — no install, no floor, no cooldown", v, ok)
+	}
+}
+
+// TestClusterSwitch_EpochChangesAtTheProxyHandoff pins the window between
+// adopting a new coordinator set and actually receiving that cluster's proxies.
+//
+// Adoption only changes which coordinators we will ASK; db.dbInfo still points
+// at the old cluster's proxies until a later successful refresh installs the
+// new ones. Bumping the epoch at adoption therefore opens a window in which a
+// GRV captures the NEW generation, is dispatched to the OLD proxies, and its
+// reply is accepted as current — the old cluster's version installed into what
+// is nominally the new epoch, with no second reset when the real proxies land.
+//
+// C++ closes this by clearing commitProxies/grvProxies in the same block as the
+// cache reset (switchConnectionRecord, NativeAPI.actor.cpp:2196-2207), so no
+// dispatch to the old cluster can happen under the new epoch at all. Go reaches
+// the same observable state by moving the epoch change to the PROXY HANDOFF:
+// anything dispatched while the old proxies are still installed carries the old
+// generation and is refused the moment the handoff bumps it.
+func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	db := &database{}
+	db.grvCache.now = func() time.Time { return base }
+
+	db.grvCache.publish(db.grvCache.token(), base, 9_000_000) // cluster A cached
+
+	// Adoption: the cluster file now names B's coordinators, but dbInfo still
+	// holds A's proxies.
+	db.onCoordinatorSetAdopted()
+
+	// A GRV dispatched in this window goes to A's proxies. Whatever generation
+	// it captures must not survive the handoff.
+	inWindowGen := db.grvCache.token()
+
+	// The handoff: B's proxies arrive.
+	db.onProxySetInstalled()
+
+	// The in-window reply lands after the handoff, carrying A's version.
+	db.grvCache.publish(inWindowGen, base, 9_000_001)
+
+	if v, _, ok := db.grvCache.tryCache(grvPriorityDefault); ok {
+		t.Fatalf("a GRV dispatched between coordinator adoption and proxy handoff "+
+			"installed version %d after the handoff.\n"+
+			"That request went to the PREVIOUS cluster's proxies — adoption only "+
+			"changes which coordinators we ask — so its reply belongs to the old "+
+			"cluster and must not survive into the new epoch. The epoch has to change "+
+			"where the proxies do, not where the cluster file does", v)
+	}
+}
+
+// TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms is
+// the interaction of the two fences. A commit dispatched before the handle even
+// began switching, landing after the new cluster's proxies are installed, must
+// be refused on BOTH arms: it may not install its version (generation) and it
+// may not raise the floor or touch the cooldowns (epoch). Either arm alone
+// leaves a hole — an install would serve another cluster's version, a floor
+// would wedge this one permanently.
+func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	db := &database{}
+	db.grvCache.now = func() time.Time { return base }
+
+	// A commit dispatched against cluster A, long before any switch.
+	commitTok := db.grvCache.token()
+
+	// The handle adopts B's coordinators, then receives B's proxies.
+	db.onCoordinatorSetAdopted()
+	db.onProxySetInstalled()
+
+	// B caches normally.
+	db.grvCache.publish(db.grvCache.token(), base, 500)
+
+	// A's commit finally lands.
+	db.grvCache.update(commitTok, base, 9_000_000)
+
+	if f := db.grvCache.entryFloor(); f != 0 {
+		t.Fatalf("the pre-adoption commit raised the new cluster's floor to %d — it would "+
+			"refuse every version this cluster mints", f)
+	}
+	v, _, ok := db.grvCache.tryCache(grvPriorityDefault)
+	if !ok || v != 500 {
+		t.Fatalf("tryCache = (%d, %v), want (500, true): a commit that predates the whole "+
+			"switch must touch nothing in the new cluster's cache", v, ok)
 	}
 }

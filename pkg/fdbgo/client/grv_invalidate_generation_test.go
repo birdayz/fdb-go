@@ -42,7 +42,7 @@ func TestMergeReply_BlockedGenerationNeverInstallsAVersion(t *testing.T) {
 	// carrying forward the cooldowns the invalidation preserved.
 	sentinel := &grvCacheEntry{rkDefault: base.Add(-time.Hour)}
 
-	got := mergeReply(sentinel, false /* generation moved */, false /* not durable */, base, 300,
+	got := mergeReply(sentinel, false /* generation moved */, true /* same epoch */, false /* not durable */, base, 300,
 		base, true /* rkDefault */, false)
 
 	if got.version != 0 {
@@ -74,7 +74,7 @@ func TestMergeReply_CurrentGenerationStillInstalls(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	got := mergeReply(&grvCacheEntry{}, true /* generation current */, false, base, 300,
+	got := mergeReply(&grvCacheEntry{}, true /* generation current */, true /* same epoch */, false, base, 300,
 		time.Time{}, false, false)
 
 	if got.version != 300 {
@@ -103,11 +103,11 @@ func TestInvalidate_StaleReplyLosingItsCASCannotResurrectItsVersion(t *testing.T
 	for i := 0; i < attempts; i++ {
 		base := time.Now()
 		c := &grvCache{now: func() time.Time { return base }}
-		c.publish(c.generation.Load(), base, cachedVersion)
+		c.publish(c.token(), base, cachedVersion)
 
 		// The reply is validated under the CURRENT generation, as a real one
 		// dispatched before the invalidation would be.
-		gen := c.generation.Load()
+		gen := c.token()
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -153,10 +153,10 @@ func TestInvalidate_InFlightReplyCannotRepopulate(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(db.grvCache.generation.Load(), base, 5000)
+	db.grvCache.publish(db.grvCache.token(), base, 5000)
 
 	// A GRV is dispatched: the generation is captured here, as flush does.
-	gen := db.grvCache.generation.Load()
+	gen := db.grvCache.token()
 
 	// While it is in flight, the caller invalidates after an external write.
 	db.grvCache.invalidate()
@@ -185,11 +185,11 @@ func TestInvalidate_ReplyDispatchedAfterInvalidationPopulates(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(db.grvCache.generation.Load(), base, 5000)
+	db.grvCache.publish(db.grvCache.token(), base, 5000)
 	db.grvCache.invalidate()
 
 	// Dispatched AFTER the invalidation: this one is entitled to populate.
-	gen := db.grvCache.generation.Load()
+	gen := db.grvCache.token()
 	b.applyGRVReply(db, gen, base, 7000, false, false, nil)
 
 	v, _, ok := db.grvCache.tryCache(grvPriorityDefault)

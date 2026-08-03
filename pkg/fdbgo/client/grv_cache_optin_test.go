@@ -63,7 +63,7 @@ func TestFDB_GRVCache_OptInOnly(t *testing.T) {
 	if v == 0 {
 		t.Fatal("GRV cache not populated by a real reply")
 	}
-	db.db.grvCache.updateFromGRV(db.db.grvCache.generation.Load(), time.Now(), v) // refresh freshness → deterministic hit window
+	db.db.grvCache.updateFromGRV(db.db.grvCache.token(), time.Now(), v) // refresh freshness → deterministic hit window
 
 	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
 	optIn := db.CreateTransaction()
@@ -140,7 +140,7 @@ func TestFDB_GRVCache_SkipOverridesUse(t *testing.T) {
 	if v == 0 {
 		t.Fatal("GRV cache not populated")
 	}
-	db.db.grvCache.updateFromGRV(db.db.grvCache.generation.Load(), time.Now(), v)
+	db.db.grvCache.updateFromGRV(db.db.grvCache.token(), time.Now(), v)
 
 	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
 	tx := db.CreateTransaction()
@@ -180,7 +180,7 @@ func TestFDB_GRVCache_ImmediateServesButStartsNoRefresher(t *testing.T) {
 	if v == 0 {
 		t.Fatal("GRV cache not populated")
 	}
-	db.db.grvCache.updateFromGRV(db.db.grvCache.generation.Load(), time.Now(), v)
+	db.db.grvCache.updateFromGRV(db.db.grvCache.token(), time.Now(), v)
 	if immBatcher.refresherStarted.Load() {
 		t.Fatal("IMMEDIATE refresher started before any IMMEDIATE opt-in read")
 	}

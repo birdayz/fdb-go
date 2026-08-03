@@ -1911,9 +1911,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// opted-in reader would then miss the very write the caller invalidated to
 	// observe.
 	commitStart := time.Now()
-	var commitGen int64
+	var commitTok cacheToken
 	if tx.db != nil {
-		commitGen = tx.db.grvCache.generation.Load()
+		commitTok = tx.db.grvCache.token()
 	}
 	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
@@ -1959,7 +1959,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
 	// still (before dispatch rather than after), which is the safe direction.
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(commitGen, commitStart, tx.committedVersion)
+		tx.db.grvCache.update(commitTok, commitStart, tx.committedVersion)
 	}
 
 	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs

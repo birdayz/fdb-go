@@ -46,7 +46,7 @@ func TestGRVCache_TryCacheReportsTheObtainInstantNotNow(t *testing.T) {
 
 	// Inside maxVersionCacheLag (100ms), so this is a HIT — but not fresh.
 	obtained := base.Add(-60 * time.Millisecond)
-	c.updateFromGRV(c.generation.Load(), obtained, 4242)
+	c.updateFromGRV(c.token(), obtained, 4242)
 
 	v, at, ok := c.tryCache(grvPriorityDefault)
 	if !ok {
@@ -101,7 +101,7 @@ func TestGRVCache_MissReportsNoInstant(t *testing.T) {
 		// clock for the same reason as above — the margin here is generous, but
 		// a test that depends on wall-clock margin at all is a test that can
 		// fail for reasons that are not about the code.
-		c.updateFromGRV(c.generation.Load(), base.Add(-time.Second), 777)
+		c.updateFromGRV(c.token(), base.Add(-time.Second), 777)
 		v, at, ok := c.tryCache(grvPriorityDefault)
 		if ok {
 			t.Fatalf("stale entry reported a hit (%d)", v)
@@ -181,7 +181,7 @@ func TestGRVCache_FreshnessIsJudgedOnTheSeam(t *testing.T) {
 		// verdict is the same.
 		at := obtained.Add(maxVersionCacheLag - time.Nanosecond)
 		c := &grvCache{now: func() time.Time { return at }}
-		c.updateFromGRV(c.generation.Load(), obtained, 4242)
+		c.updateFromGRV(c.token(), obtained, 4242)
 		if _, _, ok := c.tryCache(grvPriorityDefault); !ok {
 			t.Fatalf("entry judged STALE at exactly maxVersionCacheLag-1ns on the seam: "+
 				"freshness is being decided against the wall clock, so every test "+
@@ -195,7 +195,7 @@ func TestGRVCache_FreshnessIsJudgedOnTheSeam(t *testing.T) {
 		// One nanosecond the other side of the boundary.
 		at := obtained.Add(maxVersionCacheLag + time.Nanosecond)
 		c := &grvCache{now: func() time.Time { return at }}
-		c.updateFromGRV(c.generation.Load(), obtained, 4242)
+		c.updateFromGRV(c.token(), obtained, 4242)
 		if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 			t.Fatalf("entry judged FRESH at maxVersionCacheLag+1ns on the seam (version %d): "+
 				"the seam is not governing the staleness decision, so a stale version "+
