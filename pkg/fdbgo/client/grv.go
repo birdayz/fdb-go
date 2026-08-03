@@ -601,19 +601,49 @@ func (db *database) updateMinAcceptable(replyEpoch, v int64) {
 	if v <= 0 {
 		return
 	}
+	// THE OBSERVATION IS TAKEN FIRST, before the epoch is checked, and the CAS is
+	// pinned to it. That order is the whole safety argument, and reversing it —
+	// checking the epoch and only then loading what to replace — reopens the
+	// defect through the scheduler rather than through the code:
+	//
+	//	this goroutine reads the epoch and passes the check, then loses the
+	//	processor; a handoff resets the stamp and a GRV on the new cluster installs
+	//	a legitimate floor; this goroutine resumes, loads THAT fresh stamp, and
+	//	CASes it away — replacing a valid current-epoch floor with an inert
+	//	previous-epoch one. The guard the current cluster established is gone and
+	//	the read fails open.
+	//
+	// Loading first makes the window unreachable. Anything that lands in it
+	// changes the stamp pointer — the handoff's own empty-stamp publication is
+	// enough on its own — so the CAS fails and the retry re-observes and refuses
+	// on the epoch. Both the load and the check live inside the loop, so every
+	// attempt CASes against the same observation it validated.
 	for {
-		curEpoch := db.grvCache.epochNow()
-		if replyEpoch != curEpoch {
-			return // a previous cluster's version space; not this cluster's floor
-		}
 		cur := db.minAcceptableReadVersion.Load()
-		if cur != nil && cur.epoch == curEpoch && cur.version != 0 && v >= cur.version {
-			return // already hold a smaller-or-equal floor for this epoch
-		}
-		if db.minAcceptableReadVersion.CompareAndSwap(cur, &minAcceptableStamp{epoch: curEpoch, version: v}) {
+		if db.updateMinAcceptableOnce(cur, replyEpoch, v) {
 			return
 		}
 	}
+}
+
+// updateMinAcceptableOnce is one attempt against the observation `cur`. It
+// returns true when the attempt is settled — installed, or refused for good —
+// and false when the caller must re-observe and try again.
+//
+// The observation is a PARAMETER so the dangerous interleaving is expressible
+// without a seam: a test can take the stamp a stale goroutine would have seen,
+// let a handoff and a fresh install happen, and then present that stale
+// observation here. The alternative — loading inside — makes the property
+// testable only by racing the scheduler, which is how it went unnoticed.
+func (db *database) updateMinAcceptableOnce(cur *minAcceptableStamp, replyEpoch, v int64) bool {
+	curEpoch := db.grvCache.epochNow()
+	if replyEpoch != curEpoch {
+		return true // a previous cluster's version space; not this cluster's floor
+	}
+	if cur != nil && cur.epoch == curEpoch && cur.version != 0 && v >= cur.version {
+		return true // already hold a smaller-or-equal floor for this epoch
+	}
+	return db.minAcceptableReadVersion.CompareAndSwap(cur, &minAcceptableStamp{epoch: curEpoch, version: v})
 }
 
 // validateVersion checks a user-set read version against the client's

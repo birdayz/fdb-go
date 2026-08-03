@@ -519,3 +519,57 @@ func TestSeam_StragglerCannotDestroyTheCurrentFloor(t *testing.T) {
 			"by a reply from a cluster whose version space is unrelated")
 	}
 }
+
+// TestSeam_StaleObservationLosesItsCAS is the pin for the ordering inside the
+// floor update, and it asserts the STRUCTURAL property rather than a scenario:
+// an attempt must CAS only against the observation it was handed, so a stale
+// observation loses and the caller is told to re-observe.
+//
+// The defect that property prevents is a scheduling gap. A reply's goroutine
+// validates the epoch, then loses the processor; a handoff resets the stamp and
+// a GRV on the NEW cluster installs a legitimate floor; the goroutine resumes
+// and — if it loads what to replace at THAT point, after the check — picks up
+// the fresh stamp and CASes it away. A valid current-epoch floor is replaced by
+// an inert previous-epoch one, and the guard the current cluster established is
+// silently gone, fail-open.
+//
+// Why the property and not the scenario: the gap only exists BETWEEN the epoch
+// check and the load, so it exists only in the broken ordering. Load-first
+// leaves no point at which a test could deschedule to reproduce it — which is
+// exactly the sense in which the fix is structural. Handing the attempt a stale
+// observation and requiring it to lose is the faithful observable, and it is
+// what the observation is a parameter for.
+//
+// The composed cross-epoch version of this — take an observation, run a handoff,
+// present it afterwards — was written and DELETED: at that point the stamp is
+// still nil, so its CAS fails on a nil mismatch rather than on anything under
+// test, and it stayed green under both mutations. The cross-epoch dimension is
+// held by TestSeam_StragglerCannotDestroyTheCurrentFloor, which drives the
+// looping API and does redden.
+func TestSeam_StaleObservationLosesItsCAS(t *testing.T) {
+	t.Parallel()
+
+	db := &database{proxiesChanged: make(chan struct{})}
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+
+	// An observation that is stale only because another reply got there first,
+	// with no handoff involved: the epoch is current throughout.
+	staleObservation := db.minAcceptableReadVersion.Load()
+	db.updateMinAcceptable(db.grvCache.epochNow(), 900)
+
+	// The attempt against the stale observation must fail its CAS...
+	if db.updateMinAcceptableOnce(staleObservation, db.grvCache.epochNow(), 700) {
+		t.Fatal("an attempt against a stale observation reported itself SETTLED.\n" +
+			"It must lose the CAS and tell the caller to re-observe. An attempt that " +
+			"loads what to replace AFTER validating the epoch settles against state it " +
+			"never validated — and when a handoff lands in that gap, the state it picks " +
+			"up is the floor the new cluster just installed, which it then CASes away")
+	}
+	// ...and the full call, which retries, must still lower the floor.
+	db.updateMinAcceptable(db.grvCache.epochNow(), 700)
+	if got := db.minAcceptable(); got != 700 {
+		t.Fatalf("floor = %d, want 700: the retry must re-observe and install. An "+
+			"ordering that only ever refuses would stop the floor tracking the "+
+			"smallest version seen, which is what it is for", got)
+	}
+}
