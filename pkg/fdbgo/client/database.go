@@ -597,6 +597,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 		case err == nil && info.Forward != "":
 			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
 			if db.followForward(snap, info.Forward) {
+				db.onCoordinatorSetChanged()
 				continue
 			}
 			// self/empty/over-bound forward → fall through to backoff.
@@ -613,6 +614,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 			// Path B: all coordinators unreachable — another process may have
 			// rotated the set and rewritten the cluster file. Re-read it.
 			if db.connRecord.adoptStoredIfChanged() {
+				db.onCoordinatorSetChanged()
 				continue
 			}
 		}

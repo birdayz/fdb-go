@@ -81,6 +81,7 @@ func (db *database) refreshTopology() {
 	if err != nil {
 		// Path B: all coordinators unreachable — adopt a rotated set from the file.
 		if db.connRecord.adoptStoredIfChanged() {
+			db.onCoordinatorSetChanged()
 			db.kickTopology()
 		}
 		return
@@ -88,6 +89,7 @@ func (db *database) refreshTopology() {
 	if newInfo.Forward != "" {
 		// Path A: a coordinator forwarded us to a new set. Adopt + re-poll now.
 		if db.followForward(snap, newInfo.Forward) {
+			db.onCoordinatorSetChanged()
 			db.kickTopology()
 		}
 		return
@@ -204,4 +206,12 @@ func dbInfoEqual(a, b *DBInfo) bool {
 		}
 	}
 	return true
+}
+
+// onCoordinatorSetChanged runs when the handle adopts a coordinator set it did
+// not previously have. The adopted set may belong to a different cluster —
+// nothing on either adoption path checks — so every version-scoped cache fact
+// is discarded. See grvCache.resetForNewCoordinators.
+func (db *database) onCoordinatorSetChanged() {
+	db.grvCache.resetForNewCoordinators()
 }

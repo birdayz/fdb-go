@@ -442,3 +442,173 @@ func TestCommitFloor_DoesNotWedgeTheCacheForever(t *testing.T) {
 			"cache would be a worse bug than the stale read it prevents", v, ok)
 	}
 }
+
+// TestCommitFloor_RestsOnAMonotonicVersionSpace pins the ASSUMPTION the floor
+// depends on, against a live cluster, because the floor is unbounded
+// client-side state and its safety is entirely inherited from FDB's version
+// semantics rather than from anything this client enforces.
+//
+// The assumption: within one cluster, a GRV issued after a commit returns a
+// version at or above that commit's. Every read version comes from the same
+// monotonic stream, so a client that has observed a commit at V is never
+// handed a read version below V afterwards. That is what makes the floor
+// self-clearing in normal operation — it blocks nothing, because nothing
+// legitimate ever arrives below it.
+//
+// It is worth a test rather than a sentence because the floor's failure mode
+// when the assumption breaks is silent and total: every publication refused,
+// the cache never servable, and the background refresher pinned at its 1ms
+// clamp. The assumption holds for a handle bound to one continuous version
+// space; a version space that REWINDS beneath a client (a restore from backup,
+// a force recovery) breaks it, and the remedy there is to reopen the handle —
+// the same remedy those operations require of clients generally. Nothing in
+// this client detects such a rewind, and this test is where that limitation is
+// written down.
+func TestCommitFloor_RestsOnAMonotonicVersionSpace(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("floor-monotonic-" + t.Name())
+
+	for i := 0; i < 5; i++ {
+		tx := db.CreateTransaction()
+		tx.Set(key, []byte{byte(i)})
+		if err := tx.Commit(ctx); err != nil {
+			tx.Cancel()
+			t.Fatalf("commit %d: %v", i, err)
+		}
+		cv, err := tx.GetCommittedVersion()
+		tx.Cancel()
+		if err != nil {
+			t.Fatalf("committed version %d: %v", i, err)
+		}
+
+		// A GRV taken after that commit must be at or above it — the property
+		// the floor rests on.
+		rtx := db.CreateTransaction()
+		rv, err := rtx.GetReadVersion(ctx)
+		rtx.Cancel()
+		if err != nil {
+			t.Fatalf("read version %d: %v", i, err)
+		}
+		if rv < cv {
+			t.Fatalf("a GRV taken after a commit at %d returned %d, BELOW it.\n"+
+				"The committed-version floor assumes this cannot happen within one "+
+				"cluster: if read versions can fall below an observed commit, the floor "+
+				"refuses every publication and the GRV cache becomes permanently "+
+				"unservable while the background refresher pins at its %v clamp",
+				cv, rv, grvRefreshMin)
+		}
+
+		// And the cache the commit warmed is servable, not wedged by its own floor.
+		if v, _, ok := db.db.grvCache.tryCache(grvPriorityDefault); ok && v < db.db.grvCache.entryFloor() {
+			t.Fatalf("tryCache served %d below the floor %d", v, db.db.grvCache.entryFloor())
+		}
+	}
+}
+
+// TestClusterSwitch_ResetsVersionScopedCacheState covers the one way a Go
+// client can end up bound to a DIFFERENT version space: it adopts a coordinator
+// set it did not previously have, either by following a coordinator forward or
+// by re-reading a cluster file another process rewrote. Neither path validates
+// cluster identity — the same is true of the C++ client it is ported from — so
+// a rewritten cluster file can point a live handle at an unrelated cluster.
+//
+// Every version-scoped fact in the cache belongs to the cluster that produced
+// it: the cached version, its anchor, its freshness, the ratekeeper cooldowns,
+// and above all the committed-version FLOOR. Carrying a floor from cluster A
+// into cluster B is the worst of them, because B's versions may be entirely
+// below A's and the floor then refuses every reply forever — the cache never
+// serves again and the background refresher sits at its 1ms clamp, with no
+// operator escape, since InvalidateGRVCache preserves the floor by design.
+//
+// C++ resets analogous state on its explicit cluster-switch path
+// (switchConnectionRecord, NativeAPI.actor.cpp:2191-2213: "Reset state from
+// former cluster" — proxies, location cache, minAcceptableReadVersion,
+// ssVersionVectorCache). Go has no such API, so the reset belongs at the only
+// boundary Go has: coordinator-set adoption.
+func TestClusterSwitch_ResetsVersionScopedCacheState(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	// Cluster A: a commit raises the floor high.
+	c.update(c.generation.Load(), base, 9_000_000)
+	if c.entryFloor() != 9_000_000 {
+		t.Fatalf("precondition: floor = %d, want 9000000", c.entryFloor())
+	}
+
+	// The handle adopts a different coordinator set.
+	c.resetForNewCoordinators()
+
+	if f := c.entryFloor(); f != 0 {
+		t.Fatalf("the committed-version floor survived a coordinator-set switch (floor %d).\n"+
+			"That floor belongs to the previous cluster's version space. Against a "+
+			"cluster whose versions are lower, it refuses every reply permanently: the "+
+			"cache never serves, the refresher pins at its %v clamp, and "+
+			"InvalidateGRVCache cannot clear it because it preserves the floor by "+
+			"design", f, grvRefreshMin)
+	}
+
+	// Cluster B's versions are far lower, and must cache normally.
+	bGen := c.generation.Load()
+	c.publish(bGen, base, 500)
+	v, _, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 500 {
+		t.Fatalf("tryCache = (%d, %v), want (500, true): after switching clusters the new "+
+			"cluster's versions must cache normally, however low they are relative to "+
+			"the cluster the handle used to serve", v, ok)
+	}
+}
+
+// TestClusterSwitch_LateReplyFromTheOldClusterIsRefused is the dispatch-capture
+// pattern one level up: a GRV or commit dispatched to cluster A that lands
+// after the handle has moved to cluster B must not install A's version into B's
+// cache. It carries A's generation, and the switch bumped it.
+func TestClusterSwitch_LateReplyFromTheOldClusterIsRefused(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	aGen := c.generation.Load() // dispatched against cluster A
+	c.resetForNewCoordinators() // the handle moves to cluster B
+	c.publish(c.generation.Load(), base, 500)
+
+	// A's reply lands late, carrying a version from an unrelated version space.
+	c.publish(aGen, base, 9_000_000)
+
+	v, _, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 500 {
+		t.Fatalf("tryCache = (%d, %v), want (500, true): a reply dispatched to the PREVIOUS "+
+			"cluster landed after the switch and installed its version. Read versions "+
+			"from an unrelated cluster are meaningless here — worse than stale — and "+
+			"the generation captured at dispatch is what has to refuse them", v, ok)
+	}
+}
+
+// TestClusterSwitch_SameClusterInvalidationStillPreservesTheFloor is the
+// control that keeps the switch reset from collapsing into the invalidation.
+// They answer different questions: an invalidation says "this cluster moved on"
+// (freshness — the floor survives, since a committed version stays committed);
+// a coordinator-set switch says "this may not be the same cluster at all"
+// (identity — nothing version-scoped survives).
+func TestClusterSwitch_SameClusterInvalidationStillPreservesTheFloor(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	c.update(c.generation.Load(), base, 7000)
+	c.invalidate()
+
+	if f := c.entryFloor(); f != 7000 {
+		t.Fatalf("floor = %d after invalidate(), want 7000 preserved: invalidation is about "+
+			"freshness within one cluster, and a version this client committed stays "+
+			"committed across it. Only a cluster-identity change may drop the floor", f)
+	}
+}

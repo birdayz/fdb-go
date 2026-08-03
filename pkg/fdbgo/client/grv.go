@@ -1148,3 +1148,50 @@ func (c *grvCache) throttleStamp(priority uint32) time.Time {
 	}
 	return e.rkDefault
 }
+
+// entryFloor is the committed-version floor, or 0 when the cache is empty.
+func (c *grvCache) entryFloor() int64 {
+	if e := c.entry.Load(); e != nil {
+		return e.floor
+	}
+	return 0
+}
+
+// resetForNewCoordinators discards every CLUSTER-SCOPED fact in the cache after
+// the handle adopts a coordinator set it did not previously have — a followed
+// coordinator forward, or a cluster file another process rewrote.
+//
+// Neither adoption path validates cluster identity (nor does the C++ client
+// they are ported from: MonitorLeader.actor.cpp adopts a forwarded connection
+// string and a rewritten cluster file without comparing cluster ids, and
+// ClientDBInfo.clusterId is never diffed anywhere in the C++ client), so a
+// handle can end up bound to an unrelated version space. Everything the cache
+// holds is then meaningless: the version and its anchor, the freshness, the
+// ratekeeper cooldowns — those describe another cluster's ratekeeper — and
+// above all the committed-version FLOOR.
+//
+// The floor is the dangerous one. It is a high-water mark with no expiry and no
+// operator escape (invalidate() preserves it by design, correctly, because
+// within one cluster a committed version stays committed). Carried into a
+// cluster whose versions are lower, it refuses every reply permanently: the
+// cache never serves again and the background refresher sits at its 1ms clamp.
+// That is a liveness failure with no recovery short of reopening the handle.
+//
+// Bumping the generation rather than only clearing the entry is what refuses
+// LATE replies — a GRV or commit dispatched to the previous cluster that lands
+// after the switch carries the old generation and can no longer install. Same
+// dispatch-capture pattern as the invalidation, one level up, and reusing that
+// counter rather than adding a second one keeps a single answer to "may this
+// reply install?".
+//
+// C++ resets the analogous state on its explicit cluster-switch path
+// (switchConnectionRecord, NativeAPI.actor.cpp:2191-2213, "Reset state from
+// former cluster": proxies, location cache, minAcceptableReadVersion,
+// ssVersionVectorCache). It notably does NOT clear cachedReadVersion or
+// lastGrvTime there, which leaves its own GRV cache stale across a switch —
+// this is deliberately stricter, because Go's floor makes the consequence
+// permanent rather than bounded by the 100ms freshness window.
+func (c *grvCache) resetForNewCoordinators() {
+	c.generation.Add(1)
+	c.entry.Store(nil)
+}
