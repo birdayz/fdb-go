@@ -159,6 +159,7 @@ go_test(
         "tri_bool_test.go",
         "tx_cancelled_context_test.go",
         "tx_catalog_binding_test.go",
+        "tx_exec_error_fdb_tail_test.go",
         "tx_execute_state_scope_test.go",
         "tx_page_row_budget_test.go",
         "tx_store_cache_test.go",
@@ -294,6 +295,7 @@ go_test(
         "tx_execute_state_scope_test.go",
         "tx_catalog_binding_test.go",
         "tx_store_cache_test.go",
+        "tx_exec_error_fdb_tail_test.go",
     ],
     deps = [
         "//gen",

@@ -16,14 +16,17 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -100,6 +103,14 @@ type stressHarness struct {
 	batchSize    int
 	workers      int
 	batchesPerTx int
+
+	// txConflicts counts the 40001s the loader retried. It is REPORTED rather
+	// than merely tolerated: the loader is an explicit-transaction workload,
+	// so this counter is the one live measurement of how much new conflict
+	// volume in-transaction serializable reads actually produce (RFC-198 open
+	// question 3). A silent retry loop answers that question with a throughput
+	// number; a counter answers it with the number.
+	txConflicts int64
 }
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
@@ -157,6 +168,37 @@ func (h *stressHarness) createSchema(template string) {
 	if _, err := sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", h.dbPath, h.schema, tmplName)); err != nil {
 		h.t.Fatalf("CREATE SCHEMA: %v", err)
 	}
+}
+
+// txRetryable decides whether the bulk loader may re-run an explicit
+// transaction that failed. It exists because the loader is an
+// EXPLICIT-TRANSACTION workload (BeginTx … Commit), so it sits squarely inside
+// the blast radius of the change that made in-transaction SELECTs
+// serializable: that change introduces genuine 40001s where none occurred
+// before. A blind "retry anything five times" loop absorbs them and reports a
+// throughput number where a correctness signal was wanted — the comparison
+// then measures nothing (RFC-198 criterion 14).
+//
+// Exactly one code is retryable here:
+//
+//   - 40001 SERIALIZATION_FAILURE — the transaction definitely did not commit,
+//     so re-running it is safe and is the documented application remedy.
+//
+// Everything else breaks out of the loop and fails the run, and two cases are
+// worth naming because sleeping on them is actively wrong:
+//
+//   - 40003 STATEMENT_COMPLETION_UNKNOWN — the commit outcome is UNKNOWN. A
+//     blind retry double-applies, which is the whole reason 40003 is a
+//     distinct code from 40001 (RFC-198 Decision 7). The loader must never
+//     retry it; surfacing it is the correct behaviour.
+//   - 25F01 / 53F00 / anything else — a real defect or a resource wall.
+//     Sleeping a second and trying again only delays the report.
+func txRetryable(err error) bool {
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == api.ErrCodeSerializationFailure
 }
 
 func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) string) time.Duration {
@@ -220,6 +262,10 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 					if lastErr == nil {
 						break
 					}
+					if !txRetryable(lastErr) {
+						break
+					}
+					atomic.AddInt64(&h.txConflicts, 1)
 					time.Sleep(time.Duration(attempt+1) * time.Second)
 				}
 				if lastErr != nil {
@@ -237,7 +283,8 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 	}
 
 	elapsed := time.Since(start)
-	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s, %d workers)", table, n, elapsed, float64(n)/elapsed.Seconds(), workers)
+	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s, %d workers, %d retried 40001s)",
+		table, n, elapsed, float64(n)/elapsed.Seconds(), workers, atomic.LoadInt64(&h.txConflicts))
 	return elapsed
 }
 
