@@ -875,6 +875,16 @@ func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 func (tx *simTxn) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.rvSet = true
+	// A caller-supplied version's MVCC window opened on the cluster at an
+	// instant this process never observed, so there is no anchor to report.
+	// Clearing (rather than leaving a prior GRV's stamp) keeps "the instant
+	// describes the CURRENT read version" true — a stale stamp reads as a
+	// window that is still open, and a budget anchored on it under-counts the
+	// transaction's age. rvSet stays true, so the accessor's rvSet gate cannot
+	// stand in for this clear; the zero instant is what makes it report
+	// ok=false. Same contract as the pure client (client/transaction.go
+	// SetReadVersion), which a backend of the same interface owes.
+	tx.rvInstant = time.Time{}
 }
 
 // ---- post-commit ----------------------------------------------------------------------

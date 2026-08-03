@@ -57,6 +57,7 @@ go_test(
         "range_batch_test.go",
         "range_lazy_test.go",
         "range_limit_conflict_test.go",
+        "read_version_instant_test.go",
         "ryw_conflict_test.go",
         "selector_conflict_test.go",
         "simfdb_more_test.go",
