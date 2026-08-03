@@ -38,7 +38,7 @@ func TestMergeReply_CommitAgainstSentinelWithOldGeneration(t *testing.T) {
 	base := time.Now()
 	sentinel := &grvCacheEntry{} // what invalidate() leaves behind
 
-	got := mergeReply(sentinel, false /* generation moved */, true /* same epoch */, true /* durable */, base, 7000,
+	got := mergeReply(sentinel, 0, false /* generation moved */, true /* same epoch */, true /* durable */, base, 7000,
 		time.Time{}, false, false)
 
 	if got.version != 0 {
@@ -737,5 +737,106 @@ func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t 
 	if !ok || v != 500 {
 		t.Fatalf("tryCache = (%d, %v), want (500, true): a commit that predates the whole "+
 			"switch must touch nothing in the new cluster's cache", v, ok)
+	}
+}
+
+// THE INVARIANT, stated once because all three races below are the same
+// mistake: a token is valid only if its epoch was captured atomically with the
+// proxy set the request was actually sent to, and it may be consumed only
+// against a cache state whose epoch it matches.
+
+// TestEpochRace_ReaderNeverServesAPreviousEpochEntry is race (1) of the
+// handoff: the proxies are installed before the epoch bump, so a concurrent
+// reader can hold the old cluster's entry while the new cluster is already
+// active. The entry carries the epoch it was published under, so the reader
+// validates it in the SAME load that produced it.
+func TestEpochRace_ReaderNeverServesAPreviousEpochEntry(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+	c.publish(c.token(), base, 9_000_000) // cluster A
+
+	c.resetForNewCoordinators() // epoch moves; the entry is deliberately left
+
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
+		t.Fatalf("served version %d from the PREVIOUS epoch's entry. The entry must carry "+
+			"the epoch it was published under so a reader can refuse it in the same "+
+			"load — comparing a separately-loaded epoch against a separately-loaded "+
+			"entry has a window, and that window is served", v)
+	}
+}
+
+// TestEpochRace_NewEpochPublisherIsNotErasedByTheReset is race (2): a publisher
+// that lands under the NEW epoch, between the counter bump and any clearing of
+// the entry, must not have its valid version erased by a reset that was never
+// about it. The invariant chosen: the reset does NOT clear the entry at all —
+// a previous-epoch entry is already unservable and unusable as a merge base,
+// so clearing buys nothing and can only destroy newer state.
+func TestEpochRace_NewEpochPublisherIsNotErasedByTheReset(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+	c.publish(c.token(), base, 9_000_000)
+
+	c.resetForNewCoordinators()
+
+	// THE INVARIANT, asserted directly because the race it prevents lives
+	// between two statements and cannot be interleaved from a test: the switch
+	// leaves the entry ALONE. Nothing to clear means nothing a concurrent
+	// new-epoch publisher can lose.
+	if c.entry.Load() == nil {
+		t.Fatal("the switch cleared the entry. A publisher landing under the NEW epoch " +
+			"between the counter bump and that clear would have its valid version and " +
+			"floor erased by a reset that was never about it. A previous-epoch entry " +
+			"is already unservable and unusable as a merge base, so clearing buys " +
+			"nothing and can only destroy newer state")
+	}
+
+	// A new-epoch publisher lands and wins outright — the previous-epoch entry
+	// is not a merge base, so its higher version cannot suppress this one.
+	c.publish(c.token(), base, 500)
+
+	v, _, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 500 {
+		t.Fatalf("tryCache = (%d, %v), want (500, true): a publication made under the NEW "+
+			"epoch was erased by the switch that preceded it. The reset must not "+
+			"destroy state that already belongs to the cluster it switched to", v, ok)
+	}
+}
+
+// TestEpochRace_CommitBindsItsEpochAtProxySelection is race (b): the commit's
+// epoch must come from where the attempt bound to a commit proxy, not from the
+// caller before commit() ran. If a handoff lands in between, a token sampled
+// early describes a cluster the commit never used — and the commit's version
+// AND its durable floor are discarded, after which a lower GRV from the new
+// cluster repopulates and an opted-in read misses the committed write.
+func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	// Sampled early, as the caller used to: epoch of cluster A.
+	staleEpoch := c.epoch.Load()
+	// The handoff happens before the commit binds to a proxy.
+	c.resetForNewCoordinators()
+	// The commit actually runs against the NEW cluster and binds there.
+	boundEpoch := c.epoch.Load()
+
+	if staleEpoch == boundEpoch {
+		t.Fatal("precondition: the handoff did not move the epoch")
+	}
+
+	// Publishing under the epoch the commit actually bound to must install and
+	// floor; under the early sample it must not.
+	c.update(cacheToken{gen: c.generation.Load(), epoch: boundEpoch}, base, 7000)
+	if v, _, ok := c.tryCache(grvPriorityDefault); !ok || v != 7000 {
+		t.Fatalf("tryCache = (%d, %v), want (7000, true): a commit that bound to the "+
+			"CURRENT cluster's proxies must install its version — capturing the epoch "+
+			"at proxy selection is what makes that possible", v, ok)
+	}
+	if f := c.entryFloor(); f != 7000 {
+		t.Fatalf("floor = %d, want 7000: the committed version must also floor, or a "+
+			"delayed lower GRV repopulates and the read-your-committed-writes "+
+			"guarantee RFC-198 exists for is lost", f)
 	}
 }

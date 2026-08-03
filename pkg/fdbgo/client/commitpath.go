@@ -26,6 +26,15 @@ import (
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
 func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflicts []KeyRange) error {
+	// The epoch is captured HERE, beside the actual proxy selection, and BEFORE
+	// it: this is the instant the attempt binds to a cluster. Sampling it in the
+	// caller before commit() runs would let a handoff land in between, so the
+	// commit would succeed against the NEW cluster while carrying the OLD
+	// token — and its version and durable floor would then be discarded, after
+	// which a lower GRV from the new cluster repopulates the cache and an
+	// opted-in read misses the write that just committed. Epoch-before-proxy is
+	// the conservative order, as on the GRV path.
+	tx.commitEpoch.Store(tx.db.grvCache.epoch.Load())
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
 		return &wire.FDBError{Code: ErrAllProxiesUnreachable}

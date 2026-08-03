@@ -116,6 +116,18 @@ type grvCache struct {
 // one entry so the (version, anchor) pair can never be observed torn, not
 // because they move together — they usually do not.
 type grvCacheEntry struct {
+	// epoch is the cluster epoch this entry was published under. Carried IN the
+	// entry so a reader validates it in the SAME atomic load that produced the
+	// entry: comparing a separately-loaded epoch against a separately-loaded
+	// entry has a window where the two disagree, and that window is served.
+	//
+	// The comparison is conservative in the safe direction, which is why no
+	// atomicity between the epoch counter and this entry is needed: a reader
+	// that sees a NEW epoch counter beside an OLD entry refuses (correct), and
+	// one that sees an old counter beside an old entry serves an entry that
+	// was still current when it loaded it (also correct).
+	epoch int64
+
 	version   int64
 	anchor    time.Time
 	freshness time.Time
@@ -221,7 +233,7 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 		// the invalidation installed.
 		mayInstallVersion := c.generation.Load() == tok.gen
 		sameEpoch := c.epoch.Load() == tok.epoch
-		next := mergeReply(cur, mayInstallVersion, sameEpoch, durable, at, v, replyTime, rkDefault, rkBatch)
+		next := mergeReply(cur, tok.epoch, mayInstallVersion, sameEpoch, durable, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -246,7 +258,16 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 // install is blocked; a GRV reply carries no such promise, and retiring on
 // one would evict a perfectly good cache entry every time a straggler with a
 // higher version landed after an invalidation.
-func mergeReply(cur *grvCacheEntry, mayInstallVersion, sameEpoch, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+func mergeReply(cur *grvCacheEntry, tokEpoch int64, mayInstallVersion, sameEpoch, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+	// A previous-epoch entry is not a MERGE BASE. Its version, floor and
+	// cooldowns belong to another cluster, so inheriting any of them — or
+	// comparing this version against it for staleness — is the same category
+	// error as letting it be served. Only when this publication itself belongs
+	// to the current epoch: a stale-epoch reply must leave cur untouched.
+	if sameEpoch && cur != nil && cur.epoch != tokEpoch {
+		cur = nil
+	}
+
 	next := grvCacheEntry{version: v, anchor: at, freshness: at}
 
 	// The floor is carried forward by every publication and raised by a
@@ -338,6 +359,11 @@ func mergeReply(cur *grvCacheEntry, mayInstallVersion, sameEpoch, durable bool, 
 	// floor is what those refusals have to LEAVE BEHIND, or the next publisher
 	// re-opens the hole they just closed.
 	next.floor = floor
+	// Stamp the epoch this publication belongs to. A refused (stale-epoch)
+	// reply leaves cur untouched, so it keeps cur.s epoch and stays refused.
+	if sameEpoch {
+		next.epoch = tokEpoch
+	}
 	return next
 }
 
@@ -353,6 +379,12 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	// pair handed back is always one that actually occurred.
 	e := c.entry.Load()
 	if e == nil || e.version == 0 {
+		return 0, time.Time{}, false
+	}
+	// Never serve an entry from a previous cluster. The handle may already be
+	// talking to a different cluster whose proxies were installed before this
+	// entry was retired; its version is not merely stale but meaningless here.
+	if e.epoch != c.epoch.Load() {
 		return 0, time.Time{}, false
 	}
 	// Never below the last version this client committed. Checked HERE and not
@@ -734,7 +766,7 @@ func (b *grvBatcher) flush(db *database) {
 	// by a reply it was meant to retire.
 	tok := db.grvCache.token()
 	requestTime := time.Now()
-	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
+	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, attemptEpoch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -742,7 +774,7 @@ func (b *grvBatcher) flush(db *database) {
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
 		// precedes :7425). `locked` is returned to waiters below but no longer
 		// rides the cache (RFC-104).
-		b.applyGRVReply(db, tok, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+		b.applyGRVReply(db, cacheToken{gen: tok.gen, epoch: attemptEpoch}, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
@@ -923,7 +955,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				// No tx waiters on a background refresh, so the batcher span has no
 				// links: batchGRVSpanContext(nil) = {traceID 0, random spanID,
 				// unsampled} — the no-sampled-link case, matching a C++ updater GRV.
-				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1, batchGRVSpanContext(nil))
+				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, attemptEpoch, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1, batchGRVSpanContext(nil))
 				if err == nil {
 					// The refresher ignores the reply's `locked` flag — equivalent
 					// to C++'s background updater, whose non-lock-aware txn THROWS
@@ -931,7 +963,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 					// :7425) and is caught by its own onError loop. Nothing surfaces
 					// to users from a background refresh, and the cached path
 					// fail-opens anyway (RFC-104).
-					b.applyGRVReply(db, tok, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+					b.applyGRVReply(db, cacheToken{gen: tok.gen, epoch: attemptEpoch}, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 					// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 					grvDelay = (grvDelay + time.Since(requestTime)) / 2
 				}
@@ -989,11 +1021,19 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
 	var backoff time.Duration
 
 	for {
 		// Re-read proxy list each cycle — topology may have refreshed.
+		//
+		// The epoch is captured HERE, per attempt, and BEFORE the proxies: a
+		// retry that re-reads the list can cross a cluster handoff, and a token
+		// minted once at dispatch would then describe a cluster this attempt
+		// never talked to. Epoch-before-proxies is the conservative order — a
+		// handoff in between yields the OLD epoch beside the NEW proxies, and
+		// the reply is refused rather than wrongly accepted.
+		attemptEpoch = db.grvCache.epoch.Load()
 		proxies := db.getGRVProxies()
 		if len(proxies) == 0 {
 			db.kickTopology()
@@ -1015,7 +1055,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			case <-ctx.Done():
 				timer.Stop()
-				return 0, false, false, false, nil, 0, ctx.Err()
+				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
 			}
 		}
 
@@ -1044,7 +1084,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				replyHandle.Cancel()
 				replyHandle.Release()
 				if ctx.Err() != nil {
-					return 0, false, false, false, nil, 0, ctx.Err()
+					return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
 				}
 				// RFC-114: a GRV proxy that stops replying (TCP may stay open) is a
 				// real endpoint failure — route through the observability sink so it
@@ -1058,7 +1098,8 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			}
 			db.failMon.markAlive(proxy.Address)
-			return parseGetReadVersionReply(resp.Body)
+			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
+			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr
 		}
 
 		// All proxies exhausted — backoff with recovery/topology wakeup.
@@ -1080,7 +1121,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			backoff = 0
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, false, false, false, nil, 0, ctx.Err()
+			return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
 		}
 	}
 }
@@ -1150,7 +1191,7 @@ func (c *grvCache) freshnessInstant() time.Time {
 
 // cachedVersion is the cached version, or 0 when the cache is empty.
 func (c *grvCache) cachedVersion() int64 {
-	if e := c.entry.Load(); e != nil {
+	if e := c.entry.Load(); e != nil && e.epoch == c.epoch.Load() {
 		return e.version
 	}
 	return 0
@@ -1187,7 +1228,10 @@ func (c *grvCache) throttleStamp(priority uint32) time.Time {
 
 // entryFloor is the committed-version floor, or 0 when the cache is empty.
 func (c *grvCache) entryFloor() int64 {
-	if e := c.entry.Load(); e != nil {
+	// The EFFECTIVE floor in the current epoch. A previous-epoch entry may
+	// still be present — the switch deliberately does not clear it — but its
+	// floor is inert: it is neither served nor used as a merge base.
+	if e := c.entry.Load(); e != nil && e.epoch == c.epoch.Load() {
 		return e.floor
 	}
 	return 0
@@ -1228,9 +1272,17 @@ func (c *grvCache) entryFloor() int64 {
 // this is deliberately stricter, because Go's floor makes the consequence
 // permanent rather than bounded by the 100ms freshness window.
 func (c *grvCache) resetForNewCoordinators() {
+	// Bumping the counters is the WHOLE reset. The entry is deliberately NOT
+	// cleared: every entry records the epoch it was published under, so one
+	// from the previous cluster is already unservable and unusable as a merge
+	// base, and it is overwritten by the next publication.
+	//
+	// Clearing it would introduce a race it cannot win — a publisher that
+	// landed under the NEW epoch between the counter bumps and the clear would
+	// have its perfectly valid version and floor erased by a reset that was
+	// never about it.
 	c.epoch.Add(1)
 	c.generation.Add(1)
-	c.entry.Store(nil)
 }
 
 // cacheToken is the pair a publisher captures AT DISPATCH and must present to

@@ -302,6 +302,11 @@ type Transaction struct {
 	state   atomic.Int32 // txState values
 	isDummy bool         // commitDummyTransaction marker; prevents recursive dummies
 
+	// commitEpoch is the cluster epoch captured when commit() bound to a commit
+	// proxy — the epoch the committed version actually belongs to, which is not
+	// necessarily the one current when the caller entered Commit.
+	commitEpoch atomic.Int64
+
 	// Every option-backing field lives on the embedded txOptions (RFC-175 C2);
 	// accessors and all field references work unchanged via promotion.
 	txOptions
@@ -1911,9 +1916,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// opted-in reader would then miss the very write the caller invalidated to
 	// observe.
 	commitStart := time.Now()
-	var commitTok cacheToken
+	var commitGen int64
 	if tx.db != nil {
-		commitTok = tx.db.grvCache.token()
+		commitGen = tx.db.grvCache.generation.Load()
 	}
 	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
@@ -1959,7 +1964,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
 	// still (before dispatch rather than after), which is the safe direction.
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(commitTok, commitStart, tx.committedVersion)
+		// Generation from dispatch (an invalidation during the commit must still
+		// refuse it); EPOCH from the proxy binding inside commit(), which is the
+		// cluster this version actually came from.
+		tx.db.grvCache.update(cacheToken{gen: commitGen, epoch: tx.commitEpoch.Load()},
+			commitStart, tx.committedVersion)
 	}
 
 	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs

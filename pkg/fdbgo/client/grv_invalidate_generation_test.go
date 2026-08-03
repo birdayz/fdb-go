@@ -42,7 +42,7 @@ func TestMergeReply_BlockedGenerationNeverInstallsAVersion(t *testing.T) {
 	// carrying forward the cooldowns the invalidation preserved.
 	sentinel := &grvCacheEntry{rkDefault: base.Add(-time.Hour)}
 
-	got := mergeReply(sentinel, false /* generation moved */, true /* same epoch */, false /* not durable */, base, 300,
+	got := mergeReply(sentinel, 0, false /* generation moved */, true /* same epoch */, false /* not durable */, base, 300,
 		base, true /* rkDefault */, false)
 
 	if got.version != 0 {
@@ -74,7 +74,7 @@ func TestMergeReply_CurrentGenerationStillInstalls(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	got := mergeReply(&grvCacheEntry{}, true /* generation current */, true /* same epoch */, false, base, 300,
+	got := mergeReply(&grvCacheEntry{}, 0, true /* generation current */, true /* same epoch */, false, base, 300,
 		time.Time{}, false, false)
 
 	if got.version != 300 {
