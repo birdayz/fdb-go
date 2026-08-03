@@ -135,6 +135,7 @@ go_library(
         "//pkg/internal/fdbclient",
         "//pkg/rabitq",
         "//pkg/recordlayer/protoname",
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/vectorcodec",
         "@com_github_google_uuid//:uuid",

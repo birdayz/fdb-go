@@ -294,12 +294,31 @@ func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpres
 // (ValueIndexExpansionVisitor.java:138-162), so a query matches the candidate
 // only when the matcher can account for the predicate — never as if the index
 // held every record.
+//
+// This is where a predicate ENTERS the candidate machinery, and therefore where
+// a predicate that provably filters NOTHING is resolved to no predicate at all.
+// Sparseness is read back as `predicateProto != nil` in four separate places —
+// the fan-out expansion arm, AbstractDataAccessRule's root-match restriction,
+// candidatePreservesBaseRecordCardinality, and the flat expansion — and only
+// the last converts the predicate before deciding. Classifying here is what
+// keeps the other three from treating a COMPLETE index as filtered, which for
+// the fan-out arm meant `WHERE TRUE` produced no candidate at all. Java gets
+// the same effect structurally: the planner only ever sees an index predicate
+// through IndexPredicate.toPredicate, whose folding constructors have already
+// collapsed a tautology to the constant (IndexPredicate.java:344-345).
+//
+// Only a PROVED tautology is dropped; anything unprovable stays sparse.
 func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *ValueIndexScanMatchCandidate {
 	if pred == nil {
 		c.predicateProto = nil
 		return c
 	}
-	c.predicateProto = proto.Clone(pred).(*gen.Predicate)
+	normalized := NormalizeIndexPredicateProto(pred)
+	if constantPredicateArmIsTrue(normalized) {
+		c.predicateProto = nil
+		return c
+	}
+	c.predicateProto = normalized
 	return c
 }
 

@@ -1477,3 +1477,32 @@ func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
 		t.Fatal("WHERE FALSE indexes nothing — maximally filtering")
 	}
 }
+
+// TestSetPredicateProtoRejectsRowNumberWindow pins what makes the row-window
+// hazard LATENT rather than live, and names what re-arms it.
+//
+// NormalizeIndexPredicateProto deliberately refuses to fold a row-window arm
+// (it keeps only the top-N records, so the index is the opposite of complete),
+// but that guard is currently unreachable from Go: predicateFromProto has no
+// row-window arm, so an Index cannot carry the predicate in the first place.
+//
+// The moment Go implements row-window index maintenance, this test fails — and
+// that failure is the signal to check that every sparseness gate still treats
+// the resulting index as filtering, because from then on it is reachable.
+func TestSetPredicateProtoRejectsRowNumberWindow(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("topn", Field("score"))
+	err := idx.SetPredicateProto(&gen.Predicate{
+		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{Size: proto.Int32(100)},
+	})
+	if err == nil {
+		t.Fatal("SetPredicateProto ACCEPTED a row-number window predicate — Go now has " +
+			"a reachable partial-index shape whose stored predicate the maintainer " +
+			"must honour, and every `sparse` classification has to be re-checked " +
+			"against it (see NormalizeIndexPredicateProto's row-window note)")
+	}
+	if idx.HasPredicate() {
+		t.Fatal("a rejected predicate must leave the index unpredicated")
+	}
+}

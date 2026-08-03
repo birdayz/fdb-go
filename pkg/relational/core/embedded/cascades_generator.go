@@ -2195,7 +2195,13 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if idx.RootExpression == nil {
 			continue
 		}
-		sparse := idx.GetPredicateProto() != nil
+		// Sparseness is asked here too, ahead of the candidate boundary, and it
+		// must be the SAME question that boundary answers: an index whose stored
+		// predicate provably rejects nothing holds an entry for every record, so
+		// its aggregates cover the whole table and the family suppression below
+		// has nothing to protect against.
+		sparse := !cascades.IndexPredicateProtoIsTautology(idx.GetPredicateProto()) &&
+			idx.GetPredicateProto() != nil
 		if !sparse {
 			// A SPARSE aggregate/vector index must not become a candidate that
 			// ignores its predicate: the maintained aggregates cover only the
@@ -2360,16 +2366,13 @@ func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 // candidate graph so a query never matches the filtered index as if it were
 // full (ValueIndexExpansionVisitor.java:138-162). Nil for a full index.
 //
-// The predicate is normalized on the way in, which is exactly where Java
-// normalizes it: the planner only ever sees an index predicate through
-// IndexPredicate.toPredicate, whose And arm delegates to the folding
-// constructor AndPredicate.and (IndexPredicate.java:344-345). So a conjunction
-// of tautologies arrives already collapsed to the constant and the expansion's
-// existing tautology check leaves the index as matchable as any full one.
-// Sharing NormalizePredicateProto with the executor's completeness backstop is
-// what stops the two from classifying the same stored predicate differently.
+// Handed over RAW: normalization and the tautology classification belong to the
+// candidate boundary (ValueIndexScanMatchCandidate.WithPredicateProto), which
+// every producer of a candidate goes through — this adapter is only one of
+// them, and normalizing here would leave the direct WithPredicateProto callers
+// classified differently.
 func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
-	return recordlayer.NormalizePredicateProto(d.idx.GetPredicateProto())
+	return d.idx.GetPredicateProto()
 }
 
 // IndexKeyComponentTypes derives one authoritative physical tuple type per
