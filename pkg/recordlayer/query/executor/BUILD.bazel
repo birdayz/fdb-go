@@ -110,6 +110,7 @@ go_test(
         "positional_type_cache_bound_test.go",
         "positional_type_cache_test.go",
         "projection_output_names_test.go",
+        "read_path_agreement_test.go",
         "recursive_cursor_resume_test.go",
         "recursive_distinct_replay_test.go",
         "recursive_union_cursor_test.go",
@@ -222,6 +223,7 @@ go_test(
         "frontier_context_carrier_test.go",
         "merge_shape_composite_name_test.go",
         "first_or_default_continuation_test.go",
+        "read_path_agreement_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
@@ -237,6 +239,7 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
+        "//pkg/relational/core/rowstruct",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",

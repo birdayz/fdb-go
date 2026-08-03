@@ -749,10 +749,20 @@ func isCompositeOperand(v any) bool {
 //     the elements are compared by plain Object.equals — which for the
 //     DynamicMessage a tuple evaluates to is protobuf's structural
 //     AbstractMessage.equals. Go compares structurally for the same
-//     reason and does not require descriptor IDENTITY the way proto
-//     equality does: two structurally identical tuple types can be baked
-//     against distinct descriptor instances here, and Java only avoids
-//     that because TypeRepository interns the type name.
+//     reason, and deliberately does not require descriptor IDENTITY the
+//     way proto equality does: two structurally identical tuple types
+//     can be baked against distinct descriptor instances here. That
+//     relaxation is Java's own, not an invention — MessageHelpers
+//     .compareMessageEquals:185-203 uses reference equality on the
+//     descriptors only as a FAST PATH, and otherwise falls back to a
+//     field-by-field loop keyed on ORDINAL, exactly as below.
+//     Go is deliberately WIDER than that fallback in one respect: Java
+//     verifies the ordinal loop never sees a repeated, map or nested
+//     message field (:197-198) and throws if it does, because it only
+//     ever reaches that loop for a flat top-level record. Go recurses
+//     instead, so a struct element holding a nested array or a nested
+//     record compares by the same rules as everywhere else. Wire format
+//     is untouched by this — it is a read-side comparison only.
 //     Presence is honoured, so a field that is NULL (absent — a nil child
 //     is left unset by buildRecordMessage) does not compare equal to one
 //     explicitly set to the zero value.

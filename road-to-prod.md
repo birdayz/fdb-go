@@ -350,6 +350,28 @@ its census tests, not the generator, so nothing was retired.
     line terminator): `WHERE name LIKE 'abc'` matches `"abc\n"`. Deliberate Java-parity
     (verified against a live JDK over 1.2M cases), pinned in the LIKE test tables — listed here
     because it will read as a bug to anyone who hasn't seen the derivation.
+18. ON-DISK MIGRATION (CQ-89 → CQ-90): stale `CARDINALITY()` index entries written by pre-fix Go.
+    CQ-89 changed the index key for an EMPTY non-nullable (flat repeated) array from a NULL key to
+    the integer key `0` — measured, the entry key moved from `indexSubspace ‖ 0x00 ‖ pk` to
+    `indexSubspace ‖ 0x14 ‖ pk`. Java always keyed `0`
+    (`CardinalityFunctionKeyExpression.java:115-117`), so this REDUCES Go-vs-Java divergence; the
+    stale entries are Go-vs-Go. **Nothing rewrites them.** Until the affected indexes are rebuilt
+    (`OnlineIndexer`), an index-backed `CARDINALITY(a) = 0` can MISS rows a full scan returns, and
+    `CARDINALITY(a) IS NULL` can return rows on a column whose type forbids NULL — on records
+    written by a pre-fix Go binary only. Scope is narrow: only a CARDINALITY index over a NOT NULL
+    array column that has held empty arrays. The base-table read half of CQ-89 stores nothing and
+    needs no migration.
+    **Sharper sub-hazard, on UNIQUE cardinality indexes.** The maintainer skips the uniqueness
+    check when the entry key contains a NULL (`!indexKeyContainsNull`; Java:
+    `StandardIndexMaintainer.java:471`). Under the OLD key two records with empty NOT NULL arrays
+    BOTH keyed NULL and so were never checked — an existing store may already hold a pair the new
+    key considers impossible. A rebuild surfaces that as a uniqueness violation. **That is the
+    correct loud outcome, not a rebuild bug** — the invariant was silently false before, and the
+    rebuild is what makes it audible. Latent today: `builder.go:606-608` honours the flag but no
+    SQL DDL route reaches it. Pinned — `TestFDB_ArrayCardinalityUniqueIndex`.
+    Owner ruling (CQ-90): DOCUMENT, DO NOT FORCE — no `LastModifiedVersion` bump, because
+    pre-production means every affected store is dev/test. That premise expires on first
+    production deployment, which is the booked trigger to revisit.
 
 Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
 `NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
