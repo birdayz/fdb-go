@@ -264,30 +264,49 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 	prefix := 0
 	for i := 0; i < n && i < len(comps); i++ {
-		if !comps[i].IsEquality() {
-			break
-		}
-		// A zero-valued FLOAT/DOUBLE equality does NOT pin a single key. The
-		// executor widens it to span both signed zeros (-0.0 and +0.0 are
-		// IEEE-equal but pack to distinct adjacent keys), so the scan covers
-		// TWO physical prefixes and every column after it RESETS at the
-		// boundary.
-		//
-		// Counting it as an equality claimed the suffix was globally ordered
-		// and let the planner drop a required sort: over rows (-0.0, 9) and
-		// (+0.0, 1), `WHERE v = 0 ORDER BY w` returned [9 1] unsorted, and
-		// `... LIMIT 1` returned the wrong row entirely.
-		//
-		// Treat it like an inequality instead — stop here without counting it.
-		// A non-equality leading comparison already trims nothing, so `v` stays
-		// in the ordering (it IS ordered: -0.0 sorts immediately before +0.0)
-		// while the suffix no longer claims an order the scan does not provide.
-		if isZeroFloatEqualityRange(comps[i]) {
+		if !EqualityPinsSinglePhysicalKey(comps[i]) {
 			break
 		}
 		prefix = i + 1
 	}
 	return prefix
+}
+
+// EqualityPinsSinglePhysicalKey reports whether cr binds its coordinate to ONE
+// physical key — the property that makes the coordinate FIXED rather than
+// sorted, so it claims no order of its own and the columns after it remain
+// claimable.
+//
+// This is the SINGLE AUTHORITY on that question. Two callers derive an
+// ordering claim from a key-column sequence and must agree column for column:
+// equalityPrefixLen here on the plan side, and the sargable candidates'
+// ComputeMatchedOrderingParts on the cascades side. A second hand-rolled copy
+// of the rule is how the two derivations drift apart and classify the same
+// column differently — which is exactly the defect this consolidation removes,
+// where one side exempted an equality-bound float and the other terminated on
+// it, costing every affected query an index intersection or a materialized
+// sort it did not need.
+//
+// An equality is NOT enough on its own. A zero-valued FLOAT/DOUBLE equality
+// pins no single key: the executor widens it to span both signed zeros (-0.0
+// and +0.0 are IEEE-equal but pack to distinct adjacent keys), so the scan
+// covers TWO physical prefixes and every column after it RESETS at the
+// boundary.
+//
+// Counting that as an equality claimed the suffix was globally ordered and let
+// the planner drop a required sort: over rows (-0.0, 9) and (+0.0, 1),
+// `WHERE v = 0 ORDER BY w` returned [9 1] unsorted, and `... LIMIT 1` returned
+// the wrong row entirely.
+//
+// Such a range is treated like an inequality — it does not pin, so the prefix
+// stops there. A non-equality leading comparison already trims nothing, so `v`
+// stays in the ordering (it IS ordered: -0.0 sorts immediately before +0.0)
+// while the suffix no longer claims an order the scan does not provide.
+// A nil range is an ABSENT binding, not an equality — it pins nothing. The
+// check is here rather than at the call sites because one of them reads a
+// parameter-binding map, where a miss yields nil and IsEquality would panic.
+func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
+	return cr != nil && cr.IsEquality() && !isZeroFloatEqualityRange(cr)
 }
 
 // isZeroFloatEqualityRange reports whether cr is an equality against a
@@ -403,6 +422,11 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	comps := plan.GetScanComparisons()
 	firstNonEq := equalityPrefixLen(comps, len(pk))
 	keys := resolveOrderingColumns(pk[firstNonEq:], plan.GetFlowedType())
+	// Terminate the claim at the first coordinate whose physical key order is
+	// not its logical order (a FLOAT/DOUBLE primary-key column — see
+	// keyCanExtendOrderingClaim). A float PK is reachable: `PRIMARY KEY (e)`
+	// with e DOUBLE makes the scan itself claim an order it does not deliver.
+	keys = keys[:claimableKeyLimit(plan.GetFlowedType(), keys)]
 	if len(keys) == 0 {
 		return properties.Ordering{}
 	}
@@ -441,17 +465,82 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	comps := p.GetScanComparisons()
 	firstNonEq := equalityPrefixLen(comps, len(columnNames))
 	rev := p.IsReverse()
-	keys := make([]values.Value, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
-	desc := make([]bool, 0, cap(keys))
-	for i := firstNonEq; i < len(columnNames); i++ {
-		keys = append(keys, orderingColumnOfName(p.GetFlowedType(), columnNames[i]))
-		desc = append(desc, rev)
+	// The SORTED coordinates, in order: the non-equality-bound index columns
+	// followed by the trimmed PK suffix. The claim is truncated at the first
+	// FLOAT/DOUBLE among them — an index on a double column does NOT deliver
+	// its own key order (NaN packs into two disjoint blocks), and because all
+	// NaNs are one logical tie class split across those blocks, the PK suffix
+	// after it is not ordered within the tie either.
+	sorted := make([]string, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
+	sorted = append(sorted, columnNames[firstNonEq:]...)
+	sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+	sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
+	if len(sorted) == 0 {
+		return properties.Ordering{}
 	}
-	for _, col := range TrimmedPKSuffix(columnNames, pkColumnNames) {
+	keys := make([]values.Value, 0, len(sorted))
+	desc := make([]bool, 0, len(sorted))
+	for _, col := range sorted {
 		keys = append(keys, orderingColumnOfName(p.GetFlowedType(), col))
 		desc = append(desc, rev)
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// columnCanExtendOrderingClaim / keyCanExtendOrderingClaim are the plans-side
+// door to the ONE ordering-claim predicate (values.TypeTerminatesOrderingClaim).
+// Every derivation in this file that turns a key-column sequence into an
+// ordering claim routes through them, so none can classify a column
+// differently from its sibling.
+//
+// The rule they enforce: an ordering claim TERMINATES at a coordinate whose
+// physical FDB key order is not its logical order. For FLOAT/DOUBLE that is
+// NaN — negative NaN payloads pack BEFORE -Inf and positive ones AFTER +Inf,
+// while the comparator (values.CompareFloat64, faithful to
+// java.lang.Double.compare) collapses every NaN to one value ranked GREATEST.
+// So the column is misordered AND every NaN is one logical tie class split
+// across two disjoint physical ranges, which leaves any LATER sort column
+// unordered within the tie. Hence terminate, not reorder.
+//
+// Only the SORTED coordinates are subject to this. An equality-bound float
+// prefix column is FIXED, not sorted: it pins one physical point, so it makes
+// no order claim and the columns after it stay claimable. (The one equality
+// that does NOT pin a point — a zero-valued float, which spans both signed
+// zeros — is already excluded upstream by equalityPrefixLen.)
+func columnCanExtendOrderingClaim(layout values.Type, name string) bool {
+	return values.ColumnCanExtendOrderingClaim(layout, name)
+}
+
+// keyCanExtendOrderingClaim is the Value-shaped form, for derivations that
+// already hold ordering keys rather than metadata names. A flat field is
+// resolved by name against the layout (its declared type is usually
+// UnknownType at this point, so the layout is the authority); any other key
+// shape is judged on its own type.
+func keyCanExtendOrderingClaim(layout values.Type, k values.Value) bool {
+	if fv, isField := k.(*values.FieldValue); isField && fv.Child == nil {
+		return columnCanExtendOrderingClaim(layout, fv.Field)
+	}
+	if k == nil {
+		return true
+	}
+	return !values.TypeTerminatesOrderingClaim(k.Type())
+}
+
+// claimableKeyLimit returns how many leading keys may be claimed as an
+// ordering against layout — the index of the first key that terminates the
+// claim, or len(keys) when none does.
+func claimableKeyLimit(layout values.Type, keys []values.Value) int {
+	for i, k := range keys {
+		if !keyCanExtendOrderingClaim(layout, k) {
+			return i
+		}
+	}
+	return len(keys)
+}
+
+// claimableNameLimit is claimableKeyLimit over metadata column names.
+func claimableNameLimit(layout values.Type, names []string) int {
+	return values.ClaimableOrderingPrefix(layout, names)
 }
 
 // orderingColumnOfName mints an ordering key for a METADATA column name
@@ -827,13 +916,22 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
-	for i, key := range resolveOrderingColumns(pk, p.GetFlowedType()) {
+	resolved := resolveOrderingColumns(pk, p.GetFlowedType())
+	// Truncate the SORTED tail at the first coordinate whose physical order is
+	// not its logical order. The equality-bound prefix is exempt: a FixedBinding
+	// pins one physical point and states no order, so a float there is harmless
+	// and the columns after it stay claimable.
+	limit := prefixLen + claimableKeyLimit(p.GetFlowedType(), resolved[prefixLen:])
+	for i, key := range resolved[:limit] {
 		keys = append(keys, key)
 		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
+	}
+	if len(keys) == 0 {
+		return properties.EmptyOrdering()
 	}
 	return properties.NewRichOrdering(bm, keys, false)
 }
@@ -870,19 +968,26 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
-	for i, col := range columnNames {
+	// Same split as the plain form: the equality-bound prefix is FIXED (no order
+	// claimed, so a float there is harmless), and the SORTED tail — the
+	// remaining index columns plus the trimmed PK suffix — is truncated at the
+	// first FLOAT/DOUBLE.
+	tail := make([]string, 0, len(columnNames)-prefixLen+len(pkColumnNames))
+	tail = append(tail, columnNames[prefixLen:]...)
+	tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+	tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
+	for i, col := range columnNames[:prefixLen] {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
-		if i < prefixLen {
-			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
-		} else {
-			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
-		}
+		bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 	}
-	for _, col := range TrimmedPKSuffix(columnNames, pkColumnNames) {
+	for _, col := range tail {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+	}
+	if len(keys) == 0 {
+		return properties.EmptyOrdering()
 	}
 	// Java passes RecordQueryIndexPlan.isStrictlySorted(), not the index
 	// metadata's UNIQUE bit. A unique index is only a distinct ordering once

@@ -119,6 +119,17 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 				matches = false
 				break
 			}
+			// Binding a sort key to an index column proves the scan visits
+			// that column's keys in KEY order, not in VALUE order. For a
+			// FLOAT/DOUBLE column the two differ: NaN payloads pack into two
+			// disjoint blocks (negative NaN before -Inf, positive NaN after
+			// +Inf) while the comparator collapses them to one value ranked
+			// greatest. Eliding the sort here is a wrong-answer bug, so
+			// decline and let a materialized sort serve the query.
+			if !values.ColumnCanExtendOrderingClaim(scan.GetFlowedType(), colNames[i]) {
+				matches = false
+				break
+			}
 			// The requested direction for this key: DESC defaults NULLS LAST,
 			// ASC defaults NULLS FIRST; an explicit NULLS choice may run
 			// counterflow.

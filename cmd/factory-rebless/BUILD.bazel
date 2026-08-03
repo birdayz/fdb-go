@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "factory-rebless_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/factory-rebless",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/relational/conformance/explaindiff",
+        "//pkg/relational/conformance/factory",
+        "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_binary(
+    name = "factory-rebless",
+    embed = [":factory-rebless_lib"],
+    visibility = ["//visibility:public"],
+)

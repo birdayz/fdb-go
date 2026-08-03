@@ -653,6 +653,29 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// ordering part carries the SAME Value the query's sort key does —
 		// resolved against the record row layout it indexes, so the key states
 		// a column identity rather than a display name.
+		// An ordering claim terminates at a coordinate whose physical key order
+		// is not its logical order. A FLOAT/DOUBLE column is such a coordinate:
+		// NaN payloads pack into two disjoint blocks (negative NaN before -Inf,
+		// positive NaN after +Inf) while the comparator ranks every NaN equal
+		// and greatest. Stop before emitting it — and, because the loop stops,
+		// the PK-suffix continuation below is skipped too, which is required:
+		// all NaNs are ONE logical tie class split across two physical ranges,
+		// so no later column is ordered within that tie.
+		//
+		// A coordinate PINNED to one physical key is exempt, float or not: it
+		// is FIXED, not sorted, so it claims no order and the columns after it
+		// stay claimable. The duplicate-producing arm above does NOT cover this
+		// — it is gated on duplicateProducingColumns[idx] and never sees an
+		// ordinary column. Ask the one authority instead, the same one
+		// equalityPrefixLen consults on the plan side, so the two derivations
+		// cannot classify a column differently. Its answer is narrower than
+		// "is an equality": a zero-valued float equality spans BOTH signed
+		// zeros and therefore pins nothing, and must still terminate here.
+		if !plans.EqualityPinsSinglePhysicalKey(cr) &&
+			!values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), c.columnNames[idx]) {
+			break
+		}
+
 		colValue := c.orderingColumnValue(idx)
 
 		// A plain column orders tuple-naturally; an order-wrapped column
@@ -689,6 +712,11 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// (Index.trimPrimaryKey), matching fullKey construction.
 	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) {
 		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
+			// The suffix terminates on the same rule as the key columns: a
+			// FLOAT/DOUBLE PK column cannot extend the claim.
+			if !values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), col) {
+				break
+			}
 			colValue := c.bakeOrderingColumn(col)
 			sortOrder := MatchedSortOrderAscending
 			if isReverse {

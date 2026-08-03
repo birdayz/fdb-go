@@ -1367,11 +1367,155 @@ not symmetric:
   documented for signed zero via RFC-082), but it is a real semantics change
   across every comparison site and needs its own design gate.
 
-The DISTINCT / GROUP BY behaviour (two NaNs are one value) is consistent with
-this engine's settled rule that value identity is tuple-key identity — every NaN
-packs to the same key — and would NOT change even if predicate comparison moved
-to IEEE. That asymmetry is the same one already accepted for signed zero, just
-pointing the other way.
+The DISTINCT / GROUP BY behaviour (two NaNs are one value) follows from
+`values.CompareFloat64` canonicalizing every NaN bit pattern, and would NOT
+change even if predicate comparison moved to IEEE. That asymmetry is the same
+one already accepted for signed zero, just pointing the other way.
+
+**Correction — "every NaN packs to the same key" is false, and it was the
+premise of a real wrong-answer bug.** An earlier revision of this paragraph
+justified the DISTINCT/GROUP BY behaviour by asserting that value identity is
+tuple-key identity because all NaNs pack alike. They do not. MEASURED, packing
+`float64` through `pkg/fdbgo/fdb/tuple`:
+
+    negNaN(0xFFF8000000000001) -> 210007fffffffffffe   (BEFORE -Inf)
+    -Inf                       -> 21000fffffffffffff
+    +Inf                       -> 21fff0000000000000
+    posNaN(0x7FF8000000000002) -> 21fff8000000000002   (AFTER +Inf)
+
+NaN payloads are neither canonicalized nor contiguous: encoding flips every bit
+of a negative double and only the sign bit of a non-negative one, so NaN lands
+in TWO disjoint blocks at opposite ends of the key space. The comparator
+meanwhile ranks all NaN equal and greatest. So a NEGATIVE NaN is the physically
+first row and the logically last one, and one logical tie class spans two
+disjoint physical ranges. Pinned by
+`values.TestFloatPhysicalOrderDivergesFromLogicalOrder`.
+
+The "ORDER BY v/z -> NaN sorts after +Inf" row in the table above holds only
+for POSITIVE NaN, which is what that probe happened to produce; a negative NaN
+sorts first under an index scan.
+
+The consequence for the planner is a separate, now-fixed defect — see
+"Float-leading ordering claims terminate (Java is unsound here)" below.
 
 Tracked in TODO.md; no behaviour changed by this entry, which only corrects a
 false claim about what Go does today.
+
+## Float-leading ordering claims terminate (Java is unsound here)
+
+**Java is wrong and Go deliberately is not.** This is a read-side planner
+divergence only; the wire is untouched (identical bytes are written and read),
+so it falls under the port's "read-side query surface may go beyond Java" rule
+rather than being a parity break.
+
+**The defect.** An ordering claim asserts that the PHYSICAL order in which a
+scan returns rows equals the LOGICAL order the comparator imposes. FDB tuple
+encoding flips every bit of a negative double and only the sign bit of a
+non-negative one, which lays the domain out as
+
+    negative NaN < -Inf < … < -0.0 < +0.0 < … < +Inf < positive NaN
+
+while `values.CompareFloat64` (faithful to `java.lang.Double.compare`)
+canonicalizes every NaN to one value ranked GREATEST. Two independent
+consequences follow:
+
+1. A NEGATIVE NaN is the physically FIRST row and the logically LAST one, so a
+   scan claiming to deliver `ORDER BY <double>` delivers something else.
+2. All NaN payloads are ONE logical tie class spread across TWO disjoint
+   physical ranges, so no SUBSEQUENT sort column is ordered within that tie —
+   which is why a float coordinate must TERMINATE an ordering claim rather than
+   merely be reordered. No range-set can repair (2).
+
+Positive NaN alone does NOT expose this (it is physically and logically last),
+and signed zero does not either (`-0.0` packs immediately before `+0.0` and the
+comparator agrees). The defect requires a negative NaN, or both signs present.
+
+**Java has the same bug — verified, not assumed.** Nothing on Java's path from
+index key to sort removal consults the column's type:
+
+- `ScanComparisons.getComparisonType` (`ScanComparisons.java:150-169`) maps
+  operators to EQUALITY/INEQUALITY from `comparison.getType()` — the operator
+  enum — alone. The file does not import `cascades.typing.Type` at all.
+- `ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons`
+  (`ValueIndexLikeMatchCandidate.java:166-196`) emits `Binding.sorted(...)` for
+  every key column that is not `createsDuplicates()`. `getBaseType()` is used
+  only to build the `Value` (lines 179-181); the resulting type is never
+  inspected.
+- `Ordering.satisfies` (`Ordering.java:330-352`) checks Value identity,
+  ASC/DESC compatibility and a topological permutation. No type.
+- `RemoveSortRule.onMatch` (`RemoveSortRule.java:105-110`) drops the sort on
+  `ordering.satisfies(...)` alone.
+- `AbstractDataAccessRule` references a data type nowhere; its only `Type` hits
+  (lines 793, 809, 1121) are `ComparisonRange.Type.EQUALITY`.
+
+Java's only NaN awareness is `CastValue.java:139-169` (rejecting NaN in casts
+to INT/LONG) and the half-precision vector type — neither is about ordering.
+The tuple layer *documents* the split it creates, two levels below a planner
+with no channel to hear it. Both citations below are in the **fdb-java
+bindings** (the `foundationdb` repo, tag 7.3.77 — the MODULE.bazel pin), NOT in
+the record-layer tree —
+`bindings/java/src/main/com/apple/foundationdb/tuple/`:
+
+- `IterableComparator.java:49-51` — "For floating point types, negative NaN
+  values are sorted before all regular values, and positive NaN values are
+  sorted after all regular values."
+- `TupleUtil.java:184-187` —
+
+      private static long encodeDoubleBits(double d) {
+          long longBits = Double.doubleToRawLongBits(d);
+          return (longBits < 0L) ? (~longBits) : (longBits ^ Long.MIN_VALUE);
+      }
+
+  `doubleToRawLongBits` is the non-collapsing variant, so the payload and sign
+  bit survive verbatim — deliberately NOT canonicalizing NaN. Contrast
+  `Half.floatToShortBitsCollapseNaN` in `fdb-extensions`, which does collapse,
+  proving the distinction is known upstream.
+
+Java is additionally inconsistent with its own index order:
+`Comparisons.compare` (`Comparisons.java:236-239`) special-cases `byte[]`,
+`ByteString` and `UUID` to unsigned wrappers *specifically* to match tuple
+order, but lets Double/Float fall through to `Double.compareTo` — the same
+negative-NaN disagreement Go had.
+
+**What Go does.** `values.TypeTerminatesOrderingClaim` /
+`ColumnCanExtendOrderingClaim` / `ClaimableOrderingPrefix`
+(`cascades/values/ordering_claim.go`) are the ONE predicate; every ordering-claim
+producer asks it: `plans/ordering.go`'s four derivations (`PKScanOrdering`,
+`RecordQueryIndexPlan.HintOrdering`, and both `HintRichOrdering`), both match
+candidates' `ComputeMatchedOrderingParts`, and both sort-elision rules
+(`rule_ordered_index_scan.go`, `rule_ordered_primary_scan.go`, which previously
+name-matched sort keys against column names without consulting any
+ordering-capability machinery at all). An equality-bound float prefix column is
+exempt: a fixed binding pins one physical point and claims no order, so columns
+after it stay claimable.
+
+The predicate is only as good as the layout it reads, and that layout was half
+blind. `executor.PositionalTypeForDescriptor` — the single authority for a
+stored record's row shape, shared by the runtime rows and by every sargable
+match candidate — stamped `UnknownType` on every field, while the plain
+full-scan leaf (`cascades_translator.fieldTypeForFD`) typed the same columns
+fully. Two derivations of one table's layout, disagreeing. The predicate could
+therefore prove a column was a DOUBLE on the scan leaf and could not prove it on
+the index candidate, so `... WHERE d > 5.0 ORDER BY d` kept the unsound elision
+that the unpredicated `ORDER BY d` had already lost. The two mappings are now
+one — `values.FieldTypeForProtoField` — and both call sites delegate to it.
+
+The cost is a materialized sort where Java elides one. That shows up in the
+cross-engine harness as a deliberate plan-shape difference, not a surprise.
+
+Scope of the plan-shape change, MEASURED rather than estimated, by running the
+RFC-201 factory determinism check under each half of the change separately:
+
+| ordering-claim termination | typed row layout | corpus files with drifted plan shape |
+| --- | --- | --- |
+| off | off | 0 (baseline) |
+| on  | off | 0 — the fix cannot fire without the types |
+| off | on  | 0 — typing the layout changes nothing on its own |
+| on  | on  | 18 |
+
+The third row is the load-bearing one: filling in a layout's field types is the
+kind of change that could plausibly perturb any type-directed decision in the
+engine, and across the corpus it perturbs none. Every one of the 18 is the
+ordering-claim termination landing on an index whose key columns include the
+DOUBLE or FLOAT column, which is the intended behaviour change. They are
+re-blessed through the factory, never edited in place.
