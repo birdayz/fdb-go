@@ -92,7 +92,7 @@ func TestSimTxBudget_ExhaustedBudgetPreemptsWith40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, _, env := openSimSchemaWithEnv(t, 47,
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -142,7 +142,7 @@ func TestSimTxBudget_IdleBeforeFirstReadIsFree(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, _, env := openSimSchemaWithEnv(t, 53,
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -200,7 +200,7 @@ func TestSimTxBudget_ScannedRecordsSharedAcrossStatements(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, _, _ := openSimSchemaWithEnv(t, 59,
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	for i := 0; i < 12; i++ {
 		mustExecSQL(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i))
 	}
@@ -254,7 +254,7 @@ func TestSimTxBudget_ArmedLimitWithoutFailModeStaysCorrect(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, _, _ := openSimSchemaWithEnv(t, 61,
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	for i := 0; i < 12; i++ {
 		mustExecSQL(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i))
 	}
@@ -313,7 +313,7 @@ func TestSimTxBudget_MemoryBudgetStaysStatementScoped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, _, _ := openSimSchemaWithEnv(t, 67,
-		"CREATE TABLE t (id BIGINT NOT NULL, v STRING, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v STRING, PRIMARY KEY (id))")
 	// Rows with a payload big enough that ONE in-memory sort uses more than
 	// half the armed budget: two statements sharing one counter would exceed
 	// it, two statements with fresh counters both fit.

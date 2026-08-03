@@ -54,14 +54,14 @@ func newSimConnection(t *testing.T, seed uint64) *EmbeddedConnection {
 	ctx := context.Background()
 	for _, stmt := range []string{
 		"CREATE DATABASE /simdb",
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl",
 	} {
 		if _, err := c.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	c.SetSchema("s")
+	c.SetDefaultSchema("s")
 	return c
 }
 

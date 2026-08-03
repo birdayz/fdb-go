@@ -66,7 +66,7 @@ func TestSQLFault_AutoCommit1021ExhaustionSurfacesAs40003(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 13,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	// One fault per attempt, one more than the loop will take.
 	faults := make([]int, simMaxRetries+1)
@@ -120,7 +120,7 @@ func TestSQLFault_AutoCommit1021BelowTheLimitIsInvisible(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 17,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	sim.InjectOnce(simfdb.CommitUnknownDiscarded)
 	if _, err := db.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 100)"); err != nil {

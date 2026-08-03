@@ -49,7 +49,7 @@ func TestStoreCache_PagesDoNotCostStoreOpens(t *testing.T) {
 	b := newSimBackend(t, 101)
 	conn := b.connect("")
 	bootstrapTwoTemplates(t, conn)
-	conn.SetSchema("s")
+	conn.SetDefaultSchema("s")
 
 	const rows = 20
 	var sb strings.Builder
@@ -163,7 +163,7 @@ func TestStoreCache_OwnDDLDropsTheStoreAndTheSnapshotHolds(t *testing.T) {
 	b := newSimBackend(t, 103)
 	conn := b.connect("")
 	bootstrapTwoTemplates(t, conn)
-	conn.SetSchema("s")
+	conn.SetDefaultSchema("s")
 	if _, err := conn.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}

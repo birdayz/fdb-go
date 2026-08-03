@@ -33,7 +33,7 @@ func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
-			" CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
+			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))

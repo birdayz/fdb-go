@@ -83,7 +83,7 @@ func TestSQLFault_ExplicitTx1007SurfacesAs40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 31,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 
 	tx := beginRelUpdateTx(t, ctx, db)
@@ -105,7 +105,7 @@ func TestSQLFault_ExplicitTxCommitUnknownAppliedSurfacesAs40003(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 37,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 
 	tx := beginRelUpdateTx(t, ctx, db)
@@ -140,7 +140,7 @@ func TestSQLFault_ExplicitTxCommitUnknownDiscardedSurfacesAs40003(t *testing.T) 
 	t.Parallel()
 	ctx := context.Background()
 	db, sim := openSimSchema(t, 41,
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 
 	tx := beginRelUpdateTx(t, ctx, db)

@@ -75,12 +75,66 @@ func newSimBackend(t *testing.T, seed uint64) *simBackend {
 	}
 }
 
+// connect builds a connection the way the SQL driver's Connector does —
+// New(...) plus SetDefaultSchema — and NOT via SetSchema. The distinction is
+// load-bearing and is pinned by TestSchemaNameNormalizationIsInSetDefaultSchema
+// below: SetDefaultSchema normalizes the name (unquoted identifiers uppercase),
+// SetSchema stores it raw, and DDL writes the catalog row under the normalized
+// name. A harness that used the raw setter with a lowercase literal would look
+// past the catalog row its own DDL just wrote.
 func (b *simBackend) connect(schema string) *EmbeddedConnection {
 	c := New("/simdb", b.fdbDB, b.cat, b.factory, b.ks)
 	if schema != "" {
-		c.SetSchema(schema)
+		c.SetDefaultSchema(schema)
 	}
 	return c
+}
+
+// TestSchemaNameNormalizationIsInSetDefaultSchema pins where SQL identifier
+// normalization happens on the connection, because every SimFDB-backed test in
+// this package depends on it and nothing else states it.
+//
+// CREATE SCHEMA /simdb/s writes the catalog row under the NORMALIZED name
+// ("S"), so a session schema must be normalized before it can resolve. The
+// driver gets that for free: the DSN's schema= goes through SetDefaultSchema,
+// which strips quotes and uppercases. SetSchema is the raw setter and does
+// neither — it is the api.Connection-shaped label setter with no production
+// caller in this repo, so nothing else would notice.
+//
+// If SetSchema ever grows normalization (or SetDefaultSchema loses it), this
+// test fails and the harnesses above can be simplified — that is the point of
+// pinning it rather than leaving it as a comment.
+func TestSchemaNameNormalizationIsInSetDefaultSchema(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := newSimBackend(t, 107)
+	admin := b.connect("")
+	bootstrapTwoTemplates(t, admin)
+
+	if got := admin.GetSchema(); got != "" {
+		t.Fatalf("admin connection schema = %q, want empty", got)
+	}
+
+	normalized := b.connect("s")
+	if got := normalized.GetSchema(); got != "S" {
+		t.Fatalf("SetDefaultSchema(%q) left the session schema %q, want %q: the driver's "+
+			"own entry point stopped normalizing, and every DSN with a lowercase "+
+			"schema= now looks past the catalog row CREATE SCHEMA wrote", "s", got, "S")
+	}
+	if _, err := normalized.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
+		t.Fatalf("insert through the normalized session: %v", err)
+	}
+
+	raw := b.connect("")
+	raw.SetSchema("s")
+	if got := raw.GetSchema(); got != "s" {
+		t.Fatalf("SetSchema(%q) stored %q: the raw label setter now normalizes too, so the "+
+			"harnesses in this package no longer need SetDefaultSchema", "s", got)
+	}
+	if _, err := raw.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 2)", nil); err == nil {
+		t.Fatalf("a session schema set through the RAW setter resolved: normalization moved, " +
+			"and the reason this package's harnesses must use SetDefaultSchema no longer holds")
+	}
 }
 
 // bootstrapTwoTemplates creates the database, a plain template, an indexed
@@ -90,8 +144,8 @@ func bootstrapTwoTemplates(t *testing.T, admin *EmbeddedConnection) {
 	ctx := context.Background()
 	for _, stmt := range []string{
 		"CREATE DATABASE /simdb",
-		"CREATE SCHEMA TEMPLATE tmpl_plain CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))",
-		"CREATE SCHEMA TEMPLATE tmpl_indexed CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON t (v)",
+		"CREATE SCHEMA TEMPLATE tmpl_plain CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA TEMPLATE tmpl_indexed CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON t (v)",
 		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_plain",
 	} {
 		if _, err := admin.ExecContext(ctx, stmt, nil); err != nil {
@@ -140,7 +194,7 @@ func TestCatalogBinding_NoSilentZeroRows(t *testing.T) {
 	b := newSimBackend(t, 73)
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
-	connA.SetSchema("s")
+	connA.SetDefaultSchema("s")
 	connB := b.connect("s")
 
 	const rows = 250 // past MAX_RECORDS_FOR_REBUILD (200)
@@ -234,7 +288,7 @@ func TestCatalogBinding_CacheDoesNotCrossTransactionBoundary(t *testing.T) {
 	b := newSimBackend(t, 79)
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
-	connA.SetSchema("s")
+	connA.SetDefaultSchema("s")
 	connB := b.connect("s")
 
 	if _, err := connA.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
@@ -291,7 +345,7 @@ func TestCatalogBinding_ConcurrentDDLConflictsCommit(t *testing.T) {
 	if _, err := connA.ExecContext(ctx, "CREATE SCHEMA /simdb/other WITH TEMPLATE tmpl_plain", nil); err != nil {
 		t.Fatalf("create other schema: %v", err)
 	}
-	connA.SetSchema("s")
+	connA.SetDefaultSchema("s")
 	connB := b.connect("s")
 
 	if _, err := connA.Begin(); err != nil {
@@ -303,7 +357,7 @@ func TestCatalogBinding_ConcurrentDDLConflictsCommit(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	// The transaction's write lives in the OTHER schema.
-	connA.SetSchema("other")
+	connA.SetDefaultSchema("other")
 	if _, err := connA.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (100, 100)", nil); err != nil {
 		t.Fatalf("insert into other: %v", err)
 	}
