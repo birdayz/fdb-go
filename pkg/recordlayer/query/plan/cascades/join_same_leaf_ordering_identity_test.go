@@ -65,10 +65,12 @@ func TestSelfJoinOrderingKeepsBothLegsApart(t *testing.T) {
 	// ordering set and can therefore collide.
 	outer := plans.NewRecordQueryIndexPlan(
 		"T_ID_IDX", nil, []string{"T"}, layout, false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"ID"}, nil, false).
 		WithStrictlySorted()
 	inner := plans.NewRecordQueryScanPlan([]string{"T"}, layout, false).
-		WithPrimaryKey([]values.Value{pk()})
+		WithPrimaryKey([]values.Value{pk()}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 
 	// Both legs provide the SAME key: same name, same ordinal, same domain.
 	// Asserted rather than assumed -- if the providers ever stop agreeing here,

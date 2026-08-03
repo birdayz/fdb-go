@@ -451,9 +451,15 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 }
 
 // PlanRecordQueryWithMetadata is like PlanQueryWithMetadata but returns the
-// physical RecordQueryPlan (so callers can execute it against a real store),
-// not just its Explain string. The session schema defaults to the embedded
-// planner's "s".
+// physical RecordQueryPlan, not just its Explain string. This is a metadata-only
+// TEST/HARNESS API: it has no record store from which to load mutable index
+// state. A caller that executes the result against a real store must
+// independently establish that EVERY secondary index in md is strictly
+// READABLE and remains so through execution. Otherwise a metadata-only UNIQUE
+// proof can survive even when the final plan contains no index leaf for the
+// executor to reject. Live SQL must use cascadesGenerator, which snapshots,
+// cache-keys, and revalidates authoritative store state. The session schema
+// defaults to the embedded planner's "s".
 //
 // The query's scalar subqueries are planned but NOT returned — fine for
 // plan-only callers (Explain/shape assertions); a caller that EXECUTES a
@@ -472,7 +478,8 @@ func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, sta
 // EvaluationContext.WithScalarSubqueries, exactly as the sql driver's
 // fetchPage does; running the outer plan without the bindings fails loudly
 // with values.UnboundScalarSubqueryError (never a silent NULL that vanishes
-// rows — the bug this API closed).
+// rows — the bug this API closed). The same all-secondary-indexes-strictly-
+// READABLE execution precondition applies.
 func PlanRecordQueryWithSubqueries(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
 	return planRecordQueryAndSubqueries(sql, md, defaultEmbeddedSchema, stats)
 }
@@ -484,7 +491,8 @@ func PlanRecordQueryWithSubqueries(sql string, md *recordlayer.RecordMetaData, s
 // schema-qualified-table demotion/resolution, so a schema-qualified source —
 // including INSIDE a subquery (`… EXISTS (SELECT 1 FROM PA AS main, main.PB AS
 // B)` with session schema `main`) — is resolved against the ACTIVE schema, not
-// the hardcoded default. RFC-142 (P2b).
+// the hardcoded default. RFC-142 (P2b). It remains a metadata-only harness and
+// inherits the strictly-READABLE execution precondition above.
 func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
 	plan, _, err := planRecordQueryAndSubqueries(sql, md, schemaName, stats)
 	return plan, err

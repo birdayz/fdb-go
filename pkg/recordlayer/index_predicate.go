@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	gen "fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -30,6 +31,16 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 	default:
 		return nil, fmt.Errorf("empty predicate message")
 	}
+}
+
+// predicateProtoIsTautology reports whether a stored index predicate provably
+// rejects no record. The classification itself lives in the cascades package,
+// beside the candidate boundary that is its other consumer: the executor's
+// completeness backstop and the planner's sparseness gates must never answer
+// differently about the same stored bytes, and one function is the only way to
+// guarantee that.
+func predicateProtoIsTautology(p *gen.Predicate) bool {
+	return cascades.IndexPredicateProtoIsTautology(p)
 }
 
 func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {

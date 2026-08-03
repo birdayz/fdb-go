@@ -25,8 +25,10 @@ import (
 
 // HintCost: a full scan reads every record of the covered types, discounted by
 // the bound-comparison selectivity. A fully-equality-bound scan over the
-// primary key is a point lookup (one row), but only when the primary-key shape
-// stamped on the plan proves that the comparison prefix covers the whole key.
+// primary key has an exact finite physical-key multiplicity, but only when the
+// stamped primary-key shape proves full coverage and every equality class is
+// statically bounded. It is usually one; each known signed-zero FLOAT/DOUBLE
+// component doubles it, while a dynamic floating comparand fails closed.
 //
 // The point-lookup branch charges FetchCPU, not ScanCPU: a full-PK equality
 // bind is ONE isolated GetRange round trip with nothing to amortize over (see
@@ -38,10 +40,14 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	comps := p.GetScanComparisons()
+	shape := physicalEqualityShape(comps, p.GetKeyComponentTypes(), true)
 	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
 	sel, _, _ := properties.BoundSelectivity(comps)
-	if isProvablePointProbe(p) {
-		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		comps, p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+		properties.TupleKeyUnique,
+	); known {
+		return uniqueEqualityCost(multiplicity, shape)
 	}
 	types := p.GetRecordTypes()
 	total := 0.0
@@ -53,13 +59,18 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 		}
 	}
 	card := total * sel
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: card,
+		CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+	}, shape)
 }
 
 // HintCost: index scans are cheaper than full table scans because they read a
 // subset of records. Apply a selectivity multiplier on top of the physical
-// discount. Unique indexes with all columns equality-bound return
-// cardinality=1 (point lookup).
+// discount. A fully equality-bound UNIQUE index gets the exact physical-key
+// multiplicity when provable: normally one, 2^k for k known signed-zero float
+// components, and unknown for NULL under NULLS-DISTINCT uniqueness or for a
+// dynamic float comparand.
 //
 // The point-lookup branch charges FetchCPU for the INDEX round trip itself —
 // it is ONE isolated GetRange call with nothing to amortize over, the same
@@ -72,12 +83,23 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 func (p *RecordQueryIndexPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	base := indexBaseCardinality(p, stats)
 	if p != nil {
+		comps := p.GetScanComparisons()
+		shape := physicalEqualityShape(comps, p.GetKeyComponentTypes(), true)
 		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
-		sel, _, _ := properties.BoundSelectivity(p.GetScanComparisons())
-		if isProvablePointProbe(p) {
-			return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
+		sel, _, _ := properties.BoundSelectivity(comps)
+		if p.IsUnique() {
+			if multiplicity, known := provenFullEqualityMultiplicity(
+				comps, p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+				properties.SecondaryUniqueNullsDistinct,
+			); known {
+				return uniqueEqualityCost(multiplicity, shape)
+			}
 		}
 		base *= sel
+		return addPhysicalRangeSeekCost(properties.Cost{
+			Cardinality: base,
+			CPU:         base * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+		}, shape)
 	}
 	return properties.Cost{Cardinality: base, CPU: base * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
 }
@@ -96,8 +118,10 @@ func indexBaseCardinality(plan *RecordQueryIndexPlan, stats properties.Statistic
 }
 
 // isProvablePointProbe reports whether plan is proven, by its OWN static
-// shape, to return AT MOST ONE row per execution: a full-PK equality-bound
-// RecordQueryScanPlan, or a unique index with every column equality-bound.
+// shape, to return AT MOST ONE row per execution: a full-key equality bind
+// whose exact physical multiplicity is one. Full coverage alone is
+// insufficient: signed-zero float branches can make the bound 2^k, nullable
+// UNIQUE NULL binds are unbounded, and dynamic float comparands fail closed.
 // This is the SAME condition RecordQueryScanPlan.HintCost and
 // RecordQueryIndexPlan.HintCost gate their point-lookup branch on, factored
 // out so RecordQueryInJoinPlan.HintCost can reuse it rather than
@@ -113,20 +137,20 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 		if p == nil {
 			return false
 		}
-		return properties.EqualityBoundsCoverKey(p.GetScanComparisons(), len(p.GetPrimaryKeyValues())) &&
-			!properties.AnyEqualityWidensBeyondOneKey(p.GetScanComparisons())
+		multiplicity, known := provenFullEqualityMultiplicity(
+			p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+			properties.TupleKeyUnique,
+		)
+		return known && multiplicity == 1
 	case *RecordQueryIndexPlan:
 		if p == nil {
 			return false
 		}
-		comps := p.GetScanComparisons()
-		_, numBound, allEquality := properties.BoundSelectivity(comps)
-		// A widening equality (a zero float) binds TWO keys, so the probe is
-		// not a point probe even with every column equality-bound. Shared with
-		// computeCardinalities and the cost model so one plan cannot carry
-		// contradictory cardinality claims.
-		return p.IsUnique() && allEquality && numBound == len(p.GetColumnNames()) &&
-			!properties.AnyEqualityWidensBeyondOneKey(comps)
+		multiplicity, known := provenFullEqualityMultiplicity(
+			p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+			properties.SecondaryUniqueNullsDistinct,
+		)
+		return p.IsUnique() && known && multiplicity == 1
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return false
@@ -140,15 +164,57 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 // HintCost: a K-NN probe returns its top-K (or, for an ordered stream, its
 // fixed re-ranked horizon) regardless of table size.
 func (p *RecordQueryVectorIndexPlan) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	card := vectorScanCardinality(p)
-	return properties.Cost{
-		Cardinality: card,
-		CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+	if p == nil {
+		card := vectorScanCardinality(nil)
+		return properties.Cost{
+			Cardinality: card,
+			CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
+		}
 	}
+	comps := p.GetPrefixComparisons()
+	shape := physicalEqualityShape(comps, p.GetPartitionKeyComponentTypes(), false)
+	card := vectorScanCardinality(p)
+	partitionCount := len(p.GetPartitionColumns())
+	if partitionCount > 0 {
+		fullyBound := properties.EqualityBoundsCoverKey(comps, partitionCount)
+		if fullyBound && !p.IsOrderedStream() {
+			card = properties.SaturatingHeuristicMultiply(
+				card, float64(shape.SuccessfulSeekUpperBound),
+			)
+		} else {
+			// A partial prefix fans out over an unknown number of remaining
+			// physical partitions. Keep the estimate conservative; multiplying
+			// k only by the known signed-zero choices would advertise a false
+			// N*k bound.
+			card = properties.LeafScanCardinality
+		}
+	}
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: card,
+		CPU: properties.SaturatingHeuristicMultiply(
+			properties.SaturatingHeuristicMultiply(card, properties.ScanCPU),
+			properties.PhysicalWrapperCostMultiplier,
+		),
+	}, shape)
 }
 
 // HintCost: an aggregate index materializes one row per group.
 func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	if p == nil || p.GetIndexPlan() == nil {
+		return properties.Cost{
+			Cardinality: properties.MaxFiniteHeuristic,
+			CPU:         properties.MaxFiniteHeuristic,
+		}
+	}
+	if p.GetPhysicalGroupingPrefixCount() < len(p.GetGroupCols()) {
+		// Positive PERMUTED_MIN/MAX is ineligible under RFC-208. Saturation
+		// makes a hand-built survivor maximally unattractive without injecting
+		// infinity into the total cost preorder.
+		return properties.Cost{
+			Cardinality: properties.MaxFiniteHeuristic,
+			CPU:         properties.MaxFiniteHeuristic,
+		}
+	}
 	tableCard := properties.LeafScanCardinality
 	if stats != nil {
 		tableCard = stats.RecordTypeCardinality(p.GetRecordTypeName())
@@ -157,7 +223,16 @@ func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats prop
 	if cardinality < 1 {
 		cardinality = 1
 	}
-	return properties.Cost{Cardinality: cardinality, CPU: cardinality * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
+	shape := physicalEqualityShape(
+		p.GetIndexPlan().GetScanComparisons(), p.GetKeyComponentTypes(), true,
+	)
+	return addPhysicalRangeSeekCost(properties.Cost{
+		Cardinality: cardinality,
+		CPU: properties.SaturatingHeuristicMultiply(
+			properties.SaturatingHeuristicMultiply(cardinality, properties.ScanCPU),
+			properties.PhysicalWrapperCostMultiplier,
+		),
+	}, shape)
 }
 
 // HintCost: a literal row source costs nothing to produce.
@@ -460,7 +535,9 @@ func (p *RecordQueryNestedLoopJoinPlan) HintCost(child []properties.Cost, _ prop
 	}
 	uniqueKeyConjuncts, _ := NestedLoopJoinUniqueKeyConjuncts(p)
 	return properties.NestedLoopJoinCost(
-		child[0], child[1], predicates.CountConjuncts(p.GetPredicates()), uniqueKeyConjuncts)
+		child[0], child[1], predicates.CountConjuncts(p.GetPredicates()), uniqueKeyConjuncts,
+		p.GetJoinType() == JoinLeftOuter,
+	)
 }
 
 // --- unique-key equality-join detection for the materialized NLJ -----------
@@ -537,9 +614,9 @@ func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bo
 	// full identity: ordinal 0 of the inner and ordinal 0 of the outer are
 	// different columns, and that is exactly the element the old
 	// `(string, CorrelationIdentifier)` return had split apart.
-	want := make(map[values.ColumnIdentity]bool, len(keyCols))
-	for key := range keyCols {
-		want[key.WithCorrelation(innerAlias)] = true
+	want := make(map[values.ColumnIdentity]values.Type, len(keyCols))
+	for key, physicalType := range keyCols {
+		want[key.WithCorrelation(innerAlias)] = physicalType
 	}
 
 	bound := make(map[values.ColumnIdentity]bool, len(want))
@@ -603,24 +680,43 @@ func matchedInnerKeyEquality(
 	conjunct predicates.QueryPredicate,
 	innerAlias values.CorrelationIdentifier,
 	frontier values.OrdinalDomain,
-	want, bound map[values.ColumnIdentity]bool,
+	want map[values.ColumnIdentity]values.Type,
+	bound map[values.ColumnIdentity]bool,
 ) (values.ColumnIdentity, bool) {
 	cmp, ok := conjunct.(*predicates.ComparisonPredicate)
 	if !ok || cmp.Comparison.Type != predicates.ComparisonEquals {
 		return values.ColumnIdentity{}, false
 	}
 	lhs, rhs := cmp.Operand, cmp.Comparison.Operand
-	if key, ok := correlatedInnerFieldKey(lhs, innerAlias, frontier); ok && want[key] && !bound[key] &&
+	if key, ok := correlatedInnerFieldKey(lhs, innerAlias, frontier); ok && !bound[key] &&
 		!valueCorrelatedTo(rhs, innerAlias) {
-		return key, true
-	}
-	if rhs != nil {
-		if key, ok := correlatedInnerFieldKey(rhs, innerAlias, frontier); ok && want[key] && !bound[key] &&
-			!valueCorrelatedTo(lhs, innerAlias) {
+		if physicalType, wanted := want[key]; wanted &&
+			logicalEqualityAtMostOnePhysicalKey(cmp.Comparison, physicalType) {
 			return key, true
 		}
 	}
+	if rhs != nil {
+		if key, ok := correlatedInnerFieldKey(rhs, innerAlias, frontier); ok && !bound[key] &&
+			!valueCorrelatedTo(lhs, innerAlias) {
+			if physicalType, wanted := want[key]; wanted &&
+				logicalEqualityAtMostOnePhysicalKey(predicates.Comparison{
+					Type: cmp.Comparison.Type, Operand: lhs,
+				}, physicalType) {
+				return key, true
+			}
+		}
+	}
 	return values.ColumnIdentity{}, false
+}
+
+func logicalEqualityAtMostOnePhysicalKey(
+	comparison predicates.Comparison,
+	physicalType values.Type,
+) bool {
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	return merged.Ok && properties.LogicalEqualityAtMostOnePhysicalKey(
+		merged.Range, physicalType,
+	)
 }
 
 // valueCorrelatedTo reports whether v's correlation set includes alias.
@@ -755,14 +851,37 @@ func innerLegLayout(plan RecordQueryPlan) values.Type {
 // ok=false for anything else (a non-unique index, an unrecognized wrapper, a
 // nil leaf, a composite/nested PK component that is not a flat field reference,
 // or a layout with no declared column order) — fails closed.
-func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[values.ColumnIdentity]bool, bool) {
+func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[values.ColumnIdentity]values.Type, bool) {
 	switch p := plan.(type) {
 	case *RecordQueryScanPlan:
 		if p == nil {
 			return nil, false
 		}
-		want := make(map[values.ColumnIdentity]bool, len(p.GetPrimaryKeyValues()))
-		for _, v := range p.GetPrimaryKeyValues() {
+		pkValues := p.GetPrimaryKeyValues()
+		want := make(map[values.ColumnIdentity]values.Type, len(pkValues))
+		physicalTypes := p.GetKeyComponentTypes()
+		variableCount := 0
+		hasRecordTypeCoordinate := false
+		for _, v := range pkValues {
+			if _, isRecordType := v.(*values.RecordTypeValue); isRecordType {
+				hasRecordTypeCoordinate = true
+			} else {
+				variableCount++
+			}
+		}
+		// RecordTypeValue is constant only for a scan restricted to one record
+		// type. On a multi-type scan the physical key is (recordType, pk...):
+		// binding only pk can match the same value once per type.
+		if hasRecordTypeCoordinate && len(p.GetRecordTypes()) != 1 {
+			return nil, false
+		}
+		fullCoordinateTypes := len(physicalTypes) == len(pkValues)
+		visibleCoordinateTypes := len(physicalTypes) == variableCount
+		if !fullCoordinateTypes && !visibleCoordinateTypes {
+			return nil, false
+		}
+		visiblePosition := 0
+		for i, v := range pkValues {
 			if _, isRecordType := v.(*values.RecordTypeValue); isRecordType {
 				// A per-thread CONSTANT (the RecordTypeKey-prefixed
 				// composite PK every table in a non-intermingled multi-type
@@ -780,7 +899,15 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 			if !ok {
 				return nil, false
 			}
-			want[key] = true
+			if _, duplicate := want[key]; duplicate {
+				return nil, false
+			}
+			physicalPosition := visiblePosition
+			if fullCoordinateTypes {
+				physicalPosition = i
+			}
+			want[key] = physicalKeyTypeAt(physicalTypes, physicalPosition)
+			visiblePosition++
 		}
 		if len(want) == 0 {
 			return nil, false
@@ -805,13 +932,20 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 		if len(cols) == 0 {
 			return nil, false
 		}
-		want := make(map[values.ColumnIdentity]bool, len(cols))
-		for _, c := range cols {
+		want := make(map[values.ColumnIdentity]values.Type, len(cols))
+		physicalTypes := p.GetKeyComponentTypes()
+		if len(physicalTypes) != len(cols) {
+			return nil, false
+		}
+		for i, c := range cols {
 			key, ok := values.OrdinalOfNameIn(layout, c)
 			if !ok {
 				return nil, false
 			}
-			want[key] = true
+			if _, duplicate := want[key]; duplicate {
+				return nil, false
+			}
+			want[key] = physicalKeyTypeAt(physicalTypes, i)
 		}
 		return want, true
 	case *RecordQueryFetchFromPartialRecordPlan:
@@ -837,6 +971,13 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 	default:
 		return nil, false
 	}
+}
+
+func physicalKeyTypeAt(types []values.Type, position int) values.Type {
+	if position < 0 || position >= len(types) || types[position] == nil {
+		return values.UnknownType
+	}
+	return types[position]
 }
 
 // HintCost: an InJoin re-runs its inner once per IN value. ImplementInJoinRule

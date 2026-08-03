@@ -588,6 +588,62 @@ func TestIndexSetPredicateProto(t *testing.T) {
 	}
 }
 
+func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	pred := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}
+	if err := idx.SetPredicateProto(pred); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+
+	// Mutating the caller's input after Set must affect neither representation.
+	pred.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("caller mutation changed compiled FALSE evaluator")
+	}
+	if got := idx.GetPredicateProto(); got.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+		t.Fatalf("caller mutation changed stored proto to %s", got.GetConstantPredicate().GetValue())
+	}
+
+	// The getter is also an ownership boundary.
+	got := idx.GetPredicateProto()
+	got.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("getter-result mutation changed compiled FALSE evaluator")
+	}
+	if again := idx.GetPredicateProto(); again.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
+		t.Fatalf("getter-result mutation changed stored proto to %s", again.GetConstantPredicate().GetValue())
+	}
+}
+
+func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	if err := idx.SetPredicateProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+
+	wire, err := indexToProto(idx)
+	if err != nil {
+		t.Fatalf("indexToProto: %v", err)
+	}
+	wire.Predicate.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
+	if idx.Predicate(&gen.Order{}) {
+		t.Fatal("serialized metadata mutation changed compiled FALSE evaluator")
+	}
+	again, err := indexToProto(idx)
+	if err != nil {
+		t.Fatalf("second indexToProto: %v", err)
+	}
+	if got := again.GetPredicate().GetConstantPredicate().GetValue(); got != gen.ConstantPredicate_FALSE {
+		t.Fatalf("serialized metadata mutation changed internal proto to %s", got)
+	}
+}
+
 func TestIndexSetPredicateProtoNil(t *testing.T) {
 	t.Parallel()
 	idx := NewIndex("test_idx", Field("price"))
@@ -608,6 +664,50 @@ func TestIndexSetPredicateProtoNil(t *testing.T) {
 	}
 	if idx.Predicate != nil {
 		t.Fatal("Predicate function should be nil after clearing")
+	}
+}
+
+func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
+	t.Parallel()
+	idx := NewIndex("test_idx", Field("price"))
+	if idx.HasPredicate() {
+		t.Fatal("new index unexpectedly reports a predicate")
+	}
+	valid := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_FALSE.Enum(),
+	}}
+	if err := idx.SetPredicateProto(valid); err != nil {
+		t.Fatalf("SetPredicateProto(valid): %v", err)
+	}
+	if !idx.HasPredicate() || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+		t.Fatal("valid FALSE proto was not published consistently")
+	}
+
+	// Compilation failure must leave both previously valid representations
+	// intact, rather than publishing a proto that HasPredicate sees while the
+	// evaluator still implements some other predicate.
+	if err := idx.SetPredicateProto(&gen.Predicate{}); err == nil {
+		t.Fatal("empty predicate proto unexpectedly compiled")
+	}
+	if !proto.Equal(idx.GetPredicateProto(), valid) || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+		t.Fatal("rejected proto partially mutated the previous predicate")
+	}
+
+	idx.SetPredicate(func(proto.Message) bool { return true })
+	if !idx.HasPredicate() || idx.GetPredicateProto() != nil || !idx.Predicate(&gen.Order{}) {
+		t.Fatal("programmatic predicate did not replace and clear serialized semantics")
+	}
+	idx.SetPredicate(nil)
+	if idx.HasPredicate() || idx.Predicate != nil || idx.GetPredicateProto() != nil {
+		t.Fatal("SetPredicate(nil) did not clear both predicate representations")
+	}
+
+	// Defensive representation check: metadata loaded by another path may have
+	// only the serializable form. Planner admission must still classify it as
+	// sparse and fail closed.
+	idx.predicateProto = valid
+	if !idx.HasPredicate() {
+		t.Fatal("proto-only predicate representation was not classified as sparse")
 	}
 }
 
@@ -1131,5 +1231,278 @@ func TestValuePredicateLongValueOperand(t *testing.T) {
 	}
 	if fn(&gen.Order{OrderId: proto.Int64(99)}) {
 		t.Fatal("LongValue operand should not match order_id=99")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Tautology proof (index completeness)
+// --------------------------------------------------------------------------
+
+// TestPredicateProtoTautologyProofFailsClosed pins the completeness proof that
+// admits a filtered index to query execution. Every case that is NOT a proved
+// tautology must answer false: an index whose predicate can reject a record is
+// incomplete, and a scan over it silently omits rows.
+//
+// The nil / absent-arm cases are the load-bearing ones. ConstantPredicate.value
+// is a proto2 field whose declared DEFAULT is TRUE, so gen's nil-safe
+// GetConstantPredicate().GetValue() returns TRUE for a predicate that has no
+// constant arm at all — the getters fail OPEN. A proof written on those getters
+// declares EVERY predicate a tautology, which admits every sparse index.
+func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	valueArm := &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+		Value: []string{"price"},
+		Comparison: &gen.Comparison{
+			SimpleComparison: &gen.SimpleComparison{
+				Type:    gen.ComparisonType_GREATER_THAN.Enum(),
+				Operand: &gen.Value{IntValue: proto.Int32(100)},
+			},
+		},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		pred *gen.Predicate
+		want bool
+	}{
+		{"nil predicate", nil, false},
+		{"empty predicate message (no arm set)", &gen.Predicate{}, false},
+		{
+			"constant arm present but value unset — proto2 default is TRUE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{}},
+			true,
+		},
+		{
+			"constant TRUE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_TRUE.Enum(),
+			}},
+			true,
+		},
+		{
+			"constant FALSE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_FALSE.Enum(),
+			}},
+			false,
+		},
+		{
+			"constant NULL",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_NULL.Enum(),
+			}},
+			false,
+		},
+		{"value comparison", valueArm, false},
+		{
+			// AndPredicate.and drops tautological conjuncts and returns
+			// ConstantPredicate.TRUE when none remain (AndPredicate.java:188-206),
+			// so Java never holds an AndPredicate of TRUEs to classify — it holds
+			// the constant. Normalizing the same way is what makes
+			// `WHERE TRUE AND TRUE` a complete index here too.
+			"AND of EXPLICIT tautologies folds to the constant",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			true,
+		},
+		{
+			// A child that carries the constant ARM with no value set folds like
+			// any other TRUE, and must: proto2 declares TRUE as that field's
+			// default, so constantPredicateFromProto compiles it to an
+			// always-true evaluator and the index really does hold every record.
+			// The classifier has to agree with the evaluator that built the
+			// index, not be stricter than it.
+			"AND of value-defaulted constant children folds like explicit TRUEs",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{}},
+				{ConstantPredicate: &gen.ConstantPredicate{}},
+			}}},
+			true,
+		},
+		{
+			// THIS is the proto2 trap, and the fold must not re-open it: these
+			// children carry NO constant arm at all, and the nil-safe getter
+			// chain GetConstantPredicate().GetValue() would still answer TRUE for
+			// them. Only a child whose constant arm is PRESENT may be folded out;
+			// an armless child is unknowable and keeps the conjunction filtering.
+			"AND of children with NO constant arm stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{}, {},
+			}}},
+			false,
+		},
+		{
+			"AND mixing a real TRUE with an armless child stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				{},
+			}}},
+			false,
+		},
+		{
+			// A surviving conjunct keeps the conjunction filtering: TRUE AND x
+			// folds to x, which is a real comparison.
+			"AND of a tautology and a real comparison folds to the comparison",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				valueArm,
+			}}},
+			false,
+		},
+		{
+			"AND of two real comparisons stays filtering",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{valueArm, valueArm}}},
+			false,
+		},
+		{
+			// Nested: AND(AND(TRUE, TRUE), TRUE) collapses all the way down,
+			// because the fold is recursive exactly as construction is.
+			"nested AND of tautologies folds recursively",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				}}},
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			true,
+		},
+		{
+			// OR IS NOT THE DUAL. OrPredicate.or -> of (OrPredicate.java:417-445)
+			// does no tautology folding, and OrPredicate never overrides
+			// isTautology, so TRUE OR x is filtering to Java. Folding it would
+			// make Go scan an index Java treats as incomplete.
+			"OR containing a tautology is NOT a proved tautology",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				valueArm,
+			}}},
+			false,
+		},
+		{
+			// A SINGLETON disjunction is different, and this is Java too: of()
+			// collapses a one-element list to that element, which here is the
+			// constant itself. The narrow test then answers about a constant,
+			// not about an Or.
+			"singleton OR collapses to its only child",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			true,
+		},
+		{
+			"singleton OR of a real comparison collapses and stays filtering",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{valueArm}}},
+			false,
+		},
+		{
+			"empty AND has no surviving conjunct and is vacuously complete",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{}},
+			true,
+		},
+		{
+			// An empty disjunction is what Java's of() refuses outright
+			// (Verify.verify(!disjuncts.isEmpty())). Unreconstructable, so it is
+			// handed back untouched and fails closed.
+			"empty OR fails closed",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{}},
+			false,
+		},
+		{
+			// The evaluator (predicateFromProto) dispatches AND before the
+			// constant arm, so a multi-arm message runs the AND. Reading the
+			// constant arm out of turn would prove a tautology about a
+			// predicate that is never evaluated.
+			"multi-arm message answers for the arm the evaluator runs",
+			&gen.Predicate{
+				AndPredicate:      &gen.AndPredicate{Children: []*gen.Predicate{valueArm}},
+				ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+			},
+			false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := predicateProtoIsTautology(tc.pred); got != tc.want {
+				t.Fatalf("predicateProtoIsTautology = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering pins the other
+// half: an index's completeness can only be proved from the SERIALIZED
+// predicate. A programmatic Go closure is opaque — this one is a tautology and
+// no one can prove it — so it must count as filtering and keep the index out of
+// query execution.
+func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
+	t.Parallel()
+
+	plain := NewIndex("plain", Field("price"))
+	if plain.HasFilteringPredicate() {
+		t.Fatal("index with no predicate at all reports a filtering predicate")
+	}
+
+	opaque := NewIndex("opaque", Field("price")).
+		SetPredicate(func(proto.Message) bool { return true })
+	if !opaque.HasFilteringPredicate() {
+		t.Fatal("an opaque programmatic predicate must count as filtering — " +
+			"its tautology is unprovable, so the index cannot be assumed complete")
+	}
+
+	serialized := NewIndex("serialized", Field("price"))
+	if err := serialized.SetPredicateProto(&gen.Predicate{
+		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+	}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+	if !serialized.HasPredicate() {
+		t.Fatal("a WHERE TRUE index still DECLARES a predicate")
+	}
+	if serialized.HasFilteringPredicate() {
+		t.Fatal("a proved-tautology predicate rejects no record, so the index " +
+			"is complete and must not be treated as filtering")
+	}
+
+	filtering := NewIndex("filtering", Field("price"))
+	if err := filtering.SetPredicateProto(&gen.Predicate{
+		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_FALSE.Enum()},
+	}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+	if !filtering.HasFilteringPredicate() {
+		t.Fatal("WHERE FALSE indexes nothing — maximally filtering")
+	}
+}
+
+// TestSetPredicateProtoRejectsRowNumberWindow pins what makes the row-window
+// hazard LATENT rather than live, and names what re-arms it.
+//
+// NormalizeIndexPredicateProto deliberately refuses to fold a row-window arm
+// (it keeps only the top-N records, so the index is the opposite of complete),
+// but that guard is currently unreachable from Go: predicateFromProto has no
+// row-window arm, so an Index cannot carry the predicate in the first place.
+//
+// The moment Go implements row-window index maintenance, this test fails — and
+// that failure is the signal to check that every sparseness gate still treats
+// the resulting index as filtering, because from then on it is reachable.
+func TestSetPredicateProtoRejectsRowNumberWindow(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("topn", Field("score"))
+	err := idx.SetPredicateProto(&gen.Predicate{
+		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{Size: proto.Int32(100)},
+	})
+	if err == nil {
+		t.Fatal("SetPredicateProto ACCEPTED a row-number window predicate — Go now has " +
+			"a reachable partial-index shape whose stored predicate the maintainer " +
+			"must honour, and every `sparse` classification has to be re-checked " +
+			"against it (see NormalizeIndexPredicateProto's row-window note)")
+	}
+	if idx.HasPredicate() {
+		t.Fatal("a rejected predicate must leave the index unpredicated")
 	}
 }

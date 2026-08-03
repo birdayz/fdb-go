@@ -18,6 +18,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -56,8 +57,10 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 	idx := plans.NewRecordQueryIndexPlan(
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
-		[]string{"T"}, values.UnknownType, false)
-	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false)
+		[]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableString})
+	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 
 	ord := computeWrapperRichOrdering(w)
 	if ord == nil {
@@ -89,8 +92,10 @@ func TestIndexScanRichOrdering_ReverseSatisfiesOrderByPKDesc(t *testing.T) {
 	idx := plans.NewRecordQueryIndexPlan(
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
-		[]string{"T"}, values.UnknownType, true /* reverse */)
-	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false)
+		[]string{"T"}, values.UnknownType, true /* reverse */).
+		WithKeyComponentTypes([]values.Type{values.NullableString})
+	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(
@@ -111,8 +116,12 @@ func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 	idx := plans.NewRecordQueryIndexPlan(
 		"KVW_B",
 		[]*predicates.ComparisonRange{equalityRange(t, int64(20))},
-		[]string{"KVW"}, values.UnknownType, false)
-	w := idx.WithIndexMetadata([]string{"B"}, []string{"A", "B", "C"}, false)
+		[]string{"KVW"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
+	w := idx.WithIndexMetadata([]string{"B"}, []string{"A", "B", "C"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{
+			values.NullableLong, values.NullableLong, values.NullableLong,
+		})
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(
@@ -142,7 +151,8 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	pkB := &values.FieldValue{Field: "B", Typ: values.UnknownType}
 	scan := plans.NewRecordQueryScanPlan([]string{"AB"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{pkA, pkB}).
-		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	w := scan
 
 	ord := computeWrapperRichOrdering(w)
@@ -234,6 +244,7 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		values.UnknownType, false,
 		[]string{"ID"})
 	cand.createsDuplicates = true
+	cand.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT))
 
 	mi := NewRegularMatchInfo(
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, "x")},
@@ -242,6 +253,24 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 	parts := cand.ComputeMatchedOrderingParts(mi, []values.CorrelationIdentifier{alias}, false)
 	if len(parts) != 0 {
 		t.Fatalf("fan-out index must expose neither TAGS nor a PK suffix: got %d parts", len(parts))
+	}
+	fetch, ok := cand.ToScanPlan(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			alias: equalityRange(t, "x"),
+		}, false,
+	).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatalf("fan-out scan = %T, want fetch over index", cand.ToScanPlan(nil, false))
+	}
+	indexPlan, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("fan-out fetch inner = %T, want index plan", fetch.GetInner())
+	}
+	if pk := indexPlan.GetPKColumnNames(); len(pk) != 1 || pk[0] != "ID" {
+		t.Fatalf("fan-out plan lost coordinate-safe PK coverage names: %v", pk)
+	}
+	if ordering := indexPlan.HintOrdering(); ordering.IsKnown {
+		t.Fatalf("fan-out plan advertised ordering despite retained coverage PK: %#v", ordering)
 	}
 }
 
@@ -261,7 +290,8 @@ func TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	pkB := &values.FieldValue{Field: "B", Typ: values.UnknownType}
 	scan := plans.NewRecordQueryScanPlan([]string{"AB"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{pkA, pkB}).
-		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 
 	reqADesc := properties.NewRequestedOrdering(
 		requestedParts(map[string]properties.RequestedSortOrder{"A": properties.RequestedSortOrderDescending}, []string{"A"}),

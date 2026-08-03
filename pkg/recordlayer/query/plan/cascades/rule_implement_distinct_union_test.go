@@ -55,10 +55,14 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 
 func makeScanWithPK(recordType string, pkCols ...string) (*plans.RecordQueryScanPlan, *expressions.Reference) {
 	pkVals := make([]values.Value, len(pkCols))
+	keyTypes := make([]values.Type, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keyTypes[i] = values.NullableLong
 	}
-	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).
+		WithKeyComponentTypes(keyTypes).
+		WithPrimaryKey(pkVals)
 	ref := expressions.InitialOf(scan)
 	pm := NewPlanPropertiesMap()
 	pm.Add(scan)
@@ -261,14 +265,18 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	// pk-ordered scan, but whose BAKED plan child is a DIFFERENT (stale)
 	// scan object — the estimate/executable divergence.
 	pkVals := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithPrimaryKey(pkVals)
 	orderedSW := orderedScan
 	srcRef := expressions.InitialOf(orderedSW)
 	pmSrc := NewPlanPropertiesMap()
 	pmSrc.Add(orderedSW)
 	srcRef.SetPlanProperties(pmSrc)
 
-	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithPrimaryKey(pkVals)
 	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
 		staleScan,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
@@ -304,5 +312,364 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 		if fp, ok := child.(*plans.RecordQueryPredicatesFilterPlan); ok && fp.GetInner() == staleScan {
 			t.Fatal("the union baked the filter over its STALE child — pinOrderedSpine must relink the executable plan to the ordered member")
 		}
+	}
+}
+
+func distinctUnionCompositeRowType(recordType string) *values.RecordType {
+	return values.NewRecordType(recordType, false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+	})
+}
+
+func distinctUnionCompositeScanRef(
+	recordType string,
+	flowedType values.Type,
+) *expressions.Reference {
+	pk := []values.Value{
+		values.NewFlatFieldValue("A", values.NullableLong),
+		values.NewFlatFieldValue("B", values.NullableLong),
+	}
+	scan := plans.NewRecordQueryScanPlan([]string{recordType}, flowedType, false).
+		WithPrimaryKey(pk).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
+	ref := expressions.FinalOf(scan)
+	computeRefPlanProperties(ref)
+	return ref
+}
+
+func distinctUnionOverLegs(legs ...*expressions.Reference) *expressions.Reference {
+	quantifiers := make([]expressions.Quantifier, len(legs))
+	for i, leg := range legs {
+		quantifiers[i] = expressions.ForEachQuantifier(leg)
+	}
+	union := expressions.NewLogicalUnionExpression(quantifiers)
+	distinct := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(union)),
+	)
+	return expressions.InitialOf(distinct)
+}
+
+// TestImplementDistinctUnionRule_UnresolvedFreePrimaryKeySuffixDeclines pins
+// the nil contract of bakeMergeComparisonKeys on the real rule path. The
+// requested A prefix is addressable at the record boundary, but Limit erases
+// the flowed RecordType and the unrequested/free B tiebreak remains lazy. The
+// merge front also deduplicates by its comparison tuple, so treating nil as an
+// empty key would collapse every row in both legs.
+func TestImplementDistinctUnionRule_UnresolvedFreePrimaryKeySuffixDeclines(t *testing.T) {
+	t.Parallel()
+
+	limitLeg := func() *expressions.Reference {
+		scanRef := distinctUnionCompositeScanRef("T", values.UnknownType)
+		limit := plans.NewRecordQueryLimitPlanFromQuantifier(
+			expressions.ForEachQuantifier(scanRef), 100, 0, nil,
+		)
+		limitRef := expressions.FinalOf(limit)
+		computeRefPlanProperties(limitRef)
+		return limitRef
+	}
+	distinctRef := distinctUnionOverLegs(limitLeg(), limitLeg())
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     values.NewFlatFieldValue("A", values.NullableLong),
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessPreserveDistinctness,
+		false,
+	)
+	constraints := NewConstraintMap()
+	Set(
+		constraints,
+		distinctRef,
+		RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{requested},
+	)
+
+	for _, result := range FireImplementationRule(
+		NewImplementDistinctUnionRule(), distinctRef, constraints,
+	) {
+		if merge, ok := result.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			t.Fatalf(
+				"unresolved free PK suffix yielded merge-sort DISTINCT with keys %#v",
+				merge.GetComparisonKeys(),
+			)
+		}
+	}
+}
+
+// TestBakeMergeComparisonKeys_ResolvableFreePrimaryKeySuffix is the positive
+// twin of the rule-level refusal above: when the row type authoritatively maps
+// A and B to ordinals, the same proper-prefix request retains and bakes B as
+// the full dedup tiebreak. The existing full-record rule positive control then
+// proves that a sound candidate is still yielded end-to-end.
+func TestBakeMergeComparisonKeys_ResolvableFreePrimaryKeySuffix(t *testing.T) {
+	t.Parallel()
+
+	rowType := distinctUnionCompositeRowType("T")
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     values.NewFlatFieldValue("A", values.NullableLong),
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessPreserveDistinctness,
+		false,
+	)
+	keys := bakeMergeComparisonKeys(
+		[]values.Value{
+			values.NewFlatFieldValue("A", values.NullableLong),
+			values.NewFlatFieldValue("B", values.NullableLong),
+		},
+		requested,
+		rowType,
+	)
+	if len(keys) != 2 {
+		t.Fatalf("comparison keys = %#v, want baked (A,B)", keys)
+	}
+	for i, key := range keys {
+		field, ok := key.(*values.FieldValue)
+		if !ok || field.Resolved == nil {
+			t.Fatalf("comparison key %d = %#v, want resolved FieldValue", i, key)
+		}
+	}
+}
+
+func distinctUnionProjectedLeg(constant int64) *expressions.Reference {
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+		{Name: "V", FieldType: values.NullableLong},
+	})
+	// The resolved ordinal is load-bearing for the regression: the old plan's
+	// merge key ID#0 evaluated successfully against the projected row and
+	// silently over-collapsed it; this is not an unresolved-value loud failure.
+	id := values.NewFieldValueWithResolvedOrdinal("ID", 0, values.NullableLong)
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false).
+		WithPrimaryKey([]values.Value{id}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
+	scanRef := expressions.FinalOf(scan)
+	computeRefPlanProperties(scanRef)
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{id, values.LiteralValue(constant)},
+		[]string{"ID", "V"},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	projectionRef := expressions.FinalOf(projection)
+	computeRefPlanProperties(projectionRef)
+	return projectionRef
+}
+
+// TestImplementDistinctUnionRule_RejectsPrimaryKeyThroughReshapingProjection
+// distinguishes record identity from SQL row identity. Both projections carry
+// StoredRecord+PrimaryKey from their scan, and both are ordered by the valid
+// resolved key ID#0, but (ID,1) and (ID,2) are distinct output rows. A PK-front
+// merge would consume them together and emit only one.
+func TestImplementDistinctUnionRule_RejectsPrimaryKeyThroughReshapingProjection(t *testing.T) {
+	t.Parallel()
+
+	left := distinctUnionProjectedLeg(1)
+	right := distinctUnionProjectedLeg(2)
+	for _, ref := range []*expressions.Reference{left, right} {
+		partitions := ToPlanPartitions(ref)
+		if len(partitions) == 0 || !partitions[0].IsStoredRecord() || !partitions[0].HasPrimaryKey() {
+			t.Fatal("fixture must carry StoredRecord and PrimaryKey through Projection")
+		}
+	}
+
+	distinctRef := distinctUnionOverLegs(left, right)
+	for _, result := range FireImplementationRule(
+		NewImplementDistinctUnionRule(), distinctRef,
+	) {
+		if merge, ok := result.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			t.Fatalf(
+				"reshaped rows with the same PK yielded merge-sort DISTINCT keys %#v",
+				merge.GetComparisonKeys(),
+			)
+		}
+	}
+}
+
+// TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows pins the Go
+// executor contract (which differs from the Java plan model): Fetch currently
+// executes its child unchanged because index scans already return record
+// payloads. It therefore cannot turn (ID,constant) back into the full stored
+// row, and must not make a row-shaping projection eligible for PK dedup.
+func TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows(t *testing.T) {
+	t.Parallel()
+
+	fetchLeg := func(constant int64) *expressions.Reference {
+		projectionRef := distinctUnionProjectedLeg(constant)
+		fetch := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+			expressions.ForEachQuantifier(projectionRef),
+			nil,
+			values.UnknownType,
+			plans.FetchIndexRecordsPrimaryKey,
+		)
+		fetchRef := expressions.FinalOf(fetch)
+		computeRefPlanProperties(fetchRef)
+		return fetchRef
+	}
+
+	distinctRef := distinctUnionOverLegs(fetchLeg(1), fetchLeg(2))
+	for _, result := range FireImplementationRule(
+		NewImplementDistinctUnionRule(), distinctRef,
+	) {
+		if merge, ok := result.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			t.Fatalf(
+				"Fetch-wrapped projected rows yielded merge-sort DISTINCT keys %#v",
+				merge.GetComparisonKeys(),
+			)
+		}
+	}
+}
+
+// TestMergeDistinctStoredRecordIdentity_RejectsPlannerIdentityRowWrappers
+// protects against treating planner-level identity as runtime row identity.
+// Projection and Map both allocate a one-slot PositionalRow containing the
+// evaluated input row; neither is byte-for-byte/pass-through at execution.
+func TestMergeDistinctStoredRecordIdentity_RejectsPlannerIdentityRowWrappers(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{values.NewFlatFieldValue("ID", values.NullableLong)}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithPrimaryKey(pk).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
+	scanRef := expressions.FinalOf(scan)
+	computeRefPlanProperties(scanRef)
+
+	projectionQ := expressions.ForEachQuantifier(scanRef)
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(projectionQ.GetAlias())},
+		nil,
+		projectionQ,
+	)
+	if !projection.IsIdentity() {
+		t.Fatal("fixture must be planner-classified as an identity projection")
+	}
+	if recordType, ok := mergeDistinctStoredRecordIdentity(projection, pk); ok {
+		t.Fatalf("identity Projection unexpectedly proved stored-row identity %q", recordType)
+	}
+
+	mapQ := expressions.ForEachQuantifier(scanRef)
+	mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(
+		mapQ,
+		values.NewQuantifiedObjectValue(mapQ.GetAlias()),
+	)
+	if recordType, ok := mergeDistinctStoredRecordIdentity(mapPlan, pk); ok {
+		t.Fatalf("QOV-identity Map unexpectedly proved stored-row identity %q", recordType)
+	}
+}
+
+// TestImplementDistinctUnionRule_RejectsSameVisiblePrimaryKeyAcrossRecordTypes
+// pins the second half of the output-identity proof: primary keys are scoped to
+// a record type. T/1 and U/1 are different stored records even when both scan
+// plans expose the same structural Field(ID) property.
+func TestImplementDistinctUnionRule_RejectsSameVisiblePrimaryKeyAcrossRecordTypes(t *testing.T) {
+	t.Parallel()
+
+	_, left := makeScanWithPK("T", "id")
+	_, right := makeScanWithPK("U", "id")
+	distinctRef := distinctUnionOverLegs(left, right)
+	for _, result := range FireImplementationRule(
+		NewImplementDistinctUnionRule(), distinctRef,
+	) {
+		if merge, ok := result.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			t.Fatalf(
+				"different record types with the same visible PK yielded merge keys %#v",
+				merge.GetComparisonKeys(),
+			)
+		}
+	}
+}
+
+func distinctUnionIndexLeg(
+	distinctSignal *bool,
+) (*plans.RecordQueryIndexPlan, *expressions.Reference) {
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "TAG", FieldType: values.NullableString},
+		{Name: "ID", FieldType: values.NullableLong},
+	})
+	pk := []values.Value{values.NewFlatFieldValue("ID", values.NullableLong)}
+	index := plans.NewRecordQueryIndexPlan(
+		"IDX_TAG", nil, []string{"T"}, rowType, false,
+	).
+		WithIndexMetadata([]string{"TAG"}, []string{"ID"}, false).
+		WithKeyComponentTypes([]values.Type{values.NullableString}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithCommonPrimaryKey(pk)
+	if distinctSignal != nil {
+		index = index.WithDistinctRecordsSignal(*distinctSignal)
+	}
+	ref := expressions.FinalOf(index)
+	computeRefPlanProperties(ref)
+	return index, ref
+}
+
+// TestImplementDistinctUnionRule_RequiresEachLegToBeInternallyDistinct pins a
+// merge-cursor constraint that is easy to miss: it can advance all DIFFERENT
+// legs whose current heads tie, but it cannot see a second equal row from one
+// leg until the next round. An index with no candidate distinctness proof may
+// repeat a base record (fan-out is the production example), so PK merge-dedup
+// must decline even though the index carries a safe base PK and full ordering.
+func TestImplementDistinctUnionRule_RequiresEachLegToBeInternallyDistinct(t *testing.T) {
+	t.Parallel()
+
+	_, left := distinctUnionIndexLeg(nil) // no !createsDuplicates proof
+	_, right := distinctUnionIndexLeg(nil)
+	distinctRef := distinctUnionOverLegs(left, right)
+	for _, result := range FireImplementationRule(
+		NewImplementDistinctUnionRule(), distinctRef,
+	) {
+		if merge, ok := result.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			t.Fatalf(
+				"internally non-distinct index legs yielded merge-sort DISTINCT keys %#v",
+				merge.GetComparisonKeys(),
+			)
+		}
+	}
+}
+
+func TestMergeDistinctLegProducesDistinctRecords_IndexSignal(t *testing.T) {
+	t.Parallel()
+
+	createsDuplicates := true
+	fanOut, _ := distinctUnionIndexLeg(&createsDuplicates)
+	if mergeDistinctLegProducesDistinctRecords(fanOut) {
+		t.Fatal("fan-out index leg must not prove internal record distinctness")
+	}
+
+	createsDuplicates = false
+	scalar, _ := distinctUnionIndexLeg(&createsDuplicates)
+	if !mergeDistinctLegProducesDistinctRecords(scalar) {
+		t.Fatal("scalar index with an explicit !createsDuplicates signal should prove distinctness")
+	}
+}
+
+func TestMergeDistinctStoredRecordIdentity_QuantifiesEveryLiveChild(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{values.NewFlatFieldValue("ID", values.NullableLong)}
+	newScan := func(recordType string) *plans.RecordQueryScanPlan {
+		return plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).
+			WithPrimaryKey(pk).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
+	}
+
+	mixed := expressions.FinalOf(newScan("T"))
+	mixed.InsertFinal(newScan("U"))
+	computeRefPlanProperties(mixed)
+	limit := plans.NewRecordQueryLimitPlanFromQuantifier(
+		expressions.ForEachQuantifier(mixed), 10, 0, nil,
+	)
+	if recordType, ok := mergeDistinctStoredRecordIdentity(limit, pk); ok {
+		t.Fatalf("mixed live child record types proved one identity %q", recordType)
+	}
+
+	unanimous := expressions.FinalOf(newScan("T"))
+	unanimous.InsertFinal(newScan("T"))
+	computeRefPlanProperties(unanimous)
+	limit = plans.NewRecordQueryLimitPlanFromQuantifier(
+		expressions.ForEachQuantifier(unanimous), 10, 0, nil,
+	)
+	if recordType, ok := mergeDistinctStoredRecordIdentity(limit, pk); !ok || recordType != "T" {
+		t.Fatalf("unanimous live children = (%q,%v), want (T,true)", recordType, ok)
 	}
 }

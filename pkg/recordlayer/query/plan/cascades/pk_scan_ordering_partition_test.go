@@ -36,10 +36,12 @@ func TestToPlanPartitions_SeparatesFixedBoundScanFromSortedUnboundScan(t *testin
 	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
 
 	unbound := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, false).
-		WithPrimaryKey([]values.Value{id, k})
+		WithPrimaryKey([]values.Value{id, k}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	bound := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{id, k}).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 
 	// Sanity: both members must actually agree on DistinctRecords/StoredRecord
 	// so the test isolates Ordering as the separating property, not an

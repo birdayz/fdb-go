@@ -42,19 +42,19 @@ by nothing. Each is fixed and tested; none was caused by the cost work.
 
 **Gating conditions from revision 1, disposition.** (1) reproducer passes and both cycles are gone — done;
 (2) both self-cleaning exclusion entries removed from the property suite — done, and their `assertKnownViolation`
-would have failed had they been left; (3) corpus reviewed entry by entry against the committed explaindiff golden
-(`testdata/plan_shape.golden`, 2633 pre-fix / 2637 post-fix (file, query) plan-shape entries, 436 changed): no
-query stopped planning, no index scan demoted. **Correction:** this item originally read "no plan gained a
-node" — false, refuted by re-diffing the same golden. Exactly ONE entry gained a node:
-`in_list_pushdown.yaml#8` (`SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id`), promoted from
-`Project(PredicatesFilter(Scan(T)))` to `Project(InUnion(PredicatesFilter(Scan(T))))`. That is not a
-regression — it is the fix working as intended: with per-node cardinality shrinkage removed, the model now
-correctly prices the 3-value IN-list pushdown (three per-value point probes, merged in primary-key order) as
-cheaper than scanning the whole table and filtering, which is exactly the access path IN-list pushdown exists
-to deliver. Under the old (broken) model, the extra InUnion node's cardinality got an undeserved multiplicative
-discount that this fix removed, but the flat scan still won on the (also-wrong) old numbers; post-fix the
-pushdown wins on cost that is actually consistent with the true row counts. Re-diffing the same golden delta
-found no other entry that gained a node. No index scan was demoted anywhere in the 436 changed entries — done;
+would have failed had they been left; (3) the historical corpus at that revision was reviewed entry by entry
+against the committed explaindiff golden (`testdata/plan_shape.golden`, 2633 pre-fix / 2637 post-fix (file,
+query) plan-shape entries, 436 changed): no query stopped planning and no index scan was demoted.
+
+**Later correction to that historical audit:** it called the one node-gaining entry,
+`in_list_pushdown.yaml#8` (`SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id`), three per-value
+point probes. A subsequent physical-equality audit proved that candidate was not SARGed: its child explains as
+`Scan(T)` (a bound scan would render `Scan(T, [=])`), so `executeInUnion` reopened the full table once per IN
+value. The current single `PredicatesFilter(Scan(T))` winner is cheaper and correct. Java's
+`PlanningCostModel.compareInOperator` likewise penalizes an IN transform whose binding appears in no scan
+equality. The original promotion was therefore a cost-model false positive, not the intended IN-list access
+path. On the final rebase, 2642 of 2643 corpus shapes remain byte-identical and this correction is the sole
+shape change; no index scan is demoted;
 (4) `flatmap_secondary_index#3` unregressed — verified;
 (5) RFC-152/153 preserved-only tests pass — verified; (6) 1M stress unchanged — verified; (7) CQ-23 fixed in the
 same pass — done.

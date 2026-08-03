@@ -46,7 +46,8 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 			name: "composite PK partial equality prefix",
 			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 				WithPrimaryKey(pk2).
-				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}),
+				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}).
+				WithKeyComponentTypes(testPhysicalLongTypes(1)),
 			wantCardinality: stats.Cardinality *
 				properties.EqualityBoundSelectivity,
 		},
@@ -54,13 +55,15 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 			name: "composite PK fully equality bound",
 			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 				WithPrimaryKey(pk2).
-				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, eqOrder}),
+				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, eqOrder}).
+				WithKeyComponentTypes(testPhysicalLongTypes(2)),
 			wantCardinality: 1,
 		},
 		{
 			name: "primary key metadata unavailable",
 			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}),
+				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}).
+				WithKeyComponentTypes(testPhysicalLongTypes(1)),
 			wantCardinality: stats.Cardinality *
 				properties.EqualityBoundSelectivity,
 		},
@@ -68,7 +71,8 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 			name: "full primary key includes range",
 			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 				WithPrimaryKey(pk2).
-				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, rangeOrder}),
+				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, rangeOrder}).
+				WithKeyComponentTypes(testPhysicalLongTypes(2)),
 			wantCardinality: stats.Cardinality *
 				properties.EqualityBoundSelectivity *
 				properties.RangeSelectivity,

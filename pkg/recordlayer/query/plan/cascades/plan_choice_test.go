@@ -76,3 +76,6 @@ func (d *planChoiceIndexDef) IndexRecordTypes() []string       { return d.record
 func (d *planChoiceIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d *planChoiceIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 func (d *planChoiceIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (d *planChoiceIndexDef) IndexKeyComponentTypes() []values.Type {
+	return syntheticIndexKeyTypes(len(d.columns))
+}

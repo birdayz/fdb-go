@@ -1,6 +1,9 @@
 package cascades
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+)
 
 // indexTestPlanContext is a minimal PlanContext stub carrying a fixed set of match
 // candidates, used by data-access-path planner tests (e.g. the InExplode and benchmark
@@ -50,6 +53,24 @@ func testColumnRef(child values.Value, rowType *values.RecordType, col string, t
 	panic("testColumnRef: no column " + col + " in " + rowType.RecordName)
 }
 
+func syntheticIndexKeyTypes(size int) []values.Type {
+	result := make([]values.Type, size)
+	for i := range result {
+		result[i] = values.NullableLong
+	}
+	return result
+}
+
+func withSyntheticIndexPlanKeyTypes(plan *plans.RecordQueryIndexPlan) *plans.RecordQueryIndexPlan {
+	size := max(len(plan.GetScanComparisons()), len(plan.GetColumnNames()))
+	return plan.WithKeyComponentTypes(syntheticIndexKeyTypes(size))
+}
+
+func withSyntheticScanPlanKeyTypes(plan *plans.RecordQueryScanPlan) *plans.RecordQueryScanPlan {
+	size := max(len(plan.GetScanComparisons()), len(plan.GetPrimaryKeyValues()))
+	return plan.WithKeyComponentTypes(syntheticIndexKeyTypes(size))
+}
+
 // newKnownDistinctValueIndexCandidate constructs an ordinary scalar value
 // index for shortcut-rule tests. The production metadata adapter supplies this
 // affirmative non-fanout signal; the legacy constructor intentionally leaves
@@ -64,7 +85,7 @@ func newKnownDistinctValueIndexCandidate(
 	pkColumnNames []string,
 ) *ValueIndexScanMatchCandidate {
 	createsDuplicates := false
-	return NewValueIndexScanMatchCandidateWithFunctions(
+	candidate := NewValueIndexScanMatchCandidateWithFunctions(
 		indexName,
 		recordTypes,
 		columnNames,
@@ -75,4 +96,12 @@ func newKnownDistinctValueIndexCandidate(
 		pkColumnNames,
 		&createsDuplicates,
 	)
+	// Synthetic planner fixtures do not have descriptor metadata. Give every
+	// advertised key coordinate an explicit scalar tuple domain so they test the
+	// planner behavior they name without exercising the production Unknown-type
+	// rejection path. Tests for physical FLOAT/DOUBLE behavior override this
+	// vector with WithKeyComponentTypes.
+	return candidate.
+		WithKeyComponentTypes(syntheticIndexKeyTypes(len(columnNames))).
+		WithPrimaryKeyComponentTypes(syntheticIndexKeyTypes(len(pkColumnNames)))
 }

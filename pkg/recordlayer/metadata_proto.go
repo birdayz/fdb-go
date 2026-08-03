@@ -287,7 +287,9 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 
 	// Predicate (proto round-trip)
 	if idx.predicateProto != nil {
-		p.Predicate = idx.predicateProto
+		// The metadata proto is caller-owned output. Do not expose the Index's
+		// internal predicate authority through a mutable protobuf pointer.
+		p.Predicate = proto.Clone(idx.predicateProto).(*gen.Predicate)
 	}
 
 	return p, nil

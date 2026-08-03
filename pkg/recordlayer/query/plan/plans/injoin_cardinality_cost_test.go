@@ -42,6 +42,7 @@ func TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe(t *testing.T
 			t.Parallel()
 			stats := properties.FixedStatistics{Cardinality: test.tableCard}
 			inner := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+				WithKeyComponentTypes(testPhysicalLongTypes(1)).
 				WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false /* non-unique */)
 
 			childCost := inner.HintCost(nil, stats)
@@ -93,7 +94,8 @@ func TestInJoinHintCost_StaysInValuesLenForProvableUniqueBind(t *testing.T) {
 			t.Parallel()
 			inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 				WithPrimaryKey(pk).
-				WithScanComparisons([]*predicates.ComparisonRange{eq})
+				WithScanComparisons([]*predicates.ComparisonRange{eq}).
+				WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 			inJoin := NewRecordQueryInJoinPlan(inner, "x", false, false)
 			inJoin.SetInValues(test.inValues)
@@ -126,6 +128,7 @@ func TestInJoinInUnion_AgreeOnCardinalityForSameNonUniqueChild(t *testing.T) {
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
 	newInner := func() *RecordQueryIndexPlan {
 		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false /* non-unique */)
 	}
 

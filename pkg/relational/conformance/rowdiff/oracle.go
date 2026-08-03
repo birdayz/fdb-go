@@ -728,9 +728,11 @@ func distinctKey(r Row, cols []string) string {
 	for _, c := range cols {
 		// -0.0 and +0.0 are DISTINCT dedup keys, and %v renders them
 		// distinctly ("-0" vs "0") without help. Value identity in this engine
-		// is tuple-key identity, and the tuple encoding preserves the sign bit
-		// (see packedDedupKey's doc comment for why every dedup, grouping and
-		// uniqueness path follows the bytes rather than IEEE `=`). A previous
+		// is tuple-key identity, and the tuple encoding preserves the sign bit.
+		// For signed zero, DISTINCT, grouping, and uniqueness paths all preserve
+		// those bytes rather than following IEEE `=`; NaN is deliberately
+		// different because DISTINCT recursively canonicalizes its payloads (see
+		// packedDedupKey's doc comment). A previous
 		// revision canonicalized zero here to mirror an engine-side
 		// canonicalization that has since been removed; leaving it would make
 		// the oracle disagree with the engine it is meant to check, and a
@@ -1030,10 +1032,12 @@ func compareNonNull(a, b any) int {
 		}
 		return 0
 	case float64:
-		// values.CompareFloat64, NOT native </>/== : ORDER BY follows the
-		// FDB-tuple / index total order (signed zero split, NaN sorts
-		// highest), which deliberately DIFFERS from the IEEE equality
-		// predicate.Eval's cmpAny uses (-0.0 == +0.0 there) — the same
+		// values.CompareFloat64, NOT native </>/==. On the generator's
+		// deliberately NaN-free domain, this matches the relevant FDB tuple/index
+		// total order, including the signed-zero split. It does NOT model raw FDB
+		// NaN sign/payload order; no generated row can reach that case. This sort
+		// order deliberately DIFFERS from the IEEE equality predicate.Eval's
+		// cmpAny uses (-0.0 == +0.0 there) — the same
 		// documented predicate-vs-sort split as RFC-082's
 		// double_negative_zero_ge_predicate. Sharing the engine's own sort
 		// comparator (rather than restating float ordering here) keeps that

@@ -26,6 +26,13 @@ type AggregateIndexMatchCandidate struct {
 	aggFunction expressions.AggregateFunction
 	aggColumn   string
 	aliases     []values.CorrelationIdentifier
+	// groupKeyTypes and physicalGroupingPrefixCount answer a SARGABILITY
+	// question — which grouping coordinates a scan range can bind, and how far
+	// the logical grouping columns stay a contiguous prefix of the physical
+	// BY_GROUP key. baseRowType below answers an ORDERING question. Neither
+	// subsumes the other; see physical_key_types.go's header.
+	groupKeyTypes               []values.Type
+	physicalGroupingPrefixCount int
 	// baseRowType is the DECLARED layout of the record type this index is built
 	// over — the descriptor-shaped positional type, from the one authority
 	// (executor.PositionalTypeForDescriptor / values.FieldTypeForProtoField).
@@ -51,6 +58,21 @@ type AggregateIndexMatchCandidate struct {
 // describe the pre-computed aggregate; baseRowType is the declared layout the
 // grouping-column names resolve against (values.UnknownType when there is no
 // single one).
+//
+// groupKeyTypes and physicalGroupingPrefixCount are PRECONDITIONS, not optional
+// enhancements. Callers must supply the authoritative physical grouping-key
+// types; a candidate without them cannot exist. The reason is that an Unknown
+// physical type must DECLINE range eligibility — the binder cannot prove an
+// exact probe against a type it does not know (scan_range_binding.go's
+// validateAuthoritativeScanPhysicalType) — so a candidate built without them
+// silently declines every binding, and a silently-declining candidate is how
+// aggregate intersection dies invisibly. Making them constructor arguments
+// makes that unsound state unconstructible rather than merely discouraged.
+//
+// physicalGroupingPrefixCount is the number of grouping columns that stay a
+// contiguous leading prefix of the physical BY_GROUP key: groupingCount for an
+// ordinary aggregate, groupingCount-permutedSize for PERMUTED_MIN/MAX. It is
+// clamped to [0, len(groupCols)].
 func NewAggregateIndexMatchCandidate(
 	indexName string,
 	recordTypes []string,
@@ -58,7 +80,11 @@ func NewAggregateIndexMatchCandidate(
 	aggFunction expressions.AggregateFunction,
 	aggColumn string,
 	baseRowType values.Type,
+	groupKeyTypes []values.Type,
+	physicalGroupingPrefixCount int,
 ) *AggregateIndexMatchCandidate {
+	recordTypes = append([]string(nil), recordTypes...)
+	groupCols = append([]string(nil), groupCols...)
 	aliases := make([]values.CorrelationIdentifier, len(groupCols))
 	for i := range aliases {
 		aliases[i] = values.UniqueCorrelationIdentifier()
@@ -66,20 +92,40 @@ func NewAggregateIndexMatchCandidate(
 	if baseRowType == nil {
 		baseRowType = values.UnknownType
 	}
+	if physicalGroupingPrefixCount < 0 {
+		physicalGroupingPrefixCount = 0
+	}
+	if physicalGroupingPrefixCount > len(groupCols) {
+		physicalGroupingPrefixCount = len(groupCols)
+	}
 	return &AggregateIndexMatchCandidate{
-		indexName:   indexName,
-		recordTypes: recordTypes,
-		groupCols:   groupCols,
-		aggFunction: aggFunction,
-		aggColumn:   aggColumn,
-		aliases:     aliases,
-		baseRowType: baseRowType,
+		indexName:                   indexName,
+		recordTypes:                 recordTypes,
+		groupCols:                   groupCols,
+		aggFunction:                 aggFunction,
+		aggColumn:                   aggColumn,
+		aliases:                     aliases,
+		baseRowType:                 baseRowType,
+		groupKeyTypes:               normalizePhysicalKeyTypes(groupKeyTypes, len(groupCols)),
+		physicalGroupingPrefixCount: physicalGroupingPrefixCount,
 	}
 }
 
 // GetBaseRowType returns the declared layout the grouping-column names resolve
 // against, or values.UnknownType when the index has no single one.
 func (c *AggregateIndexMatchCandidate) GetBaseRowType() values.Type { return c.baseRowType }
+
+// GetKeyComponentTypes returns logical grouping-key types. The scan plan
+// aligns the leading entries to the comparisons it actually carries.
+func (c *AggregateIndexMatchCandidate) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.groupKeyTypes...)
+}
+
+// GetPhysicalGroupingPrefixCount returns the number of grouping columns that
+// occur before the aggregate value in the physical BY_GROUP key.
+func (c *AggregateIndexMatchCandidate) GetPhysicalGroupingPrefixCount() int {
+	return c.physicalGroupingPrefixCount
+}
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 
@@ -109,7 +155,7 @@ func (c *AggregateIndexMatchCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
 	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
-	for _, alias := range c.aliases {
+	for _, alias := range c.aliases[:c.physicalGroupingPrefixCount] {
 		cr, ok := bindings[alias]
 		if !ok || cr == nil {
 			break
@@ -123,19 +169,33 @@ func (c *AggregateIndexMatchCandidate) ComputeBoundParameterPrefixMap(
 	return prefix
 }
 
+func (c *AggregateIndexMatchCandidate) bindingRangesEligible(
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) bool {
+	physicalAliases := c.aliases[:c.physicalGroupingPrefixCount]
+	// Aggregate-index rows cannot carry a residual record predicate. Decline
+	// both incomplete exact-NaN probes and bounds whose tuple-wire domain is
+	// unknown; neither can be repaired above the pre-aggregated stream.
+	return !bindingsUseUnknownPhysicalKeyType(bindings, physicalAliases, c.groupKeyTypes) &&
+		!bindingsContainUnsupportedPhysicalFloatOrdering(bindings, physicalAliases, c.groupKeyTypes) &&
+		!bindingsContainUnsupportedPhysicalStartsWith(bindings, physicalAliases, c.groupKeyTypes) &&
+		!bindingsContainKnownConstantNaN(bindings, physicalAliases, c.groupKeyTypes)
+}
+
 func (c *AggregateIndexMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {
-	comps := make([]*predicates.ComparisonRange, 0, len(c.aliases))
-	for _, alias := range c.aliases {
+	comps := make([]*predicates.ComparisonRange, 0, c.physicalGroupingPrefixCount)
+	for _, alias := range c.aliases[:c.physicalGroupingPrefixCount] {
 		cr, ok := prefixMap[alias]
 		if !ok {
 			break
 		}
 		comps = append(comps, cr)
 	}
-	return stampIndexMetadata(c, plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, values.UnknownType, reverse))
+	return stampIndexMetadata(c, plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, values.UnknownType, reverse)).
+		WithPhysicalGroupingPrefixCount(c.physicalGroupingPrefixCount)
 }
 
 // MatchesGroupBy reports whether this aggregate index can directly satisfy

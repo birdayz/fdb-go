@@ -41,6 +41,7 @@ const (
 	partSortKeys
 	partEquatable
 	partSub
+	partTypes
 )
 
 // part is one identifying field. Constructed only via the typed builder
@@ -56,6 +57,7 @@ type part struct {
 	vs        []values.Value
 	preds     []predicates.QueryPredicate
 	typ       values.Type
+	types     []values.Type
 	scanComps []*predicates.ComparisonRange
 	iptr      *int
 	sks       []SortKey
@@ -138,6 +140,15 @@ func (k *structuralKey) Preds(ps []predicates.QueryPredicate) *structuralKey {
 // under-hash — equal⟹same-hash still holds).
 func (k *structuralKey) Type(t values.Type) *structuralKey {
 	k.parts = append(k.parts, part{kind: partType, typ: t})
+	return k
+}
+
+// Types folds an ORDERED type slice. Physical key-component types are part of
+// a scan's semantics: FLOAT and DOUBLE use different FDB tuple tags, so two
+// otherwise identical comparison plans with different component types cannot
+// share one memo member.
+func (k *structuralKey) Types(ts []values.Type) *structuralKey {
+	k.parts = append(k.parts, part{kind: partTypes, types: ts})
 	return k
 }
 
@@ -264,6 +275,16 @@ func partEqual(a, b part) bool {
 		return true
 	case partType:
 		return typeEquals(a.typ, b.typ)
+	case partTypes:
+		if len(a.types) != len(b.types) {
+			return false
+		}
+		for i := range a.types {
+			if !typeEquals(a.types[i], b.types[i]) {
+				return false
+			}
+		}
+		return true
 	case partScanComps:
 		return scanComparisonRangesEqual(a.scanComps, b.scanComps)
 	case partValuePtr:
@@ -346,6 +367,20 @@ func (k *structuralKey) writeParts(w hash.Hash64) {
 			// Equals-only — no payload (the kind byte above is the whole
 			// contribution). Mirrors the hand-rolled scan/index hashes, which
 			// fold recordTypes + scanComparisons + flags but never flowedType.
+		case partTypes:
+			binary.BigEndian.PutUint64(buf[:], uint64(len(p.types)))
+			w.Write(buf[:])
+			for _, typ := range p.types {
+				if typ == nil {
+					w.Write([]byte{0})
+					continue
+				}
+				w.Write([]byte{1})
+				typeString := typ.String()
+				binary.BigEndian.PutUint64(buf[:], uint64(len(typeString)))
+				w.Write(buf[:])
+				w.Write([]byte(typeString))
+			}
 		case partScanComps:
 			writeScanComparisonRangesHash(w, p.scanComps)
 		case partValuePtr:

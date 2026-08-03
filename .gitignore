@@ -97,3 +97,5 @@ scratchpad/
 
 # scratch build dir used by local test tooling
 .tmpbuild/
+/factory-rebless-plan-shapes
+/verify-corpus-retirement-history

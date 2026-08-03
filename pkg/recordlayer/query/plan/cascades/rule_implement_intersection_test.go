@@ -28,6 +28,7 @@ func intersectionRuleOrderedScan(
 	reverse bool,
 ) *plans.RecordQueryScanPlan {
 	return plans.NewRecordQueryScanPlan([]string{"T"}, rt, reverse).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{intersectionRuleKey()})
 }
 
@@ -182,8 +183,10 @@ func TestImplementIntersectionRule_DeclinesStaleBakedOrdinal(t *testing.T) {
 	}
 	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
 	scanA := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{id})
 	scanB := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{id})
 	staleID := values.NewFieldValueWithResolvedOrdinal("ID", 1, values.NotNullLong)
 	intr := expressions.NewLogicalIntersectionExpression(

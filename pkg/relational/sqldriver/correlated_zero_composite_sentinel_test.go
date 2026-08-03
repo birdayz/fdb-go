@@ -8,20 +8,19 @@ package sqldriver_test
 // The shape: `t.v = o.k AND t.w = 5` against composite index (v, w), where
 // the comparand o.k is CORRELATED — supplied per-probe by an outer row and
 // therefore opaque at plan time. When the runtime value is a signed zero,
-// IEEE `=` (this engine's ruled semantics — see DIVERGENCES.md on Java's
-// bit-identity `=`) requires matching BOTH stored zeros, but -0.0 and +0.0
+// IEEE `=` (this engine's ruled semantics — see DIVERGENCES.md and RFC-208)
+// requires matching BOTH stored zeros, but -0.0 and +0.0
 // are distinct adjacent index keys and the two wanted keys
 // (-0.0, 5) / (+0.0, 5) are NOT a contiguous interval: the span between
 // them also admits (-0.0, w>5) and (+0.0, w<5). A single probe missed a
 // row; a naively widened interval would return wrong rows.
 //
-// The fix is execution-time probe splitting (zeroFork in
-// pkg/recordlayer/query/executor): when the range builder — which runs
-// per-probe, with the correlated value in hand — sees a zero-valued float
-// equality that does NOT terminate the scan prefix, it emits one range per
-// signed zero and the executor scans them as an ordered concatenation.
-// Disjoint ranges make the union duplicate-free with no dedup layer, and
-// the full composite prefix stays sarg'd — no de-sarg, no residual filter.
+// The fix is an execution-time physical range set. The binder uses the
+// physical key-component type and, when a zero-valued float equality does NOT
+// terminate the scan prefix, records one exact alternative per signed zero.
+// The range-set cursor enumerates the Cartesian product lazily in key order.
+// Disjoint ranges make the union duplicate-free with no dedup layer, while the
+// full composite prefix stays sarg'd — no de-sarg and no residual filter.
 //
 // Rows 3 and 4 sit BETWEEN the two zero groups' w=5 keys, so this test
 // fails loudly in BOTH error directions: a single-sign probe misses id 1 or
@@ -37,6 +36,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
@@ -69,8 +71,8 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES"+rows)
 	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, v, w) VALUES"+rows)
 	// Outer keys: id 10 = +0.0, id 30 = -0.0 (both correlation directions),
-	// id 20 = nonzero control.
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0), (30, -0.0)")
+	// id 20 = nonzero control, and id 40 = NULL (SQL 3VL control).
+	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0), (30, -0.0), (40, NULL)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -137,6 +139,16 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 			"residual-filter path must agree with the index path, -0.0 outer",
 		},
 		{
+			"SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 40",
+			nil,
+			"a correlated NULL equality comparand is UNKNOWN and must bind to an empty range set",
+		},
+		{
+			"SELECT t2.id FROM t2, o WHERE t2.v = o.k AND t2.w = 5 AND o.id = 40",
+			nil,
+			"the residual path must agree that a correlated NULL equality matches no rows",
+		},
+		{
 			"SELECT t.id FROM t, o WHERE t.v = o.k AND o.id = 10",
 			[]int64{1, 3, 4, 5},
 			"correlated zero in TERMINAL position still widens correctly (all zero-v rows)",
@@ -169,14 +181,17 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	if !strings.Contains(plan, "T_VW") {
 		t.Errorf("correlated composite probe no longer uses index T_VW — de-sargged?\nplan: %s", plan)
 	}
+	if !strings.Contains(plan, "[=, =]") {
+		t.Errorf("correlated composite probe dropped part of the (v, w) equality prefix\nplan: %s", plan)
+	}
 }
 
-// Shape pins for the zeroFork mechanism beyond the single-fork sentinel above:
-// the 2^k multi-fork expansion, aggregate consumers over a forked prefix, and
-// the negative result that the REVERSE fork arm is not SQL-reachable today.
+// Shape pins for physical range sets beyond the one-zero sentinel above: the
+// 2^k Cartesian product, aggregate consumers over a plural physical prefix,
+// and SQL-reachable REVERSE range-set order plus continuation resume.
 // Each subtest is a proof that justified a design decision; the failure
 // messages say what gets re-armed if the pinned fact changes.
-func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
+func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -199,8 +214,8 @@ func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx,
 		"INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, 5.0, 5), (3, -0.0, 9), (4, 0.0, 1), (5, 0.0, 5)")
-	// m: ALL FOUR sign combinations at w=5 (ids 1-4) — the 2^2 cartesian a
-	// two-fork probe must cover — plus guards: ids 5-6 sit between the wanted
+	// m: ALL FOUR sign combinations at w=5 (ids 1-4) — the 2^2 Cartesian range
+	// set must cover — plus guards: ids 5-6 sit between the wanted
 	// (a,b,5) keys in index order (wrong w), ids 7-8 have a nonzero in one
 	// fork column (must not match a zero comparand).
 	mwjoMustExec(t, db, ctx,
@@ -248,27 +263,27 @@ func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
 		return true
 	}
 
-	// TWO correlated zero comparands on one index (a, b, w): the range builder
-	// records a fork per non-terminal zero equality and expands the cartesian —
-	// 2^2 = 4 disjoint ranges, exactly one row per sign combination, no
-	// duplicates, and the FULL three-column prefix stays sarg'd.
-	t.Run("two-fork-cartesian", func(t *testing.T) {
+	// TWO correlated zero comparands on one index (a, b, w): the binder records
+	// two alternatives per non-terminal zero equality and the cursor enumerates
+	// their 2^2 Cartesian product lazily — four disjoint ranges, exactly one row
+	// per sign combination, no duplicates, and the full prefix stays sarg'd.
+	t.Run("two-zero-cartesian", func(t *testing.T) {
 		q := "SELECT m.id FROM m, o WHERE m.a = o.k AND m.b = o.k2 AND m.w = 5 AND o.id = 10"
 		plan := explainOnConn(t, ctx, conn, q)
 		if !strings.Contains(plan, "IndexScan(M_ABW, [=, =, =])") {
-			t.Errorf("two-fork probe no longer sargs the full (a, b, w) prefix — de-sargged or residualized?\nplan: %s", plan)
+			t.Errorf("two-zero probe no longer sargs the full (a, b, w) prefix — de-sargged or residualized?\nplan: %s", plan)
 		}
 		got := ids(t, q)
 		want := []int64{1, 2, 3, 4}
 		if !eq(got, want) {
-			t.Errorf("two correlated zero forks must return exactly one row per sign combination: got %v, want %v\nplan: %s", got, want, plan)
+			t.Errorf("two correlated zero equalities must return exactly one row per sign combination: got %v, want %v\nplan: %s", got, want, plan)
 		}
 	})
 
-	// Aggregate consumers sit above the same forked scan; a fork arm that
-	// dropped or duplicated a range would corrupt COUNT/MAX silently (no row
-	// list to eyeball), so pin the aggregate values over the forked join.
-	t.Run("aggregate-over-fork", func(t *testing.T) {
+	// Aggregate consumers sit above the same range-set scan; a dropped or
+	// duplicated physical range would corrupt COUNT/MAX silently (no row list
+	// to eyeball), so pin the aggregate values over the correlated join.
+	t.Run("aggregate-over-range-set", func(t *testing.T) {
 		for _, tc := range []struct {
 			q    string
 			want int64
@@ -278,7 +293,7 @@ func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
 		} {
 			plan := explainOnConn(t, ctx, conn, tc.q)
 			if !strings.Contains(plan, "IndexScan(T_VW, [=, =])") {
-				t.Errorf("aggregate over the forked correlated join lost the composite index probe\nquery: %s\nplan: %s", tc.q, plan)
+				t.Errorf("aggregate over the correlated range set lost the composite index probe\nquery: %s\nplan: %s", tc.q, plan)
 			}
 			var got int64
 			if err := conn.QueryRowContext(ctx, tc.q).Scan(&got); err != nil {
@@ -290,23 +305,32 @@ func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
 		}
 	})
 
-	// NEGATIVE RESULT, pinned: the REVERSE fork arm is not SQL-reachable.
-	// ORDER BY t.v DESC over the correlated join plans an InMemorySort above a
-	// FORWARD inner probe — the planner does not push DESC into a correlated
-	// inner scan, so e2e coverage of the reverse arm is impossible today and
-	// multiRangeScanCursor's reverse ordering is pinned at unit level only
-	// (zero_fork_scan_ranges_test.go). If this pin breaks because the plan
-	// gains a REVERSE marker or loses the InMemorySort, the reverse arm has
-	// become reachable: extend the sentinel to assert reverse row order and
-	// continuation resume across fork boundaries on the SQL path.
-	t.Run("reverse-not-reachable", func(t *testing.T) {
+	// RFC-208 makes the REVERSE range-set path SQL-reachable: ORDER BY t.v DESC
+	// is satisfied directly by a reverse composite-index probe. Pin both its
+	// physical order (+0 branch before -0) and transparent statement pagination
+	// under budgets that stop inside and between the two signed-zero branches.
+	t.Run("reverse-order-and-resume", func(t *testing.T) {
 		q := "SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10 ORDER BY t.v DESC"
 		plan := explainOnConn(t, ctx, conn, q)
-		if strings.Contains(plan, "REVERSE") || !strings.Contains(plan, "InMemorySort") {
-			t.Errorf("DESC over a correlated forked probe no longer plans InMemorySort over a forward scan — the reverse fork arm just became SQL-reachable; add e2e reverse-order and continuation pins here\nplan: %s", plan)
+		if !strings.Contains(plan, "IndexScan(T_VW, [=, =]) REVERSE") || strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("DESC over the correlated range set must use the reverse composite probe directly\nplan: %s", plan)
 		}
-		if got, want := ids(t, q), []int64{1, 5}; !eq(got, want) {
-			t.Errorf("reverse-ordered forked join lost or duplicated rows: got %v, want %v\nplan: %s", got, want, plan)
+
+		unpaged := scanInt64Rows(t, ctx, conn, q)
+		if got, want := fmt.Sprint(unpaged), "[5 1]"; got != want {
+			t.Fatalf("reverse physical range order = %s, want %s\nplan: %s", got, want, plan)
+		}
+		for budget := 2; budget <= 4; budget++ {
+			pagedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+				ec.SetOptions(api.NewOptionsBuilder().
+					Set(api.OptExecutionScannedRowsLimit, budget).
+					Build())
+			})
+			paged := scanInt64Rows(t, ctx, pagedConn, q)
+			if fmt.Sprint(paged) != fmt.Sprint(unpaged) {
+				t.Fatalf("reverse range-set continuation dropped, duplicated, or reordered rows (budget %d): paged=%v unpaged=%v",
+					budget, paged, unpaged)
+			}
 		}
 	})
 }

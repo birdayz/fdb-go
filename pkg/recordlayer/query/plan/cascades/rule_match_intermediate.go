@@ -1061,6 +1061,9 @@ func matchSingleSourceAgainstSelect(
 	// ComputeBoundParameterPrefixMap is the single source of truth for what the
 	// scan can actually constrain; the distance (index-only) binding it always
 	// retains stays sargable.
+	if !candidateBindingRangesEligible(candidate, paramBindings) {
+		return
+	}
 	prefix := candidate.ComputeBoundParameterPrefixMap(paramBindings)
 	for _, pb := range pendingSargables {
 		if _, inPrefix := prefix[pb.ph.GetParameterAlias()]; inPrefix {

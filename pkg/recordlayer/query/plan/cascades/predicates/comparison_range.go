@@ -143,11 +143,13 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 	}
 	switch r.rangeType {
 	case ComparisonRangeEmpty:
-		if c.Type == ComparisonEquals || c.Type == ComparisonIsNull {
+		if isScanRangeEqualityType(c.Type) {
 			// IS NULL is an EQUALITY range on the NULL value, matching Java's
 			// ScanComparisons.getComparisonType(IS_NULL) == EQUALITY: the index
-			// scan seeks the single [null] key. (IS NOT NULL stays an
-			// inequality — the (null, +inf) range — handled below.)
+			// scan seeks the single [null] key. IS NOT DISTINCT FROM is likewise
+			// a null-safe equality and must reach the exact-key binder rather than
+			// the ordered-inequality combiner. (IS NOT NULL stays an inequality —
+			// the (null, +inf) range — handled below.)
 			return MergeResult{
 				Range: &ComparisonRange{
 					rangeType: ComparisonRangeEquality,
@@ -166,7 +168,7 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 			Ok: true,
 		}
 	case ComparisonRangeEquality:
-		if c.Type != ComparisonEquals {
+		if !isScanRangeEqualityType(c.Type) {
 			return MergeResult{Ok: false, Residual: c}
 		}
 		// Two equality comparisons must agree. Go compares via
@@ -178,7 +180,7 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 		}
 		return MergeResult{Range: r, Ok: true}
 	case ComparisonRangeInequality:
-		if c.Type == ComparisonEquals {
+		if isScanRangeEqualityType(c.Type) {
 			return MergeResult{Ok: false, Residual: c}
 		}
 		merged := &ComparisonRange{
@@ -189,6 +191,15 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 		return MergeResult{Range: merged, Ok: true}
 	}
 	return MergeResult{Ok: false, Residual: c}
+}
+
+func isScanRangeEqualityType(comparisonType ComparisonType) bool {
+	switch comparisonType {
+	case ComparisonEquals, ComparisonIsNull, ComparisonNotDistinctFrom:
+		return true
+	default:
+		return false
+	}
 }
 
 // comparisonsEqualValue compares two equality Comparisons via their

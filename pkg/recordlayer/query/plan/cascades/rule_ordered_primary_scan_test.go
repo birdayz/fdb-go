@@ -14,7 +14,15 @@ func TestOrderedPrimaryScanRule_FiresForPrimaryKeyOrdering(t *testing.T) {
 	ctx := &rfc190PrimaryKeyPlanContext{
 		primaryKeyColumns: []string{"TENANT_ID", "ID"},
 	}
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	// The flowed type must be REAL. Sort elision now depends on the physical
+	// type of each key coordinate — a raw FLOAT/DOUBLE key is not in logical
+	// order — so a stubbed UnknownType would exercise the fail-closed path
+	// rather than the behaviour this test is about.
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "TENANT_ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
 	sortExpr := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
 			{Value: values.NewFlatFieldValue("TENANT_ID", values.NullableLong)},

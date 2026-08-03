@@ -23,7 +23,8 @@ func TestRFC190FlatMapOrderingCase1MaxOneOuterUsesInner(t *testing.T) {
 	outer := plans.NewRecordQueryScanPlan(
 		[]string{"OUTER"}, values.UnknownType, false,
 	).WithPrimaryKey([]values.Value{outerKey}).
-		WithScanComparisons([]*predicates.ComparisonRange{rfc190EqualityRange(t, int64(7))})
+		WithScanComparisons([]*predicates.ComparisonRange{rfc190EqualityRange(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	inner := rfc190Index("INNER_IDX", "inner_key", true, true)
 
 	outerMax := computeCardinalities(outer, outer).GetMaxCardinality()
@@ -51,7 +52,8 @@ func TestRFC190FlatMapOrderingCase2aNonDistinctOuterUsesOuterOnly(t *testing.T) 
 	innerKey := rfc190Field("inner_key")
 	outer := plans.NewRecordQueryScanPlan(
 		[]string{"OUTER"}, values.UnknownType, true,
-	).WithPrimaryKey([]values.Value{outerKey})
+	).WithPrimaryKey([]values.Value{outerKey}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	// Make the ignored inner suffix visibly different and strict. Case 2a must
 	// still report only the non-distinct outer ordering.
 	inner := rfc190Index("INNER_IDX", "inner_key", false, true)
@@ -88,7 +90,8 @@ func TestRFC190FlatMapOrderingCase2bDistinctOuterConcatenatesInner(t *testing.T)
 	// the right/inner ordering.
 	inner := plans.NewRecordQueryScanPlan(
 		[]string{"INNER"}, values.UnknownType, true,
-	).WithPrimaryKey([]values.Value{innerKey})
+	).WithPrimaryKey([]values.Value{innerKey}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 
 	if !computeWrapperRichOrdering(outer).IsDistinct() {
 		t.Fatal("case 2b precondition: outer ordering must be distinct")
@@ -221,7 +224,8 @@ func rfc190Index(
 ) *plans.RecordQueryIndexPlan {
 	index := plans.NewRecordQueryIndexPlan(
 		indexName, nil, []string{"T"}, values.UnknownType, reverse,
-	).WithIndexMetadata([]string{columnName}, nil, false)
+	).WithKeyComponentTypes([]values.Type{values.NullableLong}).
+		WithIndexMetadata([]string{columnName}, nil, false)
 	if distinct {
 		index = index.WithStrictlySorted()
 	}

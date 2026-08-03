@@ -110,7 +110,7 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 			[]string{"Order"},
 			nil,
 			false,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, cerr := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if cerr != nil {

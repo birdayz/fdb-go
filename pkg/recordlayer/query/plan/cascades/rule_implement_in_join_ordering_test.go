@@ -26,7 +26,8 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{result.Range},
-		[]string{"T"}, values.UnknownType, false)
+		[]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 
 	innerRef := expressions.InitialOf(iw)
@@ -89,7 +90,8 @@ func TestInJoinRule_SortedClaimIsBackedByActuallySortedValues(t *testing.T) {
 
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{result.Range},
-		[]string{"T"}, values.UnknownType, false)
+		[]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 
 	innerRef := expressions.InitialOf(iw)
@@ -173,7 +175,8 @@ func TestInJoinRule_OrderingAware_RichOrderingFromIndexScan(t *testing.T) {
 
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_ab", []*predicates.ComparisonRange{eqRange, predicates.EmptyComparisonRange()},
-		[]string{"T"}, values.UnknownType, false)
+		[]string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a", "b"}, nil, false)
 
 	richOrd := iw.HintRichOrdering()

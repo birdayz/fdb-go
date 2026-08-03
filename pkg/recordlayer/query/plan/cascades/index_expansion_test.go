@@ -775,6 +775,8 @@ func TestAggregateIndexMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	trav := cand.GetTraversal()
@@ -805,6 +807,8 @@ func TestAggregateIndexMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	trav1 := cand.GetTraversal()
@@ -812,4 +816,91 @@ func TestAggregateIndexMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 	if trav1 != trav2 {
 		t.Fatal("AggregateIndexMatchCandidate.GetTraversal returned different pointers on repeated calls")
 	}
+}
+
+// tautologyPredicateProto is `WHERE TRUE` in the stored form: a predicate that
+// rejects no record, so the index it guards holds an entry for every one.
+func tautologyPredicateProto() *gen.Predicate {
+	return &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_TRUE.Enum(),
+	}}
+}
+
+// TestCandidateBoundaryClassifiesTautologyAsNoPredicate pins that a stored
+// predicate which provably filters nothing leaves the candidate with NO
+// predicate at all — the state every downstream gate reads.
+//
+// The classification has to happen where the predicate ENTERS the candidate,
+// because "is this candidate sparse?" is asked in four places and only ONE of
+// them converts the predicate first:
+//
+//   - ExpandValueIndex's fan-out arm drops the candidate outright,
+//   - AbstractDataAccessRule restricts it to root-reference matches,
+//   - candidatePreservesBaseRecordCardinality refuses cardinality shortcuts,
+//   - expandFlatValueIndex attaches it (and DOES check for a tautology).
+//
+// A tautology check at the one converting site leaves the other three treating
+// a complete index as filtered, so `WHERE TRUE` on a fan-out index yields no
+// candidate at all. Normalizing at the boundary is what makes the four agree.
+func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
+	t.Parallel()
+
+	newCandidate := func(root *gen.KeyExpression, duplicates bool) *ValueIndexScanMatchCandidate {
+		return NewValueIndexScanMatchCandidateWithFunctions(
+			"idx_taut", []string{"Item"}, []string{"TAGS"}, nil,
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			values.UnknownType, false, nil, &duplicates,
+		).WithRootKeyExpression(root)
+	}
+
+	fanOutRoot := candidateTestKeyField("TAGS", gen.Field_FAN_OUT)
+
+	t.Run("presence gates see no predicate", func(t *testing.T) {
+		t.Parallel()
+		cand := newCandidate(fanOutRoot, true).WithPredicateProto(tautologyPredicateProto())
+		if cand.GetPredicateProto() != nil {
+			t.Fatalf("a WHERE TRUE index still presents a candidate predicate (%v); "+
+				"every `predicateProto != nil` gate will treat a COMPLETE index as filtered",
+				cand.GetPredicateProto())
+		}
+	})
+
+	t.Run("fan-out candidate survives", func(t *testing.T) {
+		t.Parallel()
+		cand := newCandidate(fanOutRoot, true).WithPredicateProto(tautologyPredicateProto())
+		if cand.GetTraversal() == nil {
+			t.Fatal("a WHERE TRUE fan-out index produced NO candidate — the sparse " +
+				"fan-out guard fired on a predicate that rejects nothing, so the " +
+				"index is unusable for planning")
+		}
+	})
+
+	t.Run("cardinality shortcut admits it", func(t *testing.T) {
+		t.Parallel()
+		scalarRoot := candidateTestKeyField("TAGS", gen.Field_SCALAR)
+		cand := newCandidate(scalarRoot, false).WithPredicateProto(tautologyPredicateProto())
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			t.Fatal("a WHERE TRUE scalar index was refused as cardinality-preserving — " +
+				"it omits no record, so it preserves base-record cardinality exactly")
+		}
+	})
+
+	t.Run("a REAL filter is still sparse at every gate", func(t *testing.T) {
+		t.Parallel()
+		filtering := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+			Value: gen.ConstantPredicate_FALSE.Enum(),
+		}}
+		cand := newCandidate(fanOutRoot, true).WithPredicateProto(filtering)
+		if cand.GetPredicateProto() == nil {
+			t.Fatal("WHERE FALSE indexes nothing and must stay a sparse candidate")
+		}
+		if cand.GetTraversal() != nil {
+			t.Fatal("a genuinely sparse fan-out candidate must still fail closed")
+		}
+		scalarCand := newCandidate(candidateTestKeyField("TAGS", gen.Field_SCALAR), false).
+			WithPredicateProto(filtering)
+		if candidatePreservesBaseRecordCardinality(scalarCand) {
+			t.Fatal("a sparse index omits records and cannot preserve base-record cardinality")
+		}
+	})
 }

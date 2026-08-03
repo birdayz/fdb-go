@@ -3,12 +3,15 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // DistinctOverGroupByElimRule eliminates a LogicalDistinct that sits
-// directly over a GroupByExpression. GROUP BY already produces at most
-// one row per unique combination of grouping keys — DISTINCT on top
-// is a no-op.
+// directly over a GroupByExpression when the grouping key's physical identity
+// is congruent with logical DISTINCT equality. GROUP BY's streaming/runtime and
+// maintained aggregate indexes preserve raw FLOAT/DOUBLE NaN encodings, while
+// DISTINCT canonicalizes NaNs, so floating (including nested floating) or
+// unknown keys must keep the outer DISTINCT.
 //
 //	Distinct(GroupBy(keys, aggs, X))  →  GroupBy(keys, aggs, X)
 //
@@ -32,8 +35,14 @@ func (r *DistinctOverGroupByElimRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	innerExpr := innerRef.Get()
-	if _, ok := innerExpr.(*expressions.GroupByExpression); !ok {
+	groupBy, ok := innerExpr.(*expressions.GroupByExpression)
+	if !ok {
 		return
+	}
+	for _, key := range groupBy.GetGroupingKeys() {
+		if key == nil || !properties.ValueIdentityMatchesLogicalEquality(key.Type()) {
+			return
+		}
 	}
 	call.Yield(innerExpr)
 }

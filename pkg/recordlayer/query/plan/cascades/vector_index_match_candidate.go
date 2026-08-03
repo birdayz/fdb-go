@@ -42,7 +42,8 @@ type VectorIndexScanMatchCandidate struct {
 	// partitionCount is the number of leading (partition-prefix) columns —
 	// the KeyWithValue split point. columnNames[:partitionCount] are the
 	// partition columns; columnNames[partitionCount] is the vector column.
-	partitionCount int
+	partitionCount             int
+	partitionKeyComponentTypes []values.Type
 	// distanceAlias is the sargable alias of the distance placeholder (the
 	// slot the DistanceRank predicate binds to).
 	distanceAlias values.CorrelationIdentifier
@@ -119,12 +120,26 @@ func NewVectorIndexScanMatchCandidate(
 		orderingAliases:              ordering,
 		parametersRequiredForBinding: requiredForBinding,
 		partitionCount:               partitionCount,
+		partitionKeyComponentTypes:   physicalTypesFromFlatRow(flowedType, cols[:partitionCount], nil),
 		distanceAlias:                distanceAlias,
 		metric:                       metric,
 		flowedType:                   flowedType,
 		unique:                       unique,
 		primaryKeyColumns:            pkCols,
 	}
+}
+
+// WithPartitionKeyComponentTypes attaches authoritative physical partition-key
+// types to a freshly constructed vector candidate.
+func (c *VectorIndexScanMatchCandidate) WithPartitionKeyComponentTypes(types []values.Type) *VectorIndexScanMatchCandidate {
+	c.partitionKeyComponentTypes = normalizePhysicalKeyTypes(types, c.partitionCount)
+	return c
+}
+
+// GetPartitionKeyComponentTypes returns physical types aligned with the
+// partition equality prefix.
+func (c *VectorIndexScanMatchCandidate) GetPartitionKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.partitionKeyComponentTypes...)
 }
 
 // CandidateName returns the index name.
@@ -243,6 +258,32 @@ func (c *VectorIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	return prefix
 }
 
+func (c *VectorIndexScanMatchCandidate) bindingRangesEligible(
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) bool {
+	// Partitioned vectors are self-limiting per physical partition. Turning a
+	// logical NaN equality into a residual after selecting one NaN payload could
+	// omit whole graphs, so the candidate is ineligible instead.
+	partitionAliases := c.parameters[:c.partitionCount]
+	return !bindingsUseUnknownPhysicalKeyType(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainUnsupportedPhysicalFloatOrdering(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainUnsupportedPhysicalStartsWith(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	) && !bindingsContainKnownConstantNaN(
+		bindings,
+		partitionAliases,
+		c.partitionKeyComponentTypes,
+	)
+}
+
 // ToScanPlan converts the matched bindings into a vector (BY_DISTANCE) scan
 // plan. It separates the partition-key equality bindings (which form the HNSW
 // partition prefix) from the single DistanceRank binding (which carries the
@@ -288,7 +329,7 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		isReturningVectors,
 		c.recordTypes,
 		c.flowedType,
-	)
+	).WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes)
 
 	// Carry the partition-key column names so the planner can certify a
 	// partition-column residual (an unconsumed partition INEQUALITY, e.g.

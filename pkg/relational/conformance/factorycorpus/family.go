@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// FileExt is the extension of a committed corpus family file. The corpus is
+// genuine yamsql grouped one file per feature family (RFC-201 §5.7).
+const FileExt = ".yamsql"
+
 // FamilyOf maps a feature vector onto its feature FAMILY — the logical group
 // whose scenarios share one committed `.yamsql` file, mirroring the upstream
 // corpus's convention of one file per feature area (cte.yamsql holds the CTE
@@ -142,7 +146,7 @@ func FamilyFileName(family string) string {
 	// The subquery segment is "" for the none case after sanitizing? It is
 	// not: subqueryClass returns "none" explicitly, so every segment is
 	// non-empty and the name never ends in a bare separator.
-	return strings.Join(segs, "__") + ".yamsql"
+	return strings.Join(segs, "__") + FileExt
 }
 
 func sanitizeSegment(s string) string {

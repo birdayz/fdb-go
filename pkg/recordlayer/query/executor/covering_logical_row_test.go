@@ -73,6 +73,29 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 	}
 }
 
+func TestBuildCoveringLogicalRowDoesNotGuessUnsafePrimaryKeyNames(t *testing.T) {
+	t.Parallel()
+
+	// PK (ID, literal(7)) has FieldNames()==[ID], but ID is not the tuple tail.
+	// An index whose root is ID can still cover ID directly. The metadata adapter
+	// stamps no PK coverage names, and the executor must honor that empty list;
+	// re-deriving FieldNames would write the literal after the correct index value
+	// and silently change ID from 42 to 7.
+	logical := positionalTypeFromNames([]string{"ID", "PRICE"})
+	ords := coveringLogicalOrdinals([]string{"ID"}, logical)
+	row := buildCoveringLogicalRow(
+		[]string{"ID"}, nil,
+		tuple.Tuple{int64(42)}, tuple.Tuple{int64(42), int64(7)},
+		logical, ords,
+	)
+	if id, _ := row.Get(0); id != int64(42) {
+		t.Fatalf("unsafe PK tail overwrote covered ID with %v, want 42", id)
+	}
+	if price, _ := row.Get(1); price != nil {
+		t.Fatalf("uncovered PRICE = %v, want nil", price)
+	}
+}
+
 func TestCoveringIndexCursor_PropagatesFullPrimaryKey(t *testing.T) {
 	t.Parallel()
 	index := recordlayer.NewIndex("covering_pk", recordlayer.Field("a"))

@@ -1,17 +1,17 @@
 # RFC-196 — A zero-valued float equality terminates the scan prefix
 
-Status: **implemented on `fix/cq29-cardinality-bound-violations`, NOT merged, awaiting Graefe + Torvalds ACK.**
-Closes: TODO CQ-28.
+Status: **historical interim design; landed after review and superseded by RFC-208 on 2026-08-01.**
+Closes: TODO CQ-28 historically; RFC-208 is the current complete design.
 
 ## Process note, stated up front
 
 CLAUDE.md requires a Graefe ACK on an RFC *before* implementation for any
 matching/data-access change, and CQ-28's own TODO entry repeated that. The
 implementation was written first and this document after. That ordering was
-wrong. The work is on a branch and unmerged, so the gate can still function as a
-gate — but reviewers should read this as a design under review, not a
-rationalisation of something already shipped. If the design is rejected, the
-commit comes out.
+wrong. At the time, the change remained unmerged so review could still function
+as a gate. Review later completed and the interim design landed; this note is
+retained as the process record, while the postscript below records RFC-208's
+superseding design.
 
 ## The defect
 
@@ -19,7 +19,8 @@ commit comes out.
 `(-0.0, 5)`.
 
 IEEE says `-0.0 == +0.0` and this engine's `=` follows IEEE (deliberately — see
-DIVERGENCES.md on Java's buggy bit-identity `=`). FDB tuple encoding preserves
+DIVERGENCES.md on Java's boxed-predicate bit-identity `=` and its contradictory
+direct primitive `RelOpValue` path). FDB tuple encoding preserves
 the sign bit, because it is Java's encoder and wire compatibility is the hard
 line, so the two zeros are **distinct, adjacent index keys**. An equality probe
 for `0` must therefore span both.
@@ -103,16 +104,17 @@ where the comparand value is finally known. That changes the index scan's
 contract — it would return more rows than its range implies and filter
 internally — and belongs behind its own gate.
 
-**POSTSCRIPT (2026-08-01, CQ-83, branch `fix/rfc196-correlated-zero-composite`):
-the gap is CLOSED, at execution time as prescribed above, but WITHOUT the
-contract change this section anticipated.** The executor's range builder runs
-per-probe with the correlated value in hand; it now splits a non-terminal
-zero-float equality into one range per signed zero and scans them as an
-ordered concatenation (`zeroFork` / `multiRangeScanCursor`,
-`pkg/recordlayer/query/executor`). The union is exact — full composite prefix
-kept, no residual, no internal filtering, no de-sarg, plan shape unchanged —
-and disjointness makes it duplicate-free with no dedup layer. The sentinel
-fired on its own terms and now asserts the correct rows.
+**POSTSCRIPT (2026-08-01, CQ-83; generalized by RFC-208): the gap is CLOSED at
+execution time, but without the contract change this section anticipated.**
+PR #571 first closed the correlated case with executor-local probe splitting.
+RFC-208 supersedes that narrow mechanism: the binder uses authoritative
+physical key-component types to represent non-terminal zero equality as an
+exact lazy range set, and the range-set cursor scans it with fingerprinted
+continuations and shared resource/limit accounting. The full composite prefix
+is kept — no residual, no internal filtering, no de-sarg, and no plan-shape
+change — while disjoint physical ranges make the result duplicate-free without
+a dedup layer. The sentinel fired on its own terms and now asserts the correct
+rows.
 
 ## Verification
 

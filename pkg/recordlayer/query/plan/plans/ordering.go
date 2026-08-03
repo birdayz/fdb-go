@@ -309,6 +309,33 @@ func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 	return prefix
 }
 
+// ownOrderPrefixLen is equalityPrefixLen for the SELF question: how many
+// leading coordinates are FIXED by an equality, counting one that spans both
+// signed zeros. Always >= equalityPrefixLen.
+//
+// The gap between the two is load-bearing. When ownOrderPrefixLen runs past
+// equalityPrefixLen, the extra coordinates still carry their OWN order — the
+// range set enumerates their blocks in key order, so a sort on any of them is
+// satisfied in the scan's direction (NOT because they admit a single logical
+// value: a signed-zero equality admits two distinct sort values, see
+// EqualityBoundCoordinateClaimsOwnOrder) — but one of them covers more than a
+// single physical key, so the SORTED tail after that prefix is not globally
+// ordered and must be dropped entirely. Callers
+// express that by claiming the fixed prefix and emptying the tail, never by
+// claiming a shorter fixed prefix: shortening it would throw away a sound
+// claim, which is what cost `ORDER BY <signed-zero-bound float>` its
+// index order.
+func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
+	prefix := 0
+	for i := 0; i < n && i < len(comps); i++ {
+		if !EqualityBoundCoordinateClaimsOwnOrder(comps[i]) {
+			break
+		}
+		prefix = i + 1
+	}
+	return prefix
+}
+
 // EqualityPinsSinglePhysicalKey reports whether cr binds its coordinate to ONE
 // physical key — the property that makes the coordinate FIXED rather than
 // sorted, so it claims no order of its own and the columns after it remain
@@ -344,6 +371,57 @@ func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // parameter-binding map, where a miss yields nil and IsEquality would panic.
 func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
 	return cr != nil && cr.IsEquality() && !isZeroFloatEqualityRange(cr)
+}
+
+// EqualityBoundCoordinateClaimsOwnOrder answers a DIFFERENT question from
+// EqualityPinsSinglePhysicalKey, and the two must never be substituted for one
+// another — conflating them is precisely the defect this pair replaces.
+//
+//	EqualityPinsSinglePhysicalKey: may LATER coordinates claim order THROUGH
+//	                               this one? (the SUFFIX question)
+//	this predicate:                may THIS coordinate claim ITS OWN order?
+//	                               (the SELF question)
+//
+// A signed-zero float equality answers NO to the first and YES to the second.
+// It answers no to the first because it spans two physical keys, so a later
+// coordinate restarts at the block boundary: over rows (-0.0, 9) and (+0.0, 1),
+// `WHERE v = 0 ORDER BY w` returns [9 1]. That termination is inviolable and
+// stays exactly as it was.
+//
+// It answers yes to the second on ONE ground, the PHYSICAL ENUMERATION, and
+// only that: the executor's range set opens the two signed-zero blocks in KEY
+// ORDER and reverses them wholesale for a reverse scan, so the coordinate is
+// genuinely ordered in whichever direction the scan runs. DESC and mid-scan
+// resume rest on the same fact. Because the ground is an enumeration order and
+// not an absence of order, the claim it supports is SORTED and DIRECTIONAL.
+//
+// Do NOT reason from tie-class vacuity here. The tempting alternative — "the
+// equality admits one logical value, so any permutation satisfies ORDER BY,
+// which settles ASC by itself" — is FALSE at this coordinate, and believing it
+// produced a wrong answer. It presumes one comparator. There are TWO, and they
+// disagree on signed zeros BY DESIGN: predicates.Comparison.Eval checks IEEE
+// equality, so -0.0 == +0.0 and both rows are admitted; values.CompareFloat64
+// (faithful to java.lang.Double.compare, and to FDB tuple order) ranks -0.0
+// BELOW +0.0. The admitted rows are therefore TWO distinct ORDER BY values, not
+// one tie class. (The NaN tie class elsewhere in this file IS genuine — there
+// CompareFloat64 canonicalizes every payload to one value, so both comparators
+// agree. The reasoning is sound for NaN and unsound for signed zeros; the
+// difference is which comparators agree, so it must be checked, never assumed.)
+//
+// The consequence is that the claim is DIRECTIONAL, never FIXED. A caller that
+// records this coordinate as FIXED — order-free, hence satisfying any requested
+// direction — elides the sort on `WHERE z = 0.0 ORDER BY z DESC` and answers it
+// from a FORWARD scan. Measured, that returned the zero blocks ascending as
+// [7 9 1 3] where the correct answer is [3 1 9 7]. HintRichOrdering binds it
+// SORTED for that reason, and
+// TestFDB_SignedZeroEqualityDoesNotOrderThePKSuffix/bound_column_descending
+// pins it; its ascending sibling stays green either way and proves nothing.
+//
+// NaN does not intrude here the way it does for an unbound or range-bound float
+// coordinate: an equality against zero admits no NaN at all, so the two
+// disjoint NaN blocks are simply out of range.
+func EqualityBoundCoordinateClaimsOwnOrder(cr *predicates.ComparisonRange) bool {
+	return cr != nil && cr.IsEquality()
 }
 
 // isZeroFloatEqualityRange reports whether cr is an equality against a
@@ -520,10 +598,20 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	// its own key order (NaN packs into two disjoint blocks), and because all
 	// NaNs are one logical tie class split across those blocks, the PK suffix
 	// after it is not ordered within the tie either.
-	sorted := make([]string, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
-	sorted = append(sorted, columnNames[firstNonEq:]...)
-	sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-	sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
+	// A coordinate bound by an equality that spans BOTH signed zeros stays in
+	// that prefix — the range set opens its two blocks in key order, so a sort on
+	// it is satisfied in the scan's direction, NOT because it admits one logical
+	// value (it admits two distinct sort values; see
+	// EqualityBoundCoordinateClaimsOwnOrder) — but nothing after it is globally
+	// ordered, so the sorted tail goes away entirely rather than being truncated
+	// by type.
+	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
+	sorted := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
+	if fixedLen == firstNonEq {
+		sorted = append(sorted, columnNames[fixedLen:]...)
+		sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+		sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
+	}
 	if len(sorted) == 0 {
 		return properties.Ordering{}
 	}
@@ -1079,14 +1167,47 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// claimed, so a float there is harmless), and the SORTED tail — the
 	// remaining index columns plus the trimmed PK suffix — is truncated at the
 	// first FLOAT/DOUBLE.
-	tail := make([]string, 0, len(columnNames)-prefixLen+len(pkColumnNames))
-	tail = append(tail, columnNames[prefixLen:]...)
-	tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-	tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
+	// A coordinate bound by an equality spanning BOTH signed zeros belongs in
+	// that leading prefix too — but as a SORTED entry, not a FIXED one, which is
+	// why the prefix length comes from ownOrderPrefixLen rather than from the
+	// pins-one-key question. Its ground is RFC-208's range set opening the two
+	// zero blocks in KEY ORDER (reversed wholesale under a reverse scan), NOT
+	// that it admits one logical value: it admits two distinct sort values, so
+	// `ORDER BY` on it is satisfied only in the direction the scan runs. The
+	// loop below binds it accordingly; do not restate the vacuity argument here,
+	// it is refuted at EqualityBoundCoordinateClaimsOwnOrder.
+	// What it cannot do is carry the tail: a later coordinate restarts at the
+	// block boundary. So the tail is dropped outright rather than truncated by
+	// type, and the leading prefix keeps its full length.
+	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
+	tail := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
+	if fixedLen == prefixLen {
+		tail = append(tail, columnNames[fixedLen:]...)
+		tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+		tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
+	}
+	prefixLen = fixedLen
 	for i, col := range columnNames[:prefixLen] {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
-		bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		// FIXED means "states no order, so ANY requested direction is
+		// satisfied". That is only true of a coordinate pinned to ONE physical
+		// key, where every admitted row shares one SORT value.
+		//
+		// A signed-zero-widened equality is not such a coordinate. The
+		// PREDICATE comparator makes -0.0 and +0.0 equal, which is why the
+		// equality admits both; the SORT comparator (values.CompareFloat64,
+		// faithful to java.lang.Double.compare) ranks -0.0 BELOW +0.0, which is
+		// why they are two distinct ORDER BY values. The coordinate is ordered,
+		// but only in the direction the scan runs — so it binds SORTED, not
+		// FIXED. Calling it FIXED elides the sort on `WHERE z = 0.0 ORDER BY z
+		// DESC` and answers it from a FORWARD scan, returning the two zero
+		// blocks ascending.
+		if EqualityPinsSinglePhysicalKey(comps[i]) {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
 	}
 	for _, col := range tail {
 		key := orderingColumnOfName(p.GetFlowedType(), col)

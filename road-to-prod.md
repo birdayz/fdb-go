@@ -94,7 +94,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
-| Generation factory corpus (NEW, #555) | **2000** scenarios · **8000** tests; blessings **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenarios, tests, per-feature-vector and per-blessing (`factorycorpus/census_baseline.json`) |
+| Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
 | `.Field`-decides ratchet (RFC-197) | **52** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition` |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
@@ -224,16 +224,11 @@ Wrong rows / wrong data:
    `sqldriver/null_pk_java_parity_test.go` (explicit NULL, composite partial-NULL, omitted PK
    column; each asserts the null key exists — duplicate-NULL collides 23505 — and that `id=0` does
    NOT collide, i.e. nothing was stored as 0). No divergence remains.
-3. **RESOLVED 2026-08-01 (CQ-83, `fix/rfc196-correlated-zero-composite`, awaiting the Graefe
-   lap).** Correlated float `=` no longer misses `-0.0`/`+0.0` on a non-terminal composite index
-   column. The sentinel fired on its own terms and was flipped:
-   `correlated_zero_composite_sentinel_test.go` now asserts the CORRECT rows (both correlation
-   directions, no duplicates, in-between guard rows, residual-path agreement, EXPLAIN pin that the
-   composite probe survives). Mechanism: execution-time probe split — one index range per signed
-   zero, scanned as an ordered concatenation (`zeroFork` in the executor; RFC-196's known gap,
-   closed the way its own analysis prescribed: widening decided at execution time, where the
-   correlated comparand's value is finally known — but as an exact two-range union, not a
-   contract-changing internal filter).
+3. **FIXED by CQ-83 and generalized by RFC-208.** Correlated FLOAT/DOUBLE `=` on a non-terminal composite-index column now
+   binds an exact runtime range set for both zero signs while retaining the suffix. Pinned positive
+   by `correlated_zero_composite_sentinel_test.go` and
+   `runtime_signed_zero_range_set_fdb_test.go`; this is retained in the numbered history but is no
+   longer a production watch.
 4. **RESOLVED: `CURRENT_TIMESTAMP` drifted across rows within one statement (SELECT path),
    including across PAGE boundaries.** The statement instant is captured ONCE per execution on the
    result set (`paginatingRows.statementTime` in `cascades_generator.go`) while the driver call's
@@ -247,10 +242,18 @@ Wrong rows / wrong data:
    `sqldriver/current_timestamp_crosspage_test.go` (~20-page statements looped across second
    boundaries), `sqldriver/current_timestamp_join_shapes_test.go` (join/EXISTS/scalar-subquery
    battery), and `executor/ordinal_join_clock_test.go` (baked-build clock threading).
-5. NaN comparisons follow Java's total order, not IEEE — `(v/z)=(v/z)` returns ALL rows. Pinned —
-   `nan_comparison_semantics_test.go`. Matches Java; both diverge from the standard/PG/CRDB.
-6. Signed zero: Go is IEEE, Java is bit-identity — `WHERE d = 0.0` returns a stored `-0.0` row in
-   Go, not in Java. Pinned — `plandiff/corpus.go:4726` (`DivergenceJavaWrongRowsGoCorrect`).
+5. NaN comparisons follow Java's **boxed-predicate** total order, not IEEE —
+   `(v/z)=(v/z)` returns ALL rows. Pinned — `nan_comparison_semantics_test.go`. PostgreSQL agrees
+   exactly (NaNs equal and greatest); CockroachDB makes NaNs equal/canonical but sorts them least;
+   Java's direct `RelOpValue` primitive `==` instead makes NaN unequal to itself. Raw FDB NaN
+   sign/payload order is a separate indexed-access gap tracked by **CQ-93** (raw NaN primary-key
+   identity vs logical DISTINCT / ORDER BY). It was previously cited here as CQ-84, which is a
+   different item entirely (qualified star with GROUP BY) — the gap was unfindable under that
+   reference.
+6. Signed zero: Go is IEEE; Java's boxed predicate is bit-identity, while its direct
+   `RelOpValue` primitive `==` agrees with Go — `WHERE d = 0.0` returns a stored `-0.0` row in Go,
+   not through Java's boxed predicate path. Pinned — `plandiff/corpus.go:4726`
+   (`DivergenceJavaWrongRowsGoCorrect`).
 7. BIGINT vs DOUBLE above 2^53 — Java promotes lossily and wrongly matches; Go rewrites exactly.
    Pinned — `plandiff/corpus.go:4741`. **Do not read this as "Go is exact everywhere"**: a DOUBLE
    *column* against an integer constant is lossy in Go too, which is correct SQL and is separately
@@ -412,19 +415,23 @@ is the one known committed-byte divergence (deliberate, reviewed).
 Both merged while this revision was being written, and both are re-verified at `a1d281a63`.
 
 **The generation factory (#555, `491e02a7c`).** `pkg/relational/conformance/factorycorpus` exists
-with **2000 committed scenarios / 8000 tests** (`census_baseline.json`), generated
-→executed→blessed→deduped→committed, with a componentwise census ratchet over scenarios, tests,
-per-feature-vector AND per-blessing. First batch: 1200 seeds → 2268 candidates → 965 blessed → 900
+with **5000 committed scenarios / 20000 tests / 4952 feature vectors** (`census_baseline.json`),
+generated → executed → blessed → deduped → committed. The census ratchet gates scenario/test
+totals and every feature vector; authority is compared per scenario by dedup key so promotion is
+allowed and downgrade is rejected. Aggregate `ByBlessing` counts are report-only, because a floor
+per label would reject promotion. First batch: 1200 seeds → 2268 candidates → 965 blessed → 900
 committed; 1599 TLP partitions and 3226 second-plan pairs, zero disagreements, every oracle
-mutation-proven armed. Blessings are **1785 `metamorphic` + 217 `metamorphic-tlp-only`**, labeled in
-every header — the Java leg is environmentally unreachable here, so the corpus does not claim a
+mutation-proven armed. The current blessings are **1763 `metamorphic` + 216
+`metamorphic-tlp-only`**, labeled in every header — the Java leg is environmentally unreachable
+here, so the corpus does not claim a
 cross-engine authority it does not have. **This is the tier's ceiling and should be read as one:**
 metamorphic blessing proves a query agrees with its own transformations, not that it agrees with
 Java. The headers are promotable without regeneration, so the corpus becomes a cross-engine net the
 day the Java leg is reachable — until then it catches self-inconsistency, which is how it caught the
-resolver defect, and not cross-engine divergence. The full corpus is tagged out of the default suite; a stratified
-100-scenario sample rides `just test`. TLP's inherent blindness to branch misassignment is pinned as
-a negative result that re-arms if the checker gains the ability.
+resolver defect, and not cross-engine divergence. The full corpus is ordinary per-PR suite content:
+`just test` and CI execute every committed scenario; the tagged target exists to isolate its FDB
+container, not to reduce it to a sample. TLP's inherent blindness to branch misassignment is pinned
+as a negative result that re-arms if the checker gains the ability.
 
 **The resolver boolean-operand family (#555, same merge).** Found by the factory's FIRST TLP sweep —
 64 of 413 `(p) IS NULL` renderings failed to plan. `walkRecordConstructor` hardcoded the position
@@ -517,8 +524,9 @@ Booked by THIS revision, from defects the verification pass found:
    then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
-6. **CQ-75** — `v IN (-0.0, 0.0)` silently loses a row, order-dependently. Wrong rows, and now that
-   the factory exists it is the kind of shape the factory should be generating.
+6. **CQ-75 — DONE via RFC-208.** `v IN (-0.0, 0.0)` now returns both signs in either element order;
+   the exact plan/result regression is in `composite_index_zero_widen_test.go`. CQ-76's general
+   nonzero `IN` + trailing-equality SARGability gap remains open.
 7. **CQ-30**, B3's residual: criterion 2's data-access maxima are still forked.
 8. **B5** typed metadata flow. L, after the migration proves the identity machinery everywhere.
 9. Watch-list handed to any prod adopter, once CQ-80 has pinned it.

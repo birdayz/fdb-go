@@ -53,7 +53,10 @@ func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 			for i, col := range pkCols {
 				pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 			}
-			plan = plan.WithPrimaryKey(pkVals)
+			plan = plan.WithPrimaryKey(pkVals).
+				WithKeyComponentTypes(physicalTypesFromFlatRow(
+					scan.GetFlowedType(), pkCols, nil,
+				))
 		}
 	}
 

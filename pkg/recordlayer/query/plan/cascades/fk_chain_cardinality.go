@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -62,6 +64,7 @@ import (
 type pkThread struct {
 	recordType string
 	pkValues   []values.Value
+	pkTypes    []values.Type
 	ok         bool
 }
 
@@ -80,7 +83,11 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 		if len(rts) != 1 || len(pk) == 0 {
 			return pkThread{}
 		}
-		return pkThread{recordType: rts[0], pkValues: pk, ok: true}
+		pkTypes, aligned := alignPKTypesByPosition(pk, pl.GetKeyComponentTypes())
+		if !aligned {
+			return pkThread{}
+		}
+		return pkThread{recordType: rts[0], pkValues: pk, pkTypes: pkTypes, ok: true}
 
 	case *plans.RecordQueryIndexPlan:
 		rts := pl.GetRecordTypes()
@@ -99,7 +106,13 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 		if !pl.ProducesDistinctRecords() {
 			return pkThread{}
 		}
-		return pkThread{recordType: rts[0], pkValues: pk, ok: true}
+		pkTypes, aligned := alignIndexPKTypesByCoordinate(
+			pk, len(pl.GetPKColumnNames()), pl.GetPrimaryKeyComponentTypes(),
+		)
+		if !aligned {
+			return pkThread{}
+		}
+		return pkThread{recordType: rts[0], pkValues: pk, pkTypes: pkTypes, ok: true}
 
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkThreadFromSingleChild(pl.GetChildren())
@@ -122,6 +135,96 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 	default:
 		return pkThread{}
 	}
+}
+
+// alignPKTypesByPosition aligns a primary scan's authoritative physical type
+// vector with its structural PK values. Producers use one of two explicit
+// topologies: a full-coordinate vector (including a RecordTypeValue prefix),
+// or a visible-column vector that omits that per-record-type constant. Any
+// other arity fails closed rather than silently shifting a later key type onto
+// the wrong component.
+func alignPKTypesByPosition(pk []values.Value, physicalTypes []values.Type) ([]values.Type, bool) {
+	variableCount := 0
+	for _, component := range pk {
+		if _, isRecordType := component.(*values.RecordTypeValue); !isRecordType {
+			variableCount++
+		}
+	}
+	fullCoordinates := len(physicalTypes) == len(pk)
+	visibleCoordinates := len(physicalTypes) == variableCount
+	if !fullCoordinates && !visibleCoordinates {
+		return nil, false
+	}
+	aligned := make([]values.Type, len(pk))
+	visiblePosition := 0
+	for i, component := range pk {
+		if _, isRecordType := component.(*values.RecordTypeValue); isRecordType {
+			aligned[i] = values.UnknownType
+			continue
+		}
+		position := visiblePosition
+		if fullCoordinates {
+			position = i
+		}
+		aligned[i] = physicalTypeAt(physicalTypes, position)
+		visiblePosition++
+	}
+	return aligned, true
+}
+
+// alignIndexPKTypesByCoordinate aligns an index scan's structural common
+// primary-key Values with its authoritative visible PK type vector. Both are
+// translations of the same primary-key expression and therefore share
+// primary-key component order. That coordinate is the identity: Field is only
+// a display spelling and is deliberately never read here. This matters for a
+// layout that exposes duplicate display names with distinct baked ordinals;
+// a name-keyed map would collapse the two components and could attach a
+// FLOAT/DOUBLE proof to the wrong physical key coordinate.
+//
+// The independently-derived visible column count participates only as an arity
+// witness for the type vector; no display name crosses this boundary. A
+// leading RecordTypeValue is the one structural coordinate omitted from both
+// visible metadata vectors and is preserved as an Unknown placeholder.
+// Non-flat or misplaced structural components fail closed.
+func alignIndexPKTypesByCoordinate(
+	pk []values.Value,
+	visiblePKColumnCount int,
+	physicalTypes []values.Type,
+) ([]values.Type, bool) {
+	if visiblePKColumnCount <= 0 || visiblePKColumnCount != len(physicalTypes) {
+		return nil, false
+	}
+	aligned := make([]values.Type, len(pk))
+	visiblePosition := 0
+	for i, component := range pk {
+		if _, isRecordType := component.(*values.RecordTypeValue); isRecordType {
+			if i != 0 {
+				return nil, false
+			}
+			aligned[i] = values.UnknownType
+			continue
+		}
+		field, ok := component.(*values.FieldValue)
+		if !ok || field.Child != nil {
+			return nil, false
+		}
+		if visiblePosition >= len(physicalTypes) {
+			return nil, false
+		}
+		aligned[i] = physicalTypeAt(physicalTypes, visiblePosition)
+		visiblePosition++
+	}
+	if visiblePosition != len(physicalTypes) {
+		return nil, false
+	}
+	return aligned, true
+}
+
+func physicalTypeAt(types []values.Type, position int) values.Type {
+	if position < 0 || position >= len(types) || types[position] == nil {
+		return values.UnknownType
+	}
+	return types[position]
 }
 
 func pkThreadFromSingleChild(children []plans.RecordQueryPlan) pkThread {
@@ -165,6 +268,9 @@ func computeMapPKThread(pl *plans.RecordQueryMapPlan) pkThread {
 func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
 	childThread := pkThreadFromSingleChild(pl.GetChildren())
 	if !childThread.ok {
+		return pkThread{}
+	}
+	if len(childThread.pkTypes) != len(childThread.pkValues) {
 		return pkThread{}
 	}
 	if pl.IsIdentity() {
@@ -255,14 +361,19 @@ func pkThreadThroughFields(
 	if !childThread.ok {
 		return pkThread{}
 	}
+	if len(childThread.pkTypes) != len(childThread.pkValues) {
+		return pkThread{}
+	}
 	frontier := values.OrdinalDomainOfType(childLayout)
 	if !frontier.IsKnown() {
 		return pkThread{} // no declared column order to state the mapping in
 	}
 	newPK := make([]values.Value, 0, len(childThread.pkValues))
-	for _, pv := range childThread.pkValues {
+	newPKTypes := make([]values.Type, 0, len(childThread.pkTypes))
+	for i, pv := range childThread.pkValues {
 		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
 			newPK = append(newPK, pv)
+			newPKTypes = append(newPKTypes, childThread.pkTypes[i])
 			continue
 		}
 		wanted, ok := leafFieldIdentity(pv, childLayout)
@@ -278,8 +389,14 @@ func pkThreadThroughFields(
 		// declares. It is resolved against that layout when it is next
 		// consulted, never compared as a name.
 		newPK = append(newPK, &values.FieldValue{Field: outName})
+		newPKTypes = append(newPKTypes, childThread.pkTypes[i])
 	}
-	return pkThread{recordType: childThread.recordType, pkValues: newPK, ok: true}
+	return pkThread{
+		recordType: childThread.recordType,
+		pkValues:   newPK,
+		pkTypes:    newPKTypes,
+		ok:         true,
+	}
 }
 
 // findDirectFieldMapping searches fields for a slot that is a DIRECT,
@@ -377,8 +494,11 @@ func computeFlatMapPKThread(fm *plans.RecordQueryFlatMapPlan) pkThread {
 // boundary. Two same-leaf-named columns reached through different quantifiers
 // no longer key one slot, and an ordinal is never compared across layouts.
 func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThread) bool {
-	comps := scanComparisonsOfLeaf(fm.GetInner())
-	if comps == nil {
+	binding, ok := scanBindingOfLeaf(fm.GetInner())
+	if !ok || len(binding.comparisons) == 0 {
+		return false
+	}
+	if len(outerThread.pkTypes) != len(outerThread.pkValues) {
 		return false
 	}
 	outerLayout := planRowLayout(fm.GetOuter())
@@ -386,8 +506,8 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 	if !frontier.IsKnown() {
 		return false // no declared column order to state the proof in — fail closed
 	}
-	wantKeys := make(map[values.ColumnIdentity]bool, len(outerThread.pkValues))
-	for _, pv := range outerThread.pkValues {
+	wantKeys := make(map[values.ColumnIdentity]values.Type, len(outerThread.pkValues))
+	for i, pv := range outerThread.pkValues {
 		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
 			continue // per-thread constant — never a discriminating column, see doc comment
 		}
@@ -395,14 +515,18 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		if !ok {
 			return false // a non-flat-FieldValue PK component — fail closed
 		}
-		wantKeys[key.WithCorrelation(fm.GetOuterAlias())] = true
+		key = key.WithCorrelation(fm.GetOuterAlias())
+		if _, duplicate := wantKeys[key]; duplicate {
+			return false
+		}
+		wantKeys[key] = outerThread.pkTypes[i]
 	}
 	if len(wantKeys) == 0 {
 		return false
 	}
 
 	bound := make(map[values.ColumnIdentity]bool, len(wantKeys))
-	for _, cr := range comps {
+	for i, cr := range binding.comparisons {
 		if cr == nil || !cr.IsEquality() {
 			continue
 		}
@@ -423,7 +547,10 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 			continue
 		}
 		key = key.WithCorrelation(fm.GetOuterAlias())
-		if wantKeys[key] {
+		sourceType, wanted := wantKeys[key]
+		if wanted && properties.LogicalEqualityProjectionInjective(
+			sourceType, physicalTypeAt(binding.physicalTypes, i),
+		) {
 			bound[key] = true
 		}
 	}
@@ -540,30 +667,57 @@ func singleChildRowLayout(children []plans.RecordQueryPlan) values.Type {
 	return planRowLayout(children[0])
 }
 
-// scanComparisonsOfLeaf resolves p down through the same identity-preserving
-// wrappers computePKThread already knows how to see through, and returns the
-// bottommost scan/index leaf's own ScanComparisons. nil means p is not (or
-// does not resolve to) a bare scan/index leaf.
-func scanComparisonsOfLeaf(p plans.RecordQueryPlan) []*predicates.ComparisonRange {
+type leafScanBinding struct {
+	comparisons   []*predicates.ComparisonRange
+	physicalTypes []values.Type
+}
+
+// scanBindingOfLeaf resolves p down through the same identity-preserving
+// wrappers as the old scanComparisonsOfLeaf walk and returns the bottommost
+// scan/index leaf's comparisons together with their aligned authoritative
+// physical key types. Keeping those parallel vectors in one result prevents a
+// correlated disjointness proof from reconstructing the target domain from
+// the comparand or from a display name.
+func scanBindingOfLeaf(p plans.RecordQueryPlan) (leafScanBinding, bool) {
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		return pl.GetScanComparisons()
+		if pl == nil {
+			return leafScanBinding{}, false
+		}
+		return leafScanBinding{
+			comparisons: pl.GetScanComparisons(), physicalTypes: pl.GetKeyComponentTypes(),
+		}, true
 	case *plans.RecordQueryIndexPlan:
-		return pl.GetScanComparisons()
+		if pl == nil {
+			return leafScanBinding{}, false
+		}
+		// The cap sums one partition of the inner table per distinct outer
+		// primary key. A fan-out index can emit the same physical inner record
+		// under multiple indexed values, so two outer probes can overlap even
+		// though their bind values differ. That breaks the partition proof before
+		// this index ever becomes a later hop's outer thread. Require the same
+		// explicit duplicate-free signal computePKThread requires; an unstamped
+		// hand-built/stale plan fails closed as Java's empty-candidate default.
+		if !pl.ProducesDistinctRecords() {
+			return leafScanBinding{}, false
+		}
+		return leafScanBinding{
+			comparisons: pl.GetScanComparisons(), physicalTypes: pl.GetKeyComponentTypes(),
+		}, true
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		return scanComparisonsOfSingleChild(pl.GetChildren())
+		return scanBindingOfSingleChild(pl.GetChildren())
 	case *plans.RecordQueryTypeFilterPlan:
-		return scanComparisonsOfSingleChild(pl.GetChildren())
+		return scanBindingOfSingleChild(pl.GetChildren())
 	default:
-		return nil
+		return leafScanBinding{}, false
 	}
 }
 
-func scanComparisonsOfSingleChild(children []plans.RecordQueryPlan) []*predicates.ComparisonRange {
+func scanBindingOfSingleChild(children []plans.RecordQueryPlan) (leafScanBinding, bool) {
 	if len(children) != 1 {
-		return nil
+		return leafScanBinding{}, false
 	}
-	return scanComparisonsOfLeaf(children[0])
+	return scanBindingOfLeaf(children[0])
 }
 
 // fkChainCardinalityCap returns a sound, PROVABLE upper bound on fm's total
@@ -593,60 +747,62 @@ func fkChainCardinalityCap(fm *plans.RecordQueryFlatMapPlan, stats properties.St
 	return stats.RecordTypeCardinality(innerRecordType), true
 }
 
-// fkChainCappedInnerCost derives a CPU-consistent inner Cost for a FlatMap hop
-// once fkChainCardinalityCap has proven the hop's total output cannot exceed
-// `cap` rows across all of outer's probes. Returns the derived Cost and
-// whether the cap actually binds (ok=false means the caller should use
-// inner unchanged — the proven bound does not improve on inner's own
-// selectivity-based estimate here).
+// fkChainCappedInnerCost derives a CPU-consistent average inner Cost for a
+// FlatMap hop once fkChainCardinalityCap has proven the hop emits at most cap
+// rows across all outer probes. fixedPerExecutionCPU is the part of the inner
+// CPU paid every time FlatMap opens that inner, even when the probe returns no
+// row: an isolated point-probe GetRange and every additional physical range
+// seek are the two leaf examples. Only the remaining row-dependent CPU scales
+// with the reduced average result cardinality.
 //
-// DERIVATION (not a picked constant): FlatMapCost re-runs inner once per
-// outer row, so the total rows examined across the whole hop is
-// outerCard * inner.Cardinality, where inner.Cardinality is scanLikeCost's
-// flat-selectivity GUESS at how many rows one probe returns. The cap proves a
-// hard ceiling on that SAME total: cap. If cap < outerCard*inner.Cardinality,
-// the guess is provably too high, and the bound implies a corrected average
-// rows-EXAMINED-per-probe of cap/outerCard (NOT inner.Cardinality) — the same
-// arithmetic fkChainCardinalityCap's own soundness argument already
-// establishes, one level down: total ≤ cap, spread evenly over outerCard
-// identically-shaped probes (every probe binds the same way, off the same
-// index, so there is no basis to assume any one probe cheaper or costlier
-// than another).
+// FlatMap executes the inner once per emitted outer row. Therefore a binding
+// cap changes the estimated rows returned by one execution from innerCard to
+// cap/outerCard, but it does not change the number of executions. Scaling the
+// entire CPU by that ratio would erase real startup work: 1,000 distinct outer
+// keys probing a 20-row table still open 1,000 cursors/ranges even though only
+// 20 probes can return a row. Java's model likewise uses the FlatMap outer
+// cardinality to reason about how often the inner is executed; this numeric
+// statistics cap is a Go extension, not permission to reduce that count.
 //
-// scanLikeCost's CPU is an EXACTLY LINEAR, zero-intercept function of the
-// leaf's own Cardinality (CPU = card*ScanCPU*multiplier — see scanLikeCost),
-// and every wrapper this cap sees through (Fetch/TypeFilter/PredicatesFilter,
-// see scanComparisonsOfLeaf's siblings) is itself linear with no additive
-// constant independent of its child's cardinality (FetchCost, TypeFilterCost,
-// FilterCost — cost_formulas.go). So inner.CPU, taken as a whole, is an exactly
-// linear function of inner.Cardinality with no offset: scaling BOTH
-// inner.Cardinality and inner.CPU by the identical ratio
-// r = (cap/outerCard) / inner.Cardinality reproduces exactly the Cost a
-// probe returning cap/outerCard rows would have had, rather than crediting
-// the hop with the proven (smaller) row count while still charging it for
-// scanning the disproven (larger) one — the same "cardinality and CPU must
-// describe the same execution" property FlatMapCost's own doc comment
-// already requires of NestedLoopJoinCost vs FlatMapCost.
-//
-// FlatMapCost's own outerCard fallback (LeafScanCardinality when
-// outer.Cardinality is 0) is mirrored here so the ratio is computed against
-// the SAME outerCard FlatMapCost will actually use.
-func fkChainCappedInnerCost(outer, inner properties.Cost, cap float64) (properties.Cost, bool) {
+// Callers that cannot structurally derive the fixed component pass inner.CPU.
+// That still applies the proven cardinality cap while conservatively preserving
+// all CPU. A negative or oversized fixed component is clamped to [0,inner.CPU]
+// so the helper remains safe for hand-built plans and direct property tests.
+func fkChainCappedInnerCost(
+	outer, inner properties.Cost,
+	cap float64,
+	fixedPerExecutionCPU float64,
+) (properties.Cost, bool) {
 	outerCard := outer.Cardinality
-	if outerCard <= 0 {
-		outerCard = properties.LeafScanCardinality
-	}
-	if inner.Cardinality <= 0 {
+	if outerCard <= 0 || inner.Cardinality <= 0 ||
+		math.IsNaN(outerCard) || math.IsInf(outerCard, 0) ||
+		math.IsNaN(inner.Cardinality) || math.IsInf(inner.Cardinality, 0) ||
+		math.IsNaN(inner.CPU) || math.IsInf(inner.CPU, 0) || inner.CPU < 0 ||
+		math.IsNaN(cap) || math.IsInf(cap, 0) || cap < 0 {
 		return properties.Cost{}, false
 	}
-	uncappedTotal := outerCard * inner.Cardinality
+	uncappedTotal := properties.SaturatingHeuristicMultiply(outerCard, inner.Cardinality)
 	if cap >= uncappedTotal {
 		return properties.Cost{}, false // not binding — inner's own estimate already satisfies the bound
 	}
-	r := (cap / outerCard) / inner.Cardinality
+	averageCardinality := cap / outerCard
+	r := averageCardinality / inner.Cardinality
+	if math.IsNaN(fixedPerExecutionCPU) || math.IsInf(fixedPerExecutionCPU, 0) {
+		fixedPerExecutionCPU = inner.CPU
+	}
+	if fixedPerExecutionCPU < 0 {
+		fixedPerExecutionCPU = 0
+	}
+	if fixedPerExecutionCPU > inner.CPU {
+		fixedPerExecutionCPU = inner.CPU
+	}
+	variableCPU := inner.CPU - fixedPerExecutionCPU
 	return properties.Cost{
-		Cardinality: inner.Cardinality * r,
-		CPU:         inner.CPU * r,
+		Cardinality: averageCardinality,
+		CPU: properties.SaturatingHeuristicAdd(
+			fixedPerExecutionCPU,
+			properties.SaturatingHeuristicMultiply(variableCPU, r),
+		),
 	}, true
 }
 

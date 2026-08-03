@@ -423,9 +423,34 @@ A red nightly is triaged same-day under the standing red-safety-net rule.
 ## 8. Governance — what makes 100k tests mean something
 
 1. **Ratchets.** The corpus pass count, the feature-matrix coverage, and the
-   per-dimension counts only go up; a change that shrinks any of them fails CI
-   with the shrink named. (Same design as the docscheck ratchet: the count may
-   rise honestly, never fall silently.)
+   per-dimension counts only go up silently; a change that shrinks any of them
+   fails CI with the shrink named. Independently, a frozen corpus file cannot
+   be deleted, renamed, or byte-replaced merely because aggregate counts stay
+   flat. The sole exception is an explicit retirement ledger in the same
+   change. It binds a reviewed reason/RFC/date, both logical
+   census fingerprints, both complete filename-plus-content tree fingerprints,
+   every added/replaced/retired file hash, and the exact base Git commit. CI
+   first proves that object is a commit on the independently fetched target
+   branch's trusted history, then materializes raw Git blobs with `ls-tree` and
+   `cat-file` and independently recomputes the old census/tree/file hashes. It
+   recomputes the new side from raw blobs at the ledger's unique first-add
+   commit and, while the ledger is absent from
+   the trusted branch, at proposed HEAD too. Proposed corpus/ledger checkout
+   bytes must equal raw HEAD, preventing attributes or filters from rewriting
+   evidence. Trusted ledgers are immutable/undeletable; one newly appended
+   ledger is allowed per transition,
+   and its BEFORE must equal the fetched target corpus rather than merely an
+   older ancestor. Independently of aggregate counts, every trusted YAML must
+   remain present and byte-identical unless that ledger authenticates the full
+   transition; pure additions remain ledger-free. Thus balanced delete+add
+   cannot retire a reproduction while keeping the census flat, and later
+   corpus growth does not invalidate old AFTER snapshots. The ledger
+   cannot authenticate a synthetic history or invented endpoint using only its
+   own claims. Thus a
+   planner change may retire a reproduction point that truly ceased to exist,
+   but cannot lower the floor
+   or carry an unrelated corpus edit invisibly. (Same design as the docscheck
+   ratchet: the count may rise honestly, never fall silently.)
 2. **The skip ledger.** Every non-executed directive/file/query is a counted
    skip with a reason class (`unsupported-DDL:struct`, `plan-assertion`,
    `polarity:negative-meta`, …), extending the existing yamsql coverage
@@ -435,8 +460,9 @@ A red nightly is triaged same-day under the standing red-safety-net rule.
    production × type × mode), from the factory's feature-vector index and
    `bazelisk coverage` for code-level gaps. The audit's job is to answer "which
    dimension has zero tests" — the question raw counts cannot.
-4. **The pinned-regression count** is the headline metric: it only grows, and
-   each unit is a bug that cannot return.
+4. **The pinned-regression count** is the headline metric: it grows unless a
+   reviewed tree-exact retirement proves that the old reproduction point no
+   longer exists, and each remaining unit is a bug that cannot return.
 5. **Instrument hygiene.** Every counter this RFC introduces is floored or
    asserted by a gate that fails when the counter goes dark (the dead-counter /
    proxy-metric / tautological-partition failure classes are this repo's

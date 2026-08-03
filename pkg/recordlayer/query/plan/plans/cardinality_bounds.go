@@ -22,9 +22,11 @@ import (
 // agree. cascades.computeCardinalities is now a thin adapter over these
 // methods, keeping its signature for the property-map consumers.
 //
-// STRUCTURAL bounds only, never statistics: a unique index with every column
-// equality-bound PROVES max=1, it does not "probably" return one row. An
-// operator that can prove nothing returns UnknownCardinalities, which makes the
+// STRUCTURAL bounds only, never statistics: a full equality bind on a physical
+// unique key proves its exact multiplicity when possible—normally one, but
+// 2^k for k known signed-zero float components. Nullable UNIQUE NULL binds and
+// dynamic float comparands remain unknown. An operator that can prove nothing
+// returns UnknownCardinalities, which makes the
 // clamp a deterministic no-op for it — the correct direction, since inventing a
 // bound is how a false proof would silently cap a legitimate estimate.
 
@@ -146,16 +148,16 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) ProvenCardinalities(child [
 
 // --- data-access leaves -----------------------------------------------------
 
-// ProvenCardinalities: a full-primary-key-equality primary scan is a point
-// lookup (at most one row), exactly as Java's
-// CardinalitiesProperty.visitRecordQueryScanPlan bounds a scan whose
-// equality-bound values cover the whole primary key. A range, partial or prefix
-// bind stays unknown.
+// ProvenCardinalities: a full-primary-key-equality primary scan has a finite
+// physical multiplicity when every component can be bounded. Ordinary keys
+// prove at most one row; k known signed-zero float components prove at most
+// 2^k rows because logical equality probes both encodings. A range, partial or
+// dynamic floating bind stays unknown.
 //
-// The proof runs through isProvablePointProbe — the SAME recognizer
-// RecordQueryScanPlan.HintCost gates its point-lookup branch on — so one plan
-// cannot carry a cost that says "one row" and a proof that says otherwise, or
-// the reverse. That reverse is not hypothetical: the derivation this replaces
+// The proof and RecordQueryScanPlan.HintCost both run through the SAME shared
+// physical multiplicity authority, so one plan cannot carry a cost that says
+// "one row" and a proof that says otherwise, or the reverse. That reverse is
+// not hypothetical: the derivation this replaces
 // consulted a helper whose widening guard sat AFTER its stamped-primary-key
 // early return, so a scan with a stamped PK and a terminal zero-valued FLOAT
 // equality was PROVEN at-most-one while the cost model correctly declined to
@@ -163,23 +165,34 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) ProvenCardinalities(child [
 // +0.0 (IEEE-equal, distinct adjacent keys), so that proof was false, and under
 // RFC-195's clamp a false max=1 would have CAPPED the honest estimate to it.
 func (p *RecordQueryScanPlan) ProvenCardinalities(_ []properties.Cardinalities) properties.Cardinalities {
-	if isProvablePointProbe(p) {
-		return properties.AtMostOne()
+	if p == nil {
+		return properties.UnknownMaxCardinality()
+	}
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
+		properties.TupleKeyUnique,
+	); known {
+		return properties.Cardinalities{
+			Min: properties.OfCardinality(0),
+			Max: properties.OfCardinality(multiplicity),
+		}
 	}
 	return properties.UnknownMaxCardinality()
 }
 
 // ProvenCardinalities: a UNIQUE index with every one of its columns
-// equality-bound pins a single entry — at most one row.
+// equality-bound has an exact physical multiplicity only when every equality
+// class is bounded. It is normally one, but known signed-zero components form
+// a checked Cartesian set and nullable NULLS-DISTINCT binds remain unknown.
 //
-// A WIDENING equality does not pin a single key, so it cannot support an
-// at-most-one PROOF. The executor widens a terminal zero-valued float bound
+// A WIDENING equality does not pin a single key. The executor widens a
+// zero-valued float bound
 // across both signed zeros (-0.0 and +0.0 are IEEE-equal but pack to distinct
 // adjacent keys), and a UNIQUE index legitimately holds BOTH — uniqueness is
 // enforced on the raw packed prefix, so the two are different entries.
 // Measured: a unique index on a DOUBLE column holding both zeros returns TWO
-// rows for `WHERE v = 0`. That is a false proof, not a loose estimate, and
-// DISTINCT elision, single-row shortcuts and the cost model all inherit it.
+// rows for `WHERE v = 0`. The shared multiplicity proof therefore returns two
+// (and multiplies independent components) instead of the retired false one.
 //
 // The check uses the SHARED widening predicate deliberately: a correlated or
 // Unknown-typed operand — the QOV a multi-element float IN list produces — is
@@ -188,28 +201,21 @@ func (p *RecordQueryScanPlan) ProvenCardinalities(_ []properties.Cardinalities) 
 // left the false proof reachable through exactly those operands.
 //
 // This arm counts EVERY comparison (including empty trailing ranges) rather
-// than only the non-empty bound prefix, which is strictly stricter than
-// isProvablePointProbe's index case: a trailing unconstrained column declines
-// the proof here. Kept as it was — a proof may safely be stricter than the cost
-// model's point-probe recognizer, since a declined proof only forgoes a clamp,
-// while a granted one caps an estimate.
+// than only the non-empty bound prefix. A trailing unconstrained column
+// therefore declines the proof; a declined proof only forgoes a clamp, while
+// a granted one caps an estimate.
 func (p *RecordQueryIndexPlan) ProvenCardinalities(_ []properties.Cardinalities) properties.Cardinalities {
 	if p == nil || !p.IsUnique() {
 		return properties.UnknownMaxCardinality()
 	}
-	comps := p.GetScanComparisons()
-	allEquality := true
-	for _, cr := range comps {
-		if !cr.IsEquality() {
-			allEquality = false
-			break
+	if multiplicity, known := provenFullEqualityMultiplicity(
+		p.GetScanComparisons(), p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+		properties.SecondaryUniqueNullsDistinct,
+	); known {
+		return properties.Cardinalities{
+			Min: properties.OfCardinality(0),
+			Max: properties.OfCardinality(multiplicity),
 		}
-	}
-	if properties.AnyEqualityWidensBeyondOneKey(comps) {
-		allEquality = false
-	}
-	if allEquality && len(comps) == len(p.GetColumnNames()) {
-		return properties.AtMostOne()
 	}
 	return properties.UnknownMaxCardinality()
 }

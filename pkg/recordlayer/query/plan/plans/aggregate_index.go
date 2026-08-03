@@ -35,6 +35,17 @@ type RecordQueryAggregateIndexPlan struct {
 	// so two plans over the same index cannot disagree about it, and folding it
 	// into plan identity would key the memo on a type token.
 	groupColLayout values.Type
+
+	// physicalGroupingPrefixCount is the number of logical grouping columns
+	// that remain a contiguous leading prefix of the physical BY_GROUP key.
+	// For ordinary aggregate indexes this is g; for PERMUTED_MIN/MAX it is g-p.
+	//
+	// Distinct question from groupColLayout above: this is about SARGABILITY
+	// (how much of the group key a scan range can bind), while groupColLayout
+	// answers whether a grouping column may extend an ORDERING claim. Neither
+	// subsumes the other.
+	physicalGroupingPrefixCount int
+	physicalGroupingPrefixKnown bool
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -56,12 +67,18 @@ func NewRecordQueryAggregateIndexPlan(
 	if resultType == nil {
 		resultType = values.UnknownType
 	}
+	prefixCount, prefixKnown := 0, false
+	if indexPlan != nil {
+		prefixCount, prefixKnown = indexPlan.physicalGroupingPrefix()
+	}
 	return &RecordQueryAggregateIndexPlan{
-		indexPlan:         indexPlan,
-		recordTypeName:    recordTypeName,
-		resultType:        resultType,
-		aggregateFunction: aggregateFunction,
-		resultValue:       values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		indexPlan:                   indexPlan,
+		recordTypeName:              recordTypeName,
+		resultType:                  resultType,
+		aggregateFunction:           aggregateFunction,
+		physicalGroupingPrefixCount: prefixCount,
+		physicalGroupingPrefixKnown: prefixKnown,
+		resultValue:                 values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
 
@@ -80,9 +97,14 @@ func (p *RecordQueryAggregateIndexPlan) GetResultValue() values.Value {
 // WithGroupColumns sets the grouping and aggregate column names for
 // the executor to map index entries to result rows.
 func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, aggColumn string) *RecordQueryAggregateIndexPlan {
-	p.groupCols = groupCols
-	p.aggColumn = aggColumn
-	return p
+	cp := *p
+	cp.groupCols = append([]string(nil), groupCols...)
+	cp.aggColumn = aggColumn
+	if !cp.physicalGroupingPrefixKnown {
+		cp.physicalGroupingPrefixCount = len(groupCols)
+		cp.physicalGroupingPrefixKnown = true
+	}
+	return &cp
 }
 
 // WithGroupColumnLayout carries the declared layout the grouping-column names
@@ -99,10 +121,30 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type
 func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { return p.groupColLayout }
 
 // GetGroupCols returns the grouping column names.
-func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string { return p.groupCols }
+func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string {
+	return append([]string(nil), p.groupCols...)
+}
 
 // GetAggColumn returns the aggregate column name.
 func (p *RecordQueryAggregateIndexPlan) GetAggColumn() string { return p.aggColumn }
+
+// GetKeyComponentTypes returns the authoritative physical grouping-key types
+// aligned with the underlying index scan's comparisons.
+func (p *RecordQueryAggregateIndexPlan) GetKeyComponentTypes() []values.Type {
+	if p.indexPlan == nil {
+		return nil
+	}
+	return p.indexPlan.GetKeyComponentTypes()
+}
+
+// GetPhysicalGroupingPrefixCount returns the g-p boundary before the inserted
+// aggregate value in a permuted BY_GROUP key.
+func (p *RecordQueryAggregateIndexPlan) GetPhysicalGroupingPrefixCount() int {
+	if p.physicalGroupingPrefixKnown {
+		return p.physicalGroupingPrefixCount
+	}
+	return len(p.groupCols)
+}
 
 // CanonicalAggColumnName returns the canonical column name the executor's
 // aggregateIndexCursor writes the aggregate value under: "FUNC(*)" for an
@@ -167,6 +209,7 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	return newStructuralKey().
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
+		Int(p.GetPhysicalGroupingPrefixCount()).
 		Sub(p.indexPlan.structuralKey())
 }
 

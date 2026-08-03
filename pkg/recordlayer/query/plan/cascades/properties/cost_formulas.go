@@ -148,8 +148,11 @@ func FlatMapCost(outer, inner Cost) Cost {
 // uniqueKeyConjuncts is how many of numPreds conjuncts the caller has PROVEN
 // (plans/cost.go's nestedLoopJoinUniqueKeyConjuncts) to be a full equality
 // bind on the inner leg's own UNIQUE key (primary key or a declared-UNIQUE
-// index). For those conjuncts the flat per-predicate FilterSelectivity guess
-// is provably wrong: a unique-key equality can match AT MOST ONE inner row
+// index), with each logical equality class proved to contain at most one raw
+// key. Signed-zero/NaN float classes, precision-cliff integer classes, nullable
+// NULL binds, and unknown types fail closed before this formula. For accepted
+// conjuncts the flat per-predicate FilterSelectivity guess
+// is provably wrong: the equality can match AT MOST ONE inner row
 // per pair, so their TRUE combined selectivity is exactly 1/innerCard, not
 // FilterSelectivity^uniqueKeyConjuncts. This is the exact invariant
 // FlatMapCost's doc comment requires of this function — the two physical
@@ -165,7 +168,12 @@ func FlatMapCost(outer, inner Cost) Cost {
 // correction is a gated ADDITION, never a replacement of the honest fallback
 // when uniqueness cannot be proven (e.g. a non-unique secondary-index
 // equality join, where the flat guess remains the right answer).
-func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int) Cost {
+func NestedLoopJoinCost(
+	outer, inner Cost,
+	numPreds int,
+	uniqueKeyConjuncts int,
+	preservesOuter bool,
+) Cost {
 	if numPreds < 1 {
 		numPreds = 1
 	}
@@ -181,8 +189,17 @@ func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int)
 			sel *= FilterSelectivity
 		}
 	}
+	cardinality := outerCard * innerCard * sel
+	// LEFT OUTER emits at least one matched-or-NULL-padded row per outer row.
+	// In the full-unique-key case this is exact even with additional ON
+	// conjuncts: those predicates can turn a match into a NULL-padded miss, but
+	// cannot remove the outer row. For non-unique joins it is the required floor
+	// beneath the ordinary selectivity estimate.
+	if preservesOuter && cardinality < outerCard {
+		cardinality = outerCard
+	}
 	return Cost{
-		Cardinality: outerCard * innerCard * sel,
+		Cardinality: cardinality,
 		CPU:         (outer.CPU + inner.CPU + outerCard*innerCard*FilterCPU*float64(numPreds)) * PhysicalWrapperCostMultiplier,
 	}
 }
@@ -362,64 +379,9 @@ func EqualityBoundsCoverKey(comps []*predicates.ComparisonRange, keyColumnCount 
 // SARGABILITY rather than a proof want the stricter constant-only test instead
 // (see match_candidate_index), because being conservative there de-sargs a probe
 // into a full leading-column scan rather than merely costing a sort.
-func AnyEqualityWidensBeyondOneKey(comps []*predicates.ComparisonRange) bool {
-	for i, cr := range comps {
-		if cr == nil || !cr.IsEquality() {
-			continue
-		}
-		// The executor widens a zero bound ONLY when nothing after it
-		// constrains the key (scanComparisonsToTupleRange). With a later
-		// constraining comparison the union of the two zero prefixes is not a
-		// contiguous interval, so it deliberately does not widen — and a
-		// unique `v = outer.k AND w = 5` probe really does pin one key.
-		//
-		// Mirroring that condition matters in BOTH directions: without it this
-		// helper discards a valid one-row proof for every correlated composite
-		// float probe and replaces point-probe cost with a multi-row estimate.
-		if anyLaterComparisonConstrains(comps, i) {
-			continue
-		}
-		cmp := cr.GetEqualityComparison()
-		if cmp == nil || cmp.Operand == nil {
-			continue
-		}
-		if !values.IsConstantValue(cmp.Operand) {
-			// Unknown at plan time — treat a declared float as possibly zero.
-			if t := cmp.Operand.Type(); t != nil &&
-				(t.Code() == values.TypeCodeFloat || t.Code() == values.TypeCodeDouble) {
-				return true
-			}
-			continue
-		}
-		v, ok := values.EvaluateConstant(cmp.Operand)
-		if !ok || v == nil {
-			continue
-		}
-		switch n := v.(type) {
-		case float64:
-			if n == 0 {
-				return true
-			}
-		case float32:
-			if n == 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// anyLaterComparisonConstrains reports whether any comparison after index i
-// narrows the key range. A candidate index contributes one ComparisonRange per
-// indexed column, so unconstrained trailing columns appear as EMPTY ranges and
-// must not count. Mirrors the executor's own terminal test in
-// scanComparisonsToTupleRange — the two must agree or a proof here contradicts
-// what the scan actually does.
-func anyLaterComparisonConstrains(comps []*predicates.ComparisonRange, i int) bool {
-	for _, cr := range comps[i+1:] {
-		if cr != nil && !cr.IsEmpty() {
-			return true
-		}
-	}
-	return false
+func AnyEqualityWidensBeyondOneKey(
+	comps []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+) bool {
+	return PhysicalEqualityShapeForComparisons(comps, physicalTypes, true).MayFanOut
 }

@@ -47,7 +47,7 @@ func TestNestedLoopJoinCost_ZeroCardinalityStaysZero(t *testing.T) {
 		t.Parallel()
 		outer := Cost{Cardinality: 500, CPU: 50}
 		zeroInner := Cost{Cardinality: 0, CPU: 3}
-		got := NestedLoopJoinCost(outer, zeroInner, 1, 0)
+		got := NestedLoopJoinCost(outer, zeroInner, 1, 0, false)
 		if got.Cardinality != 0 {
 			t.Fatalf("Cardinality = %v, want 0", got.Cardinality)
 		}
@@ -57,7 +57,7 @@ func TestNestedLoopJoinCost_ZeroCardinalityStaysZero(t *testing.T) {
 		t.Parallel()
 		zeroOuter := Cost{Cardinality: 0, CPU: 3}
 		inner := Cost{Cardinality: 500, CPU: 50}
-		got := NestedLoopJoinCost(zeroOuter, inner, 1, 0)
+		got := NestedLoopJoinCost(zeroOuter, inner, 1, 0, false)
 		if got.Cardinality != 0 {
 			t.Fatalf("Cardinality = %v, want 0", got.Cardinality)
 		}
@@ -115,7 +115,7 @@ func TestNestedLoopJoinCost_UniqueKeyEqualityJoin_MatchesFlatMapCost(t *testing.
 	outer := Cost{Cardinality: 10, CPU: 1}
 	inner := Cost{Cardinality: 1000, CPU: 5}
 
-	nljGot := NestedLoopJoinCost(outer, inner, 1, 1)
+	nljGot := NestedLoopJoinCost(outer, inner, 1, 1, false)
 	if nljGot.Cardinality != 10 {
 		t.Fatalf("NestedLoopJoinCost.Cardinality = %v, want 10 (outerCard — a unique-key equality join returns at most one inner row per outer row)", nljGot.Cardinality)
 	}
@@ -142,7 +142,7 @@ func TestNestedLoopJoinCost_NonUniqueEqualityJoin_FlatSelectivityUnaffected(t *t
 	outer := Cost{Cardinality: 10, CPU: 1}
 	inner := Cost{Cardinality: 1000, CPU: 5}
 
-	got := NestedLoopJoinCost(outer, inner, 1, 0)
+	got := NestedLoopJoinCost(outer, inner, 1, 0, false)
 	want := outer.Cardinality * inner.Cardinality * FilterSelectivity
 	if got.Cardinality != want {
 		t.Fatalf("Cardinality = %v, want %v (unchanged flat-selectivity formula)", got.Cardinality, want)

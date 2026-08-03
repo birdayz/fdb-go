@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -89,6 +90,9 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		prefix := buildAggScanPrefix(aggCand, innerFilterPreds)
+		if !candidateBindingRangesEligible(aggCand, prefix) {
+			continue
+		}
 		scanPlan := aggCand.ToScanPlan(prefix, false)
 		idxPlan := extractIndexPlan(scanPlan)
 		if idxPlan == nil {
@@ -389,9 +393,24 @@ func tryMultiAggregateIntersection(
 	childPlans := make([]plans.RecordQueryPlan, len(matched))
 	for i, mc := range matched {
 		prefix := buildAggScanPrefix(mc, innerFilterPreds)
+		if !candidateBindingRangesEligible(mc, prefix) {
+			return
+		}
 		sp := mc.ToScanPlan(prefix, false)
 		idxPlan := extractIndexPlan(sp)
 		if idxPlan == nil {
+			return
+		}
+		// Multi-intersection is a merge, not a hash match: every child must
+		// physically stream in the complete logical grouping-key order. A
+		// permuted grouping layout is not contiguous, and an unbound raw
+		// FLOAT/DOUBLE (or Unknown) coordinate has tuple NaN regions that are
+		// not congruent with the query comparator. Decline the optimization;
+		// the ordinary streaming aggregate remains correct.
+		if mc.GetPhysicalGroupingPrefixCount() != len(groupCols) ||
+			properties.PhysicalOrderingPrefixLength(
+				idxPlan.GetScanComparisons(), idxPlan.GetKeyComponentTypes(), len(groupCols),
+			) != len(groupCols) {
 			return
 		}
 		var recordTypeName string

@@ -30,6 +30,22 @@ func TestComparisonRange_MergeEqualsIntoEmpty(t *testing.T) {
 	}
 }
 
+func TestComparisonRange_MergeNotDistinctFromIntoEmptyIsEquality(t *testing.T) {
+	t.Parallel()
+
+	comparison := Comparison{
+		Type:    ComparisonNotDistinctFrom,
+		Operand: values.LiteralValue(nil),
+	}
+	result := EmptyComparisonRange().Merge(&comparison)
+	if !result.Ok || result.Range == nil || !result.Range.IsEquality() {
+		t.Fatalf("IS NOT DISTINCT FROM merge = %+v, want equality range", result)
+	}
+	if got := result.Range.GetEqualityComparison(); got != &comparison {
+		t.Fatalf("stored comparison = %p, want %p", got, &comparison)
+	}
+}
+
 func TestComparisonRange_MergeInequalityIntoEmpty(t *testing.T) {
 	t.Parallel()
 	r := EmptyComparisonRange()

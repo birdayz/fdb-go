@@ -1,0 +1,39 @@
+# cast_empty_array.yaml
+#
+# Casting an EMPTY array literal to a typed array, end to end.
+#
+# The empty array is the shape that breaks a guard placed one level too high.
+# An empty array literal can only carry an unknown element type, so a
+# "source array element type cannot be null" check hoisted to the top of the
+# array cast rejects `CAST([] AS INTEGER ARRAY)` — which is legal here and in
+# Java. Java raises only when a real element cast needs the source type
+# (CastValue.java:599-602) and returns an empty list before that at :586-589.
+#
+# The Value-level unit test pins the same rule, but only this scenario proves a
+# user's SQL survives the whole planner and executor path. Two files in the
+# vendored Java corpus (cast-documentation-queries, arrays-operators) went red
+# on exactly these shapes.
+name: cast_empty_array
+schema_template: |
+  CREATE TABLE arr_t (id BIGINT, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO arr_t VALUES (1, 10)
+tests:
+  # The shape that broke: an empty array literal cast to a typed array.
+  - query: SELECT CAST([] AS INTEGER ARRAY) AS empty_int_array FROM arr_t WHERE id = 1
+    rows:
+      - [[]]
+  # The same cast at another element width, so the rule is not read as
+  # INTEGER-specific.
+  - query: SELECT CAST([] AS BIGINT ARRAY) AS empty_long_array FROM arr_t WHERE id = 1
+    rows:
+      - [[]]
+  # An empty array compared against an empty typed array. This is the
+  # arrays-operators shape, and it also exercises the cast on BOTH sides.
+  - query: SELECT [] = CAST([] AS INTEGER ARRAY) AS both_empty FROM arr_t WHERE id = 1
+    rows:
+      - [true]
+  # A NON-empty cast still works, so the fix is not "stop casting arrays".
+  - query: SELECT CAST([1, 2, 3] AS BIGINT ARRAY) AS widened FROM arr_t WHERE id = 1
+    rows:
+      - [[1, 2, 3]]

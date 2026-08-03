@@ -136,6 +136,7 @@ type dataAccessTestCandidate struct {
 	name              string
 	sargableAliases   []values.CorrelationIdentifier
 	columnNames       []string
+	keyComponentTypes []values.Type
 	recordTypes       []string
 	fixedPlan         plans.RecordQueryPlan
 	unique            bool
@@ -145,6 +146,10 @@ type dataAccessTestCandidate struct {
 func (c *dataAccessTestCandidate) CandidateName() string    { return c.name }
 func (c *dataAccessTestCandidate) GetTraversal() *Traversal { return nil }
 func (c *dataAccessTestCandidate) GetColumnNames() []string { return c.columnNames }
+func (c *dataAccessTestCandidate) GetKeyComponentTypes() []values.Type {
+	return append([]values.Type(nil), c.keyComponentTypes...)
+}
+
 func (c *dataAccessTestCandidate) GetSargableAliases() []values.CorrelationIdentifier {
 	return c.sargableAliases
 }
@@ -337,11 +342,12 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 	}
 
 	candidate := &dataAccessTestCandidate{
-		name:            name,
-		sargableAliases: sargAliases,
-		columnNames:     columnNames,
-		recordTypes:     []string{"TestRecord"},
-		fixedPlan:       plan,
+		name:              name,
+		sargableAliases:   sargAliases,
+		columnNames:       columnNames,
+		keyComponentTypes: syntheticIndexKeyTypes(numParts),
+		recordTypes:       []string{"TestRecord"},
+		fixedPlan:         plan,
 	}
 
 	return &testPartialMatch{
@@ -773,12 +779,18 @@ func TestDataAccessForMatchPartition_IntersectorNoViable(t *testing.T) {
 // orders, and comparison ranges.
 func makeOrderingTestPartialMatch(parts []*MatchedOrderingPart) *testPartialMatch {
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, len(parts))
+	aliases := make([]values.CorrelationIdentifier, 0, len(parts))
 	for _, p := range parts {
 		paramBindings[p.GetParameterId()] = p.GetComparisonRange()
+		aliases = append(aliases, p.GetParameterId())
 	}
 	return &testPartialMatch{
 		candidate: &dataAccessTestCandidate{
-			name:        "ordering_test",
+			name:            "ordering_test",
+			sargableAliases: aliases,
+			keyComponentTypes: func() []values.Type {
+				return syntheticIndexKeyTypes(len(aliases))
+			}(),
 			recordTypes: []string{"TestRecord"},
 			fixedPlan:   &testPlan{name: "ordering_scan"},
 		},
@@ -913,6 +925,77 @@ func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
 	}
 	if *dir != ScanDirectionForward {
 		t.Fatalf("expected ScanDirectionForward, got %d", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_PhysicalSignedZeroDoesNotSkip(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		literal   int64
+		satisfied bool
+	}{
+		{name: "zero fans out after DOUBLE coercion", literal: 0, satisfied: false},
+		{name: "nonzero stays one physical key", literal: 1, satisfied: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fieldA := dataAccessTestKey("A")
+			fieldB := dataAccessTestKey("B")
+			comparison := predicates.NewLiteralComparison(
+				predicates.ComparisonEquals,
+				tc.literal,
+			)
+			equality := predicates.EmptyComparisonRange().Merge(&comparison)
+			if !equality.Ok {
+				t.Fatal("failed to build equality range")
+			}
+			parts := []*MatchedOrderingPart{
+				NewMatchedOrderingPart(
+					values.UniqueCorrelationIdentifier(),
+					fieldA,
+					equality.Range,
+					MatchedSortOrderAscending,
+				),
+				NewMatchedOrderingPart(
+					values.UniqueCorrelationIdentifier(),
+					fieldB,
+					predicates.EmptyComparisonRange(),
+					MatchedSortOrderAscending,
+				),
+			}
+			pm := makeOrderingTestPartialMatch(parts)
+			candidate := pm.candidate.(*dataAccessTestCandidate)
+			// The RHS is deliberately an integer literal. The physical DOUBLE
+			// metadata must win: coercion turns zero into a signed-zero logical
+			// equality with two tuple encodings.
+			candidate.keyComponentTypes = []values.Type{
+				values.NullableDouble,
+				values.NullableLong,
+			}
+
+			requested := properties.NewRequestedOrdering(
+				[]properties.RequestedOrderingPart{{
+					Value:     fieldB,
+					SortOrder: properties.RequestedSortOrderAscending,
+				}},
+				properties.DistinctnessNotDistinct,
+				false,
+			)
+			direction := SatisfiesRequestedOrdering(pm, requested)
+			if tc.satisfied && direction == nil {
+				t.Fatal("one-key nonzero equality should expose trailing ordering")
+			}
+			if !tc.satisfied && direction != nil {
+				t.Fatalf(
+					"signed-zero range set exposed trailing ordering in direction %v",
+					*direction,
+				)
+			}
+		})
 	}
 }
 

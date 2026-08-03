@@ -25,9 +25,14 @@ package sqldriver_test
 // representable in both and cannot tell them apart — a suite that only ever
 // tests values like 1.5 passes with every one of the three defects present.
 //
-// The plan assertions are not decoration: a shape that silently stops using the
-// index still returns the right rows through a residual filter, which would let
-// the SARG defect come back with the row checks all green.
+// The plan assertions are not decoration. Equality keeps the width-aware index
+// probe, and ordered FLOAT/DOUBLE predicates keep an index too — as an EXACT
+// range set rather than one raw range. Raw FDB keys retain NaN sign and
+// payload, so physical order disagrees with the logical total order in exactly
+// one place, the negative-NaN block; that is representable as one extra range,
+// not a reason to fall back to a residual scan. The row expectations here are
+// unchanged from when these cases DID fall back, which is the evidence that
+// falling back bought no correctness.
 
 import (
 	"context"
@@ -169,8 +174,8 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	cases := []struct {
 		query string
 		want  []int64
-		// plan, when non-empty, must appear in EXPLAIN — it pins that the
-		// predicate is still answered by the index rather than by a filter.
+		// plan, when non-empty, must appear in EXPLAIN. Equality pins the
+		// width-aware index probe; ordering pins the NaN-safe residual path.
 		plan string
 		why  string
 	}{
@@ -184,7 +189,7 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		{"SELECT id FROM t WHERE f = 1.5", []int64{1}, "IndexScan(T_F", "exact literal narrows to the FLOAT column"},
 		// Row 3 (d = 0.1) is NOT > 1.0. A 0x20 bound against 0x21 entries sorts
 		// below everything and returned all three rows.
-		{"SELECT id FROM t WHERE d > CAST(1.0 AS FLOAT)", []int64{1, 2}, "IndexScan(T_D", "FLOAT bound on a DOUBLE index"},
+		{"SELECT id FROM t WHERE d > CAST(1.0 AS FLOAT)", []int64{1, 2}, "IndexScan(T_D", "FLOAT bound on a DOUBLE index, kept as an exact range set"},
 
 		// binary32 0.1 != binary64 0.1 — the pair that only a real rounding fix
 		// gets right, and it must come out wrong in OPPOSITE directions.
@@ -196,10 +201,10 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		// A binary64 comparand against a binary32 index, across every ordering
 		// operator. f holds 1.5, 2.5 and binary32 0.1 (= 0.10000000149…, which
 		// IS greater than binary64 0.1).
-		{"SELECT id FROM t WHERE f > 0.1", []int64{1, 2, 3}, "IndexScan(T_F", "widened binary32 0.1 exceeds binary64 0.1"},
-		{"SELECT id FROM t WHERE f < 2.0", []int64{1, 3}, "IndexScan(T_F", "binary64 upper bound"},
-		{"SELECT id FROM t WHERE f >= 1.5", []int64{1, 2}, "IndexScan(T_F", "inclusive bound"},
-		{"SELECT id FROM t WHERE f > 1.0", []int64{1, 2}, "IndexScan(T_F", "exclusive bound"},
+		{"SELECT id FROM t WHERE f > 0.1", []int64{1, 2, 3}, "IndexScan(T_F", "widened binary32 0.1 exceeds binary64 0.1; still an exact range set"},
+		{"SELECT id FROM t WHERE f < 2.0", []int64{1, 3}, "IndexScan(T_F", "binary64 upper bound: ONE range starting at -Inf"},
+		{"SELECT id FROM t WHERE f >= 1.5", []int64{1, 2}, "IndexScan(T_F", "inclusive lower bound: TWO ranges, the tail plus the negative NaNs"},
+		{"SELECT id FROM t WHERE f > 1.0", []int64{1, 2}, "IndexScan(T_F", "exclusive lower bound: TWO ranges, the tail plus the negative NaNs"},
 
 		// Column-vs-column across widths. The comparand is promoted to the
 		// indexed column's type, so these stay index probes.
@@ -213,9 +218,10 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
 			if tc.plan != "" {
-				if plan := explainOnConn(t, ctx, conn, tc.query); !strings.Contains(plan, tc.plan) {
+				plan := explainOnConn(t, ctx, conn, tc.query)
+				if !strings.Contains(plan, tc.plan) {
 					t.Fatalf("%s\nplan = %s\nwant it to contain %q — the rows may still be right via a\n"+
-						"residual filter, which would hide a SARG regression", tc.why, plan, tc.plan)
+						"different physical path, which would hide a planner-contract regression", tc.why, plan, tc.plan)
 				}
 			}
 			rows, err := conn.QueryContext(ctx, tc.query)

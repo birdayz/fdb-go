@@ -163,7 +163,10 @@ func TestE2E_SortEliminationThroughFilter(t *testing.T) {
 	t.Parallel()
 
 	// Build: Sort(ID ASC) -> Filter(ID > 5) -> FullUnorderedScan(TABLE)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"TABLE"}, values.UnknownType)
+	rowType := values.NewRecordType("TABLE", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"TABLE"}, rowType)
 	scanRef := expressions.InitialOf(scan)
 
 	pred := predicates.NewComparisonPredicate(

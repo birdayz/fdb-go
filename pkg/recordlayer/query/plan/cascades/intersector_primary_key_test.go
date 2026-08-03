@@ -379,11 +379,12 @@ func TestIntersector_JavaRedundancyExampleKeepsUsefulPair(t *testing.T) {
 		))
 		return &testPartialMatch{
 			candidate: &dataAccessTestCandidate{
-				name:            name,
-				sargableAliases: aliases,
-				columnNames:     fixedColumns,
-				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name, resultType: dataAccessTestRow},
+				name:              name,
+				sargableAliases:   aliases,
+				columnNames:       fixedColumns,
+				keyComponentTypes: syntheticIndexKeyTypes(len(fixedColumns)),
+				recordTypes:       []string{"TestRecord"},
+				fixedPlan:         &testPlan{name: name, resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: parts,
@@ -901,6 +902,87 @@ func TestCreateScanForAccess_NilPlan(t *testing.T) {
 	}
 }
 
+func TestAdjustedIntersectionOrdering_SignedZeroIsDirectional(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name             string
+		literal          int64
+		wantFixed        int
+		wantOrderingKeys int
+	}{
+		{name: "signed zero", literal: 0, wantFixed: 0, wantOrderingKeys: 2},
+		{name: "nonzero", literal: 7, wantFixed: 1, wantOrderingKeys: 1},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keyAlias := values.UniqueCorrelationIdentifier()
+			pkAlias := values.UniqueCorrelationIdentifier()
+			comparison := predicates.NewLiteralComparison(
+				predicates.ComparisonEquals,
+				tc.literal,
+			)
+			rangeResult := predicates.EmptyComparisonRange().Merge(&comparison)
+			if !rangeResult.Ok {
+				t.Fatal("failed to build equality range")
+			}
+
+			pm := &testPartialMatch{
+				candidate: &dataAccessTestCandidate{
+					name:              "idx_a",
+					sargableAliases:   []values.CorrelationIdentifier{keyAlias},
+					columnNames:       []string{"A"},
+					keyComponentTypes: []values.Type{values.NullableDouble},
+					recordTypes:       []string{"TestRecord"},
+					fixedPlan: &testPlan{
+						name:       "signed_zero_scan",
+						resultType: dataAccessTestRow,
+					},
+				},
+				matchInfo: &testMatchInfo{
+					orderingParts: []*MatchedOrderingPart{
+						NewMatchedOrderingPart(
+							keyAlias,
+							dataAccessTestKey("A"),
+							rangeResult.Range,
+							MatchedSortOrderAscending,
+						),
+						NewMatchedOrderingPart(
+							pkAlias,
+							dataAccessTestKey("ID"),
+							nil,
+							MatchedSortOrderAscending,
+						),
+					},
+					paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+						keyAlias: rangeResult.Range,
+					},
+				},
+			}
+			access := NewSingleMatchedAccess(
+				pm,
+				NoCompensation,
+				values.UniqueCorrelationIdentifier(),
+				false,
+				EmptyTranslationMap(),
+				nil,
+			)
+			ordering := adjustedIntersectionOrdering(access, nil)
+			if ordering == nil {
+				t.Fatal("adjusted ordering unexpectedly absent")
+			}
+			if got := len(ordering.GetEqualityBoundValues()); got != tc.wantFixed {
+				t.Fatalf("fixed bindings = %d, want %d", got, tc.wantFixed)
+			}
+			if got := len(ordering.GetOrderingKeys()); got != tc.wantOrderingKeys {
+				t.Fatalf("directional ordering keys = %d, want %d", got, tc.wantOrderingKeys)
+			}
+		})
+	}
+}
+
 // TestIntersector_DeclinesNonPKMonotoneLeg pins RFC-181 P0.1: the strict
 // pk-sorted intersection merge silently DROPS rows when a leg's emission is
 // not PK-monotonic — an INEQUALITY-bound index column is a free non-pk
@@ -917,11 +999,12 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	pidAPK := values.UniqueCorrelationIdentifier()
 	pmA := &testPartialMatch{
 		candidate: &dataAccessTestCandidate{
-			name:            "idxA",
-			sargableAliases: []values.CorrelationIdentifier{pidA},
-			columnNames:     []string{"A"},
-			recordTypes:     []string{"TestRecord"},
-			fixedPlan:       &testPlan{name: "scanA", resultType: dataAccessTestRow},
+			name:              "idxA",
+			sargableAliases:   []values.CorrelationIdentifier{pidA},
+			columnNames:       []string{"A"},
+			keyComponentTypes: []values.Type{values.NullableLong},
+			recordTypes:       []string{"TestRecord"},
+			fixedPlan:         &testPlan{name: "scanA", resultType: dataAccessTestRow},
 		},
 		matchInfo: &testMatchInfo{
 			orderingParts: []*MatchedOrderingPart{
@@ -970,11 +1053,12 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 		pkPid := values.UniqueCorrelationIdentifier()
 		return &testPartialMatch{
 			candidate: &dataAccessTestCandidate{
-				name:            name,
-				sargableAliases: []values.CorrelationIdentifier{pid},
-				columnNames:     []string{name + "_col"},
-				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name + "_scan", resultType: dataAccessTestRow},
+				name:              name,
+				sargableAliases:   []values.CorrelationIdentifier{pid},
+				columnNames:       []string{name + "_col"},
+				keyComponentTypes: []values.Type{values.NullableLong},
+				recordTypes:       []string{"TestRecord"},
+				fixedPlan:         &testPlan{name: name + "_scan", resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: []*MatchedOrderingPart{
@@ -1015,11 +1099,12 @@ func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
 		fixedRange := equality(literal)
 		pm := &testPartialMatch{
 			candidate: &dataAccessTestCandidate{
-				name:            name,
-				sargableAliases: []values.CorrelationIdentifier{fixedAlias},
-				columnNames:     []string{fixedColumn, "SORT_KEY"},
-				recordTypes:     []string{"TestRecord"},
-				fixedPlan:       &testPlan{name: name, resultType: dataAccessTestRow},
+				name:              name,
+				sargableAliases:   []values.CorrelationIdentifier{fixedAlias},
+				columnNames:       []string{fixedColumn, "SORT_KEY"},
+				keyComponentTypes: []values.Type{values.NullableLong, values.NullableLong},
+				recordTypes:       []string{"TestRecord"},
+				fixedPlan:         &testPlan{name: name, resultType: dataAccessTestRow},
 			},
 			matchInfo: &testMatchInfo{
 				orderingParts: []*MatchedOrderingPart{

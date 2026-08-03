@@ -61,8 +61,10 @@ func main() {
 	flag.StringVar(&cfg.manifest, "manifest", "factory-manifest.json", "path for the run's batch manifest")
 	flag.StringVar(&cfg.date, "date", "", "batch date YYYY-MM-DD, stamped into every header (required: generation must never read the clock)")
 	flag.StringVar(&cfg.javaURL, "java-url", "", "base URL of a running Java conformance server; empty = metamorphic blessing only")
+	flag.StringVar(&cfg.retirementLedger, "retirement-ledger", "",
+		"reviewed corpus-retirement ledger authorizing one exact non-additive corpus transition; requires -update-census")
 	flag.BoolVar(&cfg.updateCensus, "update-census", false,
-		"raise the committed census baseline to this batch. OFF by default: the baseline is otherwise VERIFIED, "+
+		"rewrite the committed census baseline to this measured corpus; a decrease or content replacement requires -retirement-ledger. OFF by default: the baseline is otherwise VERIFIED, "+
 			"and a producer that rewrites its own standard every run has a ratchet that cannot fire")
 	flag.Parse()
 	os.Exit(run(cfg))
@@ -74,6 +76,7 @@ type config struct {
 	out, findings    string
 	manifest, date   string
 	javaURL          string
+	retirementLedger string
 	updateCensus     bool
 }
 
@@ -277,6 +280,10 @@ func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, bles
 		fmt.Fprintf(os.Stderr, "INFRA: %v\n", sweepErr)
 		return factory.Manifest{}, exitInfra
 	}
+	if cfg.retirementLedger != "" && !cfg.updateCensus {
+		fmt.Fprintln(os.Stderr, "INFRA: -retirement-ledger requires -update-census; the ledger was not applied")
+		return factory.Manifest{}, exitInfra
+	}
 	manifest, err := batch.Finish(cfg.seedStart, cfg.seeds, cfg.date, blessingMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: finish batch: %v\n", err)
@@ -296,17 +303,43 @@ func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, bles
 	// line in the PR still reads like evidence.
 	//
 	// So the default path CHECKS the corpus against the committed baseline and
-	// fails on a downgrade. Raising the baseline is a deliberate act with a
+	// fails on a downgrade. Rewriting the baseline is a deliberate act with a
 	// flag, and its diff is then visible in the batch PR as the ratchet delta
-	// — which is the only place authority movement is visible at all.
+	// — which is the only place authority movement is visible at all. A shrink
+	// or exact-byte replacement additionally needs a reviewed ledger that binds
+	// both corpus endpoints. This producer has only the logical census baseline,
+	// so the companion Git-history gate compares raw trusted/HEAD trees and
+	// rejects a no-ledger same-census replacement that cannot be inferred here.
 	committed, err := factorycorpus.LoadCensus(censusPath(cfg.out))
 	switch {
 	case err != nil && !cfg.updateCensus:
 		fmt.Fprintf(os.Stderr, "INFRA: read committed census baseline: %v\n"+
 			"(bootstrapping a new corpus? re-run with -update-census to write the first baseline)\n", err)
 		return manifest, exitInfra
+	case err != nil && cfg.retirementLedger != "":
+		fmt.Fprintf(os.Stderr, "INFRA: retirement ledger cannot authorize a transition without a readable before baseline: %v\n", err)
+		return manifest, exitInfra
 	case err == nil:
-		if shrinks := factorycorpus.CheckRatchet(committed, manifest.Census); len(shrinks) > 0 {
+		shrinks := factorycorpus.CheckRatchet(committed, manifest.Census)
+		if cfg.retirementLedger != "" {
+			ledger, ledgerErr := factorycorpus.LoadRetirementLedger(cfg.retirementLedger)
+			if ledgerErr == nil && ledger.Date != manifest.Date {
+				ledgerErr = fmt.Errorf("ledger date %s does not match batch date %s", ledger.Date, manifest.Date)
+			}
+			if ledgerErr == nil && !hasNonAdditiveRetirementChange(ledger) {
+				ledgerErr = fmt.Errorf("ledger has only added entries; additive growth needs no retirement authorization")
+			}
+			if ledgerErr == nil {
+				ledgerErr = factorycorpus.ValidateRetirementTransition(ledger, committed, manifest.Census, cfg.out)
+			}
+			if ledgerErr != nil {
+				fmt.Fprintf(os.Stderr, "INFRA: retirement ledger did not authorize this corpus transition: %v\n", ledgerErr)
+				return manifest, exitInfra
+			}
+			fmt.Fprintf(os.Stderr, "ACKNOWLEDGED corpus retirement (%s): %s\n", ledger.RFC, ledger.Reason)
+			break
+		}
+		if len(shrinks) > 0 {
 			fmt.Fprintln(os.Stderr, "\nINFRA: this batch SHRANK the committed corpus:")
 			for _, s := range shrinks {
 				fmt.Fprintf(os.Stderr, "  %s\n", s)
@@ -328,6 +361,16 @@ func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, bles
 		}
 	}
 	return manifest, exitOK
+}
+
+func hasNonAdditiveRetirementChange(ledger factorycorpus.RetirementLedger) bool {
+	for _, change := range ledger.Changes {
+		if change.Disposition == factorycorpus.DispositionRetired ||
+			change.Disposition == factorycorpus.DispositionReplaced {
+			return true
+		}
+	}
+	return false
 }
 
 func censusPath(corpusDir string) string {

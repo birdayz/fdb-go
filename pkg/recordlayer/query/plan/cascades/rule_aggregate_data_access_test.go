@@ -30,6 +30,8 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -71,6 +73,8 @@ func TestAggregateDataAccessRule_WrongAggFunction(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -109,6 +113,8 @@ func TestAggregateDataAccessRule_WrongGroupingKeys(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -150,6 +156,8 @@ func TestAggregateDataAccessRule_MultipleAggregates_OnlyOneCandidate(t *testing.
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -190,6 +198,8 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_region",
@@ -198,6 +208,8 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
@@ -264,6 +276,8 @@ func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) 
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_status",
@@ -272,6 +286,8 @@ func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) 
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
@@ -315,6 +331,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_region_year",
@@ -323,6 +341,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	maxCand := NewAggregateIndexMatchCandidate(
 		"Orders$max_price_by_region_year",
@@ -331,6 +351,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggMax,
 		"price",
 		values.UnknownType,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand, maxCand}}
 
@@ -382,6 +404,8 @@ func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 

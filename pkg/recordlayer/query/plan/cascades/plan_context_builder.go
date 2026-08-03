@@ -55,6 +55,23 @@ type IndexDefWithColumnFunctions interface {
 	IndexColumnFunctions() []string
 }
 
+// IndexDefWithKeyComponentTypes is an optional extension for metadata adapters
+// that can derive the authoritative physical tuple type of every index-key
+// component. The slice is parallel to IndexColumnNames.
+type IndexDefWithKeyComponentTypes interface {
+	IndexDef
+	IndexKeyComponentTypes() []values.Type
+}
+
+// IndexDefWithPrimaryKeyComponentTypes optionally supplies authoritative tuple
+// types aligned with IndexPrimaryKeyColumns. These govern the appended PK
+// suffix's ordering congruence; missing metadata conservatively suppresses the
+// suffix rather than inferring a type from its display name.
+type IndexDefWithPrimaryKeyComponentTypes interface {
+	IndexDef
+	IndexPrimaryKeyComponentTypes() []values.Type
+}
+
 // IndexDefWithCreatesDuplicates is an optional extension of IndexDef for indexes
 // that can state whether their root key expression FANS OUT (a repeated/collection
 // field produces multiple entries per record). Ports Java's
@@ -192,6 +209,12 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			upperPK,
 			createsDuplicatesSignal,
 		).WithCommonPrimaryKey(commonPK)
+		if typed, ok := def.(IndexDefWithKeyComponentTypes); ok {
+			candidate.WithKeyComponentTypes(typed.IndexKeyComponentTypes())
+		}
+		if typedPK, ok := def.(IndexDefWithPrimaryKeyComponentTypes); ok {
+			candidate.WithPrimaryKeyComponentTypes(typedPK.IndexPrimaryKeyComponentTypes())
+		}
 		if perType, ok := def.(IndexDefWithRecordTypeRowTypes); ok {
 			candidate.WithRecordTypeRowTypes(perType.IndexRecordTypeRowTypes())
 		}

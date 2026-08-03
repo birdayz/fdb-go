@@ -125,9 +125,12 @@ factory-corpus:
 factory-run date seeds="1200" quota="1000":
     go run ./cmd/factory-run -seeds {{seeds}} -quota {{quota}} -date {{date}}
 
-# Run stress tests (10K/100K rows — exercises FDB transaction limits).
+# Run the full real-FDB stress family: raw/record-layer ingest and read scaling,
+# 10K/100K/1M SQL assertions, and the large vector rebalance proofs. The tests
+# share one Bazel target, so the timeout covers the aggregate suite rather than
+# any individual scale point.
 stress:
-    bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_timeout=600 --test_output=streamed
+    bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_timeout=1800 --test_output=streamed
 
 # Run conformance server. NOTE: stdin is load-bearing — the server halts on
 # stdin EOF (parent-death watchdog), so run it with a live stdin (a terminal

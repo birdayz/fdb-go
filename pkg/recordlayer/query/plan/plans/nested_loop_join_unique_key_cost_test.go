@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -13,7 +14,7 @@ import (
 func layoutOf(name string, cols ...string) *values.RecordType {
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
 	return values.NewRecordType(name, false, fields)
 }
@@ -40,9 +41,10 @@ func fieldOfAliasIn(layout *values.RecordType, col, alias string) values.Value {
 	if !ok {
 		panic("test layout " + layout.RecordName + " does not declare " + col)
 	}
+	field, _ := layout.GetField(ord)
 	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
-		col, ord, values.UnknownType, values.OrdinalDomainOfType(layout),
+		col, ord, field.FieldType, values.OrdinalDomainOfType(layout),
 	)
 }
 
@@ -77,7 +79,8 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyEqualityJoin_MatchesOuterCardinali
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -117,7 +120,8 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyThroughFetch(t *testing.T) {
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	idxScan := NewRecordQueryIndexPlan("uq_idx", nil, []string{"Inner"}, partialLayout, false).
-		WithIndexMetadata([]string{"ID"}, []string{"ID"}, true)
+		WithIndexMetadata([]string{"ID"}, []string{"ID"}, true).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 	innerPlan := NewRecordQueryFetchFromPartialRecordPlan(idxScan, nil, innerLayout, FetchIndexRecordsPrimaryKey)
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
@@ -147,7 +151,8 @@ func TestNestedLoopJoinPlan_HintCost_CompositeUniqueKey_BothColumnsBound(t *test
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("TENANT", "ORDER"))
+		WithPrimaryKey(pkOf("TENANT", "ORDER")).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	preds := []predicates.QueryPredicate{
 		equalityJoinPredicate(fieldOfAliasIn(innerLayout, "TENANT", "i"), fieldOfAliasIn(outerLayout, "TENANT_FK", "o")),
@@ -173,7 +178,8 @@ func TestNestedLoopJoinPlan_HintCost_UniqueKeyPlusResidualPredicate(t *testing.T
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	keyPred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
 	residual := predicates.NewComparisonPredicate(fieldOfAliasIn(innerLayout, "STATUS", "i"), predicates.Comparison{
@@ -207,7 +213,8 @@ func TestNestedLoopJoinPlan_HintCost_NonUniqueEqualityJoin_Unaffected(t *testing
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryIndexPlan("cat_idx", nil, []string{"Inner"}, innerLayout, false).
-		WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false) // NOT unique
+		WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false).
+		WithKeyComponentTypes(testPhysicalLongTypes(1)) // NOT unique
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "CATEGORY", "i"), fieldOfAliasIn(outerLayout, "CAT_FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -238,7 +245,8 @@ func TestNestedLoopJoinPlan_HintCost_PartialCompositeKeyBind_Unaffected(t *testi
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("TENANT", "ORDER"))
+		WithPrimaryKey(pkOf("TENANT", "ORDER")).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "TENANT", "i"), fieldOfAliasIn(outerLayout, "TENANT_FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(outerPlan, innerPlan, []predicates.QueryPredicate{pred}, JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil)
@@ -267,7 +275,8 @@ func TestNestedLoopJoinPlan_HintCost_BothOperandsInner_Unaffected(t *testing.T) 
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	// i.id = i.other — both sides correlated to "i", the inner alias.
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(innerLayout, "OTHER", "i"))
@@ -306,7 +315,8 @@ func TestNestedLoopJoinPlan_HintCost_NestedFieldSameLeafName_Unaffected(t *testi
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	addrOrd, _ := innerLayout.FieldIndex("ADDRESS")
 	nestedInnerID := &values.FieldValue{
@@ -369,7 +379,8 @@ func TestNestedLoopJoinPlan_HintCost_SameLeafNameDifferentDomain_Unaffected(t *t
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	// Correlated to the inner alias, spelled ID, but its ordinal indexes
 	// otherLayout — the shape a rebase produces when a reference keeps a
@@ -420,7 +431,8 @@ func TestNestedLoopJoinPlan_HintCost_LazyOperand_Unaffected(t *testing.T) {
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	lazyInnerID := &values.FieldValue{
 		Field: "ID",
@@ -448,7 +460,8 @@ func TestNestedLoopJoinPlan_HintCost_UntypedLeg_Unaffected(t *testing.T) {
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, values.UnknownType, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -474,7 +487,8 @@ func TestNestedLoopJoinPlan_HintCost_UnsafeIndexOrderingNames_Unaffected(t *test
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryIndexPlan("uq_tags_idx", nil, []string{"Inner"}, innerLayout, false).
 		WithIndexMetadata([]string{"TAGS"}, []string{"ID"}, true). // unique
-		WithOrderingKeyNamesUnavailable()                          // e.g. CARDINALITY(TAGS) — names unsafe
+		WithKeyComponentTypes(testPhysicalLongTypes(1)).
+		WithOrderingKeyNamesUnavailable() // e.g. CARDINALITY(TAGS) — names unsafe
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "TAGS", "i"), fieldOfAliasIn(outerLayout, "TAGS_FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -505,7 +519,8 @@ func TestNestedLoopJoinPlan_HintCost_FullOuterJoin_Unaffected(t *testing.T) {
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -538,7 +553,8 @@ func TestNestedLoopJoinPlan_HintCost_LeftOuterJoin_StillCorrected(t *testing.T) 
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"))
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -553,6 +569,80 @@ func TestNestedLoopJoinPlan_HintCost_LeftOuterJoin_StillCorrected(t *testing.T) 
 	got := plan.HintCost([]properties.Cost{{Cardinality: 10, CPU: 1}, {Cardinality: 1000, CPU: 5}}, nil)
 	if got.Cardinality != 10 {
 		t.Fatalf("Cardinality = %v, want 10 (outerCard)", got.Cardinality)
+	}
+}
+
+func TestNestedLoopJoinPlan_HintCost_LeftOuterUniqueBindKeepsOuterFloor(t *testing.T) {
+	t.Parallel()
+	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
+	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
+	keyPredicate := equalityJoinPredicate(
+		fieldOfAliasIn(innerLayout, "ID", "i"), fieldOfAliasIn(outerLayout, "FK", "o"),
+	)
+	extraPredicate := predicates.NewComparisonPredicate(
+		fieldOfAliasIn(outerLayout, "FK", "o"),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
+	)
+	for _, test := range []struct {
+		name       string
+		additional predicates.QueryPredicate
+	}{
+		{name: "unrelated ON conjunct", additional: extraPredicate},
+		{name: "redundant unique-key conjunct", additional: keyPredicate},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			plan := NewRecordQueryNestedLoopJoinPlan(
+				outerPlan, innerPlan,
+				[]predicates.QueryPredicate{keyPredicate, test.additional},
+				JoinLeftOuter, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
+			)
+			if n, ok := NestedLoopJoinUniqueKeyConjuncts(plan); !ok || n != 1 {
+				t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%d,%v), want (1,true)", n, ok)
+			}
+			got := plan.HintCost([]properties.Cost{{Cardinality: 10}, {Cardinality: 1000}}, nil)
+			if got.Cardinality != 10 {
+				t.Fatalf("left-outer cardinality = %v, want outer cardinality 10", got.Cardinality)
+			}
+		})
+	}
+}
+
+func TestNestedLoopJoinUniqueKeyConjuncts_MultiTypeDiscriminatorMustBeBound(t *testing.T) {
+	t.Parallel()
+	innerRT := typedJoinLayout("Inner", "ID", values.NotNullLong)
+	outerRT := typedJoinLayout("Outer", "FK", values.NotNullLong)
+	outer := NewRecordQueryScanPlan([]string{"Outer"}, outerRT, false)
+	predicate := equalityJoinPredicate(
+		fieldOfAliasIn(innerRT, "ID", "i"), fieldOfAliasIn(outerRT, "FK", "o"),
+	)
+	pk := []values.Value{values.NewRecordTypeValue(nil), &values.FieldValue{Field: "ID"}}
+	for _, test := range []struct {
+		name        string
+		recordTypes []string
+		wantProof   bool
+	}{
+		{name: "single type makes discriminator constant", recordTypes: []string{"InnerA"}, wantProof: true},
+		{name: "multi type leaves discriminator unbound", recordTypes: []string{"InnerA", "InnerB"}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inner := NewRecordQueryScanPlan(test.recordTypes, innerRT, false).
+				WithPrimaryKey(pk).
+				WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
+			plan := NewRecordQueryNestedLoopJoinPlan(
+				outer, inner, []predicates.QueryPredicate{predicate}, JoinInner,
+				values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
+			)
+			_, gotProof := NestedLoopJoinUniqueKeyConjuncts(plan)
+			if gotProof != test.wantProof {
+				t.Fatalf("NestedLoopJoinUniqueKeyConjuncts proof = %v, want %v", gotProof, test.wantProof)
+			}
+		})
 	}
 }
 
@@ -578,9 +668,11 @@ func TestNestedLoopJoinPlan_HintCost_SameLayoutOtherCorrelation_Unaffected(t *te
 	// A self-join: BOTH legs scan Inner, so there is exactly one layout and the
 	// domain element cannot do the rejecting.
 	outerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	// o.ID — the inner key's own column, in the inner's own layout, read off
 	// the OUTER quantifier.
@@ -631,9 +723,11 @@ func TestNestedLoopJoinPlan_HintCost_SameLayoutInnerCorrelation_StillCorrected(t
 	t.Parallel()
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	pred := equalityJoinPredicate(fieldOfAliasIn(innerLayout, "ID", "i"), &values.ConstantValue{Value: int64(7)})
 	plan := NewRecordQueryNestedLoopJoinPlan(
@@ -682,7 +776,8 @@ func TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg(t *testing.T
 
 	outerPlan := NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
 	innerPlan := NewRecordQueryScanPlan([]string{"Inner"}, innerLayout, false).
-		WithPrimaryKey(pkOf("ID"))
+		WithPrimaryKey(pkOf("ID")).
+		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
 	// The inner leg is bound under the PLANNER-MINTED alias `q$5`
 	// (UniqueCorrelationIdentifier's lowercase machine-counter namespace). The
@@ -719,5 +814,128 @@ func TestNestedLoopJoinPlan_HintCost_UserAliasCannotForgeAMintedLeg(t *testing.T
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(samePlan); !ok || n != 1 {
 		t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%v, %v), want (1, true) — the genuine "+
 			"minted leg must still prove its own bind", n, ok)
+	}
+}
+
+func typedJoinLayout(name, field string, typ values.Type) *values.RecordType {
+	return values.NewRecordType(name, false, []values.Field{{
+		Name: field, FieldType: typ, Ordinal: 0,
+	}})
+}
+
+// A UNIQUE declaration is raw physical-key uniqueness. It does not imply that
+// a row-level logical equality predicate selects one key: signed zero and NaN
+// have plural FLOAT/DOUBLE classes, and cmpAny can map several integer keys to
+// one floating comparand at the binary64 precision cliff. The scan binder can
+// reject such a projection; this materialized join predicate cannot.
+func TestNestedLoopJoinUniqueKeyConjuncts_LogicalEqualityClasses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		physicalType values.Type
+		comparand    func(*values.RecordType) values.Value
+		wantProof    bool
+	}{
+		{
+			name:         "dynamic DOUBLE includes signed zero and NaN",
+			physicalType: values.NotNullDouble,
+			comparand: func(layout *values.RecordType) values.Value {
+				return fieldOfAliasIn(layout, "FK", "o")
+			},
+		},
+		{
+			name:         "dynamic FLOAT includes signed zero and NaN",
+			physicalType: values.NotNullFloat,
+			comparand: func(layout *values.RecordType) values.Value {
+				return fieldOfAliasIn(layout, "FK", "o")
+			},
+		},
+		{name: "DOUBLE positive zero", physicalType: values.NotNullDouble, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(float64(0)) }},
+		{name: "FLOAT negative zero", physicalType: values.NotNullFloat, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(math.Copysign(0, -1)) }},
+		{name: "DOUBLE NaN", physicalType: values.NotNullDouble, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(math.NaN()) }},
+		{name: "LONG dynamic DOUBLE can reach precision cliff", physicalType: values.NotNullLong, comparand: func(*values.RecordType) values.Value {
+			return &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}
+		}},
+		{name: "LONG precision-cliff literal", physicalType: values.NotNullLong, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(float64(1 << 53)) }},
+		{name: "DOUBLE finite nonzero", physicalType: values.NotNullDouble, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(float64(5)) }, wantProof: true},
+		{name: "LONG exactly represented float", physicalType: values.NotNullLong, comparand: func(*values.RecordType) values.Value { return values.LiteralValue(float64(5)) }, wantProof: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			innerRT := typedJoinLayout("FloatingInner", "K", test.physicalType)
+			outerRT := typedJoinLayout("FloatingOuter", "FK", test.physicalType)
+			outer := NewRecordQueryScanPlan([]string{"FloatingOuter"}, outerRT, false)
+			inner := NewRecordQueryScanPlan([]string{"FloatingInner"}, innerRT, false).
+				WithPrimaryKey(pkOf("K")).
+				WithKeyComponentTypes([]values.Type{test.physicalType})
+			predicate := equalityJoinPredicate(
+				fieldOfAliasIn(innerRT, "K", "i"), test.comparand(outerRT),
+			)
+			plan := NewRecordQueryNestedLoopJoinPlan(
+				outer, inner, []predicates.QueryPredicate{predicate}, JoinInner,
+				values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
+			)
+			_, gotProof := NestedLoopJoinUniqueKeyConjuncts(plan)
+			if gotProof != test.wantProof {
+				t.Fatalf("NestedLoopJoinUniqueKeyConjuncts proof = %v, want %v", gotProof, test.wantProof)
+			}
+			cost := plan.HintCost([]properties.Cost{{Cardinality: 10}, {Cardinality: 1000}}, nil)
+			if test.wantProof && cost.Cardinality != 10 {
+				t.Fatalf("proven unique bind cardinality = %v, want 10", cost.Cardinality)
+			}
+			if !test.wantProof && cost.Cardinality <= 10 {
+				t.Fatalf("unproven logical equality cardinality = %v, must not be capped to outer cardinality 10", cost.Cardinality)
+			}
+		})
+	}
+}
+
+func TestNestedLoopJoinUniqueKeyConjuncts_PhysicalTypeAlignmentFailsClosed(t *testing.T) {
+	t.Parallel()
+	innerRT := typedJoinLayout("Inner", "K", values.NotNullDouble)
+	outerRT := typedJoinLayout("Outer", "FK", values.NotNullDouble)
+	outer := NewRecordQueryScanPlan([]string{"Outer"}, outerRT, false)
+	// Integer zero is a singleton in LONG but spans both signs in DOUBLE. If
+	// the full-coordinate vector is shifted across RecordTypeValue, this exact
+	// predicate flips from a required decline to a false proof.
+	predicate := equalityJoinPredicate(
+		fieldOfAliasIn(innerRT, "K", "i"), values.LiteralValue(int64(0)),
+	)
+	makePlan := func(pk []values.Value, types []values.Type) *RecordQueryNestedLoopJoinPlan {
+		inner := NewRecordQueryScanPlan([]string{"Inner"}, innerRT, false).
+			WithPrimaryKey(pk).
+			WithKeyComponentTypes(types)
+		return NewRecordQueryNestedLoopJoinPlan(
+			outer, inner, []predicates.QueryPredicate{predicate}, JoinInner,
+			values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil,
+		)
+	}
+
+	prefixed := []values.Value{values.NewRecordTypeValue(nil), &values.FieldValue{Field: "K"}}
+	for _, test := range []struct {
+		name  string
+		types []values.Type
+	}{
+		{name: "full coordinates preserve DOUBLE after record type", types: []values.Type{values.NotNullLong, values.NotNullDouble}},
+		{name: "visible coordinates preserve DOUBLE", types: []values.Type{values.NotNullDouble}},
+		{name: "ambiguous arity declines", types: []values.Type{values.NotNullLong, values.NotNullLong, values.NotNullDouble}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if n, ok := NestedLoopJoinUniqueKeyConjuncts(makePlan(prefixed, test.types)); ok || n != 0 {
+				t.Fatalf("NestedLoopJoinUniqueKeyConjuncts = (%d,%v), want (0,false)", n, ok)
+			}
+		})
+	}
+
+	duplicate := makePlan(
+		[]values.Value{&values.FieldValue{Field: "K"}, &values.FieldValue{Field: "K"}},
+		[]values.Type{values.NotNullLong, values.NotNullLong},
+	)
+	if n, ok := NestedLoopJoinUniqueKeyConjuncts(duplicate); ok || n != 0 {
+		t.Fatalf("duplicate-key identity proof = (%d,%v), want (0,false)", n, ok)
 	}
 }

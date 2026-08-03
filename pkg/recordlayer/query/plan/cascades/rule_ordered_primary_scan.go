@@ -99,12 +99,18 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// The ordering claim itself is declined above by ColumnCanExtendOrderingClaim
+	// — the single ordering authority. What is derived here is the SARGABILITY
+	// supply: the physical key types the executor's range binder requires.
+	physicalTypes := physicalTypesFromFlatRow(scan.GetFlowedType(), pkCols, nil)
+
 	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), reverse)
 	pkVals := make([]values.Value, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 	}
-	plan = plan.WithPrimaryKey(pkVals)
+	plan = plan.WithPrimaryKey(pkVals).
+		WithKeyComponentTypes(physicalTypes)
 
 	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
 	// expression now (RFC-184 W2), no adapter needed.

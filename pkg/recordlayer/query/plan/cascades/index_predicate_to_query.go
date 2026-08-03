@@ -18,9 +18,12 @@ import (
 // match candidate so a query can only match the candidate when the matcher
 // can account for the predicate.
 //
-// A RowNumberWindowPredicate converts to TRUE exactly as Java's override does
-// (IndexPredicate.java:770-771): the window predicate constrains which rows
-// the maintainer keeps, not which rows a matched scan may serve.
+// A RowNumberWindowPredicate is REFUSED rather than converted — a deliberate
+// divergence from Java's override, argued at that arm below. "The window
+// predicate constrains which rows the maintainer keeps, not which rows a
+// matched scan may serve" is the tempting reading and the wrong one: the rows
+// the maintainer kept are the only rows the index HAS, so a scan that serves it
+// as a full index serves a top-N slice as the whole table.
 func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predicates.QueryPredicate, error) {
 	switch {
 	case p == nil:
@@ -57,7 +60,25 @@ func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predic
 	case p.GetValuePredicate() != nil:
 		return indexValuePredicateToQuery(p.GetValuePredicate(), base)
 	case p.GetRowNumberWindowPredicate() != nil:
-		return predicates.NewConstantPredicate(predicates.TriTrue), nil
+		// Java returns ConstantPredicate.TRUE here
+		// (RowNumberWindowPredicate.toPredicate, IndexPredicate.java:770-772),
+		// and Go must NOT, because the two languages do different things with
+		// the answer. The TRUE states that a top-N constraint is not expressible
+		// as a QueryPredicate over a single record — it does NOT state that the
+		// predicate accepts every record. It rejects nearly all of them:
+		// `QualifyRowNumber(score, DESC) <= 100` "keeps the 100 records with the
+		// highest score values in the index" (IndexPredicate.java:608-619).
+		//
+		// Go's caller (expandFlatValueIndex) then OMITS a tautological candidate
+		// predicate, so returning TRUE here produces a candidate that matches as
+		// if the index held every record, and a scan serves a top-100 index as
+		// the whole table. Refusing the conversion instead excludes the
+		// candidate outright, which is the only safe answer while Go has no
+		// machinery to honour the constraint — predicateFromProto cannot even
+		// compile this arm, so no store can maintain such an index today.
+		return nil, fmt.Errorf(
+			"row-number window index predicate cannot be expressed as a candidate predicate; " +
+				"the index holds only the qualifying rows, so it must never match as a full index")
 	default:
 		return nil, fmt.Errorf("unsupported predicate proto %v", p)
 	}

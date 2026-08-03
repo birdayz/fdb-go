@@ -225,3 +225,44 @@ func TestSPFreshCandidateGate_PartitionedMetadata(t *testing.T) {
 		t.Fatal("unpartitioned SPFresh index must yield a planner candidate")
 	}
 }
+
+func TestVectorCandidatePrimaryKeyCoverageRequiresCoordinateSafeTopology(t *testing.T) {
+	t.Parallel()
+
+	b := metadata.NewSchemaTemplateBuilder().SetName("vector_pk_topology")
+	b.AddTable("DOCS", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 2),
+	}, []string{"ID"})
+	b.AddVectorIndexUsing("HNSW", "DOCS", "V", "EMBEDDING", nil,
+		map[string]string{recordlayer.IndexOptionVectorMetric: "EUCLIDEAN_METRIC"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	idx := md.GetIndex("V")
+	if idx == nil {
+		t.Fatal("index V not in metadata")
+	}
+	control := tryVectorIndexCandidate(idx, md)
+	if control == nil || len(control.GetPrimaryKeyValues()) != 1 {
+		t.Fatalf("flat vector PK values = %v, want one ID value", control)
+	}
+
+	// FieldNames would report ID while silently omitting the literal coordinate.
+	// The vector candidate must share the structural coverage proof used by
+	// ordinary value indexes and abstain from exposing a shifted PK value.
+	md.GetRecordType("DOCS").PrimaryKey = recordlayer.Concat(
+		recordlayer.RecordTypeKey(),
+		recordlayer.Field("ID"),
+		recordlayer.Literal(int64(7)),
+	)
+	unsafe := tryVectorIndexCandidate(idx, md)
+	if unsafe == nil {
+		t.Fatal("unsafe PK topology should remove PK coverage, not the vector access path")
+	}
+	if got := unsafe.GetPrimaryKeyValues(); got != nil {
+		t.Fatalf("unsafe vector PK topology exposed coverage values: %v", got)
+	}
+}

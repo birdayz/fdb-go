@@ -1,38 +1,24 @@
 package sqldriver_test
 
 // A zero-valued float equality must find BOTH signed zeros even when it is NOT
-// the terminal column of a composite index's equality prefix (TODO CQ-28).
+// the terminal column of a composite index's equality prefix (RFC-208,
+// superseding TODO CQ-28's terminal-only stopgap).
 //
 // IEEE says -0.0 == +0.0 and this engine's `=` follows IEEE, but FDB tuple
 // encoding preserves the sign bit, so the two zeros are distinct adjacent index
-// keys and a probe must span both. The executor widens a zero bound that
-// TERMINATES the scan range — and with index (v, w), `v = 0 AND w = 5` consumed
-// both columns, so the zero was not terminal and the probe found only its own
-// key. `v = 0 AND w = 5` returned NOTHING for a stored (-0.0, 5).
+// keys and a logical probe must cover both. Before RFC-208, `v = 0 AND w = 5`
+// consumed both columns, so the zero was not terminal and the single physical
+// probe returned NOTHING for a stored (-0.0, 5).
 //
 // Widening the whole range is not available: the union of (-0.0,5) and (+0.0,5)
 // is not a contiguous interval — the span between them also admits (-0.0, w>5)
 // and (+0.0, w<5) — so a single TupleRange spanning both would return WRONG
 // rows rather than missing ones.
 //
-// The fix needs no multi-range machinery. A zero-valued float equality now
-// TERMINATES the scan prefix during index matching, even when more indexed
-// columns could be consumed. The zero equality is then the last comparison, so
-// the executor widens it across both keys, and the trailing `w = 5` is applied
-// as a RESIDUAL filter. The scan is bounded to the two zero groups and the
-// residual drops the in-between keys, leaving exactly the wanted pair — one
-// scan, correct rows.
-//
-// The cost is that this shape no longer uses the full composite prefix, so it
-// scans both zero groups instead of seeking one key. That is bounded by however
-// many rows share a zero in the leading column, and it is the price of a
-// correct answer.
-//
-// The correlated sibling gap — a comparand that is only known to be zero at
-// EXECUTION time — is covered separately: the executor splits such a probe
-// into one range per signed zero (zeroFork,
-// pkg/recordlayer/query/executor) instead of de-sargging the join. See
-// correlated_zero_composite_sentinel_test.go.
+// RFC-208 keeps the full `[=,=]` comparison prefix and binds one exact range for
+// each physical zero sign at runtime. No broad interval or residualized suffix
+// is needed, and parameters/correlations use the same binder. The correlated
+// case is pinned separately by TestFDB_CorrelatedZeroCompositeSentinel.
 
 import (
 	"context"

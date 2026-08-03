@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -31,10 +32,16 @@ var pointProbeIdentityLayouts = map[string]*values.RecordType{
 	"LINES": pointProbeLayout("LINES", "TENANT", "LINE_NO", "SKU"),
 }
 
+var pointProbeIdentityPKTypes = map[string][]values.Type{
+	"ORDERS":   {values.NotNullLong},
+	"PRODUCTS": {values.NotNullLong},
+	"LINES":    {values.NotNullLong, values.NotNullLong},
+}
+
 func pointProbeLayout(name string, cols ...string) *values.RecordType {
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
 	return values.NewRecordType(name, false, fields)
 }
@@ -55,11 +62,12 @@ func pointProbeRef(t *testing.T, rt string, corr values.CorrelationIdentifier, f
 		t.Fatalf("setup: %s does not declare %q", rt, field)
 	}
 	domain := values.OrdinalDomainOfType(layout)
+	resolved, _ := layout.GetField(ord)
 	if corr.IsZero() {
-		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, values.UnknownType, domain)
+		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, resolved.FieldType, domain)
 	}
 	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(corr), field, ord, values.UnknownType, domain)
+		values.NewQuantifiedObjectValue(corr), field, ord, resolved.FieldType, domain)
 }
 
 func pointProbeEqFilter(
@@ -73,7 +81,8 @@ func pointProbeEqFilter(
 	if !ok {
 		t.Fatalf("setup: no layout registered for %q", rt)
 	}
-	scan := plans.NewRecordQueryScanPlan([]string{rt}, layout, false)
+	scan := plans.NewRecordQueryScanPlan([]string{rt}, layout, false).
+		WithKeyComponentTypes(pointProbeIdentityPKTypes[rt])
 	preds := make([]predicates.QueryPredicate, 0, len(operands))
 	for _, op := range operands {
 		preds = append(preds, predicates.NewComparisonPredicate(op,
@@ -205,4 +214,206 @@ func TestPredicatesFilterIsFullPKPointProbe_Identity(t *testing.T) {
 				"there was no layout to resolve the primary key's name against")
 		}
 	})
+}
+
+func residualPointProbe(
+	t *testing.T,
+	physicalType values.Type,
+	rhs values.Value,
+) (*plans.RecordQueryPredicatesFilterPlan, *plans.RecordQueryScanPlan, PlanContext) {
+	t.Helper()
+	layout := values.NewRecordType("R", false, []values.Field{{
+		Name: "K", FieldType: physicalType, Ordinal: 0,
+	}})
+	alias := values.NamedCorrelationIdentifier("r")
+	key := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(alias), "K", 0, physicalType,
+		values.OrdinalDomainOfType(layout),
+	)
+	scan := plans.NewRecordQueryScanPlan([]string{"R"}, layout, false).
+		WithKeyComponentTypes([]values.Type{physicalType})
+	filter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+		scan,
+		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(key, predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: rhs,
+		})},
+		alias,
+	)
+	return filter, scan, &pkGateTestCtx{pk: []string{"K"}}
+}
+
+// Residual predicates do not execute the exact-or-loud scan binder. Their
+// at-most-one proof must therefore classify the complete cmpAny equality
+// class over the raw UNIQUE/PK key, including both zero signs, NaN payloads,
+// and integer precision-cliff aliases.
+func TestPredicatesFilterIsFullPKPointProbe_LogicalEqualityClasses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		physicalType values.Type
+		rhs          values.Value
+		want         bool
+	}{
+		{name: "DOUBLE positive zero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(float64(0))},
+		{name: "DOUBLE negative zero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(math.Copysign(0, -1))},
+		{name: "FLOAT zero", physicalType: values.NotNullFloat, rhs: values.LiteralValue(float32(0))},
+		{name: "DOUBLE NaN", physicalType: values.NotNullDouble, rhs: values.LiteralValue(math.NaN())},
+		{name: "dynamic DOUBLE", physicalType: values.NotNullDouble, rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}},
+		{name: "LONG dynamic DOUBLE", physicalType: values.NotNullLong, rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}},
+		{name: "LONG precision cliff", physicalType: values.NotNullLong, rhs: values.LiteralValue(float64(1 << 53))},
+		{name: "DOUBLE finite nonzero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(float64(5)), want: true},
+		{name: "LONG integer", physicalType: values.NotNullLong, rhs: values.LiteralValue(int64(5)), want: true},
+		{name: "LONG exactly represented float", physicalType: values.NotNullLong, rhs: values.LiteralValue(float64(5)), want: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			filter, scan, ctx := residualPointProbe(t, test.physicalType, test.rhs)
+			got := predicatesFilterIsFullPKPointProbe(filter, scan, ctx)
+			if got != test.want {
+				t.Fatalf("predicatesFilterIsFullPKPointProbe = %v, want %v", got, test.want)
+			}
+			counts := findExpressionsByType(filter, nil, ctx)
+			if test.want {
+				if counts.unboundedDataAccess || counts.maxDataAccessCardinality != 1 {
+					t.Fatalf("proven residual point counts = {unbounded:%v max:%v}, want {false 1}", counts.unboundedDataAccess, counts.maxDataAccessCardinality)
+				}
+			} else if !counts.unboundedDataAccess || counts.maxDataAccessCardinality != -1 {
+				t.Fatalf("unproven residual access counts = {unbounded:%v max:%v}, want {true -1}", counts.unboundedDataAccess, counts.maxDataAccessCardinality)
+			}
+		})
+	}
+}
+
+// A residual equality only acts like a probe when its comparand is constant
+// for the whole scan. In particular, `K = K` and `K = OTHER_COLUMN` can match
+// every row even though K is a primary key; raw key uniqueness says nothing
+// about a value chosen afresh from each row.
+func TestPredicatesFilterIsFullPKPointProbe_ComparandMustBeRowInvariant(t *testing.T) {
+	t.Parallel()
+	base, scan, ctx := residualPointProbe(t, values.NotNullLong, values.LiteralValue(int64(5)))
+	key := base.GetPredicates()[0].(*predicates.ComparisonPredicate).Operand
+	innerAlias := base.GetInnerAlias()
+	layout := scan.GetResultType()
+	domain := values.OrdinalDomainOfType(layout)
+	childlessKey := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"K", 0, values.NotNullLong, domain,
+	)
+	innerKey := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(innerAlias), "K", 0, values.NotNullLong, domain,
+	)
+	outerKey := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("outer")),
+		"K", 0, values.NotNullLong, domain,
+	)
+
+	for _, test := range []struct {
+		name string
+		rhs  values.Value
+		want bool
+	}{
+		{name: "literal", rhs: values.LiteralValue(int64(5)), want: true},
+		{name: "parameter", rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullLong}, want: true},
+		{name: "outer correlated field", rhs: outerKey, want: true},
+		{name: "childless current-row field", rhs: childlessKey},
+		{name: "explicit current-row field", rhs: innerKey},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			filter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+				scan,
+				[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+					key, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: test.rhs},
+				)},
+				innerAlias,
+			)
+			if got := predicatesFilterIsFullPKPointProbe(filter, scan, ctx); got != test.want {
+				t.Fatalf("predicatesFilterIsFullPKPointProbe = %v, want %v", got, test.want)
+			}
+			counts := findExpressionsByType(filter, nil, ctx)
+			if test.want {
+				if counts.unboundedDataAccess || counts.maxDataAccessCardinality != 1 {
+					t.Fatalf("proven residual point counts = {unbounded:%v max:%v}, want {false 1}", counts.unboundedDataAccess, counts.maxDataAccessCardinality)
+				}
+			} else if !counts.unboundedDataAccess || counts.maxDataAccessCardinality != -1 {
+				t.Fatalf("unproven residual access counts = {unbounded:%v max:%v}, want {true -1}", counts.unboundedDataAccess, counts.maxDataAccessCardinality)
+			}
+		})
+	}
+}
+
+func TestPredicatesFilterIsFullPKPointProbe_PhysicalTypeAlignment(t *testing.T) {
+	t.Parallel()
+	filter, baseScan, ctx := residualPointProbe(
+		t, values.NotNullDouble,
+		values.LiteralValue(int64(0)),
+	)
+	prefixedPK := []values.Value{
+		values.NewRecordTypeValue(nil), &values.FieldValue{Field: "K"},
+	}
+	for _, test := range []struct {
+		name      string
+		types     []values.Type
+		wantProof bool
+	}{
+		{name: "full-coordinate DOUBLE is not shifted onto prefix", types: []values.Type{values.NotNullLong, values.NotNullDouble}},
+		{name: "visible-coordinate DOUBLE remains authoritative", types: []values.Type{values.NotNullDouble}},
+		{name: "ambiguous arity declines", types: []values.Type{values.NotNullLong, values.NotNullLong, values.NotNullDouble}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			scan := baseScan.WithPrimaryKey(prefixedPK).WithKeyComponentTypes(test.types)
+			rebound := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+				scan, filter.GetPredicates(), filter.GetInnerAlias(),
+			)
+			if got := predicatesFilterIsFullPKPointProbe(rebound, scan, ctx); got != test.wantProof {
+				t.Fatalf("predicatesFilterIsFullPKPointProbe = %v, want %v", got, test.wantProof)
+			}
+		})
+	}
+
+	// A statically non-zero DOUBLE proves the positive direction even when the
+	// structural RecordTypeValue occupies a full physical coordinate.
+	nonzeroFilter, _, _ := residualPointProbe(t, values.NotNullDouble, values.LiteralValue(float64(5)))
+	nonzeroScan := baseScan.WithPrimaryKey(prefixedPK).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullDouble})
+	nonzero := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+		nonzeroScan, nonzeroFilter.GetPredicates(), nonzeroFilter.GetInnerAlias(),
+	)
+	if !predicatesFilterIsFullPKPointProbe(nonzero, nonzeroScan, ctx) {
+		t.Fatal("full-coordinate nonzero DOUBLE equality lost its valid at-most-one proof")
+	}
+}
+
+// residualPrimaryKeyPhysicalTypes consumes two ordered translations of one
+// primary-key expression. It must preserve their coordinates even when two
+// FieldValues render identically; Field is not column identity and cannot be a
+// map key for the signed-zero multiplicity proof.
+func TestResidualPrimaryKeyPhysicalTypes_DuplicateDisplayNamesStayPositional(t *testing.T) {
+	t.Parallel()
+	domain := values.OrdinalDomainOfColumnNames([]string{"DUP", "DUP"})
+	pk := []values.Value{
+		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 1, values.NotNullFloat, domain),
+		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 0, values.NotNullDouble, domain),
+	}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithPrimaryKey(pk).
+		WithKeyComponentTypes([]values.Type{values.NotNullFloat, values.NotNullDouble})
+	got, ok := residualPrimaryKeyPhysicalTypes(scan, 2)
+	if !ok {
+		t.Fatal("coordinate-aligned duplicate display names were declined")
+	}
+	if len(got) != 2 || got[0] != values.NotNullFloat || got[1] != values.NotNullDouble {
+		t.Fatalf("physical types = %v, want [FLOAT DOUBLE] in PK-component order", got)
+	}
+
+	prefixed := scan.WithPrimaryKey(append([]values.Value{values.NewRecordTypeValue(nil)}, pk...)).
+		WithKeyComponentTypes([]values.Type{values.UnknownType, values.NotNullFloat, values.NotNullDouble})
+	got, ok = residualPrimaryKeyPhysicalTypes(prefixed, 2)
+	if !ok || len(got) != 2 || got[0] != values.NotNullFloat || got[1] != values.NotNullDouble {
+		t.Fatalf("record-type-prefixed physical types = %v ok=%v, want [FLOAT DOUBLE]", got, ok)
+	}
 }

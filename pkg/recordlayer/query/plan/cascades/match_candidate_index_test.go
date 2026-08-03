@@ -249,7 +249,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
 	if !fanOutCandidate.CreatesDuplicates() {
 		t.Fatal("structured FAN_OUT must override a stale false duplicate signal")
 	}
@@ -353,6 +353,13 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 	if !ok {
 		t.Fatalf("fan-out fetch child = %T, want IndexPlan", fetch.GetInner())
 	}
+	pkColumns := indexPlan.GetPKColumnNames()
+	if len(pkColumns) != 1 || pkColumns[0] != "ID" {
+		t.Fatalf(
+			"fan-out scan primary-key coverage = %v, want [ID]",
+			pkColumns,
+		)
+	}
 	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
 		len(ordering.Keys) != 0 {
 		t.Fatalf(
@@ -381,7 +388,8 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if _, ok := scalarCandidate.PushValueThroughFetch(
 		field("SCORE"),
 		sourceAlias,
@@ -551,7 +559,7 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
-	})
+	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong})
 
 	equality := predicates.NewLiteralComparison(
 		predicates.ComparisonEquals,
@@ -662,7 +670,8 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 		false,
 		nil,
 		&noDuplicates,
-	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR)).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	scalarParts := scalarCandidate.ComputeMatchedOrderingParts(
 		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
 		[]values.CorrelationIdentifier{scalarAlias},

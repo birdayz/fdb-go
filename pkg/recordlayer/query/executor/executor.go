@@ -10,11 +10,13 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -81,6 +83,25 @@ type SumOverflowError struct{ Int32 bool }
 // child; a raw-key scan child consumed it as a scan position).
 type UnsupportedContinuationError struct {
 	Shape string
+}
+
+// FilteredIndexPlanError reports a physical query plan that attempts to read a
+// sparse/filtered index without carrying a predicate-implication proof. The
+// planner currently excludes every filtered index from query candidates, so a
+// plan that reaches this guard is hand-built or stale. Executing it would read
+// only the predicate-selected subset and could silently omit records.
+//
+// Low-level record-store APIs deliberately remain able to scan filtered
+// indexes for maintenance and diagnostics. This is a query-plan invariant.
+type FilteredIndexPlanError struct {
+	IndexName string
+}
+
+func (e *FilteredIndexPlanError) Error() string {
+	return fmt.Sprintf(
+		"executor: filtered index %q cannot be used by a query plan without a predicate-implication proof",
+		e.IndexName,
+	)
 }
 
 func (e *UnsupportedContinuationError) Error() string {
@@ -240,9 +261,19 @@ func executeScan(
 	// scan only that range. Mirrors Java's RecordQueryScanPlan.executePlan()
 	// which calls comparisons.toTupleRange() → store.scanRecords(range).
 	if comps := p.GetScanComparisons(); len(comps) > 0 {
-		scanRanges, err := scanComparisonsToTupleRanges(comps, scanBindContext(evalCtx))
+		fingerprintSalt, err := primaryScanRangeFingerprintSalt(p)
 		if err != nil {
-			return nil, fmt.Errorf("executor: building scan range for PK comparisons: %w", err)
+			return nil, fmt.Errorf("executor: building PK scan execution identity: %w", err)
+		}
+		spec, err := bindScanComparisonsToRangeSet(
+			comps,
+			p.GetKeyComponentTypes(),
+			scanBindContext(evalCtx),
+			p.IsReverse(),
+			fingerprintSalt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("executor: building scan ranges for PK comparisons: %w", err)
 		}
 
 		// When the PK uses RecordTypeKey() as its first component, FDB
@@ -256,46 +287,62 @@ func executeScan(
 		// the subspace contains ALL record types interleaved by their
 		// RecordTypeKey prefix.
 		types := p.GetRecordTypes()
+		var recordTypePrefix tuple.Tuple
 		if len(types) == 1 {
 			md := store.GetMetaData()
 			rt := md.GetRecordType(types[0])
 			if rt != nil && rt.PrimaryKey != nil && recordlayer.KeyExpressionHasRecordTypePrefix(rt.PrimaryKey) {
-				rtk := rt.GetRecordTypeKey()
-				for ri, tupleRange := range scanRanges {
-					tupleRange = tupleRange.Prepend(tuple.Tuple{rtk})
-					// Clamp unbounded endpoints to the record-type prefix so
-					// the scan stays within this type's key range.
-					if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
-						tupleRange.High = tuple.Tuple{rtk}
-						tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
-					if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
-						tupleRange.Low = tuple.Tuple{rtk}
-						tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
-					scanRanges[ri] = tupleRange
-				}
+				recordTypePrefix = tuple.Tuple{rt.GetRecordTypeKey()}
 			}
 		}
 
-		inner := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
-			func(tupleRange recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-				lowEP := tupleRange.LowEndpoint
-				highEP := tupleRange.HighEndpoint
-				if len(cont) > 0 {
-					if scanProps.Reverse {
-						highEP = recordlayer.EndpointTypeContinuation
+		stored, err := newScanRangeSetCursor(
+			spec,
+			continuation,
+			scanProps,
+			func(
+				tupleRange recordlayer.TupleRange,
+				innerContinuation []byte,
+				childProps recordlayer.ScanProperties,
+			) (recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]], error) {
+				if len(recordTypePrefix) > 0 {
+					tupleRange = tupleRange.Prepend(recordTypePrefix)
+					// Clamp unbounded endpoints to the record-type prefix so
+					// the scan stays within this type's key range.
+					if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
+						tupleRange.High = append(tuple.Tuple(nil), recordTypePrefix...)
+						tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
+					}
+					if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
+						tupleRange.Low = append(tuple.Tuple(nil), recordTypePrefix...)
+						tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+					}
+				}
+
+				lowEndpoint := tupleRange.LowEndpoint
+				highEndpoint := tupleRange.HighEndpoint
+				if innerContinuation != nil {
+					if childProps.Reverse {
+						highEndpoint = recordlayer.EndpointTypeContinuation
 					} else {
-						lowEP = recordlayer.EndpointTypeContinuation
+						lowEndpoint = recordlayer.EndpointTypeContinuation
 					}
 				}
 				return store.ScanRecordsInRange(
-					tupleRange.Low, tupleRange.High,
-					lowEP, highEP,
-					cont, scanProps,
-				)
-			})
-		return recordlayer.MapCursor(inner, FromStoredRecord), nil
+					tupleRange.Low,
+					tupleRange.High,
+					lowEndpoint,
+					highEndpoint,
+					innerContinuation,
+					childProps,
+				), nil
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		mapped := recordlayer.MapCursor(stored, FromStoredRecord)
+		return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 	}
 
 	types := p.GetRecordTypes()
@@ -321,14 +368,27 @@ func executeIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
 	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
+	}
 	maintainer, err := store.GetIndexMaintainer(idx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	scanRanges, err := scanComparisonsToTupleRanges(p.GetScanComparisons(), scanBindContext(evalCtx))
+	fingerprintSalt, err := indexScanRangeFingerprintSalt(p, recordlayer.IndexScanByValue)
 	if err != nil {
-		return nil, fmt.Errorf("executor: building scan range for %q: %w", p.GetIndexName(), err)
+		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
+	}
+	rangeSet, err := bindScanComparisonsToRangeSet(
+		p.GetScanComparisons(),
+		p.GetKeyComponentTypes(),
+		scanBindContext(evalCtx),
+		p.IsReverse(),
+		fingerprintSalt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", p.GetIndexName(), err)
 	}
 
 	scanProps := recordlayer.ScanProperties{
@@ -337,19 +397,32 @@ func executeIndexScan(
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
-	indexCursor := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
-		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
-			return maintainer.Scan(r, cont, scanProps)
-		})
+	indexCursor, err := newScanRangeSetCursor(
+		rangeSet,
+		continuation,
+		scanProps,
+		func(
+			scanRange recordlayer.TupleRange,
+			innerContinuation []byte,
+			childProperties recordlayer.ScanProperties,
+		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			return maintainer.Scan(scanRange, innerContinuation, childProperties), nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", p.GetIndexName(), err)
+	}
 
+	var resultCursor recordlayer.RecordCursor[QueryResult]
 	if p.IsCovering() {
-		var pkCols []string
+		// The plan's PK names were validated against tuple-coordinate topology
+		// by the metadata adapter. Re-reading KeyExpression.FieldNames here would
+		// discard that proof: e.g. PK (ID, literal(7)) reports only ID, and the
+		// tail mapper below would place literal 7 in ID's logical slot.
+		pkCols := p.GetPKColumnNames()
 		var logicalType *values.RecordType
 		if rts := p.GetRecordTypes(); len(rts) > 0 {
 			if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil {
-				if rt.PrimaryKey != nil {
-					pkCols = rt.PrimaryKey.FieldNames()
-				}
 				// The record's LOGICAL row shape — only authoritative when the
 				// scan serves a single record type (a multi-type covering scan
 				// has no single logical shape and keeps the index layout).
@@ -381,13 +454,14 @@ func executeIndexScan(
 		// index-layout row, which a baked logical ordinal would misread.
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
 		if logicalOrds != nil {
-			return &coveringIndexCursor{
+			resultCursor = &coveringIndexCursor{
 				inner:       indexCursor,
 				columns:     cov,
 				pkColumns:   pkCols,
 				logicalType: logicalType,
 				logicalOrds: logicalOrds,
-			}, nil
+			}
+			return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
 		}
 		// This covering scan cannot present a row in the record's LOGICAL slot
 		// order: a nested/expression index column (e.g. `ADDR.CITY`) has no
@@ -405,12 +479,12 @@ func executeIndexScan(
 		// here, but the fetch fallback is correct in the meantime.)
 	}
 
-	resultCursor := &indexFetchCursor{
+	resultCursor = &indexFetchCursor{
 		inner: indexCursor,
 		store: store,
 	}
 
-	return resultCursor, nil
+	return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 // defaultVectorEfSearch is the HNSW search-quality knob used when the query
@@ -435,18 +509,19 @@ func executeVectorIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: vector index %q not found in metadata", p.GetIndexName())
 	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
+	}
+	if err := validateVectorPartitionPlan(idx, p); err != nil {
+		return nil, err
+	}
 
-	// Partition prefix from the leading equality comparisons.
-	var prefix tuple.Tuple
-	for _, cr := range p.GetPrefixComparisons() {
-		if cr == nil || !cr.IsEquality() {
-			break
-		}
-		op, err := cr.GetEqualityComparison().Operand.Evaluate(evalCtx)
-		if err != nil {
-			return nil, err
-		}
-		prefix = append(prefix, op)
+	prefixComparisons, prefixTypes, err := vectorPartitionEqualityPrefix(
+		p.GetPrefixComparisons(),
+		p.GetPartitionKeyComponentTypes(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: vector index %q partition prefix: %w", p.GetIndexName(), err)
 	}
 
 	queryVec, err := evalFloat64Slice(p.GetQueryVector(), evalCtx)
@@ -473,11 +548,17 @@ func executeVectorIndexScan(
 		// cannot wrap k-1 to a huge POSITIVE and slip past the ≤0 guard into an
 		// enormous horizon. K ≥ 2 here ⇒ k-1 cannot overflow.
 		if k <= 1 {
+			if err := rejectContinuationForEmptyVectorScan(continuation); err != nil {
+				return nil, err
+			}
 			return recordlayer.Empty[QueryResult](), nil
 		}
 		rankCap = k - 1
 	}
 	if rankCap <= 0 { // `<= K` with K ≤ 0
+		if err := rejectContinuationForEmptyVectorScan(continuation); err != nil {
+			return nil, err
+		}
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
@@ -493,8 +574,8 @@ func executeVectorIndexScan(
 		efSearch = *p.GetEfSearch()
 	}
 
-	var scanRange recordlayer.TupleRange
 	scanType := recordlayer.IndexScanByDistance
+	var makeScanRange func(tuple.Tuple) recordlayer.TupleRange
 	if p.IsOrderedStream() {
 		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
 		// rows in ascending distance order so the Filter ABOVE culls non-matching
@@ -536,7 +617,9 @@ func executeVectorIndexScan(
 		if rankCap > horizon {
 			horizon = rankCap
 		}
-		scanRange = recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
+		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
+			return recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
+		}
 	} else {
 		// Self-limiting (top-k) mode. The scan limit IS the adjusted rank cap
 		// (Java's VectorIndexScanBounds.getAdjustedLimit: K for <=K, K-1 for <K) —
@@ -547,14 +630,233 @@ func executeVectorIndexScan(
 		if efSearch != 0 && efSearch < limit {
 			efSearch = limit
 		}
-		scanRange = recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
+			return recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+		}
+	}
+	invocationRange := makeScanRange(nil)
+	fingerprintSalt, err := vectorScanRangeFingerprintSalt(
+		p,
+		idx.Type,
+		scanType,
+		queryVec,
+		k,
+		rankCap,
+		efSearch,
+		invocationRange,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building vector scan execution identity for %q: %w", p.GetIndexName(), err)
+	}
+	partitionRangeSet, err := bindScanComparisonsToRangeSetWithTerminalWidening(
+		prefixComparisons,
+		prefixTypes,
+		scanBindContext(evalCtx),
+		false,
+		fingerprintSalt,
+		false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building vector partition scan ranges for %q: %w", p.GetIndexName(), err)
 	}
 	scanProps := recordlayer.ScanProperties{
 		ExecuteProperties:   props,
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
-	indexCursor := store.ScanIndexByType(idx, scanType, scanRange, continuation, scanProps)
-	return &indexFetchCursor{inner: indexCursor, store: store}, nil
+	indexCursor, err := newScanRangeSetCursor(
+		partitionRangeSet,
+		continuation,
+		scanProps,
+		func(
+			partitionRange recordlayer.TupleRange,
+			innerContinuation []byte,
+			childProperties recordlayer.ScanProperties,
+		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			prefix, prefixErr := exactVectorPartitionPrefix(partitionRange)
+			if prefixErr != nil {
+				return nil, fmt.Errorf("vector index %q: %w", p.GetIndexName(), prefixErr)
+			}
+			return store.ScanIndexByType(
+				idx,
+				scanType,
+				makeScanRange(prefix),
+				innerContinuation,
+				childProperties,
+			), nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: opening vector partition scan ranges for %q: %w", p.GetIndexName(), err)
+	}
+	result := &indexFetchCursor{inner: indexCursor, store: store}
+	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// requireReadableQueryIndex is the executor backstop for plans built manually
+// or raced against mutable metadata/store state. Low-level record-store index
+// APIs retain Java's READABLE_UNIQUE_PENDING scannability and sparse-index
+// scanning for online-index tooling, but a query plan may have relied on
+// uniqueness, cardinality, ordering, or complete coverage even when the leaf
+// itself looks like an ordinary scan. Therefore query-plan execution requires
+// both the one state Java admits to planning (strictly READABLE) and a complete
+// index. Filtered indexes remain rejected until physical plans carry a checked
+// predicate-implication proof.
+//
+// "Complete" is HasFilteringPredicate, not HasPredicate: a stored predicate
+// that is a PROVED tautology rejects no record, so the index holds an entry for
+// every row and nothing is missing to reject. Planning already reasons that way
+// (a tautological candidate predicate is never attached —
+// ValueIndexExpansionVisitor.java:141), so a backstop keyed on the mere
+// presence of a predicate field would kill, at execution, plans the planner is
+// entitled to build and no query can route around.
+func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
+	state := store.GetIndexState(idx.Name)
+	if state == recordlayer.IndexStateReadable {
+		if idx.HasFilteringPredicate() {
+			return &FilteredIndexPlanError{IndexName: idx.Name}
+		}
+		return nil
+	}
+	return &recordlayer.IndexNotReadableError{
+		IndexName:    idx.Name,
+		CurrentState: state,
+	}
+}
+
+func rejectContinuationForEmptyVectorScan(continuation []byte) error {
+	if continuation == nil {
+		return nil
+	}
+	return &recordlayer.ContinuationParseError{
+		Message:  "vector scan continuation cannot resume an empty adjusted rank",
+		RawBytes: bytes.Clone(continuation),
+	}
+}
+
+// invalidVectorPartitionPlanError is returned before evaluating dynamic inputs
+// or opening storage when a hand-built/stale vector plan disagrees with the
+// metadata topology. Letting the maintainer interpret a shorter prefix would
+// silently switch to multi-partition fan-out; that is especially invalid for
+// an ordered-stream plan, because concatenated per-partition distance streams
+// are not one globally distance-ordered stream.
+type invalidVectorPartitionPlanError struct {
+	indexName          string
+	reason             string
+	metadataPartitions int
+	comparisonArity    int
+	typeArity          int
+}
+
+func (e *invalidVectorPartitionPlanError) Error() string {
+	return fmt.Sprintf(
+		"executor: vector index %q has invalid partition plan: %s (metadata partitions=%d, comparison arity=%d, physical-type arity=%d)",
+		e.indexName,
+		e.reason,
+		e.metadataPartitions,
+		e.comparisonArity,
+		e.typeArity,
+	)
+}
+
+func validateVectorPartitionPlan(idx *recordlayer.Index, p *plans.RecordQueryVectorIndexPlan) error {
+	comparisonArity := len(p.GetPrefixComparisons())
+	typeArity := len(p.GetPartitionKeyComponentTypes())
+	invalid := func(reason string, metadataPartitions int) error {
+		return &invalidVectorPartitionPlanError{
+			indexName:          idx.Name,
+			reason:             reason,
+			metadataPartitions: metadataPartitions,
+			comparisonArity:    comparisonArity,
+			typeArity:          typeArity,
+		}
+	}
+
+	if idx.Type != recordlayer.IndexTypeVector && idx.Type != recordlayer.IndexTypeVectorSPFresh {
+		return invalid(fmt.Sprintf("metadata index type is %q, want a vector index", idx.Type), 0)
+	}
+
+	partitionCount := 0
+	if keyWithValue, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
+		inner := keyWithValue.InnerKey()
+		if inner == nil {
+			return invalid("KeyWithValue root has no inner key", 0)
+		}
+		partitionCount = keyWithValue.SplitPoint()
+		if partitionCount < 0 || partitionCount >= inner.ColumnSize() {
+			return invalid(
+				fmt.Sprintf("KeyWithValue split point %d leaves no valid vector value in %d columns", partitionCount, inner.ColumnSize()),
+				partitionCount,
+			)
+		}
+	} else if idx.RootExpression == nil {
+		return invalid("metadata root expression is nil", 0)
+	}
+
+	if comparisonArity != partitionCount || typeArity != partitionCount {
+		return invalid("plan arity does not match the metadata KeyWithValue split point", partitionCount)
+	}
+	if p.IsOrderedStream() && partitionCount > 0 {
+		return invalid("ordered distance streaming is unsupported for partitioned vector indexes", partitionCount)
+	}
+	if idx.Type == recordlayer.IndexTypeVectorSPFresh && partitionCount > 0 {
+		return invalid("SPFresh does not support partitioned vector indexes", partitionCount)
+	}
+	return nil
+}
+
+// vectorPartitionEqualityPrefix extracts the contiguous bound equality run
+// from the candidate's fixed-width partition comparison vector. Unbound
+// trailing partition columns are represented by EmptyComparisonRange and are
+// intentionally legal: the vector maintainer fans out over those remaining
+// partitions. A constraint after a gap, or any non-equality in the physical
+// prefix, is an invalid hand-built plan and must not be silently ignored.
+func vectorPartitionEqualityPrefix(
+	comparisons []*predicates.ComparisonRange,
+	physicalTypes []values.Type,
+) ([]*predicates.ComparisonRange, []values.Type, error) {
+	prefixLength := 0
+	seenGap := false
+	for i, comparisonRange := range comparisons {
+		if comparisonRange == nil || comparisonRange.IsEmpty() {
+			seenGap = true
+			continue
+		}
+		if seenGap {
+			return nil, nil, fmt.Errorf("component %d is constrained after an unbound partition component", i)
+		}
+		if !comparisonRange.IsEquality() {
+			return nil, nil, fmt.Errorf("component %d is not an equality", i)
+		}
+		prefixLength++
+	}
+	prefixComparisons := append([]*predicates.ComparisonRange(nil), comparisons[:prefixLength]...)
+	prefixTypes := make([]values.Type, prefixLength)
+	for i := range prefixTypes {
+		prefixTypes[i] = values.UnknownType
+		if i < len(physicalTypes) && physicalTypes[i] != nil {
+			prefixTypes[i] = physicalTypes[i]
+		}
+	}
+	return prefixComparisons, prefixTypes, nil
+}
+
+// exactVectorPartitionPrefix converts the binder's exact allOf range back to
+// the partition tuple expected by the vector maintainer. Unlike an ordinary
+// index, a vector partition cannot consume an inequality or a terminal range:
+// each signed-zero choice must open one exact physical graph (or one exact
+// partial-prefix fan-out managed by the maintainer).
+func exactVectorPartitionPrefix(scanRange recordlayer.TupleRange) (tuple.Tuple, error) {
+	if scanRange.LowEndpoint == recordlayer.EndpointTypeTreeStart &&
+		scanRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd &&
+		len(scanRange.Low) == 0 && len(scanRange.High) == 0 {
+		return nil, nil
+	}
+	if scanRange.LowEndpoint != recordlayer.EndpointTypeRangeInclusive ||
+		scanRange.HighEndpoint != recordlayer.EndpointTypeRangeInclusive ||
+		!bytes.Equal(scanRange.Low.Pack(), scanRange.High.Pack()) {
+		return nil, fmt.Errorf("partition comparisons did not materialize one exact tuple prefix")
+	}
+	return append(tuple.Tuple(nil), scanRange.Low...), nil
 }
 
 // evalFloat64Slice evaluates a Value to a vector ([]float64). Accepts the
@@ -725,14 +1027,95 @@ func toFloat32Scalar(v any) (float32, bool) {
 //     join case: Evaluate returns the row-domain float64, and THIS is
 //     where it finally narrows to match the index's wire type).
 func coerceTupleElement(v any, opType values.Type) any {
+	return coerceTupleElementForKey(v, nil, opType)
+}
+
+// coerceTupleElementForKey adapts an evaluated scan comparand to the physical
+// tuple representation of its key component. physicalType is authoritative
+// whenever it is known: comparison operands frequently carry UnknownType
+// (parameters, correlated values, and IN legs), and using that erased RHS type
+// can pack a FLOAT key as DOUBLE or a DOUBLE key as an integer. Only when the
+// physical plan genuinely lacks key metadata do we fall back to the operand's
+// declared type and finally to the evaluated Go value.
+//
+// This is deliberately a packing-boundary conversion, not a SQL cast. The
+// planner has already established comparison compatibility; this function
+// merely selects the tuple wire width that the indexed/primary key was written
+// with.
+func coerceTupleElementForKey(v any, physicalType, operandType values.Type) any {
 	v = uuidToTupleElement(v)
-	if v == nil || opType == nil || opType.Code() != values.TypeCodeFloat {
+	if v == nil {
+		return nil
+	}
+
+	typ := physicalType
+	if typ == nil || typ.Code() == values.TypeCodeUnknown {
+		typ = operandType
+	}
+	if typ == nil {
 		return v
 	}
-	if f, ok := toFloat32Scalar(v); ok {
-		return f
+
+	switch typ.Code() {
+	case values.TypeCodeInt, values.TypeCodeLong:
+		if n, ok := toExactInt64Scalar(v); ok {
+			return n
+		}
+	case values.TypeCodeFloat:
+		if f, ok := toFloat32Scalar(v); ok {
+			return f
+		}
+	case values.TypeCodeDouble:
+		if f, ok := toFloat64Scalar(v); ok {
+			return f
+		}
 	}
 	return v
+}
+
+// toExactInt64Scalar normalizes the integer representations admitted by the
+// value layer to the tuple package's signed integer carrier. A floating value
+// is accepted only when it is finite, integral, and exactly representable as
+// int64; comparison type checking owns every lossy conversion.
+func toExactInt64Scalar(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint:
+		if uint64(n) <= math.MaxInt64 {
+			return int64(n), true
+		}
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint64:
+		if n <= math.MaxInt64 {
+			return int64(n), true
+		}
+	case float32:
+		f := float64(n)
+		if !math.IsNaN(f) && !math.IsInf(f, 0) && math.Trunc(f) == f &&
+			f >= float64(math.MinInt64) && f < float64(math.MaxInt64) {
+			return int64(f), true
+		}
+	case float64:
+		if !math.IsNaN(n) && !math.IsInf(n, 0) && math.Trunc(n) == n &&
+			n >= float64(math.MinInt64) && n < float64(math.MaxInt64) {
+			return int64(n), true
+		}
+	}
+	return 0, false
 }
 
 // tupleElementToRowValue normalizes a decoded tuple element read off an index
@@ -875,159 +1258,12 @@ func anyLaterComparisonConstrains(comparisons []*predicates.ComparisonRange, i i
 	return false
 }
 
-// zeroFork records a zero-valued FLOAT/DOUBLE equality at a NON-terminal
-// position of the equality prefix (a later comparison constrains the key).
-// pos is the element's index within the built prefix; val is the coerced
-// comparand, kept so the sign variants reuse its Go runtime type (float32
-// for FLOAT, float64 for DOUBLE — the tuple packer dispatches on it).
-//
-// Why a fork and not widening: -0.0 and +0.0 are adjacent index KEYS
-// (isZeroFloatBound), so a terminal zero widens to the contiguous
-// [prefix+(-0.0) .. prefix+(+0.0)] subtree. A NON-terminal zero cannot: the
-// interval [(-0.0,x) .. (+0.0,y)] also admits every (-0.0, >x) and
-// (+0.0, <y) between the two zero groups — wrong rows rather than missing
-// ones. The exact key set is the UNION of two disjoint ranges, one per
-// sign, identical in every other element. expandZeroForks materializes that
-// union; the executor scans the ranges as an ordered concatenation
-// (ConcatCursors). Disjointness makes the concatenation duplicate-free by
-// construction — no dedup layer, nothing for one to get wrong — and
-// ascending range order keeps the index's key order intact.
-//
-// This is execution-time machinery on purpose: only here is a CORRELATED or
-// parameterised comparand's value known (the planner sees an opaque operand
-// at match time — see match_candidate_index.go, which can terminate the
-// prefix only for a compile-time-constant zero). Java needs none of this:
-// its `=` is bit identity (Comparisons.java compareEquals →
-// toClassWithRealEquals → Double.equals → doubleToLongBits), so a Java
-// probe matches exactly one signed key and its single-range
-// ScanComparisons.toTupleRange is self-consistent. Go's `=` is ruled IEEE
-// (DIVERGENCES.md "Java's float `=` is bit identity"), so a Go probe must
-// return BOTH zeros' rows.
-type zeroFork struct {
-	pos int
-	val any
-}
-
-// scanComparisonsToTupleRanges converts scan comparisons to the ORDERED,
-// DISJOINT list of tuple ranges the scan must cover — one range in the
-// overwhelmingly common case, 2^k for k non-terminal zero-float equalities
-// (zeroFork). Ranges come back in ascending index-key order.
-func scanComparisonsToTupleRanges(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) ([]recordlayer.TupleRange, error) {
-	r, forks, err := scanComparisonsToTupleRangeAndForks(comparisons, binder)
-	if err != nil {
-		return nil, err
-	}
-	return expandZeroForks(r, forks)
-}
-
-// scanComparisonsToTupleRange is the single-range projection of
-// scanComparisonsToTupleRanges, for callers (tests) that assert on one
-// range. It fails LOUDLY when the comparisons fork — silently dropping a
-// fork would reintroduce the missing-row bug the fork exists to fix.
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
-	ranges, err := scanComparisonsToTupleRanges(comparisons, binder)
-	if err != nil {
-		return recordlayer.TupleRange{}, err
-	}
-	if len(ranges) != 1 {
-		return recordlayer.TupleRange{}, fmt.Errorf(
-			"scanComparisonsToTupleRange: comparisons require %d disjoint ranges (non-terminal signed-zero fork); use scanComparisonsToTupleRanges", len(ranges))
-	}
-	return ranges[0], nil
-}
-
-// expandZeroForks turns the base range plus its recorded forks into the
-// full ordered list of disjoint ranges: each fork doubles every range into
-// a -0.0 and a +0.0 variant at the fork's prefix position. Processing forks
-// in recording order (ascending position) with the negative variant first
-// yields ascending index-key order — earlier positions are more significant
-// and vary slowest, and -0.0's key sorts immediately below +0.0's.
-func expandZeroForks(r recordlayer.TupleRange, forks []zeroFork) ([]recordlayer.TupleRange, error) {
-	ranges := []recordlayer.TupleRange{r}
-	for _, f := range forks {
-		next := make([]recordlayer.TupleRange, 0, 2*len(ranges))
-		for _, cur := range ranges {
-			// Every range produced with forks recorded carries the full equality
-			// prefix in BOTH bounds, so the fork position must be addressable in
-			// each. A miss means the invariant broke; substituting nothing would
-			// emit two IDENTICAL ranges and every matching row twice — fail loud.
-			if f.pos >= len(cur.Low) || f.pos >= len(cur.High) {
-				return nil, fmt.Errorf(
-					"expandZeroForks: fork position %d outside range bounds (low %d, high %d elements)",
-					f.pos, len(cur.Low), len(cur.High))
-			}
-			neg := cur
-			neg.Low = cloneTupleWithElement(cur.Low, f.pos, negativeZeroLike(f.val))
-			neg.High = cloneTupleWithElement(cur.High, f.pos, negativeZeroLike(f.val))
-			pos := cur
-			pos.Low = cloneTupleWithElement(cur.Low, f.pos, positiveZeroLike(f.val))
-			pos.High = cloneTupleWithElement(cur.High, f.pos, positiveZeroLike(f.val))
-			next = append(next, neg, pos)
-		}
-		ranges = next
-	}
-	return ranges, nil
-}
-
-// cloneTupleWithElement copies t with the element at pos replaced. Always a
-// fresh copy: a range's Low and High may alias the same backing tuple (both
-// are often the bare equality prefix).
-func cloneTupleWithElement(t tuple.Tuple, pos int, v any) tuple.Tuple {
-	out := append(tuple.Tuple{}, t...)
-	out[pos] = v
-	return out
-}
-
-// multiRangeScanCursor scans the given disjoint, ascending-ordered ranges as
-// one cursor: a plain scan for one range, an ordered ConcatCursors chain
-// (Java-wire-compatible continuations) for several. Reverse scans consume
-// the ranges highest-first so the concatenation preserves descending key
-// order. scan opens one range's cursor from an optional continuation.
-func multiRangeScanCursor[T any](
-	ranges []recordlayer.TupleRange,
-	reverse bool,
-	continuation []byte,
-	scan func(recordlayer.TupleRange, []byte) recordlayer.RecordCursor[T],
-) recordlayer.RecordCursor[T] {
-	if reverse && len(ranges) > 1 {
-		ranges = slices.Clone(ranges)
-		slices.Reverse(ranges)
-	}
-	factories := make([]recordlayer.CursorFactory[T], len(ranges))
-	for i, r := range ranges {
-		factories[i] = func(cont []byte) recordlayer.RecordCursor[T] {
-			return scan(r, cont)
-		}
-	}
-	return concatCursorFactories(factories, continuation)
-}
-
-// concatCursorFactories folds N cursor factories into a right-nested
-// ConcatCursors chain. Resume rebuilds the identical nesting (the range
-// list is deterministic for a given plan and bindings), so each
-// ConcatContinuation layer finds the same shape it was minted against.
-func concatCursorFactories[T any](factories []recordlayer.CursorFactory[T], continuation []byte) recordlayer.RecordCursor[T] {
-	if len(factories) == 1 {
-		return factories[0](continuation)
-	}
-	rest := factories[1:]
-	return recordlayer.ConcatCursors(factories[0], func(cont []byte) recordlayer.RecordCursor[T] {
-		return concatCursorFactories(rest, cont)
-	}, continuation)
-}
-
-// scanComparisonsToTupleRangeAndForks builds the base scan range and
-// records a zeroFork for every non-terminal zero-float equality it had to
-// pin to a single sign along the way; expandZeroForks then splits the base
-// range per fork. Forks are nil on empty-range returns (nothing to split —
-// an empty range stays empty under any sign substitution).
-func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, []zeroFork, error) {
 	if len(comparisons) == 0 {
-		return recordlayer.TupleRangeAllOf(nil), nil, nil
+		return recordlayer.TupleRangeAllOf(nil), nil
 	}
 
 	var prefix tuple.Tuple
-	var forks []zeroFork
 	for i, cr := range comparisons {
 		if !cr.IsEquality() {
 			break
@@ -1043,7 +1279,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 		}
 		val, err := comp.Operand.Evaluate(binder)
 		if err != nil {
-			return recordlayer.TupleRange{}, nil, err
+			return recordlayer.TupleRange{}, err
 		}
 		val = coerceTupleElement(val, comp.Operand.Type())
 		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
@@ -1067,7 +1303,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 				High:         prefix,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil, nil
+			}, nil
 		}
 		// A zero-valued FLOAT/DOUBLE equality that terminates the prefix (the
 		// whole comparisons list is equality — nothing follows this column) widens
@@ -1093,16 +1329,12 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 		// through a composite one.
 		//
 		// A trailing CONSTRAINING comparison is different and still correctly
-		// excluded from widening: with `v = 0 AND w = 5` the union of (-0.0,5)
-		// and (+0.0,5) is not a contiguous interval — the span between them also
-		// admits (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot
-		// express it and widening here would return WRONG rows rather than
-		// missing ones. That case records a zeroFork below instead: the probe is
-		// split into one range per sign (see zeroFork / expandZeroForks). It
-		// arises only for a comparand whose value is unknown at plan time — a
-		// correlated or parameterised operand — because a compile-time-constant
-		// zero already TERMINATES the match prefix (match_candidate_index.go)
-		// and takes the widened branch above.
+		// excluded: with `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is
+		// not a contiguous interval — the span between them also admits
+		// (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot express it
+		// and widening here would return WRONG rows rather than missing ones.
+		// That case needs a genuine two-probe union (TODO CQ-28) and is left
+		// alone deliberately.
 		if isZeroFloatBound(val) && !anyLaterComparisonConstrains(comparisons, i) {
 			low := append(append(tuple.Tuple{}, prefix...), negativeZeroLike(val))
 			high := append(append(tuple.Tuple{}, prefix...), positiveZeroLike(val))
@@ -1111,26 +1343,23 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 				High:         high,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
-			}, forks, nil
-		}
-		if isZeroFloatBound(val) {
-			forks = append(forks, zeroFork{pos: len(prefix), val: val})
+			}, nil
 		}
 		prefix = append(prefix, val)
 	}
 
 	eqCount := len(prefix)
 	if eqCount >= len(comparisons) {
-		return recordlayer.TupleRangeAllOf(prefix), forks, nil
+		return recordlayer.TupleRangeAllOf(prefix), nil
 	}
 
 	nextRange := comparisons[eqCount]
 	if nextRange.IsEmpty() {
-		return recordlayer.TupleRangeAllOf(prefix), forks, nil
+		return recordlayer.TupleRangeAllOf(prefix), nil
 	}
 
 	if !nextRange.IsInequality() {
-		return recordlayer.TupleRangeAllOf(prefix), forks, nil
+		return recordlayer.TupleRangeAllOf(prefix), nil
 	}
 
 	// STARTS_WITH is a single-comparison PREFIX_STRING range, handled BEFORE the
@@ -1149,11 +1378,11 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 			// No prefix operand to bound against: fall back to the equality prefix
 			// rather than fabricate a bound (defensive — the planner always binds a
 			// prefix operand for STARTS_WITH).
-			return recordlayer.TupleRangeAllOf(prefix), forks, nil
+			return recordlayer.TupleRangeAllOf(prefix), nil
 		}
 		val, err := startsWith.Operand.Evaluate(binder)
 		if err != nil {
-			return recordlayer.TupleRange{}, nil, err
+			return recordlayer.TupleRange{}, err
 		}
 		// A NULL prefix operand makes `col STARTS_WITH NULL` UNKNOWN for every row
 		// (SQL 3VL) → unsatisfiable → empty result, consistent with the ordered-
@@ -1165,7 +1394,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 				High:         prefix,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil, nil
+			}, nil
 		}
 		val = uuidToTupleElement(val)
 		startTuple := append(append(tuple.Tuple{}, prefix...), val)
@@ -1174,7 +1403,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 			High:         startTuple,
 			LowEndpoint:  recordlayer.EndpointTypePrefixString,
 			HighEndpoint: recordlayer.EndpointTypePrefixString,
-		}, forks, nil
+		}, nil
 	}
 
 	var lowEndpoint, highEndpoint recordlayer.EndpointType
@@ -1202,7 +1431,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 			var err error
 			comparand, err = ineq.Operand.Evaluate(binder)
 			if err != nil {
-				return recordlayer.TupleRange{}, nil, err
+				return recordlayer.TupleRange{}, err
 			}
 			comparand = coerceTupleElement(comparand, ineq.Operand.Type())
 			comparand = canonicalizeZeroSignedBound(comparand, ineq.Type)
@@ -1223,7 +1452,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 					High:         prefix,
 					LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 					HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-				}, nil, nil
+				}, nil
 			}
 		}
 		switch ineq.Type {
@@ -1279,7 +1508,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 			// in Java — residual, never sargable into a scan range — so it does not
 			// reach this combiner; any other type arriving here is likewise an
 			// unexpected-invariant bug to surface, not to paper over.)
-			return recordlayer.TupleRange{}, nil, fmt.Errorf(
+			return recordlayer.TupleRange{}, fmt.Errorf(
 				"scanComparisonsToTupleRange: unexpected inequality comparison %v combined with another inequality on the same column (not a representable single scan range)",
 				ineq.Type)
 		}
@@ -1309,7 +1538,7 @@ func scanComparisonsToTupleRangeAndForks(comparisons []*predicates.ComparisonRan
 		High:         high,
 		LowEndpoint:  lowEndpoint,
 		HighEndpoint: highEndpoint,
-	}, forks, nil
+	}, nil
 }
 
 type indexFetchCursor struct {
@@ -2125,17 +2354,27 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // distinct from any string (the "\x00NULL\x00"-sentinel collision). Java dedups
 // via Set<Key.Evaluated> structured value equality; this is the Go equivalent.
 // The [16]byte→UUID arm mirrors intersectionCompKeyFunc's tuple
-// canonicalization; the composite %T:%v fallback keeps distinct concrete types
-// key-distinct. (The merge-sort union dedups via compareValues on evaluated
-// keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
-// a dedup key at all.)
+// canonicalization. Composite values use a DISTINCT-only typed recursive
+// encoding. It deliberately does not reuse the continuation encoding as-is:
+// continuations must preserve raw floating-point bits so they can reconstruct
+// the original row, while DISTINCT must canonicalize NaNs at every nesting
+// level. (The merge-sort union dedups via compareValues on evaluated keys
+// instead — Java UnionCursor's advance-all-equal — so it no longer packs a
+// dedup key at all.)
 //
 // A zero-valued FLOAT/DOUBLE slot is packed VERBATIM, sign bit and all, so
-// -0.0 and +0.0 dedup as two distinct values. That looks like it contradicts
+// -0.0 and +0.0 dedup as two distinct values. NaNs are the one normalization:
+// every payload/sign representation is replaced with one quiet NaN per width,
+// matching Java Float.equals/Double.equals (via floatToIntBits/doubleToLongBits)
+// and the in-memory total comparator, both of which make all NaNs equal. Raw
+// FDB tuple keys preserve NaN payloads, which is why a FLOAT/DOUBLE UNIQUE
+// index cannot prove logical DISTINCT even though signed-zero keys can remain
+// separate. The zero rule looks like it contradicts
 // cmpAny's IEEE `=`, and a previous revision canonicalized zero here for
-// exactly that reason. It cannot: value identity in this engine is TUPLE-KEY
-// identity, and the tuple encoding is Java's, which preserves the sign bit
-// (Java asserts the two pack distinctly and adjacently in TupleOrderingTest).
+// exactly that reason. It cannot: Java's structured value equality preserves
+// the sign bit (Float.equals/Double.equals use floatToIntBits/doubleToLongBits),
+// and the tuple encoding preserves it too (Java asserts the two zero signs pack
+// distinctly and adjacently in TupleOrderingTest).
 // Canonicalizing only this encoder made the same query return different rows
 // depending on the plan:
 //
@@ -2151,8 +2390,9 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 //     are two physical entries that Java also reads; merging them would mean
 //     either writing key bytes Java does not, or reporting a different group
 //     count than Java does from the same index.
-//   - A UNIQUE index or primary key over the column proves distinctness from
-//     those same bytes, and the planner elides DISTINCT on that proof.
+//   - A metadata key can prove logical DISTINCT only when its physical bytes
+//     are globally congruent with this value identity. FLOAT/DOUBLE keys fail
+//     that proof because raw NaN encodings remain physically distinct.
 //
 // Splitting needs no guard on any of those paths; merging needs one on each
 // and still ends in a divergence. CockroachDB merges because it normalizes
@@ -2162,7 +2402,15 @@ func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
-		case float32, float64:
+		case float32:
+			if math.IsNaN(float64(tv)) {
+				tv = math.Float32frombits(distinctCanonicalNaN32Bits)
+			}
+			t[i] = tv
+		case float64:
+			if math.IsNaN(tv) {
+				tv = math.Float64frombits(distinctCanonicalNaN64Bits)
+			}
 			t[i] = tv
 		case nil, int64, int, uint, uint64, string, []byte, bool:
 			t[i] = tv
@@ -2172,20 +2420,179 @@ func packedDedupKey(slots []any) (string, error) {
 			t[i] = tuple.UUID(tv)
 		default:
 			// Composite/nested slot (struct, array, message): the tuple layer
-			// cannot pack it. Encode LOSSLESSLY via the continuation codec
-			// (type-tagged, length-prefixed, recursive) as one []byte tuple
-			// slot — boundary-safe AND collision-free. The retired %T:%v
+			// cannot pack it. Encode with the DISTINCT-only type-tagged,
+			// length-prefixed recursive codec as one []byte tuple slot —
+			// boundary-safe and collision-free, with recursive NaN
+			// canonicalization but verbatim signed-zero bits. The retired %T:%v
 			// rendering collided on composites ([]any{"a b"} vs
 			// []any{"a","b"} both rendered "[a b]") and split equal protos
 			// across generated/dynamicpb representations (RFC-180 C1).
-			b, err := appendContValue(nil, v)
+			b, err := appendDistinctValue(nil, v)
 			if err != nil {
 				return "", fmt.Errorf("dedup key slot %d: %w", i, err)
 			}
-			t[i] = b
+			// Keep the composite's outer type distinct from a user BYTES value
+			// containing these exact encoder bytes. A nested FDB tuple has its own
+			// type code, while b retains the recursive ARRAY/STRUCT type tags.
+			t[i] = tuple.Tuple{b}
 		}
 	}
 	return string(t.Pack()), nil
+}
+
+const (
+	distinctCanonicalNaN32Bits uint32 = 0x7fc00000
+	distinctCanonicalNaN64Bits uint64 = 0x7ff8000000000000
+)
+
+// appendDistinctValue is the composite-value encoder used only by logical
+// value deduplication. Its framing intentionally mirrors appendContValue's
+// proven type-tagged, length-prefixed format, but its floating-point contract is
+// different: every NaN sign/payload is one value, while both signed-zero bit
+// patterns remain distinct. Keeping this as a separate recursive entry point is
+// essential — appendContValue is a reversible continuation codec and therefore
+// must retain every raw bit of the value it will later reconstruct.
+func appendDistinctValue(buf []byte, v any) ([]byte, error) {
+	switch t := v.(type) {
+	case float32:
+		if math.IsNaN(float64(t)) {
+			t = math.Float32frombits(distinctCanonicalNaN32Bits)
+		}
+		return appendContValue(buf, t)
+	case float64:
+		if math.IsNaN(t) {
+			t = math.Float64frombits(distinctCanonicalNaN64Bits)
+		}
+		return appendContValue(buf, t)
+	case []any:
+		buf = append(buf, contValList)
+		buf = binary.AppendUvarint(buf, uint64(len(t)))
+		for _, element := range t {
+			var err error
+			buf, err = appendDistinctValue(buf, element)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return buf, nil
+	case proto.Message:
+		return appendDistinctProtoMessage(buf, t)
+	default:
+		// Scalars without floating payloads already have the exact typed,
+		// collision-free representation DISTINCT needs. Delegating those arms
+		// avoids a second implementation drifting from the continuation codec;
+		// only the recursive and protobuf arms above intentionally diverge.
+		return appendContValue(buf, v)
+	}
+}
+
+// appendDistinctProtoMessage encodes a STRUCT value independently of its Go
+// representation. Generated and dynamicpb messages with the same protobuf type
+// and contents are the same logical STRUCT value, so the key contains the full
+// protobuf name and deterministic payload, not appendContProtoMessage's
+// continuation-only generated/dynamic representation flag.
+//
+// The input is cloned before canonicalization. DISTINCT is observational only;
+// computing a key must never rewrite a QueryResult that may still be consumed by
+// another operator. Descriptor-driven traversal reaches populated ordinary,
+// oneof, and extension fields, including repeated/map/nested message values.
+// Unknown wire fields are retained verbatim: without a descriptor their fixed32
+// or fixed64 bytes cannot safely be classified as floating point.
+func appendDistinctProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
+	if msg == nil || isNilProtoMessage(msg) {
+		return nil, fmt.Errorf("distinct: cannot encode a nil proto message")
+	}
+	cloned := proto.Clone(msg)
+	if cloned == nil || isNilProtoMessage(cloned) {
+		return nil, fmt.Errorf("distinct: cannot clone proto message of type %T", msg)
+	}
+	reflection := cloned.ProtoReflect()
+	if !reflection.IsValid() {
+		return nil, fmt.Errorf("distinct: cannot encode invalid proto message of type %T", msg)
+	}
+	canonicalizeDistinctProtoNaNs(reflection)
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(cloned)
+	if err != nil {
+		return nil, fmt.Errorf("distinct: cannot encode proto message %q: %w", reflection.Descriptor().FullName(), err)
+	}
+	fullName := string(reflection.Descriptor().FullName())
+	buf = append(buf, contValProtoMsg)
+	buf = binary.AppendUvarint(buf, uint64(len(fullName)))
+	buf = append(buf, fullName...)
+	buf = binary.AppendUvarint(buf, uint64(len(payload)))
+	return append(buf, payload...), nil
+}
+
+func isNilProtoMessage(msg proto.Message) bool {
+	v := reflect.ValueOf(msg)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+// canonicalizeDistinctProtoNaNs rewrites only the cloned message passed by
+// appendDistinctProtoMessage. Message.Range covers populated regular, oneof,
+// and extension fields. Map updates are collected and applied after Range so
+// traversal never mutates the map being iterated.
+func canonicalizeDistinctProtoNaNs(message protoreflect.Message) {
+	message.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		switch {
+		case field.IsMap():
+			protoMap := value.Map()
+			type mapUpdate struct {
+				key   protoreflect.MapKey
+				value protoreflect.Value
+			}
+			var updates []mapUpdate
+			protoMap.Range(func(key protoreflect.MapKey, mapValue protoreflect.Value) bool {
+				canonical, changed := canonicalDistinctProtoValue(field.MapValue(), mapValue)
+				if changed {
+					updates = append(updates, mapUpdate{key: key, value: canonical})
+				}
+				return true
+			})
+			for _, update := range updates {
+				protoMap.Set(update.key, update.value)
+			}
+		case field.IsList():
+			list := value.List()
+			for i := 0; i < list.Len(); i++ {
+				canonical, changed := canonicalDistinctProtoValue(field, list.Get(i))
+				if changed {
+					list.Set(i, canonical)
+				}
+			}
+		default:
+			canonical, changed := canonicalDistinctProtoValue(field, value)
+			if changed {
+				message.Set(field, canonical)
+			}
+		}
+		return true
+	})
+}
+
+func canonicalDistinctProtoValue(
+	field protoreflect.FieldDescriptor,
+	value protoreflect.Value,
+) (protoreflect.Value, bool) {
+	switch field.Kind() {
+	case protoreflect.FloatKind:
+		floating := float32(value.Float())
+		if math.IsNaN(float64(floating)) {
+			return protoreflect.ValueOfFloat32(
+				math.Float32frombits(distinctCanonicalNaN32Bits),
+			), true
+		}
+	case protoreflect.DoubleKind:
+		floating := value.Float()
+		if math.IsNaN(floating) {
+			return protoreflect.ValueOfFloat64(
+				math.Float64frombits(distinctCanonicalNaN64Bits),
+			), true
+		}
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		canonicalizeDistinctProtoNaNs(value.Message())
+	}
+	return value, false
 }
 
 func executeProjection(

@@ -31,6 +31,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		if !wholePlanMaxCardinalityKnown(scan) {
 			t.Fatal("full-PK-equality primary scan must be a bounded point lookup (max 1)")
@@ -45,6 +46,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		// complete key.
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong}).
 			WithPrimaryKey(pk2)
 		if wholePlanMaxCardinalityKnown(scan) {
 			t.Fatal("a composite-PK prefix bind must stay unknown (matches many rows)")
@@ -55,7 +57,8 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		// All-equality but PK metadata absent → full coverage unprovable → unknown.
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
 		if wholePlanMaxCardinalityKnown(scan) {
 			t.Fatal("without PK values, full-PK coverage is unprovable → unknown")
 		}
@@ -80,6 +83,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
 		if !wholePlanMaxCardinalityKnown(tf) {
@@ -93,6 +97,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		// fallback must not manufacture a bound the child doesn't prove.
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong}).
 			WithPrimaryKey(pk2)
 		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
 		if wholePlanMaxCardinalityKnown(tf) {
@@ -109,6 +114,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		other := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 		// A child reference holding TWO plan-typed final members and no winner.
@@ -132,6 +138,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
 		adapter := &scanPlanExpression{plan: tf}
@@ -152,6 +159,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		bounded := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		unbounded := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 		childRef := expressions.FinalOf(bounded)
@@ -179,6 +187,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		childRef := expressions.FinalOf(bound)
 		// A non-final exploratory member alongside the single final plan.
@@ -198,6 +207,7 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		t.Parallel()
 		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithPrimaryKey(pk2)
 		childRef := expressions.InitialOf(bound) // Members=[bound], FinalMembers=[]
 		if len(childRef.FinalMembers()) != 0 {

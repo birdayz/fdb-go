@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestScanLikeCost_PointProbeChargesFetchRate pins the fix for a real
@@ -25,12 +26,15 @@ func TestScanLikeCost_PointProbeChargesFetchRate(t *testing.T) {
 	eq := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5))
 	eqRange := predicates.EmptyComparisonRange().Merge(&eq).Range
 	comps := []*predicates.ComparisonRange{eqRange}
+	physicalTypes := []values.Type{values.NullableLong}
 
 	for _, card := range []float64{1, 20, 1000, 1_000_000} {
 		t.Run("", func(t *testing.T) {
 			t.Parallel()
 			stats := properties.MapStatistics{PerType: map[string]float64{"T": card}}
-			got := scanLikeCost(comps, []string{"T"}, stats, true)
+			got := scanLikeCost(
+				comps, physicalTypes, []string{"T"}, stats, 1, properties.TupleKeyUnique,
+			)
 			if got.Cardinality != 1 {
 				t.Fatalf("cardinality = %v, want 1 (point probe)", got.Cardinality)
 			}
@@ -52,8 +56,11 @@ func TestScanLikeCost_NonPointProbeCPUUnaffected(t *testing.T) {
 	eq := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5))
 	eqRange := predicates.EmptyComparisonRange().Merge(&eq).Range
 	comps := []*predicates.ComparisonRange{eqRange}
+	physicalTypes := []values.Type{values.NullableLong}
 
-	got := scanLikeCost(comps, []string{"T"}, stats, false)
+	got := scanLikeCost(
+		comps, physicalTypes, []string{"T"}, stats, 0, properties.TupleKeyUnique,
+	)
 	if got.Cardinality <= 1 {
 		t.Fatalf("cardinality = %v, want a bucket (>1) — non-unique bind is not a point probe", got.Cardinality)
 	}

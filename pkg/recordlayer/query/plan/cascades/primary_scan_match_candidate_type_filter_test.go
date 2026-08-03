@@ -52,7 +52,7 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 			[]string{"ID"},
 			true, // hasRecordTypeKeyPrefix — the scan is already type-scoped
 			values.UnknownType,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableLong})
 		plan := candidate.ToScanPlan(prefix, false)
 
 		if _, wrapped := plan.(*plans.RecordQueryTypeFilterPlan); wrapped {
@@ -88,7 +88,7 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 			[]string{"ID"},
 			false, // no record-type-key prefix — a real shared-PK-range multi-type scan
 			values.UnknownType,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NullableLong})
 		plan := candidate.ToScanPlan(prefix, false)
 
 		tf, wrapped := plan.(*plans.RecordQueryTypeFilterPlan)
@@ -108,4 +108,29 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 				got.Cardinality, want)
 		}
 	})
+}
+
+func TestPrimaryScanMatchCandidateUnboundScanKeepsPhysicalOrderingTypes(t *testing.T) {
+	t.Parallel()
+
+	alias := values.UniqueCorrelationIdentifier()
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+	candidate := NewPrimaryScanMatchCandidate(
+		nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
+		[]string{"ID"}, true, rowType,
+	).WithKeyComponentTypes([]values.Type{values.NotNullLong})
+	plan, ok := candidate.ToScanPlan(nil, false).(*plans.RecordQueryScanPlan)
+	if !ok {
+		t.Fatalf("unbound plan = %T, want primary scan", candidate.ToScanPlan(nil, false))
+	}
+	types := plan.GetKeyComponentTypes()
+	if len(types) != 1 || types[0].Code() != values.TypeCodeLong {
+		t.Fatalf("unbound primary physical types = %v, want [LONG]", types)
+	}
+	ordering := plan.HintOrdering()
+	if !ordering.IsKnown || len(ordering.Keys) != 1 {
+		t.Fatalf("unbound LONG primary ordering = %#v, want one known key", ordering)
+	}
 }

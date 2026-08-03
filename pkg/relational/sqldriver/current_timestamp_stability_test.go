@@ -26,6 +26,24 @@ import (
 	"time"
 )
 
+// minStraddleExecs is the sample floor the boundary-straddle detector needs:
+// per-row wall-clock evaluation only reveals itself when a statement happens to
+// span a second boundary, so a single execution proves very little and the loop
+// has to run several.
+//
+// It is a LOOP GUARD, deliberately, and not an assertion after a purely
+// time-boxed loop. As an assertion it stated a THROUGHPUT claim — "this machine
+// can scan 10k rows at least three times in three seconds" — which is a
+// property of the load on the host, not of the code under test. These tests run
+// t.Parallel() alongside the rest of the suite and, under `just test`, beside up
+// to four concurrent FDB containers; one scan there can outlast the whole
+// window, and the loop would exit having sampled once and then fail with "only
+// 1 executions in the 3s window". Observed exactly that way. Bounding the loop
+// by BOTH the sample floor and the window keeps the full 3 seconds of
+// straddle-chances on an idle machine while still collecting the samples the
+// argument rests on when the host is busy.
+const minStraddleExecs = 3
+
 // TestFDB_CurrentTimestamp_StatementStable_Select scans a table large
 // enough that per-row evaluation is spread over tens of milliseconds,
 // repeatedly for ~3 wall-clock seconds. CURRENT_TIMESTAMP formats at
@@ -59,7 +77,7 @@ func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	var firstTS, lastTS string
 	execs := 0
-	for execs == 0 || time.Now().Before(deadline) {
+	for execs < minStraddleExecs || time.Now().Before(deadline) {
 		rows, err := db.QueryContext(ctx, "SELECT id, CURRENT_TIMESTAMP FROM Item")
 		if err != nil {
 			t.Fatalf("SELECT: %v", err)
@@ -94,9 +112,6 @@ func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 			lastTS = ts
 		}
 		execs++
-	}
-	if execs < 3 {
-		t.Fatalf("only %d executions in the 3s window — the scan is too slow for the boundary-straddle argument to hold; shrink the table or lengthen the window", execs)
 	}
 	// Cross-statement control: the loop spans ~3 seconds at second
 	// precision, so the FIRST and LAST statements must observe different
@@ -138,7 +153,7 @@ func TestFDB_CurrentTimestamp_StatementStable_Where(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	execs := 0
-	for execs == 0 || time.Now().Before(deadline) {
+	for execs < minStraddleExecs || time.Now().Before(deadline) {
 		rows, err := db.QueryContext(ctx,
 			"SELECT id, CURRENT_TIMESTAMP FROM Item WHERE CURRENT_TIMESTAMP = CURRENT_TIMESTAMP")
 		if err != nil {
@@ -168,9 +183,6 @@ func TestFDB_CurrentTimestamp_StatementStable_Where(t *testing.T) {
 			t.Fatalf("projected CURRENT_TIMESTAMP drifted within ONE statement under a clocked WHERE: %d distinct values %v", len(distinct), keysOf(distinct))
 		}
 		execs++
-	}
-	if execs < 3 {
-		t.Fatalf("only %d executions in the 3s window — the scan is too slow for the boundary-straddle argument to hold; shrink the table or lengthen the window", execs)
 	}
 }
 

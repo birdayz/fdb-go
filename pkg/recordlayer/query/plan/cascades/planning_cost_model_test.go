@@ -672,6 +672,7 @@ func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	// tie-breaker then prefers the primary scan to avoid per-row PK fetches.) Mark the
 	// candidate unique and resolve its metadata from a PlanContext, as in production.
 	index := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false).
+		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithIndexMetadata([]string{"A"}, nil, true)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newKnownDistinctValueIndexCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, true, nil),

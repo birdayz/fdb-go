@@ -38,14 +38,79 @@ func executeAggregateIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: aggregate index %q not found", idxPlan.GetIndexName())
 	}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
+	}
 	maintainer, err := store.GetIndexMaintainer(idx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
-	scanRanges, err := scanComparisonsToTupleRanges(idxPlan.GetScanComparisons(), scanBindContext(evalCtx))
+	groupCols := p.GetGroupCols()
+	physicalGroupingPrefixCount := p.GetPhysicalGroupingPrefixCount()
+	physicalGroupingCount := len(groupCols)
+	isPermuted := idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax
+	scanType := recordlayer.IndexScanByValue
+	if isPermuted {
+		groupingCount, actualPhysicalPrefix, layoutErr := permutedAggregateGroupingLayout(idx)
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		if len(groupCols) != groupingCount || physicalGroupingPrefixCount != actualPhysicalPrefix {
+			return nil, &invalidPermutedAggregateScanError{
+				indexName:                   idxPlan.GetIndexName(),
+				comparisonCount:             len(idxPlan.GetScanComparisons()),
+				groupingCount:               len(groupCols),
+				physicalGroupingPrefixCount: physicalGroupingPrefixCount,
+				actualGroupingCount:         groupingCount,
+				actualPhysicalPrefixCount:   actualPhysicalPrefix,
+				layoutMismatch:              true,
+			}
+		}
+		physicalGroupingCount = groupingCount
+		scanType = recordlayer.IndexScanByGroup
+	}
+	if isPermuted && (physicalGroupingPrefixCount < 0 || physicalGroupingPrefixCount > len(groupCols)) {
+		return nil, &invalidPermutedAggregateScanError{
+			indexName:                   idxPlan.GetIndexName(),
+			comparisonCount:             len(idxPlan.GetScanComparisons()),
+			groupingCount:               len(groupCols),
+			physicalGroupingPrefixCount: physicalGroupingPrefixCount,
+		}
+	}
+	if isPermuted && len(idxPlan.GetScanComparisons()) > physicalGroupingPrefixCount {
+		// PERMUTED_MIN/MAX inserts the aggregate value between the physical
+		// grouping prefix and suffix. Applying a logical grouping comparison
+		// past that boundary would scan a different tuple coordinate and can
+		// silently return the wrong groups. Production planning declines these
+		// candidates; retain this executor guard for hand-built plans.
+		return nil, &invalidPermutedAggregateScanError{
+			indexName:                   idxPlan.GetIndexName(),
+			comparisonCount:             len(idxPlan.GetScanComparisons()),
+			groupingCount:               len(groupCols),
+			physicalGroupingPrefixCount: physicalGroupingPrefixCount,
+		}
+	}
+
+	fingerprintSalt, err := aggregateScanRangeFingerprintSalt(
+		p,
+		idx.Type,
+		scanType,
+		physicalGroupingCount,
+		physicalGroupingPrefixCount,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("executor: building scan range for %q: %w", idxPlan.GetIndexName(), err)
+		return nil, fmt.Errorf("executor: building aggregate scan execution identity for %q: %w", idxPlan.GetIndexName(), err)
+	}
+	rangeSet, err := bindScanComparisonsToRangeSet(
+		idxPlan.GetScanComparisons(),
+		p.GetKeyComponentTypes(),
+		scanBindContext(evalCtx),
+		idxPlan.IsReverse(),
+		fingerprintSalt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
 	scanProps := recordlayer.ScanProperties{
@@ -55,7 +120,6 @@ func executeAggregateIndexScan(
 	}
 
 	canonicalName := p.CanonicalAggColumnName()
-	groupCols := p.GetGroupCols()
 	// The aggregate-index row's authoritative ordinal
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
@@ -74,16 +138,51 @@ func executeAggregateIndexScan(
 	// scan Java's AggregateIndexMatchCandidate builds (IndexScanType.BY_GROUP) —
 	// so a plain SQL MAX/MIN served from a permuted index reflects the true
 	// current extremum under deletes/updates (a monotone _EVER index goes stale).
-	if idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax {
-		return newPermutedAggregateIndexCursor(store, idx, scanRanges, continuation, scanProps, len(groupCols), posType)
+	if isPermuted {
+		cursor, openErr := newScanRangeSetCursor(
+			rangeSet,
+			continuation,
+			scanProps,
+			func(
+				scanRange recordlayer.TupleRange,
+				innerContinuation []byte,
+				childProperties recordlayer.ScanProperties,
+			) (recordlayer.RecordCursor[QueryResult], error) {
+				return newPermutedAggregateIndexCursor(
+					store,
+					idx,
+					scanRange,
+					innerContinuation,
+					childProperties,
+					len(groupCols),
+					physicalGroupingPrefixCount,
+					posType,
+				)
+			},
+		)
+		if openErr != nil {
+			return nil, fmt.Errorf("executor: opening permuted aggregate scan ranges for %q: %w", idxPlan.GetIndexName(), openErr)
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	indexCursor := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
-		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
-			return maintainer.Scan(r, cont, scanProps)
-		})
+	indexCursor, err := newScanRangeSetCursor(
+		rangeSet,
+		continuation,
+		scanProps,
+		func(
+			scanRange recordlayer.TupleRange,
+			innerContinuation []byte,
+			childProperties recordlayer.ScanProperties,
+		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			return maintainer.Scan(scanRange, innerContinuation, childProperties), nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("executor: opening aggregate scan ranges for %q: %w", idxPlan.GetIndexName(), err)
+	}
 
-	return &aggregateIndexCursor{
+	result := &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: groupCols,
 		// Single source for the aggregate column key: the plan's
@@ -92,7 +191,64 @@ func executeAggregateIndexScan(
 		// drift (RFC-081).
 		canonicalName: canonicalName,
 		posType:       posType,
-	}, nil
+	}
+	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
+}
+
+type invalidPermutedAggregateScanError struct {
+	indexName                   string
+	comparisonCount             int
+	groupingCount               int
+	physicalGroupingPrefixCount int
+	actualGroupingCount         int
+	actualPhysicalPrefixCount   int
+	layoutMismatch              bool
+}
+
+func (e *invalidPermutedAggregateScanError) Error() string {
+	if e.layoutMismatch {
+		return fmt.Sprintf(
+			"executor: aggregate index %q plan claims grouping layout g=%d, prefix=%d, but metadata has g=%d, prefix=%d",
+			e.indexName,
+			e.groupingCount,
+			e.physicalGroupingPrefixCount,
+			e.actualGroupingCount,
+			e.actualPhysicalPrefixCount,
+		)
+	}
+	return fmt.Sprintf(
+		"executor: aggregate index %q has %d logical grouping comparisons, but only %d of %d grouping columns precede the permuted aggregate value",
+		e.indexName,
+		e.comparisonCount,
+		e.physicalGroupingPrefixCount,
+		e.groupingCount,
+	)
+}
+
+func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, physicalPrefixCount int, err error) {
+	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
+	if !ok {
+		return 0, 0, fmt.Errorf(
+			"executor: permuted index %q root is %T, want *GroupingKeyExpression",
+			idx.Name, idx.RootExpression,
+		)
+	}
+	groupingCount = gke.GetGroupingCount()
+	permutedSize := 0
+	if raw, exists := idx.Options[recordlayer.IndexOptionPermutedSize]; exists {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 || parsed > groupingCount {
+			return 0, 0, fmt.Errorf(
+				"executor: permuted index %q has invalid %s=%q for grouping count %d",
+				idx.Name,
+				recordlayer.IndexOptionPermutedSize,
+				raw,
+				groupingCount,
+			)
+		}
+		permutedSize = parsed
+	}
+	return groupingCount, groupingCount - permutedSize, nil
 }
 
 // newPermutedAggregateIndexCursor builds a cursor over a PERMUTED_MIN/MAX
@@ -107,10 +263,11 @@ func executeAggregateIndexScan(
 func newPermutedAggregateIndexCursor(
 	store *recordlayer.FDBRecordStore,
 	idx *recordlayer.Index,
-	scanRanges []recordlayer.TupleRange,
+	scanRange recordlayer.TupleRange,
 	continuation []byte,
 	scanProps recordlayer.ScanProperties,
 	groupCount int,
+	physicalGroupingPrefixCount int,
 	posType *values.RecordType,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
@@ -119,21 +276,12 @@ func newPermutedAggregateIndexCursor(
 			idx.Name, idx.RootExpression)
 	}
 	totalSize := gke.ColumnSize()
-	permutedSize := 0
-	if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			permutedSize = n
-		}
-	}
-	inner := multiRangeScanCursor(scanRanges, scanProps.Reverse, continuation,
-		func(r recordlayer.TupleRange, cont []byte) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
-			return store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, r, cont, scanProps)
-		})
+	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
 	return &permutedAggregateIndexCursor{
 		inner:      inner,
 		groupCount: groupCount,
-		valueStart: gke.GetGroupingCount() - permutedSize,
-		valueEnd:   totalSize - permutedSize,
+		valueStart: physicalGroupingPrefixCount,
+		valueEnd:   totalSize - (gke.GetGroupingCount() - physicalGroupingPrefixCount),
 		posType:    posType,
 	}, nil
 }

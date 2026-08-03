@@ -20,7 +20,7 @@
 // execute a committed file verbatim; that is what makes cross-engine blessing
 // literal rather than aspirational.
 //
-// The package therefore holds five things and no more:
+// The package therefore holds six things and no more:
 //
 //   - the FAMILY mapping (family.go): feature vector → family key → file
 //     name, the grouping convention the loader cross-checks per scenario;
@@ -39,7 +39,23 @@
 //   - the CENSUS and RATCHET (census.go), the governance instrument of
 //     RFC-201 §8: scenario count, test count, per-feature-vector counts and
 //     the per-dedup-key blessing, computed from the files and gated so they
-//     can only go up.
+//     can only go up; and
+//   - the RETIREMENT LEDGER (retirement.go and retirements/), the sole explicit
+//     exception for a planner change that makes an old physical plan point
+//     cease to exist. It binds the reason, date, RFC, exact base Git commit,
+//     logical census, and full filename-plus-content tree before and after. CI
+//     proves that commit is on the trusted target history and materializes it
+//     to authenticate the old hashes; it authenticates the new hashes at the
+//     ledger's unique first-add commit and, while newly proposed, against raw
+//     proposed HEAD too. The checkout must exactly match those raw corpus and
+//     ledger blobs, so Git filters cannot rewrite evidence. The new ledger's
+//     BEFORE must equal the trusted target corpus, and every trusted scenario
+//     remains byte-identical unless
+//     that ledger authorizes the full transition; pure additions need no
+//     exception. Later corpus growth therefore does not weaken or invalidate
+//     older ledgers, and neither a synthetic/invented old side, nested corpus
+//     file, balanced delete+add, nor unrelated edit can hitchhike on a reviewed
+//     decrease.
 //
 // The producer lives in the sibling `factory` package and in
 // `cmd/factory-run`; the split is what lets the corpus run with no dependency

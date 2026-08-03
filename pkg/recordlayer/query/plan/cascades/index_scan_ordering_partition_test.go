@@ -30,10 +30,14 @@ func TestToPlanPartitions_SeparatesFixedBoundIndexScanFromSortedUnboundIndexScan
 	t.Parallel()
 
 	unbound := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
-		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 	bound := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
-		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
+		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 
 	// Sanity: both members must actually agree on DistinctRecords/StoredRecord
 	// so the test isolates Ordering as the separating property, not an
