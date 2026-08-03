@@ -216,6 +216,22 @@ type embeddedTx struct {
 	// transaction would make the third statement fail for memory the first two
 	// released.
 	scanState *recordlayer.ScanLimiterState
+
+	// schemaCache is the TRANSACTION-scoped catalog cache (RFC-198 Decision
+	// 8b). While this transaction is open, catalog resolution consults THIS
+	// map and never the session cache in either direction: a session-cache hit
+	// populated by an earlier transaction (or an auto-commit statement) would
+	// hand back metadata from a different read version with no FDB read and no
+	// conflict range — the plan-at-snapshot-A / rows-at-snapshot-B skew whose
+	// failure mode is zero rows with no error. A miss here reads the catalog
+	// INSIDE the transaction, which both pins the schema to the transaction's
+	// snapshot and adds the read conflict range that makes a concurrent DDL
+	// conflict this transaction with 40001 — the accepted, correct cost.
+	// Java's shape: RecordLayerSchema caches per transaction and drops the
+	// binding via a transaction close listener (RecordLayerSchema.java:98-108);
+	// here the map simply dies with the embeddedTx — one lifecycle for every
+	// transaction-scoped object.
+	schemaCache map[string]api.Schema
 }
 
 // scanStateIn returns the transaction-scoped ScanLimiterState, minting it on
@@ -283,34 +299,50 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 	return c.sess.DB.Run(ctx, fn)
 }
 
-// cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
-// connection-level cache to avoid repeated FDB reads within the same session.
-// The cache is invalidated by any DDL that modifies schema definitions.
+// cachedLoadSchema returns the api.Schema for (dbPath, schemaName).
 //
-// When an explicit user transaction is active we read the catalog via a
-// separate auto-commit transaction so that catalog reads do not add read
-// conflict ranges to the user's write transaction, which would cause spurious
-// not_committed (1020) conflicts when other tests run DDL concurrently.
+// AUTO-COMMIT: the session-level cache memoises the lookup for the session's
+// lifetime, and a miss reads through the caller's txn — unchanged; there is no
+// transaction to bind to and no serializable promise to keep.
+//
+// EXPLICIT TRANSACTION (RFC-198 Decision 8b): resolution binds to the
+// transaction. The TRANSACTION-scoped cache on the embeddedTx is consulted —
+// never the session cache, whose entries were populated at other read
+// versions and would serve a plan-at-snapshot-A / rows-at-snapshot-B skew
+// with no read and no conflict range. A miss reads the catalog INSIDE the
+// active transaction, pinning the schema to the transaction's snapshot and
+// adding the read conflict range that makes a concurrent DDL conflict this
+// transaction loudly (40001) instead of letting it return wrong rows
+// silently. This is Java's shape (BackingRecordStore builds on
+// conn.getTransaction(); RecordLayerSchema caches per transaction). The
+// in-transaction read result is deliberately NOT copied into the session
+// cache: it describes one transaction's snapshot, not the session's present.
 func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
 	key := session.SchemaCacheKey(dbPath, schemaName)
+	if tx := c.activeTx; tx != nil {
+		if s, ok := tx.schemaCache[key]; ok {
+			return s, nil
+		}
+		var s api.Schema
+		_, err := c.runInTx(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			readTxn := catalog.NewFDBTransaction(rctx)
+			var loadErr error
+			s, loadErr = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
+			return nil, loadErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if tx.schemaCache == nil {
+			tx.schemaCache = make(map[string]api.Schema)
+		}
+		tx.schemaCache[key] = s
+		return s, nil
+	}
 	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
-	var s api.Schema
-	var err error
-	if c.activeTx != nil {
-		// Read catalog outside the user transaction to avoid adding catalog
-		// read-conflict ranges that conflict with concurrent DDL.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err = c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-			readTxn := catalog.NewFDBTransaction(rctx)
-			s, err = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
-			return nil, err
-		})
-	} else {
-		s, err = c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
-	}
+	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +352,15 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	c.sess.InvalidateSchema(dbPath, schemaName)
+	// A DDL issued while an explicit transaction is open (runDDL auto-commits
+	// even inside BeginTx — Decision 8f) must also drop the transaction-scoped
+	// binding, or the rest of the transaction keeps planning against metadata
+	// its own DDL just replaced. Same one-lifecycle rule as the terminal flag,
+	// applied to an invalidation that originates outside the transaction's
+	// end.
+	if c.activeTx != nil {
+		delete(c.activeTx.schemaCache, session.SchemaCacheKey(dbPath, schemaName))
+	}
 }
 
 // invalidatePlanCache clears all cached query plans. Called after any
@@ -347,7 +388,19 @@ func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
 		return nil
 	}
 	key := session.SchemaCacheKey(c.sess.DBPath, c.sess.Schema)
-	schema, ok := c.sess.SchemaCache[key]
+	var schema api.Schema
+	var ok bool
+	if c.activeTx != nil {
+		// While an explicit transaction is open, metadata comes from the
+		// TRANSACTION-scoped binding only (RFC-198 Decision 8b) — a
+		// session-cache entry here was read at some other transaction's
+		// read version and serving it would split plan and data across
+		// snapshots. A nil return sends the caller through ensureMetaData,
+		// which populates the binding inside the transaction.
+		schema, ok = c.activeTx.schemaCache[key]
+	} else {
+		schema, ok = c.sess.SchemaCache[key]
+	}
 	if !ok || schema == nil {
 		return nil
 	}
@@ -369,7 +422,10 @@ func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
 	if c.cachedMetaData() != nil {
 		return nil
 	}
-	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// runInTx, not DB.Run: with an explicit transaction open the catalog read
+	// must join it (RFC-198 Decision 8b — this is enumeration site (c)); in
+	// auto-commit it is the same fresh transaction as before.
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		_, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		return nil, loadErr
