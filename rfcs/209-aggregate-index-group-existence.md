@@ -344,7 +344,30 @@ should win on cost. This is not a new special case: it is the existing
 aggregate-index-vs-streaming trade-off with the companion's scan added to the
 correct side of the comparison. The change is that the companion's cardinality
 must enter the estimate, and the group-count estimate that drives it comes from
-the same cardinality machinery the aggregate-index path already relies on.
+the same cardinality machinery the aggregate-index path already relies on
+(`pkg/recordlayer/query/plan/cascades/properties/cardinality.go`,
+`cardinality_bounds.go`).
+
+**The estimate this rests on is currently a constant, and that is a live
+dependency.** `TODO.md:13800-13820` records, MEASURED, that RFC-204 P1 removed the
+record count key from relational templates, leaving `fetchTableStatistics`
+(`cascades_generator.go`) dead on every SQL-created schema — "the cost model now
+plans on its 1e6 default for every table". The cardinality *bounds* machinery
+above exists and is used; the per-table row count feeding it does not, on exactly
+the schemas this RFC targets. So the discrimination §5.3.1 depends on — group
+count versus base-table cardinality — cannot currently be made by the cost model
+at all, and the near-unique regression would ship undetected by it, caught only
+by §7's stress comparison. That is a dependency to state, not a reason to defer:
+until it is closed, §7's stress comparison is the *only* thing standing between
+this design and the regression, which is why §7 makes plan choice on the
+near-unique key a failure in its own right.
+
+There is a useful symmetry worth recording. The remedy that TODO item names
+first is "(a) read per-type row counts from COUNT-type aggregate indexes when the
+schema declares them (`IndexTypes.COUNT`, grouped by record type)" — and this
+RFC's create-if-absent companion puts a `COUNT` index on precisely those schemas.
+RFC-209 therefore supplies the input that item needs, rather than competing with
+it.
 
 **Consequence to state plainly:** on a near-unique grouping key this design can
 *lose* the index acceleration that today's (wrong) plan enjoys. That is the
