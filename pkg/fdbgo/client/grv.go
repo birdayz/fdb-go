@@ -60,12 +60,24 @@ type grvCache struct {
 	entry atomic.Pointer[grvCacheEntry]
 
 	// publications counts successful entry publications. It exists because the
-	// cache.s central safety property — that everything tryCache consults
+	// cache's central safety property — that everything tryCache consults
 	// arrives in ONE publication — is otherwise observable only by catching a
 	// window a few nanoseconds wide, i.e. by luck. A test that can only
 	// probabilistically catch a regression is not a regression net; counting
 	// publications turns the property into something assertable exactly.
-	publications     atomic.Int64
+	publications atomic.Int64
+
+	// generation counts invalidations. A reply may install its VERSION only
+	// against the generation it was validated under; once the generation has
+	// moved it may still contribute its ratekeeper cooldown — a fact about the
+	// cluster, not about the version that carried it — but never its version.
+	//
+	// Without it the load-validate-CAS loop can be turned against itself: a
+	// reply correctly rejected as stale against version N loses its CAS to an
+	// invalidation, re-reads the version-0 sentinel, no longer looks stale
+	// against 0, and installs the very version it was just rejected for —
+	// resurrecting a PRE-invalidation version inside the freshness window.
+	generation       atomic.Int64
 	lastProxyContact atomic.Int64 // UnixNano
 	// No `locked` rides the cache: the cache is now opt-in (USE_GRV_CACHE,
 	// default off, RFC-104), so every DEFAULT transaction takes the fresh-GRV
@@ -94,7 +106,7 @@ type grvCacheEntry struct {
 	// consults alongside freshness. They live HERE, not in their own atomics,
 	// because serving is decided by freshness AND cooldown together: with two
 	// separately-published values a reader can catch a renewed freshness
-	// before this reply.s cooldown lands and be served, bypassing the very
+	// before this reply's cooldown lands and be served, bypassing the very
 	// throttling the reply was delivering. One publication makes that window
 	// impossible by construction rather than by statement order, which is a
 	// property the next edit to applyGRVReply cannot silently break.
@@ -152,34 +164,22 @@ func (c *grvCache) publish(at time.Time, v int64) {
 // they SURVIVE a version that is rejected as stale — a throttle signal is
 // about the cluster, not about the version that happened to carry it.
 func (c *grvCache) publishReply(at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
+	c.publishReplyAt(c.generation.Load(), at, v, replyTime, rkDefault, rkBatch)
+}
+
+// publishReplyAt is publishReply for a reply that was validated under a known
+// generation — the one current when its GRV request was DISPATCHED. A reply
+// carrying a version obtained before an invalidation must never install it,
+// however the retry loop is scheduled.
+func (c *grvCache) publishReplyAt(gen int64, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
 	for {
 		cur := c.entry.Load()
-		next := grvCacheEntry{version: v, anchor: at, freshness: at}
-		if cur != nil {
-			next.rkDefault, next.rkBatch = cur.rkDefault, cur.rkBatch
-			if v < cur.version {
-				// Stale reply: the version is dropped whole (C++ :367), but a
-				// throttle signal it carried still counts.
-				next = *cur
-			} else {
-				if v == cur.version {
-					// Same version: keep the earliest evidence of when its
-					// window opened; freshness still advances below.
-					if cur.anchor.Before(next.anchor) {
-						next.anchor = cur.anchor
-					}
-				}
-				if cur.freshness.After(next.freshness) {
-					next.freshness = cur.freshness // monotonic (C++ :378-380)
-				}
-			}
-		}
-		if rkDefault && replyTime.After(next.rkDefault) {
-			next.rkDefault = replyTime
-		}
-		if rkBatch && replyTime.After(next.rkBatch) {
-			next.rkBatch = replyTime
-		}
+		// Re-read per iteration: an invalidation that lands between the load
+		// and the CAS fails the CAS, and the retry must see the new
+		// generation rather than re-deciding staleness against the sentinel
+		// the invalidation installed.
+		mayInstallVersion := c.generation.Load() == gen
+		next := mergeReply(cur, mayInstallVersion, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -188,6 +188,51 @@ func (c *grvCache) publishReply(at time.Time, v int64, replyTime time.Time, rkDe
 			return
 		}
 	}
+}
+
+// mergeReply computes the entry a reply produces from the current one. Pure,
+// so the decision can be asserted directly instead of by racing the loop that
+// calls it — the version-resurrection bug lived in the loop's RE-evaluation,
+// and a test that cannot pin the decision can only catch it by luck.
+//
+// mayInstallVersion is false when the cache was invalidated after this reply's
+// request was dispatched. The reply then contributes cooldowns only.
+func mergeReply(cur *grvCacheEntry, mayInstallVersion bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+	next := grvCacheEntry{version: v, anchor: at, freshness: at}
+	if !mayInstallVersion {
+		// The version is void: it predates an invalidation whose whole purpose
+		// is that the next transaction not see it. Keep whatever is cached now
+		// (nothing, if the sentinel is in place) and merge cooldowns below.
+		next = grvCacheEntry{}
+		if cur != nil {
+			next = *cur
+		}
+	} else if cur != nil {
+		next.rkDefault, next.rkBatch = cur.rkDefault, cur.rkBatch
+		if v < cur.version {
+			// Stale reply: the version is dropped whole (C++ :367), but a
+			// throttle signal it carried still counts.
+			next = *cur
+		} else {
+			if v == cur.version {
+				// Same version: keep the earliest evidence of when its window
+				// opened; freshness still advances below.
+				if cur.anchor.Before(next.anchor) {
+					next.anchor = cur.anchor
+				}
+			}
+			if cur.freshness.After(next.freshness) {
+				next.freshness = cur.freshness // monotonic (C++ :378-380)
+			}
+		}
+	}
+	if rkDefault && replyTime.After(next.rkDefault) {
+		next.rkDefault = replyTime
+	}
+	if rkBatch && replyTime.After(next.rkBatch) {
+		next.rkBatch = replyTime
+	}
+	return next
 }
 
 // tryCache returns the cached version if it's fresh enough and not throttled.
@@ -268,11 +313,30 @@ func (c *grvCache) updateFromGRV(t time.Time, v int64) {
 }
 
 // invalidate clears the cached version.
+// invalidate drops the cached VERSION.
+//
+// THE GUARANTEE: no version obtained before this call is served afterwards.
+// That is the whole point of the API — a caller invalidates because an
+// external write happened, so a version that predates the call would answer
+// with data the caller knows is superseded.
+//
+// WHAT ENFORCES IT: the generation counter, not the sentinel. Clearing the
+// entry alone is not enough, because a reply already inside publishReply can
+// lose its CAS to this one, reload the sentinel, and install a version this
+// call was meant to retire — the sentinel makes the reply look FRESHER than
+// it is (version 0 makes any version look like an advance). Bumping the
+// generation FIRST, before the sentinel is installed, closes that: a reply
+// that captured the old generation may from then on contribute only its
+// cooldown. The order matters — installing the sentinel first would leave a
+// window where a reply reloads the sentinel while still reading the old
+// generation, which is the same bug with extra steps.
+//
+// The ratekeeper cooldowns are deliberately PRESERVED: a throttle signal is
+// about the cluster, not about the version that carried it, and forgetting it
+// here would let the next un-throttled reply serve a cache the ratekeeper is
+// still suppressing.
 func (c *grvCache) invalidate() {
-	// Drops the cached VERSION but preserves the ratekeeper cooldowns: a
-	// throttle signal is about the cluster, not about the version that carried
-	// it, and forgetting it here would let the next untrottled reply serve a
-	// cache the ratekeeper is still suppressing.
+	c.generation.Add(1)
 	for {
 		cur := c.entry.Load()
 		if cur == nil {
@@ -541,6 +605,12 @@ func (b *grvBatcher) flush(db *database) {
 	}
 	flags := b.priority | optionBits
 
+	// The generation is captured with the request time, BEFORE dispatch: a
+	// reply may install its version only if no invalidation happened while it
+	// was in flight. Capturing it at reply-processing time instead would leave
+	// the whole round trip as a window in which InvalidateGRVCache is defeated
+	// by a reply it was meant to retire.
+	gen := db.grvCache.generation.Load()
 	requestTime := time.Now()
 	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
 	elapsed := time.Since(requestTime)
@@ -550,7 +620,7 @@ func (b *grvBatcher) flush(db *database) {
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
 		// precedes :7425). `locked` is returned to waiters below but no longer
 		// rides the cache (RFC-104).
-		b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+		b.applyGRVReply(db, gen, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
@@ -716,6 +786,10 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 		select {
 		case <-timer.C:
 			pb.run(func() {
+				// Captured before dispatch, like the foreground path: a
+				// background refresh must not resurrect a version an
+				// invalidation retired while its RPC was in flight.
+				gen := db.grvCache.generation.Load()
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 				defer refreshCancel() // RFC-110: release the GRV timer even if sendGRVRequest panics
@@ -735,7 +809,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 					// :7425) and is caught by its own onError loop. Nothing surfaces
 					// to users from a background refresh, and the cached path
 					// fail-opens anyway (RFC-104).
-					b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+					b.applyGRVReply(db, gen, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 					// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 					grvDelay = (grvDelay + time.Since(requestTime)) / 2
 				}
@@ -750,7 +824,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 // version cache, proxy contact time, minAcceptableReadVersion, ratekeeper
 // throttle state, and tag throttle info.
 // Called from both flush() (batched request) and backgroundRefresher().
-func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
+func (b *grvBatcher) applyGRVReply(db *database, gen int64, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
 	// ONE publication for everything tryCache consults. Serving is decided by
 	// freshness AND cooldown together, so publishing them separately — in
 	// either order — leaves a state a concurrent reader can catch. Renewing
@@ -768,7 +842,7 @@ func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version 
 	// ordering it cannot be undone by an innocent-looking edit to this
 	// function.
 	replyTime := time.Now()
-	db.grvCache.publishReply(requestTime, version, replyTime, rkDefault, rkBatch)
+	db.grvCache.publishReplyAt(gen, requestTime, version, replyTime, rkDefault, rkBatch)
 	db.grvCache.lastProxyContact.Store(replyTime.UnixNano())
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 

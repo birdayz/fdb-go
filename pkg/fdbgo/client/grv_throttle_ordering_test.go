@@ -65,7 +65,7 @@ func TestGRVReply_ThrottleAndFreshnessArePublishedTogether(t *testing.T) {
 			}
 
 			publishedBefore := db.grvCache.publications.Load()
-			b.applyGRVReply(db, base, tc.replyVersion, true, false, nil)
+			b.applyGRVReply(db, db.grvCache.generation.Load(), base, tc.replyVersion, true, false, nil)
 
 			// ONE publication, and this is the assertion that makes the window
 			// unrepresentable rather than merely unlikely. Two publications —
@@ -122,7 +122,7 @@ func TestGRVReply_UnthrottledReplyStillServes(t *testing.T) {
 	b := &grvBatcher{priority: grvPriorityDefault}
 
 	db.grvCache.publish(base.Add(-2*maxVersionCacheLag), 9000)
-	b.applyGRVReply(db, base, 9000, false, false, nil)
+	b.applyGRVReply(db, db.grvCache.generation.Load(), base, 9000, false, false, nil)
 
 	v, _, ok := db.grvCache.tryCache(grvPriorityDefault)
 	if !ok {
@@ -192,7 +192,7 @@ func throttleOrderingProbe(t *testing.T, replyVersion int64) {
 			}
 		}()
 
-		b.applyGRVReply(db, base, replyVersion, true, false, nil)
+		b.applyGRVReply(db, db.grvCache.generation.Load(), base, replyVersion, true, false, nil)
 
 		close(stop)
 		wg.Wait()

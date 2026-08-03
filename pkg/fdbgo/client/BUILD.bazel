@@ -91,6 +91,7 @@ go_test(
         "grv_cache_freshness_test.go",
         "grv_cache_optin_test.go",
         "grv_close_barrier_test.go",
+        "grv_invalidate_generation_test.go",
         "grv_panic_test.go",
         "grv_test.go",
         "grv_throttle_ordering_test.go",
