@@ -271,6 +271,51 @@ func TestContainerClosureFollowsTransitiveAndEmbedEdges(t *testing.T) {
 	}
 }
 
+// A nested git checkout is another repository's territory, and the walk must
+// not cross into it.
+//
+// A worktree marks itself with a .git FILE (not a directory), so a name-based
+// directory skip never fires on it. Without the boundary check, a leftover
+// worktree under .claude/worktrees/ carrying an unpriced container target
+// reddens this checkout's gate — while CI, which has no worktrees, stays
+// green. The failure is then unreproducible exactly where the gate runs.
+func TestBuildGraphWalkStopsAtNestedCheckouts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(pkg, name, body string) {
+		t.Helper()
+		full := filepath.Join(dir, pkg)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", full, err)
+		}
+		if err := os.WriteFile(filepath.Join(full, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s/%s: %v", pkg, name, err)
+		}
+	}
+	// The root's own target: must be seen (control — proves the walk still
+	// descends everywhere a boundary marker is absent, including when the
+	// ROOT itself carries a .git entry, as the real repo does).
+	write("", ".git", "gitdir: /elsewhere\n")
+	write("pkg/real", "BUILD.bazel", "go_test(\n    name = \"real_test\",\n    deps = [\"//pkg/testcontainers/foundationdb\"],\n)\n")
+	write("pkg/testcontainers/foundationdb", "BUILD.bazel", "go_library(\n    name = \"foundationdb\",\n)\n")
+	// A nested worktree: .git is a FILE, and its unpriced container target
+	// must be invisible to the graph.
+	write(".claude/worktrees/stale", ".git", "gitdir: /elsewhere\n")
+	write(".claude/worktrees/stale/cmd/thing", "BUILD.bazel", "go_test(\n    name = \"thing_test\",\n    deps = [\"//pkg/testcontainers/foundationdb\"],\n)\n")
+
+	graph := parseBuildGraph(t, dir)
+	got := containerBackedTests(graph, testcontainerHelperLabel)
+
+	want := []string{"pkg/real:real_test"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("container-backed tests with a nested checkout present = %v, want %v.\n"+
+			"A nested worktree's targets never run from this checkout; pricing them here lets a "+
+			"leftover tree redden a gate CI cannot reproduce, and skipping the root's own tree "+
+			"would unprice every real target.", got, want)
+	}
+}
+
 // A tag whose value is not a positive integer is not a declaration.
 //
 // `resources:memory:` with junk after it, or a zero, parses as "present" to any
@@ -385,6 +430,16 @@ func parseBuildGraph(t *testing.T, root string) map[string]buildRule {
 		if d.IsDir() {
 			if d.Name() == ".git" || d.Name() == "fdb-record-layer" {
 				return filepath.SkipDir
+			}
+			// A nested git checkout (a worktree's .git is a FILE, so the name
+			// check above never sees it) is another repository's territory:
+			// its targets run under its own gates, never from this checkout,
+			// so pricing them here only lets a leftover tree redden a gate
+			// CI cannot reproduce.
+			if path != root {
+				if _, statErr := os.Lstat(filepath.Join(path, ".git")); statErr == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}

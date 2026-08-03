@@ -20,12 +20,14 @@ than quietly corrected, because a status page whose errors vanish teaches nobody
 The one-line answer: the code is closer to prod than any older document claims. Three corrections
 dominate this revision:
 
-1. **The safety nets are not yet PROVEN, but the mechanism is now honest twice over.** B1's
+1. **The safety nets are now PROVEN, and the mechanism got honest before it got green.** B1's
    detection (#523) worked exactly as designed and reported that three of nine nightly nets had
    never recorded a genuine run. #556 then found the reconciler's *diagnosis* wrong — the lanes were
    fine, the window band was the wrong shape — fixed it across all five nets, and published the
    number nobody wanted: **107 of 177 scheduled runs over these lanes' whole life were fake-green**.
-   Five validation dispatches are in flight. Tier 1 confirms on the first genuinely green reconcile.
+   **Confirmed 2026-08-02/03**: the reconciler has now passed two consecutive nights (runs
+   30744450066, 30814146026) with every net showing a genuine, artifact-backed run inside its
+   limit — Tier 1's gate is satisfied.
 2. **The read-side safety net roughly doubled.** The generation factory (#555) landed 2000 blessed
    scenarios, and it paid for itself on its first sweep by finding a resolver defect that broke six
    boolean operand shapes — including one, boolean-CASE in WHERE, that this page had listed as a
@@ -39,9 +41,13 @@ application, and is now the top item outright.
 ## Deployment tiers
 
 ### Tier 1 — record-layer data plane + auto-commit SQL, bounded contexts
-**Distance: gated on the nightly nets becoming genuinely green.** Two items:
+**Distance: CONFIRMED 2026-08-03.** The nightly-net gate is satisfied (below); the CQ-46 residual
+stays open as a booked item, not a tier gate. Two items:
 
-- **The nightly nets: the window fix is MERGED (#556), awaiting its first genuine green.** The
+- **The nightly nets: genuinely green, twice.** Reconcile runs 30744450066 (08-02) and
+  30814146026 (08-03) passed with all eleven nets showing artifact-backed genuine runs inside
+  their limits (stress, rowdiff, oracles, coverage, factory-corpus, factory-batch, and the five
+  fuzz lanes: diff/race/binding/client/engine — ages 0–1d against 3–7d limits, `STALE=0`). The
   reconciler fails when a net has not genuinely executed inside its limit, and it was right that
   `fuzz-diff`, `fuzz-binding` and `fuzz-engine` had no heartbeat of any age. **Its diagnosis was
   wrong, and that matters more than the fix.** The suspicion was mis-wired lanes; measurement found
@@ -61,8 +67,10 @@ application, and is now the top item outright.
   diff-fuzz 20/39 (12), race-detector 19/33 (13). So the lanes were not dead their entire life, only
   most of it; diff-fuzz last did real work on 07-25. Since heartbeats began there have been exactly
   two scheduled runs and three lanes lost both, which is why they read as never having run.
-  **Status: five validation dispatches are in flight; Tier 1 confirms on the first genuinely green
-  reconcile, not before.** A merged window fix is not a proven net.
+  **Status: CONFIRMED.** The reconciler passed on 2026-08-02 and again on 2026-08-03 with every
+  net inside its limit and no vacuous pass possible (the reconciler fails on a missing artifact,
+  not just a green badge). The "not before" discipline held: three red reconciles (07-30 to
+  08-01) preceded the first genuine green.
   *Corrected from earlier in this revision:* an earlier draft blamed runner contention alone and
   called the residual "not started". Contention is real, but the band's shape was the defect, and
   `TestNightlyWindowAdmitsMeasuredLandings` (replaying every allocation hour each job has really
@@ -115,22 +123,19 @@ conformance total moved 1362→1363 and SQL coverage 2399→2401 between two SHA
 coverage move is not noise: it is the two CASE shapes flipping from unsupported-pin to supported.
 
 ### Tier 2 — full SQL surface incl. explicit transactions
-**Distance: weeks at the current grind pace.** Dominated by B2, which is the Tier-2 gate outright:
+**Distance: one PR from confirmation.** Dominated by B2, which is the Tier-2 gate outright:
 
-- Inside `BeginTx`, DML joins the FDB transaction but SELECT runs in a fresh auto-commit
-  transaction — no read-your-writes, no read-conflict ranges, so read-modify-write across two
-  transactions is last-writer-wins with no 1020/40001. **Silent lost updates.** Pinned by
-  `pkg/relational/sqldriver/tx_select_isolation_probe_test.go`, which asserts the CURRENT broken
-  semantics and names what to change when it flips. No user-side mitigation exists.
+- The defect this gate exists for: inside `BeginTx`, DML joined the FDB transaction but SELECT ran
+  in a fresh auto-commit transaction — no read-your-writes, no read-conflict ranges, so
+  read-modify-write across two transactions was last-writer-wins with no 1020/40001. **Silent lost
+  updates.** Formerly pinned by `tx_select_isolation_probe_test.go` asserting the broken semantics.
 - The design is **RFC-198** (`rfcs/198-explicit-transactions-read-your-writes.md`), joint review
-  **complete** (#529, with the review's one blocker folded into the body). **Implementation is not
-  started**: `respectActiveTx` is still `p.IsUpdate()` at
-  `pkg/relational/core/embedded/cascades_generator.go:1255`, and the SELECT routing fork survives at
-  `:1760`. B2 carries a second gate beyond the RFC: SimFDB/RFC-199 as acceptance harness with
-  mandatory injected 1007 and both 1021 branches (`TODO.md:6867-6890`).
-  *Corrected:* the RFC's own status line read "**proposed** … awaiting joint-review ACK before
-  implementation" — stale from the moment the commit that completed its review merged. Fixed in this
-  pass.
+  complete (#529). **Implementation is COMPLETE on #607** — all five phases, including the
+  SimFDB/RFC-199 acceptance harness with injected 1007 and both 1021 branches; the isolation probe
+  now pins the CORRECT semantics. #607 is in final review: the joint Graefe+Torvalds lap ACK'd at
+  the phase boundary, the 1M stress ran clean (−0.9% wall, plans byte-identical), and the GRV-cache
+  span that grew out of OQ-1 is under a C++-client + Torvalds delta review with a prescribed fence
+  reshape in progress. Tier 2 confirms when #607 merges.
 
 The RFC-197 identity migration does not gate Tier 2. Its wrong-rows channels are closed; what the
 ratchet still holds is machinery-gated stops and boundary-layer sites, which gate the *migration's
@@ -145,8 +150,8 @@ entries mean the same query returns different rows or different errors on the tw
 
 | # | Item | Impact | Size | State |
 |---|---|---|---|---|
-| B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **Detection merged (#523); the WINDOW SHAPE fixed and merged (#556); awaiting first genuine green.** #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Five validation dispatches in flight. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 still open (CQ-47) |
-| B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **The Tier-2 gate.** RFC-198 review-complete (#529); implementation not started. Pinned by the probe test |
+| B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 still open (CQ-47) |
+| B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **The Tier-2 gate; implementation COMPLETE and in final review (#607).** RFC-198 phases 1–5 implemented; joint Graefe+Torvalds lap ACK'd at the phase boundary; 1M stress clean (−0.9% wall, plans byte-identical); the GRV-cache span that grew out of OQ-1 is under a C++-client + Torvalds delta review with a prescribed fence reshape in progress. Merges when that lap and codex go clean |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 (`TODO.md:10046`, open)** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 52 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
@@ -384,9 +389,9 @@ Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN
 The path to zero KNOWN correctness errors, in execution order. "Done" for each = the watch-list
 entry's pin goes red and the entry is retired with the fix cited.
 
-1. **B2 / RFC-198** (entry 1) — in flight: OQ-1 + Phase 1 done and mutation-verified on
-   `feat/rfc198-explicit-tx-isolation`; Phases 2+ (SQLSTATE lanes, catalog binding, SimFDB
-   criteria 9-12) remain, then the joint completion lap.
+1. **B2 / RFC-198** (entry 1) — all five phases COMPLETE and mutation-verified on #607
+   (`feat/rfc198-explicit-tx-isolation`), joint lap ACK'd, 1M stress clean; in final review
+   (GRV-cache fence reshape + C++-client/Torvalds delta lap). Retires when #607 merges.
 2. **The unpinned-or-unowned batch** (entries 2, 4, 3, 9) — INSERT-NULL-into-PK
    (measurement REFUTED the entry: Java allows NULL PKs and Go matches — real pins landed,
    fake pin deleted, on `fix/watchlist-insert-null-pk-timestamp`), CURRENT_TIMESTAMP drift
@@ -514,10 +519,10 @@ Booked by THIS revision, from defects the verification pass found:
 
 ## Sequence
 
-1. **Confirm B1.** The window fix is merged and five validation dispatches are in flight; Tier 1
-   turns on the first genuinely green reconcile. Watch it, do not assume it. Nothing to build.
-2. **B2 explicit-tx isolation.** The Tier-2 gate and the top item outright. RFC-198 is
-   review-complete; implement it. L, plus its SimFDB acceptance harness.
+1. **~~Confirm B1.~~ DONE 2026-08-03** — two consecutive genuinely green reconciles (see B1);
+   Tier 1 is confirmed. Residuals CQ-46/CQ-47 stay booked below, not tier-gating.
+2. **B2 explicit-tx isolation.** The Tier-2 gate and the top item outright. Implementation
+   complete on #607; in final review (GRV-cache fence reshape + delta laps), merges on clean.
 3. **CQ-80** — pin the watch-list entries that claim a test they do not have (entries 2 and 4 done;
    8 and 12 remain). Small, and it is what makes the list handable to an adopter.
 4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
