@@ -1916,9 +1916,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// opted-in reader would then miss the very write the caller invalidated to
 	// observe.
 	commitStart := time.Now()
-	var commitGen int64
+	var commitTok cacheToken
 	if tx.db != nil {
-		commitGen = tx.db.grvCache.generation.Load()
+		commitTok = tx.db.grvCache.token()
 	}
 	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
@@ -1967,7 +1967,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// Generation from dispatch (an invalidation during the commit must still
 		// refuse it); EPOCH from the proxy binding inside commit(), which is the
 		// cluster this version actually came from.
-		tx.db.grvCache.update(cacheToken{gen: commitGen, epoch: tx.commitEpoch.Load()},
+		tx.db.grvCache.update(commitTok.withEpoch(tx.commitEpoch.Load()),
 			commitStart, tx.committedVersion)
 	}
 

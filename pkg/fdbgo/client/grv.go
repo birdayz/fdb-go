@@ -46,12 +46,15 @@ type grvCache struct {
 	// observes a pair that never existed. When the instant is the newer half,
 	// the anchor claims a later MVCC-window start than the version really
 	// has, the RFC-198 budget under-counts the age, and the page it admits
-	// dies on 1007. C++ avoids the same tear by writing both fields inside
-	// one critical section (updateCachedReadVersionShared,
-	// NativeAPI.actor.cpp:348-359, under MutexHolder); it needs no more,
-	// because it uses lastGrvTime only for FRESHNESS and never derives an
-	// anchor from it. Go's accessor is the extra consumer that makes
-	// coherence load-bearing.
+	// dies on 1007. C++ WRITES both fields inside one critical section
+	// (updateCachedReadVersionShared, NativeAPI.actor.cpp:348-359, under
+	// MutexHolder) but READS them through two separate acquisitions —
+	// getCachedReadVersion() then getLastGrvTime(), :7511-7512 — so its reader
+	// can observe a torn pair. It survives that because it uses lastGrvTime only
+	// for FRESHNESS and never derives an anchor from it: a torn instant costs it
+	// at most a spurious cache miss. Go's anchor accessor is the extra consumer
+	// that turns the same tear into a wrong MVCC budget, so Go's single
+	// publication is strictly stronger than C++'s — and has to be.
 	//
 	// nil means empty. Both instants are stored as time.Time so their
 	// MONOTONIC readings survive: round-tripping through UnixNano drops them,
@@ -67,34 +70,39 @@ type grvCache struct {
 	// publications turns the property into something assertable exactly.
 	publications atomic.Int64
 
-	// generation counts invalidations. A reply may install its VERSION only
+	// fences is BOTH fence counters in ONE word: the cluster epoch in the high
+	// 32 bits, the invalidation generation in the low 32.
+	//
+	// The GENERATION counts invalidations. A reply may install its VERSION only
 	// against the generation it was validated under; once the generation has
 	// moved it may still contribute its ratekeeper cooldown — a fact about the
 	// cluster, not about the version that carried it — but never its version.
-	//
 	// Without it the load-validate-CAS loop can be turned against itself: a
 	// reply correctly rejected as stale against version N loses its CAS to an
 	// invalidation, re-reads the version-0 sentinel, no longer looks stale
 	// against 0, and installs the very version it was just rejected for —
 	// resurrecting a PRE-invalidation version inside the freshness window.
-	generation atomic.Int64
-
-	// epoch counts CLUSTER changes, and is a strictly coarser fence than
-	// generation. Both are bumped when the handle moves to another cluster;
-	// only generation is bumped by an invalidation.
 	//
-	// Two counters because install and floor need DIFFERENT scopes, and one
-	// counter cannot express that. A commit blocked by an invalidation must
-	// still raise the floor — same cluster, so its version genuinely proves
-	// lower ones stale (that is the round-7 asymmetry). A commit from a
-	// PREVIOUS CLUSTER must raise nothing, because across clusters a version
-	// comparison is meaningless: the two number spaces are unrelated, so
-	// "9000000 > 500" says only which cluster minted it. Gating the floor on
-	// generation would break the first; leaving it ungated broke the second.
+	// The EPOCH counts CLUSTER changes and is a strictly coarser fence. Both
+	// halves move when the handle moves to another cluster; only the generation
+	// moves on an invalidation. Two fences because install and floor need
+	// DIFFERENT scopes: a commit blocked by an invalidation must still raise the
+	// floor — same cluster, so its version genuinely proves lower ones stale —
+	// while a commit from a PREVIOUS CLUSTER must raise nothing, because across
+	// clusters a version comparison is meaningless (the two number spaces are
+	// unrelated, so "9000000 > 500" says only which cluster minted it).
 	//
-	// So: install requires the generation to match, the floor and the
-	// ratekeeper cooldowns require the EPOCH to match.
-	epoch atomic.Int64
+	// ONE WORD, not two atomics, because the two predicates must be derived from
+	// the SAME observation. With separate counters a publisher that tokened
+	// before a coordinator switch can observe the state BETWEEN the two bumps
+	// and conclude mayInstall=true (generation not yet bumped) AND
+	// sameEpoch=false (epoch already bumped) — a combination that describes no
+	// reachable state of the cache, and under which mergeReply installs a
+	// previous-cluster version over a valid current-epoch entry while declining
+	// to stamp it, leaving the cache holding an unservable epoch-0 entry. Packed,
+	// mayInstall is `obs == tok` and therefore IMPLIES sameEpoch: the skew is
+	// unrepresentable rather than merely unlikely.
+	fences atomic.Uint64
 
 	lastProxyContact atomic.Int64 // UnixNano
 	// No `locked` rides the cache: the cache is now opt-in (USE_GRV_CACHE,
@@ -227,14 +235,13 @@ func (c *grvCache) publish(tok cacheToken, at time.Time, v int64) {
 func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
 	for {
 		cur := c.entry.Load()
-		// Re-read per iteration: an invalidation that lands between the load
-		// and the CAS fails the CAS, and the retry must see the new
-		// generation rather than re-deciding staleness against the sentinel
-		// the invalidation installed.
-		obsEpoch := c.epoch.Load()
-		mayInstallVersion := c.generation.Load() == tok.gen
-		sameEpoch := obsEpoch == tok.epoch
-		next := mergeReply(cur, obsEpoch, mayInstallVersion, sameEpoch, durable, at, v, replyTime, rkDefault, rkBatch)
+		// Re-read per iteration, and as ONE word: an invalidation that lands
+		// between the load and the CAS fails the CAS, and the retry must see the
+		// new generation rather than re-deciding staleness against the sentinel
+		// the invalidation installed. Both fence predicates come from this single
+		// Load, so no publication can ever mix a pre-switch generation with a
+		// post-switch epoch.
+		next := mergeReply(cur, c.fences.Load(), tok, durable, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -250,8 +257,20 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 // calls it — the version-resurrection bug lived in the loop's RE-evaluation,
 // and a test that cannot pin the decision can only catch it by luck.
 //
-// mayInstallVersion is false when the cache was invalidated after this reply.s
-// request was dispatched.
+// obs is the fence word observed at publication; tok is the one the publisher
+// captured at dispatch. BOTH predicates are derived here from that single pair,
+// so a caller cannot supply a combination the cache never held:
+//
+//   - mayInstallVersion (obs == tok) is false when either fence moved after this
+//     reply's request was dispatched.
+//   - sameEpoch compares only the high halves.
+//
+// mayInstallVersion therefore IMPLIES sameEpoch. That implication is the whole
+// reason the fences share a word: as two counters, a publisher could observe
+// mayInstall=true beside sameEpoch=false in the gap between a switch's two
+// bumps, and install a previous-cluster version over a valid current-epoch entry
+// — while the stamp below, correctly refusing to promote a stale-epoch
+// publication, left the result unservable at epoch 0.
 //
 // durable says the version is one the caller has already observed as
 // COMMITTED — ground truth about the cluster rather than a point-in-time
@@ -259,7 +278,10 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 // install is blocked; a GRV reply carries no such promise, and retiring on
 // one would evict a perfectly good cache entry every time a straggler with a
 // higher version landed after an invalidation.
-func mergeReply(cur *grvCacheEntry, obsEpoch int64, mayInstallVersion, sameEpoch, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+func mergeReply(cur *grvCacheEntry, obs uint64, tok cacheToken, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+	obsEpoch := fenceEpoch(obs)
+	mayInstallVersion := obs == tok.f
+	sameEpoch := obsEpoch == tok.epoch()
 	// A previous-epoch entry is not a MERGE BASE. Its version, floor and
 	// cooldowns belong to another cluster, so inheriting any of them — or
 	// comparing this version against it for staleness — is the same category
@@ -392,7 +414,7 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	// Never serve an entry from a previous cluster. The handle may already be
 	// talking to a different cluster whose proxies were installed before this
 	// entry was retired; its version is not merely stale but meaningless here.
-	if e.epoch != c.epoch.Load() {
+	if e.epoch != c.epochNow() {
 		return 0, time.Time{}, false
 	}
 	// Never below the last version this client committed. Checked HERE and not
@@ -493,7 +515,7 @@ func (c *grvCache) updateFromGRV(tok cacheToken, t time.Time, v int64) {
 // here would let the next un-throttled reply serve a cache the ratekeeper is
 // still suppressing.
 func (c *grvCache) invalidate() {
-	c.generation.Add(1)
+	c.bumpFences(false)
 	for {
 		cur := c.entry.Load()
 		if cur == nil {
@@ -787,7 +809,7 @@ func (b *grvBatcher) flush(db *database) {
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
 		// precedes :7425). `locked` is returned to waiters below but no longer
 		// rides the cache (RFC-104).
-		b.applyGRVReply(db, cacheToken{gen: tok.gen, epoch: attemptEpoch}, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+		b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
@@ -976,7 +998,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 					// :7425) and is caught by its own onError loop. Nothing surfaces
 					// to users from a background refresh, and the cached path
 					// fail-opens anyway (RFC-104).
-					b.applyGRVReply(db, cacheToken{gen: tok.gen, epoch: attemptEpoch}, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+					b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 					// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 					grvDelay = (grvDelay + time.Since(requestTime)) / 2
 				}
@@ -1046,7 +1068,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 		// never talked to. Epoch-before-proxies is the conservative order — a
 		// handoff in between yields the OLD epoch beside the NEW proxies, and
 		// the reply is refused rather than wrongly accepted.
-		attemptEpoch = db.grvCache.epoch.Load()
+		attemptEpoch = db.grvCache.epochNow()
 		proxies := db.getGRVProxies()
 		if len(proxies) == 0 {
 			db.kickTopology()
@@ -1189,6 +1211,21 @@ func (c *grvCache) clock() time.Time {
 	return time.Now()
 }
 
+// currentEntry is the cached entry when it belongs to the epoch the cache
+// serves under, and nil otherwise. EVERY accessor below goes through it, so
+// they answer uniformly: an entry from a previous cluster is inert in all of
+// them, not merely in the ones someone remembered to guard. The uniformity is
+// load-bearing rather than tidy — an unguarded freshnessInstant paces the
+// background refresher off a previous cluster's confirmation instant and
+// suppresses the refresh that would repopulate the cache under the new epoch.
+func (c *grvCache) currentEntry() *grvCacheEntry {
+	e := c.entry.Load()
+	if e == nil || e.epoch != c.epochNow() {
+		return nil
+	}
+	return e
+}
+
 // freshnessInstant is when the cluster last CONFIRMED the cached entry, or the
 // zero time when the cache is empty. This is what the background refresher
 // paces off and what tryCache judges staleness on — never the version anchor,
@@ -1196,7 +1233,7 @@ func (c *grvCache) clock() time.Time {
 // anchor collapses the refresh interval to its floor on a quiet cluster, where
 // every reply carries the version already held.
 func (c *grvCache) freshnessInstant() time.Time {
-	if e := c.entry.Load(); e != nil {
+	if e := c.currentEntry(); e != nil {
 		return e.freshness
 	}
 	return time.Time{}
@@ -1204,7 +1241,7 @@ func (c *grvCache) freshnessInstant() time.Time {
 
 // cachedVersion is the cached version, or 0 when the cache is empty.
 func (c *grvCache) cachedVersion() int64 {
-	if e := c.entry.Load(); e != nil && e.epoch == c.epoch.Load() {
+	if e := c.currentEntry(); e != nil {
 		return e.version
 	}
 	return 0
@@ -1214,7 +1251,7 @@ func (c *grvCache) cachedVersion() int64 {
 // when the cache is empty. This is the budget-facing instant — the one that
 // must never move for a version already held.
 func (c *grvCache) anchorInstant() time.Time {
-	if e := c.entry.Load(); e != nil {
+	if e := c.currentEntry(); e != nil {
 		return e.anchor
 	}
 	return time.Time{}
@@ -1227,9 +1264,11 @@ func (c *grvCache) markThrottled(tok cacheToken, at time.Time, rkDefault, rkBatc
 	c.publishReplyAt(tok, false, time.Time{}, 0, at, rkDefault, rkBatch)
 }
 
-// throttleStamp is the recorded cooldown for a priority, or the zero time.
+// throttleStamp is the recorded cooldown for a priority, or the zero time. A
+// cooldown describes the epoch's ratekeeper, so a previous-epoch stamp reads as
+// zero — the same rule mergeReply applies when it declines to merge one.
 func (c *grvCache) throttleStamp(priority uint32) time.Time {
-	e := c.entry.Load()
+	e := c.currentEntry()
 	if e == nil {
 		return time.Time{}
 	}
@@ -1244,7 +1283,7 @@ func (c *grvCache) entryFloor() int64 {
 	// The EFFECTIVE floor in the current epoch. A previous-epoch entry may
 	// still be present — the switch deliberately does not clear it — but its
 	// floor is inert: it is neither served nor used as a merge base.
-	if e := c.entry.Load(); e != nil && e.epoch == c.epoch.Load() {
+	if e := c.currentEntry(); e != nil {
 		return e.floor
 	}
 	return 0
@@ -1284,32 +1323,93 @@ func (c *grvCache) entryFloor() int64 {
 // lastGrvTime there, which leaves its own GRV cache stale across a switch —
 // this is deliberately stricter, because Go's floor makes the consequence
 // permanent rather than bounded by the 100ms freshness window.
-func (c *grvCache) resetForNewCoordinators() {
-	// Bumping the counters is the WHOLE reset. The entry is deliberately NOT
+// It returns the epoch it installed, because that epoch is what the DBInfo
+// published immediately afterwards must carry: the fence word and the DBInfo
+// are two views of one fact, and the caller is the only place that can keep
+// them coherent (see database.installProxySet).
+func (c *grvCache) resetForNewCoordinators() int64 {
+	// Bumping the fences is the WHOLE reset. The entry is deliberately NOT
 	// cleared: every entry records the epoch it was published under, so one
 	// from the previous cluster is already unservable and unusable as a merge
 	// base, and it is overwritten by the next publication.
 	//
 	// Clearing it would introduce a race it cannot win — a publisher that
-	// landed under the NEW epoch between the counter bumps and the clear would
+	// landed under the NEW epoch between the fence bump and the clear would
 	// have its perfectly valid version and floor erased by a reset that was
 	// never about it.
-	c.epoch.Add(1)
-	c.generation.Add(1)
+	return fenceEpoch(c.bumpFences(true))
 }
 
-// cacheToken is the pair a publisher captures AT DISPATCH and must present to
-// publish anything: the invalidation generation and the cluster epoch.
+// bumpFences advances the generation, and the epoch too when newCluster.
+// Returns the fence word it installed.
+//
+// A CAS loop rather than an Add, deliberately: an Add on a packed word carries
+// between the halves, so the low half's wrap at 2^32 would silently increment
+// the cluster epoch and make every live entry unservable. Recomputing both
+// halves under a CAS keeps them independent and removes the carry question
+// entirely. Both callers are rare (an explicit InvalidateGRVCache, a
+// coordinator-set handoff), so the loop costs nothing that matters.
+func (c *grvCache) bumpFences(newCluster bool) uint64 {
+	for {
+		cur := c.fences.Load()
+		epoch := fenceEpoch(cur)
+		if newCluster {
+			epoch++
+		}
+		next := packFences(epoch, fenceGen(cur)+1)
+		if c.fences.CompareAndSwap(cur, next) {
+			return next
+		}
+	}
+}
+
+// fenceGenMask is the low half of the packed fence word — the generation.
+const fenceGenMask = uint64(1)<<32 - 1
+
+// packFences builds a fence word from an epoch and a generation. The generation
+// is masked to its own half, so it wraps within itself and can never carry into
+// the epoch.
+func packFences(epoch, gen int64) uint64 {
+	return uint64(epoch)<<32 | uint64(gen)&fenceGenMask
+}
+
+func fenceEpoch(f uint64) int64 { return int64(f >> 32) }
+func fenceGen(f uint64) int64   { return int64(f & fenceGenMask) }
+
+// cacheToken is the fence word a publisher captures AT DISPATCH and must present
+// to publish anything.
 //
 // One value rather than two parameters so the API gate stays a single required
-// argument — a publisher still cannot compile without deciding when it
-// captured, and it now cannot capture one fence while forgetting the other.
+// argument — a publisher cannot compile without deciding when it captured — and
+// one WORD rather than two fields so the epoch and the generation it presents
+// are necessarily from the same instant.
 type cacheToken struct {
-	gen   int64
-	epoch int64
+	f uint64
 }
 
-// token captures the current fences. Call at DISPATCH, never at publication.
-func (c *grvCache) token() cacheToken {
-	return cacheToken{gen: c.generation.Load(), epoch: c.epoch.Load()}
+func (t cacheToken) epoch() int64 { return fenceEpoch(t.f) }
+func (t cacheToken) gen() int64   { return fenceGen(t.f) }
+
+// withEpoch rebinds a token to the epoch of the proxy set the attempt ACTUALLY
+// used, keeping the generation it captured at dispatch. The two are captured at
+// different instants by necessity — the generation covers the whole round trip
+// from dispatch, while the epoch belongs to the proxy set selected later,
+// possibly on a retry — and this is the only sanctioned way to combine them.
+//
+// A rebound token whose epoch is older than the observed fence fails `obs ==
+// tok.f` and is refused: the request talked to the previous cluster, so refusing
+// it is the correct outcome, not a conservative approximation of one.
+func (t cacheToken) withEpoch(epoch int64) cacheToken {
+	return cacheToken{f: packFences(epoch, t.gen())}
 }
+
+// token captures the current fences in ONE load. Call at DISPATCH, never at
+// publication.
+func (c *grvCache) token() cacheToken {
+	return cacheToken{f: c.fences.Load()}
+}
+
+// epochNow is the cluster epoch the cache currently serves under. Every entry
+// accessor validates against it, so an entry minted by a previous cluster is
+// inert rather than merely stale.
+func (c *grvCache) epochNow() int64 { return fenceEpoch(c.fences.Load()) }

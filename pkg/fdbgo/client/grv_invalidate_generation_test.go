@@ -42,7 +42,10 @@ func TestMergeReply_BlockedGenerationNeverInstallsAVersion(t *testing.T) {
 	// carrying forward the cooldowns the invalidation preserved.
 	sentinel := &grvCacheEntry{rkDefault: base.Add(-time.Hour)}
 
-	got := mergeReply(sentinel, 0, false /* generation moved */, true /* same epoch */, false /* not durable */, base, 300,
+	// Dispatched at generation 0; an invalidation moved it to 1 while the reply
+	// was in flight. The epoch half is untouched, so this is the same cluster.
+	tok := cacheToken{f: packFences(0, 0)}
+	got := mergeReply(sentinel, packFences(0, 1), tok, false /* not durable */, base, 300,
 		base, true /* rkDefault */, false)
 
 	if got.version != 0 {
@@ -74,7 +77,8 @@ func TestMergeReply_CurrentGenerationStillInstalls(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	got := mergeReply(&grvCacheEntry{}, 0, true /* generation current */, true /* same epoch */, false, base, 300,
+	// Observed fence equals the token: neither fence moved.
+	got := mergeReply(&grvCacheEntry{}, packFences(0, 0), cacheToken{f: packFences(0, 0)}, false, base, 300,
 		time.Time{}, false, false)
 
 	if got.version != 300 {

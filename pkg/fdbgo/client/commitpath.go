@@ -34,7 +34,7 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 	// which a lower GRV from the new cluster repopulates the cache and an
 	// opted-in read misses the write that just committed. Epoch-before-proxy is
 	// the conservative order, as on the GRV path.
-	tx.commitEpoch.Store(tx.db.grvCache.epoch.Load())
+	tx.commitEpoch.Store(tx.db.grvCache.epochNow())
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
 		return &wire.FDBError{Code: ErrAllProxiesUnreachable}

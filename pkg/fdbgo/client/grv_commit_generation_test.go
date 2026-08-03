@@ -39,8 +39,8 @@ func TestMergeReply_CommitAgainstSentinelWithOldGeneration(t *testing.T) {
 	base := time.Now()
 	sentinel := &grvCacheEntry{} // what invalidate() leaves behind
 
-	got := mergeReply(sentinel, 0, false /* generation moved */, true /* same epoch */, true /* durable */, base, 7000,
-		time.Time{}, false, false)
+	got := mergeReply(sentinel, packFences(0, 1) /* generation moved */, cacheToken{f: packFences(0, 0)},
+		true /* durable */, base, 7000, time.Time{}, false, false)
 
 	if got.version != 0 {
 		t.Fatalf("a commit whose generation was invalidated installed version %d against "+
@@ -817,11 +817,11 @@ func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return base }}
 
 	// Sampled early, as the caller used to: epoch of cluster A.
-	staleEpoch := c.epoch.Load()
+	staleEpoch := c.epochNow()
 	// The handoff happens before the commit binds to a proxy.
 	c.resetForNewCoordinators()
 	// The commit actually runs against the NEW cluster and binds there.
-	boundEpoch := c.epoch.Load()
+	boundEpoch := c.epochNow()
 
 	if staleEpoch == boundEpoch {
 		t.Fatal("precondition: the handoff did not move the epoch")
@@ -829,7 +829,7 @@ func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 
 	// Publishing under the epoch the commit actually bound to must install and
 	// floor; under the early sample it must not.
-	c.update(cacheToken{gen: c.generation.Load(), epoch: boundEpoch}, base, 7000)
+	c.update(c.token().withEpoch(boundEpoch), base, 7000)
 	if v, _, ok := c.tryCache(grvPriorityDefault); !ok || v != 7000 {
 		t.Fatalf("tryCache = (%d, %v), want (7000, true): a commit that bound to the "+
 			"CURRENT cluster's proxies must install its version — capturing the epoch "+
@@ -839,6 +839,25 @@ func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 		t.Fatalf("floor = %d, want 7000: the committed version must also floor, or a "+
 			"delayed lower GRV repopulates and the read-your-committed-writes "+
 			"guarantee RFC-198 exists for is lost", f)
+	}
+
+	// THE NEGATIVE ARM, on its own cache so the positive arm cannot mask it. The
+	// doc above promised it and the body did not assert it: with the early
+	// sample, reverting the commit path to a caller-side epoch left this whole
+	// test green, which is the precise shape of a test that passes because it
+	// cannot express the defect.
+	c2 := &grvCache{now: func() time.Time { return base }}
+	c2.resetForNewCoordinators() // same handoff, same epochs
+	c2.update(c2.token().withEpoch(staleEpoch), base, 7000)
+	if v, _, ok := c2.tryCache(grvPriorityDefault); ok {
+		t.Fatalf("a commit token carrying the PRE-handoff epoch installed version %d.\n"+
+			"That token describes a cluster the commit never talked to. Accepting it "+
+			"is how a previous cluster's version reaches this cluster's cache", v)
+	}
+	if f := c2.entryFloor(); f != 0 {
+		t.Fatalf("floor = %d, want 0: a commit token from the previous epoch must not "+
+			"raise this cluster's floor — across clusters a version comparison proves "+
+			"nothing, and the floor it leaves refuses every version this cluster mints", f)
 	}
 }
 
