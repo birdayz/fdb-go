@@ -19,6 +19,7 @@ import (
 
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/wire"
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
@@ -232,6 +233,72 @@ type embeddedTx struct {
 	// here the map simply dies with the embeddedTx — one lifecycle for every
 	// transaction-scoped object.
 	schemaCache map[string]api.Schema
+
+	// stores is the TRANSACTION-scoped record-store cache (RFC-198 Decision
+	// 10), keyed by store subspace. Every page of every statement in this
+	// transaction reuses one open store per subspace instead of rebuilding it
+	// per page.
+	//
+	// Per-page rebuilding is free in auto-commit — each page is its own
+	// transaction and the store must be rebuilt anyway — and stops being free
+	// the moment pages share one transaction: each Open() reads the store
+	// header, so an N-page in-transaction SELECT would spend N header reads
+	// out of the same 5-second window the query itself is competing for. The
+	// cost would land on the scarcest resource this RFC introduces. Java does
+	// not pay it (RecordLayerSchema.java:98-108 caches exactly one store per
+	// transaction and drops it when the transaction terminates), and neither
+	// does this.
+	//
+	// The store carries no statement-scoped state — context, metadata,
+	// subspace, store header, index states and the per-transaction index
+	// maintainer cache are all transaction-scoped facts — so reuse changes
+	// lifetime, not semantics.
+	//
+	// One lifecycle, as everywhere else here: the map dies with the
+	// embeddedTx, and no page can reach it after the terminal flag is set
+	// because runInCapturedTx refuses the transaction first. It is ALSO
+	// dropped by invalidateSchemaCache, because a DDL issued inside an
+	// explicit transaction auto-commits in its own transaction (Decision 8f)
+	// and would otherwise leave this store holding metadata its own DDL
+	// replaced for the rest of the transaction.
+	stores map[string]*recordlayer.FDBRecordStore
+}
+
+// storeIn returns the record store for ss inside rctx, reusing this
+// transaction's open store when there is one (RFC-198 Decision 10). tx == nil
+// is auto-commit, where each page is its own transaction and the store must be
+// built fresh — unchanged.
+func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *embeddedTx, ss subspace.Subspace) (*recordlayer.FDBRecordStore, error) {
+	if tx != nil {
+		if store, ok := tx.stores[string(ss.Bytes())]; ok {
+			return store, nil
+		}
+	}
+	store, err := c.newStoreBuilder().
+		SetContext(rctx).
+		SetSubspace(ss).
+		SetMetaDataProvider(c.cachedMetaData()).
+		// Revalidation must observe FDB, not a database-level state-cache
+		// entry that can outlive a non-cacheable store's state transition.
+		//
+		// It belongs HERE rather than at the call site now that every store is
+		// opened through this one function: the transaction-scoped reuse above
+		// is a different lifetime question (one store per subspace per
+		// transaction, dying with the transaction) and does not answer this one.
+		// Reusing a store whose state was read through the database-level cache
+		// would carry that staleness across every page of the transaction.
+		SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
+		Open()
+	if err != nil {
+		return nil, err
+	}
+	if tx != nil {
+		if tx.stores == nil {
+			tx.stores = make(map[string]*recordlayer.FDBRecordStore)
+		}
+		tx.stores[string(ss.Bytes())] = store
+	}
+	return store, nil
 }
 
 // scanStateIn returns the transaction-scoped ScanLimiterState, minting it on
@@ -360,6 +427,19 @@ func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	// end.
 	if c.activeTx != nil {
 		delete(c.activeTx.schemaCache, session.SchemaCacheKey(dbPath, schemaName))
+		// And the transaction's OPEN STORES with it (RFC-198 Decision 10):
+		// a cached store was built with SetMetaDataProvider(cachedMetaData())
+		// and holds that metadata for its lifetime, so leaving it in place
+		// would let the rest of the transaction execute against metadata this
+		// very DDL replaced — the collision Decision 10's cache creates and
+		// this invalidation is the resolution to.
+		//
+		// ALL of them, not just the invalidated schema's: over-invalidating
+		// costs one store header read, under-invalidating ships stale
+		// metadata, and mapping (dbPath, schemaName) back to a store subspace
+		// needs a keyspace lookup that can itself fail — a failure path whose
+		// only safe handling is to drop everything anyway.
+		c.activeTx.stores = nil
 	}
 }
 

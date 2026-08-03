@@ -1823,14 +1823,10 @@ func (r *paginatingRows) fetchPage() error {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 
-		store, storeErr := c.newStoreBuilder().
-			SetContext(rctx).
-			SetSubspace(r.ss).
-			SetMetaDataProvider(c.cachedMetaData()).
-			// Revalidation must observe FDB, not a database-level state-cache
-			// entry that can outlive a non-cacheable store's state transition.
-			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
-			Open()
+		// One store per subspace per transaction, reused by every page
+		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
+		// store per page, because there each page IS a transaction.
+		store, storeErr := c.storeIn(rctx, r.tx, r.ss)
 		if storeErr != nil {
 			return nil, storeErr
 		}

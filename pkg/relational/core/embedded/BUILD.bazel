@@ -161,6 +161,7 @@ go_test(
         "tx_catalog_binding_test.go",
         "tx_execute_state_scope_test.go",
         "tx_page_row_budget_test.go",
+        "tx_store_cache_test.go",
         "unnest_element_later_from_item_test.go",
         "unnest_element_stays_untyped_test.go",
         "utilities_test.go",
@@ -292,6 +293,7 @@ go_test(
         "tx_cancelled_context_test.go",
         "tx_execute_state_scope_test.go",
         "tx_catalog_binding_test.go",
+        "tx_store_cache_test.go",
     ],
     deps = [
         "//gen",
