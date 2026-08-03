@@ -96,7 +96,7 @@ and the grouped SUM at `611-614`:
 
 The control table in the same file — same data, same deletes, no aggregate index
 — asserts the **correct** empty answer (`450-461`, `639-654`). The live ungrouped
-SUM case carries the root cause in a comment at `570-580`; note that the live
+SUM case carries the root cause in a comment at `572-580`; note that the live
 comment reads `# TODO (enhance SUM aggregate index…)` (lowercase, no `[POST]`),
 distinct from the `[POST] Enhance…` wording in the commented block at `612`.
 
@@ -213,6 +213,21 @@ stores built from the same DDL differ in stored bytes, reintroducing §4 by the
 back door. The name carries no semantic weight — matching is structural, so a
 companion created by an older binary under a different name still matches.
 
+**The reserved suffix is a user-visible DDL restriction, and Java has none.**
+This must be stated plainly rather than buried in the naming rule: `CREATE INDEX`
+begins rejecting a name Java's DDL accepts, which narrows the shared DDL surface
+rather than extending the read side. It is justified because the alternative is
+worse — without reservation, create-if-absent can collide with a pre-existing
+user index of the same derived name but different structure, and the failure
+surfaces at schema-creation time as a confusing duplicate-name error rather than
+at the point the user chose the name. The restriction applies at **`CREATE` only,
+never at load.** A schema that already contains an index whose name ends with the
+suffix — created by Java, or by an older Go binary — must open and read normally.
+That is forced by the rule two paragraphs up: matching is structural and the name
+carries no semantic weight, so a colliding name is inert at read time and there
+is nothing to reject. Rejecting at load would make this design able to render an
+existing Java-written schema unreadable, which no read-side extension may do.
+
 ### 5.3 The read path is a plan-visible operator
 
 The existence check **must not** live inside the aggregate-index cursor. A
@@ -287,10 +302,10 @@ this RFC was wrong to claim it was — it borrowed the `COUNT(*)` coalesce shape
 as evidence for SUM, which has no coalesce. Java's ungrouped SUM has the same
 defect family, visible in one file:
 
-- `aggregate-empty-table.yamsql:545-550` — `select sum(col1) from T1`, no
+- `aggregate-empty-table.yamsql:547-550` — `select sum(col1) from T1`, no
   aggregate index, emptied table, plan `SCAN([IS T1]) | … | ON EMPTY NULL |
   MAP (_._0._0 AS _0)` → `result: [{!null _}]`, i.e. **NULL**.
-- `aggregate-empty-table.yamsql:570-580` — `select sum(col1) from T2`, identical
+- `aggregate-empty-table.yamsql:577-580` — `select sum(col1) from T2`, identical
   data and deletes, SUM index `t2_i5`, plan `AISCAN(T2_I5 <,> BY_GROUP …)` →
   `result: [{0}]`, i.e. **0**.
 
@@ -308,7 +323,8 @@ So: ungrouped SUM is **out of scope because it is not index-backed**, not
 because it is correct by design. The test pins exactly that, and fails if the
 plan ever becomes index-backed. The moment it does, the companion rule must
 extend to the ungrouped case and an emptied table must yield NULL, not the
-stored 0, with `:545-550` vs `:570-580` as the oracle.
+stored 0, with `:547-550` vs `:577-580` as the oracle — the same two ranges the
+test's own failure message cites, so the two documents agree.
 
 (NOT root-caused: *why* the planner declines. `AggregateDataAccessRule` matches
 `*expressions.GroupByExpression` and the translator builds one even with zero
