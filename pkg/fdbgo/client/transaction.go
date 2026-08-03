@@ -734,7 +734,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return tx.mapTimeout(parentCtx, err)
@@ -753,8 +753,16 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
-		// clears it and the retry's GRV opens a new 5-second window.
-		tx.readVersionInstant = time.Now()
+		// clears it and the retry.s GRV opens a new 5-second window.
+		//
+		// The instant comes FROM the GRV, not from now(): for a proxy round
+		// trip it is the pre-RPC request time, and for a USE_GRV_CACHE hit it is
+		// when that cached version was originally obtained — up to
+		// maxVersionCacheLag ago. Stamping now() here instead made the anchor
+		// NEWER than the window it names, so a budget built on it under-counted
+		// the age and could let a nominally-in-budget page start against a
+		// version FDB was about to refuse with 1007.
+		tx.readVersionInstant = rvAt
 	}
 	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
 	// version below the smallest-seen floor (genuinely ancient) or an absurd
@@ -769,7 +777,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
 			// Bootstrap: fetch a version to establish the baseline.
 			flags := tx.grvFlags()
-			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err

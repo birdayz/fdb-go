@@ -26,7 +26,7 @@ func TestSetNextWriteNoWriteConflictRange(t *testing.T) {
 
 	// tx1: Set key1 with no-write-conflict, then key2 normally.
 	tx1 := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

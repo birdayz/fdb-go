@@ -52,16 +52,16 @@ type grvCache struct {
 // Matches C++ DatabaseContext::getConsistentReadVersion throttle checks. The
 // opt-in gate (USE_GRV_CACHE) is enforced by the CALLER (getReadVersion);
 // reaching here already implies the transaction opted in (RFC-104).
-func (c *grvCache) tryCache(priority uint32) (int64, bool) {
+func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	v := c.version.Load()
 	if v == 0 {
-		return 0, false
+		return 0, time.Time{}, false
 	}
 
 	now := time.Now().UnixNano()
 	lastTime := c.lastTime.Load()
 	if time.Duration(now-lastTime) > maxVersionCacheLag {
-		return 0, false // stale
+		return 0, time.Time{}, false // stale
 	}
 
 	// Check ratekeeper throttle cooldown for the requesting priority, matching C++
@@ -79,10 +79,13 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 		lastThrottle = c.lastRkDefault.Load()
 	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
-		return 0, false // throttled — must contact proxy
+		return 0, time.Time{}, false // throttled — must contact proxy
 	}
 
-	return v, true
+	// The instant is when this CACHED version was obtained, not now. Serving a
+	// version up to maxVersionCacheLag old while reporting "now" as its anchor
+	// would hand a budget the full window when most of it is already spent.
+	return v, time.Unix(0, lastTime), true
 }
 
 // update advances the cached version + freshness clock from a successful
@@ -259,6 +262,12 @@ type grvRequest struct {
 type grvResult struct {
 	version int64
 	locked  bool // database-locked flag from the GRV reply (RFC-096)
+	// instant is when this version.s MVCC window opened, as nearly as the
+	// client can know it: the PRE-RPC request time, never the reply time. It
+	// is a lower bound — the proxy assigned the version at or after we asked —
+	// and erring early is the safe direction, because a budget built on it
+	// then expires sooner than FDB.s window rather than later.
+	instant time.Time
 	err     error
 }
 
@@ -267,7 +276,7 @@ type grvResult struct {
 // cache entry) — the per-transaction lock check happens at the consumption
 // site (the C++ extractReadVersion analog), NOT here: one batched reply
 // fans out to transactions with different lock-awareness.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32, span types.SpanContext, useGrvCache, skipGrvCache bool) (int64, bool, error) {
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32, span types.SpanContext, useGrvCache, skipGrvCache bool) (int64, bool, time.Time, error) {
 	// Fast path: serve from cache ONLY when the transaction opted in
 	// (USE_GRV_CACHE, default off — RFC-104). C++ gate NativeAPI.actor.cpp:7503-7517:
 	//   (debugChance || useGrvCache) && rkThrottlingCooledDown(cx, priority)
@@ -321,9 +330,9 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 				go b.backgroundRefresher(db) // does its own db.wg.Done() on exit
 			})
 		}
-		if v, ok := db.grvCache.tryCache(b.priority); ok {
+		if v, at, ok := db.grvCache.tryCache(b.priority); ok {
 			db.metrics.countGRVCacheHit()
-			return v, false, nil
+			return v, false, at, nil
 		}
 	}
 
@@ -339,9 +348,9 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 
 	select {
 	case result := <-req.reply:
-		return result.version, result.locked, result.err
+		return result.version, result.locked, result.instant, result.err
 	case <-ctx.Done():
-		return 0, false, ctx.Err()
+		return 0, false, time.Time{}, ctx.Err()
 	}
 }
 
@@ -442,7 +451,7 @@ func (b *grvBatcher) flush(db *database) {
 		}
 	}()
 
-	result := grvResult{version: version, locked: locked, err: err}
+	result := grvResult{version: version, locked: locked, instant: requestTime, err: err}
 	for _, req := range batch {
 		req.reply <- result
 	}

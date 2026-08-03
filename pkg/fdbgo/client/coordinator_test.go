@@ -139,7 +139,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try GRV — GetReadVersion from the GRV proxy
 	t.Log("Attempting GetReadVersion...")
-	version, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	version, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Logf("GetReadVersion: %v", err)
 	} else {
@@ -173,7 +173,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 		// Write via Go client.
 		writeTx := db.CreateTransaction()
-		rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+		rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 		if err != nil {
 			t.Fatalf("GRV for write: %v", err)
 		}
@@ -202,7 +202,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 		// Also verify via Go client read.
 		readTx := db.CreateTransaction()
-		rv2, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+		rv2, _, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 		readTx.readVersion = rv2
 		readTx.hasReadVersion = true
 		val2, err := readTx.getValue(ctx, []byte("go_native_key"))
@@ -240,7 +240,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		tx1 := db.CreateTransaction()
 		tx2 := db.CreateTransaction()
 		// Both get the same read version.
-		sharedRV, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+		sharedRV, _, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 		tx1.readVersion = sharedRV
 		tx1.hasReadVersion = true
 		tx2.readVersion = sharedRV
