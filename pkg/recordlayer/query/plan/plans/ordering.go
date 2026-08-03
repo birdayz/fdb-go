@@ -55,6 +55,43 @@ import (
 // is where a transcription slip would land, and the parity tests in
 // cascades/plan_rich_ordering_parity_test.go are what hold them honest in the
 // meantime.
+//
+// WHICH PRODUCERS ASK THE ORDERING-CLAIM PREDICATE
+//
+// A producer's claim is that the PHYSICAL order it hands rows back in equals
+// the LOGICAL order the comparator imposes. For a FLOAT/DOUBLE coordinate those
+// two differ (values/ordering_claim.go), so a producer whose order comes from
+// FDB KEY layout has to ask. This is enumerated rather than counted, because a
+// count is what rots first — and because the sentence this replaces ("every
+// derivation routes through it") was false about two of them while they were
+// returning wrong rows.
+//
+//   - ASK, because their order IS the tuple-key order:
+//     RecordQueryScanPlan.HintOrdering (via PKScanOrdering),
+//     RecordQueryIndexPlan.HintOrdering, both of their HintRichOrdering forms,
+//     RecordQueryStreamingAggregationPlan.HintOrdering and
+//     RecordQueryAggregateIndexPlan.HintOrdering. The last two claim GROUP
+//     order, which is the group column's key order and therefore the same
+//     hazard one level up.
+//
+//   - DOES NOT ASK, and must not: RecordQueryInMemorySortPlan.HintOrdering. It
+//     restates the keys it sorted BY, with the comparator. Its claim is true by
+//     construction and truncating it would delete the one plan that repairs
+//     the others.
+//
+//   - DO NOT ASK, because a float cannot reach them:
+//     RecordQueryMergeSortUnionPlan, RecordQueryIntersectionPlan,
+//     RecordQueryInUnionPlan and RecordQueryMultiIntersectionOnValuesPlan all
+//     restate a COMPARISON KEY they were built with, and a comparison key is
+//     derived from the legs' provided orderings — which now terminate at the
+//     float, so no common ordering containing one exists and the merge is never
+//     built. That is an EMERGENT property, not a guard, so it is pinned rather
+//     than asserted: embedded_test.TestFloatNeverReachesAMergeComparisonKey
+//     shows the identical shape still building an Intersection over an INTEGER
+//     coordinate and falling back to a materialized sort over a DOUBLE one.
+//
+//   - Produce no ordering at all: every body under "--- unordered ---" below,
+//     and RecordQueryVectorIndexPlan.HintRichOrdering.
 
 // orderingSourceOf returns the reference a single-child plan's ordering flows
 // from — its one child quantifier's group.
@@ -426,6 +463,18 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	// not its logical order (a FLOAT/DOUBLE primary-key column — see
 	// keyCanExtendOrderingClaim). A float PK is reachable: `PRIMARY KEY (e)`
 	// with e DOUBLE makes the scan itself claim an order it does not deliver.
+	//
+	// This truncation is NOT what keeps the sort on such a query, and saying so
+	// matters because it decides where the test has to live. MEASURED: deleting
+	// this line leaves every plan-shape assertion in
+	// embedded_test.TestFloatPrimaryKeyScanClaimsNoOrder green — SQL sort
+	// elision on the primary-key path is decided by OrderedPrimaryScanRule's
+	// decline. What this line protects is the OTHER consumer of PKScanOrdering:
+	// plan partitioning (expression_partition.go's orderingsEqual) and the cost
+	// model, which would otherwise co-partition scans that deliver different
+	// orders. Its own coverage is therefore direct, at this level —
+	// TestPKScanOrdering_FloatPKColumnTerminatesTheClaim — rather than borrowed
+	// from a plan-shape test that would stay green without it.
 	keys = keys[:claimableKeyLimit(plan.GetFlowedType(), keys)]
 	if len(keys) == 0 {
 		return properties.Ordering{}
@@ -488,10 +537,15 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 }
 
 // columnCanExtendOrderingClaim / keyCanExtendOrderingClaim are the plans-side
-// door to the ONE ordering-claim predicate (values.TypeTerminatesOrderingClaim).
-// Every derivation in this file that turns a key-column sequence into an
-// ordering claim routes through them, so none can classify a column
-// differently from its sibling.
+// door to the ONE ordering-claim predicate (values.TypeTerminatesOrderingClaim),
+// so no two derivations can classify the same column differently.
+//
+// An earlier revision said "EVERY derivation in this file that turns a
+// key-column sequence into an ordering claim routes through them". It did not,
+// and the gap was not academic: the two AGGREGATE producers never asked, and
+// `SELECT d, SUM(a) FROM t GROUP BY d ORDER BY d` returned the negative-NaN
+// group FIRST on a real cluster. Which producer asks, and why the rest need
+// not, is enumerated in this file's header.
 //
 // The rule they enforce: an ordering claim TERMINATES at a coordinate whose
 // physical FDB key order is not its logical order. For FLOAT/DOUBLE that is
@@ -541,6 +595,27 @@ func claimableKeyLimit(layout values.Type, keys []values.Value) int {
 // claimableNameLimit is claimableKeyLimit over metadata column names.
 func claimableNameLimit(layout values.Type, names []string) int {
 	return values.ClaimableOrderingPrefix(layout, names)
+}
+
+// claimableTypedKeyLimit is claimableKeyLimit for keys that carry their OWN
+// declared type, with no flowed layout to resolve against.
+//
+// It cannot go through keyCanExtendOrderingClaim: that one resolves a flat
+// FieldValue by NAME against the layout, because a scan's ordering keys are
+// minted with UnknownType and the layout is the only authority. A grouping key
+// arrives from the translator already typed, and there is no layout — so
+// routing it through the name path with a nil layout would ask a question that
+// always answers "not a float" and would silently claim every ordering.
+func claimableTypedKeyLimit(keys []values.Value) int {
+	for i, k := range keys {
+		if k == nil {
+			continue
+		}
+		if values.TypeTerminatesOrderingClaim(k.Type()) {
+			return i
+		}
+	}
+	return len(keys)
 }
 
 // orderingColumnOfName mints an ordering key for a METADATA column name
@@ -773,11 +848,28 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) outputColumnNames() []string 
 // unsatisfied — a spurious second InMemorySort above the aggregate; an
 // evaluating consumer (a merge comparison key) would also have read the
 // aggregate's output row with a dead pre-aggregate ordinal.
+// A grouping key that TERMINATES the ordering claim truncates it here exactly
+// as it does on an index scan, and for the same reason: a streaming
+// aggregation emits its groups in the order its input hands them over, so a
+// FLOAT/DOUBLE grouping key means the groups come out in tuple-key order, with
+// a negative-NaN group physically FIRST and logically LAST.
+//
+// The truncation is asked of the same authority the scan producers ask
+// (values.TypeTerminatesOrderingClaim, via claimableKeyLimit) because the
+// grouping keys are Values that already carry their declared type. This plan
+// does NOT inherit the decision from its inner: StreamingAggFromIndexRule
+// builds it by matching grouping keys against index column NAMES and never
+// reads the inner's ordering claim at all, so terminating the inner scan's
+// claim does not reach this producer.
 func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering {
 	if p == nil || len(p.GetGroupingKeys()) == 0 {
 		return properties.Ordering{IsKnown: false}
 	}
 	groupKeys := p.GetGroupingKeys()
+	groupKeys = groupKeys[:claimableTypedKeyLimit(groupKeys)]
+	if len(groupKeys) == 0 {
+		return properties.Ordering{IsKnown: false}
+	}
 	outputNames := p.OutputColumnNames()
 	domain := values.OrdinalDomainOfColumnNames(outputNames)
 	keys := make([]values.Value, len(groupKeys))
@@ -795,11 +887,26 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 }
 
 // HintOrdering: an aggregate index is stored grouped, so it emits one row per
-// group in group-column order.
+// group in group-column KEY order — which is the group's VALUE order only for
+// coordinates whose tuple encoding is order-preserving under the comparator.
+// The claim is therefore truncated at the first FLOAT/DOUBLE grouping column,
+// by the same authority every other producer here asks: a negative-NaN group
+// is the physically first row and the logically last one, and the NaN groups
+// form one tie class split across two disjoint physical ranges, so no later
+// grouping column is ordered within it either.
+//
+// The grouping columns are NAMES, so answering this needs a layout — carried
+// as groupColLayout from the match candidate's base record type. With none
+// (a multi-record-type index), the predicate's fail-open direction applies and
+// the claim stands, exactly as it does for an untyped index scan.
 func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	groupCols := p.GetGroupCols()
 	if len(groupCols) == 0 {
 		return properties.Ordering{IsKnown: true}
+	}
+	groupCols = groupCols[:claimableNameLimit(p.GetGroupColumnLayout(), groupCols)]
+	if len(groupCols) == 0 {
+		return properties.Ordering{IsKnown: false}
 	}
 	// Grouping column i IS slot i of the row this plan flows
 	// ([groupCols..., FUNC(col)] — aggregateIndexCursor's layout, named by

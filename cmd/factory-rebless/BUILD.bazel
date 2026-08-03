@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "factory-rebless_lib",
@@ -9,6 +9,7 @@ go_library(
         "//pkg/relational/conformance/explaindiff",
         "//pkg/relational/conformance/factory",
         "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
     ],
 )
@@ -17,4 +18,16 @@ go_binary(
     name = "factory-rebless",
     embed = [":factory-rebless_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "factory-rebless_test",
+    srcs = ["main_test.go"],
+    # keep: the tests build their fixtures from real committed family files —
+    # a synthetic one cannot be used, because the tool regenerates each
+    # scenario's candidate from its header recipe and verifies the whole
+    # reproduction recipe against it.
+    data = ["//pkg/relational/conformance/factorycorpus:testdata"],
+    embed = [":factory-rebless_lib"],
+    deps = ["//pkg/relational/conformance/factorycorpus"],
 )

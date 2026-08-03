@@ -1479,15 +1479,48 @@ negative-NaN disagreement Go had.
 
 **What Go does.** `values.TypeTerminatesOrderingClaim` /
 `ColumnCanExtendOrderingClaim` / `ClaimableOrderingPrefix`
-(`cascades/values/ordering_claim.go`) are the ONE predicate; every ordering-claim
-producer asks it: `plans/ordering.go`'s four derivations (`PKScanOrdering`,
-`RecordQueryIndexPlan.HintOrdering`, and both `HintRichOrdering`), both match
-candidates' `ComputeMatchedOrderingParts`, and both sort-elision rules
-(`rule_ordered_index_scan.go`, `rule_ordered_primary_scan.go`, which previously
-name-matched sort keys against column names without consulting any
-ordering-capability machinery at all). An equality-bound float prefix column is
-exempt: a fixed binding pins one physical point and claims no order, so columns
-after it stay claimable.
+(`cascades/values/ordering_claim.go`) are the ONE predicate. The producers that
+ask it, enumerated rather than counted:
+
+- `plans/ordering.go`: `PKScanOrdering` (behind
+  `RecordQueryScanPlan.HintOrdering`), `RecordQueryIndexPlan.HintOrdering`, both
+  of their `HintRichOrdering` forms, and — the two AGGREGATE producers —
+  `RecordQueryStreamingAggregationPlan.HintOrdering` and
+  `RecordQueryAggregateIndexPlan.HintOrdering`;
+- both match candidates' `ComputeMatchedOrderingParts`
+  (`match_candidate_index.go`, `primary_scan_match_candidate.go`);
+- both sort-elision rules (`rule_ordered_index_scan.go`,
+  `rule_ordered_primary_scan.go`), which previously name-matched sort keys
+  against column names without consulting any ordering-capability machinery at
+  all.
+
+**Correction — an earlier revision of this paragraph said "every ordering-claim
+producer asks it: `plans/ordering.go`'s four derivations".** It was false in the
+way this repo's failure mode always is: it asserted an invariant the code did
+not have. The two aggregate producers above did not ask, and the omission was
+not theoretical — MEASURED on a real cluster,
+`SELECT d, SUM(a) FROM t GROUP BY d ORDER BY d` with `d DOUBLE` returned the
+negative-NaN group FIRST from both a `StreamingAgg` over an ordered index scan
+and a direct aggregate-index read, while the unindexed oracle returned it last.
+The streaming-aggregation case is NOT derivative of the inner scan:
+`StreamingAggFromIndexRule` matches grouping keys against index column NAMES and
+never reads the inner's ordering claim, so terminating the scan leaves the
+aggregate stating the same false order. Pinned by
+`TestFDB_FloatOrderingClaim_Aggregate_Differential`.
+
+The remaining producers in that file do not ask, and the reason each does not is
+stated at the head of `plans/ordering.go` rather than left to be assumed.
+`RecordQueryInMemorySortPlan` restates what it sorted BY, with the comparator.
+The four merge-set producers (`MergeSortUnion`, `Intersection`, `InUnion`,
+`MultiIntersectionOnValues`) restate a COMPARISON KEY derived from their legs'
+provided orderings — and those now terminate at the float, so no common ordering
+containing one exists and the merge is never built. That is EMERGENT, so it is
+pinned rather than asserted: `TestFloatNeverReachesAMergeComparisonKey` shows
+the identical shape still intersecting over an INTEGER coordinate and falling
+back to a materialized sort over a DOUBLE one.
+
+An equality-bound float prefix column is exempt: a fixed binding pins one
+physical point and claims no order, so columns after it stay claimable.
 
 The predicate is only as good as the layout it reads, and that layout was half
 blind. `executor.PositionalTypeForDescriptor` — the single authority for a
@@ -1511,11 +1544,31 @@ RFC-201 factory determinism check under each half of the change separately:
 | off | off | 0 (baseline) |
 | on  | off | 0 — the fix cannot fire without the types |
 | off | on  | 0 — typing the layout changes nothing on its own |
-| on  | on  | 18 |
+| on  | on  | 9 |
 
 The third row is the load-bearing one: filling in a layout's field types is the
 kind of change that could plausibly perturb any type-directed decision in the
-engine, and across the corpus it perturbs none. Every one of the 18 is the
-ordering-claim termination landing on an index whose key columns include the
-DOUBLE or FLOAT column, which is the intended behaviour change. They are
-re-blessed through the factory, never edited in place.
+engine, and across the corpus it perturbs none.
+
+The last row is **9 files / 27 scenarios**, re-enumerated from scratch against
+master by regenerating every committed header and comparing. Every one of the 27
+is an `ORDER BY <float column>[ NULLS FIRST], id` — the ordering-claim
+termination landing on an index whose key columns include the `DOUBLE` or
+`FLOAT` column, which is the intended behaviour change.
+
+**"18 files" stood here as a MEASURED figure and is retracted.** It was a true
+measurement of an EARLIER, over-broad revision of the fix, which also terminated
+the claim on equality-bound floats and drifted 57 scenarios — 30 of them plan
+REGRESSIONS with correct rows. It was never a measurement of what shipped. The
+retraction previously lived only in
+`factorycorpus/RETIREMENT_LEDGER.md`, which is not where a reader of this table
+would find it, so the number is corrected where it stands.
+
+Extending the termination to the two AGGREGATE producers drifts the corpus by a
+further **0 scenarios** — MEASURED, all 5000 headers re-derived, none moved. No
+committed factory scenario groups by a float, so the corpus never exercised
+either aggregate producer; that is a gap in the corpus, not evidence the
+producers were sound, and it is why the aggregate proof is an FDB differential
+rather than a corpus entry.
+
+Scenarios are re-blessed through the factory, never edited in place.

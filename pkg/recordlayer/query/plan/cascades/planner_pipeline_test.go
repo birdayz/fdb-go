@@ -377,6 +377,7 @@ func TestPipeline_AggregateIndex(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
+		values.UnknownType,
 	)
 
 	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
@@ -405,6 +406,7 @@ func TestPipeline_AggregateIndexSUM(t *testing.T) {
 		[]string{"REGION"},
 		expressions.AggSum,
 		"AMOUNT",
+		values.UnknownType,
 	)
 
 	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
@@ -436,6 +438,7 @@ func TestPipeline_AggregateIndexMAX(t *testing.T) {
 		[]string{"CATEGORY"},
 		expressions.AggMax,
 		"PRICE",
+		values.UnknownType,
 	)
 
 	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
@@ -464,6 +467,7 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
+		values.UnknownType,
 	)
 
 	rootRef := expressions.InitialOf(groupBy)
@@ -507,6 +511,7 @@ func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
+		values.UnknownType,
 	)
 
 	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
@@ -535,6 +540,7 @@ func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
+		values.UnknownType,
 	)
 
 	regularIdx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_status", "STATUS")})

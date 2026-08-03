@@ -191,3 +191,71 @@ func TestRecordQueryScanPlan_HintOrdering_DelegatesToPKScanOrdering(t *testing.T
 		t.Fatalf("HintOrdering() = %#v, want PKScanOrdering() = %#v", got, want)
 	}
 }
+
+// TestPKScanOrdering_FloatPKColumnTerminatesTheClaim covers PKScanOrdering's
+// ordering-claim truncation DIRECTLY.
+//
+// It is tested here, at this level, because SQL does not reach it. MEASURED:
+// deleting the truncation from PKScanOrdering leaves every plan-shape
+// assertion in embedded_test.TestFloatPrimaryKeyScanClaimsNoOrder green — the
+// sort those queries keep is kept by OrderedPrimaryScanRule's decline, which
+// is the guard that actually decides SQL sort elision on the primary-key path.
+//
+// That does NOT make this one dead. PKScanOrdering is also what plan
+// PARTITIONING compares (expression_partition.go's orderingsEqual) and what the
+// cost model reads, so an unsound claim here co-partitions plans that deliver
+// different orders — a defect with no SQL-visible symptom today and every
+// reason to acquire one. An untested guard is a guard that gets deleted green,
+// so it gets its own test rather than borrowing another's coverage.
+func TestPKScanOrdering_FloatPKColumnTerminatesTheClaim(t *testing.T) {
+	t.Parallel()
+	// The LAYOUT is the authority for a flat key's type — the keys themselves
+	// are minted with UnknownType on this path — so the float has to be
+	// declared there or the guard is asked a question it cannot answer.
+	layout := values.NewRecordType("P", false, []values.Field{
+		{Name: "G", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "E", FieldType: values.NullableDouble, Ordinal: 1},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	g := &values.FieldValue{Field: "G", Typ: values.UnknownType}
+	e := &values.FieldValue{Field: "E", Typ: values.UnknownType}
+	v := &values.FieldValue{Field: "V", Typ: values.UnknownType}
+
+	t.Run("float in the middle truncates everything after it", func(t *testing.T) {
+		t.Parallel()
+		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+			WithPrimaryKey([]values.Value{g, e, v})
+		got := PKScanOrdering(plan)
+		if !got.IsKnown || len(got.Keys) != 1 {
+			t.Fatalf("PKScanOrdering(PK = G, E DOUBLE, V) = %#v, want exactly [G]. A DOUBLE "+
+				"primary-key column is visited in FDB tuple order, where a negative NaN "+
+				"comes FIRST and the comparator ranks it GREATEST; and because every NaN is "+
+				"one logical tie class split across two disjoint physical blocks, V is not "+
+				"ordered within that tie either", got)
+		}
+	})
+
+	t.Run("float first claims nothing at all", func(t *testing.T) {
+		t.Parallel()
+		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+			WithPrimaryKey([]values.Value{e, g})
+		got := PKScanOrdering(plan)
+		if got.IsKnown {
+			t.Fatalf("PKScanOrdering(PK = E DOUBLE, G) = %#v, want an UNKNOWN ordering: the "+
+				"leading coordinate is the one that is misordered", got)
+		}
+	})
+
+	t.Run("an all-integer primary key keeps its full claim", func(t *testing.T) {
+		t.Parallel()
+		// The control. Without it, a truncation that returned nothing for every
+		// primary key would satisfy both cases above.
+		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+			WithPrimaryKey([]values.Value{g, v})
+		got := PKScanOrdering(plan)
+		if !got.IsKnown || len(got.Keys) != 2 {
+			t.Fatalf("PKScanOrdering(PK = G, V, both BIGINT) = %#v, want both keys claimed; "+
+				"the float terminates the claim, it does not delete it", got)
+		}
+	})
+}

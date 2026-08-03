@@ -19,8 +19,18 @@ ledgers, a different instrument), so this file is the home.
 
 ## Float-leading ORDER BY loses its sort elision — CORRECTNESS CHANGE
 
-**Retired: 27 scenarios across 9 plan points (9 candidates × 3 projections),
-in 9 family files. Result rows: UNCHANGED.**
+**Retired: 27 scenarios — 9 candidates × 3 projections — across 9 family files.
+Result rows: UNCHANGED.**
+
+(An earlier revision of this line called those 9 candidates "9 plan points".
+That is wrong, and the two are not interchangeable: a plan point is a
+`(feature vector, plan shape)` pair, which is exactly what the dedup key
+digests, and the three projections of one candidate carry three DIFFERENT
+feature vectors — `proj=star`, `proj=n1`, `proj=n5`. So the 27 scenarios are
+**27 distinct plan points**, held by 9 candidates. Counted, not reasoned:
+re-deriving every committed header against master yields 27 drifted scenarios
+with 27 distinct dedup keys over 9 distinct `(seed, query index)` candidates in
+9 files.)
 
 ### What the old plan claimed
 
@@ -106,9 +116,13 @@ Plan-shape assertions covering the same ground without a cluster:
 Ordering claims were built from index column-name sequences with **no
 consultation of column type at all**:
 
-- the four ordering producers in `pkg/recordlayer/query/plan/plans/ordering.go`
-  (`PKScanOrdering`, `RecordQueryIndexPlan.HintOrdering`, and both
-  `HintRichOrdering` forms);
+- the scan-side ordering producers in
+  `pkg/recordlayer/query/plan/plans/ordering.go` (`PKScanOrdering`,
+  `RecordQueryIndexPlan.HintOrdering`, and both `HintRichOrdering` forms) —
+  and the two AGGREGATE producers,
+  `RecordQueryStreamingAggregationPlan.HintOrdering` and
+  `RecordQueryAggregateIndexPlan.HintOrdering`, which an earlier revision of
+  this list omitted while claiming the four were all of them;
 - both match candidates' `ComputeMatchedOrderingParts`
   (`match_candidate_index.go`, `primary_scan_match_candidate.go`);
 - and the two sort-elision rules (`rule_ordered_index_scan.go`,
@@ -169,14 +183,24 @@ recipe and its plan shape recomputed, with and without the change applied, and
 the two dumps compared. With the change reverted, all 5000 committed digests
 reproduce exactly — so the change is the sole cause of the drift.
 
-| set | scenarios | files | candidates |
-|---|---|---|---|
-| retired here | 27 | 9 | 9 |
+| set | scenarios | plan points (distinct dedup keys) | files | candidates |
+|---|---|---|---|---|
+| retired here | 27 | 27 | 9 | 9 |
 
 Two other figures circulated while this was in flight. "18 drifting files" was a
 true measurement of the *earlier, over-broad* 57-scenario drift and is
-superseded. "36 scenarios across 12 plan points" could not be reproduced against
-either state and is not adopted.
+superseded; it also shipped as a MEASURED row in `DIVERGENCES.md`'s scope table,
+where it has now been corrected to 9 rather than left to be found here.
+"36 scenarios across 12 plan points" could not be reproduced against either
+state and is not adopted.
+
+**Extending the termination to the two AGGREGATE producers retires NOTHING
+further.** Re-derived from scratch after that change: 0 drifted scenarios of
+5000. No committed factory scenario groups by a float, so the corpus never
+exercised either aggregate producer — which is why their proof is an FDB
+differential (`TestFDB_FloatOrderingClaim_Aggregate_Differential`) and not a
+corpus entry. A corpus that would have caught them is a separate gap, recorded
+here so it is not mistaken for a clean bill of health.
 
 Rows were verified unchanged empirically, not by argument:
 `//pkg/relational/conformance/factorycorpus/full:full_test` executes every

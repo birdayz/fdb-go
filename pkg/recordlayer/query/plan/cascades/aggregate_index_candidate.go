@@ -26,6 +26,21 @@ type AggregateIndexMatchCandidate struct {
 	aggFunction expressions.AggregateFunction
 	aggColumn   string
 	aliases     []values.CorrelationIdentifier
+	// baseRowType is the DECLARED layout of the record type this index is built
+	// over — the descriptor-shaped positional type, from the one authority
+	// (executor.PositionalTypeForDescriptor / values.FieldTypeForProtoField).
+	//
+	// It exists so the grouping columns, which the candidate otherwise knows
+	// only as NAMES, can be asked whether they may extend an ordering claim. An
+	// aggregate index is stored grouped, so the plan over it advertises group
+	// order — and a FLOAT/DOUBLE group column does not deliver one (see
+	// values/ordering_claim.go). Without a layout that question has no true
+	// answer, which is how the claim was stated unconditionally.
+	//
+	// UnknownType when the index serves more than one record type, or none with
+	// a descriptor: no single declared layout exists, and the claim then falls
+	// back to the fail-open direction the predicate documents.
+	baseRowType values.Type
 
 	traversalOnce sync.Once
 	traversal     *Traversal
@@ -33,17 +48,23 @@ type AggregateIndexMatchCandidate struct {
 
 // NewAggregateIndexMatchCandidate creates a candidate for an aggregate
 // index. groupCols are the grouping key columns; aggFunction + aggColumn
-// describe the pre-computed aggregate.
+// describe the pre-computed aggregate; baseRowType is the declared layout the
+// grouping-column names resolve against (values.UnknownType when there is no
+// single one).
 func NewAggregateIndexMatchCandidate(
 	indexName string,
 	recordTypes []string,
 	groupCols []string,
 	aggFunction expressions.AggregateFunction,
 	aggColumn string,
+	baseRowType values.Type,
 ) *AggregateIndexMatchCandidate {
 	aliases := make([]values.CorrelationIdentifier, len(groupCols))
 	for i := range aliases {
 		aliases[i] = values.UniqueCorrelationIdentifier()
+	}
+	if baseRowType == nil {
+		baseRowType = values.UnknownType
 	}
 	return &AggregateIndexMatchCandidate{
 		indexName:   indexName,
@@ -52,8 +73,13 @@ func NewAggregateIndexMatchCandidate(
 		aggFunction: aggFunction,
 		aggColumn:   aggColumn,
 		aliases:     aliases,
+		baseRowType: baseRowType,
 	}
 }
+
+// GetBaseRowType returns the declared layout the grouping-column names resolve
+// against, or values.UnknownType when the index has no single one.
+func (c *AggregateIndexMatchCandidate) GetBaseRowType() values.Type { return c.baseRowType }
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 

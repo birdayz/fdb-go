@@ -101,7 +101,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		aggPlan := plans.NewRecordQueryAggregateIndexPlan(
 			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
-		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn)
+		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
+			WithGroupColumnLayout(aggCand.GetBaseRowType())
 
 		// The aggregate-index plan is its own cascades expression now (RFC-184 W2).
 		call.Yield(aggPlan)
@@ -399,7 +400,8 @@ func tryMultiAggregateIntersection(
 		}
 		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
 			idxPlan, recordTypeName, values.UnknownType, mc.aggFunction.String(),
-		).WithGroupColumns(mc.groupCols, mc.aggColumn)
+		).WithGroupColumns(mc.groupCols, mc.aggColumn).
+			WithGroupColumnLayout(mc.GetBaseRowType())
 	}
 
 	// Comparison key = grouping column FieldValues. The aggregate-index

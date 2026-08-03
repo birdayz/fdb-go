@@ -287,3 +287,195 @@ func TestZeroFloatEqualityStillTerminatesTheClaim(t *testing.T) {
 		})
 	}
 }
+
+// mergeKeySchema carries two coordinates that differ ONLY in type — an INTEGER
+// `c` and a DOUBLE `d` — each indexed twice, once behind `a` and once behind
+// `b`. `WHERE a = ? AND b = ?` is the shape that makes the planner intersect
+// two index scans on their common ordering.
+const mergeKeySchema = `CREATE TABLE t3 (
+	id BIGINT,
+	a BIGINT,
+	b BIGINT,
+	c BIGINT,
+	d DOUBLE,
+	PRIMARY KEY (id)
+)
+CREATE INDEX t3_ac ON t3 (a, c)
+CREATE INDEX t3_bc ON t3 (b, c)
+CREATE INDEX t3_ad ON t3 (a, d)
+CREATE INDEX t3_bd ON t3 (b, d)`
+
+func mergeKeyExplain(t *testing.T, sql string) string {
+	t.Helper()
+	plan, err := embedded.PlanPhysicalForTest(sql, mergeKeySchema, nil)
+	if err != nil {
+		t.Fatalf("planning %q: %v", sql, err)
+	}
+	return plan.Explain()
+}
+
+// TestFloatNeverReachesAMergeComparisonKey pins the EMERGENT property that
+// plans/ordering.go's header rests on when it says the four merge-set ordering
+// producers (MergeSortUnion, Intersection, InUnion, MultiIntersectionOnValues)
+// need not ask the ordering-claim predicate.
+//
+// Those producers restate a COMPARISON KEY they were built with, and a merge
+// over tuple-encoded bytes has exactly the defect the predicate exists for: a
+// negative NaN sorts first physically and last logically. They are safe only
+// because a float can never BECOME a comparison key — the key is derived from
+// the legs' provided orderings, and those now terminate at the float, so no
+// common ordering containing one exists.
+//
+// That is a property of the whole planner, not a check at any one site, so
+// asserting it in a comment is worth nothing. It is asserted here instead, and
+// asserted as a CONTRAST: the integer case proves the shape really does build
+// an intersection, so the float case failing to build one is the termination
+// doing it rather than the query being unintersectable. Without the integer
+// control this test would pass over a schema that never intersects at all.
+func TestFloatNeverReachesAMergeComparisonKey(t *testing.T) {
+	t.Parallel()
+
+	// Control: an INTEGER coordinate. Its key order IS its value order, the
+	// legs both claim it, and the intersection forms with the sort elided.
+	for _, sql := range []string{
+		"SELECT id FROM t3 WHERE a = 1 AND b = 2 ORDER BY c",
+		"SELECT id FROM t3 WHERE a = 1 AND b = 2 ORDER BY c, id",
+	} {
+		t.Run("integer_coordinate_still_intersects", func(t *testing.T) {
+			t.Parallel()
+			explain := mergeKeyExplain(t, sql)
+			if !strings.Contains(explain, "Intersection") {
+				t.Fatalf("%s\n\nno Intersection formed over an INTEGER coordinate. The float "+
+					"assertions below are then vacuous — they would hold over a schema that "+
+					"cannot intersect at all.\n\nplan: %s", sql, explain)
+			}
+			if strings.Contains(explain, "Sort") {
+				t.Fatalf("%s\n\nthe INTEGER intersection did not elide its sort, so the "+
+					"contrast this test draws is not the one it claims.\n\nplan: %s", sql, explain)
+			}
+		})
+	}
+
+	// The same shape over a DOUBLE. No leg can claim `d`'s order, so there is
+	// no common ordering to merge on and the sort must be materialized.
+	for _, sql := range []string{
+		"SELECT id FROM t3 WHERE a = 1 AND b = 2 ORDER BY d",
+		"SELECT id FROM t3 WHERE a = 1 AND b = 2 ORDER BY d, id",
+	} {
+		t.Run("double_coordinate_does_not", func(t *testing.T) {
+			t.Parallel()
+			explain := mergeKeyExplain(t, sql)
+			if strings.Contains(explain, "Intersection") {
+				t.Fatalf("%s\n\nan Intersection formed on a DOUBLE comparison key. The merge "+
+					"compares tuple-encoded bytes, so it would interleave the two legs by "+
+					"KEY order — a negative NaN merged first where the comparator ranks it "+
+					"GREATEST. The merge-set producers do not ask the ordering-claim "+
+					"predicate BECAUSE this cannot happen; it just did.\n\nplan: %s",
+					sql, explain)
+			}
+			if !strings.Contains(explain, "Sort") {
+				t.Fatalf("%s\n\nthe DOUBLE-ordered query kept no materialized sort, so some "+
+					"access path is still claiming to deliver a float's order.\n\nplan: %s",
+					sql, explain)
+			}
+		})
+	}
+}
+
+// floatPKSchema is a table whose PRIMARY KEY IS the float — one line of DDL,
+// which is the whole point of this test's existence.
+const floatPKSchema = `CREATE TABLE p (
+	e DOUBLE,
+	v BIGINT,
+	PRIMARY KEY (e)
+)`
+
+// floatPKSuffixSchema puts the float SECOND in a compound primary key, so the
+// claim has something legitimate to keep before it terminates.
+const floatPKSuffixSchema = `CREATE TABLE q (
+	g BIGINT,
+	e DOUBLE,
+	v BIGINT,
+	PRIMARY KEY (g, e)
+)`
+
+// TestFloatPrimaryKeyScanClaimsNoOrder covers the PRIMARY-KEY half of the
+// ordering-claim termination — PKScanOrdering's truncation and
+// OrderedPrimaryScanRule's decline — which every other test in this file
+// reaches only through an INDEX.
+//
+// It exists because that guard was live, load-bearing and completely uncovered:
+// every schema in this package's float tests declares `PRIMARY KEY (id)` over a
+// BIGINT, so no assertion anywhere reached a float primary key. A guard nothing
+// exercises is a guard that can be deleted green.
+//
+// A float primary key is reachable through ordinary DDL — `PRIMARY KEY (e)`
+// with `e DOUBLE` is accepted and plans — so this is not a defensive arm
+// against an impossible schema.
+func TestFloatPrimaryKeyScanClaimsNoOrder(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, schema, sql string
+		// wantSort is the sort that must survive; "" means the sort must be
+		// elided instead (the positive control).
+		wantSort string
+	}{{
+		name:     "float is the whole primary key",
+		schema:   floatPKSchema,
+		sql:      "SELECT v FROM p ORDER BY e",
+		wantSort: "InMemorySort([E ASC]",
+	}, {
+		name:     "float primary key, descending",
+		schema:   floatPKSchema,
+		sql:      "SELECT v FROM p ORDER BY e DESC",
+		wantSort: "InMemorySort([E DESC]",
+	}, {
+		name:     "float in the primary key suffix",
+		schema:   floatPKSuffixSchema,
+		sql:      "SELECT v FROM q ORDER BY g, e",
+		wantSort: "InMemorySort([G ASC, E ASC]",
+	}, {
+		// The float is the leading SORTED coordinate once g is equality-bound,
+		// so the claim terminates immediately and the sort survives.
+		name:     "float behind an equality-bound primary key column",
+		schema:   floatPKSuffixSchema,
+		sql:      "SELECT v FROM q WHERE g = 1 ORDER BY e",
+		wantSort: "InMemorySort([E ASC]",
+	}, {
+		// THE CONTROL, and it is what makes the four above mean something. The
+		// termination is at the FLOAT, not at the table: the integer prefix
+		// before it is still claimable and its sort is still elided. Without
+		// this, a change that simply stopped claiming any primary-key order at
+		// all would satisfy every assertion above.
+		name:     "the integer prefix before the float keeps its claim",
+		schema:   floatPKSuffixSchema,
+		sql:      "SELECT v FROM q ORDER BY g",
+		wantSort: "",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := embedded.PlanPhysicalForTest(tc.sql, tc.schema, nil)
+			if err != nil {
+				t.Fatalf("planning %q: %v", tc.sql, err)
+			}
+			explain := plan.Explain()
+			if tc.wantSort == "" {
+				if strings.Contains(explain, "Sort") {
+					t.Fatalf("%s\n\nthe sort was NOT elided over an integer primary-key prefix. "+
+						"The float terminates the claim; it does not delete it. Every other case "+
+						"in this test is vacuous if a primary scan claims nothing at all.\n\nplan: %s",
+						tc.sql, explain)
+				}
+				return
+			}
+			if !strings.Contains(explain, tc.wantSort) {
+				t.Fatalf("%s\n\nexpected %s to survive. A primary scan visits a DOUBLE key "+
+					"column in FDB tuple order, where a negative NaN comes FIRST and the "+
+					"comparator ranks it GREATEST — so eliding this sort returns rows in an "+
+					"order the engine's own comparator disagrees with.\n\nplan: %s",
+					tc.sql, tc.wantSort, explain)
+			}
+		})
+	}
+}

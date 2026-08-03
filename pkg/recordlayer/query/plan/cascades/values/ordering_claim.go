@@ -105,10 +105,20 @@ func ColumnCanExtendOrderingClaim(layout Type, name string) bool {
 // in order) may be claimed as an ordering — the count of leading columns before
 // the first one that terminates the claim.
 //
-// This is the single entry point for every producer that builds an ordering key
-// list from a metadata column-name sequence. Asking it in one place is the
-// point: a producer that re-implements the predicate at its own call site is
-// how two derivations drift apart and classify the same column differently.
+// This is the single entry point for producers that build an ordering key list
+// from a metadata column-NAME sequence. Asking it in one place is the point: a
+// producer that re-implements the predicate at its own call site is how two
+// derivations drift apart and classify the same column differently.
+//
+// It is NOT the only shape a producer comes in, and an earlier revision of this
+// comment claimed it was ("the single entry point for every producer"). That
+// was false, and the two producers it did not cover — the streaming aggregation
+// and the aggregate index, whose ordering is over GROUPS rather than rows —
+// were returning wrong rows on a real cluster while this file asserted they
+// could not. A producer holding already-typed key VALUES asks
+// TypeTerminatesOrderingClaim directly instead; the predicate is shared, the
+// entry point is not. plans/ordering.go's header enumerates which producer
+// asks which, and which need not ask at all.
 func ClaimableOrderingPrefix(layout Type, names []string) int {
 	for i, name := range names {
 		if !ColumnCanExtendOrderingClaim(layout, name) {
