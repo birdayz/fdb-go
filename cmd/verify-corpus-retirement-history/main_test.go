@@ -925,7 +925,7 @@ func historyCorpusScenarios(t *testing.T, keys []string, label string) []byte {
 			},
 			Doc: &yamsql.Scenario{
 				Name:           key,
-				SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))",
+				SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
 				Setup:          []string{"INSERT INTO t VALUES (1)"},
 				Tests: []yamsql.Test{{
 					Query:     "SELECT id FROM t",

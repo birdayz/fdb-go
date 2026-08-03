@@ -703,13 +703,29 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// is FIXED, not sorted, so it claims no order and the columns after it
 		// stay claimable. The duplicate-producing arm above does NOT cover this
 		// — it is gated on duplicateProducingColumns[idx] and never sees an
-		// ordinary column. Ask the one authority instead, the same one
-		// equalityPrefixLen consults on the plan side, so the two derivations
-		// cannot classify a column differently. Its answer is narrower than
-		// "is an equality": a zero-valued float equality spans BOTH signed
-		// zeros and therefore pins nothing, and must still terminate here.
-		if !plans.EqualityPinsSinglePhysicalKey(cr) &&
-			!values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), c.columnNames[idx]) {
+		// ordinary column. Ask the plan-side authorities instead, the same ones
+		// equalityPrefixLen consults, so the two derivations cannot classify a
+		// column differently.
+		//
+		// TWO questions, deliberately asked separately, because a signed-zero
+		// float equality answers them differently and answering both with one
+		// predicate is what previously cost this coordinate its own claim:
+		//
+		//   claimsOwnOrder  — may THIS column be emitted as an ordering part?
+		//   carriesTheSuffix — may LATER columns claim order THROUGH it?
+		//
+		// A zero-valued float equality spans BOTH signed zeros. It therefore
+		// pins no single key and cannot carry the suffix (a later column
+		// restarts at the block boundary), yet every row it admits shares one
+		// logical value at this coordinate, and the executor's range set opens
+		// the two zero blocks in key order — reversed wholesale under a reverse
+		// scan. So it claims its own order while terminating the suffix.
+		canExtend := values.ColumnCanExtendOrderingClaim(
+			c.orderingKeyLayout(), c.columnNames[idx],
+		)
+		claimsOwnOrder := plans.EqualityBoundCoordinateClaimsOwnOrder(cr) || canExtend
+		carriesTheSuffix := plans.EqualityPinsSinglePhysicalKey(cr) || canExtend
+		if !claimsOwnOrder {
 			break
 		}
 
@@ -721,6 +737,15 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		sortOrder := c.columnMatchedSortOrder(idx, isReverse)
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
+
+		// Emitted, but nothing may claim order THROUGH it. Breaking here rather
+		// than before the append is the whole point of the split: the
+		// PK-suffix continuation below is skipped too, which is required —
+		// the tie class spans two physical ranges, so no later column is
+		// ordered within it.
+		if !carriesTheSuffix {
+			break
+		}
 	}
 
 	// Continue the matched ordering into the trimmed primary-key suffix.

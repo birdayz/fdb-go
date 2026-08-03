@@ -421,10 +421,12 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 	// single-column float ORDER BY could drop its sort. That bought nothing
 	// measurable — it changed 0 of the 2489 plans in the plan-shape golden —
 	// and it could not help the multi-column case it was introduced for,
-	// because an ordering claim stops AT a coordinate relaxed through the NaN
-	// tie class (see keyOrderingCongruence). Against that it charged FOUR range
-	// opens instead of one to every scan whose first unbound coordinate is a
-	// float, ordering-consuming or not.
+	// because an ordering claim stops AT a coordinate whose physical key order
+	// is not its logical order — the planner-side rule carried by
+	// values.ColumnCanExtendOrderingClaim, with plans.EqualityPinsSinglePhysicalKey
+	// as its narrower equality-bound companion. Against that it charged FOUR
+	// range opens instead of one to every scan whose first unbound coordinate
+	// is a float, ordering-consuming or not.
 	//
 	// A pure optimisation that no test can detect, paid for on every such scan,
 	// is not worth its cost. Reinstating it needs a way to split only when the

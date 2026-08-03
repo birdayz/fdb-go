@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=347 queries=2502 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
+# files=348 queries=2506 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2313,6 +2313,26 @@ plan:  <PLAN-ERROR: 22F3H: No cast defined from STRING to BYTES>
 === cast.yaml#18 expect-error=22F3H
 sql:   SELECT CAST(str_col AS BYTES) FROM test_cast WHERE id = 1
 plan:  <PLAN-ERROR: 22F3H: No cast defined from STRING to BYTES>
+=== cast_empty_array.yaml#0
+sql:   SELECT CAST([] AS INTEGER ARRAY) AS empty_int_array FROM arr_t WHERE id = 1
+plan:  Project([CAST(array AS UNKNOWN)], Scan(ARR_T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cast_empty_array.yaml#1
+sql:   SELECT CAST([] AS BIGINT ARRAY) AS empty_long_array FROM arr_t WHERE id = 1
+plan:  Project([CAST(array AS UNKNOWN)], Scan(ARR_T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cast_empty_array.yaml#2
+sql:   SELECT [] = CAST([] AS INTEGER ARRAY) AS both_empty FROM arr_t WHERE id = 1
+plan:  Project([predicate], Scan(ARR_T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cast_empty_array.yaml#3
+sql:   SELECT CAST([1, 2, 3] AS BIGINT ARRAY) AS widened FROM arr_t WHERE id = 1
+plan:  Project([CAST(array AS UNKNOWN)], Scan(ARR_T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#0
 sql:   SELECT CAST(num_col AS STRING) FROM test_cast WHERE id = 1
 plan:  Project([CAST(NUM_COL#1 AS STRING)], Scan(TEST_CAST, [=]))

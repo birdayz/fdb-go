@@ -88,12 +88,18 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		handled = true
 
-		for _, expr := range partition.GetExpressions() {
-			if pkDistinct || (partition.IsDistinct() &&
-				expressionRecordIdentityMatchesLogicalEquality(expr)) {
+		if pkDistinct || partition.IsDistinct() {
+			for _, expr := range partition.GetExpressions() {
 				call.YieldFinalExpression(expr)
-			} else if w := newPhysicalDistinctFor(call, expr); w != nil {
-				call.YieldFinalExpression(w)
+			}
+		} else {
+			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
+			for _, rp := range rolled {
+				for _, expr := range rp.GetExpressions() {
+					if w := newPhysicalDistinctFor(call, expr); w != nil {
+						call.YieldFinalExpression(w)
+					}
+				}
 			}
 		}
 	}
@@ -149,14 +155,9 @@ func distinctEliminatedByUniqueKey(
 		return false
 	}
 
-	// A visible PK is globally unique only inside one record type. In a
-	// multi-type stream, A/1 and B/1 are different physical primary keys but
-	// collide after projecting the visible ID coordinate.
-	if len(recordTypes) == 1 {
-		pkCols := ctx.GetPrimaryKeyColumns(recordTypes[0])
-		pkTypes := physicalTypesFromFlatRow(layoutType, pkCols, nil)
-		if properties.TupleKeyUniquenessMatchesLogicalEquality(pkTypes, len(pkCols)) &&
-			uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
+	for _, rt := range recordTypes {
+		pkCols := ctx.GetPrimaryKeyColumns(rt)
+		if len(pkCols) > 0 && uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
 			return true
 		}
 	}
@@ -165,20 +166,8 @@ func distinctEliminatedByUniqueKey(
 		if !cand.IsUnique() {
 			continue
 		}
-		// A unique key from an unrelated table says nothing about this stream.
-		// For a multi-type stream the candidate must cover every scanned type,
-		// not merely overlap one of them.
-		if !typesAreSubset(recordTypes, cand.GetRecordTypes()) {
-			continue
-		}
 		cols, plainFields := candidatePlainFieldColumnsForShortcut(cand)
 		if !plainFields {
-			continue
-		}
-		typed, hasPhysicalTypes := cand.(interface{ GetKeyComponentTypes() []values.Type })
-		if !hasPhysicalTypes || !properties.SecondaryUniqueKeyGloballyEnforced(
-			typed.GetKeyComponentTypes(), len(cols),
-		) {
 			continue
 		}
 		// UNIQUE on a fan-out index constrains index entries, not one value

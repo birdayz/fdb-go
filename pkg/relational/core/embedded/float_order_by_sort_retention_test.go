@@ -39,21 +39,21 @@ func TestUnpredicatedFloatOrderByRetainsItsSort(t *testing.T) {
 	}{
 		{
 			name:     "double primary key",
-			ddl:      "CREATE TABLE TF (f DOUBLE NOT NULL, w BIGINT, PRIMARY KEY (f))",
+			ddl:      "CREATE TABLE TF (f DOUBLE, w BIGINT, PRIMARY KEY (f))",
 			sql:      "SELECT f FROM TF ORDER BY f",
 			wantSort: true,
 			why:      "an unpredicated primary scan binds no range set, so the NaN blocks are never split",
 		},
 		{
 			name:     "bigint primary key control",
-			ddl:      "CREATE TABLE TL (i BIGINT NOT NULL, w BIGINT, PRIMARY KEY (i))",
+			ddl:      "CREATE TABLE TL (i BIGINT, w BIGINT, PRIMARY KEY (i))",
 			sql:      "SELECT i FROM TL ORDER BY i",
 			wantSort: false,
 			why:      "an integer key has no NaN region; this must keep eliding or the fix is a blanket pessimisation",
 		},
 		{
 			name:     "double index, single column",
-			ddl:      "CREATE TABLE TI (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) CREATE INDEX IDXV ON TI (v)",
+			ddl:      "CREATE TABLE TI (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) CREATE INDEX IDXV ON TI (v)",
 			sql:      "SELECT v FROM TI ORDER BY v",
 			wantSort: true,
 			why: "the DELIBERATE loss. The scan could split this coordinate into NULL/numbers/" +
@@ -64,7 +64,7 @@ func TestUnpredicatedFloatOrderByRetainsItsSort(t *testing.T) {
 		},
 		{
 			name:     "double index, two columns",
-			ddl:      "CREATE TABLE TJ (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) CREATE INDEX IDXVW ON TJ (v, w)",
+			ddl:      "CREATE TABLE TJ (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) CREATE INDEX IDXVW ON TJ (v, w)",
 			sql:      "SELECT v, w FROM TJ ORDER BY v, w",
 			wantSort: true,
 			why:      "all NaN payloads are one logical value across many physical keys, so w is in payload order inside that tie",

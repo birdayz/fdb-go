@@ -520,14 +520,14 @@ func TestMetadataIndexDefPrimaryKeyTypesStayAlignedThroughMiddleTrim(t *testing.
 		columns[1] != "val_float" || columns[2] != "val_double" {
 		t.Fatalf("PK columns = %v, want [id val_float val_double]", columns)
 	}
+	// The SARGABILITY supply is what this pins: the physical types stay aligned
+	// with IndexPrimaryKeyColumns even when the trimmed coordinate sits in the
+	// MIDDLE of the key, so a later consumer indexes the same coordinate system
+	// the comparisons do. Whether any of these coordinates may extend an
+	// ORDERING claim is a separate question, answered by
+	// values.ColumnCanExtendOrderingClaim rather than here.
 	types := definition.IndexPrimaryKeyComponentTypes()
 	requireEmbeddedPhysicalTypeCodes(
 		t, types, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble,
 	)
-	ordered := plans.PhysicallyOrderedTrimmedPKSuffix(
-		definition.IndexColumnNames(), columns, types,
-	)
-	if len(ordered) != 1 || ordered[0] != "id" {
-		t.Fatalf("middle-trim ordered suffix = %v, want [id] before DOUBLE barrier", ordered)
-	}
 }

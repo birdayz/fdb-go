@@ -57,6 +57,8 @@ func TestAggregateCandidateDeclinedByRawIndexShortcuts(t *testing.T) {
 		expressions.AggSum,
 		"AMOUNT",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	// Precondition: the candidate really does advertise the join column as its
@@ -168,6 +170,8 @@ func TestAggregateCandidateToScanPlanIsARawFetchingIndexPlan(t *testing.T) {
 		expressions.AggSum,
 		"AMOUNT",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	plan := agg.ToScanPlan(nil, false)

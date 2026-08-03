@@ -1,3 +1,23 @@
+// This file answers a SARGABILITY question: given a key coordinate's
+// authoritative PHYSICAL tuple type, what can a scan range bind there — can the
+// coordinate be probed exactly, must the predicate stay a residual filter, and
+// how many physical ranges does an equality open? The executor's range binder
+// hard-requires these types (see scan_range_binding.go's
+// validateAuthoritativeScanPhysicalType, which errors on an unknown one), so
+// they are supplied from index metadata rather than inferred from comparands.
+//
+// It is NOT the authority on ORDERING claims. Whether a coordinate may extend
+// the order a plan advertises is answered by values.ColumnCanExtendOrderingClaim
+// (see values/ordering_claim.go), with plans.EqualityPinsSinglePhysicalKey as
+// its narrower companion for equality-bound coordinates.
+//
+// The two are near-siblings and easy to confuse because they share a cause — a
+// FLOAT/DOUBLE coordinate whose physical key order diverges from its logical
+// order. Neither subsumes the other, and they may legitimately disagree: an
+// equality on 0.0 opens TWO physical ranges (so it pins no single key and
+// carries no order) while remaining perfectly sargable as a two-range probe.
+// Deriving one from the other is how a plan comes to claim an order its scan
+// does not deliver.
 package cascades
 
 import (

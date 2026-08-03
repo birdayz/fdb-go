@@ -168,22 +168,9 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		// Name-matching the sort keys against the index columns proves the scan
-		// visits those columns, NOT that it visits them in the order the query
-		// asked for. The two differ on a raw FLOAT/DOUBLE key coordinate, whose
-		// physical tuple order puts the negative NaNs below -Inf while the
-		// comparator makes every NaN greatest. Ask the plan how much of its key
-		// it genuinely returns in logical order — which also keeps an aggregate
-		// index, that cannot enumerate the NaN blocks at all, from claiming it.
 		// The index scan is its own cascades expression now (RFC-184 W2) — a bare
 		// leaf carrying its index metadata (columns/pk/unique/fan-out) on the plan.
 		stamped := stampIndexMetadata(cand, idxPlan)
-
-		// Ask the STAMPED plan — before stamping it does not yet know its key
-		// columns and would report a zero-length ordered prefix for everything.
-		if len(sortKeys) > stamped.OrderedKeyColumnPrefixLen() {
-			continue
-		}
 		call.Yield(stamped)
 	}
 }

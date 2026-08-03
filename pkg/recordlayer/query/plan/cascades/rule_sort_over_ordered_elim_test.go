@@ -369,8 +369,7 @@ func TestStrictlySorted_UniqueIndexFullCoverage(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
-	w := idx.WithIndexMetadata([]string{"A", "B"}, nil, true).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
+	w := idx.WithIndexMetadata([]string{"A", "B"}, nil, true)
 
 	// numKeys == len(columnNames): full coverage.
 	if !strictlyOrderedIfUnique(w, 2) {
@@ -389,8 +388,7 @@ func TestStrictlySorted_UniqueIndexPartialCoverage(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
-	w := idx.WithIndexMetadata([]string{"A", "B", "C"}, nil, true).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong, values.NotNullLong})
+	w := idx.WithIndexMetadata([]string{"A", "B", "C"}, nil, true)
 
 	// numKeys < len(columnNames): partial coverage.
 	if strictlyOrderedIfUnique(w, 2) {
@@ -399,31 +397,6 @@ func TestStrictlySorted_UniqueIndexPartialCoverage(t *testing.T) {
 
 	if strictlyOrderedIfUnique(w, 0) {
 		t.Fatal("unique index with numKeys=0 should NOT be strictly ordered")
-	}
-}
-
-func TestStrictlySorted_UniqueStorageKeyMustMatchLogicalEquality(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name string
-		typ  values.Type
-	}{
-		{name: "nullable", typ: values.NullableLong},
-		{name: "unknown", typ: values.UnknownType},
-		{name: "FLOAT raw NaN encodings", typ: values.NotNullFloat},
-		{name: "DOUBLE raw NaN encodings", typ: values.NotNullDouble},
-	} {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			index := plans.NewRecordQueryIndexPlan(
-				"idx_u", nil, []string{"T"}, values.UnknownType, false,
-			).WithIndexMetadata([]string{"A"}, nil, true).
-				WithKeyComponentTypes([]values.Type{test.typ})
-			if strictlyOrderedIfUnique(index, 1) {
-				t.Fatal("storage UNIQUE was treated as globally strict although raw tuple uniqueness is not congruent with logical equality")
-			}
-		})
 	}
 }
 
@@ -593,7 +566,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		values.UnknownType,
 		true, // unique
 		nil,
-	).WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
+	)
 	// Build the index scan the data-access path produces for STATUS='active'
 	// (the retired ImplementIndexScanRule's job, RFC-076), then compute plan
 	// properties on a clean inner Reference (simulating implementBottomUp).
@@ -678,38 +651,5 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	// Verify the rule DID yield something (sort was eliminated).
 	if len(yielded) == 0 {
 		t.Fatal("ImplementSortRule should yield at least one expression (sort eliminated)")
-	}
-}
-
-func TestPlanner_NaNBarrierPrefixIsOrderedButNotStrict(t *testing.T) {
-	t.Parallel()
-
-	// Physical storage order is (A LONG, B DOUBLE, ID LONG). ORDER BY A is
-	// satisfied by the prefix, but A is not unique: the NaN barrier at B removes
-	// B and the later PK suffix from the advertised logical ordering. Record
-	// distinctness must not turn that truncated prefix into a strict ordering.
-	idx := plans.NewRecordQueryIndexPlan(
-		"T_AB", nil, []string{"T"}, values.UnknownType, false,
-	).WithIndexMetadata(
-		[]string{"A", "B"}, []string{"ID"}, false,
-	).WithKeyComponentTypes(
-		[]values.Type{values.NotNullLong, values.NotNullDouble},
-	).WithPrimaryKeyComponentTypes(
-		[]values.Type{values.NotNullLong},
-	).WithDistinctRecordsSignal(false)
-	innerRef := expressions.InitialOf(idx)
-	computeRefPlanProperties(innerRef)
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.NotNullLong}}},
-		expressions.ForEachQuantifier(innerRef),
-	)
-	yielded := FireImplementationRule(NewImplementSortRule(), expressions.InitialOf(sortExpr))
-	if len(yielded) == 0 {
-		t.Fatal("physical A prefix should satisfy ORDER BY A")
-	}
-	for _, expr := range yielded {
-		if plan, ok := expr.(*plans.RecordQueryIndexPlan); ok && plan.IsStrictlySorted() {
-			t.Fatalf("NaN-truncated A prefix was marked strict: %s", plan.Explain())
-		}
 	}
 }

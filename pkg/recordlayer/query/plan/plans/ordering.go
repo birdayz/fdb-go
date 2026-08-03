@@ -309,6 +309,30 @@ func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 	return prefix
 }
 
+// ownOrderPrefixLen is equalityPrefixLen for the SELF question: how many
+// leading coordinates are FIXED by an equality, counting one that spans both
+// signed zeros. Always >= equalityPrefixLen.
+//
+// The gap between the two is load-bearing. When ownOrderPrefixLen runs past
+// equalityPrefixLen, the extra coordinates are still FIXED — each admits one
+// logical value, so a sort on any of them is already satisfied — but one of
+// them covers more than a single physical key, so the SORTED tail after the
+// fixed prefix is not globally ordered and must be dropped entirely. Callers
+// express that by claiming the fixed prefix and emptying the tail, never by
+// claiming a shorter fixed prefix: shortening it would throw away a sound
+// claim, which is what cost `ORDER BY <signed-zero-bound float>` its
+// index order.
+func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
+	prefix := 0
+	for i := 0; i < n && i < len(comps); i++ {
+		if !EqualityBoundCoordinateClaimsOwnOrder(comps[i]) {
+			break
+		}
+		prefix = i + 1
+	}
+	return prefix
+}
+
 // EqualityPinsSinglePhysicalKey reports whether cr binds its coordinate to ONE
 // physical key — the property that makes the coordinate FIXED rather than
 // sorted, so it claims no order of its own and the columns after it remain
@@ -344,6 +368,39 @@ func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // parameter-binding map, where a miss yields nil and IsEquality would panic.
 func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
 	return cr != nil && cr.IsEquality() && !isZeroFloatEqualityRange(cr)
+}
+
+// EqualityBoundCoordinateClaimsOwnOrder answers a DIFFERENT question from
+// EqualityPinsSinglePhysicalKey, and the two must never be substituted for one
+// another — conflating them is precisely the defect this pair replaces.
+//
+//	EqualityPinsSinglePhysicalKey: may LATER coordinates claim order THROUGH
+//	                               this one? (the SUFFIX question)
+//	this predicate:                may THIS coordinate claim ITS OWN order?
+//	                               (the SELF question)
+//
+// A signed-zero float equality answers NO to the first and YES to the second.
+// It answers no to the first because it spans two physical keys, so a later
+// coordinate restarts at the block boundary: over rows (-0.0, 9) and (+0.0, 1),
+// `WHERE v = 0 ORDER BY w` returns [9 1]. That termination is inviolable and
+// stays exactly as it was.
+//
+// It answers yes to the second on two independent grounds:
+//
+//  1. Every row the equality admits has the SAME logical value at this
+//     coordinate — that is what an equality means. `ORDER BY v` over one tie
+//     class is satisfied by ANY permutation of it, so the bound coordinate is
+//     vacuously order-preserving for itself. This ground alone settles ASC.
+//  2. The physical enumeration is ordered too: the executor's range set opens
+//     the two signed-zero blocks in key order and reverses them wholesale for a
+//     reverse scan. This is the ground DESC and mid-scan resume rest on, since
+//     those need a definite physical order, not merely a permissible one.
+//
+// NaN does not intrude here the way it does for an unbound or range-bound float
+// coordinate: an equality against zero admits no NaN at all, so the two
+// disjoint NaN blocks are simply out of range.
+func EqualityBoundCoordinateClaimsOwnOrder(cr *predicates.ComparisonRange) bool {
+	return cr != nil && cr.IsEquality()
 }
 
 // isZeroFloatEqualityRange reports whether cr is an equality against a
@@ -520,10 +577,17 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	// its own key order (NaN packs into two disjoint blocks), and because all
 	// NaNs are one logical tie class split across those blocks, the PK suffix
 	// after it is not ordered within the tie either.
-	sorted := make([]string, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
-	sorted = append(sorted, columnNames[firstNonEq:]...)
-	sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-	sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
+	// A coordinate fixed by an equality that spans BOTH signed zeros stays in
+	// the fixed prefix — it admits one logical value, so a sort on it is
+	// satisfied — but nothing after it is globally ordered, so the sorted tail
+	// goes away entirely rather than being truncated by type.
+	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
+	sorted := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
+	if fixedLen == firstNonEq {
+		sorted = append(sorted, columnNames[fixedLen:]...)
+		sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+		sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
+	}
 	if len(sorted) == 0 {
 		return properties.Ordering{}
 	}
@@ -1079,10 +1143,21 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// claimed, so a float there is harmless), and the SORTED tail — the
 	// remaining index columns plus the trimmed PK suffix — is truncated at the
 	// first FLOAT/DOUBLE.
-	tail := make([]string, 0, len(columnNames)-prefixLen+len(pkColumnNames))
-	tail = append(tail, columnNames[prefixLen:]...)
-	tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-	tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
+	// A coordinate fixed by an equality spanning BOTH signed zeros belongs in
+	// the FIXED prefix — it admits exactly one logical value, so `ORDER BY` on
+	// it is satisfied in either direction, and RFC-208's range set opens the
+	// two zero blocks in key order (reversed wholesale under a reverse scan).
+	// What it cannot do is carry the tail: a later coordinate restarts at the
+	// block boundary. So the tail is dropped outright rather than truncated by
+	// type, and the fixed prefix keeps its full length.
+	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
+	tail := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
+	if fixedLen == prefixLen {
+		tail = append(tail, columnNames[fixedLen:]...)
+		tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+		tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
+	}
+	prefixLen = fixedLen
 	for i, col := range columnNames[:prefixLen] {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)

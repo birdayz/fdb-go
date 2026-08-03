@@ -356,7 +356,11 @@ func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 		t.Fatal("expected non-nil root reference")
 	}
 
-	ac := NewAggregateIndexMatchCandidate("agg_idx", []string{"T"}, []string{"g"}, expressions.AggSum, "v", values.UnknownType)
+	ac := NewAggregateIndexMatchCandidate(
+		"agg_idx", []string{"T"}, []string{"g"}, expressions.AggSum, "v", values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
+	)
 	aggTrav := ac.GetTraversal()
 	if aggTrav == nil {
 		t.Fatal("expected non-nil traversal from AggregateIndexMatchCandidate")

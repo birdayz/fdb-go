@@ -301,17 +301,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
 	// query text (see planCacheScope / PlanCache.Get).
 	popts := plannerOptionsFrom(g.c.Options())
-	indexStates, indexStateSignature, stateErr := g.loadPlanningIndexStates(ctx, md)
-	if stateErr != nil {
-		return nil, stateErr
-	}
-	var stateScope []string
-	if indexStateSignature != "" {
-		stateScope = []string{indexStateSignature}
-	}
-	cacheScope := planCacheScope(
-		g.c.sess.Schema, md.Version(), popts.cacheKeyPart(), stateScope...,
-	)
+	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
 	var ls *planLogScope
 	if logMetrics {
@@ -329,12 +319,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
-				conn:                g.c,
-				md:                  md,
-				physicalPlan:        cachedPlan,
-				explain:             cachedPlan.Explain(),
-				scalarSubqueries:    cachedSubs,
-				indexStateSignature: indexStateSignature,
+				conn:             g.c,
+				md:               md,
+				physicalPlan:     cachedPlan,
+				explain:          cachedPlan.Explain(),
+				scalarSubqueries: cachedSubs,
 			}, nil
 		}
 	}
@@ -428,7 +417,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	stats := g.fetchTableStatistics(ctx, md)
-	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats, indexStates)
+	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -463,7 +452,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
-	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats, popts, indexStates)
+	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats, popts)
 	if subErr != nil {
 		return nil, subErr
 	}
@@ -479,12 +468,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
-		conn:                g.c,
-		md:                  md,
-		physicalPlan:        physPlan,
-		explain:             physPlan.Explain(),
-		scalarSubqueries:    scalarSubs,
-		indexStateSignature: indexStateSignature,
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          physPlan.Explain(),
+		scalarSubqueries: scalarSubs,
 	}, nil
 }
 
@@ -829,10 +817,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
 	}
-	indexStates, indexStateSignature, stateErr := g.loadPlanningIndexStates(ctx, md)
-	if stateErr != nil {
-		return nil, stateErr
-	}
 
 	// DML … OPTIONS (DRY RUN): preview the would-be-affected rows without committing.
 	// Java honors it — AstNormalizer.visitQueryOptions → Options.DRY_RUN →
@@ -1030,7 +1014,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	dmlStats := g.fetchTableStatistics(ctx, md)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	popts := plannerOptionsFrom(g.c.Options())
-	planner := newCascadesPlanner(md, popts, planningRules, dmlStats, indexStates)
+	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -1065,7 +1049,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
 	// both differential models identically wrong; the loud
 	// values.UnboundScalarSubqueryError is what surfaced it.
-	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats, popts, indexStates)
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats, popts)
 	if dmlSubErr != nil {
 		return nil, dmlSubErr
 	}
@@ -1073,13 +1057,12 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	ls.setPlan(physPlan)
 	ls.setCache(PlanCacheSkip)
 	return &cascadesPlan{
-		conn:                g.c,
-		md:                  md,
-		physicalPlan:        physPlan,
-		explain:             logicalOp.Explain(""),
-		scalarSubqueries:    dmlScalarSubs,
-		indexStateSignature: indexStateSignature,
-		dryRun:              dryRun,
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          logicalOp.Explain(""),
+		scalarSubqueries: dmlScalarSubs,
+		dryRun:           dryRun,
 	}, nil
 }
 
@@ -1146,7 +1129,6 @@ type cascadesPlan struct {
 	// Signature of the authoritative strictly-readable index set used to plan.
 	// Revalidated inside every execution transaction before any plan or scalar
 	// subquery runs, including cache hits and continuation pages.
-	indexStateSignature string
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
@@ -1238,19 +1220,18 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// architecture.
 
 	pr := &paginatingRows{
-		ctx:                 ctx,
-		cancel:              cancel,
-		conn:                c,
-		ss:                  ss,
-		plan:                p.physicalPlan,
-		md:                  p.md,
-		scalarSubqueries:    p.scalarSubqueries,
-		indexStateSignature: p.indexStateSignature,
-		maxRows:             optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
-		maxResultBytes:      c.maxResultBytes,
-		cols:                cols,
-		respectActiveTx:     p.IsUpdate(),
-		dryRun:              p.dryRun,
+		ctx:              ctx,
+		cancel:           cancel,
+		conn:             c,
+		ss:               ss,
+		plan:             p.physicalPlan,
+		md:               p.md,
+		scalarSubqueries: p.scalarSubqueries,
+		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
+		maxResultBytes:   c.maxResultBytes,
+		cols:             cols,
+		respectActiveTx:  p.IsUpdate(),
+		dryRun:           p.dryRun,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on
@@ -1323,15 +1304,14 @@ func (r *paginatingRows) countAll() (int64, error) {
 // (aggregate accumulators, sort buffers) serialized as protobuf. No
 // cursor persists across transactions — this matches Java's architecture.
 type paginatingRows struct {
-	ctx                 context.Context
-	cancel              context.CancelFunc // statement-timeout cancel; nil when no timeout
-	conn                *EmbeddedConnection
-	ss                  subspace.Subspace
-	plan                plans.RecordQueryPlan
-	md                  *recordlayer.RecordMetaData
-	scalarSubqueries    []PlannedScalarSubquery
-	indexStateSignature string
-	cols                []executor.ColumnDef
+	ctx              context.Context
+	cancel           context.CancelFunc // statement-timeout cancel; nil when no timeout
+	conn             *EmbeddedConnection
+	ss               subspace.Subspace
+	plan             plans.RecordQueryPlan
+	md               *recordlayer.RecordMetaData
+	scalarSubqueries []PlannedScalarSubquery
+	cols             []executor.ColumnDef
 
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
@@ -1819,13 +1799,6 @@ func (r *paginatingRows) fetchPage() error {
 		if storeErr != nil {
 			return nil, storeErr
 		}
-		if r.indexStateSignature != "" {
-			if stateErr := validatePlanningIndexStateSignature(
-				r.indexStateSignature, store.GetAllIndexStates(),
-			); stateErr != nil {
-				return nil, stateErr
-			}
-		}
 
 		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
@@ -2115,13 +2088,8 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 func buildCascadesPlanContext(
 	md *recordlayer.RecordMetaData,
 	cfg cascades.PlannerConfiguration,
-	indexStates ...map[string]recordlayer.IndexState,
 ) cascades.PlanContext {
-	var authoritativeStates map[string]recordlayer.IndexState
-	if len(indexStates) > 0 {
-		authoritativeStates = indexStates[0]
-	}
-	return &metadataPlanContext{md: md, cfg: cfg, indexStates: authoritativeStates}
+	return &metadataPlanContext{md: md, cfg: cfg}
 }
 
 type metadataPlanContext struct {
@@ -2130,7 +2098,6 @@ type metadataPlanContext struct {
 	// nil is reserved for offline/unit planning and preserves the historical
 	// all-readable assumption. Live SQL planning always supplies the complete
 	// store snapshot; a missing entry there fails closed.
-	indexStates    map[string]recordlayer.IndexState
 	candidatesOnce sync.Once
 	candidates     []cascades.MatchCandidate
 }
@@ -2228,12 +2195,6 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	defs := make([]cascades.IndexDef, 0, len(allIndexes))
 	for _, name := range indexNames {
 		idx := allIndexes[name]
-		if c.indexStates != nil {
-			state, present := c.indexStates[name]
-			if !present || state != recordlayer.IndexStateReadable {
-				continue
-			}
-		}
 		if idx.RootExpression == nil {
 			continue
 		}
@@ -2988,7 +2949,9 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		// it the plan over this index advertises group order for every column
 		// type, including a DOUBLE whose key order is not its value order.
 		singleRecordTypeRowType(md, idx),
-	).WithPhysicalGroupingMetadata(groupTypes, groupingCount)
+		groupTypes,
+		groupingCount,
+	)
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector

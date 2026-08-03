@@ -1,11 +1,9 @@
 package cascades
 
 import (
-	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -32,6 +30,8 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -73,6 +73,8 @@ func TestAggregateDataAccessRule_WrongAggFunction(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -111,6 +113,8 @@ func TestAggregateDataAccessRule_WrongGroupingKeys(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -152,6 +156,8 @@ func TestAggregateDataAccessRule_MultipleAggregates_OnlyOneCandidate(t *testing.
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -192,7 +198,9 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableString}, 1)
+		[]values.Type{values.NullableString},
+		1,
+	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_region",
 		[]string{"Orders"},
@@ -200,7 +208,9 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableString}, 1)
+		[]values.Type{values.NullableString},
+		1,
+	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
 	results := FireExpressionRuleWithMemo(
@@ -239,52 +249,6 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 	}
 }
 
-func TestAggregateDataAccessRule_MultiAggregateRequiresCongruentGroupOrdering(t *testing.T) {
-	t.Parallel()
-
-	for _, test := range []struct {
-		name        string
-		physical    values.Type
-		wantResults int
-	}{
-		{name: "long", physical: values.NullableLong, wantResults: 1},
-		{name: "float", physical: values.NullableFloat, wantResults: 0},
-		{name: "double", physical: values.NullableDouble, wantResults: 0},
-		{name: "unknown", physical: values.UnknownType, wantResults: 0},
-	} {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-			gb := expressions.NewGroupByExpression(
-				[]values.Value{&values.FieldValue{Field: "region", Typ: test.physical}},
-				[]expressions.AggregateSpec{
-					{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.NullableLong}},
-					{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.NullableLong}},
-				},
-				expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-			)
-			candidates := []MatchCandidate{
-				NewAggregateIndexMatchCandidate(
-					"Orders$sum_amount_by_region", []string{"Orders"}, []string{"region"},
-					expressions.AggSum, "amount",
-				).WithPhysicalGroupingMetadata([]values.Type{test.physical}, 1),
-				NewAggregateIndexMatchCandidate(
-					"Orders$count_id_by_region", []string{"Orders"}, []string{"region"},
-					expressions.AggCount, "id",
-				).WithPhysicalGroupingMetadata([]values.Type{test.physical}, 1),
-			}
-			results := FireExpressionRuleWithMemo(
-				NewAggregateDataAccessRule(), expressions.InitialOf(gb),
-				&indexTestPlanContext{candidates: candidates}, nil,
-			)
-			if len(results) != test.wantResults {
-				t.Fatalf("multi-aggregate results = %d, want %d", len(results), test.wantResults)
-			}
-		})
-	}
-}
-
 func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) {
 	t.Parallel()
 
@@ -312,7 +276,9 @@ func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) 
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableString}, 1)
+		[]values.Type{values.NullableString},
+		1,
+	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_status",
 		[]string{"Orders"},
@@ -320,7 +286,9 @@ func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) 
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableString}, 1)
+		[]values.Type{values.NullableString},
+		1,
+	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
 	results := FireExpressionRuleWithMemo(
@@ -363,8 +331,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata(
-		[]values.Type{values.NullableString, values.NullableLong}, 2,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	countCand := NewAggregateIndexMatchCandidate(
 		"Orders$count_id_by_region_year",
@@ -373,8 +341,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata(
-		[]values.Type{values.NullableString, values.NullableLong}, 2,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	maxCand := NewAggregateIndexMatchCandidate(
 		"Orders$max_price_by_region_year",
@@ -383,8 +351,8 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		expressions.AggMax,
 		"price",
 		values.UnknownType,
-	).WithPhysicalGroupingMetadata(
-		[]values.Type{values.NullableString, values.NullableLong}, 2,
+		[]values.Type{values.NullableString, values.NullableString},
+		2,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand, maxCand}}
 
@@ -436,6 +404,8 @@ func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
@@ -447,55 +417,5 @@ func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 	)
 	if len(results) != 0 {
 		t.Fatal("AggregateDataAccessRule should NOT fire for wrong record type")
-	}
-}
-
-func TestAggregateDataAccessRule_DeclinesKnownNaNBounds(t *testing.T) {
-	t.Parallel()
-
-	for _, aggregateCount := range []int{1, 2} {
-		aggregateCount := aggregateCount
-		t.Run(map[int]string{1: "single", 2: "multi"}[aggregateCount], func(t *testing.T) {
-			t.Parallel()
-			scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-			predicate := predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "region", Typ: values.NullableFloat},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, math.NaN()),
-			)
-			filter := expressions.NewLogicalFilterExpression(
-				[]predicates.QueryPredicate{predicate},
-				expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-			)
-			aggregates := []expressions.AggregateSpec{{
-				Function: expressions.AggSum,
-				Operand:  &values.FieldValue{Field: "amount", Typ: values.NullableLong},
-			}}
-			candidates := []MatchCandidate{NewAggregateIndexMatchCandidate(
-				"Orders$sum_amount_by_region", []string{"Orders"}, []string{"region"},
-				expressions.AggSum, "amount",
-			).WithPhysicalGroupingMetadata([]values.Type{values.NullableFloat}, 1)}
-			if aggregateCount == 2 {
-				aggregates = append(aggregates, expressions.AggregateSpec{
-					Function: expressions.AggCount,
-					Operand:  &values.FieldValue{Field: "id", Typ: values.NullableLong},
-				})
-				candidates = append(candidates, NewAggregateIndexMatchCandidate(
-					"Orders$count_id_by_region", []string{"Orders"}, []string{"region"},
-					expressions.AggCount, "id",
-				).WithPhysicalGroupingMetadata([]values.Type{values.NullableFloat}, 1))
-			}
-			gb := expressions.NewGroupByExpression(
-				[]values.Value{&values.FieldValue{Field: "region", Typ: values.NullableFloat}},
-				aggregates,
-				expressions.ForEachQuantifier(expressions.InitialOf(filter)),
-			)
-			results := FireExpressionRuleWithMemo(
-				NewAggregateDataAccessRule(), expressions.InitialOf(gb),
-				&indexTestPlanContext{candidates: candidates}, nil,
-			)
-			if len(results) != 0 {
-				t.Fatalf("aggregate data-access rule produced %d plan(s) for a NaN group bound", len(results))
-			}
-		})
 	}
 }

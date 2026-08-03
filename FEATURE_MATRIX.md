@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**347 scenarios · 2763 query/assertion cases** across 18 feature areas — 2424 supported, 113 unsupported-feature pins, 226 error-path pins.
+**348 scenarios · 2767 query/assertion cases** across 18 feature areas — 2428 supported, 113 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -34,7 +34,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 192 | 1 | 17 |
 | Ordering & pagination | 16 | 120 | 116 | 0 | 4 |
-| Scalar functions & expressions | 33 | 377 | 324 | 21 | 32 |
+| Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **347** | **2763** | **2424** | **113** | **226** |
+| **Total** | **348** | **2767** | **2428** | **113** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -314,6 +314,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `case_when` | 11 | 11 | 0 | 0 | CASE WHEN ... |
 | `case_when_in_java` | 5 | 5 | 0 | 0 | CASE WHEN with IN predicate from Java's |
 | `cast` | 19 | 11 | 0 | 8 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
+| `cast_empty_array` | 4 | 4 | 0 | 0 | Casting an EMPTY array literal to a typed array, end to end. |
 | `cast_scalar_java` | 12 | 10 | 0 | 2 | Scalar CAST patterns from Java's cast-tests.yamsql. |
 | `coalesce_nullif` | 3 | 2 | 1 | 0 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
 | `datetime_functions` | 27 | 19 | 8 | 0 | Two groups: |

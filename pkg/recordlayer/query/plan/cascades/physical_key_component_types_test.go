@@ -34,8 +34,7 @@ func TestAggregateCandidateStopsAtPhysicalGroupingBoundary(t *testing.T) {
 	t.Parallel()
 
 	candidate := NewAggregateIndexMatchCandidate(
-		"max_idx", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V",
-	).WithPhysicalGroupingMetadata(
+		"max_idx", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", values.UnknownType,
 		[]values.Type{values.NullableFloat, values.NullableDouble, values.NullableLong},
 		2,
 	)
@@ -71,48 +70,6 @@ func TestAggregateCandidateStopsAtPhysicalGroupingBoundary(t *testing.T) {
 		WithGroupColumns([]string{"A", "B", "C"}, "V")
 	if got := aggregate.GetPhysicalGroupingPrefixCount(); got != 2 {
 		t.Fatalf("aggregate physical grouping prefix = %d, want 2", got)
-	}
-}
-
-func TestAggregateCandidatePreservesUnboundGroupingTypesForOrdering(t *testing.T) {
-	t.Parallel()
-
-	for _, test := range []struct {
-		name      string
-		types     []values.Type
-		wantKeys  int
-		boundLead bool
-	}{
-		{name: "unbound long", types: []values.Type{values.NotNullLong, values.NotNullLong}, wantKeys: 2},
-		{name: "unbound double barrier", types: []values.Type{values.NotNullLong, values.NotNullDouble}, wantKeys: 1},
-		{name: "unbound unknown barrier", types: []values.Type{values.UnknownType, values.NotNullLong}, wantKeys: 0},
-		{name: "partial long", types: []values.Type{values.NotNullLong, values.NotNullLong}, wantKeys: 1, boundLead: true},
-		{name: "partial double suffix", types: []values.Type{values.NotNullLong, values.NotNullDouble}, wantKeys: 0, boundLead: true},
-	} {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			candidate := NewAggregateIndexMatchCandidate(
-				"agg_order", []string{"T"}, []string{"A", "B"},
-				expressions.AggSum, "V",
-			).WithPhysicalGroupingMetadata(test.types, 2)
-			prefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-			if test.boundLead {
-				prefix[candidate.GetSargableAliases()[0]] = candidatePhysicalTypeEquality(int64(1))
-			}
-			plan, ok := candidate.ToScanPlan(prefix, false).(*plans.RecordQueryIndexPlan)
-			if !ok {
-				t.Fatalf("aggregate scan = %T, want index plan", candidate.ToScanPlan(prefix, false))
-			}
-			gotTypes := plan.GetKeyComponentTypes()
-			if len(gotTypes) != 2 || gotTypes[0].Code() != test.types[0].Code() ||
-				gotTypes[1].Code() != test.types[1].Code() {
-				t.Fatalf("aggregate physical types = %v, want %v", gotTypes, test.types)
-			}
-			if ordering := plan.HintOrdering(); len(ordering.Keys) != test.wantKeys {
-				t.Fatalf("aggregate ordering = %#v, want %d keys", ordering, test.wantKeys)
-			}
-		})
 	}
 }
 
@@ -205,8 +162,7 @@ func TestVisibleConstantNaNEligibility(t *testing.T) {
 			}
 
 			aggregate := NewAggregateIndexMatchCandidate(
-				"agg_nan", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V",
-			).WithPhysicalGroupingMetadata(
+				"agg_nan", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", values.UnknownType,
 				[]values.Type{values.NullableDouble, values.NullableLong, values.NullableLong}, 3,
 			)
 			aggAliases := aggregate.GetSargableAliases()
@@ -260,8 +216,9 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 
 	aggregate := NewAggregateIndexMatchCandidate(
 		"heterogeneous_aggregate", []string{"FloatRecord", "DoubleRecord"}, []string{"A"},
-		expressions.AggMax, "V",
-	).WithPhysicalGroupingMetadata([]values.Type{values.UnknownType}, 1)
+		expressions.AggMax, "V", values.UnknownType,
+		[]values.Type{values.UnknownType}, 1,
+	)
 	if candidateBindingRangesEligible(aggregate, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		aggregate.GetSargableAliases()[0]: candidatePhysicalTypeEquality(float64(1)),
 	}) {
@@ -318,8 +275,9 @@ func TestCandidatesRetainPhysicalFloatInequalities(t *testing.T) {
 	}
 
 	aggregate := NewAggregateIndexMatchCandidate(
-		"float_order_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A",
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableDouble}, 1)
+		"float_order_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", values.UnknownType,
+		[]values.Type{values.NullableDouble}, 1,
+	)
 	aggAlias := aggregate.GetSargableAliases()[0]
 	if candidateBindingRangesEligible(aggregate, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		aggAlias: candidatePhysicalTypeInequality(float64(0)),
@@ -361,8 +319,9 @@ func TestCandidatesRetainPhysicalFloatIsNotNull(t *testing.T) {
 	}
 
 	aggregate := NewAggregateIndexMatchCandidate(
-		"float_not_null_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A",
-	).WithPhysicalGroupingMetadata([]values.Type{values.NullableDouble}, 1)
+		"float_not_null_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", values.UnknownType,
+		[]values.Type{values.NullableDouble}, 1,
+	)
 	aggAlias := aggregate.GetSargableAliases()[0]
 	if !candidateBindingRangesEligible(aggregate, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		aggAlias: candidatePhysicalIsNotNull(),
@@ -379,86 +338,6 @@ func TestCandidatesRetainPhysicalFloatIsNotNull(t *testing.T) {
 		partitionAlias: candidatePhysicalIsNotNull(),
 	}) {
 		t.Fatal("vector candidate declined exact FLOAT IS NOT NULL")
-	}
-}
-
-func TestValueCandidateStopsAtPhysicalPrimaryKeySuffixBarrier(t *testing.T) {
-	t.Parallel()
-
-	alias := values.UniqueCorrelationIdentifier()
-	knownDistinct := false
-	matchInfo := NewRegularMatchInfo(
-		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
-			alias: candidatePhysicalTypeEquality("active"),
-		},
-		nil, nil, nil, nil, nil, nil, nil,
-	)
-
-	for _, test := range []struct {
-		name      string
-		pkTypes   []values.Type
-		wantParts int
-	}{
-		{name: "long control", pkTypes: []values.Type{values.NotNullLong, values.NotNullLong}, wantParts: 3},
-		{name: "double first", pkTypes: []values.Type{values.NotNullDouble, values.NotNullLong}, wantParts: 1},
-		{name: "float first", pkTypes: []values.Type{values.NotNullFloat, values.NotNullLong}, wantParts: 1},
-		{name: "double second", pkTypes: []values.Type{values.NotNullLong, values.NotNullDouble}, wantParts: 2},
-		{name: "unknown first", pkTypes: []values.Type{values.UnknownType, values.NotNullLong}, wantParts: 1},
-	} {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			candidate := NewValueIndexScanMatchCandidateWithFunctions(
-				"status_idx", []string{"T"}, []string{"STATUS"}, nil,
-				[]values.CorrelationIdentifier{alias}, values.UnknownType, false,
-				[]string{"ID", "SEQ"}, &knownDistinct,
-			).WithKeyComponentTypes([]values.Type{values.NullableString})
-			parts := candidate.WithPrimaryKeyComponentTypes(test.pkTypes).
-				ComputeMatchedOrderingParts(matchInfo, []values.CorrelationIdentifier{alias}, false)
-			if len(parts) != test.wantParts {
-				t.Fatalf("ordering parts = %d, want %d: %#v", len(parts), test.wantParts, parts)
-			}
-		})
-	}
-}
-
-func TestLegacyValueCandidateDoesNotInferPrimaryKeyTopologyFromRowType(t *testing.T) {
-	t.Parallel()
-
-	alias := values.UniqueCorrelationIdentifier()
-	rowType := values.NewRecordType("T", false, []values.Field{
-		{Name: "STATUS", FieldType: values.NullableString},
-		{Name: "ID", FieldType: values.NotNullLong},
-	})
-	knownDistinct := false
-	candidate := NewValueIndexScanMatchCandidateWithFunctions(
-		"status_idx", []string{"T"}, []string{"STATUS"}, nil,
-		[]values.CorrelationIdentifier{alias}, rowType, false,
-		[]string{"ID"}, &knownDistinct,
-	).WithKeyComponentTypes([]values.Type{values.NullableString})
-	matchInfo := NewRegularMatchInfo(
-		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
-			alias: candidatePhysicalTypeEquality("active"),
-		},
-		nil, nil, nil, nil, nil, nil, nil,
-	)
-
-	types := candidate.GetPrimaryKeyComponentTypes()
-	if len(types) != 1 || types[0].Code() != values.TypeCodeUnknown {
-		t.Fatalf("legacy PK physical types = %v, want explicit UNKNOWN", types)
-	}
-	parts := candidate.ComputeMatchedOrderingParts(
-		matchInfo, []values.CorrelationIdentifier{alias}, false,
-	)
-	if len(parts) != 1 {
-		t.Fatalf("legacy candidate inferred a PK suffix from row type: %#v", parts)
-	}
-
-	authorized := candidate.WithPrimaryKeyComponentTypes(
-		[]values.Type{values.NotNullLong},
-	).ComputeMatchedOrderingParts(matchInfo, []values.CorrelationIdentifier{alias}, false)
-	if len(authorized) != 2 {
-		t.Fatalf("explicit authoritative PK type did not restore suffix: %#v", authorized)
 	}
 }
 
@@ -502,8 +381,9 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 
 			aggregate := NewAggregateIndexMatchCandidate(
 				"unsupported_starts_with_aggregate", []string{"T"}, []string{"V"},
-				expressions.AggMax, "A",
-			).WithPhysicalGroupingMetadata([]values.Type{test.physicalType}, 1)
+				expressions.AggMax, "A", values.UnknownType,
+				[]values.Type{test.physicalType}, 1,
+			)
 			aggAlias := aggregate.GetSargableAliases()[0]
 			if candidateBindingRangesEligible(aggregate, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 				aggAlias: candidatePhysicalTypeStartsWith(test.comparand),

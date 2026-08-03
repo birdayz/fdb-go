@@ -33,7 +33,6 @@ func planScalarSubqueryPlans(
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
 	popts plannerOptions,
-	indexStates ...map[string]recordlayer.IndexState,
 ) ([]PlannedScalarSubquery, error) {
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
@@ -68,7 +67,7 @@ func planScalarSubqueryPlans(
 		// gate), and the same connection options govern the subquery as govern
 		// the main statement — Java plans a scalar subquery under the statement's
 		// PlannerConfiguration too.
-		subPlanner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats, indexStates...)
+		subPlanner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 		subBest, _, subErr := subPlanner.PlanWithContext(ctx, subRef)
 		if subErr != nil {
 			return nil, translatePlannerError(subErr, unableToPlanScalarSubqueryMessage)

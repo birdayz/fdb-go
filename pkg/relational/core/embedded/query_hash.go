@@ -1,7 +1,6 @@
 package embedded
 
 import (
-	"encoding/base64"
 	"strconv"
 	"strings"
 	"unicode"
@@ -41,12 +40,12 @@ const planCacheScopeDelim = "\x01"
 // from the same key. Java's QueryCacheKey carries the whole PlannerConfiguration
 // for exactly this reason.
 //
-// For offline/legacy callers that omit the optional index-state component, the
-// all-defaults case renders empty and the delimiter is omitted ENTIRELY, so
-// that scope remains byte-identical to what it was before planner options were
-// keyed. Live SQL intentionally supplies a non-empty authoritative state
-// signature and therefore uses the tagged planner+state form below even when
-// planner options are default.
+// The all-defaults case renders empty and the delimiter is then omitted
+// ENTIRELY, so the default scope is byte-identical to what it was before
+// planner options were keyed at all. Appending a bare trailing delimiter would
+// have been harmless in practice but would still mean this feature changed the
+// key for every user who sets no options; not emitting it makes "no options
+// changes nothing" literally true.
 //
 // Injectivity: plannerOpts is non-empty only when at least one option is set,
 // and it is delimiter-free because optStringSet DROPS any rule name containing
@@ -56,17 +55,8 @@ const planCacheScopeDelim = "\x01"
 // would be indistinguishable from the component boundary. See optStringSet for
 // the collision pair this closes; TestPlanCacheScope_InjectiveWithOptions
 // verifies it.
-func planCacheScope(schema string, metaDataVersion int, plannerOpts string, indexStateSignature ...string) string {
+func planCacheScope(schema string, metaDataVersion int, plannerOpts string) string {
 	scope := schema + planCacheScopeDelim + strconv.Itoa(metaDataVersion)
-	if len(indexStateSignature) > 0 {
-		// Once live index state participates, tag and encode BOTH trailing
-		// components. Otherwise an option string that happened to look like the
-		// state tag could occupy the same byte position as a state signature.
-		// Raw URL base64 cannot contain planCacheScopeDelim.
-		return scope + planCacheScopeDelim + "planner:" +
-			base64.RawURLEncoding.EncodeToString([]byte(plannerOpts)) +
-			planCacheScopeDelim + "index-states:" + indexStateSignature[0]
-	}
 	if plannerOpts == "" {
 		return scope
 	}

@@ -111,6 +111,7 @@ go_test(
         "baked_field_value_identity_test.go",
         "baked_ordinal_unification_test.go",
         "bitmap_overflow_test.go",
+        "cast_array_type_test.go",
         "cast_float_identity_test.go",
         "cast_java_trim_test.go",
         "cast_round_bughunt_test.go",

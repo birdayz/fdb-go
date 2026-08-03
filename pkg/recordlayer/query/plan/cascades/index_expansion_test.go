@@ -775,6 +775,8 @@ func TestAggregateIndexMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 		expressions.AggSum,
 		"amount",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	trav := cand.GetTraversal()
@@ -805,6 +807,8 @@ func TestAggregateIndexMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 		expressions.AggCount,
 		"id",
 		values.UnknownType,
+		[]values.Type{values.NullableString},
+		1,
 	)
 
 	trav1 := cand.GetTraversal()

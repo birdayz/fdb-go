@@ -58,6 +58,21 @@ type AggregateIndexMatchCandidate struct {
 // describe the pre-computed aggregate; baseRowType is the declared layout the
 // grouping-column names resolve against (values.UnknownType when there is no
 // single one).
+//
+// groupKeyTypes and physicalGroupingPrefixCount are PRECONDITIONS, not optional
+// enhancements. Callers must supply the authoritative physical grouping-key
+// types; a candidate without them cannot exist. The reason is that an Unknown
+// physical type must DECLINE range eligibility — the binder cannot prove an
+// exact probe against a type it does not know (scan_range_binding.go's
+// validateAuthoritativeScanPhysicalType) — so a candidate built without them
+// silently declines every binding, and a silently-declining candidate is how
+// aggregate intersection dies invisibly. Making them constructor arguments
+// makes that unsound state unconstructible rather than merely discouraged.
+//
+// physicalGroupingPrefixCount is the number of grouping columns that stay a
+// contiguous leading prefix of the physical BY_GROUP key: groupingCount for an
+// ordinary aggregate, groupingCount-permutedSize for PERMUTED_MIN/MAX. It is
+// clamped to [0, len(groupCols)].
 func NewAggregateIndexMatchCandidate(
 	indexName string,
 	recordTypes []string,
@@ -65,6 +80,8 @@ func NewAggregateIndexMatchCandidate(
 	aggFunction expressions.AggregateFunction,
 	aggColumn string,
 	baseRowType values.Type,
+	groupKeyTypes []values.Type,
+	physicalGroupingPrefixCount int,
 ) *AggregateIndexMatchCandidate {
 	recordTypes = append([]string(nil), recordTypes...)
 	groupCols = append([]string(nil), groupCols...)
@@ -75,6 +92,12 @@ func NewAggregateIndexMatchCandidate(
 	if baseRowType == nil {
 		baseRowType = values.UnknownType
 	}
+	if physicalGroupingPrefixCount < 0 {
+		physicalGroupingPrefixCount = 0
+	}
+	if physicalGroupingPrefixCount > len(groupCols) {
+		physicalGroupingPrefixCount = len(groupCols)
+	}
 	return &AggregateIndexMatchCandidate{
 		indexName:                   indexName,
 		recordTypes:                 recordTypes,
@@ -83,32 +106,14 @@ func NewAggregateIndexMatchCandidate(
 		aggColumn:                   aggColumn,
 		aliases:                     aliases,
 		baseRowType:                 baseRowType,
-		groupKeyTypes:               normalizePhysicalKeyTypes(nil, len(groupCols)),
-		physicalGroupingPrefixCount: len(groupCols),
+		groupKeyTypes:               normalizePhysicalKeyTypes(groupKeyTypes, len(groupCols)),
+		physicalGroupingPrefixCount: physicalGroupingPrefixCount,
 	}
 }
 
 // GetBaseRowType returns the declared layout the grouping-column names resolve
 // against, or values.UnknownType when the index has no single one.
 func (c *AggregateIndexMatchCandidate) GetBaseRowType() values.Type { return c.baseRowType }
-
-// WithPhysicalGroupingMetadata attaches authoritative logical grouping-key
-// types and the contiguous physical SARG boundary. For PERMUTED_MIN/MAX the
-// boundary is groupingCount-permutedSize; ordinary aggregates use groupingCount.
-func (c *AggregateIndexMatchCandidate) WithPhysicalGroupingMetadata(
-	types []values.Type,
-	prefixCount int,
-) *AggregateIndexMatchCandidate {
-	c.groupKeyTypes = normalizePhysicalKeyTypes(types, len(c.groupCols))
-	if prefixCount < 0 {
-		prefixCount = 0
-	}
-	if prefixCount > len(c.groupCols) {
-		prefixCount = len(c.groupCols)
-	}
-	c.physicalGroupingPrefixCount = prefixCount
-	return c
-}
 
 // GetKeyComponentTypes returns logical grouping-key types. The scan plan
 // aligns the leading entries to the comparisons it actually carries.

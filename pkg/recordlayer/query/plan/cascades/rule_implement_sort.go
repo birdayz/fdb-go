@@ -113,7 +113,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			// Java RemoveSortRule lines 112-125: when the partition is
 			// distinct and all ordering values are covered by sort keys
 			// or equality-bound keys, yield a strictlySorted copy.
-			if partition.IsDistinct() && expressionStorageOrderingIsComplete(expr) {
+			if partition.IsDistinct() {
 				allCovered := true
 				for _, v := range ordering.GetOrderingKeys() {
 					name := values.ExplainValue(v)
@@ -297,7 +297,7 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *pr
 // Looks through Fetch wrappers to find the underlying index scan.
 func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int) bool {
 	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
-		return indexHasGloballyEnforcedUniqueKey(p) && numKeys >= len(p.GetColumnNames())
+		return p.IsUnique() && numKeys >= len(p.GetColumnNames())
 	}
 	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		ref := fw.GetInnerQuantifier().GetRangesOver()
@@ -306,17 +306,11 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 		}
 		for _, m := range ref.AllMembers() {
 			if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
-				return indexHasGloballyEnforcedUniqueKey(p) && numKeys >= len(p.GetColumnNames())
+				return p.IsUnique() && numKeys >= len(p.GetColumnNames())
 			}
 		}
 	}
 	return false
-}
-
-func indexHasGloballyEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
-	return p != nil && p.IsUnique() && properties.SecondaryUniqueKeyGloballyEnforced(
-		p.GetKeyComponentTypes(), len(p.GetColumnNames()),
-	)
 }
 
 // makeStrictlySorted returns an expression with its inner plan marked

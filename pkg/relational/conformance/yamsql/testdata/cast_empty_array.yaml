@@ -15,7 +15,7 @@
 # on exactly these shapes.
 name: cast_empty_array
 schema_template: |
-  CREATE TABLE arr_t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE arr_t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO arr_t VALUES (1, 10)
 tests:

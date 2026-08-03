@@ -147,6 +147,16 @@ tests:
 
   # IN narrows the scan to {1, 3, 5}; residual `v > 20` drops id=1
   # (v=10) — only id=3 (v=30) and id=5 (v=50) qualify.
+  #
+  # This one plans as a single filtered PK scan, NOT as an InUnion, and that
+  # is the cheaper shape rather than a lost pushdown. When the IN rides an
+  # unbound inner scan the InUnion buys nothing: it re-reads the WHOLE table
+  # once per list element and unions the results, so three full scans replace
+  # one. The sibling cases below (`IN + LIKE`, `NOT IN`) already plan as a
+  # single filtered scan for the same reason; a genuine pushdown shows a
+  # BOUNDED inner (`InUnion(Scan(T, [=]), ...)`, as in the ORDER BY case
+  # above), and those are unaffected. The single PK scan already delivers
+  # ORDER BY id, so no sort is added either.
   - query: SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id
     rows:
       - [3]

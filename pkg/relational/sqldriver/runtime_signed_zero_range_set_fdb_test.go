@@ -27,18 +27,18 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	setup := openTestDB(t, "/testdb_rszr")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rszr")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rszr "+
-		"CREATE TABLE d (id BIGINT NOT NULL, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE d (id BIGINT, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_vw ON d (v, w) "+
-		"CREATE TABLE f (id BIGINT NOT NULL, v FLOAT, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE f (id BIGINT, v FLOAT, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_vw ON f (v, w) "+
-		"CREATE TABLE m (id BIGINT NOT NULL, v1 DOUBLE, v2 FLOAT, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE m (id BIGINT, v1 DOUBLE, v2 FLOAT, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX m_v1v2w ON m (v1, v2, w) "+
-		"CREATE TABLE pfx (id BIGINT NOT NULL, g BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE pfx (id BIGINT, g BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX pfx_gvw ON pfx (g, v, w) "+
-		"CREATE TABLE pkd (v DOUBLE NOT NULL, w BIGINT NOT NULL, id BIGINT NOT NULL, payload STRING, PRIMARY KEY (v, w, id)) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE pkd (v DOUBLE, w BIGINT, id BIGINT, payload STRING, PRIMARY KEY (v, w, id)) "+
+		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX u_vw ON u (v, w) "+
-		"CREATE TABLE o (id BIGINT NOT NULL, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
+		"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rszr/s WITH TEMPLATE rszr")
 	dsn := fmt.Sprintf("fdbsql:///testdb_rszr?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -227,11 +227,11 @@ func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 	}
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "rsz_corr_widths",
-		"CREATE TABLE d (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE d (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX d_vw ON d (v, w) "+
-			"CREATE TABLE f (id BIGINT NOT NULL, v FLOAT, w BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE f (id BIGINT, v FLOAT, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX f_vw ON f (v, w) "+
-			"CREATE TABLE o (id BIGINT NOT NULL, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
+			"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (1,-0.0,5),(2,0.0,5),(3,-0.0,9),(4,0.0,1)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO f VALUES (101,-0.0,5),(102,0.0,5),(103,-0.0,9),(104,0.0,1)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (10,0.0,-0.0),(11,-0.0,0.0),(30,NULL,NULL)")
