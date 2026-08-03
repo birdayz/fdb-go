@@ -143,8 +143,8 @@ func TestGRVCachePublishersAllRequireAGeneration(t *testing.T) {
 	}
 }
 
-// TestCommitWarming_BlockedCommitStillRetiresAStaleEntry is the dual of the
-// generation gate, and the case the gate on its own gets wrong.
+// TestCommitWarming_BlockedCommitLeavesNoStaleEntryServable is the dual of
+// the generation gate, and the case the gate on its own gets wrong.
 //
 // A commit dispatched under generation N is overtaken by an invalidation; a
 // generation-N+1 GRV then caches an OLDER version; the commit lands. Refusing
@@ -154,10 +154,15 @@ func TestGRVCachePublishersAllRequireAGeneration(t *testing.T) {
 // would read at a version that provably predates it. Read-your-committed-writes
 // is violated by the very mechanism that protects InvalidateGRVCache.
 //
-// Retiring needs no generation, and that asymmetry is the whole design: an
-// install is a claim about WHEN, which a stale dispatch cannot make; a retire
+// The floor needs no generation, and that asymmetry is the whole design: an
+// install is a claim about WHEN, which a stale dispatch cannot make; the floor
 // is a claim about ORDER, which a version comparison settles on its own.
-func TestCommitWarming_BlockedCommitStillRetiresAStaleEntry(t *testing.T) {
+//
+// The commit does not EVICT the stale entry — an eviction is point-in-time and
+// a publisher already in flight would simply re-install. It raises the floor,
+// which makes the entry unservable wherever it came from and whenever it
+// arrives.
+func TestCommitWarming_BlockedCommitLeavesNoStaleEntryServable(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
@@ -179,10 +184,10 @@ func TestCommitWarming_BlockedCommitStillRetiresAStaleEntry(t *testing.T) {
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Fatalf("the cache is still serving version %d after a commit at 7000 RETURNED.\n"+
 			"7000 is durable, so 6000 provably predates it and every read served from "+
-			"it misses the caller's own just-committed write. The blocked commit may "+
+			"it misses the caller.s own just-committed write. The blocked commit may "+
 			"not INSTALL its version — its anchor belongs to a pre-invalidation "+
-			"dispatch — but it must still RETIRE one it proves stale, which needs no "+
-			"generation because it is a version comparison", v)
+			"dispatch — but it must still raise the FLOOR, which needs no generation "+
+			"because it is a version comparison", v)
 	}
 }
 
@@ -306,4 +311,134 @@ func TestCommit_RealPathWarmsAndSurvivesConcurrentInvalidation(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCommitFloor_InFlightLowGRVCannotRepopulateAfterACommit is the route
+// around the retire: clearing the entry does not stop a publisher that is
+// ALREADY IN FLIGHT and generation-current from installing a version below the
+// one a commit just made durable.
+//
+// The commit returned at 7000. A GRV dispatched after the invalidation — so
+// nothing about the generation refuses it — lands with 6000 and repopulates.
+// The next USE_GRV_CACHE transaction reads 6000 and misses the caller's own
+// committed write. Same stale read as before, reached by a different door,
+// which is why the answer has to be an ORDER invariant rather than another
+// eviction: evictions are point-in-time and publishers arrive arbitrarily
+// late.
+func TestCommitFloor_InFlightLowGRVCannotRepopulateAfterACommit(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	commitGen := c.generation.Load() // commit dispatched
+	c.invalidate()                   // overtaken by an invalidation
+	grvGen := c.generation.Load()    // a GRV dispatched after it, now in flight
+
+	c.update(commitGen, base, 7000) // the commit lands: durable at 7000
+
+	// The in-flight GRV lands LAST, carrying a lower version.
+	c.publish(grvGen, base, 6000)
+
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok && v < 7000 {
+		t.Fatalf("the cache is serving version %d after a commit at 7000 returned.\n"+
+			"That GRV was dispatched after the invalidation, so the generation cannot "+
+			"refuse it, and the retire had already happened before it landed. Only a "+
+			"monotonic committed-version FLOOR closes this: a version below the last "+
+			"durable commit is stale by construction, whenever it arrives", v)
+	}
+}
+
+// TestCommitFloor_FreshGRVAtOrAboveTheFloorStillInstalls is the control that
+// keeps the floor from being a cache-disabling device. A GRV at or above the
+// last committed version is exactly what the cache is for.
+func TestCommitFloor_FreshGRVAtOrAboveTheFloorStillInstalls(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		grv  int64
+	}{
+		{"above the floor", 7001},
+		{"exactly at the floor", 7000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := time.Now()
+			c := &grvCache{now: func() time.Time { return base }}
+			gen := c.generation.Load()
+
+			c.update(gen, base, 7000) // floor := 7000
+			c.publish(gen, base, tc.grv)
+
+			v, _, ok := c.tryCache(grvPriorityDefault)
+			if !ok || v != tc.grv {
+				t.Fatalf("tryCache = (%d, %v), want (%d, true): the floor must refuse only "+
+					"versions BELOW the last commit. Refusing at-or-above turns it into a "+
+					"switch that disables caching after the first commit", v, ok, tc.grv)
+			}
+		})
+	}
+}
+
+// TestCommitFloor_SurvivesInvalidation pins the rule that the floor and the
+// invalidation answer different questions: invalidation is about freshness
+// (what is recent enough), the floor is about order (what is old enough to be
+// wrong). Resetting the floor on invalidate would let the next low publication
+// become servable and re-open the stale read the commit had already ruled out.
+func TestCommitFloor_SurvivesInvalidation(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+
+	c.update(c.generation.Load(), base, 7000) // floor := 7000
+	c.invalidate()
+
+	// A GRV dispatched after the invalidation — generation-current, so only
+	// the floor can refuse it.
+	c.publish(c.generation.Load(), base, 6000)
+
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
+		t.Fatalf("the cache is serving version %d after an invalidation, below the "+
+			"committed floor of 7000.\n"+
+			"invalidate() must PRESERVE the floor: it clears what is stale by TIME, "+
+			"while the floor rules out what is stale by ORDER, and a committed version "+
+			"stays committed across an invalidation", v)
+	}
+}
+
+// TestCommitFloor_DoesNotWedgeTheCacheForever states the consequence that can
+// look like a regression in a hit-rate test: a client whose GRVs lag its last
+// commit pays real GRVs until the cluster's versions catch up, and then caches
+// normally again. That is correct, and it is bounded.
+func TestCommitFloor_DoesNotWedgeTheCacheForever(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
+	gen := c.generation.Load()
+
+	c.update(gen, base, 7000)
+
+	// A lagging GRV is refused, and the entry it failed to overwrite is the
+	// COMMIT'S OWN version — which sits exactly at the floor and is perfectly
+	// servable. The assertion is therefore about WHICH version is served, not
+	// about a miss: refusing the low version must not also discard the good
+	// one that was already there.
+	c.publish(gen, base, 6500)
+	if v, _, ok := c.tryCache(grvPriorityDefault); !ok || v != 7000 {
+		t.Fatalf("tryCache = (%d, %v), want (7000, true): the lagging GRV must be refused "+
+			"WITHOUT disturbing the commit's own version, which is at the floor and "+
+			"legitimately servable", v, ok)
+	}
+
+	// The cluster catches up.
+	c.publish(gen, base, 7100)
+	v, _, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 7100 {
+		t.Fatalf("tryCache = (%d, %v), want (7100, true): once the cluster's versions pass "+
+			"the floor the cache must serve again. A floor that permanently wedged the "+
+			"cache would be a worse bug than the stale read it prevents", v, ok)
+	}
 }

@@ -102,6 +102,28 @@ type grvCacheEntry struct {
 	anchor    time.Time
 	freshness time.Time
 
+	// floor is the highest version this client has observed as COMMITTED. No
+	// version below it is ever served, whenever it arrives and whoever
+	// publishes it: a durable commit proves every lower version predates it,
+	// so serving one is a stale read by construction.
+	//
+	// It is an ORDER invariant, which is why it needs no generation — the same
+	// reason the version comparison in a stale-reply rejection needs none.
+	// Evictions cannot do this job: an eviction is point-in-time, and a
+	// publisher dispatched before the commit can land arbitrarily later and
+	// repopulate what was evicted. The floor refuses it on arrival instead.
+	//
+	// MONOTONIC, and deliberately NOT reset by invalidate(): invalidation is
+	// about freshness (what is recent enough to serve), the floor is about
+	// order (what is old enough to be wrong). Clearing it would let the next
+	// low publication become servable again.
+	//
+	// It cannot wedge the cache permanently: a client whose GRVs lag its last
+	// commit simply pays real GRVs until the cluster's versions catch up,
+	// which is the correct behaviour and not the cache-hit regression it can
+	// look like in a hit-rate test.
+	floor int64
+
 	// rkDefault and rkBatch are the ratekeeper cooldown stamps tryCache
 	// consults alongside freshness. They live HERE, not in their own atomics,
 	// because serving is decided by freshness AND cooldown together: with two
@@ -207,32 +229,49 @@ func (c *grvCache) publishReplyAt(gen int64, durable bool, at time.Time, v int64
 // higher version landed after an invalidation.
 func mergeReply(cur *grvCacheEntry, mayInstallVersion, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
 	next := grvCacheEntry{version: v, anchor: at, freshness: at}
+
+	// The floor is carried forward by every publication and raised by a
+	// durable one. Raised even when the install below is REFUSED: a commit
+	// that may not publish its version has still proved every lower version
+	// stale, and that proof is what the floor records.
+	floor := int64(0)
+	if cur != nil {
+		floor = cur.floor
+	}
+	if durable && v > floor {
+		floor = v
+	}
 	if !mayInstallVersion {
 		// The version is void: it predates an invalidation whose whole purpose
 		// is that the next transaction not see it. Keep whatever is cached now
 		// (nothing, if the sentinel is in place) and merge cooldowns below.
+		// THE ASYMMETRY: a blocked reply may not INSTALL its version, but a
+		// DURABLE one still raises the FLOOR above. Installing needs the
+		// generation because the anchor belongs to a pre-invalidation dispatch
+		// and would date the entry as something it is not. The floor needs no
+		// generation, because it is a version comparison — order, not time.
+		//
+		// Refusing the install protects InvalidateGRVCache; the floor protects
+		// read-your-committed-writes. Both are required, and only the first
+		// needs the generation.
 		next = grvCacheEntry{}
 		if cur != nil {
 			next = *cur
-			// THE ASYMMETRY, and it is the whole design: a blocked reply may
-			// not INSTALL its version, but a DURABLE one may still RETIRE an
-			// older one. Installing needs the generation because the anchor
-			// belongs to a pre-invalidation dispatch and would date the entry
-			// as something it is not. Retiring needs no generation at all,
-			// because it is a version comparison: a committed version proves
-			// every lower cached version predates it.
-			//
-			// Without this the generation gate trades one guarantee for
-			// another. A commit dispatched under generation N, overtaken by an
-			// invalidation, lands after a generation-N+1 GRV cached something
-			// older — and that older version stays servable, so the very next
-			// USE_GRV_CACHE transaction misses the write whose Commit JUST
-			// RETURNED. Refusing the install protects InvalidateGRVCache;
-			// retiring the stale entry protects read-your-committed-writes.
-			// Both are required, and only the first needs the generation.
-			if durable && cur.version != 0 && cur.version < v {
-				next = grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch}
-			}
+		}
+	} else if v < floor {
+		// Below the last durable commit: this version is stale by
+		// construction, whoever published it and however current its
+		// generation. Nothing to install; cooldowns still merge below.
+		//
+		// This is what an eviction could not do. Clearing the entry when the
+		// commit landed left every publisher already in flight free to
+		// repopulate with a low version the moment it arrived, and a
+		// generation check cannot refuse those — they were dispatched after
+		// the invalidation and are perfectly current. The floor refuses them
+		// on arrival instead, which is why it subsumes the eviction entirely.
+		next = grvCacheEntry{}
+		if cur != nil {
+			next = *cur
 		}
 	} else if cur != nil {
 		next.rkDefault, next.rkBatch = cur.rkDefault, cur.rkBatch
@@ -259,6 +298,10 @@ func mergeReply(cur *grvCacheEntry, mayInstallVersion, durable bool, at time.Tim
 	if rkBatch && replyTime.After(next.rkBatch) {
 		next.rkBatch = replyTime
 	}
+	// Applied on every path, including the two that refused the install: the
+	// floor is what those refusals have to LEAVE BEHIND, or the next publisher
+	// re-opens the hole they just closed.
+	next.floor = floor
 	return next
 }
 
@@ -274,6 +317,14 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	// pair handed back is always one that actually occurred.
 	e := c.entry.Load()
 	if e == nil || e.version == 0 {
+		return 0, time.Time{}, false
+	}
+	// Never below the last version this client committed. Checked HERE and not
+	// only at publication because the floor must hold against an entry that
+	// was already installed when the commit landed, not merely against later
+	// publications — the two together are what make "no stale read after a
+	// commit returns" an invariant rather than a race.
+	if e.version < e.floor {
 		return 0, time.Time{}, false
 	}
 
@@ -372,7 +423,12 @@ func (c *grvCache) invalidate() {
 		if cur == nil {
 			return
 		}
-		next := grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch}
+		// The floor SURVIVES, like the cooldowns: invalidation is about
+		// freshness (what is recent enough to serve), the floor is about order
+		// (what is old enough to be wrong). Clearing it would let the next low
+		// publication become servable again and re-open the stale read a
+		// committed version had already ruled out.
+		next := grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch, floor: cur.floor}
 		if c.entry.CompareAndSwap(cur, &next) {
 			return
 		}
