@@ -53,29 +53,66 @@ type leafScan struct {
 	// scan drains the leaf with the given properties, returning how many
 	// elements it saw (asserted non-zero, so an empty scan can never be
 	// mistaken for "no conflict range because nothing was read").
-	scan func(t *testing.T, store *FDBRecordStore, index *Index, props ScanProperties) int
+	scan func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int
+}
+
+// leafFixture carries the indexes the seeded store holds, so a leaf can pick
+// the access path it needs without every leaf sharing one index.
+type leafFixture struct {
+	valueIndex  *Index // Order$price — the ordinary value index
+	vectorIndex *Index // Order$vec — the HNSW kNN access path
 }
 
 func queryLeafScans() []leafScan {
 	return []leafScan{
 		{
 			name: "record_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, _ *Index, props ScanProperties) int {
+			scan: func(t *testing.T, store *FDBRecordStore, _ leafFixture, props ScanProperties) int {
 				return drainLeaf(t, store.ScanRecords(nil, props))
 			},
 		},
 		{
 			name: "index_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, index *Index, props ScanProperties) int {
-				return drainLeaf(t, store.ScanIndex(index, TupleRangeAll, nil, props))
+			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
+				return drainLeaf(t, store.ScanIndex(fx.valueIndex, TupleRangeAll, nil, props))
 			},
 		},
 		{
 			name: "record_key_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, _ *Index, props ScanProperties) int {
+			scan: func(t *testing.T, store *FDBRecordStore, _ leafFixture, props ScanProperties) int {
 				return drainLeaf(t, store.ScanRecordKeys(nil, props))
 			},
 		},
+		{
+			// The VECTOR leaf. A kNN scan is a query leaf like any other — the
+			// executor forwards the statement's ScanProperties to it — and its
+			// HNSW traversal reads the graph through the transaction. Java
+			// derives that read's isolation from ScanProperties exactly as the
+			// generic leaf cursor does (VectorIndexMaintainer.java:201-202 is
+			// character-for-character KeyValueCursorBase.java:358), so a
+			// serializable kNN scan must take conflict ranges.
+			name: "vector_scan_by_distance",
+			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
+				return drainLeaf(t, store.ScanIndexByType(fx.vectorIndex, IndexScanByDistance,
+					vectorKNNRange(vectorLeafQuery, 5), nil, props))
+			},
+		},
+	}
+}
+
+// vectorLeafQuery is the kNN probe point. It sits next to the seeded rows so
+// the search returns them and the concurrent writer's move is inside the
+// neighbourhood the reader actually traversed.
+var vectorLeafQuery = []float64{3, 3}
+
+// vectorKNNRange builds the BY_DISTANCE TupleRange the vector maintainers
+// agree on: Low = (serialized query vector), High = (k).
+func vectorKNNRange(query []float64, k int64) TupleRange {
+	return TupleRange{
+		Low:          tuple.Tuple{serializeVector(query)},
+		High:         tuple.Tuple{k},
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeInclusive,
 	}
 }
 
@@ -100,7 +137,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 	t.Parallel()
 
 	const indexName = "Order$price"
-	buildMetaData := func(t *testing.T) (*RecordMetaData, *Index) {
+	buildMetaData := func(t *testing.T) (*RecordMetaData, leafFixture) {
 		t.Helper()
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -108,11 +145,16 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		index := NewIndex(indexName, Field("price"))
 		builder.AddIndex("Order", index)
+		// (price, quantity) as a 2-D vector: the same records carry both the
+		// value index and the kNN access path, so one seeded store serves
+		// every leaf and the concurrent write below moves a row in BOTH.
+		vecIndex := NewVectorIndex("Order$vec", Concat(Field("price"), Field("quantity")), 2)
+		builder.AddIndex("Order", vecIndex)
 		md, err := builder.Build()
 		if err != nil {
 			t.Fatalf("build metadata: %v", err)
 		}
-		return md, index
+		return md, leafFixture{valueIndex: index, vectorIndex: vecIndex}
 	}
 
 	for _, leaf := range queryLeafScans() {
@@ -132,7 +174,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				sim := simfdb.New(env)
 				db := NewFDBDatabaseWithBackend(sim).SetEnv(env)
 				sub := subspace.FromBytes(tuple.Tuple{"oq2", leaf.name, level.name}.Pack())
-				md, index := buildMetaData(t)
+				md, fx := buildMetaData(t)
 
 				// Seed rows 1..5 and, separately, the row the reader will
 				// WRITE. The write target is a record type the scans below
@@ -147,7 +189,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 					}
 					for i := int64(1); i <= 5; i++ {
 						if _, err := store.SaveRecord(&gen.Order{
-							OrderId: proto.Int64(i), Price: proto.Int32(int32(i)),
+							OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i)),
 						}); err != nil {
 							return nil, err
 						}
@@ -171,7 +213,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				}
 
 				props := NewScanProperties(ExecuteProperties{IsolationLevel: level.isolation})
-				if n := leaf.scan(t, readerStore, index, props); n == 0 {
+				if n := leaf.scan(t, readerStore, fx, props); n == 0 {
 					t.Fatalf("the %s leaf read nothing: a scan that saw no rows takes no "+
 						"conflict range for the trivial reason, and this subtest would "+
 						"then pass or fail for reasons unrelated to the isolation level",
@@ -188,19 +230,25 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 						return nil, err
 					}
 					_, err = store.SaveRecord(&gen.Order{
-						OrderId: proto.Int64(3), Price: proto.Int32(3000),
+						OrderId: proto.Int64(3), Price: proto.Int32(3000), Quantity: proto.Int32(3000),
 					})
 					return nil, err
 				}); err != nil {
 					t.Fatalf("concurrent write: %v", err)
 				}
 
-				// The reader writes a row of its own and commits. Its write
-				// set does not overlap the writer's, so the ONLY thing that
-				// can conflict this commit is the read conflict range the
-				// scan above did or did not take.
-				if _, err := readerStore.SaveRecord(&gen.Order{
-					OrderId: proto.Int64(99), Price: proto.Int32(99),
+				// The reader writes a row of its own and commits. It writes a
+				// CUSTOMER — a record type carrying no indexes at all — so its
+				// write set cannot overlap the writer's through index
+				// maintenance. Writing another Order would: the vector index
+				// makes every Order save mutate the shared HNSW graph, and the
+				// two transactions would then conflict on their WRITES no
+				// matter what the reader read, which reports as a pass on
+				// every serializable arm and a failure on every snapshot one.
+				// The ONLY thing that may conflict this commit is the read
+				// conflict range the scan above did or did not take.
+				if _, err := readerStore.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(99), Name: proto.String("reader"),
 				}); err != nil {
 					t.Fatalf("reader write: %v", err)
 				}

@@ -90,6 +90,23 @@ type standardIndexMaintainer struct {
 	store         indexStoreContext
 }
 
+// readTx resolves the transaction a SCAN's reads go through, from the
+// caller's isolation level. Every maintainer that performs a query read uses
+// this — it is the one mechanism, inherited rather than re-decided per leaf,
+// which is the whole point: an index type that reads through
+// tx.Snapshot() directly silently overrides the statement's isolation, and
+// nothing about the leaf's own code looks wrong when it does.
+//
+// Java's shape exactly: IndexMaintainerState.context.readTransaction(
+// scanProperties.getExecuteProperties().getIsolationLevel().isSnapshot()) —
+// VectorIndexMaintainer.java:201-202, TextIndexMaintainer.java:542,
+// RankIndexMaintainer.java:292, and the generic leaf at
+// KeyValueCursorBase.java:358 all spell it the same way.
+func (m *standardIndexMaintainer) readTx(scanProperties ScanProperties) fdb.ReadTransaction {
+	return readTransactionFor(m.tx,
+		scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot())
+}
+
 func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext) *standardIndexMaintainer {
 	return &standardIndexMaintainer{
 		index:         index,

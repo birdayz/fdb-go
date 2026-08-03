@@ -466,7 +466,7 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 		}
 		fetches = append(fetches, postingFetch{
 			routed: rt,
-			future: f.tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
+			future: f.tx.GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
 		})
 	}
 	for _, ft := range fetches {
@@ -557,7 +557,7 @@ func (f *spfreshFrontier) resolveForwardPostings() error {
 		if f.scoredCells != nil {
 			f.scoredCells[rt.fineID] = struct{}{}
 		}
-		ff = append(ff, fwdFetch{routed: rt, future: f.tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})})
+		ff = append(ff, fwdFetch{routed: rt, future: f.tx.GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})})
 	}
 	for _, ft := range ff {
 		kvs, kerr := ft.future.GetSliceWithError()
@@ -634,7 +634,7 @@ func (f *spfreshFrontier) finalize() error {
 		s.timer.IncrementBy(CountSPFreshRerankReads, int64(len(hits)))
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
-			futures[i] = f.tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(h.span))
+			futures[i] = f.tx.Get(s.storage.sidecarKeyFromSpan(h.span))
 		}
 		kept := hits[:0]
 		for i, h := range hits {
@@ -773,7 +773,7 @@ func (s *spfreshSearcher) resolveForward(tx fdb.ReadTransaction, cellID, childA,
 		if fineID == 0 {
 			continue
 		}
-		data, err := tx.Snapshot().Get(s.storage.centroidKey(cellID, fineID)).Get()
+		data, err := tx.Get(s.storage.centroidKey(cellID, fineID)).Get()
 		if err != nil {
 			return nil, fmt.Errorf("spfresh search: forward child (%d,%d): %w", cellID, fineID, err)
 		}

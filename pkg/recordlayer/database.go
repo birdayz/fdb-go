@@ -641,6 +641,41 @@ func (rc *FDBRecordContext) Transaction() fdb.WritableTransaction {
 	return rc.tx
 }
 
+// ReadTransaction returns the transaction a READ should go through for the
+// given isolation: the snapshot view (no read conflict ranges) when snapshot
+// is true, the plain transaction (conflict-tracking) otherwise.
+//
+// This is the ONE place the snapshot/serializable choice is made, so that
+// "serializable" is a property of the mechanism rather than of each leaf
+// remembering to ask. Java has exactly this method —
+// FDBRecordContext.readTransaction(boolean) (FDBRecordContext.java:660-666) —
+// and every Java leaf resolves through it with the same expression:
+// context.readTransaction(scanProperties.getExecuteProperties()
+// .getIsolationLevel().isSnapshot()) (KeyValueCursorBase.java:358,
+// VectorIndexMaintainer.java:201-202, TextIndexMaintainer.java:542,
+// RankIndexMaintainer.java:292).
+//
+// A leaf that calls Transaction().Snapshot() directly instead is not making a
+// local choice — it is silently overriding the caller's isolation, which reads
+// as isolated and commits as non-serializable.
+func (rc *FDBRecordContext) ReadTransaction(snapshot bool) fdb.ReadTransaction {
+	return readTransactionFor(rc.tx, snapshot)
+}
+
+// readTransactionFor is the single implementation behind every
+// snapshot-vs-serializable choice in the package. It is a pure function of the
+// transaction and the flag — which is exactly what Java's
+// FDBRecordContext.readTransaction is (`snapshot ? ensureActive().snapshot() :
+// ensureActive()`), so siting it here rather than only on the context lets an
+// index maintainer resolve isolation from the transaction it already holds
+// without needing a context reference it may not have.
+func readTransactionFor(tx fdb.WritableTransaction, snapshot bool) fdb.ReadTransaction {
+	if snapshot {
+		return tx.Snapshot()
+	}
+	return tx
+}
+
 // TransactionID returns a unique ID for this record context.
 // Useful for logging and tracing. Matches Java's FDBRecordContext transaction ID.
 func (rc *FDBRecordContext) TransactionID() int64 {

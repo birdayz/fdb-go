@@ -574,7 +574,7 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, efSearch, pSize, continuation, scanProperties)
 	}
 
-	entries, err := m.searchOnePartition(prefix, queryVector, k, efSearch)
+	entries, err := m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, efSearch)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -592,7 +592,7 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // single-partition scan and the per-partition inner of the multi-partition
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
-func (m *vectorIndexMaintainer) searchOnePartition(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
+func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
 			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))
@@ -600,7 +600,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(prefix tuple.Tuple, queryVect
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
+	results, err := graph.Search(readTx, queryVector, k, efSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -818,7 +818,13 @@ func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix 
 // re-read first (its inner continuation replays the saved entries), then the
 // skip-scan advances to the next distinct partition.
 type vectorMultiPartitionCursor struct {
-	m             *vectorIndexMaintainer
+	m *vectorIndexMaintainer
+	// scanProps carries the caller.s isolation to every partition this cursor
+	// visits. Held as PROPERTIES, not as an already-resolved transaction:
+	// resolving at construction would touch the store before the continuation
+	// is even validated, and Java resolves inside scanSinglePartition — per
+	// partition, at the point of the read — for the same reason.
+	scanProps     ScanProperties
 	queryVector   []float64
 	k             int
 	efSearch      int
@@ -877,6 +883,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 
 	c := &vectorMultiPartitionCursor{
 		m:                  m,
+		scanProps:          scanProperties,
 		queryVector:        queryVector,
 		k:                  k,
 		efSearch:           efSearch,
@@ -983,7 +990,7 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 			inner = c.pendingInner
 			c.pendingInner = nil
 		} else {
-			entries, err = c.m.searchOnePartition(fullPrefix, c.queryVector, c.k, c.efSearch)
+			entries, err = c.m.searchOnePartition(c.m.readTx(c.scanProps), fullPrefix, c.queryVector, c.k, c.efSearch)
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, err
 			}
@@ -1153,6 +1160,17 @@ func VectorDistanceScanRangeOrdered(queryVector []float64, k, efSearch, cRerank 
 // SearchKNN performs a k-nearest-neighbor search on the HNSW graph.
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
 // Returns results sorted by distance (closest first).
+//
+// SNAPSHOT deliberately, and this is NOT the query leaf: SearchKNN is the
+// direct store-level API (FDBRecordStore.SearchVectorIndex), reached by chaos
+// verification and diagnostics rather than by a plan, and it carries no
+// ScanProperties to derive an isolation from. The executor's leaf is
+// ScanByDistance, which resolves isolation through Context().ReadTransaction
+// like every other leaf. Giving this diagnostic path conflict ranges would
+// make a verification pass contend with the workload it is verifying. If this
+// API ever becomes reachable from a plan it must take ScanProperties and route
+// through readTx — the exhaustiveness gate in the isolation test is what
+// forces that conversation.
 //
 // The HNSW graph stores trimmed primary keys (via TrimPrimaryKey). This method
 // reconstructs full primary keys using getEntryPrimaryKey so callers can use
