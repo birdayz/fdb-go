@@ -230,13 +230,14 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 // companion COUNT(*) group set, since their own key set can neither prove nor
 // disprove that a group exists.
 //
-// A measured caveat for whoever implements: turning clearWhenZero on for SUM
-// and re-running this test does NOT currently drop groups 4 and 6 -- it only
-// removes the phantoms. The clear fires on the removing path but was not
-// observed firing on the adding path through the SQL layer, even though the
-// record-layer sibling test ("clears entry when an added record cancels the
-// running sum to zero") proves the adding path does clear. That gap is
-// unexplained and is itself suspect.
+// The SUM hazard is not theoretical -- it was measured. Forcing clearWhenZero
+// on for SUM and re-running this test yields exactly "[2 60]": the phantoms go,
+// and groups 4 and 6 go with them, which is the wrong answer in the other
+// direction. That measurement was initially masked by a second defect: the
+// grouped SUM insert fast path in the maintainer wrote its ADD inline and never
+// issued the clear, so nothing was dropped on insert and the option looked
+// harmless. That defect is fixed (atomicMutationIndexMaintainer.clearIfZero),
+// and with it fixed the contract's stated behaviour reproduces exactly.
 //
 // This is not a Go slip. Java's SQL layer has the identical defect: relational
 // DDL never sets clearWhenZero (MaterializedViewIndexGenerator.java:235-243) and

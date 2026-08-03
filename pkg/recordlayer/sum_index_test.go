@@ -504,4 +504,68 @@ var _ = Describe("SumIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// GROUPED, which is a different code path and not a cosmetic variation of
+	// the ungrouped tests above. A grouped SUM insert is served by an inline
+	// fast path in the maintainer that writes its ADD directly instead of going
+	// through sumMutation.applyMutation; the ungrouped spelling has no such
+	// path. So the clear can be correct for every ungrouped test in this file
+	// and still be missing for every grouped insert, which is exactly the state
+	// this file was in -- the option looked covered because the covered
+	// spelling was the one without the fast path.
+	It("clears a grouped entry when the group's values sum to zero on insert", func() {
+		ks := specSubspace()
+
+		sumIdx := NewSumIndex("sum_price_by_quantity",
+			GroupBy(Field("price"), Field("quantity")))
+		sumIdx.SetClearWhenZero(true)
+		builder := baseMetaData()
+		builder.AddIndex("Order", sumIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		save := func(id int64, quantity, price int32) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				return store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(id),
+					Quantity: proto.Int32(quantity),
+					Price:    proto.Int32(price),
+				})
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		groups := func() map[int64]int64 {
+			out := map[int64]int64{}
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				entries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range entries {
+					out[e.Key[0].(int64)] = e.Value[0].(int64)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return out
+		}
+
+		// group 1 cancels to zero across two transactions; group 2 does not.
+		save(1, 1, 42)
+		Expect(groups()).To(Equal(map[int64]int64{1: 42}))
+		save(2, 1, -42)
+		save(3, 2, 7)
+		Expect(groups()).To(Equal(map[int64]int64{2: 7}),
+			"group 1's entry summed to zero on an INSERT and clearWhenZero is set, "+
+				"so it must be cleared exactly as the ungrouped spelling is")
+
+		// A single record whose value is itself zero is the case
+		// IndexOptions.CLEAR_WHEN_ZERO names outright: the group must not appear.
+		save(4, 3, 0)
+		Expect(groups()).To(Equal(map[int64]int64{2: 7}))
+	})
 })
