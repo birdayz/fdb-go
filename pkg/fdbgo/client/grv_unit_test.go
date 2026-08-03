@@ -83,7 +83,7 @@ func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 	c := &grvCache{}
 	c.updateFromGRV(time.Now(), 100)
 	// Mark BATCH priority as throttled less than grvCacheRKCooldown ago.
-	c.lastRkBatch.Store(time.Now().UnixNano())
+	c.markThrottled(time.Now(), false, true)
 	if _, _, ok := c.tryCache(grvPriorityBatch); ok {
 		t.Error("BATCH priority must miss cache while ratekeeper throttled")
 	}

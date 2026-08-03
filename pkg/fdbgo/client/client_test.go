@@ -558,7 +558,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			name: "batch ratekeeper throttle",
 			setup: func(c *grvCache) {
 				c.publish(time.Now(), 1000000)
-				c.lastRkBatch.Store(time.Now().UnixNano())
+				c.markThrottled(time.Now(), false, true)
 			},
 			priority: grvPriorityBatch,
 			wantOK:   false,
@@ -567,7 +567,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			name: "default ratekeeper throttle",
 			setup: func(c *grvCache) {
 				c.publish(time.Now(), 1000000)
-				c.lastRkDefault.Store(time.Now().UnixNano())
+				c.markThrottled(time.Now(), true, false)
 			},
 			priority: grvPriorityDefault,
 			wantOK:   false,
@@ -591,8 +591,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			name: "system immediate serves cache despite default+batch throttle",
 			setup: func(c *grvCache) {
 				c.publish(time.Now(), 1000000)
-				c.lastRkDefault.Store(time.Now().UnixNano())
-				c.lastRkBatch.Store(time.Now().UnixNano())
+				c.markThrottled(time.Now(), true, true)
 			},
 			priority: grvPrioritySystemImmediate,
 			wantOK:   true,

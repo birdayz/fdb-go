@@ -57,10 +57,16 @@ type grvCache struct {
 	// MONOTONIC readings survive: round-tripping through UnixNano drops them,
 	// and a backward wall-clock step then corrupts every anchor derived from
 	// the one and every freshness verdict derived from the other.
-	entry            atomic.Pointer[grvCacheEntry]
+	entry atomic.Pointer[grvCacheEntry]
+
+	// publications counts successful entry publications. It exists because the
+	// cache.s central safety property — that everything tryCache consults
+	// arrives in ONE publication — is otherwise observable only by catching a
+	// window a few nanoseconds wide, i.e. by luck. A test that can only
+	// probabilistically catch a regression is not a regression net; counting
+	// publications turns the property into something assertable exactly.
+	publications     atomic.Int64
 	lastProxyContact atomic.Int64 // UnixNano
-	lastRkDefault    atomic.Int64 // ratekeeper throttle
-	lastRkBatch      atomic.Int64
 	// No `locked` rides the cache: the cache is now opt-in (USE_GRV_CACHE,
 	// default off, RFC-104), so every DEFAULT transaction takes the fresh-GRV
 	// path and hits the real locked check at the consumption site
@@ -83,6 +89,19 @@ type grvCacheEntry struct {
 	version   int64
 	anchor    time.Time
 	freshness time.Time
+
+	// rkDefault and rkBatch are the ratekeeper cooldown stamps tryCache
+	// consults alongside freshness. They live HERE, not in their own atomics,
+	// because serving is decided by freshness AND cooldown together: with two
+	// separately-published values a reader can catch a renewed freshness
+	// before this reply.s cooldown lands and be served, bypassing the very
+	// throttling the reply was delivering. One publication makes that window
+	// impossible by construction rather than by statement order, which is a
+	// property the next edit to applyGRVReply cannot silently break.
+	//
+	// Zero means never throttled at that priority.
+	rkDefault time.Time
+	rkBatch   time.Time
 }
 
 // publish records a successful GRV/commit observation: version v, obtained by
@@ -119,30 +138,53 @@ type grvCacheEntry struct {
 // All three fields ride ONE immutable entry behind ONE atomic pointer, so a
 // reader can never observe a version paired with another version's anchor.
 func (c *grvCache) publish(at time.Time, v int64) {
+	c.publishReply(at, v, time.Time{}, false, false)
+}
+
+// publishReply records a GRV reply as ONE atomic publication: the version and
+// its anchor, the renewed freshness, and any ratekeeper cooldown the reply
+// carried. Doing it in one CAS is what makes it impossible for a reader to see
+// a renewed entry before its cooldown — see grvCacheEntry.rkDefault.
+//
+// replyTime stamps the cooldowns (C++ uses the reply instant for these, not
+// the request instant: lastRkBatchThrottleTime/lastRkDefaultThrottleTime =
+// replyTime, NativeAPI.actor.cpp:7411-7416). Cooldowns only ever advance, and
+// they SURVIVE a version that is rejected as stale — a throttle signal is
+// about the cluster, not about the version that happened to carry it.
+func (c *grvCache) publishReply(at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
 	for {
 		cur := c.entry.Load()
 		next := grvCacheEntry{version: v, anchor: at, freshness: at}
 		if cur != nil {
+			next.rkDefault, next.rkBatch = cur.rkDefault, cur.rkBatch
 			if v < cur.version {
-				return // stale reply — never go backwards (C++ :367)
-			}
-			if v == cur.version {
-				// Same version: keep the earliest evidence of when its window
-				// opened; freshness still advances below.
-				if cur.anchor.Before(next.anchor) {
-					next.anchor = cur.anchor
+				// Stale reply: the version is dropped whole (C++ :367), but a
+				// throttle signal it carried still counts.
+				next = *cur
+			} else {
+				if v == cur.version {
+					// Same version: keep the earliest evidence of when its
+					// window opened; freshness still advances below.
+					if cur.anchor.Before(next.anchor) {
+						next.anchor = cur.anchor
+					}
+				}
+				if cur.freshness.After(next.freshness) {
+					next.freshness = cur.freshness // monotonic (C++ :378-380)
 				}
 			}
-			if cur.freshness.After(next.freshness) {
-				next.freshness = cur.freshness // monotonic (C++ :378-380)
-			}
-			if next.version == cur.version &&
-				next.anchor.Equal(cur.anchor) &&
-				next.freshness.Equal(cur.freshness) {
-				return // nothing moved
-			}
+		}
+		if rkDefault && replyTime.After(next.rkDefault) {
+			next.rkDefault = replyTime
+		}
+		if rkBatch && replyTime.After(next.rkBatch) {
+			next.rkBatch = replyTime
+		}
+		if cur != nil && next == *cur {
+			return // nothing moved
 		}
 		if c.entry.CompareAndSwap(cur, &next) {
+			c.publications.Add(1)
 			return
 		}
 	}
@@ -164,7 +206,6 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	}
 
 	nowT := c.clock()
-	now := nowT.UnixNano()
 	// Staleness is judged on FRESHNESS — when the cluster last confirmed this
 	// entry — not on the version anchor. An equal-version reply renews
 	// freshness without moving the anchor, and on a quiet cluster that reply
@@ -179,16 +220,19 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	// DEFAULT → lastRkDefaultThrottleTime, and IMMEDIATE → always cooled down (:7485-7486 —
 	// IMMEDIATE bypasses ratekeeper), so an opted-in IMMEDIATE read is served from the fresh
 	// cache like any other priority (#16).
-	var lastThrottle int64
+	// Read from the SAME entry as the freshness above: the cooldown a reply
+	// carried is published with the freshness it renewed, so there is no state
+	// in which this check sees the old cooldown beside the new freshness.
+	var lastThrottle time.Time
 	switch priority {
 	case grvPriorityBatch:
-		lastThrottle = c.lastRkBatch.Load()
+		lastThrottle = e.rkBatch
 	case grvPrioritySystemImmediate:
-		lastThrottle = 0 // IMMEDIATE is never ratekeeper-throttled → always cooled down
+		// IMMEDIATE is never ratekeeper-throttled → always cooled down
 	default:
-		lastThrottle = c.lastRkDefault.Load()
+		lastThrottle = e.rkDefault
 	}
-	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
+	if !lastThrottle.IsZero() && nowT.Sub(lastThrottle) < grvCacheRKCooldown {
 		return 0, time.Time{}, false // throttled — must contact proxy
 	}
 
@@ -225,7 +269,20 @@ func (c *grvCache) updateFromGRV(t time.Time, v int64) {
 
 // invalidate clears the cached version.
 func (c *grvCache) invalidate() {
-	c.entry.Store(nil)
+	// Drops the cached VERSION but preserves the ratekeeper cooldowns: a
+	// throttle signal is about the cluster, not about the version that carried
+	// it, and forgetting it here would let the next untrottled reply serve a
+	// cache the ratekeeper is still suppressing.
+	for {
+		cur := c.entry.Load()
+		if cur == nil {
+			return
+		}
+		next := grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch}
+		if c.entry.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
 }
 
 // updateMinAcceptable lowers minAcceptableReadVersion toward the SMALLEST read
@@ -694,16 +751,26 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 // throttle state, and tag throttle info.
 // Called from both flush() (batched request) and backgroundRefresher().
 func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
-	db.grvCache.updateFromGRV(requestTime, version)
-	db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
+	// ONE publication for everything tryCache consults. Serving is decided by
+	// freshness AND cooldown together, so publishing them separately — in
+	// either order — leaves a state a concurrent reader can catch. Renewing
+	// freshness first is the harmful one: an opted-in transaction is served
+	// from an entry this reply just refreshed while the throttling the same
+	// reply carried has not landed, and it bypasses the ratekeeper.
+	//
+	// C++ writes them as separate statements in the opposite order
+	// (updateCachedReadVersion at NativeAPI.actor.cpp:7409, then the
+	// lastRk*ThrottleTime stores at :7411-7416) and is safe regardless: no
+	// wait() separates them, so the actor cannot yield and no other actor sees
+	// the intermediate state. Go has real threads and no such guarantee, so
+	// matching C++ here means reproducing which states an observer can SEE.
+	// Publishing atomically is stronger than ordering the stores, and unlike an
+	// ordering it cannot be undone by an innocent-looking edit to this
+	// function.
+	replyTime := time.Now()
+	db.grvCache.publishReply(requestTime, version, replyTime, rkDefault, rkBatch)
+	db.grvCache.lastProxyContact.Store(replyTime.UnixNano())
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
-
-	if rkDefault {
-		db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
-	}
-	if rkBatch {
-		db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
-	}
 
 	if len(tagThrottleInfoBytes) > 0 {
 		parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
@@ -901,4 +968,23 @@ func (c *grvCache) anchorInstant() time.Time {
 		return e.anchor
 	}
 	return time.Time{}
+}
+
+// markThrottled records a ratekeeper cooldown at the given instant without
+// touching the cached version. Test-facing counterpart to the reply path,
+// which publishes the cooldown together with the version it arrived with.
+func (c *grvCache) markThrottled(at time.Time, rkDefault, rkBatch bool) {
+	c.publishReply(time.Time{}, 0, at, rkDefault, rkBatch)
+}
+
+// throttleStamp is the recorded cooldown for a priority, or the zero time.
+func (c *grvCache) throttleStamp(priority uint32) time.Time {
+	e := c.entry.Load()
+	if e == nil {
+		return time.Time{}
+	}
+	if priority == grvPriorityBatch {
+		return e.rkBatch
+	}
+	return e.rkDefault
 }
