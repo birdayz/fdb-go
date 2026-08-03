@@ -22,11 +22,12 @@ import (
 //     Java's ImplementDistinctRule 1:1. A scan on a unique index, an
 //     identity-mapping MapPlan, etc. propagate distinctness through
 //     the property system.
-//  2. Logical-level PK/unique-index column coverage — Go extension,
-//     fallback. If the projected columns cover a primary key or unique
-//     index, ALL physical plans are guaranteed distinct (equivalent to
-//     Java's "strictlySorted" path where all partition members get
-//     elided).
+//  2. Logical-level PRIMARY KEY column coverage — Go extension,
+//     fallback. If the projected columns cover a primary key, ALL physical
+//     plans are guaranteed distinct (equivalent to Java's "strictlySorted"
+//     path where all partition members get elided). Primary-key uniqueness
+//     is a storage invariant; a SECONDARY index's `unique` flag is not, and
+//     is deliberately excluded — see distinctEliminatedByUniqueKey.
 //
 // When either check passes, the Distinct operator is elided and the
 // inner plan is yielded directly. Otherwise, the inner is wrapped
@@ -129,8 +130,9 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 }
 
 // distinctEliminatedByUniqueKey checks whether the projected column set
-// covers all columns of a primary key or unique index, making the
-// DISTINCT operator redundant. Ported from DistinctOnUniqueElimRule.
+// covers all columns of a PRIMARY KEY, making the DISTINCT operator
+// redundant. Secondary unique indexes are not admitted as proofs; the
+// reasoning is at the bottom of this function, where they are declined.
 func distinctEliminatedByUniqueKey(
 	innerExpr expressions.RelationalExpression,
 	ctx PlanContext,
@@ -162,24 +164,37 @@ func distinctEliminatedByUniqueKey(
 		}
 	}
 
-	for _, cand := range ctx.GetMatchCandidates() {
-		if !cand.IsUnique() {
-			continue
-		}
-		cols, plainFields := candidatePlainFieldColumnsForShortcut(cand)
-		if !plainFields {
-			continue
-		}
-		// UNIQUE on a fan-out index constrains index entries, not one value
-		// per base record. Empty repeated fields produce no entry at all, so
-		// the index key cannot prove the projected base rows are distinct.
-		if !candidatePreservesBaseRecordCardinality(cand) {
-			continue
-		}
-		if len(cols) > 0 && uniqueKeysCovered(cols, layoutType, projectedOrds) {
-			return true
-		}
-	}
+	// A SECONDARY index's `unique` flag is deliberately NOT a proof here.
+	//
+	// The flag states an INTENT recorded in metadata; whether the stored rows
+	// actually honour it is a property of the STORE, and the two part company in
+	// exactly one state. A unique index whose build completes over violating data
+	// lands in READABLE_UNIQUE_PENDING: fully populated, scannable, and carrying
+	// a `unique` flag the data contradicts — "safe to consider READABLE for
+	// queries as long as uniqueness is not assumed" (IndexState.java:59-66).
+	//
+	// Java never assumes it. Its DISTINCT implementation reads only
+	// DistinctRecordsProperty, which is `!createsDuplicates()` — key-expression
+	// fan-out, not the unique flag (DistinctRecordsProperty.java:265-273,
+	// ImplementDistinctRule.java:82-93). Where Java does trust
+	// MatchCandidate.isUnique() — RemoveSortRule's strict-sortedness,
+	// CardinalitiesProperty — it is safe for one structural reason and not a
+	// check at those sites: MetaDataPlanContext filters candidate indexes through
+	// RecordStoreState::isReadable (MetaDataPlanContext.java:96-103), which is
+	// exact equality with READABLE (RecordStoreState.java:172-174) and so
+	// excludes READABLE_UNIQUE_PENDING from planning entirely.
+	//
+	// Go builds match candidates from metadata alone, so no candidate here
+	// carries an index state and that structural guarantee does not exist. The
+	// executor's per-leaf state backstop cannot stand in for it: eliding a
+	// DISTINCT changes a plan that never READS the pending index — a base-record
+	// scan — so no leaf is ever checked and the duplicate rows flow out verbatim.
+	//
+	// Trusting a secondary unique index again requires the candidate set to be
+	// state-filtered the way Java's is; until then the primary-key arm above is
+	// the only uniqueness this proof may rest on, being a storage invariant
+	// rather than a declared intent. Declining costs a DISTINCT that was
+	// redundant; assuming costs duplicate rows.
 
 	return false
 }

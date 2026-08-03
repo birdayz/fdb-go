@@ -52,24 +52,69 @@ func requireCommittableFileMode(info os.FileInfo) error {
 	return nil
 }
 
+// trustedRefKind says WHOSE history the trusted ref belongs to. The two kinds
+// produce the identical ancestry shape when the trusted ref is not an ancestor
+// of HEAD, and the opposite meaning, so the caller — the only party that knows
+// which ref it passed — has to declare it.
+type trustedRefKind string
+
+const (
+	// trustedRefTargetBranch: the tip of the branch this change targets, which
+	// advances independently of the change. Commits on it past the fork point
+	// belong to other changes and stay protected on that branch, so narrowing
+	// the anchor to the fork point loses nothing.
+	trustedRefTargetBranch trustedRefKind = "target-branch"
+	// trustedRefPriorTip: this history's OWN previous tip (a push event's
+	// `before`). It must be an ancestor of HEAD. When it is not, history was
+	// rewritten and the commits it holds were deleted BY this push — the exact
+	// case the anchor must not be narrowed past.
+	trustedRefPriorTip trustedRefKind = "prior-tip"
+)
+
+func parseTrustedRefKind(raw string) (trustedRefKind, error) {
+	switch trustedRefKind(strings.TrimSpace(raw)) {
+	case trustedRefTargetBranch:
+		return trustedRefTargetBranch, nil
+	case trustedRefPriorTip:
+		return trustedRefPriorTip, nil
+	default:
+		return "", fmt.Errorf(
+			"unknown -trusted-ref-kind %q; want %q (the tip of the branch this change targets) or %q (this history's own pre-push tip)",
+			raw, trustedRefTargetBranch, trustedRefPriorTip)
+	}
+}
+
 func main() {
 	trustedRef := flag.String(
 		"trusted-ref",
 		"",
 		"Git commit/ref whose history is trusted (normally the pre-PR target branch)",
 	)
+	// The strict kind is the DEFAULT. A caller that forgets to declare gets the
+	// anchor that cannot silently narrow; only an explicit target-branch
+	// declaration buys tolerance for a moving base.
+	trustedRefKindFlag := flag.String(
+		"trusted-ref-kind",
+		string(trustedRefPriorTip),
+		"whose history -trusted-ref belongs to: \"target-branch\" (tip of the branch this change targets; may advance independently) or \"prior-tip\" (this history's own pre-push tip; must be an ancestor of HEAD)",
+	)
 	flag.Parse()
 	if flag.NArg() != 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "verify corpus retirement history: unexpected arguments: %v\n", flag.Args())
 		os.Exit(2)
 	}
-	if err := run(*trustedRef); err != nil {
+	kind, kindErr := parseTrustedRefKind(*trustedRefKindFlag)
+	if kindErr != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "verify corpus retirement history:", kindErr)
+		os.Exit(2)
+	}
+	if err := run(*trustedRef, kind); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "verify corpus retirement history:", err)
 		os.Exit(1)
 	}
 }
 
-func run(trustedRef string) error {
+func run(trustedRef string, kind trustedRefKind) error {
 	if strings.TrimSpace(trustedRef) == "" {
 		return fmt.Errorf("-trusted-ref is required; use the pre-PR target branch, not the proposed HEAD")
 	}
@@ -78,10 +123,10 @@ func run(trustedRef string) error {
 		return fmt.Errorf("locate Git repository: %w", err)
 	}
 	repoRoot := strings.TrimSpace(string(repoRootBytes))
-	return runAtRepo(repoRoot, trustedRef)
+	return runAtRepo(repoRoot, trustedRef, kind)
 }
 
-func runAtRepo(repoRoot, trustedRef string) error {
+func runAtRepo(repoRoot, trustedRef string, kind trustedRefKind) error {
 	if _, err := realDirectoryPath(repoRoot, ledgerRepoPath); err != nil {
 		return fmt.Errorf("retirement-ledger directory: %w", err)
 	}
@@ -96,25 +141,42 @@ func runAtRepo(repoRoot, trustedRef string) error {
 	if err != nil {
 		return fmt.Errorf("resolve proposed HEAD: %w", err)
 	}
-	// The trusted commit is the base AS THIS CHANGE SEES IT, not the live tip
-	// of the base branch.
+	// A trusted ref that is NOT an ancestor of HEAD has two possible causes, and
+	// they demand opposite responses. The ancestry alone cannot tell them apart —
+	// the commit graph looks identical — so the KIND the caller declared decides.
 	//
-	// Using the tip is a race, and it fires on innocent changes: CI evaluates a
-	// pull request against a merge commit built at trigger time, and the base
-	// branch keeps moving afterwards. Minutes later the tip is no longer an
-	// ancestor of that merge commit, and the gate rejects a change that did
-	// nothing wrong. Observed exactly that way — the base gained three commits
-	// between the merge ref being built and this step running.
+	//   target-branch: the base moved. CI evaluates a pull request against a
+	//     merge commit built at trigger time while the base branch keeps
+	//     advancing, so minutes later the tip is no longer an ancestor of that
+	//     merge commit and the gate would reject a change that did nothing wrong
+	//     (observed: the base gained three commits between the merge ref being
+	//     built and this step running). Narrowing to the fork point is right and
+	//     loses nothing — ledgers added to the base after the fork point are not
+	//     in this change's history, so this change cannot have altered them, and
+	//     they stay protected on the base branch itself.
 	//
-	// The merge base is the right anchor and loses nothing. Ledgers that exist
-	// on the base at the fork point are still immutable and undeletable here;
-	// ledgers added to the base AFTER the fork point are not in this change's
-	// history at all, so this change cannot have altered them.
-	trustedCommit, err = mergeBaseCommit(repoRoot, trustedCommit, headCommit)
-	if err != nil {
-		return fmt.Errorf("locate the base this change forked from: %w", err)
+	//   prior-tip: history was REWRITTEN. The trusted ref is this branch's own
+	//     pre-push tip, and the commits it holds that HEAD does not are the ones
+	//     the force-push deleted. Narrowing to the fork point would drop exactly
+	//     the erased ledgers out of the trusted set and wave the erasure through
+	//     — the one outcome this gate exists to prevent. Fail loudly instead.
+	if kind == trustedRefTargetBranch {
+		trustedCommit, err = mergeBaseCommit(repoRoot, trustedCommit, headCommit)
+		if err != nil {
+			return fmt.Errorf("locate the base this change forked from: %w", err)
+		}
 	}
 	if ancestryErr := verifyBaseCommit(repoRoot, trustedCommit, headCommit); ancestryErr != nil {
+		if kind == trustedRefPriorTip {
+			return fmt.Errorf(
+				"trusted commit %s is not an ancestor of proposed HEAD %s, so this history was rewritten: "+
+					"every commit reachable from the trusted tip but not from HEAD has been deleted by this push, "+
+					"and any retirement ledger among them would be erased without a trace. "+
+					"Retirement ledgers are immutable and undeletable once on the trusted branch; "+
+					"restore the dropped history, or re-run against the branch this change targets with "+
+					"-trusted-ref-kind=%s if the ref is a moving base rather than a rewritten tip: %w",
+				trustedCommit, headCommit, trustedRefTargetBranch, ancestryErr)
+		}
 		return fmt.Errorf("trusted commit must be an ancestor of proposed HEAD: %w", ancestryErr)
 	}
 	if err := validateCurrentCorpusEntries(repoRoot); err != nil {

@@ -1233,3 +1233,150 @@ func TestValuePredicateLongValueOperand(t *testing.T) {
 		t.Fatal("LongValue operand should not match order_id=99")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Tautology proof (index completeness)
+// --------------------------------------------------------------------------
+
+// TestPredicateProtoTautologyProofFailsClosed pins the completeness proof that
+// admits a filtered index to query execution. Every case that is NOT a proved
+// tautology must answer false: an index whose predicate can reject a record is
+// incomplete, and a scan over it silently omits rows.
+//
+// The nil / absent-arm cases are the load-bearing ones. ConstantPredicate.value
+// is a proto2 field whose declared DEFAULT is TRUE, so gen's nil-safe
+// GetConstantPredicate().GetValue() returns TRUE for a predicate that has no
+// constant arm at all — the getters fail OPEN. A proof written on those getters
+// declares EVERY predicate a tautology, which admits every sparse index.
+func TestPredicateProtoTautologyProofFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	valueArm := &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+		Value: []string{"price"},
+		Comparison: &gen.Comparison{
+			SimpleComparison: &gen.SimpleComparison{
+				Type:    gen.ComparisonType_GREATER_THAN.Enum(),
+				Operand: &gen.Value{IntValue: proto.Int32(100)},
+			},
+		},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		pred *gen.Predicate
+		want bool
+	}{
+		{"nil predicate", nil, false},
+		{"empty predicate message (no arm set)", &gen.Predicate{}, false},
+		{
+			"constant arm present but value unset — proto2 default is TRUE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{}},
+			true,
+		},
+		{
+			"constant TRUE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_TRUE.Enum(),
+			}},
+			true,
+		},
+		{
+			"constant FALSE",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_FALSE.Enum(),
+			}},
+			false,
+		},
+		{
+			"constant NULL",
+			&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_NULL.Enum(),
+			}},
+			false,
+		},
+		{"value comparison", valueArm, false},
+		{
+			// Java's QueryPredicate.isTautology() is overridden only by
+			// ConstantPredicate (ConstantPredicate.java:98); AndPredicate does
+			// not override it, so TRUE AND TRUE is not a tautology to Java
+			// either. Go matches that narrowness deliberately.
+			"AND of tautologies is not itself a proved tautology",
+			&gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			false,
+		},
+		{
+			"OR containing a tautology is not a proved tautology",
+			&gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}},
+			false,
+		},
+		{
+			// The evaluator (predicateFromProto) dispatches AND before the
+			// constant arm, so a multi-arm message runs the AND. Reading the
+			// constant arm out of turn would prove a tautology about a
+			// predicate that is never evaluated.
+			"multi-arm message answers for the arm the evaluator runs",
+			&gen.Predicate{
+				AndPredicate:      &gen.AndPredicate{Children: []*gen.Predicate{valueArm}},
+				ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+			},
+			false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := predicateProtoIsTautology(tc.pred); got != tc.want {
+				t.Fatalf("predicateProtoIsTautology = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering pins the other
+// half: an index's completeness can only be proved from the SERIALIZED
+// predicate. A programmatic Go closure is opaque — this one is a tautology and
+// no one can prove it — so it must count as filtering and keep the index out of
+// query execution.
+func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
+	t.Parallel()
+
+	plain := NewIndex("plain", Field("price"))
+	if plain.HasFilteringPredicate() {
+		t.Fatal("index with no predicate at all reports a filtering predicate")
+	}
+
+	opaque := NewIndex("opaque", Field("price")).
+		SetPredicate(func(proto.Message) bool { return true })
+	if !opaque.HasFilteringPredicate() {
+		t.Fatal("an opaque programmatic predicate must count as filtering — " +
+			"its tautology is unprovable, so the index cannot be assumed complete")
+	}
+
+	serialized := NewIndex("serialized", Field("price"))
+	if err := serialized.SetPredicateProto(&gen.Predicate{
+		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()},
+	}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+	if !serialized.HasPredicate() {
+		t.Fatal("a WHERE TRUE index still DECLARES a predicate")
+	}
+	if serialized.HasFilteringPredicate() {
+		t.Fatal("a proved-tautology predicate rejects no record, so the index " +
+			"is complete and must not be treated as filtering")
+	}
+
+	filtering := NewIndex("filtering", Field("price"))
+	if err := filtering.SetPredicateProto(&gen.Predicate{
+		ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_FALSE.Enum()},
+	}); err != nil {
+		t.Fatalf("SetPredicateProto: %v", err)
+	}
+	if !filtering.HasFilteringPredicate() {
+		t.Fatal("WHERE FALSE indexes nothing — maximally filtering")
+	}
+}

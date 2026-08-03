@@ -32,6 +32,37 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 	}
 }
 
+// predicateProtoIsTautology reports whether a stored index predicate provably
+// rejects no record. Deliberately as narrow as Java's QueryPredicate
+// .isTautology(): only ConstantPredicate.TRUE overrides the default `false`
+// (ConstantPredicate.java:98 vs QueryPredicate.java:311) — And/Or/Not do NOT,
+// so `WHERE TRUE AND TRUE` is not a tautology to Java either. Matching that
+// narrowness keeps the executor's completeness proof and the planner's
+// candidate-admission proof (indexPredicateToQueryPredicate + IsTautology)
+// answering the same question; a wider proof on one side alone would admit at
+// execution what planning treated as filtering, or the reverse.
+func predicateProtoIsTautology(p *gen.Predicate) bool {
+	if p == nil {
+		return false
+	}
+	// Dispatch in predicateFromProto's exact order and answer only for the arm
+	// that function would actually evaluate. A proto carrying several arms is
+	// evaluated by the FIRST one, so reading the constant arm out of turn would
+	// prove a tautology about a predicate the evaluator never runs.
+	//
+	// The arm-presence test is not redundant with the value test: ConstantPredicate
+	// .value is a proto2 field whose declared DEFAULT is TRUE, so GetValue() on an
+	// absent arm returns TRUE. The nil-safe getters fail OPEN here, not closed.
+	switch {
+	case p.AndPredicate != nil, p.OrPredicate != nil:
+		return false
+	case p.ConstantPredicate != nil:
+		return p.ConstantPredicate.GetValue() == gen.ConstantPredicate_TRUE
+	default:
+		return false
+	}
+}
+
 func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {
 	children := make([]IndexPredicate, 0, len(p.Children))
 	for i, child := range p.Children {

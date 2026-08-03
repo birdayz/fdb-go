@@ -382,12 +382,33 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	}
 }
 
-// TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate proves that UNIQUE on a
-// fan-out index is uniqueness of index entries, not a base-row uniqueness key.
-// In particular, multiple records may all have an empty repeated field and
-// produce no index entry, so projecting that field does not make DISTINCT
-// redundant. A normal unique scalar index remains a valid elimination proof.
-func TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate(t *testing.T) {
+// TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof pins that NO
+// secondary index's `unique` flag makes a DISTINCT redundant — not a fan-out
+// one, and not a perfectly ordinary scalar one either.
+//
+// The fan-out cases (TAGS, SCORE, CITY) fail for a second, independent reason:
+// UNIQUE on a fan-out index constrains index ENTRIES, and records with an empty
+// repeated field produce no entry at all, so the key says nothing about base-row
+// distinctness. They are kept because that reason must survive on its own.
+//
+// EMAIL — a plain, scalar, non-fan-out unique index — is the case this test
+// exists for. It USED to be elided, and that elision returned duplicate rows
+// against a real store: a unique index whose build completes over violating data
+// lands in READABLE_UNIQUE_PENDING, keeping its `unique` flag while the data
+// contradicts it. Go's match candidates are built from metadata alone and carry
+// no index state, so the planner cannot tell the two apart; Java can only trust
+// the flag because MetaDataPlanContext filters candidates through
+// RecordStoreState::isReadable first (MetaDataPlanContext.java:96-103,
+// RecordStoreState.java:172-174), which excludes that state from planning.
+//
+// The elision cannot be resurrected by state-filtering the candidate set alone:
+// see TestFDB_UniquePendingIndexDoesNotEliminateDistinct for the end-to-end
+// witness, and note it fires on a plan that never reads the pending index, so
+// no executor leaf check can substitute.
+//
+// The PK case is the positive control. Without it this test would still pass
+// with the whole rule inert, since "no elision" is what a dead rule produces.
+func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.T) {
 	t.Parallel()
 
 	fanOut := true
@@ -439,47 +460,54 @@ func TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate(t *testing.T) {
 		newUniqueCandidate("T$email_unique", "EMAIL", &scalar),
 	}}
 
-	assertWrapped := func(projected string) {
+	fire := func(planCtx PlanContext, projected string) []expressions.RelationalExpression {
 		t.Helper()
-		results := FireImplementationRuleWithContext(
+		return FireImplementationRuleWithContext(
 			NewImplementDistinctFinalRule(),
 			buildDistinctOverProjection("T", []values.Value{
 				distinctRead("T", projected),
 			}),
-			ctx,
+			planCtx,
 			nil,
 		)
-		for _, result := range results {
+	}
+	assertWrapped := func(projected, why string) {
+		t.Helper()
+		for _, result := range fire(ctx, projected) {
 			if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
 				return
 			}
 		}
-		t.Fatalf("DISTINCT(%s) was elided; the unique fan-out index is not a base-row uniqueness proof", projected)
-	}
-	assertEliminated := func(projected string) {
-		t.Helper()
-		results := FireImplementationRuleWithContext(
-			NewImplementDistinctFinalRule(),
-			buildDistinctOverProjection("T", []values.Value{
-				distinctRead("T", projected),
-			}),
-			ctx,
-			nil,
-		)
-		if len(results) == 0 {
-			t.Fatalf("DISTINCT(%s): rule did not fire", projected)
-		}
-		for _, result := range results {
-			if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
-				t.Fatalf("DISTINCT(%s) was retained; the unique scalar index should prove it redundant", projected)
-			}
-		}
+		t.Fatalf("DISTINCT(%s) was elided; %s", projected, why)
 	}
 
-	assertWrapped("TAGS")
-	assertWrapped("SCORE")
-	assertWrapped("CITY")
-	assertEliminated("EMAIL")
+	assertWrapped("TAGS", "UNIQUE on a fan-out index constrains index entries, "+
+		"not base rows — records with an empty repeated field produce no entry at all")
+	assertWrapped("SCORE", "a CARDINALITY()-keyed unique index keys a derived "+
+		"value, not the projected column")
+	assertWrapped("CITY", "a unique index nested under a repeated parent is "+
+		"fan-out, whatever the leaf's fan type says")
+	assertWrapped("EMAIL", "a secondary index's `unique` flag is a metadata "+
+		"INTENT, not a statement about the stored rows — a READABLE_UNIQUE_PENDING "+
+		"index carries that flag over data that violates it")
+
+	// Positive control: the SAME projection over the SAME layout IS elided when
+	// EMAIL is the primary key rather than a unique index. Primary-key
+	// uniqueness is a storage invariant with no pending state to diverge into.
+	// This is also what keeps the four assertions above honest — an inert rule
+	// would satisfy every one of them.
+	pkCtx := &pkPlanContext{pk: map[string][]string{"T": {"EMAIL"}}}
+	pkResults := fire(pkCtx, "EMAIL")
+	if len(pkResults) == 0 {
+		t.Fatal("DISTINCT(EMAIL) over a PK-covering projection: rule did not fire at all")
+	}
+	for _, result := range pkResults {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			t.Fatal("DISTINCT(EMAIL) was retained even though EMAIL is the PRIMARY KEY — " +
+				"primary-key coverage is still a valid elimination proof, and if it " +
+				"stopped being one the four assertions above would prove nothing")
+		}
+	}
 }
 
 // TestDistinctFinal_WrapsAllMembers verifies the wrapping path

@@ -1126,9 +1126,6 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []PlannedScalarSubquery
-	// Signature of the authoritative strictly-readable index set used to plan.
-	// Revalidated inside every execution transaction before any plan or scalar
-	// subquery runs, including cache hits and continuation pages.
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun

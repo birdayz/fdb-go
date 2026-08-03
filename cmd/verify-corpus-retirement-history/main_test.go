@@ -259,7 +259,7 @@ func TestRunRejectsNewLedgerBasedBeforeTrustedCorpusGrowth(t *testing.T) {
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "propose stale-base retirement")
 
-	err := runAtRepo(repo, trustedCommit)
+	err := runAtRepo(repo, trustedCommit, trustedRefPriorTip)
 	if err == nil || !strings.Contains(err.Error(), "BEFORE does not match trusted target") {
 		t.Fatalf("stale-base retirement error = %v, want trusted-corpus BEFORE rejection", err)
 	}
@@ -289,7 +289,7 @@ func TestRunRejectsAdditionOnlyRetirementLedger(t *testing.T) {
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "unnecessary addition-only ledger")
 
-	err := runAtRepo(repo, trustedCommit)
+	err := runAtRepo(repo, trustedCommit, trustedRefPriorTip)
 	if err == nil || !strings.Contains(err.Error(), "every trusted corpus file remains byte-identical") {
 		t.Fatalf("addition-only ledger error = %v, want unused-ledger rejection", err)
 	}
@@ -318,13 +318,13 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "ledger and exact after")
 	retirementCommit := gitForTest(t, repo, "rev-parse", "HEAD")
-	if err := runAtRepo(repo, trustedBase); err != nil {
+	if err := runAtRepo(repo, trustedBase, trustedRefPriorTip); err != nil {
 		t.Fatalf("valid new ledger: %v", err)
 	}
 
 	writeHistoryFile(t, filepath.Join(corpusDir, name),
 		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=tampered-after"))
-	if err := runAtRepo(repo, trustedBase); err == nil || !strings.Contains(err.Error(), "checkout does not exactly match raw proposed HEAD") {
+	if err := runAtRepo(repo, trustedBase, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "checkout does not exactly match raw proposed HEAD") {
 		t.Fatalf("malformed current AFTER error = %v, want raw-HEAD/checkout rejection", err)
 	}
 	writeHistoryFile(t, filepath.Join(corpusDir, name), afterBytes)
@@ -335,10 +335,10 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "later legitimate corpus growth")
 	trustedGrowth := gitForTest(t, repo, "rev-parse", "HEAD")
-	if err := runAtRepo(repo, retirementCommit); err != nil {
+	if err := runAtRepo(repo, retirementCommit, trustedRefPriorTip); err != nil {
 		t.Fatalf("add-only growth relative to pre-growth trusted ref: %v", err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err != nil {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err != nil {
 		t.Fatalf("historical ledger after later growth: %v", err)
 	}
 
@@ -346,7 +346,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=unledgered-replacement"))
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "attempt unledgered replacement")
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "changed without one new retirement ledger") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "changed without one new retirement ledger") {
 		t.Fatalf("unledgered replacement error = %v, want trusted-tree rejection", err)
 	}
 	writeHistoryFile(t, filepath.Join(corpusDir, name), afterBytes)
@@ -361,7 +361,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 		historyCorpusScenario(t, "fc_0000000003_q0_p0", "shape=balanced-swap"))
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "attempt balanced corpus swap")
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "deleted or renamed") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "deleted or renamed") {
 		t.Fatalf("balanced delete+add error = %v, want lost trusted-file rejection", err)
 	}
 	if err := os.Remove(filepath.Join(corpusDir, swapName)); err != nil {
@@ -378,7 +378,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(corpusSymlinkTarget, filepath.Join(corpusDir, name)); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "proposed corpus file") || !strings.Contains(err.Error(), "not a regular file") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "proposed corpus file") || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("replacement corpus symlink error = %v, want non-regular-file rejection", err)
 	}
 	if err := os.Remove(filepath.Join(corpusDir, name)); err != nil {
@@ -389,7 +389,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(corpusSymlinkTarget, addedSymlink); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "proposed corpus file") || !strings.Contains(err.Error(), "not a regular file") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "proposed corpus file") || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("added corpus symlink error = %v, want non-regular-file rejection", err)
 	}
 	if err := os.Remove(addedSymlink); err != nil {
@@ -398,7 +398,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	weirdName := filepath.Join(corpusDir, `C:\x.yamsql`)
 	writeHistoryFile(t, weirdName,
 		historyCorpusScenario(t, "fc_0000000004_q0_p0", "shape=nonportable-name"))
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "portable flat .yamsql name") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "portable flat .yamsql name") {
 		t.Fatalf("nonportable corpus filename error = %v, want path-policy rejection", err)
 	}
 	if err := os.Remove(weirdName); err != nil {
@@ -411,7 +411,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(corpusBackup, corpusDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "factory-corpus directory") || !strings.Contains(err.Error(), "not a real directory") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "factory-corpus directory") || !strings.Contains(err.Error(), "not a real directory") {
 		t.Fatalf("corpus directory symlink error = %v, want real-directory rejection", err)
 	}
 	if err := os.Remove(corpusDir); err != nil {
@@ -428,7 +428,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(ledgerDirBackup, ledgerDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "retirement-ledger directory") || !strings.Contains(err.Error(), "not a real directory") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "retirement-ledger directory") || !strings.Contains(err.Error(), "not a real directory") {
 		t.Fatalf("ledger directory symlink error = %v, want real-directory rejection", err)
 	}
 	if err := os.Remove(ledgerDir); err != nil {
@@ -439,14 +439,14 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	}
 
 	writeHistoryFile(t, ledgerPath, append(append([]byte(nil), ledgerBytes...), '\n'))
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "was modified") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "was modified") {
 		t.Fatalf("modified historical ledger error = %v, want immutability rejection", err)
 	}
 	writeHistoryFile(t, ledgerPath, ledgerBytes)
 	if err := os.Chmod(ledgerPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
 		t.Fatalf("executable ledger error = %v, want mode rejection", err)
 	}
 	if err := os.Chmod(ledgerPath, 0o644); err != nil {
@@ -460,7 +460,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Symlink(symlinkTarget, ledgerPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("symlink ledger error = %v, want non-regular-file rejection", err)
 	}
 	if err := os.Remove(ledgerPath); err != nil {
@@ -470,7 +470,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	if err := os.Remove(ledgerPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "was deleted") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "was deleted") {
 		t.Fatalf("deleted historical ledger error = %v, want deletion rejection", err)
 	}
 	ledgerRepoRelative := filepath.ToSlash(strings.TrimPrefix(ledgerPath, repo+string(filepath.Separator)))
@@ -479,7 +479,7 @@ func TestRunPinsNewAndHistoricalLedgerLifecycle(t *testing.T) {
 	writeHistoryFile(t, ledgerPath, ledgerBytes)
 	gitForTest(t, repo, "add", ledgerRepoRelative)
 	gitForTest(t, repo, "commit", "--quiet", "-m", "re-add identical trusted ledger")
-	if err := runAtRepo(repo, trustedGrowth); err == nil || !strings.Contains(err.Error(), "changed in proposed history") {
+	if err := runAtRepo(repo, trustedGrowth, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "changed in proposed history") {
 		t.Fatalf("committed ledger delete+readd error = %v, want trusted-history immutability rejection", err)
 	}
 }
@@ -555,7 +555,7 @@ func TestRunRejectsNestedProposedHeadCorpus(t *testing.T) {
 	if err := os.Remove(nestedDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "unexpected corpus tree path") {
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "unexpected corpus tree path") {
 		t.Fatalf("nested proposed-HEAD corpus error = %v, want raw-tree path rejection", err)
 	}
 }
@@ -590,7 +590,7 @@ func TestRunRejectsCheckoutTransformedCorpusBytes(t *testing.T) {
 	if bytes.Equal(working, data) {
 		t.Fatal("git ident fixture did not transform checkout bytes")
 	}
-	if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "checkout bytes differ from raw commit") {
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "checkout bytes differ from raw commit") {
 		t.Fatalf("checkout-transformed corpus error = %v, want raw-blob mismatch rejection", err)
 	}
 }
@@ -632,7 +632,7 @@ func TestRunRejectsCheckoutTransformedNewLedgerBytes(t *testing.T) {
 	if bytes.Equal(working, rawLedger) {
 		t.Fatal("git ident fixture did not transform ledger checkout bytes")
 	}
-	if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "checkout bytes differ from raw proposed HEAD") {
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "checkout bytes differ from raw proposed HEAD") {
 		t.Fatalf("checkout-transformed ledger error = %v, want raw-blob mismatch rejection", err)
 	}
 }
@@ -708,13 +708,13 @@ func TestRunAcceptsGroupWritableCheckoutModes(t *testing.T) {
 		if err := os.Chmod(corpusPath, mode); err != nil {
 			t.Fatal(err)
 		}
-		if err := runAtRepo(repo, trusted); err != nil {
+		if err := runAtRepo(repo, trusted, trustedRefPriorTip); err != nil {
 			t.Fatalf("corpus file checked out with mode %v was rejected: %v", mode, err)
 		}
 		if err := os.Chmod(corpusPath, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
+		if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "carries an execute bit") {
 			t.Fatalf("executable corpus file error = %v, want execute-bit rejection", err)
 		}
 		if err := os.Chmod(corpusPath, 0o644); err != nil {
@@ -728,7 +728,7 @@ func TestRunAcceptsGroupWritableCheckoutModes(t *testing.T) {
 		if err := os.Symlink(target, corpusPath); err != nil {
 			t.Fatal(err)
 		}
-		if err := runAtRepo(repo, trusted); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("symlinked corpus file error = %v, want non-regular-file rejection", err)
 		}
 	}
@@ -751,7 +751,7 @@ func TestRunAcceptsAnAbsentRetirementLedgerDirectory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(ledgerRepoPath))); !os.IsNotExist(err) {
 		t.Fatalf("fixture unexpectedly has a retirement-ledger directory: %v", err)
 	}
-	if err := runAtRepo(repo, trusted); err != nil {
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err != nil {
 		t.Fatalf("ledger-free repository was rejected: %v", err)
 	}
 }
@@ -780,7 +780,7 @@ func TestAdditiveFamilyAppendNeedsNoLedger(t *testing.T) {
 	writeHistoryFile(t, filepath.Join(corpusDir, name), grown)
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "append a scenario into an existing family")
-	if err := runAtRepo(repo, trusted); err != nil {
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err != nil {
 		t.Fatalf("additive append into an existing family file was rejected: %v", err)
 	}
 
@@ -788,7 +788,7 @@ func TestAdditiveFamilyAppendNeedsNoLedger(t *testing.T) {
 	writeHistoryFile(t, filepath.Join(corpusDir, name), rewritten)
 	gitForTest(t, repo, "add", ".")
 	gitForTest(t, repo, "commit", "--quiet", "-m", "rewrite a committed scenario without a ledger")
-	if err := runAtRepo(repo, trusted); err == nil ||
+	if err := runAtRepo(repo, trusted, trustedRefPriorTip); err == nil ||
 		!strings.Contains(err.Error(), "changed without one new retirement ledger") ||
 		!strings.Contains(err.Error(), "fc_0000000001_q0_p0 (scenario rewritten)") {
 		t.Fatalf("unledgered scenario rewrite error = %v, want a scenario-level rejection", err)
@@ -844,7 +844,7 @@ func TestRunToleratesTheBaseBranchMovingAfterTheMergeCommit(t *testing.T) {
 	if err := verifyBaseCommit(repo, movedTip, mergeCommit); err == nil {
 		t.Fatal("fixture is not exercising the race: the moved tip is still an ancestor of the merge commit")
 	}
-	if err := runAtRepo(repo, baseBranch); err != nil {
+	if err := runAtRepo(repo, baseBranch, trustedRefTargetBranch); err != nil {
 		t.Fatalf("gate rejected an innocent change because the base branch moved: %v", err)
 	}
 }
@@ -1022,4 +1022,120 @@ func gitForTest(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// TestRunRejectsForcePushErasingRetirementLedgers pins the OTHER reason a
+// trusted ref can fail to be an ancestor of HEAD.
+//
+// The merge-base normalization exists for a moving target: on a pull request CI
+// evaluates a merge commit built at trigger time while the base branch keeps
+// advancing, so the base tip stops being an ancestor of a change that did
+// nothing wrong. Ledgers on the base past the fork point are not in the change's
+// history and remain protected on the base branch.
+//
+// A force-push to the target branch produces the identical ancestry SHAPE and
+// the opposite meaning. There the trusted ref is github.event.before — the
+// branch's own pre-push tip — and ledgers between the common ancestor and that
+// tip are not somebody else's work still safe elsewhere; they are exactly what
+// the rewrite deleted. Normalizing to the common ancestor removes them from the
+// trusted set and the erasure passes unnoticed, which is the one thing this gate
+// exists to prevent ("once present on the trusted target branch, ledger bytes
+// are immutable and undeletable").
+//
+// The two cases are indistinguishable from ancestry alone; only the CALLER knows
+// which ref it handed over, so the gate makes it say so.
+func TestRunRejectsForcePushErasingRetirementLedgers(t *testing.T) {
+	t.Parallel()
+	repo := newHistoryTestRepo(t)
+	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+	beforeDir := t.TempDir()
+	name := historyCorpusFileName(t, "fc_0000000001_q0_p0")
+	beforeBytes := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=before")
+	writeHistoryFile(t, filepath.Join(corpusDir, name), beforeBytes)
+	writeHistoryFile(t, filepath.Join(beforeDir, name), beforeBytes)
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "trusted base")
+	trustedBase := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	// The pre-push tip: a legitimate retirement, ledger and all.
+	afterBytes := historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=after")
+	writeHistoryFile(t, filepath.Join(corpusDir, name), afterBytes)
+	ledger := historyTestLedger(t, trustedBase, beforeDir, corpusDir, factorycorpus.RetirementChange{
+		Name: name, Disposition: factorycorpus.DispositionReplaced,
+		OldSHA256: historyDigest(beforeBytes), NewSHA256: historyDigest(afterBytes),
+	})
+	writeHistoryLedger(t, repo, ledger)
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "retire a scenario, with its ledger")
+	prePushTip := gitForTest(t, repo, "rev-parse", "HEAD")
+	if err := runAtRepo(repo, trustedBase, trustedRefPriorTip); err != nil {
+		t.Fatalf("the pre-push tip must itself be a valid state: %v", err)
+	}
+
+	// The force-push: history rewound to the base and rebuilt WITHOUT the
+	// retirement — no ledger, and the retired corpus bytes restored to what they
+	// were. Relative to the FORK POINT this tree is spotless: the corpus is
+	// byte-identical and no ledger is required. Every other check in this gate
+	// therefore has nothing to say, and the erasure of the ledger that DID exist
+	// on the pre-push tip is the only fault left to catch.
+	gitForTest(t, repo, "checkout", "--quiet", "-B", "rewritten", trustedBase)
+	writeHistoryFile(t, filepath.Join(repo, "unrelated.txt"), []byte("rebuilt history\n"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "rebuilt history without the retirement")
+	rewrittenTip := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	if err := verifyBaseCommit(repo, prePushTip, rewrittenTip); err == nil {
+		t.Fatal("fixture is not exercising a rewrite: the pre-push tip is still an ancestor of the new tip")
+	}
+	if err := runAtRepo(repo, trustedBase, trustedRefPriorTip); err != nil {
+		t.Fatalf("fixture is not isolating the erasure: the rewritten tip is already "+
+			"rejected against the FORK POINT for some other reason, so this test would "+
+			"pass with the trusted-ref narrowing fully intact: %v", err)
+	}
+
+	erased := ledgerNameForTest(t, repo, prePushTip)
+	err := runAtRepo(repo, prePushTip, trustedRefPriorTip)
+	if err == nil {
+		t.Fatalf("a force-push that erased retirement ledger %q was ACCEPTED; "+
+			"normalizing the trusted ref to merge-base(%s, %s) drops every ledger the "+
+			"rewrite deleted out of the trusted set", erased, prePushTip, rewrittenTip)
+	}
+	if !strings.Contains(err.Error(), "history was rewritten") {
+		t.Fatalf("force-push rejection = %v, want an error naming the rewritten history", err)
+	}
+}
+
+// TestRunToleratesTheBaseBranchMovingUnderAPriorTipRef is the negative control
+// for the discrimination above: a trusted ref declared as a prior tip must still
+// pass when it IS an ancestor, which is every ordinary fast-forward push. Only
+// the rewrite case is refused, not the whole prior-tip mode.
+func TestRunToleratesTheBaseBranchMovingUnderAPriorTipRef(t *testing.T) {
+	t.Parallel()
+	repo := newHistoryTestRepo(t)
+	corpusDir := filepath.Join(repo, filepath.FromSlash(corpusRepoPath))
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000001_q0_p0")),
+		historyCorpusScenario(t, "fc_0000000001_q0_p0", "shape=base"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "base")
+	priorTip := gitForTest(t, repo, "rev-parse", "HEAD")
+
+	writeHistoryFile(t, filepath.Join(corpusDir, historyCorpusFileName(t, "fc_0000000002_q0_p0")),
+		historyCorpusScenario(t, "fc_0000000002_q0_p0", "shape=added"))
+	gitForTest(t, repo, "add", ".")
+	gitForTest(t, repo, "commit", "--quiet", "-m", "fast-forward growth")
+
+	if err := runAtRepo(repo, priorTip, trustedRefPriorTip); err != nil {
+		t.Fatalf("ordinary fast-forward push rejected under a prior-tip trusted ref: %v", err)
+	}
+}
+
+// ledgerNameForTest reports the single ledger present at commit, for failure
+// messages that have to name what was erased.
+func ledgerNameForTest(t *testing.T, repo, commit string) string {
+	t.Helper()
+	paths, err := ledgerPathsAtCommit(repo, commit)
+	if err != nil || len(paths) == 0 {
+		return "(none found)"
+	}
+	return paths[0]
 }

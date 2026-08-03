@@ -701,10 +701,18 @@ func executeVectorIndexScan(
 // both the one state Java admits to planning (strictly READABLE) and a complete
 // index. Filtered indexes remain rejected until physical plans carry a checked
 // predicate-implication proof.
+//
+// "Complete" is HasFilteringPredicate, not HasPredicate: a stored predicate
+// that is a PROVED tautology rejects no record, so the index holds an entry for
+// every row and nothing is missing to reject. Planning already reasons that way
+// (a tautological candidate predicate is never attached —
+// ValueIndexExpansionVisitor.java:141), so a backstop keyed on the mere
+// presence of a predicate field would kill, at execution, plans the planner is
+// entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
 	state := store.GetIndexState(idx.Name)
 	if state == recordlayer.IndexStateReadable {
-		if idx.HasPredicate() {
+		if idx.HasFilteringPredicate() {
 			return &FilteredIndexPlanError{IndexName: idx.Name}
 		}
 		return nil

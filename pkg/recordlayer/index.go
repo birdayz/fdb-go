@@ -539,6 +539,22 @@ func (idx *Index) HasPredicate() bool {
 	return idx != nil && (idx.Predicate != nil || idx.predicateProto != nil)
 }
 
+// HasFilteringPredicate reports whether this index's predicate can actually
+// reject a record — the question anything reasoning about index COMPLETENESS
+// has to ask, as opposed to HasPredicate's question of whether a predicate is
+// declared at all. A predicate that is a proved tautology rejects nothing, so
+// the index holds an entry for every record and a scan over it is not lossy;
+// Java draws the same line at ValueIndexExpansionVisitor.java:141, where a
+// tautological index predicate is simply not attached to the match candidate
+// and the index stays a full value index.
+//
+// Only the serialized representation can be reasoned about. A programmatic Go
+// predicate is an opaque closure — `func(proto.Message) bool { return true }`
+// is a tautology no one can prove — so it counts as filtering and fails closed.
+func (idx *Index) HasFilteringPredicate() bool {
+	return idx.HasPredicate() && !predicateProtoIsTautology(idx.predicateProto)
+}
+
 // PrimaryKeyComponentPositions returns the overlap mapping between index key and primary key.
 // nil means no overlap was computed. Matches Java's Index.getPrimaryKeyComponentPositions().
 func (idx *Index) PrimaryKeyComponentPositions() []int {
