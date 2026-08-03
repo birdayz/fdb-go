@@ -1903,7 +1903,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
 	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	// Captured together, both BEFORE dispatch: the instant this version's MVCC
+	// window opened, and the cache generation it is entitled to publish
+	// against. Loading the generation after the commit returns would let a
+	// commit dispatched before InvalidateGRVCache install its pre-invalidation
+	// version as though it were a post-invalidation observation, and an
+	// opted-in reader would then miss the very write the caller invalidated to
+	// observe.
 	commitStart := time.Now()
+	var commitGen int64
+	if tx.db != nil {
+		commitGen = tx.db.grvCache.generation.Load()
+	}
 	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
 	}
@@ -1948,7 +1959,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
 	// still (before dispatch rather than after), which is the safe direction.
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(commitStart, tx.committedVersion)
+		tx.db.grvCache.update(commitGen, commitStart, tx.committedVersion)
 	}
 
 	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs

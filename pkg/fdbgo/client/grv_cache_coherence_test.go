@@ -98,7 +98,7 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 			defer pub.Done()
 			for i := int64(1); i <= versionsEach; i++ {
 				v := base*versionsEach + i
-				c.updateFromGRV(coherenceTimeFor(v), v)
+				c.updateFromGRV(c.generation.Load(), coherenceTimeFor(v), v)
 			}
 		}(int64(w))
 	}

@@ -149,28 +149,29 @@ type grvCacheEntry struct {
 //
 // All three fields ride ONE immutable entry behind ONE atomic pointer, so a
 // reader can never observe a version paired with another version's anchor.
-func (c *grvCache) publish(at time.Time, v int64) {
-	c.publishReply(at, v, time.Time{}, false, false)
+func (c *grvCache) publish(gen int64, at time.Time, v int64) {
+	c.publishReplyAt(gen, at, v, time.Time{}, false, false)
 }
 
-// publishReply records a GRV reply as ONE atomic publication: the version and
+// publishReplyAt records a reply as ONE atomic publication: the version and
 // its anchor, the renewed freshness, and any ratekeeper cooldown the reply
 // carried. Doing it in one CAS is what makes it impossible for a reader to see
 // a renewed entry before its cooldown — see grvCacheEntry.rkDefault.
+//
+// gen is the cache generation current when this reply's request was
+// DISPATCHED, and it is a REQUIRED parameter on every publication entry point
+// in this file — deliberately. There is no overload that loads it here,
+// because "load the generation at publication time" is precisely the bug: by
+// then an invalidation may have happened while the request was in flight, and
+// a version obtained before it would install as though it were obtained after.
+// Requiring the parameter means a future publisher cannot compile without
+// deciding when it captured, which a convention in a comment cannot promise.
 //
 // replyTime stamps the cooldowns (C++ uses the reply instant for these, not
 // the request instant: lastRkBatchThrottleTime/lastRkDefaultThrottleTime =
 // replyTime, NativeAPI.actor.cpp:7411-7416). Cooldowns only ever advance, and
 // they SURVIVE a version that is rejected as stale — a throttle signal is
 // about the cluster, not about the version that happened to carry it.
-func (c *grvCache) publishReply(at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
-	c.publishReplyAt(c.generation.Load(), at, v, replyTime, rkDefault, rkBatch)
-}
-
-// publishReplyAt is publishReply for a reply that was validated under a known
-// generation — the one current when its GRV request was DISPATCHED. A reply
-// carrying a version obtained before an invalidation must never install it,
-// however the retry loop is scheduled.
 func (c *grvCache) publishReplyAt(gen int64, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
 	for {
 		cur := c.entry.Load()
@@ -298,8 +299,8 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 // reader. No lock state: the cached path fail-opens (RFC-104; the RFC-096
 // commit-must-not-extend-freshness divergence is reverted now that the cache is
 // no longer always-on + enforcement-carrying).
-func (c *grvCache) update(at time.Time, v int64) {
-	c.publish(at, v)
+func (c *grvCache) update(gen int64, at time.Time, v int64) {
+	c.publish(gen, at, v)
 }
 
 // updateFromGRV updates the cache from a real GRV reply: version + freshness,
@@ -308,8 +309,8 @@ func (c *grvCache) update(at time.Time, v int64) {
 // :7409, is not gated on the option). No lock state: the cached path fail-opens
 // (RFC-104; the RFC-096 lastLocked ride-along is removed — the per-transaction
 // locked check now lives only on the fresh-GRV consumption path).
-func (c *grvCache) updateFromGRV(t time.Time, v int64) {
-	c.publish(t, v)
+func (c *grvCache) updateFromGRV(gen int64, t time.Time, v int64) {
+	c.publish(gen, t, v)
 }
 
 // invalidate clears the cached version.
@@ -1047,8 +1048,8 @@ func (c *grvCache) anchorInstant() time.Time {
 // markThrottled records a ratekeeper cooldown at the given instant without
 // touching the cached version. Test-facing counterpart to the reply path,
 // which publishes the cooldown together with the version it arrived with.
-func (c *grvCache) markThrottled(at time.Time, rkDefault, rkBatch bool) {
-	c.publishReply(time.Time{}, 0, at, rkDefault, rkBatch)
+func (c *grvCache) markThrottled(gen int64, at time.Time, rkDefault, rkBatch bool) {
+	c.publishReplyAt(gen, time.Time{}, 0, at, rkDefault, rkBatch)
 }
 
 // throttleStamp is the recorded cooldown for a priority, or the zero time.

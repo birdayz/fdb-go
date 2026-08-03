@@ -41,13 +41,13 @@ func TestGRVCache_EqualVersionRefreshKeepsTheCacheServing(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return at }}
 
 	const sameVersion = 5000
-	c.updateFromGRV(base, sameVersion)
+	c.updateFromGRV(c.generation.Load(), base, sameVersion)
 
 	// Refresh every 50ms — comfortably inside the 100ms window each time —
 	// and always with the SAME version, as a quiet cluster returns.
 	for step := 1; step <= 6; step++ {
 		at = base.Add(time.Duration(step) * 50 * time.Millisecond)
-		c.updateFromGRV(at, sameVersion)
+		c.updateFromGRV(c.generation.Load(), at, sameVersion)
 
 		v, _, ok := c.tryCache(grvPriorityDefault)
 		if !ok {
@@ -78,7 +78,7 @@ func TestGRVCache_EqualVersionRefreshDoesNotMoveTheAnchor(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return at }}
 
 	const sameVersion = 6000
-	c.updateFromGRV(base, sameVersion)
+	c.updateFromGRV(c.generation.Load(), base, sameVersion)
 
 	_, anchor0, ok := c.tryCache(grvPriorityDefault)
 	if !ok {
@@ -91,7 +91,7 @@ func TestGRVCache_EqualVersionRefreshDoesNotMoveTheAnchor(t *testing.T) {
 	// A later refresh returning the SAME version. Freshness may advance; the
 	// anchor may not — version 6000's MVCC window opened once.
 	at = base.Add(50 * time.Millisecond)
-	c.updateFromGRV(at, sameVersion)
+	c.updateFromGRV(c.generation.Load(), at, sameVersion)
 
 	_, anchor1, ok := c.tryCache(grvPriorityDefault)
 	if !ok {
@@ -118,7 +118,7 @@ func TestGRVCache_RefresherDoesNotPegAtTheFloor(t *testing.T) {
 	c := &grvCache{now: func() time.Time { return at }}
 
 	const sameVersion = 7000
-	c.updateFromGRV(base, sameVersion)
+	c.updateFromGRV(c.generation.Load(), base, sameVersion)
 	c.lastProxyContact.Store(base.UnixNano())
 
 	// The refresher's own loop: wait, GRV (same version), repeat.
@@ -134,7 +134,7 @@ func TestGRVCache_RefresherDoesNotPegAtTheFloor(t *testing.T) {
 		// Time advances by the wait, then the GRV succeeds with the same
 		// version and refreshes both the proxy contact and freshness.
 		at = at.Add(wait)
-		c.updateFromGRV(at, sameVersion)
+		c.updateFromGRV(c.generation.Load(), at, sameVersion)
 		c.lastProxyContact.Store(at.UnixNano())
 	}
 

@@ -27,7 +27,7 @@ func TestGRVCache_TryCacheBeforeUpdate(t *testing.T) {
 func TestGRVCache_UpdateThenTryCacheReturnsValue(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 9999)
+	c.updateFromGRV(c.generation.Load(), time.Now(), 9999)
 	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 9999 {
 		t.Errorf("got (%d, %v), want (9999, true)", v, ok)
@@ -38,7 +38,7 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
 	// Stamp the cache as updated 1 second ago (way past maxVersionCacheLag = 100ms).
-	c.publish(time.Now().Add(-time.Second), 1234)
+	c.publish(c.generation.Load(), time.Now().Add(-time.Second), 1234)
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Errorf("stale entry returned: got (%d, true), want stale-miss", v)
 	}
@@ -51,7 +51,7 @@ func TestGRVCache_SystemImmediateServesCache(t *testing.T) {
 	// IMMEDIATE read is served from a fresh cache exactly like DEFAULT. (Was TestGRVCache_SystemImmediateBypass,
 	// which pinned the pre-#16 divergence where Go excluded IMMEDIATE.)
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 9999)
+	c.updateFromGRV(c.generation.Load(), time.Now(), 9999)
 	if v, _, ok := c.tryCache(grvPrioritySystemImmediate); !ok || v != 9999 {
 		t.Errorf("SYSTEM_IMMEDIATE must serve a fresh cache (#16); got (%d, %v), want (9999, true)", v, ok)
 	}
@@ -60,8 +60,8 @@ func TestGRVCache_SystemImmediateServesCache(t *testing.T) {
 func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
-	c.updateFromGRV(time.Now(), 50) // older — must be rejected
+	c.updateFromGRV(c.generation.Load(), time.Now(), 100)
+	c.updateFromGRV(c.generation.Load(), time.Now(), 50) // older — must be rejected
 	v, _, _ := c.tryCache(grvPriorityDefault)
 	if v != 100 {
 		t.Errorf("got %d, want 100 (older update must be ignored)", v)
@@ -71,7 +71,7 @@ func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 func TestGRVCache_Invalidate(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
+	c.updateFromGRV(c.generation.Load(), time.Now(), 100)
 	c.invalidate()
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
 		t.Errorf("got (%d, %v), want (0, false) after invalidate", v, ok)
@@ -81,9 +81,9 @@ func TestGRVCache_Invalidate(t *testing.T) {
 func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
+	c.updateFromGRV(c.generation.Load(), time.Now(), 100)
 	// Mark BATCH priority as throttled less than grvCacheRKCooldown ago.
-	c.markThrottled(time.Now(), false, true)
+	c.markThrottled(c.generation.Load(), time.Now(), false, true)
 	if _, _, ok := c.tryCache(grvPriorityBatch); ok {
 		t.Error("BATCH priority must miss cache while ratekeeper throttled")
 	}
@@ -273,18 +273,18 @@ func TestGRVCache_CommitUpdateAdvancesFreshness(t *testing.T) {
 	t.Parallel()
 	var c grvCache
 	// A real GRV reply older than maxVersionCacheLag — the cache is stale.
-	c.updateFromGRV(time.Now().Add(-2*maxVersionCacheLag), 100)
+	c.updateFromGRV(c.generation.Load(), time.Now().Add(-2*maxVersionCacheLag), 100)
 	if _, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Fatal("precondition: the cache should be stale before the commit")
 	}
 	// A commit "now" advances the version AND renews freshness (C++ :6657).
-	c.update(time.Now(), 200)
+	c.update(c.generation.Load(), time.Now(), 200)
 	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 200 {
 		t.Fatalf("tryCache = (%d, %v), want (200, true): a commit must advance version AND freshness", v, ok)
 	}
 	// Monotonicity of the commit path: a backwards version is rejected.
-	c.update(time.Now(), 150)
+	c.update(c.generation.Load(), time.Now(), 150)
 	if got := c.cachedVersion(); got != 200 {
 		t.Fatalf("version = %d after backwards commit update, want 200", got)
 	}

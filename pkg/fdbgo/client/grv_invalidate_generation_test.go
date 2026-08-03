@@ -103,7 +103,7 @@ func TestInvalidate_StaleReplyLosingItsCASCannotResurrectItsVersion(t *testing.T
 	for i := 0; i < attempts; i++ {
 		base := time.Now()
 		c := &grvCache{now: func() time.Time { return base }}
-		c.publish(base, cachedVersion)
+		c.publish(c.generation.Load(), base, cachedVersion)
 
 		// The reply is validated under the CURRENT generation, as a real one
 		// dispatched before the invalidation would be.
@@ -153,7 +153,7 @@ func TestInvalidate_InFlightReplyCannotRepopulate(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(base, 5000)
+	db.grvCache.publish(db.grvCache.generation.Load(), base, 5000)
 
 	// A GRV is dispatched: the generation is captured here, as flush does.
 	gen := db.grvCache.generation.Load()
@@ -185,7 +185,7 @@ func TestInvalidate_ReplyDispatchedAfterInvalidationPopulates(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(base, 5000)
+	db.grvCache.publish(db.grvCache.generation.Load(), base, 5000)
 	db.grvCache.invalidate()
 
 	// Dispatched AFTER the invalidation: this one is entitled to populate.

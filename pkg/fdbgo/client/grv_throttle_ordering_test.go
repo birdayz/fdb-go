@@ -58,7 +58,7 @@ func TestGRVReply_ThrottleAndFreshnessArePublishedTogether(t *testing.T) {
 			b := &grvBatcher{priority: grvPriorityDefault}
 
 			// Expired entry, no cooldown yet: unservable only because it is stale.
-			db.grvCache.publish(base.Add(-2*maxVersionCacheLag), 9000)
+			db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), 9000)
 			before := db.grvCache.entry.Load()
 			if !before.rkDefault.IsZero() {
 				t.Fatal("precondition: a cooldown is already recorded")
@@ -121,7 +121,7 @@ func TestGRVReply_UnthrottledReplyStillServes(t *testing.T) {
 	db.grvCache.now = func() time.Time { return base }
 	b := &grvBatcher{priority: grvPriorityDefault}
 
-	db.grvCache.publish(base.Add(-2*maxVersionCacheLag), 9000)
+	db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), 9000)
 	b.applyGRVReply(db, db.grvCache.generation.Load(), base, 9000, false, false, nil)
 
 	v, _, ok := db.grvCache.tryCache(grvPriorityDefault)
@@ -158,7 +158,7 @@ func throttleOrderingProbe(t *testing.T, replyVersion int64) {
 		b := &grvBatcher{priority: grvPriorityDefault}
 
 		const cachedVersion = 9000
-		db.grvCache.publish(base.Add(-2*maxVersionCacheLag), cachedVersion)
+		db.grvCache.publish(db.grvCache.generation.Load(), base.Add(-2*maxVersionCacheLag), cachedVersion)
 		if _, _, ok := db.grvCache.tryCache(grvPriorityDefault); ok {
 			t.Fatalf("precondition: the expired entry is servable before the reply — this "+
 				"probe can only detect the window if every state EXCEPT the intermediate "+
