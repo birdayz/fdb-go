@@ -105,6 +105,22 @@ func (m *atomicMutationIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 	return nil
 }
 
+// clearIfZero issues the COMPARE_AND_CLEAR that has to follow every mutation of
+// a clear-when-zero index, matching AtomicMutationIndexMaintainer.updateIndexKeys,
+// which emits it after the mutate with no remove guard.
+//
+// It exists because the SUM fast paths below write their ADD inline rather than
+// going through sumMutation.applyMutation -- they skip the boxing that path
+// costs, and in skipping it they also skipped the clear. A grouped SUM index
+// with clearWhenZero therefore kept an entry on insert that Java would have
+// cleared, while the ungrouped spelling (which has no fast path) cleared
+// correctly. Any new inline mutation site has to call this too.
+func (m *atomicMutationIndexMaintainer) clearIfZero(fdbKey fdb.Key) {
+	if m.index.IsClearWhenZero() {
+		m.tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
+	}
+}
+
 // updateInsertOnly is the insert-only fast path for atomic index maintenance.
 // Evaluates the expression and applies the mutation inline without allocating
 // []atomicMutationEntry or make(tuple.Tuple). Returns (true, nil) on success,
@@ -252,6 +268,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			var sumParam [8]byte
 			binary.LittleEndian.PutUint64(sumParam[:], uint64(sumInt64))
 			m.tx.AddBytes(fdbKey, sumParam[:])
+			m.clearIfZero(fdbKey)
 			return true, nil
 		}
 
@@ -299,6 +316,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			var param [8]byte
 			binary.LittleEndian.PutUint64(param[:], uint64(val))
 			m.tx.AddBytes(fdbKey, param[:])
+			m.clearIfZero(fdbKey)
 			return true, nil
 		}
 		if se, ok2 := sumExpr.(ScalarEvaluator); ok2 {
