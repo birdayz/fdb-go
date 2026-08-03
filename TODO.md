@@ -209,6 +209,45 @@ Related: `pkg/docscheck`'s `TestNightlyRaceStepsDeclareTheirJobCount` currently 
 every race-instrumented nightly step to WRITE `--local_test_jobs`. If the tags land, that
 gate should be revisited — the point of the tags is that the number stops needing to be
 restated at each call site.
+## Wire divergence — first-or-default continuation bytes (blocked on Java issue 3220)
+
+### [ ] Reconcile the RecordQueryFirstOrDefaultPlan continuation format with Java
+
+Recorded because CLAUDE.md treats continuations as wire-critical and an unrecorded known
+divergence there is exactly how one becomes invisible. **Not actionable today** — closing it
+requires Java to fix an upstream bug first, so this is a watch entry, not queued work.
+
+Go and Java disagree on the bytes this operator emits, and they disagreed *before* the
+tagged namespace landed:
+
+- **Java** builds its continuation from `RecordCursor.fromFuture`
+  (`RecordCursor.java:933-940`): `continuation == null` → run the child; any non-null bytes →
+  `EmptyCursor`. The only value ever produced is `FutureCursor`'s shared constant `[0x00]`
+  (`FutureCursor.java:51`). It is a **presence flag, not a position** — nothing identifies the
+  producing plan and no child state is embedded.
+- **Go** emitted `0x01` (`singleResultConsumedToken`) for the same state long before this
+  change, and now tags the namespace `0x01` consumed / `0x02` checkpoint / `0x03` restart.
+
+The divergence **cannot be closed by matching Java's bytes**, and that is the whole point:
+Java's format is structurally incapable of representing a truncated child, which is precisely
+why `RecordQueryFirstOrDefaultPlan.java:100-106` reads a truncated inner leg as an EMPTY one
+and answers `NOT EXISTS` = true from a partial scan. Its own comment flags this as unfixed and
+names the issue: **FoundationDB/fdb-record-layer#3220**. `RecordCursor.java:920-925` — the
+javadoc on the exact `fromFuture` overload that plan calls — states the fix in the abstract:
+when the future is backed by a cursor that may stop out-of-band, "it may be desirable to
+include the progress included in the underlying cursor in the final continuation … something
+more bespoke may be required". Go's checkpoint tag IS that bespoke thing. Adopting Java's
+format would mean re-importing the wrong answer.
+
+What the tagging did change is strictly in the safe direction: `0x01` keeps its meaning, so
+Go continuations issued before it still decode; an unrecognised tag now raises
+`ContinuationParseError` instead of being passed through as the inner leg's continuation,
+which is how a Java-issued `[0x00]` would previously have been fed to the wrong cursor.
+
+**Revisit when** Java closes #3220. At that point compare the two formats again and port
+Java's, since it will finally be able to express the state. Until then the reachability bound
+is what keeps this benign: this continuation is internal to the Go paginating driver, and no
+cross-engine test exchanges it — if that ever changes, this entry becomes urgent.
 
 ## FDB client — conflicting-keys readback (debugging surface + skew instrument)
 

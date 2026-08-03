@@ -1697,14 +1697,17 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 //   - in-band ReturnLimitReached with zero rows ⟹ a row limit of 0 (LIMIT 0): clean exhaustion, no data
 //     lost. (SourceExhausted+nil-bytes is impossible — it is isEnd()==true, the first branch.)
 //
-// Reachability: the out-of-band branch is presently a DEFENSIVE guard, not a live path. Every Go leaf
-// cursor reports an out-of-band stop only after scanned>0 (key_value_cursor.go:164/174/181,
-// record_key_cursor.go:64/69/78), at which point its continuation is set → a BytesContinuation; and
-// composite cursors either carry a serialized BytesContinuation (merge/intersection) or error-first with
-// 54F01 (mergeSort, RFC-106a). So no current cursor emits a no-next out-of-band+StartContinuation, and the
-// only reachable nil-bytes+non-end case is LIMIT 0. The guard exists because the OLD logic was wrong in
-// principle (exhaustion from bytes, not IsEnd) — a latent landmine the moment any future cursor emits the
-// out-of-band+START state Java's Union/Intersection/MapWhile cursors legitimately produce.
+// Reachability: the out-of-band branch is LIVE, and its one producer is deliberate. Every Go LEAF cursor
+// reports an out-of-band stop only after scanned>0 (key_value_cursor.go:164/174/181,
+// record_key_cursor.go:64/69/78), at which point its continuation is set → a BytesContinuation; most
+// composite cursors likewise carry a serialized BytesContinuation. The exception is positionReplayCursor
+// (position_replay_cursor.go:130), which resumes by deterministic replay rather than by position and so
+// reports a no-next out-of-band+START when it has emitted nothing yet — it has no partial position to
+// hand back. Its two callers are the recursive-CTE DISTINCT shapes, whose whole contract is that they
+// cannot paginate a partial traversal, so routing them to 54F01 here is the intended answer rather than
+// an accident (pinned by TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial). Apart from that producer
+// the only nil-bytes+non-end case is LIMIT 0. Deciding exhaustion from IsEnd rather than from bytes is
+// what keeps the two apart.
 func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason recordlayer.NoNextReason) (exhausted bool, contBytes []byte, err error) {
 	if cont == nil || cont.IsEnd() {
 		return true, nil, nil // SourceExhausted
