@@ -23,6 +23,16 @@ import (
 // INSIDE the retried transaction closure, so every retry attempt and every
 // page gets its own honest scan/byte/time budget, matching Java's
 // CursorLimitManager being rebuilt from a fresh FDBRecordContext each attempt.
+//
+// That per-page lifetime is the AUTO-COMMIT story, and it is the whole story
+// only there, because a page IS a transaction there. Inside an explicit SQL
+// transaction the SQL layer overrides the freshly minted state with one held
+// on the transaction (RFC-198 Decision 5), so every page of every statement
+// charges ONE budget against FDB's single 5-second window instead of N fresh
+// ones — which is the same thing Java gets from a transaction-scoped
+// ExecuteState plus a transactionCreateTime anchor. AnchorAt below is what
+// re-anchors that longer-lived state on the read-version instant; nothing on
+// the auto-commit path calls it.
 // Do not read this comment's resemblance to "ExecuteState" as a naming
 // correspondence with Go's existing ExecuteState type; it names the Java
 // class this ports, not the sibling Go type.
