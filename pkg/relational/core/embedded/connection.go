@@ -244,15 +244,20 @@ type embeddedTx struct {
 	// the moment pages share one transaction: each Open() reads the store
 	// header, so an N-page in-transaction SELECT would spend N header reads
 	// out of the same 5-second window the query itself is competing for. The
-	// cost would land on the scarcest resource this RFC introduces. Java does
-	// not pay it (RecordLayerSchema.java:98-108 caches exactly one store per
-	// transaction and drops it when the transaction terminates), and neither
-	// does this.
+	// cost would land on the scarcest resource this RFC introduces.
 	//
-	// The store carries no statement-scoped state — context, metadata,
-	// subspace, store header, index states and the per-transaction index
-	// maintainer cache are all transaction-scoped facts — so reuse changes
-	// lifetime, not semantics.
+	// Java caches the store too (RecordLayerSchema.loadStore:99-107), but only
+	// for the duration of ONE statement: AbstractEmbeddedStatement.java:82
+	// loads the schema in a try-with-resources and RecordLayerSchema.close()
+	// (:90-91) nulls currentStore when the statement ends. So reuse across the
+	// pages of one statement is Java's shape; reuse across statements in one
+	// transaction, which is what this map does, is a Go extension beyond Java.
+	//
+	// It is sound because the store carries no statement-scoped state —
+	// context, metadata, subspace, store header, index states and the
+	// per-transaction index maintainer cache are all transaction-scoped facts —
+	// so widening the cache from statement to transaction changes lifetime,
+	// not semantics.
 	//
 	// One lifecycle, as everywhere else here: the map dies with the
 	// embeddedTx, and no page can reach it after the terminal flag is set
@@ -260,7 +265,10 @@ type embeddedTx struct {
 	// dropped by invalidateSchemaCache, because a DDL issued inside an
 	// explicit transaction auto-commits in its own transaction (Decision 8f)
 	// and would otherwise leave this store holding metadata its own DDL
-	// replaced for the rest of the transaction.
+	// replaced for the rest of the transaction. That drop is LOAD-BEARING and
+	// not defence in depth: it is exactly the cross-statement reuse above that
+	// opens the window, since Java rebuilds the store at the next statement
+	// and so cannot reach the stale-metadata state at all.
 	stores map[string]*recordlayer.FDBRecordStore
 }
 
