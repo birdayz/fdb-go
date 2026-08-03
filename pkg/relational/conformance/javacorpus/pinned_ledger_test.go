@@ -89,12 +89,12 @@ package javacorpus_test
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=66 fail=0 skip=172 queries=1571 file_skips{conformance:go-accepts-what-java-rejects=4," +
+const pinnedLedger = "pass=67 fail=0 skip=171 queries=1586 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
-	"engine-gap:nested-recursive-with=2,engine-gap:non-nullable-array-empty=1," +
+	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=7,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
 	"engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
 	"engine-gap:struct-query=1,fragment=2,no-checks=1,plan-assertion=8," +
@@ -107,13 +107,13 @@ const pinnedLedger = "pass=66 fail=0 skip=172 queries=1571 file_skips{conformanc
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
-	"engine-gap:nested-recursive-with=2,engine-gap:non-nullable-array-empty=1," +
+	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=7,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
 	"engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
 	"engine-gap:struct-query=1,no-checks=8,plan-assertion=630,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
 	"unsupported:check-cache=143,unsupported:continuation=34,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=214,unsupported:random-injection=25," +
+	"unsupported:multi-cluster=2,unsupported:prepared=216,unsupported:random-injection=25," +
 	"unsupported:result-metadata-nested=85,unsupported:schema-command=16," +
 	"unsupported:temporary-function=197}"
 
@@ -129,4 +129,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "a3132f00661c48ebf5e3ad71d323af190730d818be8258156584f9173fe2a81b"
+const pinnedAssignmentDigest = "0984381f1831137f0ce961b81386f01f1b53bedc9b8c923f75c710ef7bcf2e91"

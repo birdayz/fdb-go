@@ -118,6 +118,17 @@ const positionalTypeCacheCap = 4096
 // unset field is a nil slot (SQL NULL). This is the row FieldValue resolution
 // reads by ordinal; the test-only protoToMap oracle cross-checks it
 // field-for-field (the shadow test in name_oracle_test.go).
+//
+// A REPEATED field is read before any presence test, so an empty one
+// materializes as the empty array and never as NULL — Java's
+// MessageHelpers.getFieldOnMessage branches on isRepeated() first for exactly
+// this reason. An empty repeated field is byte-identical to an absent one on
+// the wire, so emptiness cannot be recovered from presence; it is the TYPE
+// that settles it. A non-nullable array is stored FLAT repeated (in both
+// engines), and its type forbids NULL, so absent must read back as []. A
+// NULLABLE array is stored as the singular NullableArrayWrapper message, where
+// presence is real: an absent wrapper is NULL, a present wrapper holding zero
+// values is []. Both arms fall out of the repeated-first branch below.
 func protoToPositional(msg proto.Message) *PositionalRow {
 	if msg == nil {
 		return nil
@@ -130,7 +141,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
-		if refl.Has(fd) {
+		if fd.IsList() || fd.IsMap() || refl.Has(fd) {
 			slots[i] = protoFieldToGo(fd, refl.Get(fd))
 		}
 	}

@@ -41,17 +41,12 @@ var engineGaps = []EngineGap{
 	// Array COMPARISON semantics are closed (`[1] = [1]` is TRUE, the
 	// NULL/NONE matrix and the 42804 rejections match Java — pinned by
 	// TestFDB_ArrayComparison and the live-Java ArrayComparisonJavaProbe).
-	// The file now progresses THROUGH its nullable stored-row block — the
-	// RFC-143 §3a wrapper write side landed, so a stored `[]` in the
-	// NULLABLE `arr` is no longer byte-identical to NULL and its
-	// IS_NULL/IS_EMPTY answers match Java. What it reaches instead is the
-	// NOT NULL column `arr_nn`: stored flat repeated (Java's layout too),
-	// empty is absent on the wire, and Go reads absent as NULL where the
-	// type forbids NULL and Java yields an empty array.
-	{
-		"arrays-operators.yamsql", SkipGapNonNullableArrayEmpty,
-		"actual: {ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}", "CQ-89",
-	},
+	// Its NOT NULL column `arr_nn` is closed too: stored flat repeated
+	// (Java's layout), empty is absent on the wire, and the row builder now
+	// reads a repeated field before any presence test, so absent
+	// materializes as [] where the type forbids NULL — Java's
+	// MessageHelpers.getFieldOnMessage isRepeated()-first branch. The file
+	// passes outright.
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
 	// UPDATE … RETURNING executes the mutation (the array SET now converts)

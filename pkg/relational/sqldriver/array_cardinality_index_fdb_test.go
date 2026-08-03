@@ -246,6 +246,39 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
 	})
 
+	// --- The EMPTY array on the NOT NULL column, through the INDEX. ---
+	//
+	// This is the axis where the index and the base table can silently
+	// disagree. id1's array is EMPTY, so nothing is written for the repeated
+	// field and the stored bytes are identical to an unset one. The WRITE side
+	// derives the cardinality key from the array; the READ side materializes
+	// the absent repeated field as [] because the column's type forbids NULL.
+	// Both must land on 0 — an index that keyed NULL here would answer these
+	// two queries differently from the same queries over a full scan, and the
+	// covering variant would differ from the fetching one.
+	t.Run("empty array on NOT NULL column counts 0 through the index", func(t *testing.T) {
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") = 0`,
+			[]string{"ID=1"},
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+	t.Run("NOT NULL column has no NULL cardinality in the index", func(t *testing.T) {
+		// The column cannot be NULL, so the index holds no NULL key at all.
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") IS NULL`,
+			nil,
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+	t.Run("NOT NULL column is entirely NOT NULL through the index", func(t *testing.T) {
+		assertSetWithExplain(t,
+			`SELECT "ID" FROM "TAB_IDX_NN" WHERE CARDINALITY("INT_ARR") IS NOT NULL`,
+			[]string{"ID=1", "ID=2", "ID=3"},
+			[]string{"IndexScan(TAB_IDX_NN_CARD"},
+			[]string{"Scan(TAB_IDX_NN)", "PredicatesFilter"})
+	})
+
 	// --- WHERE CARDINALITY(arr) IS [NOT] NULL → null-range index scan. ---
 	t.Run("is null uses index null-range", func(t *testing.T) {
 		// Only id0 (unset array) has a NULL cardinality key → the [null]

@@ -6246,7 +6246,10 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
          proto, field 9, wire-compatible) and overrides `Evaluate` with Java's two protobuf fast paths
          (plain repeated field; nullable-array WRAPPER descent for Java-written records) plus the
          materialize-and-count fallback. `createsDuplicates()==false` (Java override), `ColumnSize()==1`.
-         Empty/unset Go array → NULL key (§3a-consistent with the scalar).
+         An empty/unset plain repeated array keys 0, not NULL — a repeated field is always an array and
+         an empty one is `[]` (Java: `Key.Evaluated.scalar(getRepeatedFieldCount(...))`, no zero case).
+         A NULL key arises only where the array can be ABSENT: an absent wrapper, or a null parent on a
+         deeper nesting, both of which reach the fallback.
        - **Step 6a — KeyExpression→Value bridge:** `ValueIndexScanMatchCandidate` carries a parallel
          `columnFunctions []string` + a `ColumnValue(i, base)` producing `CardinalityValue(FieldValue(col))`
          for a cardinality column (plain `FieldValue` otherwise). `ExpandValueIndex` (via the
@@ -6277,11 +6280,13 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
          deterministic. **Note:** nested-struct array (`tab2_index` in the yamsql) is blocked on STRUCT
          column support in the metadata builder (`buildCardinalityIndex` already builds the dotted-column
          nesting); lands with struct columns.
-     - **[ ] §3a follow-up — nullable-array-wrapper WRITE.** Go's metadata builder emits a plain repeated
-       field for both nullable and NOT-NULL arrays; it does not write Java's `message{ repeated values }`
-       wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
-       `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
-       (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
+     - **[x] §3a follow-up — nullable-array-wrapper WRITE.** Closed in two halves. RFC-204 P1 landed the
+       wrapper write side, so a Go-written NULLABLE array now distinguishes a stored NULL (absent wrapper)
+       from a stored `[]` (present wrapper, empty list). The CARDINALITY half is closed too, but NOT by the
+       wrapper — this item mis-framed it. A NOT NULL array is FLAT repeated in Java as well, so no wrapper
+       was ever coming; `CARDINALITY([])` was 0-not-NULL all along and Go simply special-cased zero into a
+       NULL key on both the count and the read. Both special cases are gone (CQ-89): the row builder reads
+       a repeated field before any presence test, and the key evaluator keys the count verbatim.
    - **[x] R6 follow-up — BITAND/BITOR/BITXOR registry drift.** The "unreachable" diagnosis became stale:
      all three dedicated bit-expression routes execute and are covered by `bitwise.yaml`. RFC-190.8 closes
      the real maintainability gap by moving their admission, evaluator operator, and declared result type
@@ -13813,33 +13818,6 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = the join-order probe's exact-driver assertion is restored
   (drive from the 1-row table) with a COUNT index declared in its DDL, and
   the joins golden decision is re-derived from real counts.
-
-- [ ] **CQ-89 (MED, wrong rows) — a stored NOT NULL array that is EMPTY reads
-  back as NULL, so `IS NULL` is true and `= []` is UNKNOWN on a column the
-  type forbids to be NULL.** Newly VISIBLE, not newly broken: while the
-  NULLABLE arm was a wire divergence (RFC-143 §3a — Go wrote a plain repeated
-  field where Java writes the `message{ repeated values }` wrapper) it failed
-  first and claimed `arrays-operators.yamsql`. RFC-204 P1 landed the wrapper
-  write side, the nullable arm now matches Java, and the file progresses to
-  its NOT NULL column.
-  **This one is NOT a wire bug — the bytes already match Java.** A NOT NULL
-  array is stored as a FLAT repeated field in both engines, and that is
-  correct; on the wire an empty repeated field is indistinguishable from an
-  absent one. The distinction has to be made on READ, from the type: a field
-  whose type forbids NULL must materialize absent as an EMPTY ARRAY. Java
-  does; Go yields NULL.
-  **Java's answer, measured, not inferred** (`arrays-operators.yamsql`):
-  `SELECT "pk" FROM T1 WHERE "arr_nn" = [] AND "pk" != -1` → `result:
-  [{pk: 0}]`, and the same for the CAST variant.
-  **Currently pinned, both sides:** the corpus file is booked
-  `engine-gap:non-nullable-array-empty` in
-  `pkg/relational/conformance/javacorpus/gaps.go` at its exact row
-  (`{ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}`),
-  and `TestFDB_ArrayComparison/field_comparisons`
-  (`array_comparison_fdb_test.go`) pins the wrong answer with a comment
-  naming this item. DONE = both flip to Java's answer together; the sqldriver
-  pin becomes `[]int64{0}` and the gap entry is deleted with the corpus pass
-  count raised.
 
 - [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
   qualified star in a SELECT list that also carries GROUP BY is rejected

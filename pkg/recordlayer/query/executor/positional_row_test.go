@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"reflect"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -134,6 +135,54 @@ func TestProtoToPositional_ShadowsMap(t *testing.T) {
 	}
 	if _, present := m["VAL_INT32"]; present {
 		t.Fatal("protoToMap should omit the unset VAL_INT32 key (sparse map)")
+	}
+}
+
+// TestProtoToPositional_EmptyRepeatedIsEmptyArray pins the read-side rule that
+// makes a NOT NULL array behave: a REPEATED field is read before any presence
+// test, so an EMPTY one materializes as the empty array and never as NULL.
+//
+// An empty repeated field is byte-identical to an absent one on the wire, so
+// emptiness cannot be recovered from presence — protoreflect's Has() reports
+// false for both. The TYPE settles it: a non-nullable SQL array is stored FLAT
+// repeated (Java's layout too) and its type forbids NULL, so absent must read
+// back as []. Java does this by branching on isRepeated() before the presence
+// test in MessageHelpers.getFieldOnMessage (MessageHelpers.java:125).
+//
+// Reading such a column as NULL made `IS NULL` true and `= []` UNKNOWN on a
+// column that cannot hold NULL. If this regresses, Tags reads (nil, true) and
+// the empty-array assertion below is what catches it.
+func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
+	t.Parallel()
+	// Tags is a FLAT repeated field: the non-nullable-array storage shape.
+	// Never set -> zero elements -> nothing on the wire.
+	msg := &gen.Order{OrderId: proto.Int64(1)}
+	row := protoToPositional(msg)
+	v, ok := getByName(row, "TAGS")
+	if !ok {
+		t.Fatal("TAGS not in the positional row")
+	}
+	got, isList := v.([]any)
+	if !isList {
+		t.Fatalf("empty repeated TAGS = %#v (%T), want the empty array []any{}; "+
+			"nil here is the NOT NULL array reading back as SQL NULL", v, v)
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty repeated TAGS = %#v, want length 0", got)
+	}
+	// A POPULATED repeated field still carries its elements, and a SINGULAR
+	// field that is genuinely unset is still NULL — the repeated-first branch
+	// must not flatten real absence.
+	pop := protoToPositional(&gen.Order{OrderId: proto.Int64(2), Tags: []string{"a", "b"}})
+	if v, ok := getByName(pop, "TAGS"); !ok || !reflect.DeepEqual(v, []any{"a", "b"}) {
+		t.Fatalf("populated TAGS = (%#v,%v), want ([a b],true)", v, ok)
+	}
+	if v, ok := getByName(row, "PRICE"); !ok || v != nil {
+		t.Fatalf("unset singular PRICE = (%#v,%v), want (nil,true)", v, ok)
+	}
+	// The name-keyed oracle agrees on every field, empty array included.
+	if bad := shadowMismatch(row, protoToMap(msg)); bad != "" {
+		t.Fatalf("protoToPositional shadow mismatch on field %q", bad)
 	}
 }
 

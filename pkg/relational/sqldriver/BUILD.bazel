@@ -70,6 +70,7 @@ go_test(
         "array_comparison_fdb_test.go",
         "array_fixture_helpers_test.go",
         "array_literal_insert_fdb_test.go",
+        "array_not_null_empty_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
         "array_unnest_struct_fdb_test.go",
         "avg_bigint_precision_fdb_test.go",

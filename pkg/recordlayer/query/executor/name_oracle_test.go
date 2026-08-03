@@ -15,9 +15,12 @@ import (
 )
 
 // protoToMap converts a proto.Message to map[string]any with UPPER-case keys.
-// Only set fields are included; unset fields are omitted (NULL semantics). An
-// EMPTY repeated field is omitted too (protoreflect's Has() reports false for
-// an empty list) and so reads back as SQL NULL.
+// Only set fields are included; unset fields are omitted (NULL semantics). A
+// REPEATED field is always included, EMPTY ONE INCLUDED, because an empty
+// repeated field is the empty array and not NULL — protoreflect's Has()
+// reports false for it, so the repeated arm has to come first, exactly as it
+// does in the production protoToPositional and in Java's
+// MessageHelpers.getFieldOnMessage.
 func protoToMap(msg proto.Message) map[string]any {
 	if msg == nil {
 		return nil
@@ -28,7 +31,7 @@ func protoToMap(msg proto.Message) map[string]any {
 	m := make(map[string]any, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		if !refl.Has(fd) {
+		if !fd.IsList() && !fd.IsMap() && !refl.Has(fd) {
 			continue
 		}
 		key := strings.ToUpper(string(fd.Name()))

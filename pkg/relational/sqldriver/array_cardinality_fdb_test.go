@@ -246,21 +246,23 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 	// --- Element-count semantics on the NOT NULL array column. ---
 	//
 	// A NOT NULL array column is a plain repeated proto field (no
-	// NullableArrayWrapper), so an EMPTY array and an unset array are
-	// wire-indistinguishable — both read back as SQL NULL (protoreflect's Has()
-	// is false for an empty list, so the scan→datum conversion omits the key).
-	// CARDINALITY of such an empty/unset array is therefore NULL here. The
-	// NULLABLE column TAB1 stores the wrapper and keeps [] distinct from NULL —
-	// see "count on nullable array column" below. The CARDINALITY function
-	// itself is faithful: a populated array → its length, a nil array → nil
-	// (pinned at the eval level by TestCardinalityValue_NullInputReturnsNil /
-	// _EmptyArray / _Counts in the values package). These FDB subtests pin the
-	// end-to-end count for POPULATED arrays and the clean handling of the
-	// empty/NULL case as it actually flows through Go-written records.
+	// NullableArrayWrapper), so an EMPTY array and an unset array ARE
+	// wire-indistinguishable. That does not make them NULL: the column's TYPE
+	// forbids NULL, so the read materializes an absent repeated field as the
+	// EMPTY ARRAY and CARDINALITY counts 0. Java's own corpus asserts exactly
+	// this over exactly this data (arrays-cardinality.yamsql:74-78 — `INSERT
+	// INTO "tab1_nn" … VALUES (1, []), (2, [1]), (3, [1, 2])` then `SELECT
+	// CARDINALITY("int_arr") FROM "tab1_nn"` → `unorderedResult: [{0}, {1},
+	// {2}]`).
+	//
+	// The NULLABLE column TAB1 reaches the same answers by a different route:
+	// it stores the wrapper, so [] is a present wrapper with an empty list and
+	// a genuine NULL is an absent wrapper — see "count on nullable array
+	// column" below, which is where a NULL count legitimately appears.
 	t.Run("count on not-null array column", func(t *testing.T) {
-		// Populated arrays: {x} → 1, {x,y} → 2. The empty array (id1) reads as
-		// NULL (flat repeated field, empty == unset on the wire).
-		want := []string{"id=1,card=<nil>", "id=2,card=1", "id=3,card=2"}
+		// [] → 0, {x} → 1, {x,y} → 2. A <nil> for id1 is the NOT NULL column
+		// reading back as SQL NULL.
+		want := []string{"id=1,card=0", "id=2,card=1", "id=3,card=2"}
 		gotPairs := cardPairs(t, `SELECT "ID", CARDINALITY("INT_ARR") AS "CARD" FROM TAB1_NN`)
 		sort.Strings(want)
 		if !unnestEqualStrs(gotPairs, want) {
@@ -354,23 +356,31 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 			"ID=1", "ID=2", "ID=3",
 		})
 	})
-	t.Run("where cardinality IS NULL on NOT NULL array matches the empty row", func(t *testing.T) {
-		// tab1_nn id1 is an empty array → NULL (flat repeated, empty == unset
-		// on the wire); id2/id3 are populated.
-		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") IS NULL`, []string{
-			"ID=1",
+	t.Run("where cardinality IS NULL on NOT NULL array matches nothing", func(t *testing.T) {
+		// A NOT NULL array column is never NULL, so CARDINALITY over it is
+		// never NULL either — not even for id1's EMPTY array, whose count is
+		// 0. The flat repeated field makes empty and unset wire-identical,
+		// but the TYPE forbids NULL, so the read materializes [] and the
+		// count is 0. No row qualifies.
+		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") IS NULL`, nil)
+	})
+	t.Run("where cardinality IS NOT NULL on NOT NULL array matches every row", func(t *testing.T) {
+		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") IS NOT NULL`, []string{
+			"ID=1", "ID=2", "ID=3",
 		})
 	})
-	t.Run("where cardinality IS NOT NULL on NOT NULL array matches populated", func(t *testing.T) {
-		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") IS NOT NULL`, []string{
-			"ID=2", "ID=3",
+	t.Run("where cardinality equals zero on NOT NULL array matches the empty row", func(t *testing.T) {
+		// The positive form of the same fact: id1's [] counts 0, exactly as
+		// the nullable column's [] does.
+		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") = 0`, []string{
+			"ID=1",
 		})
 	})
 
 	// --- ORDER BY CARDINALITY(arr) ASC/DESC (InMemorySort, exact order). ---
 	t.Run("order by cardinality ascending", func(t *testing.T) {
 		plan := assertRowsOrdered(t, `SELECT "ID" FROM TAB1_NN ORDER BY CARDINALITY("INT_ARR")`, []string{
-			"ID=1", "ID=2", "ID=3", // cards NULL,1,2 (id1's [] reads NULL on the flat NOT NULL column — sorts first ASC)
+			"ID=1", "ID=2", "ID=3", // cards 0,1,2 — id1's [] counts 0, not NULL
 		})
 		unnestMustContain(t, plan, "InMemorySort")
 		unnestMustNotContain(t, plan, "ISCAN")
