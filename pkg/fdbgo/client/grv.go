@@ -36,10 +36,13 @@ type grvCache struct {
 	// implementation. nil means time.Now.
 	now func() time.Time
 
-	// entry is the cached (version, instant) pair, published as ONE value.
+	// entry is the cached version plus its two instants, published as ONE
+	// value. The (version, anchor) half is a PAIR and must never be observed
+	// torn; freshness rides along because it is written by the same events,
+	// not because it moves with them (see publish for the two rules).
 	//
 	// Two independently-published atomics cannot express this: a reader that
-	// loads the version before a writer.s store and the instant after it
+	// loads the version before a writer's store and the instant after it
 	// observes a pair that never existed. When the instant is the newer half,
 	// the anchor claims a later MVCC-window start than the version really
 	// has, the RFC-198 budget under-counts the age, and the page it admits
@@ -47,12 +50,13 @@ type grvCache struct {
 	// one critical section (updateCachedReadVersionShared,
 	// NativeAPI.actor.cpp:348-359, under MutexHolder); it needs no more,
 	// because it uses lastGrvTime only for FRESHNESS and never derives an
-	// anchor from it. Go.s accessor is the extra consumer that makes
+	// anchor from it. Go's accessor is the extra consumer that makes
 	// coherence load-bearing.
 	//
-	// nil means empty. The instant is stored as a time.Time so its MONOTONIC
-	// reading survives: round-tripping through UnixNano drops it, and a
-	// backward wall-clock step then corrupts every anchor derived from it.
+	// nil means empty. Both instants are stored as time.Time so their
+	// MONOTONIC readings survive: round-tripping through UnixNano drops them,
+	// and a backward wall-clock step then corrupts every anchor derived from
+	// the one and every freshness verdict derived from the other.
 	entry            atomic.Pointer[grvCacheEntry]
 	lastProxyContact atomic.Int64 // UnixNano
 	lastRkDefault    atomic.Int64 // ratekeeper throttle
@@ -67,43 +71,84 @@ type grvCache struct {
 	// existed ONLY to compensate for the previous always-on cache and is gone.
 }
 
-// grvCacheEntry is one observation: a version and the instant it was obtained.
-// Immutable once published — writers build a new one rather than mutating.
+// grvCacheEntry is the cache's published state. Immutable once published —
+// writers build a new one rather than mutating.
+//
+// anchor and freshness are DIFFERENT instants with different rules (see
+// publish). anchor belongs to version and answers the MVCC-budget question;
+// freshness is monotonic and answers the cache-staleness question. They ride
+// one entry so the (version, anchor) pair can never be observed torn, not
+// because they move together — they usually do not.
 type grvCacheEntry struct {
-	version int64
-	at      time.Time
+	version   int64
+	anchor    time.Time
+	freshness time.Time
 }
 
-// publish installs pair (v, at) if it supersedes what is cached, preserving
-// C++.s version monotonicity (updateCachedReadVersion, NativeAPI.actor.cpp:363-380:
-// `if (v >= cachedReadVersion)`) while keeping the pair REAL.
+// publish records a successful GRV/commit observation: version v, obtained by
+// a request dispatched at at.
 //
-// DELIBERATE DIVERGENCE, one case: when the version is unchanged C++ advances
-// its timestamp to the later observation (`if (t > lastGrvTime)`, :375-377).
-// Here the EARLIER instant is kept, because both observations are of the same
-// version and that version.s window opened at the earlier one — taking the
-// later would claim a start the version never had, which is the unsafe
-// direction for an anchor. C++ can take the max safely: it spends lastGrvTime
-// only on freshness. The cost of the conservative choice is that an entry
-// expires marginally sooner, i.e. one more real GRV, never a wrong answer.
+// It maintains TWO instants with OPPOSITE rules, which is why they cannot be
+// one field:
+//
+//   - anchor is when THIS VERSION's MVCC window opened. For a given version
+//     that is a fixed fact, so a later observation of the same version must
+//     not move it: the window did not reopen, and claiming it did over-grants
+//     the RFC-198 budget until a page dies on 1007. It travels with its
+//     version — a higher version keeps ITS OWN pre-dispatch time even when
+//     that is earlier than the previous entry's, which C++ explicitly expects
+//     ("it's possible that we get a newer version with an older time",
+//     NativeAPI.actor.cpp:374-376). Correct for that version, and conservative.
+//
+//   - freshness is when the cache was last CONFIRMED with the cluster. Every
+//     accepted reply confirms it, including one returning the version we
+//     already hold: a quiet cluster returns the same version repeatedly, and
+//     that is a freshly-confirmed cache, not a stale one. Monotonic, exactly
+//     as C++ keeps lastGrvTime (`if (t > lastGrvTime) lastGrvTime = t;`,
+//     :378-380).
+//
+// Collapsing them onto the anchor's rule starves freshness: equal-version
+// refreshes get discarded, a read-only workload stops getting cache hits once
+// the first observation ages past maxVersionCacheLag no matter how many GRVs
+// succeed, and the background refresher — which paces off the same instant —
+// clamps to its 1ms floor and hammers the proxy forever.
+//
+// Version monotonicity is C++'s (`if (v >= cachedReadVersion)`, :367): a lower
+// version is dropped whole, freshness included.
+//
+// All three fields ride ONE immutable entry behind ONE atomic pointer, so a
+// reader can never observe a version paired with another version's anchor.
 func (c *grvCache) publish(at time.Time, v int64) {
 	for {
 		cur := c.entry.Load()
+		next := grvCacheEntry{version: v, anchor: at, freshness: at}
 		if cur != nil {
 			if v < cur.version {
-				return // stale reply — never go backwards
+				return // stale reply — never go backwards (C++ :367)
 			}
-			if v == cur.version && !at.Before(cur.at) {
-				return // same version, no earlier evidence of when it opened
+			if v == cur.version {
+				// Same version: keep the earliest evidence of when its window
+				// opened; freshness still advances below.
+				if cur.anchor.Before(next.anchor) {
+					next.anchor = cur.anchor
+				}
+			}
+			if cur.freshness.After(next.freshness) {
+				next.freshness = cur.freshness // monotonic (C++ :378-380)
+			}
+			if next.version == cur.version &&
+				next.anchor.Equal(cur.anchor) &&
+				next.freshness.Equal(cur.freshness) {
+				return // nothing moved
 			}
 		}
-		if c.entry.CompareAndSwap(cur, &grvCacheEntry{version: v, at: at}) {
+		if c.entry.CompareAndSwap(cur, &next) {
 			return
 		}
 	}
 }
 
-// tryCache returns the cached version if it.s fresh enough and not throttled.
+// tryCache returns the cached version if it's fresh enough and not throttled.
 // priority determines which ratekeeper throttle to check: BATCH checks lastRkBatch,
 // DEFAULT checks lastRkDefault, and SYSTEM_IMMEDIATE is never throttled (it bypasses
 // ratekeeper, so it is always "cooled down" and serves a fresh cache — #16).
@@ -120,7 +165,12 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 
 	nowT := c.clock()
 	now := nowT.UnixNano()
-	if nowT.Sub(e.at) > maxVersionCacheLag {
+	// Staleness is judged on FRESHNESS — when the cluster last confirmed this
+	// entry — not on the version anchor. An equal-version reply renews
+	// freshness without moving the anchor, and on a quiet cluster that reply
+	// is the steady state: judging staleness on the anchor would retire a
+	// cache the cluster just confirmed.
+	if nowT.Sub(e.freshness) > maxVersionCacheLag {
 		return 0, time.Time{}, false // stale
 	}
 
@@ -146,7 +196,7 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 	// version up to maxVersionCacheLag old while reporting "now" as its anchor
 	// would hand a budget the full window when most of it is already spent.
 	// Returned straight from the entry, so it keeps its monotonic reading.
-	return e.version, e.at, true
+	return e.version, e.anchor, true
 }
 
 // update advances the cached version + freshness clock from a successful
@@ -290,7 +340,7 @@ type grvRequest struct {
 type grvResult struct {
 	version int64
 	locked  bool // database-locked flag from the GRV reply (RFC-096)
-	// instant is when this version.s MVCC window opened, as nearly as the
+	// instant is when this version's MVCC window opened, as nearly as the
 	// client can know it: the PRE-RPC request time, never the reply time. It
 	// is a lower bound — the proxy assigned the version at or after we asked —
 	// and erring early is the safe direction, because a budget built on it
@@ -591,7 +641,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 		wait := nextGRVRefreshDelay(
 			time.Now(),
 			time.Unix(0, db.grvCache.lastProxyContact.Load()),
-			db.grvCache.entryInstant(),
+			db.grvCache.freshnessInstant(),
 			grvDelay,
 		)
 		if bo := pb.backoff(); bo > wait {
@@ -822,13 +872,15 @@ func (c *grvCache) clock() time.Time {
 	return time.Now()
 }
 
-// entryInstant is the cached entry's instant, or the zero time when the cache
-// is empty. For the background refresher's scheduling only — it wants "how
-// long since the cache was last freshened", which is exactly the pair's
-// instant, read coherently with the version it belongs to.
-func (c *grvCache) entryInstant() time.Time {
+// freshnessInstant is when the cluster last CONFIRMED the cached entry, or the
+// zero time when the cache is empty. This is what the background refresher
+// paces off and what tryCache judges staleness on — never the version anchor,
+// which equal-version replies deliberately leave untouched. Pacing off the
+// anchor collapses the refresh interval to its floor on a quiet cluster, where
+// every reply carries the version already held.
+func (c *grvCache) freshnessInstant() time.Time {
 	if e := c.entry.Load(); e != nil {
-		return e.at
+		return e.freshness
 	}
 	return time.Time{}
 }
@@ -839,4 +891,14 @@ func (c *grvCache) cachedVersion() int64 {
 		return e.version
 	}
 	return 0
+}
+
+// anchorInstant is the cached version's MVCC-window anchor, or the zero time
+// when the cache is empty. This is the budget-facing instant — the one that
+// must never move for a version already held.
+func (c *grvCache) anchorInstant() time.Time {
+	if e := c.entry.Load(); e != nil {
+		return e.anchor
+	}
+	return time.Time{}
 }
