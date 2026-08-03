@@ -177,6 +177,16 @@ type DBInfo struct {
 	// field (CommitProxyInterface.h:132). Set during a `coordinators auto`/`change`
 	// rotation; the proxies on a forward reply are ignored (RFC-111 Path A).
 	Forward string
+
+	// Epoch is the cluster epoch these proxies belong to. It rides the SNAPSHOT
+	// rather than living beside it, so a caller that loads the proxies gets the
+	// epoch of the very set it is about to talk to — the epoch a request binds
+	// to cannot describe a proxy set the request did not use, because there is
+	// no second load in which the two could disagree.
+	//
+	// Set exclusively by installProxySet, which also owns the ordering against
+	// grvCache's fence word. See the coherence rule documented there.
+	Epoch int64
 }
 
 // ProxyInfo holds addressing info for a proxy.
@@ -225,6 +235,11 @@ type database struct {
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
 	dbInfo atomic.Pointer[DBInfo]
+	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
+	// before it binds to a commit proxy. A deterministic seam for the
+	// handoff-inside-the-commit-window case, which is a few instructions wide and
+	// therefore untestable by racing. Always nil in production.
+	beforeCommitProxySelect atomic.Pointer[func()]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send
 	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
@@ -374,23 +389,27 @@ func (db *database) getGRVProxy() (*ProxyInfo, error) {
 	return &info.GRVProxies[idx], nil
 }
 
-// getCommitProxy returns a commit proxy address using round-robin selection.
-func (db *database) getCommitProxy() (*ProxyInfo, error) {
+// getCommitProxy returns a commit proxy address using round-robin selection,
+// together with the cluster epoch that proxy belongs to. ONE load: the epoch a
+// commit binds to is the epoch of the proxy set it is about to use, never one
+// sampled separately and overtaken by a handoff in between.
+func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.CommitProxies) == 0 {
-		return nil, fmt.Errorf("no commit proxies available")
+		return nil, 0, fmt.Errorf("no commit proxies available")
 	}
 	idx := db.proxyRR.nextCommit(len(info.CommitProxies))
-	return &info.CommitProxies[idx], nil
+	return &info.CommitProxies[idx], info.Epoch, nil
 }
 
-// getGRVProxies returns all GRV proxies from the current topology.
-func (db *database) getGRVProxies() []ProxyInfo {
+// getGRVProxies returns all GRV proxies from the current topology and the
+// cluster epoch they belong to, from ONE load — see getCommitProxy.
+func (db *database) getGRVProxies() ([]ProxyInfo, int64) {
 	info := db.dbInfo.Load()
 	if info == nil {
-		return nil
+		return nil, 0
 	}
-	return info.GRVProxies
+	return info.GRVProxies, info.Epoch
 }
 
 // getCommitProxies returns all commit proxies from the current topology.
@@ -611,8 +630,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 			// New coordinators answered — persist a forward adopted in memory on a
 			// previous iteration now that the set is confirmed reachable (Path A).
 			db.connRecord.persistIfDirty()
-			db.dbInfo.Store(info)
-			db.onProxySetInstalled()
+			db.installProxySet(info)
 			close(db.connected)
 			return nil
 		default:

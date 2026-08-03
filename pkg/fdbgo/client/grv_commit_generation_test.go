@@ -674,10 +674,11 @@ func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	db := &database{}
+	db := &database{proxiesChanged: make(chan struct{})}
 	db.grvCache.now = func() time.Time { return base }
-
-	db.grvCache.publish(db.grvCache.token(), base, 9_000_000) // cluster A cached
+	// Cluster A.s proxies are installed and its version cached.
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
+	db.grvCache.publish(db.grvCache.token(), base, 9_000_000)
 
 	// Adoption: the cluster file now names B's coordinators, but dbInfo still
 	// holds A's proxies.
@@ -687,8 +688,9 @@ func TestClusterSwitch_EpochChangesAtTheProxyHandoff(t *testing.T) {
 	// it captures must not survive the handoff.
 	inWindowGen := db.grvCache.token()
 
-	// The handoff: B's proxies arrive.
-	db.onProxySetInstalled()
+	// The handoff: B.s proxies arrive, and the epoch changes inside the same act
+	// that publishes them.
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
 
 	// The in-window reply lands after the handoff, carrying A's version.
 	db.grvCache.publish(inWindowGen, base, 9_000_001)
@@ -714,15 +716,16 @@ func TestClusterSwitch_PreAdoptionCommitLandingPostHandoffIsRefusedOnBothArms(t 
 	t.Parallel()
 
 	base := time.Now()
-	db := &database{}
+	db := &database{proxiesChanged: make(chan struct{})}
 	db.grvCache.now = func() time.Time { return base }
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "a:4500"}}})
 
 	// A commit dispatched against cluster A, long before any switch.
 	commitTok := db.grvCache.token()
 
-	// The handle adopts B's coordinators, then receives B's proxies.
+	// The handle adopts B.s coordinators, then receives B.s proxies.
 	db.onCoordinatorSetAdopted()
-	db.onProxySetInstalled()
+	db.installProxySet(&DBInfo{GRVProxies: []ProxyInfo{{Address: "b:4500"}}})
 
 	// B caches normally.
 	db.grvCache.publish(db.grvCache.token(), base, 500)

@@ -61,7 +61,7 @@ func TestKickTopology_DropsWhenFull(t *testing.T) {
 }
 
 // ============================================================================
-// applyDBInfo — apply + broadcast contract.
+// installProxySet — apply + broadcast contract.
 // ============================================================================
 
 func TestApplyDBInfo_FirstApplyBroadcasts(t *testing.T) {
@@ -73,8 +73,8 @@ func TestApplyDBInfo_FirstApplyBroadcasts(t *testing.T) {
 		GRVProxies:    []ProxyInfo{{Address: "10.0.0.1:4500", Token: transport.UID{First: 1}}},
 		CommitProxies: []ProxyInfo{{Address: "10.0.0.2:4500", Token: transport.UID{First: 2}}},
 	}
-	if !db.applyDBInfo(info) {
-		t.Fatal("first applyDBInfo should report change=true")
+	if !db.installProxySet(info) {
+		t.Fatal("first installProxySet should report change=true")
 	}
 	if got := db.dbInfo.Load(); got != info {
 		t.Errorf("dbInfo not stored: got %v, want %v", got, info)
@@ -100,7 +100,7 @@ func TestApplyDBInfo_NoChangeNoBroadcast(t *testing.T) {
 	ch := db.waitProxiesChanged()
 	// Apply an equal (but distinct pointer) DBInfo — must NOT broadcast.
 	dup := &DBInfo{GRVProxies: []ProxyInfo{{Address: "10.0.0.1:4500", Token: transport.UID{First: 1}}}}
-	if db.applyDBInfo(dup) {
+	if db.installProxySet(dup) {
 		t.Error("equal DBInfo must report change=false")
 	}
 	select {
@@ -123,7 +123,7 @@ func TestApplyDBInfo_RealChangeBroadcasts(t *testing.T) {
 	ch := db.waitProxiesChanged()
 
 	updated := &DBInfo{GRVProxies: []ProxyInfo{{Address: "10.0.0.99:4500", Token: transport.UID{First: 99}}}}
-	if !db.applyDBInfo(updated) {
+	if !db.installProxySet(updated) {
 		t.Error("real change must report change=true")
 	}
 	select {
@@ -202,7 +202,7 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 	// Seed dbInfo so refreshTopology has something to compare against.
 	// With Coordinators: nil, tryAllCoordinators returns an
 	// "no coordinators configured" error and refreshTopology takes its
-	// err early-out before reaching applyDBInfo.
+	// err early-out before reaching installProxySet.
 	db.dbInfo.Store(&DBInfo{})
 
 	db.wg.Add(1)
@@ -265,7 +265,7 @@ func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
 }
 
 // ============================================================================
-// Concurrent waitProxiesChanged + applyDBInfo — no panic, all waiters wake.
+// Concurrent waitProxiesChanged + installProxySet — no panic, all waiters wake.
 // ============================================================================
 
 func TestApplyDBInfo_WakesAllConcurrentWaiters(t *testing.T) {
@@ -281,7 +281,7 @@ func TestApplyDBInfo_WakesAllConcurrentWaiters(t *testing.T) {
 			defer wg.Done()
 			ch := db.waitProxiesChanged()
 			ready.Done() // signal: this goroutine has captured its channel snapshot
-			<-ch         // block until applyDBInfo broadcasts
+			<-ch         // block until installProxySet broadcasts
 		}()
 	}
 	// Wait for every waiter to confirm it has captured its channel — replaces
@@ -289,8 +289,8 @@ func TestApplyDBInfo_WakesAllConcurrentWaiters(t *testing.T) {
 	ready.Wait()
 
 	info := &DBInfo{GRVProxies: []ProxyInfo{{Address: "10.0.0.1:4500", Token: transport.UID{First: 1}}}}
-	if !db.applyDBInfo(info) {
-		t.Fatal("applyDBInfo should report change=true on first apply")
+	if !db.installProxySet(info) {
+		t.Fatal("installProxySet should report change=true on first apply")
 	}
 
 	done := make(chan struct{})
@@ -302,6 +302,6 @@ func TestApplyDBInfo_WakesAllConcurrentWaiters(t *testing.T) {
 	case <-done:
 		// ok — all 20 waiters woke
 	case <-time.After(2 * time.Second):
-		t.Fatal("applyDBInfo did not wake all concurrent waitProxiesChanged subscribers")
+		t.Fatal("installProxySet did not wake all concurrent waitProxiesChanged subscribers")
 	}
 }

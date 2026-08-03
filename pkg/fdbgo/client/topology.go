@@ -98,10 +98,9 @@ func (db *database) refreshTopology() {
 	// The new coordinators answered with real proxies — now safe to persist a
 	// forward we adopted in memory on a previous round (deferred-persist, Path A).
 	db.connRecord.persistIfDirty()
-	db.applyDBInfo(newInfo)
-	// The proxies are installed — if a coordinator-set adoption was pending,
-	// this is the handoff and the epoch changes here.
-	db.onProxySetInstalled()
+	// Installing the proxies IS the handoff when a coordinator-set adoption was
+	// pending: the epoch changes here, inside the same act that publishes them.
+	db.installProxySet(newInfo)
 }
 
 // followForward adopts a forwarded connection string (RFC-111 Path A). Returns
@@ -134,12 +133,59 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 	return true
 }
 
-// applyDBInfo replaces dbInfo and broadcasts the proxy-changed channel
-// when newInfo differs from the current value. Returns true on apply.
-// Split out from refreshTopology so the apply/broadcast contract can be
-// pinned without faking tryAllCoordinators.
-func (db *database) applyDBInfo(newInfo *DBInfo) bool {
+// installProxySet publishes a proxy set, broadcasts the proxy-changed channel,
+// and — when this installation completes a pending coordinator-set adoption —
+// performs the cluster handoff in the SAME act. Returns true on apply. Split out
+// from refreshTopology so the contract can be pinned without faking
+// tryAllCoordinators.
+//
+// THE COHERENCE RULE, and why the handoff cannot be a separate call:
+//
+//   - DBInfo.Epoch is what a REQUEST binds to. It rides the snapshot the request
+//     takes its proxies from, so an epoch can never describe a proxy set the
+//     request did not use. That is what closes the commit path's window: the
+//     epoch used to be sampled and the proxy selected afterwards, so a handoff
+//     landing between the two made the commit's own token stale against the
+//     cluster it actually committed to. The publication then failed sameEpoch,
+//     the durable floor was never raised, and a lower GRV from the new cluster
+//     repopulated the cache underneath a commit the caller had already been told
+//     succeeded. On the GRV path refusing is merely conservative; on the commit
+//     path it costs read-your-committed-writes, which is the invariant the whole
+//     floor mechanism exists to hold.
+//   - grvCache's fence word is what a PUBLICATION is judged against.
+//
+// The two are kept coherent by ORDER: the fences move FIRST, and only then is
+// the DBInfo carrying the new epoch published. So DBInfo.Epoch <= fence epoch
+// always, and the single reachable disagreement is (new fence, old proxies) — a
+// request binding there carries the OLD epoch, talks to the OLD cluster, and is
+// refused, which is the correct outcome rather than a conservative
+// approximation of one. The reverse order would permit the inverse — a request
+// binding the NEW epoch while still holding the old cluster's proxies — and that
+// one installs another cluster's version.
+//
+// C++ reaches the same observable state by a different mechanism: switchConnectionRecord
+// clears commitProxies and grvProxies inside the same block as its cluster-state
+// reset (NativeAPI.actor.cpp:2196-2197, and again on the published clientInfo at
+// :2206-2209), so nothing can be dispatched to the previous cluster at all.
+func (db *database) installProxySet(newInfo *DBInfo) bool {
 	old := db.dbInfo.Load()
+	epoch := int64(0)
+	if old != nil {
+		epoch = old.Epoch
+	}
+	if db.clusterSwitchPending.CompareAndSwap(true, false) {
+		epoch = db.grvCache.resetForNewCoordinators()
+		// C++ resets minAcceptableReadVersion in the same block
+		// (switchConnectionRecord, NativeAPI.actor.cpp:2201) and re-derives it
+		// from the new cluster's first GRV. Go's floor is the SMALLEST version
+		// seen and 0 means unset, so 0 is the faithful reset: carried across, the
+		// previous cluster's smallest rejects a perfectly current user-set
+		// version from a cluster whose version space sits lower, until this
+		// handle's own first GRV happens to lower it.
+		db.minAcceptableReadVersion.Store(0)
+	}
+	newInfo.Epoch = epoch
+
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
@@ -191,8 +237,19 @@ func (db *database) recordConnFailure(addr string) {
 	}
 }
 
-// dbInfoEqual returns true if two DBInfo have identical proxy lists.
+// dbInfoEqual returns true if two DBInfo have identical proxy lists AND the same
+// cluster epoch.
+//
+// The epoch belongs in this comparison, not merely for completeness: a handoff
+// onto a coordinator set that happens to publish an identical proxy list would
+// otherwise be skipped as "no change", leaving the fence word bumped while the
+// published DBInfo.Epoch stayed behind. Every subsequent request would then bind
+// an epoch the fence has already passed and every publication would be refused —
+// a permanent wedge, reached through the one case where the proxies did not move.
 func dbInfoEqual(a, b *DBInfo) bool {
+	if a.Epoch != b.Epoch {
+		return false
+	}
 	if len(a.GRVProxies) != len(b.GRVProxies) || len(a.CommitProxies) != len(b.CommitProxies) {
 		return false
 	}
@@ -231,12 +288,7 @@ func (db *database) onCoordinatorSetAdopted() {
 	db.clusterSwitchPending.Store(true)
 }
 
-// onProxySetInstalled runs where a refresh installs a proxy set. When it
-// completes a pending coordinator-set adoption, this is the instant the handle
-// actually starts talking to the new cluster — so this is where the epoch
-// changes and every cluster-scoped cache fact is discarded.
-func (db *database) onProxySetInstalled() {
-	if db.clusterSwitchPending.CompareAndSwap(true, false) {
-		db.grvCache.resetForNewCoordinators()
-	}
-}
+// The handoff itself lives in installProxySet: the instant the handle starts
+// talking to the new cluster is the instant its proxies are published, and
+// making that one act is what leaves no window between the epoch and the proxies
+// it describes.

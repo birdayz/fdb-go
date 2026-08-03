@@ -1060,16 +1060,14 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 	var backoff time.Duration
 
 	for {
-		// Re-read proxy list each cycle — topology may have refreshed.
-		//
-		// The epoch is captured HERE, per attempt, and BEFORE the proxies: a
-		// retry that re-reads the list can cross a cluster handoff, and a token
-		// minted once at dispatch would then describe a cluster this attempt
-		// never talked to. Epoch-before-proxies is the conservative order — a
-		// handoff in between yields the OLD epoch beside the NEW proxies, and
-		// the reply is refused rather than wrongly accepted.
-		attemptEpoch = db.grvCache.epochNow()
-		proxies := db.getGRVProxies()
+		// Re-read the proxy list each cycle — topology may have refreshed — and
+		// take the epoch FROM THAT SAME LOAD. A retry can cross a cluster
+		// handoff, and a token minted once at dispatch would then describe a
+		// cluster this attempt never talked to. There is no epoch-before-proxies
+		// ordering to reason about any more: the epoch rides the snapshot, so it
+		// is by construction the epoch of the proxies this attempt uses.
+		var proxies []ProxyInfo
+		proxies, attemptEpoch = db.getGRVProxies()
 		if len(proxies) == 0 {
 			db.kickTopology()
 			if backoff == 0 {
@@ -1323,6 +1321,15 @@ func (c *grvCache) entryFloor() int64 {
 // lastGrvTime there, which leaves its own GRV cache stale across a switch —
 // this is deliberately stricter, because Go's floor makes the consequence
 // permanent rather than bounded by the 100ms freshness window.
+//
+// db.minAcceptableReadVersion is reset too, but by installProxySet rather than
+// here: it is a database field, not a cache field, exactly as it is in C++. It
+// genuinely needs the reset. Go's is the SMALLEST read version this handle has
+// seen and 0 means unset, so carrying the previous cluster's value into a
+// cluster whose version space sits LOWER rejects perfectly current user-set
+// versions with transaction_too_old until this handle's own first GRV happens to
+// lower it. That direction — the new cluster being lower — is the whole reason
+// the epoch exists, so it is precisely the case not to leave to chance.
 // It returns the epoch it installed, because that epoch is what the DBInfo
 // published immediately afterwards must carry: the fence word and the DBInfo
 // are two views of one fact, and the caller is the only place that can keep

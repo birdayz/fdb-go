@@ -92,6 +92,7 @@ go_test(
         "grv_cache_optin_test.go",
         "grv_close_barrier_test.go",
         "grv_commit_generation_test.go",
+        "grv_epoch_dbinfo_test.go",
         "grv_fences_test.go",
         "grv_invalidate_generation_test.go",
         "grv_panic_test.go",
