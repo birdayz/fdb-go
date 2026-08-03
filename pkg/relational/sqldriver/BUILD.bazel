@@ -202,6 +202,8 @@ go_test(
         "filtered_box_unnest_fdb_test.go",
         "flatmap_continuation_drop_fdb_test.go",
         "float_integer_types_probe_test.go",
+        "float_ordering_claim_aggregate_fdb_test.go",
+        "float_ordering_claim_differential_fdb_test.go",
         "float_special_param_probe_test.go",
         "fork_colliding_subfield_fdb_test.go",
         "full_outer_join_fdb_test.go",

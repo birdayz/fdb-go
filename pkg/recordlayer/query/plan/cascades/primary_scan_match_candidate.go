@@ -282,6 +282,14 @@ func (c *PrimaryScanMatchCandidate) ComputeMatchedOrderingParts(
 		if idx < 0 || idx >= len(c.primaryKeyColumns) {
 			break
 		}
+		// The same termination the index candidate applies: a FLOAT/DOUBLE
+		// primary-key column's physical key order is not its logical order
+		// (NaN packs into two disjoint blocks while the comparator ranks all
+		// NaN equal and greatest), so it cannot extend the claim and neither
+		// can any column after it.
+		if !values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), c.primaryKeyColumns[idx]) {
+			break
+		}
 		// Childless FieldValue, matching the index candidate — resolved
 		// against the record row layout the scan flows, so the key states a
 		// column identity rather than a display name. A primary scan can be an

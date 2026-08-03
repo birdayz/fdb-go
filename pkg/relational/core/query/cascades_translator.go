@@ -359,40 +359,24 @@ func TargetElementType(fd protoreflect.FieldDescriptor) values.Type {
 // and non-UUID message fields collapse to values.UnknownType — 7.6 doesn't model
 // nested/array element types for the anchored leg columns. Columns are nullable
 // (the flowed leg row doesn't carry per-column NOT NULL constraints).
+//
+// Delegates to values.FieldTypeForProtoField — see that function for why
+// exactly one copy of this mapping may exist. The scan leaf typed here and
+// the sargable match candidate's layout (executor.PositionalTypeForDescriptor)
+// describe the same stored columns and feed the same planner decisions, so
+// they must not be able to disagree.
 func FieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
-	if fd.IsList() || fd.IsMap() {
-		return values.UnknownType
-	}
-	return scalarTypeForKind(fd)
+	return values.FieldTypeForProtoField(fd)
 }
 
 // scalarTypeForKind maps a field descriptor's proto KIND to the SQL scalar
 // type, ignoring repetition. Shared by FieldTypeForFD (which collapses
 // repeated fields before asking) and TargetElementType (which asks about an
 // array's element, where the repetition belongs to the array, not the type).
+// It is the SAME mapping FieldTypeForFD uses, entered one step earlier —
+// values owns both halves so the two can never drift apart.
 func scalarTypeForKind(fd protoreflect.FieldDescriptor) values.Type {
-	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		return values.NewPrimitiveType(values.TypeCodeBoolean, true)
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return values.NewPrimitiveType(values.TypeCodeInt, true)
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return values.NewPrimitiveType(values.TypeCodeLong, true)
-	case protoreflect.FloatKind:
-		return values.NewPrimitiveType(values.TypeCodeFloat, true)
-	case protoreflect.DoubleKind:
-		return values.NewPrimitiveType(values.TypeCodeDouble, true)
-	case protoreflect.StringKind:
-		return values.NewPrimitiveType(values.TypeCodeString, true)
-	case protoreflect.BytesKind:
-		return values.NewPrimitiveType(values.TypeCodeBytes, true)
-	case protoreflect.MessageKind:
-		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
-			return values.NewPrimitiveType(values.TypeCodeUuid, true)
-		}
-		return values.UnknownType
-	}
-	return values.UnknownType
+	return values.ScalarTypeForProtoKind(fd)
 }
 
 // legColumns derives the OUTPUT columns of a logical sub-plan as the field set

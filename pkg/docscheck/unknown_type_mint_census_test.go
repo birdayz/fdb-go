@@ -54,9 +54,18 @@ const unknownTypeMintAllowedFile = "pkg/relational/api/datatype_primitive.go"
 // composite-literal UnknownType mints. Measured; on any mismatch
 // TestUnknownTypeMintCensus prints the live census to re-pin from.
 var knownUnknownTypeMints = map[string]int{
-	"pkg/recordlayer/primary_key_translation.go":                            2,
-	"pkg/recordlayer/query/executor/positional_row.go":                      1,
-	"pkg/recordlayer/query/executor/query_result.go":                        1,
+	"pkg/recordlayer/primary_key_translation.go":       2,
+	"pkg/recordlayer/query/executor/positional_row.go": 1,
+	// query_result.go is GONE from the census. Its single mint was
+	// PositionalTypeForDescriptor stamping UnknownType on every field of a
+	// stored record's row layout, and it was the supply side of a real
+	// wrong-answer bug rather than a theoretical one: the sargable match
+	// candidates share that layout, so a type-directed planner rule asking
+	// "is this column a FLOAT/DOUBLE?" got "cannot tell" on the index path
+	// while the full-scan leaf — which types the same columns — got "yes",
+	// and an unsound ORDER BY sort elision survived on exactly the predicated
+	// shapes. The descriptor knew the answer the whole time; the layout now
+	// asks values.FieldTypeForProtoField for it.
 	"pkg/recordlayer/query/plan/cascades/intersector_primary_key.go":        1,
 	"pkg/recordlayer/query/plan/cascades/max_match_map.go":                  1,
 	"pkg/recordlayer/query/plan/cascades/primary_scan_match_candidate.go":   1,

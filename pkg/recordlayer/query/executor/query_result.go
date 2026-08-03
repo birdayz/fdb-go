@@ -113,8 +113,9 @@ const positionalTypeCacheCap = 4096
 
 // protoToPositional builds the ordinal-model PositionalRow from a proto
 // message, one slot per descriptor field in declaration order (the field's
-// ordinal), with an UPPER-cased field name and an UnknownType placeholder (the
-// runtime row carries names and ordinals; slot types are not refined). An
+// ordinal), with an UPPER-cased field name and the column type the descriptor
+// declares (values.FieldTypeForProtoField, the single authority; shapes with no
+// faithful column type stay UnknownType). An
 // unset field is a nil slot (SQL NULL). This is the row FieldValue resolution
 // reads by ordinal; the test-only protoToMap oracle cross-checks it
 // field-for-field (the shadow test in name_oracle_test.go).
@@ -150,7 +151,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 
 // PositionalTypeForDescriptor returns the LOGICAL RecordType for a message
 // descriptor — one field per descriptor field in declaration order (the
-// field's ordinal), UPPER-cased name, UnknownType placeholder. THE single authority
+// field's ordinal), UPPER-cased name, declared column type. THE single authority
 // for a stored record's logical row shape: every physical access path that
 // serves a stored record's columns (base scan rows via protoToPositional,
 // covering-index rows via coveringIndexCursor) MUST shape its rows by this
@@ -164,7 +165,8 @@ func PositionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.Re
 		n := fields.Len()
 		rtFields := make([]values.Field, n)
 		for i := 0; i < n; i++ {
-			rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+			fd := fields.Get(i)
+			rtFields[i] = values.Field{Name: strings.ToUpper(string(fd.Name())), FieldType: values.FieldTypeForProtoField(fd), Ordinal: i}
 		}
 		return values.NewRecordType("", false, rtFields)
 	})

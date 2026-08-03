@@ -69,6 +69,18 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 			matches = false
 			break
 		}
+		// Name-matching a sort key to a PK column says the scan visits that
+		// column's keys in key order; it does NOT say key order is value
+		// order. For a FLOAT/DOUBLE PK column it is not: NaN payloads pack
+		// into two disjoint blocks (negative NaN before -Inf, positive NaN
+		// after +Inf) while the comparator ranks all NaN greatest, so the
+		// scan would hand back a negative NaN first and the sort would be
+		// elided against an order the scan never delivers. Decline, and the
+		// query is served by a materialized sort instead.
+		if !values.ColumnCanExtendOrderingClaim(scan.GetFlowedType(), pkCols[i]) {
+			matches = false
+			break
+		}
 		if i == 0 {
 			reverse = sk.Reverse
 		} else if sk.Reverse != reverse {

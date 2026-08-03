@@ -27,6 +27,14 @@ type RecordQueryAggregateIndexPlan struct {
 	aggregateFunction string
 	groupCols         []string
 	aggColumn         string
+	// groupColLayout is the DECLARED layout the groupCols names resolve
+	// against, carried so HintOrdering can ask whether a grouping column may
+	// extend an ordering claim. Nil/UnknownType leaves the claim unconstrained,
+	// which is the direction values.ColumnCanExtendOrderingClaim documents.
+	// Excluded from structuralKey: it is derived from the index's record type,
+	// so two plans over the same index cannot disagree about it, and folding it
+	// into plan identity would key the memo on a type token.
+	groupColLayout values.Type
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -76,6 +84,19 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 	p.aggColumn = aggColumn
 	return p
 }
+
+// WithGroupColumnLayout carries the declared layout the grouping-column names
+// resolve against — the base record type's descriptor-shaped positional type.
+// Only HintOrdering reads it, to decide whether a grouping column may extend
+// the group-order claim this plan makes.
+func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type) *RecordQueryAggregateIndexPlan {
+	p.groupColLayout = layout
+	return p
+}
+
+// GetGroupColumnLayout returns the declared layout the grouping-column names
+// resolve against, or nil when none was carried.
+func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { return p.groupColLayout }
 
 // GetGroupCols returns the grouping column names.
 func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string { return p.groupCols }

@@ -63,6 +63,18 @@ func Load(path string) (*FamilyFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	return LoadBytes(path, data)
+}
+
+// LoadBytes is Load over bytes already in hand. path is used only for the
+// family/file-name cross-check and for error context; nothing is read from
+// disk.
+//
+// It exists so a re-emitted family can be parsed back WITHOUT being written
+// first: cmd/factory-rebless verifies that marshalling preserved every frozen
+// row before it commits any bytes to the tree, and a check that has to write
+// the file in order to verify it is not a check, it is a rollback.
+func LoadBytes(path string, data []byte) (*FamilyFile, error) {
 	parsed, err := javayamsql.Parse(filepath.Base(path), data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)

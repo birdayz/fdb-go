@@ -2515,11 +2515,21 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 // the runtime slots by construction. Multi-type indexes flow Unknown:
 // their rows have no single layout.
 func (d *metadataIndexDef) IndexRowType() values.Type {
-	rts := d.md.RecordTypesForIndex(d.idx)
+	return singleRecordTypeRowType(d.md, d.idx)
+}
+
+// singleRecordTypeRowType is that derivation as a free function, so the
+// aggregate-index candidate can carry the same layout without minting a second
+// mapping from descriptor to declared type. There is exactly one such mapping
+// in the engine (executor.PositionalTypeForDescriptor, which
+// PositionalTypeForRecordLayout wraps, over values.FieldTypeForProtoField) and
+// the ordering-claim predicate is only as trustworthy as that staying true.
+func singleRecordTypeRowType(md *recordlayer.RecordMetaData, idx *recordlayer.Index) values.Type {
+	rts := md.RecordTypesForIndex(idx)
 	if len(rts) != 1 || rts[0].Descriptor == nil {
 		return values.UnknownType
 	}
-	return executor.PositionalTypeForRecordLayout(rts[0].Descriptor, d.md.IsStoreRecordVersions())
+	return executor.PositionalTypeForRecordLayout(rts[0].Descriptor, md.IsStoreRecordVersions())
 }
 
 // IndexRecordTypeRowTypes flows ONE descriptor-shaped positional type per
@@ -2721,6 +2731,10 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		groupCols,
 		aggFunc,
 		aggColumn,
+		// The declared layout the grouping-column NAMES resolve against. Without
+		// it the plan over this index advertises group order for every column
+		// type, including a DOUBLE whose key order is not its value order.
+		singleRecordTypeRowType(md, idx),
 	)
 }
 
