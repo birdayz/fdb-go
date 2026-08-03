@@ -196,11 +196,19 @@ state and is not adopted.
 
 **Extending the termination to the two AGGREGATE producers retires NOTHING
 further.** Re-derived from scratch after that change: 0 drifted scenarios of
-5000. No committed factory scenario groups by a float, so the corpus never
-exercised either aggregate producer — which is why their proof is an FDB
-differential (`TestFDB_FloatOrderingClaim_Aggregate_Differential`) and not a
-corpus entry. A corpus that would have caught them is a separate gap, recorded
-here so it is not mistaken for a clean bill of health.
+5000.
+
+The zero is stronger than "no scenario groups by a float", and the reason
+matters: `grep -ril "group by" testdata/ | wc -l` is **0** — not one of the 309
+committed files contains GROUP BY at all. That is ARCHITECTURAL, not an
+accident of sampling. The TLP partition oracle declines aggregates by
+construction (`factory/candidate.go:101-109`: the output is one row per group,
+not a row set the input partition maps onto — "an oracle that holds for some
+functions is not an oracle"). So no factory batch will EVER cover the two
+aggregation producers, and the aggregate proof lives in the FDB differential
+(`TestFDB_FloatOrderingClaim_Aggregate_Differential`) permanently, not until
+the corpus catches up. Recorded here so the zero is not mistaken for a clean
+bill of health.
 
 Rows were verified unchanged empirically, not by argument:
 `//pkg/relational/conformance/factorycorpus/full:full_test` executes every

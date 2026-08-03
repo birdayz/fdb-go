@@ -354,3 +354,63 @@ func TestReblessToleratesTheFloatTagCanonicalization(t *testing.T) {
 		t.Errorf("the `!f 5` -> `!f 5.0` canonicalization aborted a re-bless, but it restates no expectation: %s", msg)
 	}
 }
+
+// TestReblessCarriesAFalsifiedRowThroughUntouched ARMS THE DOCUMENTED LIMIT.
+//
+// This test asserts a NON-capability, and it is deliberately shaped to fail if
+// anyone ever "corrects" the doc comment that states it. The row-integrity arm
+// compares committed rows against RE-EMITTED rows — round-trip fidelity. A cell
+// falsified by hand in the committed file sits on BOTH sides of that comparison,
+// so the tool cannot see it, and the run completes with exit 0 and rewrites the
+// header exactly as if the file were sound.
+//
+// That is not a hole to plug here: a frozen row's only authority is the oracle
+// that produced it, so the check that catches falsification is
+// //pkg/relational/conformance/factorycorpus/full:full_test, which re-executes
+// every committed scenario against a real cluster. Requiring it green around a
+// re-bless is what covers this, and this test exists so the division of labour
+// is stated in code rather than only in prose.
+//
+// If this test ever goes RED, the tool grew the ability to detect falsification.
+// That is good news — but the "WHAT THIS DOES NOT CATCH" section of the doc
+// comment on the row-integrity arm has become false and must be rewritten, and
+// the full_test-is-required-green rule around a re-bless can be revisited.
+func TestReblessCarriesAFalsifiedRowThroughUntouched(t *testing.T) {
+	t.Parallel()
+	dir := fixtureCorpus(t, earlyFile)
+	path := filepath.Join(dir, earlyFile)
+
+	// Falsify a frozen result cell IN THE COMMITTED FILE — the case a reader
+	// most expects the round-trip arm to catch, and the one it structurally
+	// cannot. The header is made stale too, so the tool actually rewrites this
+	// file: the worry is precisely that a tampered row gets re-emitted into a
+	// freshly certified file, and a run that skipped the file would not test it.
+	// editAllFile, not editFile: no numeric cell in this fixture is unique, and a
+	// falsification does not need to be a single cell to make the point.
+	editAllFile(t, path, "D: 4.0,", "D: 999.0,")
+	makePlanShapeStale(t, path)
+
+	census := filepath.Join(t.TempDir(), "census_baseline.json")
+	if got := run(dir, census, false); got != exitOK {
+		t.Fatalf("run() = %d, want exitOK (%d).\n\n"+
+			"A falsified row is expected to pass this tool — round-trip fidelity "+
+			"cannot see a cell that was edited on both sides. If this now aborts, "+
+			"the tool gained falsification detection and the doc comment's "+
+			"\"WHAT THIS DOES NOT CATCH\" section is stale.", got, exitOK)
+	}
+
+	// And the falsified value is still there afterwards, re-emitted verbatim
+	// into the freshly re-blessed file. Round-trip fidelity is exactly what
+	// guarantees this: the tool preserved the row it was given, truthful or not.
+	after := string(mustRead(t, path))
+	if !strings.Contains(after, "D: 999.0,") {
+		t.Errorf("the falsified cell did not survive the rewrite.\n\n" +
+			"Either the tool started validating rows (see above), or the " +
+			"re-emission is no longer faithful — which the row-integrity arm " +
+			"exists to prevent and would be the more serious of the two.")
+	}
+	if strings.Contains(after, "D: 4.0,") {
+		t.Error("the original cell reappeared: the tool restored a value from " +
+			"somewhere other than the file it was handed")
+	}
+}

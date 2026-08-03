@@ -1565,10 +1565,15 @@ retraction previously lived only in
 would find it, so the number is corrected where it stands.
 
 Extending the termination to the two AGGREGATE producers drifts the corpus by a
-further **0 scenarios** — MEASURED, all 5000 headers re-derived, none moved. No
-committed factory scenario groups by a float, so the corpus never exercised
-either aggregate producer; that is a gap in the corpus, not evidence the
-producers were sound, and it is why the aggregate proof is an FDB differential
-rather than a corpus entry.
+further **0 scenarios** — MEASURED, all 5000 headers re-derived, none moved.
+
+That zero is not "no scenario groups by a float": `grep -ril "group by"
+testdata/ | wc -l` is **0**, so not one of the 309 committed files contains
+GROUP BY at all. The gap is ARCHITECTURAL — the TLP partition oracle declines
+aggregates by construction (`factory/candidate.go:101-109`, because one row per
+group is not a row set the input partition maps onto), so no factory batch will
+EVER cover the two aggregation producers. Their proof is an FDB differential
+permanently, not provisionally, and the zero is evidence about the corpus's
+reach rather than about the producers' soundness.
 
 Scenarios are re-blessed through the factory, never edited in place.
