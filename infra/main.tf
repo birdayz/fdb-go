@@ -28,7 +28,7 @@ provider "minio" {
 # --- Variables ---
 
 variable "github_runner_token" {
-  description = "GitHub Actions runner registration token (gh api repos/OWNER/REPO/actions/runners/registration-token -X POST --jq .token). Only used when runner_mode=classic (break-glass)."
+  description = "GitHub Actions runner registration token (gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token). The one token infra/README.md documents: it registers the grandfathered box AND, via local.pool_registration_token, every pool box. Only used when runner_mode=classic."
   type        = string
   sensitive   = true
   default     = ""
@@ -222,7 +222,7 @@ resource "hcloud_server" "runner" {
 #
 # Scale up: raise runner_count and apply with a fresh registration token:
 #   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)
-#   tofu apply -var "runner_registration_token=$TOKEN" -var "runner_count=N"
+#   tofu apply -var "github_runner_token=$TOKEN" -var "runner_count=N"
 # Scale down: lower runner_count (destroys highest indices first); deregister the
 # removed runners in GitHub afterwards (gh api -X DELETE .../actions/runners/{id}).
 # ignore_changes[user_data] keeps token rotation and template evolution from
@@ -235,10 +235,18 @@ variable "runner_count" {
 }
 
 variable "runner_registration_token" {
-  description = "GitHub Actions registration token for pool runners (expires ~1h; only needed when creating/replacing pool boxes)"
+  description = "Registration token for the POOL boxes only, when they must differ from github_runner_token. Leave unset and the pool uses github_runner_token — the one token infra/README.md documents. Both defaulting to \"\" independently is how a fresh apply rendered `config.sh --token ` on all four pool boxes and failed registration during cloud-init, on a path nothing exercised: the live pool is held by ignore_changes[user_data], so a routine apply never re-renders it."
   type        = string
   sensitive   = true
   default     = ""
+}
+
+# The pool's token, with the documented one as the fallback. A registration token is
+# repo-scoped and single-purpose, so the same token registering five boxes is exactly what
+# the documented one-token setup means; a separate value stays possible for the case it
+# was added for (replacing pool boxes on a token the grandfathered box must not rotate to).
+locals {
+  pool_registration_token = var.runner_registration_token != "" ? var.runner_registration_token : var.github_runner_token
 }
 
 variable "runner_pool_types" {
@@ -264,7 +272,7 @@ resource "hcloud_server" "runner_pool" {
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     fdb_version                       = local.versions.fdb_version
     github_repo                       = var.github_repo
-    github_runner_token               = var.runner_registration_token
+    github_runner_token               = local.pool_registration_token
     runner_name                       = "gh-runner-drain-${count.index}"
     runner_labels                     = var.runner_labels
     runner_ephemeral                  = false

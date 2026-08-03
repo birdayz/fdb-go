@@ -125,6 +125,97 @@ func runShellSuite(t *testing.T, script string) {
 	}
 }
 
+// TestEveryRunnerTokenReachesTheDocumentedVariable pins that a fresh `tofu apply` done the
+// way infra/README.md documents it — one `-var github_runner_token=<TOKEN>` — actually
+// registers every box.
+//
+// It did not. The pool's templatefile() passed var.runner_registration_token, a SECOND
+// token variable that also defaults to "", so the four pool boxes rendered
+// `config.sh --token ` and failed registration inside cloud-init, on a box that had
+// already provisioned everything else. Nothing caught it and nothing could have: the live
+// pool is pinned by ignore_changes[user_data], so a routine apply never re-renders that
+// argument, and the only path that does is the one nobody runs until the fleet is being
+// rebuilt — which is exactly when it is needed.
+//
+// The check is deliberately on the ARGUMENT, not on the local: whatever expression a
+// server resource passes as its registration token must be able to resolve to the token
+// the docs ask for, or that box cannot be provisioned from the documented inputs.
+func TestEveryRunnerTokenReachesTheDocumentedVariable(t *testing.T) {
+	t.Parallel()
+
+	tf, err := os.ReadFile("main.tf")
+	if err != nil {
+		t.Fatalf("read main.tf: %v", err)
+	}
+	args := regexp.MustCompile(`(?m)^\s+github_runner_token\s*=\s*(.+)$`).FindAllStringSubmatch(string(tf), -1)
+	if len(args) < 2 {
+		t.Fatalf("main.tf passes github_runner_token to %d templatefile() calls, want at least 2 "+
+			"(the grandfathered box and the pool). The fleet's shape has changed and this guard "+
+			"is now checking less than it claims.", len(args))
+	}
+
+	// Resolve one level of local.* indirection: a fallback expression is the fix, and it
+	// naturally lives in a local rather than inline in both resources.
+	locals := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?m)^\s+(\w+)\s*=\s*(var\..+)$`).FindAllStringSubmatch(string(tf), -1) {
+		locals[m[1]] = m[2]
+	}
+	for _, a := range args {
+		expr := strings.TrimSpace(a[1])
+		if l := strings.TrimPrefix(expr, "local."); l != expr {
+			if v, ok := locals[l]; ok {
+				expr = v
+			}
+		}
+		if !strings.Contains(expr, "var.github_runner_token") {
+			t.Errorf("a server passes github_runner_token = %s, which cannot resolve to "+
+				"var.github_runner_token — the ONE token infra/README.md tells an operator to "+
+				"supply. That box renders `config.sh --token ` on a fresh apply and fails "+
+				"registration during cloud-init. Give the argument a fallback to "+
+				"var.github_runner_token, or document the extra variable as required in the "+
+				"README's Prerequisites.", a[1])
+		}
+	}
+}
+
+// TestReadmeTokenCommandNamesTheRealRepo pins the README's registration-token command to
+// the repo the runners actually register against.
+//
+// The README asked for a token from birdayz/fdb-record-layer-go — the LOCAL checkout
+// directory, not a repo that exists. main.tf's github_repo description already records
+// that exact mistake costing a fleet its registration (the runners POST to
+// https://github.com/<github_repo>), and the README quietly still had it: an operator
+// following the documented steps gets a 404 from `gh api` before they ever reach `tofu`.
+func TestReadmeTokenCommandNamesTheRealRepo(t *testing.T) {
+	t.Parallel()
+
+	tf, err := os.ReadFile("main.tf")
+	if err != nil {
+		t.Fatalf("read main.tf: %v", err)
+	}
+	// The default of var github_repo, i.e. what an apply with no overrides registers against.
+	m := regexp.MustCompile(`(?s)variable "github_repo".*?default\s*=\s*"([^"]+)"`).FindSubmatch(tf)
+	if m == nil {
+		t.Fatal("main.tf declares no default for var github_repo; this guard is checking nothing")
+	}
+	repo := string(m[1])
+
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	for _, line := range strings.Split(string(readme), "\n") {
+		if !strings.Contains(line, "registration-token") {
+			continue
+		}
+		if !strings.Contains(line, repo) {
+			t.Errorf("README's registration-token command does not name %s, the repo the runners "+
+				"register against (var github_repo's default):\n  %s\nAn operator following it "+
+				"asks GitHub for a token on the wrong repo and gets a 404.", repo, strings.TrimSpace(line))
+		}
+	}
+}
+
 // TestFleetGoMatchesGoMod pins the runner's system Go to the toolchain the repo
 // actually builds with.
 //

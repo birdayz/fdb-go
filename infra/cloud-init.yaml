@@ -1,32 +1,19 @@
 #cloud-config
 
 # `packages:` starts docker.io in the CONFIG stage, before runcmd links the CI volume, so
-# the daemon creates its data-root as a mode-0711 dir on the ROOT DISK. The volume link
-# then refuses to nest inside it (100 GB unused, caches filling the 75 GB root), and the
-# traverse-only ancestor makes the runner refuse to start: "Fail to create and validate
-# runner's work directory". bootcmd is the only hook before package install, so the mask
-# stays here and stays unconditional.
-#
-# What must NOT stay here is the decision to lift it. bootcmd is PER_ALWAYS and runcmd is
-# PER_INSTANCE, so mask-here + unmask-there left every boot after the first with no
-# container runtime, on a box that still registered a runner and claimed testcontainers
-# jobs. The obvious repair -- make bootcmd conditional on the volume -- does not work
-# either: bootcmd runs in cloud-init's network stage, which on Ubuntu is
-# Before=sysinit.target and is NOT ordered after local-fs.target, so the fstab mount has
-# not happened yet and the volume looks absent on every boot. ci-docker-gate.service below
-# is the fix: After=local-fs.target, so it both sees the mount and runs every boot.
+# an unmasked daemon puts its data-root on the ROOT DISK and the volume link then cannot
+# nest inside it. bootcmd is the only hook before package install, so the mask stays here
+# and stays UNCONDITIONAL: bootcmd runs Before=sysinit.target, so no mount it inspects has
+# happened yet and a conditional there reports "absent" on every boot. Lifting the mask is
+# ci-docker-gate.service's job, below. Incident narrative: infra/README.md.
 bootcmd:
   - systemctl mask docker.service docker.socket
 
 package_update: true
-# clang is load-bearing, not a convenience. Bazel detects the C++ toolchain once and caches
-# it in @local_config_cc inside the output base, which lives on the CI volume and outlives
-# the box. That cache was built against clang, so a box with only gcc fails every C++ action
-# with `gcc: error: unrecognized command-line option '-Wthread-safety'`. It was installed by
-# hand on the old fleet, which is why nothing declared it. Same class: gh (nightly-factory
-# ends a 5h batch lane with `gh pr create` — exit 127 after all the work), unzip
-# (claude.yml unpacks bun), rsync (this file's scaleset branch + the migration runbook).
-# All are in the 24.04 archive (gh 2.45.0/universe), so apt, not another pinned tarball.
+# clang is load-bearing: Bazel's @local_config_cc lives on the CI volume, outlives the box,
+# and was detected against clang — a gcc-only box fails every C++ action with
+# `unrecognized command-line option '-Wthread-safety'`. gh, unzip and rsync are the same
+# class: really depended on, undeclared because the old fleet installed them by hand.
 packages:
   - docker.io
   - build-essential
@@ -83,11 +70,10 @@ write_files:
   # a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh executes this exact
   # code against fixtures instead of a copy of it.
   #
-  # The link step is migrate-or-abort, never `ln -sfn` onto whatever is there: `ln -sfn
-  # TARGET LINK` puts the link INSIDE LINK when LINK is a real directory, which is how the
-  # pool ended up with /mnt/ci-data/HC_Volume_<id> and ran Docker + every bazel cache on
-  # the 75GB root disk (91-94%) while the 100GB volume sat at 1%. Silence is the whole
-  # failure mode, so an occupied /mnt/ci-data aborts and asks for a migration.
+  # Migrate-or-abort, never `ln -sfn` onto whatever is there: that puts the link INSIDE an
+  # existing directory, which is how the pool silently ran Docker and every bazel cache on
+  # the root disk with the volume empty. An occupied /mnt/ci-data aborts and asks for a
+  # migration. Incident narrative: infra/README.md.
   - path: /usr/local/bin/link-ci-volume.sh
     permissions: "0755"
     content: |
@@ -98,9 +84,20 @@ write_files:
       R="$${1:-}"
       # Idempotent fstab entry. by-id, never /dev/sdX: sdX renumbers across boots and a
       # renumbered `nofail` entry silently does not mount.
+      #
+      # x-systemd.before orders the Docker gate: `nofail` is precisely the option that
+      # REMOVES this mount unit's Before=local-fs.target (systemd.mount(5)), so the gate's
+      # After=local-fs.target orders it against NOTHING. Applied to WHATEVER entry is
+      # there, not just the one written above — Hetzner's automount authors that same
+      # by-id line itself, so the write path is skipped on most boxes (measured on a real
+      # boot). Ordering-only: a failed mount must still let the gate run and fail closed.
+      # See infra/README.md.
       persist() {
         grep -q " $2 " "$R/etc/fstab" 2>/dev/null \
           || echo "$1 $2 ext4 discard,nofail,defaults 0 0" >> "$R/etc/fstab"
+        awk -v mp="$2" -v o=,x-systemd.before=ci-docker-gate.service \
+          '$2 == mp && index($4, o) == 0 { $4 = $4 o } { print }' \
+          "$R/etc/fstab" > "$R/etc/fstab.n" && mv "$R/etc/fstab.n" "$R/etc/fstab"
       }
       # 10 minutes, not 3: the volume is a separate TF resource attached after boot, so
       # cloud-init races the attach, and losing is unrecoverable (cloud-init is one-shot —
@@ -124,13 +121,11 @@ write_files:
       if [ -z "$R" ] && ! mountpoint -q "$VOL"; then
         echo "::error::CI data volume $VOL is not mounted"; exit 1
       fi
-      # Persist ALWAYS, not only when we mounted it ourselves. Hetzner's attach-time
-      # automount mounts but writes no fstab entry, and it usually WINS the race above
-      # (measured: 3 of 5 boxes came up already mounted), so the loop breaks on iteration 1
-      # and never reaches the branch that authored fstab. Nothing re-runs on reboot
-      # (PER_INSTANCE), so such a box came back unmounted with /mnt/ci-data dangling and
-      # every cache silently on the root disk. Derive the device from the volume id, not
-      # from whoever mounted it, so both race outcomes converge here.
+      # Persist ALWAYS, not only when we mounted it ourselves: Hetzner's automount writes
+      # no fstab entry and usually WINS the race above, so the loop breaks before reaching
+      # the branch that authors fstab, and nothing re-runs on reboot (PER_INSTANCE). Derive
+      # the device from the volume id, not from whoever mounted it, so both outcomes
+      # converge here.
       ID=$(basename "$VOL" | sed 's/HC_Volume_//')
       DEV="/dev/disk/by-id/scsi-0HC_Volume_$ID"
       [ -e "$R$DEV" ] || { echo "::error::no $DEV backing $VOL; refusing to leave the mount unpersisted (it would not survive a reboot)"; exit 1; }
@@ -151,11 +146,9 @@ write_files:
         ln -s "$VOL" "$CI"
       fi
       [ "$(readlink "$CI")" = "$VOL" ] || { echo "::error::$CI is not the expected symlink"; exit 1; }
-      # 0755, not the 0711 a fresh volume root has defaulted to: actions/runner
-      # validates its work directory by walking the ancestor chain and LISTING
-      # each level, so a traverse-only ancestor makes every JIT runner refuse to
-      # start with "Fail to create and validate runner's work directory" -- which
-      # cost this fleet four of its five slots until it was found.
+      # 0755, not the 0711 a fresh volume root defaults to: actions/runner validates its
+      # work dir by LISTING every ancestor, so a traverse-only one makes it refuse to
+      # start ("Fail to create and validate runner's work directory").
       chmod 0755 "$VOL"
       mkdir -p "$CI/docker" "$CI/bazel"
 
@@ -171,8 +164,8 @@ write_files:
     content: |
       #!/bin/bash
       set -u
-      D="$${1:-}/mnt/ci-data"
-      if [ -L "$D" ] && [ -d "$D/docker" ]; then
+      R="$${1:-}"
+      if [ -L "$R/mnt/ci-data" ] && [ -d "$R/mnt/ci-data/docker" ]; then
         systemctl unmask docker.service docker.socket
         # The boot transaction was built while docker was masked, so unmasking alone
         # leaves it stopped for the rest of this boot. Start it explicitly.
@@ -181,13 +174,25 @@ write_files:
       else
         systemctl stop docker.service docker.socket 2>/dev/null || true
         systemctl mask docker.service docker.socket
+        # Take the job listener down with Docker. Without this the box stays in the pool
+        # and keeps claiming hetzner-fdb-vm jobs it cannot run, failing them one after
+        # another, which is worse than one box visibly missing. --no-block because the
+        # listener Requires= this unit and its start job may be queued on us right now.
+        U=$(sed -n 's/^WATCH_UNIT=//p' "$R/etc/runner-watchdog.conf" 2>/dev/null)
+        [ -n "$${U:-}" ] && systemctl --no-block stop "$U"
+        # Exit non-zero: this is what the listener's Requires= reads, and it is also what
+        # stops the watchdog from restarting the listener straight back onto a bad box.
+        echo "::error::/mnt/ci-data is not the volume symlink; Docker masked, runner stopped"
+        exit 1
       fi
 
   - path: /etc/systemd/system/ci-docker-gate.service
     content: |
       [Unit]
       Description=Gate Docker on the CI data volume being mounted
-      # The whole point: later than the fstab mount, so the check sees reality.
+      # Ordering against the CI volume itself comes from its fstab x-systemd.before=, NOT
+      # from this line: the entry is `nofail`, and nofail mounts are not ordered before
+      # local-fs.target. This covers the rest of the local mounts.
       After=local-fs.target
 
       [Service]
@@ -261,23 +266,16 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Orphan-FDB-container sweep. testcontainers-go's Ryuk reaper cleans up FDB containers
-  # when the parent test dies, but under memory pressure the OOM-killer takes Ryuk out
-  # first (~14 MB image, a likely victim) and the containers become orphans leaking
-  # ~700 MB RSS each. The sweep kills foundationdb/foundationdb containers older than
-  # 30 min (no per-test container lives that long) and pins Ryuk's oom_score_adj to -500.
-  # See `automemory/project_hetzner_runner_fdbserver_leak.md`.
+  # Orphan-FDB-container sweep: under memory pressure the OOM-killer takes testcontainers'
+  # ~14 MB Ryuk reaper out first, and the FDB containers it would have reaped become
+  # orphans leaking ~700 MB RSS each. See `automemory/project_hetzner_runner_fdbserver_leak.md`.
   - path: /usr/local/bin/orphan-fdb-sweep.sh
     permissions: "0755"
     content: |
       #!/bin/bash
-      # Match containers by IMAGE NAME (tag-agnostic). The previous version used
-      # `docker ps --filter ancestor=foundationdb/foundationdb` (no tag), which on
-      # this Docker version matches NOTHING — the containers are tagged `:7.3.77`
-      # and the untagged ancestor filter does not match a tagged image. That made
-      # the whole sweep AND the Ryuk priority bump a silent no-op (exit 0, killed
-      # nothing), so FDB orphans accumulated for weeks until a fresh CI run OOMed
-      # (fdbserver code 137 / bazel "Server terminated abruptly").
+      # Match by IMAGE NAME, not `--filter ancestor=foundationdb/foundationdb`: an
+      # untagged ancestor filter matches no `:7.3.77`-tagged container, which made this
+      # whole sweep a silent exit-0 no-op for weeks.
       set -uo pipefail
       now=$(date -u +%s)
       docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
@@ -335,10 +333,9 @@ write_files:
       WantedBy=timers.target
 
   # Bazel-cache LRU prune. The bazelrc --experimental_disk_cache_gc_* flags run IN-SERVER
-  # during IDLE only, and these servers rarely idle that long, so the native GC never
-  # engaged and the cache grew until the volume hit 100% (ENOSPC, empty compiler
-  # diagnostics). This timer is the lifecycle-independent backstop; mtime is a true LRU
-  # signal (Bazel >=7 touches entries on hit). Also sweeps stale output bases.
+  # during IDLE only and these servers rarely idle that long, so the native GC never
+  # engaged and the volume filled to ENOSPC. mtime is a true LRU signal (Bazel >=7
+  # touches entries on hit). Also sweeps stale output bases.
   - path: /etc/systemd/system/bazel-cache-prune.service
     content: |
       [Unit]
@@ -448,16 +445,10 @@ runcmd:
   # parses before anything depends on it.
   - visudo -cf /etc/sudoers.d/runner || { echo "::error::/etc/sudoers.d/runner is not valid sudoers"; exit 1; }
 
-  # CI data volume (RFC-115 §7): the 100GB ext4 volume (hcloud_volume.runner_data) is
-  # ext4-formatted by tofu and auto-mounted by Hetzner at /mnt/HC_Volume_<id>. Link it to a
-  # STABLE /mnt/ci-data and create Docker + Bazel subdirs on it BEFORE Docker starts, so
-  # Docker's data-root (/etc/docker/daemon.json) is valid on first boot. Without this the
-  # wire-oracle FDB-from-source build fills the 75GB root disk and the genrule OOMs. Fail
-  # loud if the volume never mounts (a silent fall-back to root re-creates the disk bug).
-  # The logic lives in /usr/local/bin/link-ci-volume.sh (see its write_files entry for
-  # why it is a file: infra/link_ci_volume_test.sh executes that exact script).
-  # Fail loud for real: runcmd shares one shell with no `set -e`, so a bare invocation
-  # would log the error and provision onto the root disk anyway. `exit 1` aborts it.
+  # CI data volume (RFC-115 §7): link the 100GB volume to a STABLE /mnt/ci-data and create
+  # the Docker + Bazel subdirs on it BEFORE Docker starts, so daemon.json's data-root is
+  # valid on first boot. `exit 1`, not a bare invocation: runcmd shares one shell with no
+  # `set -e`, so a failure here would otherwise provision onto the root disk anyway.
   - /usr/local/bin/link-ci-volume.sh || { echo "::error::CI data volume link failed — refusing to provision onto the root disk"; exit 1; }
 
   # Docker, now that /mnt/ci-data resolves to the volume (see the bootcmd decision above).
@@ -565,7 +556,21 @@ runcmd:
       # /etc/profile.d/go.sh does not reach it and Go has to be added here explicitly.
       printf '%s\n' "/usr/local/go/bin:/home/runner/go/bin:$(cat /etc/environment | sed -n 's/^PATH="\(.*\)"$/\1/p')" > "$RUNNER_DIR/.path"
       chown runner:runner "$RUNNER_DIR/.path"
-      ( cd "$RUNNER_DIR" && ./svc.sh install runner && ./svc.sh start )
+      ( cd "$RUNNER_DIR" && ./svc.sh install runner )
+      # Resolve the unit svc.sh just wrote (its name embeds repo + runner name) BEFORE
+      # starting it: the gate binding and the watchdog config both need the name.
+      RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
+      [ -n "$RUNNER_UNIT" ] || { echo "::error::classic runner service unit not found after svc.sh install"; exit 1; }
+      printf 'WATCH_UNIT=%s\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
+      # A box whose CI volume did not come back must leave the pool, not serve from it.
+      # svc.sh's unit depends on nothing but network-online.target, so without this the
+      # listener comes up beside a masked Docker and fails every job it claims. Requires=
+      # also means the watchdog's restart re-runs the gate instead of routing around it.
+      install -d "/etc/systemd/system/$RUNNER_UNIT.d"
+      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n' \
+        > "/etc/systemd/system/$RUNNER_UNIT.d/ci-docker-gate.conf"
+      systemctl daemon-reload
+      ( cd "$RUNNER_DIR" && ./svc.sh start )
       # The supervisor unit ships in write_files on every box regardless of mode. Here it
       # must never run: enforce that the same way worker mode does, or a repurposed box
       # keeps a second claimant on this fleet's jobs.
@@ -574,16 +579,9 @@ runcmd:
       rm -rf /etc/systemd/system/bazelscaleset.service.d
       systemctl daemon-reload
       systemctl mask bazelscaleset.service 2>/dev/null || true
-      # Point the watchdog at the unit svc.sh just installed. Its name embeds the repo and
-      # runner name, so resolve it rather than guessing.
-      RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
-      if [ -n "$RUNNER_UNIT" ]; then
-        printf 'WATCH_UNIT=%s\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
-        systemctl enable --now runner-watchdog.timer
-      else
-        echo "::error::classic runner service unit not found after svc.sh install"
-        exit 1
-      fi
+      # No WATCH_HEARTBEAT here, deliberately: see infra/README.md. The stock runner
+      # publishes no heartbeat, and every local substitute for one restarts mid-job.
+      systemctl enable --now runner-watchdog.timer
     else
       # bazelscaleset (RFC-155). Clean second runner dir (own .runner/.credentials so it can
       # never collide), CI-only bazel caches, the App private key, then the supervisor.
