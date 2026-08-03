@@ -453,4 +453,55 @@ var _ = Describe("SumIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// The sibling of the test above, on the dimension it does not reach. That
+	// one drives the sum to zero by REMOVING the only record; this one never
+	// removes anything -- it saves a record whose value is the negation of the
+	// group's running total, so the zero is reached on the ADDING path.
+	//
+	// Java issues the COMPARE_AND_CLEAR after every mutation, with no remove
+	// guard (AtomicMutationIndexMaintainer.updateIndexKeys), so both spellings
+	// clear. Gating the clear on `remove` passes the remove-path test above and
+	// still leaves a Go store holding an entry a Java store would not -- the
+	// same metadata and the same record sequence producing different index
+	// content, which is a wire divergence, not a behavioural nicety.
+	It("clears entry when an added record cancels the running sum to zero", func() {
+		ks := specSubspace()
+
+		sumIdx := NewSumIndex("sum_price", Ungrouped(Field("price")))
+		sumIdx.SetClearWhenZero(true)
+		builder := baseMetaData()
+		builder.AddIndex("Order", sumIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(-42)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(0),
+				"both records are still present, but their sum is zero and clearWhenZero is set, "+
+					"so Java would have cleared the entry on the second save")
+
+			// And the entry comes back the moment the sum leaves zero again,
+			// so the clear is not a tombstone.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(7)})
+			Expect(err).NotTo(HaveOccurred())
+			entries, err = AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(7)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

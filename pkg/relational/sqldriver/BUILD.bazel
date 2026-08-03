@@ -54,6 +54,7 @@ go_test(
         "aggregate_group_key_slot_collision_fdb_test.go",
         "aggregate_index_minmax_nullgroup_probe_test.go",
         "aggregate_index_sum_probe_test.go",
+        "aggregate_index_vacated_group_fdb_test.go",
         "aggregate_null_semantics_probe_test.go",
         "aggregate_operand_width_fdb_test.go",
         "aggregate_output_slot_recorded_fdb_test.go",

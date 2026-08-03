@@ -87,11 +87,16 @@ func (m *countMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMu
 func (m *countMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
-		if m.index.IsClearWhenZero() {
-			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
-		}
 	} else {
 		tx.AddBytes(fdbKey, littleEndianInt64One)
+	}
+	// The clear follows EVERY mutation, not just the removing one --
+	// AtomicMutationIndexMaintainer.updateIndexKeys issues the COMPARE_AND_CLEAR
+	// straight after the mutate with no remove guard. For a count the adding
+	// path can never land on zero, so this arm is where the two spellings
+	// coincide; SUM is where they do not, and all three share the rule.
+	if m.index.IsClearWhenZero() {
+		tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 	}
 	return nil
 }
@@ -129,11 +134,11 @@ func (m *countNotNullMutation) removeCommon(old, new []atomicMutationEntry) ([]a
 func (m *countNotNullMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
-		if m.index.IsClearWhenZero() {
-			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
-		}
 	} else {
 		tx.AddBytes(fdbKey, littleEndianInt64One)
+	}
+	if m.index.IsClearWhenZero() {
+		tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 	}
 	return nil
 }
@@ -270,11 +275,15 @@ func (m *sumMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, 
 			return fmt.Errorf("sum index %q overflow: cannot negate math.MinInt64", m.index.Name)
 		}
 		tx.AddBytes(fdbKey, encodeRecordCount(-val))
-		if m.index.IsClearWhenZero() {
-			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
-		}
 	} else {
 		tx.AddBytes(fdbKey, entry.param)
+	}
+	// Unlike the count arms, a SUM can reach zero on the ADDING path too -- a
+	// record carrying the negation of the group's running total. Java clears
+	// there as well, so gating the clear on `remove` made a Go store's index
+	// content diverge from a Java store's for the same record sequence.
+	if m.index.IsClearWhenZero() {
+		tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 	}
 	return nil
 }
