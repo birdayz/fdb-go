@@ -150,7 +150,7 @@ type grvCacheEntry struct {
 // All three fields ride ONE immutable entry behind ONE atomic pointer, so a
 // reader can never observe a version paired with another version's anchor.
 func (c *grvCache) publish(gen int64, at time.Time, v int64) {
-	c.publishReplyAt(gen, at, v, time.Time{}, false, false)
+	c.publishReplyAt(gen, false, at, v, time.Time{}, false, false)
 }
 
 // publishReplyAt records a reply as ONE atomic publication: the version and
@@ -172,7 +172,7 @@ func (c *grvCache) publish(gen int64, at time.Time, v int64) {
 // replyTime, NativeAPI.actor.cpp:7411-7416). Cooldowns only ever advance, and
 // they SURVIVE a version that is rejected as stale — a throttle signal is
 // about the cluster, not about the version that happened to carry it.
-func (c *grvCache) publishReplyAt(gen int64, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
+func (c *grvCache) publishReplyAt(gen int64, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) {
 	for {
 		cur := c.entry.Load()
 		// Re-read per iteration: an invalidation that lands between the load
@@ -180,7 +180,7 @@ func (c *grvCache) publishReplyAt(gen int64, at time.Time, v int64, replyTime ti
 		// generation rather than re-deciding staleness against the sentinel
 		// the invalidation installed.
 		mayInstallVersion := c.generation.Load() == gen
-		next := mergeReply(cur, mayInstallVersion, at, v, replyTime, rkDefault, rkBatch)
+		next := mergeReply(cur, mayInstallVersion, durable, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -196,9 +196,16 @@ func (c *grvCache) publishReplyAt(gen int64, at time.Time, v int64, replyTime ti
 // calls it — the version-resurrection bug lived in the loop's RE-evaluation,
 // and a test that cannot pin the decision can only catch it by luck.
 //
-// mayInstallVersion is false when the cache was invalidated after this reply's
-// request was dispatched. The reply then contributes cooldowns only.
-func mergeReply(cur *grvCacheEntry, mayInstallVersion bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+// mayInstallVersion is false when the cache was invalidated after this reply.s
+// request was dispatched.
+//
+// durable says the version is one the caller has already observed as
+// COMMITTED — ground truth about the cluster rather than a point-in-time
+// read. Only a durable version may retire an older cached one when its
+// install is blocked; a GRV reply carries no such promise, and retiring on
+// one would evict a perfectly good cache entry every time a straggler with a
+// higher version landed after an invalidation.
+func mergeReply(cur *grvCacheEntry, mayInstallVersion, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
 	next := grvCacheEntry{version: v, anchor: at, freshness: at}
 	if !mayInstallVersion {
 		// The version is void: it predates an invalidation whose whole purpose
@@ -207,6 +214,25 @@ func mergeReply(cur *grvCacheEntry, mayInstallVersion bool, at time.Time, v int6
 		next = grvCacheEntry{}
 		if cur != nil {
 			next = *cur
+			// THE ASYMMETRY, and it is the whole design: a blocked reply may
+			// not INSTALL its version, but a DURABLE one may still RETIRE an
+			// older one. Installing needs the generation because the anchor
+			// belongs to a pre-invalidation dispatch and would date the entry
+			// as something it is not. Retiring needs no generation at all,
+			// because it is a version comparison: a committed version proves
+			// every lower cached version predates it.
+			//
+			// Without this the generation gate trades one guarantee for
+			// another. A commit dispatched under generation N, overtaken by an
+			// invalidation, lands after a generation-N+1 GRV cached something
+			// older — and that older version stays servable, so the very next
+			// USE_GRV_CACHE transaction misses the write whose Commit JUST
+			// RETURNED. Refusing the install protects InvalidateGRVCache;
+			// retiring the stale entry protects read-your-committed-writes.
+			// Both are required, and only the first needs the generation.
+			if durable && cur.version != 0 && cur.version < v {
+				next = grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch}
+			}
 		}
 	} else if cur != nil {
 		next.rkDefault, next.rkBatch = cur.rkDefault, cur.rkBatch
@@ -300,7 +326,10 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 // commit-must-not-extend-freshness divergence is reverted now that the cache is
 // no longer always-on + enforcement-carrying).
 func (c *grvCache) update(gen int64, at time.Time, v int64) {
-	c.publish(gen, at, v)
+	// durable=true: a returned Commit is ground truth about the cluster, so
+	// this version may retire an older cached one even when its own install is
+	// blocked by the generation.
+	c.publishReplyAt(gen, true, at, v, time.Time{}, false, false)
 }
 
 // updateFromGRV updates the cache from a real GRV reply: version + freshness,
@@ -843,7 +872,7 @@ func (b *grvBatcher) applyGRVReply(db *database, gen int64, requestTime time.Tim
 	// ordering it cannot be undone by an innocent-looking edit to this
 	// function.
 	replyTime := time.Now()
-	db.grvCache.publishReplyAt(gen, requestTime, version, replyTime, rkDefault, rkBatch)
+	db.grvCache.publishReplyAt(gen, false, requestTime, version, replyTime, rkDefault, rkBatch)
 	db.grvCache.lastProxyContact.Store(replyTime.UnixNano())
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 
@@ -1049,7 +1078,7 @@ func (c *grvCache) anchorInstant() time.Time {
 // touching the cached version. Test-facing counterpart to the reply path,
 // which publishes the cooldown together with the version it arrived with.
 func (c *grvCache) markThrottled(gen int64, at time.Time, rkDefault, rkBatch bool) {
-	c.publishReplyAt(gen, time.Time{}, 0, at, rkDefault, rkBatch)
+	c.publishReplyAt(gen, false, time.Time{}, 0, at, rkDefault, rkBatch)
 }
 
 // throttleStamp is the recorded cooldown for a priority, or the zero time.

@@ -42,7 +42,7 @@ func TestMergeReply_BlockedGenerationNeverInstallsAVersion(t *testing.T) {
 	// carrying forward the cooldowns the invalidation preserved.
 	sentinel := &grvCacheEntry{rkDefault: base.Add(-time.Hour)}
 
-	got := mergeReply(sentinel, false /* generation moved */, base, 300,
+	got := mergeReply(sentinel, false /* generation moved */, false /* not durable */, base, 300,
 		base, true /* rkDefault */, false)
 
 	if got.version != 0 {
@@ -74,7 +74,7 @@ func TestMergeReply_CurrentGenerationStillInstalls(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	got := mergeReply(&grvCacheEntry{}, true /* generation current */, base, 300,
+	got := mergeReply(&grvCacheEntry{}, true /* generation current */, false, base, 300,
 		time.Time{}, false, false)
 
 	if got.version != 300 {
@@ -115,7 +115,7 @@ func TestInvalidate_StaleReplyLosingItsCASCannotResurrectItsVersion(t *testing.T
 			defer wg.Done()
 			// A throttled stale reply: throttled, because an un-throttled
 			// stale reply has nothing to merge and never reaches the CAS.
-			c.publishReplyAt(gen, base, staleVersion, base, true, false)
+			c.publishReplyAt(gen, false, base, staleVersion, base, true, false)
 		}()
 		go func() {
 			defer wg.Done()
