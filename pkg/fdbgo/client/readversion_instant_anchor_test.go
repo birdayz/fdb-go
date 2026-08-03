@@ -34,17 +34,25 @@ import (
 // its 60ms-old stamp, because that is when its window opened.
 func TestGRVCache_TryCacheReportsTheObtainInstantNotNow(t *testing.T) {
 	t.Parallel()
-	c := &grvCache{}
+
+	// FROZEN clock, not the wall clock. Freshness is a 100ms window, so a test
+	// that stamps an entry 60ms in the past and then races the real clock to
+	// read it sits 40ms from failing on a CORRECT implementation — one GC
+	// pause or a loaded CI box and the entry ages out mid-test. That failure
+	// would be a lie about the code, which is worse than no test at all: the
+	// no-flakes rule cuts in this direction too.
+	base := time.Now()
+	c := &grvCache{now: func() time.Time { return base }}
 
 	// Inside maxVersionCacheLag (100ms), so this is a HIT — but not fresh.
-	obtained := time.Now().Add(-60 * time.Millisecond)
+	obtained := base.Add(-60 * time.Millisecond)
 	c.updateFromGRV(obtained, 4242)
 
 	v, at, ok := c.tryCache(grvPriorityDefault)
 	if !ok {
 		t.Fatalf("cache miss on an entry %v old, well inside maxVersionCacheLag (%v): "+
 			"this test can say nothing about the instant if it never gets a hit",
-			time.Since(obtained), maxVersionCacheLag)
+			base.Sub(obtained), maxVersionCacheLag)
 	}
 	if v != 4242 {
 		t.Fatalf("cached version = %d, want 4242", v)
@@ -61,7 +69,7 @@ func TestGRVCache_TryCacheReportsTheObtainInstantNotNow(t *testing.T) {
 			"%v spent, and the page that starts on it dies with 1007",
 			at, obtained, at.Sub(obtained), maxVersionCacheLag)
 	}
-	if at.After(time.Now()) {
+	if at.After(base) {
 		t.Fatalf("cache reported a FUTURE instant %v: an anchor ahead of now makes every "+
 			"elapsed measurement negative and the budget effectively infinite", at)
 	}
@@ -87,9 +95,13 @@ func TestGRVCache_MissReportsNoInstant(t *testing.T) {
 
 	t.Run("stale entry", func(t *testing.T) {
 		t.Parallel()
-		c := &grvCache{}
-		// Past maxVersionCacheLag: a miss, and the stamp must not leak.
-		c.updateFromGRV(time.Now().Add(-time.Second), 777)
+		base := time.Now()
+		c := &grvCache{now: func() time.Time { return base }}
+		// Past maxVersionCacheLag: a miss, and the stamp must not leak. Frozen
+		// clock for the same reason as above — the margin here is generous, but
+		// a test that depends on wall-clock margin at all is a test that can
+		// fail for reasons that are not about the code.
+		c.updateFromGRV(base.Add(-time.Second), 777)
 		v, at, ok := c.tryCache(grvPriorityDefault)
 		if ok {
 			t.Fatalf("stale entry reported a hit (%d)", v)
@@ -140,4 +152,54 @@ func TestReadVersionInstant_MatchesTheGRVRequestTime(t *testing.T) {
 	if inst.After(time.Now()) {
 		t.Fatalf("anchor %v is in the future", inst)
 	}
+}
+
+// TestGRVCache_FreshnessIsJudgedOnTheSeam pins WHY the tests above can use a
+// frozen clock: freshness is decided against grvCache.now, never against the
+// wall clock directly. That is what makes them immune to a GC pause rather
+// than merely lucky.
+//
+// MEASURED, and the reason this seam exists: the previous wall-clock shape
+// stamped an entry 60ms into a 100ms window and then read it, leaving 40ms of
+// margin. Injecting a 50ms stall between the two — a GC pause, a loaded CI
+// box — failed it on a completely correct implementation ("cache miss on a
+// CORRECT implementation ... stamped 110.331039ms ago"). A test that reports
+// a defect the code does not have is worse than no test: it teaches everyone
+// to re-run the suite.
+//
+// Both directions are asserted, so a seam that existed but was ignored on one
+// of them would still redden this.
+func TestGRVCache_FreshnessIsJudgedOnTheSeam(t *testing.T) {
+	t.Parallel()
+
+	obtained := time.Now()
+
+	t.Run("inside the window per the seam", func(t *testing.T) {
+		t.Parallel()
+		// The seam reads one nanosecond before the entry ages out. Real elapsed
+		// time is irrelevant — however long this test is descheduled for, the
+		// verdict is the same.
+		at := obtained.Add(maxVersionCacheLag - time.Nanosecond)
+		c := &grvCache{now: func() time.Time { return at }}
+		c.updateFromGRV(obtained, 4242)
+		if _, _, ok := c.tryCache(grvPriorityDefault); !ok {
+			t.Fatalf("entry judged STALE at exactly maxVersionCacheLag-1ns on the seam: "+
+				"freshness is being decided against the wall clock, so every test "+
+				"here is one scheduling pause from a false failure (window %v)",
+				maxVersionCacheLag)
+		}
+	})
+
+	t.Run("past the window per the seam", func(t *testing.T) {
+		t.Parallel()
+		// One nanosecond the other side of the boundary.
+		at := obtained.Add(maxVersionCacheLag + time.Nanosecond)
+		c := &grvCache{now: func() time.Time { return at }}
+		c.updateFromGRV(obtained, 4242)
+		if v, _, ok := c.tryCache(grvPriorityDefault); ok {
+			t.Fatalf("entry judged FRESH at maxVersionCacheLag+1ns on the seam (version %d): "+
+				"the seam is not governing the staleness decision, so a stale version "+
+				"can be served with an anchor the budget then trusts", v)
+		}
+	})
 }
