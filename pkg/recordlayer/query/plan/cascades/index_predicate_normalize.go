@@ -5,6 +5,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// THE INVARIANT, for this function and every caller of it: normalization may
+// only ERASE a predicate it can PROVE accepts every record. Anything it cannot
+// prove — an arm it does not understand, a malformed message, a child it cannot
+// compile — must stay VISIBLE to the sparseness gates, because those gates read
+// absence as "this index holds everything". Erasing on doubt turns a partial
+// index into a full one and a scan of it into wrong rows; keeping a predicate
+// that was in fact harmless costs at worst a declined candidate.
+//
 // NormalizeIndexPredicateProto applies Java's predicate CONSTRUCTION rules to a
 // stored index predicate, returning the equivalent predicate Java would have
 // built. It is the single authority on that question: the planner (deciding
@@ -36,10 +44,16 @@ import (
 // nothing. It filters maximally: `QualifyRowNumber(score, DESC) <= 100` "keeps
 // the 100 records with the highest score values in the index"
 // (IndexPredicate.java:608-619). Folding it to the constant here would classify
-// a top-N index as COMPLETE and let a scan serve it as the whole table. Left
-// unfolded it stays a filtering predicate at every gate, which is the
-// fail-closed answer. Go cannot construct one today in any case —
-// predicateFromProto has no row-window arm, so SetPredicateProto rejects it.
+// a top-N index as COMPLETE and let a scan serve it as the whole table.
+//
+// Leaving it unfolded keeps it VISIBLE to the sparseness gates, and that alone
+// turned out not to be enough: the flat expansion converts the predicate and
+// omits a tautological result, so a row-window arm that reached
+// indexPredicateToQueryPredicate was mapped to TRUE and dropped, and the
+// candidate matched as full whether the arm arrived bare or wrapped in an AND.
+// The conversion therefore REFUSES the arm outright, which excludes the
+// candidate. Go cannot construct one today in any case — predicateFromProto has
+// no row-window arm, so SetPredicateProto rejects it.
 //
 // The result is always a deep clone; the input is never mutated and the two
 // trees share no nodes.
@@ -51,6 +65,15 @@ func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
 	// evaluates the FIRST arm it finds, so rewriting one arm of a multi-arm
 	// message could produce a predicate the evaluator never runs.
 	if indexPredicateProtoArmCount(p) != 1 {
+		return proto.Clone(p).(*gen.Predicate)
+	}
+	// A nil child makes the message malformed, and malformed is not provably
+	// true. Normalizing through it would collapse AND(nil) / OR(nil) — a
+	// singleton whose only child normalizes to nil — to nil itself, which the
+	// candidate boundary reads as "no predicate" and every gate reads as a FULL
+	// index. Handing the message back intact keeps it non-nil for the gates and
+	// lets the conversion reject it, which excludes the candidate.
+	if indexPredicateProtoHasNilChild(p) {
 		return proto.Clone(p).(*gen.Predicate)
 	}
 	switch {
@@ -104,6 +127,27 @@ func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
 // narrow tautology test to the result.
 func IndexPredicateProtoIsTautology(p *gen.Predicate) bool {
 	return constantPredicateArmIsTrue(NormalizeIndexPredicateProto(p))
+}
+
+// indexPredicateProtoHasNilChild reports whether any child slot of a composite
+// arm is nil. Only the immediate children are checked; a deeper nil is caught
+// when the recursion reaches its parent.
+func indexPredicateProtoHasNilChild(p *gen.Predicate) bool {
+	if p.AndPredicate != nil {
+		for _, c := range p.AndPredicate.Children {
+			if c == nil {
+				return true
+			}
+		}
+	}
+	if p.OrPredicate != nil {
+		for _, c := range p.OrPredicate.Children {
+			if c == nil {
+				return true
+			}
+		}
+	}
+	return p.NotPredicate != nil && p.NotPredicate.Child == nil
 }
 
 // indexPredicateProtoArmCount counts the set arms of a predicate message.
