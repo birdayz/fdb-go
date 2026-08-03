@@ -21,6 +21,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -838,5 +839,56 @@ func TestEpochRace_CommitBindsItsEpochAtProxySelection(t *testing.T) {
 		t.Fatalf("floor = %d, want 7000: the committed version must also floor, or a "+
 			"delayed lower GRV repopulates and the read-your-committed-writes "+
 			"guarantee RFC-198 exists for is lost", f)
+	}
+}
+
+// TestInvalidate_PreservesFloorAndCooldownsAtEveryEpoch is the dimensional gap
+// every earlier epoch test shared: they all ran at epoch 0, where a sentinel
+// that forgets to stamp its epoch is indistinguishable from one that stamps it
+// correctly. Past the first coordinator adoption they diverge, and the
+// divergence is a live stale read.
+//
+// invalidate() rebuilds the entry as a sentinel. If it does not carry the
+// CURRENT epoch forward, that sentinel reads as epoch 0 while the cache is at
+// epoch N — so the very next publication treats it as a previous-epoch entry,
+// discards it as a merge base, and loses the committed floor AND the ratekeeper
+// cooldowns with it. A version below a returned commit then becomes servable,
+// and reads are served past a throttle that is still in force.
+func TestInvalidate_PreservesFloorAndCooldownsAtEveryEpoch(t *testing.T) {
+	t.Parallel()
+
+	for _, adoptions := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("after_%d_coordinator_adoptions", adoptions), func(t *testing.T) {
+			t.Parallel()
+			base := time.Now()
+			c := &grvCache{now: func() time.Time { return base }}
+			for i := 0; i < adoptions; i++ {
+				c.resetForNewCoordinators()
+			}
+
+			tok := c.token()
+			c.update(tok, base, 7000)               // durable: floor := 7000
+			c.markThrottled(tok, base, true, false) // ratekeeper cooldown
+			c.invalidate()                          // same cluster, freshness only
+
+			// A later GRV below the committed floor must still be refused.
+			c.publish(c.token(), base, 6000)
+			if f := c.entryFloor(); f != 7000 {
+				t.Fatalf("floor = %d after invalidate() at epoch %d, want 7000 preserved.\n"+
+					"invalidate() must carry the CURRENT epoch onto its sentinel; leaving "+
+					"it at 0 makes the next publication treat the sentinel as a "+
+					"previous-epoch entry, discard it as a merge base, and lose the "+
+					"committed floor — after which a version below a returned commit "+
+					"becomes servable", f, adoptions)
+			}
+			if v, _, ok := c.tryCache(grvPriorityDefault); ok && v < 7000 {
+				t.Fatalf("served version %d below the committed floor 7000 at epoch %d",
+					v, adoptions)
+			}
+			if ts := c.throttleStamp(grvPriorityDefault); ts.IsZero() {
+				t.Fatalf("the ratekeeper cooldown was lost across invalidate() at epoch %d: "+
+					"reads are now served past a throttle that is still in force", adoptions)
+			}
+		})
 	}
 }

@@ -231,9 +231,10 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 		// and the CAS fails the CAS, and the retry must see the new
 		// generation rather than re-deciding staleness against the sentinel
 		// the invalidation installed.
+		obsEpoch := c.epoch.Load()
 		mayInstallVersion := c.generation.Load() == tok.gen
-		sameEpoch := c.epoch.Load() == tok.epoch
-		next := mergeReply(cur, tok.epoch, mayInstallVersion, sameEpoch, durable, at, v, replyTime, rkDefault, rkBatch)
+		sameEpoch := obsEpoch == tok.epoch
+		next := mergeReply(cur, obsEpoch, mayInstallVersion, sameEpoch, durable, at, v, replyTime, rkDefault, rkBatch)
 		if cur != nil && next == *cur {
 			return // nothing moved
 		}
@@ -258,13 +259,13 @@ func (c *grvCache) publishReplyAt(tok cacheToken, durable bool, at time.Time, v 
 // install is blocked; a GRV reply carries no such promise, and retiring on
 // one would evict a perfectly good cache entry every time a straggler with a
 // higher version landed after an invalidation.
-func mergeReply(cur *grvCacheEntry, tokEpoch int64, mayInstallVersion, sameEpoch, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
+func mergeReply(cur *grvCacheEntry, obsEpoch int64, mayInstallVersion, sameEpoch, durable bool, at time.Time, v int64, replyTime time.Time, rkDefault, rkBatch bool) grvCacheEntry {
 	// A previous-epoch entry is not a MERGE BASE. Its version, floor and
 	// cooldowns belong to another cluster, so inheriting any of them — or
 	// comparing this version against it for staleness — is the same category
 	// error as letting it be served. Only when this publication itself belongs
 	// to the current epoch: a stale-epoch reply must leave cur untouched.
-	if sameEpoch && cur != nil && cur.epoch != tokEpoch {
+	if sameEpoch && cur != nil && cur.epoch != obsEpoch {
 		cur = nil
 	}
 
@@ -359,10 +360,17 @@ func mergeReply(cur *grvCacheEntry, tokEpoch int64, mayInstallVersion, sameEpoch
 	// floor is what those refusals have to LEAVE BEHIND, or the next publisher
 	// re-opens the hole they just closed.
 	next.floor = floor
-	// Stamp the epoch this publication belongs to. A refused (stale-epoch)
-	// reply leaves cur untouched, so it keeps cur.s epoch and stays refused.
+	// Stamp from the OBSERVED fence when this publication contributed content,
+	// and only then. On the stale-epoch path every field above was copied from
+	// cur, so re-stamping would PROMOTE a previous-cluster entry into the
+	// current epoch and make it servable — the stale reply changing nothing
+	// except the one field that decides whether the old content counts.
+	//
+	// The epoch-0 sentinel bug this looks like it should fix lives in
+	// invalidate(), not here: that path builds a fresh entry from a struct
+	// literal and must carry cur.s epoch across explicitly.
 	if sameEpoch {
-		next.epoch = tokEpoch
+		next.epoch = obsEpoch
 	}
 	return next
 }
@@ -496,7 +504,12 @@ func (c *grvCache) invalidate() {
 		// (what is old enough to be wrong). Clearing it would let the next low
 		// publication become servable again and re-open the stale read a
 		// committed version had already ruled out.
-		next := grvCacheEntry{rkDefault: cur.rkDefault, rkBatch: cur.rkBatch, floor: cur.floor}
+		// The sentinel inherits cur.s EPOCH along with the floor and cooldowns.
+		// Without it the sentinel reads as epoch 0 while the cache is at epoch N,
+		// and the next publication discards it as a previous-epoch entry —
+		// losing the committed floor and the cooldowns an invalidation is
+		// explicitly meant to preserve.
+		next := grvCacheEntry{epoch: cur.epoch, rkDefault: cur.rkDefault, rkBatch: cur.rkBatch, floor: cur.floor}
 		if c.entry.CompareAndSwap(cur, &next) {
 			return
 		}
