@@ -660,6 +660,13 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	duplicateProducingColumns := c.duplicateProducingColumns()
 
 	var parts []*MatchedOrderingPart
+	// Whether every coordinate emitted below also carries order THROUGH itself.
+	// One that does not (a signed-zero-widened float equality) is still emitted
+	// — it claims its own order — but it disqualifies the PK suffix, and the
+	// "did the loop consume the whole key" count cannot see that: when such a
+	// coordinate is the LAST index column, the count is full even though the
+	// claim stops there.
+	suffixCarried := true
 	for _, paramID := range sortParameterIDs {
 		idx := -1
 		for i, alias := range c.sargableAliases {
@@ -738,12 +745,15 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
 
-		// Emitted, but nothing may claim order THROUGH it. Breaking here rather
-		// than before the append is the whole point of the split: the
-		// PK-suffix continuation below is skipped too, which is required —
-		// the tie class spans two physical ranges, so no later column is
-		// ordered within it.
+		// Emitted, but nothing may claim order THROUGH it. Breaking AFTER the
+		// append rather than before is the whole point of the split: the
+		// coordinate keeps its own claim. The PK suffix, however, must still be
+		// refused — the tie class spans two physical ranges, so no later column
+		// is ordered within it — and breaking alone does not refuse it: the
+		// gate below counts emitted parts against the key length, and this
+		// coordinate has now been counted. Record the refusal explicitly.
 		if !carriesTheSuffix {
+			suffixCarried = false
 			break
 		}
 	}
@@ -771,8 +781,11 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// if the loop above stopped early the positions would not be
 	// contiguous and the suffix would claim an order the entries don't
 	// have. PK columns already in the index key are trimmed
-	// (Index.trimPrimaryKey), matching fullKey construction.
-	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) {
+	// (Index.trimPrimaryKey), matching fullKey construction. (3) The last
+	// emitted coordinate must carry order through itself; a full part count is
+	// not sufficient, since a coordinate that claims only its OWN order can sit
+	// at the end of the key.
+	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) && suffixCarried {
 		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
 			// The suffix terminates on the same rule as the key columns: a
 			// FLOAT/DOUBLE PK column cannot extend the claim.

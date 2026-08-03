@@ -101,6 +101,7 @@ go_test(
         "rfc176_p2_plan_identity_test.go",
         "rfc180_wsb_identity_test.go",
         "scan_cost_test.go",
+        "signed_zero_directional_ordering_test.go",
         "streaming_aggregation_ordering_key_name_test.go",
         "table_function_test.go",
         "unordered_union_test.go",
@@ -193,6 +194,7 @@ go_test(
         "ordering_provider_identity_test.go",
         "cardinality_bounds.go",
         "physical_key_component_types_test.go",
+        "signed_zero_directional_ordering_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

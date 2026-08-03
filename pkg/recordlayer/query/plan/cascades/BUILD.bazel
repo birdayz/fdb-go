@@ -499,6 +499,7 @@ go_test(
         "select_subsumption_test.go",
         "select_subsumption_translation_test.go",
         "set_plan_helpers_test.go",
+        "signed_zero_pk_suffix_ordering_test.go",
         "simple_select_passthrough_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
@@ -1020,6 +1021,7 @@ go_test(
         "physical_equality_cost_test.go",
         "physical_key_component_types_test.go",
         "physical_key_types.go",
+        "signed_zero_pk_suffix_ordering_test.go",
     ],
     deps = [
         "//gen",

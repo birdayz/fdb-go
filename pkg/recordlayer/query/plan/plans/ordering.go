@@ -387,14 +387,25 @@ func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
 //
 // It answers yes to the second on two independent grounds:
 //
-//  1. Every row the equality admits has the SAME logical value at this
-//     coordinate — that is what an equality means. `ORDER BY v` over one tie
-//     class is satisfied by ANY permutation of it, so the bound coordinate is
-//     vacuously order-preserving for itself. This ground alone settles ASC.
-//  2. The physical enumeration is ordered too: the executor's range set opens
-//     the two signed-zero blocks in key order and reverses them wholesale for a
-//     reverse scan. This is the ground DESC and mid-scan resume rest on, since
-//     those need a definite physical order, not merely a permissible one.
+// The ground is the PHYSICAL ENUMERATION, and only that: the executor's range
+// set opens the two signed-zero blocks in key order and reverses them wholesale
+// for a reverse scan, so the coordinate is genuinely ordered in whichever
+// direction the scan runs. DESC and mid-scan resume rest on the same fact.
+//
+// The tempting SECOND ground — "every admitted row shares one logical value, so
+// any permutation satisfies ORDER BY, which settles ASC by itself" — is FALSE
+// here, and believing it produced a wrong answer. It presumes one comparator.
+// There are two, and they disagree at exactly this point on purpose:
+// predicates.Comparison.Eval checks IEEE equality, so -0.0 == +0.0 and both
+// rows are admitted; values.CompareFloat64 (faithful to
+// java.lang.Double.compare, and to FDB tuple order) ranks -0.0 BELOW +0.0, so
+// they are two distinct ORDER BY values, not a tie class.
+//
+// The consequence is that the claim is DIRECTIONAL, never FIXED. A caller that
+// records this coordinate as FIXED — order-free, hence satisfying any requested
+// direction — elides the sort on `WHERE z = 0.0 ORDER BY z DESC` and answers it
+// from a FORWARD scan, returning the two zero blocks ascending. HintRichOrdering
+// binds it SORTED for that reason.
 //
 // NaN does not intrude here the way it does for an unbound or range-bound float
 // coordinate: an equality against zero admits no NaN at all, so the two
@@ -1161,7 +1172,24 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	for i, col := range columnNames[:prefixLen] {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
 		keys = append(keys, key)
-		bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		// FIXED means "states no order, so ANY requested direction is
+		// satisfied". That is only true of a coordinate pinned to ONE physical
+		// key, where every admitted row shares one SORT value.
+		//
+		// A signed-zero-widened equality is not such a coordinate. The
+		// PREDICATE comparator makes -0.0 and +0.0 equal, which is why the
+		// equality admits both; the SORT comparator (values.CompareFloat64,
+		// faithful to java.lang.Double.compare) ranks -0.0 BELOW +0.0, which is
+		// why they are two distinct ORDER BY values. The coordinate is ordered,
+		// but only in the direction the scan runs — so it binds SORTED, not
+		// FIXED. Calling it FIXED elides the sort on `WHERE z = 0.0 ORDER BY z
+		// DESC` and answers it from a FORWARD scan, returning the two zero
+		// blocks ascending.
+		if EqualityPinsSinglePhysicalKey(comps[i]) {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
 	}
 	for _, col := range tail {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
