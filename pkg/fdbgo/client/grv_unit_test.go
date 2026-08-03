@@ -38,8 +38,7 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
 	// Stamp the cache as updated 1 second ago (way past maxVersionCacheLag = 100ms).
-	c.version.Store(1234)
-	c.lastTime.Store(time.Now().Add(-time.Second).UnixNano())
+	c.publish(time.Now().Add(-time.Second), 1234)
 	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Errorf("stale entry returned: got (%d, true), want stale-miss", v)
 	}
@@ -279,14 +278,14 @@ func TestGRVCache_CommitUpdateAdvancesFreshness(t *testing.T) {
 		t.Fatal("precondition: the cache should be stale before the commit")
 	}
 	// A commit "now" advances the version AND renews freshness (C++ :6657).
-	c.update(200)
+	c.update(time.Now(), 200)
 	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 200 {
 		t.Fatalf("tryCache = (%d, %v), want (200, true): a commit must advance version AND freshness", v, ok)
 	}
 	// Monotonicity of the commit path: a backwards version is rejected.
-	c.update(150)
-	if got := c.version.Load(); got != 200 {
+	c.update(time.Now(), 150)
+	if got := c.cachedVersion(); got != 200 {
 		t.Fatalf("version = %d after backwards commit update, want 200", got)
 	}
 }

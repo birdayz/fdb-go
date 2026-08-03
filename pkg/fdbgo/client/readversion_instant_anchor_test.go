@@ -126,7 +126,7 @@ func TestReadVersionInstant_MatchesTheGRVRequestTime(t *testing.T) {
 
 	// The batcher stamps the cache from the SAME pre-RPC requestTime it hands
 	// to the waiters, so a correctly propagated anchor equals it exactly.
-	cached := time.Unix(0, db.db.grvCache.lastTime.Load())
+	cached := db.db.grvCache.entryInstant()
 	if cached.IsZero() {
 		t.Fatal("the GRV cache has no stamp after a GRV — this test cannot compare against it")
 	}

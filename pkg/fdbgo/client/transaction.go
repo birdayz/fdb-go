@@ -1934,12 +1934,21 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 
 	// Feed committed version to GRV cache so a later opted-in read sees this
-	// write. Advances version + freshness, matching C++ updateCachedReadVersion
-	// at the commit site (NativeAPI.actor.cpp:6657, t=now()). Unconditional —
-	// population runs for every transaction regardless of USE_GRV_CACHE; only
-	// cache READS are opt-in (RFC-104).
+	// write. Unconditional — population runs for every transaction regardless
+	// of USE_GRV_CACHE; only cache READS are opt-in (RFC-104).
+	//
+	// Stamped with commitStart, the instant BEFORE the commit was dispatched,
+	// never with now(): this version.s MVCC window opened when the proxy
+	// assigned it, which is somewhere inside the round trip that just
+	// finished. Dating it now() would claim the window opened after it closed
+	// on the far side, and an opted-in reader served this entry would then
+	// budget against a window already partly spent. C++ stamps the same site
+	// from a pre-reply instant — `state double grvTime = now();` captured
+	// before `wait(reply)` and handed to updateCachedReadVersion
+	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
+	// still (before dispatch rather than after), which is the safe direction.
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(tx.committedVersion)
+		tx.db.grvCache.update(commitStart, tx.committedVersion)
 	}
 
 	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs

@@ -59,7 +59,7 @@ func TestFDB_GRVCache_OptInOnly(t *testing.T) {
 	if err := warm.ensureReadVersion(ctx); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
-	v := db.db.grvCache.version.Load()
+	v := db.db.grvCache.cachedVersion()
 	if v == 0 {
 		t.Fatal("GRV cache not populated by a real reply")
 	}
@@ -136,7 +136,7 @@ func TestFDB_GRVCache_SkipOverridesUse(t *testing.T) {
 	if err := warm.ensureReadVersion(ctx); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
-	v := db.db.grvCache.version.Load()
+	v := db.db.grvCache.cachedVersion()
 	if v == 0 {
 		t.Fatal("GRV cache not populated")
 	}
@@ -176,7 +176,7 @@ func TestFDB_GRVCache_ImmediateServesButStartsNoRefresher(t *testing.T) {
 	if err := warm.ensureReadVersion(ctx); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
-	v := db.db.grvCache.version.Load()
+	v := db.db.grvCache.cachedVersion()
 	if v == 0 {
 		t.Fatal("GRV cache not populated")
 	}

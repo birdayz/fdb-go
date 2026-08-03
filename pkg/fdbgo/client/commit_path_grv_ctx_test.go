@@ -204,7 +204,7 @@ func newGRVBlockTestDB(t *testing.T, ctx context.Context) (*Database, *grvBlockD
 // cache HIT, so the background GRV refresher (which only starts inside the hit
 // branch) never runs — the commit's GRV is the only RPC in flight.
 func coldGRVCache(db *Database) {
-	db.db.grvCache.version.Store(0)
+	db.db.grvCache.invalidate()
 }
 
 // TestFDB_CommitPathGRV_HonorsCtxCancel pins RFC-093: a ctx cancel arriving while

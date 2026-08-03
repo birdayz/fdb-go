@@ -1018,7 +1018,7 @@ func (d *Database) SetMaxWatches(n int64) error {
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
 // a fresh read version from the GRV proxy. Use after external writes.
 func (d *Database) InvalidateGRVCache() {
-	d.db.grvCache.version.Store(0)
+	d.db.grvCache.invalidate()
 }
 
 // GetDBInfo returns the current cluster topology (proxy lists, cluster ID).
