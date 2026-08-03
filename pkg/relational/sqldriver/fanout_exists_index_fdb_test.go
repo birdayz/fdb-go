@@ -61,12 +61,11 @@ func TestFDB_CorrelatedPrimaryUnnestUsesFanOutIndex(t *testing.T) {
 	record := func(id int64, tags ...int64) proto.Message {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		tagsField := desc.Fields().ByName("TAGS")
-		list := m.NewField(tagsField).List()
+		tagVals := make([]protoreflect.Value, 0, len(tags))
 		for _, tag := range tags {
-			list.Append(protoreflect.ValueOfInt64(tag))
+			tagVals = append(tagVals, protoreflect.ValueOfInt64(tag))
 		}
-		m.Set(tagsField, protoreflect.ValueOfList(list))
+		setArrayField(m, desc.Fields().ByName("TAGS"), tagVals...)
 		return m
 	}
 

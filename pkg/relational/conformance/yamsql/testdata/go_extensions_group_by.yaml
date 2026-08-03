@@ -4,7 +4,7 @@
 # These are Go-only tests — no Java conformance reference.
 name: go_extensions_group_by
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, product STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, product STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 10, 'Widget', 100), (2, 10, 'Gadget', 200), (3, 20, 'Widget', 50), (4, 20, 'Widget', 150), (5, 30, 'Gadget', 300)
 tests:

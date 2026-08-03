@@ -26,7 +26,7 @@ func TestFDB_NotInNullProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_notinnull")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE notinnull "+
-			"CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, x BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_notinnull/s WITH TEMPLATE notinnull")
 	dsn := fmt.Sprintf("fdbsql:///testdb_notinnull?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

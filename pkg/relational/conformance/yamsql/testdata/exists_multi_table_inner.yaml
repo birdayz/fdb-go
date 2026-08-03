@@ -5,9 +5,9 @@
 # via join tree building in buildCorrelatedExists.
 name: exists_multi_table_inner
 schema_template: |
-  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT, genre STRING, PRIMARY KEY (id))
-  CREATE TABLE awards (id BIGINT NOT NULL, book_id BIGINT, award_name STRING, PRIMARY KEY (id))
+  CREATE TABLE authors (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT, author_id BIGINT, genre STRING, PRIMARY KEY (id))
+  CREATE TABLE awards (id BIGINT, book_id BIGINT, award_name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO authors VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
   - INSERT INTO books VALUES (10, 1, 'fiction'), (11, 2, 'science'), (12, 3, 'history')

@@ -4,7 +4,7 @@
 # including multiple rows, default values, and edge cases.
 name: insert_returning
 schema_template: |
-  CREATE TABLE log (id BIGINT NOT NULL, msg STRING, level BIGINT, PRIMARY KEY (id))
+  CREATE TABLE log (id BIGINT, msg STRING, level BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO log VALUES (1, 'init', 0)
 tests:

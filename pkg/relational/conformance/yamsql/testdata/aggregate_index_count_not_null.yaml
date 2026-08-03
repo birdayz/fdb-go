@@ -6,7 +6,7 @@
 name: aggregate_index_count_not_null
 schema_template: |
   CREATE TABLE measurements (
-    id BIGINT NOT NULL,
+    id BIGINT,
     sensor STRING,
     reading BIGINT,
     PRIMARY KEY (id)

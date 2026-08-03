@@ -13,7 +13,7 @@
 name: in_over_intersection
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     a BIGINT,
     b BIGINT,
     c BIGINT,

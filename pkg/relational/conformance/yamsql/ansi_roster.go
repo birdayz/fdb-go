@@ -284,7 +284,13 @@ var ansiCoreRoster = []AnsiFeature{
 		ID: "F261", Name: "CASE expression", Core: true, Java: SupportPartial,
 		Subfeatures: []string{"F261-01", "F261-02", "F261-03", "F261-04"},
 	},
-	{ID: "F261-01", Name: "Simple CASE", Core: true, Java: SupportNone, Note: "Java visitCaseExpressionFunctionCall is a no-op; Go evaluates correctly"},
+	// The earlier Java=None claim was a measurement artifact: the tagged
+	// probe's schema template used scalar NOT NULL, which Java rejects at
+	// CREATE, so "Java rejected" was the TEMPLATE dying, not simple CASE.
+	// With the template Java-legal, the live JVM ACCEPTS the simple-CASE
+	// query; the visitCaseExpressionFunctionCall gap is about evaluation
+	// fidelity, not acceptance — hence Partial.
+	{ID: "F261-01", Name: "Simple CASE", Core: true, Java: SupportPartial, Note: "Java accepts (live-JVM measured); visitCaseExpressionFunctionCall evaluation gap — Go evaluates correctly"},
 	{ID: "F261-02", Name: "Searched CASE", Core: true, Java: SupportFull},
 	{ID: "F261-03", Name: "NULLIF", Core: true, Java: SupportNone, Note: "rejected 42883 — no function-registry entry (both engines)"},
 	{ID: "F261-04", Name: "COALESCE", Core: true, Java: SupportFull},

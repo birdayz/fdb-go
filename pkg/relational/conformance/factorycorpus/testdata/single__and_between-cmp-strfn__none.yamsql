@@ -18,7 +18,7 @@
 # family: single|and(between+cmp+strfn)|none
 #
 # scenario: fc_0000000034_q3_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 34
 # query-index: 3
 # projection: 0
@@ -31,7 +31,7 @@
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 34 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
 ---
 setup:
   connect: 1
@@ -106,7 +106,7 @@ test_block:
           - {ID: 10, A: !null '', B: 8, C: 5, S: "alpha", F: true, D: 8.0, E: !f -1.6777216e+07}
 #
 # scenario: fc_0000000034_q3_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 34
 # query-index: 3
 # projection: 1
@@ -119,7 +119,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 34 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
 ---
 setup:
   connect: 2
@@ -194,7 +194,7 @@ test_block:
           - {ID: 10}
 #
 # scenario: fc_0000000034_q3_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 34
 # query-index: 3
 # projection: 2
@@ -207,7 +207,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 34 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
 ---
 setup:
   connect: 3
@@ -282,7 +282,7 @@ test_block:
           - {ID: 10, A: !null '', C: 5, F: true, E: !f -1.6777216e+07}
 #
 # scenario: fc_0000000320_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 320
 # query-index: 5
 # projection: 0
@@ -295,7 +295,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 320 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
 ---
 setup:
   connect: 4
@@ -370,7 +370,7 @@ test_block:
           - {ID: 12, A: -1, B: 4, C: 0, S: !null '', F: true, D: 9.0, E: !null ''}
 #
 # scenario: fc_0000000320_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 320
 # query-index: 5
 # projection: 1
@@ -383,7 +383,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 320 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
 ---
 setup:
   connect: 5
@@ -458,7 +458,7 @@ test_block:
           - {ID: 12}
 #
 # scenario: fc_0000000320_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 320
 # query-index: 5
 # projection: 2
@@ -471,7 +471,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 320 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_s ON T_RD (s) CREATE INDEX idx_d ON T_RD (d)
 ---
 setup:
   connect: 6

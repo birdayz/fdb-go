@@ -22,7 +22,7 @@ func TestFDB_DropSchemaIfExistsConformance(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t, "/testdb_dsiec")
 	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_dsiec")
-	mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE dsiec CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE dsiec CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_dsiec/real WITH TEMPLATE dsiec")
 
 	errs := func(q string) error { _, err := db.ExecContext(ctx, q); return err }

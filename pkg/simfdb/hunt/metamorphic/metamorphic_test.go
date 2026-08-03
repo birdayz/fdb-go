@@ -89,7 +89,7 @@ func TestTeeth(t *testing.T) {
 	bad := Scenario{
 		Name:   "teeth",
 		Seed:   2,
-		Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))"},
+		Tables: []string{"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))"},
 		Data: []string{
 			"INSERT INTO t (id, a) VALUES (1, 1)",
 			"INSERT INTO t (id, a) VALUES (2, 5)",
@@ -135,7 +135,7 @@ func TestDeterminism(t *testing.T) {
 func TestLoadDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	js := `[{"name":"gen1","seed":3,"tables":["CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))"],
+	js := `[{"name":"gen1","seed":3,"tables":["CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))"],
 		"data":["INSERT INTO t (id,a) VALUES (1,1)"],
 		"groups":[{"name":"g","reason":"trivial","queries":["SELECT id FROM t","SELECT id FROM t"]}]}]`
 	if err := os.WriteFile(filepath.Join(dir, "gen.json"), []byte(js), 0o644); err != nil {

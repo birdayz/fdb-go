@@ -4,9 +4,9 @@
 # (1 Existential). This tests the implementJoinWithExistential rule.
 name: left_join_exists_combo
 schema_template: |
-  CREATE TABLE companies (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE employees (id BIGINT NOT NULL, company_id BIGINT, name STRING, PRIMARY KEY (id))
-  CREATE TABLE projects (id BIGINT NOT NULL, company_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE companies (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT, company_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE projects (id BIGINT, company_id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO companies VALUES (1, 'Acme'), (2, 'Beta'), (3, 'Gamma')
   - INSERT INTO employees VALUES (10, 1, 'Alice'), (20, 1, 'Bob'), (30, 2, 'Charlie')

@@ -6,7 +6,7 @@
 # violate the rule. Java errors 42803. nightshift-39: Go now matches.
 name: bare_col_with_agg
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
 tests:

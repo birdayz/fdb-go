@@ -41,7 +41,7 @@ func TestFDB_RecursiveCTEAliasedComputedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_alias_computed_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_computed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -103,7 +103,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_alias_seed_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_seed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -148,7 +148,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_alias_both_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_both_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -198,7 +198,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_alias_join_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_alias_join_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -258,7 +258,7 @@ func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_dup_alias_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_dup_alias_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 

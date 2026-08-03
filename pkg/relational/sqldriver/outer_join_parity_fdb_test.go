@@ -47,13 +47,13 @@ func setupOuterParityDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	// Java's emp$fname / dept$name indexes are mirrored so the planner has the
 	// same index-scan choices Java's explain strings exercise.
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, lname STRING, dept_id BIGINT, PRIMARY KEY (id))
+		CREATE TABLE emp (id BIGINT, fname STRING, lname STRING, dept_id BIGINT, PRIMARY KEY (id))
 		CREATE INDEX emp_fname ON emp (fname)
-		CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+		CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE INDEX dept_name ON dept (name)
-		CREATE TABLE project (id BIGINT NOT NULL, name STRING, emp_id BIGINT, PRIMARY KEY (id))
-		CREATE TABLE award (id BIGINT NOT NULL, name STRING, emp_id BIGINT, PRIMARY KEY (id))
-		CREATE TABLE emp_dept (id BIGINT NOT NULL, did BIGINT NOT NULL, PRIMARY KEY (id))`, tmpl))
+		CREATE TABLE project (id BIGINT, name STRING, emp_id BIGINT, PRIMARY KEY (id))
+		CREATE TABLE award (id BIGINT, name STRING, emp_id BIGINT, PRIMARY KEY (id))
+		CREATE TABLE emp_dept (id BIGINT, did BIGINT, PRIMARY KEY (id))`, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -616,10 +616,10 @@ func TestFDB_OuterParity_FullIsGoExtension(t *testing.T) {
 
 // TestFDB_OuterParity_NullSupplyingNullability verifies RFC-144 §3c (#4274): the
 // null-supplying side of an outer join behaves nullable at runtime even when its
-// SOURCE columns are declared NOT NULL. Go's runtime key-absence model NULL-pads
+// SOURCE columns are primary keys. Go's runtime key-absence model NULL-pads
 // the unmatched leg without raising "non-nullable field set to NULL" — matching
 // Java 4.12's observable behavior (Java makes the null-supplying flowed values
-// nullable so the join itself never raises). dept.id is PK (NOT NULL), yet the
+// nullable so the join itself never raises). dept.id is the PK, yet the
 // LEFT JOIN emits NULL for Dave's (unmatched) dept.id.
 func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	t.Parallel()
@@ -629,7 +629,7 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	g := gomega.NewWithT(t)
 	db := setupOuterParityDB(t, g, "nullability")
 
-	// (1) Projecting a NOT-NULL column (dept.id, the PK) from the null-supplying
+	// (1) Projecting the PK column (dept.id) from the null-supplying
 	// side must NULL-pad the unmatched row — NOT error.
 	assertRowsUnordered(t, g, db,
 		"SELECT e.fname, d.id FROM emp e LEFT JOIN dept d ON e.dept_id = d.id", "si",
@@ -637,34 +637,24 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 			row(ojStr("Alice"), ojInt(1)),
 			row(ojStr("Bob"), ojInt(1)),
 			row(ojStr("Carol"), ojInt(2)),
-			row(ojStr("Dave"), ojNull()), // dept.id is NOT NULL at source, NULL-padded here
+			row(ojStr("Dave"), ojNull()), // dept.id is the PK at source, NULL-padded here
 		})
 
-	// (2) Result-metadata nullability (ColumnTypeNullable): Go reports d.id — a
-	// null-supplying-leg column — as NOT nullable, while Java 4.12 (#4274)
-	// re-types every null-supplying flowed value nullable. This divergence is a
-	// SIDE EFFECT of a known metadata defect, not a cost/benefit decision: the
-	// null-born upgrade in deriveColumnsFromProjection exists precisely to
-	// produce Java's answer (it flips a null-supplying leaf's columns to
-	// nullable), but the descriptor lookup feeding it first-matches across join
-	// legs whenever the candidates agree on type+cardinality — emp.id and
-	// dept.id are both (BIGINT, required) — so the lookup for d.id answers with
-	// emp's descriptor and the upgrade never tests dept's null-born membership.
-	// See descriptorForColumn's agreement-gate comment and
-	// TestFDB_CrossLegAgreementGate_NullBornNotCovered for the isolated
-	// counterexample.
-	//
-	// Declining the ambiguous lookup unconditionally is NOT the fix — it
-	// over-corrects: the descriptor is then dropped for PRESERVED-leg columns
-	// too, so e.id would also report nullable, wrong in the other direction.
-	// The real fix is positional metadata derived from the plan's own flowed
-	// result type (the D3 deliverable), where each slot carries its own leg's
-	// nullability. Until then this pin asserts the CURRENT (wrong-vs-Java)
-	// answer so the flip to Java's #4274 answer lands as a conscious change
-	// that updates this assertion, not as silent drift. The flag is
-	// non-load-bearing meanwhile: query rows and INSERT…SELECT correctness use
-	// RUNTIME values (the NULL-padded d.id is a genuine SQL NULL, proven in (1)
-	// and by the INSERT…SELECT test below), not this metadata flag.
+	// (2) Result-metadata nullability (ColumnTypeNullable): d.id — a
+	// null-supplying-leg column — reports nullable, which is Java 4.12's
+	// (#4274) answer, but it reaches that answer through SOURCE nullability
+	// rather than per-slot join metadata: with scalar NOT NULL unexpressible
+	// every scalar column is proto OPTIONAL, and the NoNulls derivation keys
+	// on proto REQUIRED, which no DDL shape produces. The first-match hole in
+	// descriptorForColumn's agreement gate (the null-born upgrade keyed on
+	// descriptor identity) is therefore LATENT rather than fixed — see
+	// TestFDB_CrossLegAgreementGate_NullBornNotCovered for the pin of that
+	// unreachability. Positional metadata derived from the plan's own flowed
+	// result type (the D3 deliverable) remains the real per-slot mechanism.
+	// The flag is non-load-bearing meanwhile: query rows and INSERT…SELECT
+	// correctness use RUNTIME values (the NULL-padded d.id is a genuine SQL
+	// NULL, proven in (1) and by the INSERT…SELECT test below), not this
+	// metadata flag.
 	ctx := context.Background()
 	rows, err := db.QueryContext(ctx, "SELECT e.fname, d.id FROM emp e LEFT JOIN dept d ON e.dept_id = d.id")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -672,19 +662,29 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(len(cts)).To(gomega.Equal(2))
 	if nullable, ok := cts[1].Nullable(); ok {
-		// Current Go behavior: source cardinality (NOT-NULL PK → not nullable).
-		g.Expect(nullable).To(gomega.BeFalse(),
-			"d.id reports source (NOT-NULL) cardinality — the known-wrong first-match answer "+
-				"this pin holds until positional (D3) metadata flips it to Java's #4274 "+
-				"nullable; see the comment above before touching this assertion")
+		// d.id reports nullable — Java's #4274 answer — but it arrives from
+		// SOURCE nullability, not from per-slot join metadata: scalar NOT
+		// NULL is unexpressible (rejected at CREATE), every scalar column is
+		// proto OPTIONAL, and the NoNulls derivation keys on proto REQUIRED,
+		// which nothing produces. The first-match defect in
+		// descriptorForColumn's agreement gate is therefore latent, not
+		// fixed (see cross_leg_null_born_fdb_test.go); positional (D3)
+		// metadata remains the real per-slot answer.
+		g.Expect(nullable).To(gomega.BeTrue(),
+			"d.id must report nullable: every scalar source column is proto OPTIONAL "+
+				"now, so source-derived metadata already coincides with Java's #4274 answer")
 	}
 	rows.Close()
 }
 
 // TestFDB_OuterParity_InsertSelectFromOuterJoinNotNull verifies INSERT…SELECT
-// from an outer join into a NOT-NULL target: the NULL-padded row carries a NULL
-// for the null-supplying column, and inserting it into a NOT-NULL target column
-// raises a not-null violation (23502) — standard SQL behavior, matching Java.
+// from an outer join carries the RUNTIME NULL of the null-supplying column into
+// the target (#4274: the flowed value is genuinely NULL, not a zero value).
+// Scalar NOT NULL is unexpressible (Java parity: NOT NULL is only allowed for
+// ARRAY column type, rejected at CREATE); the scalar 23502 surface is gone, so
+// the NULL-padded row now INSERTS, and what gets pinned is that the stored
+// value is NULL — the same load-bearing runtime-NULL property, observed
+// through the write path instead of a rejection.
 func TestFDB_OuterParity_InsertSelectFromOuterJoinNotNull(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -694,36 +694,21 @@ func TestFDB_OuterParity_InsertSelectFromOuterJoinNotNull(t *testing.T) {
 	db := setupOuterParityDB(t, g, "inssel")
 	ctx := context.Background()
 
-	// emp_dept (created in the schema template) has a NOT-NULL `did` column. The
-	// two SELECT columns (e.id, d.id) map positionally to (id, did). INSERT…SELECT
-	// a LEFT JOIN whose null-supplying d.id is NULL for Dave (unmatched) → the
-	// NULL-padded row MUST be rejected (no NULL written to the NOT-NULL target).
-	// The rejection is driven by the RUNTIME NULL value (the d.id column's NULL),
-	// NOT result metadata — which is the load-bearing #4274 property.
-	//
-	// Error-code note (benign, orthogonal divergence): the INSERT…SELECT executor
-	// path surfaces this as a proto "required field … not set" serialization error
-	// rather than the clean 23502 NotNullViolation the INSERT…VALUES path emits.
-	// Threading a per-row NOT-NULL check into the INSERT…SELECT cursor is a
-	// general executor improvement, independent of outer joins (any INSERT…SELECT
-	// yielding a NULL for a NOT-NULL column hits the same path); the load-bearing
-	// guarantee — no NULL is written to a NOT-NULL column — holds either way.
+	// The two SELECT columns (e.id, d.id) map positionally to emp_dept(id, did).
+	// The LEFT JOIN's null-supplying d.id is NULL for Dave (unmatched): all 4
+	// rows insert, and Dave's did must be stored as NULL, not 0.
 	_, err := db.ExecContext(ctx, `INSERT INTO emp_dept
 		SELECT e.id, d.id FROM emp e LEFT JOIN dept d ON e.dept_id = d.id`)
-	g.Expect(err).To(gomega.HaveOccurred(),
-		"inserting a NULL-padded outer-join column into a NOT-NULL target must be rejected")
-
-	// The matched-only subset (WHERE d.id IS NOT NULL) inserts cleanly — proves it
-	// was specifically the NULL-padded row that triggered the rejection.
-	_, err = db.ExecContext(ctx, `INSERT INTO emp_dept
-		SELECT e.id, d.id FROM emp e LEFT JOIN dept d ON e.dept_id = d.id WHERE d.id IS NOT NULL`)
 	g.Expect(err).NotTo(gomega.HaveOccurred(),
-		"matched-only rows (no NULL-padding) insert cleanly into the NOT-NULL target")
+		"INSERT…SELECT from a LEFT JOIN with a NULL-padded column must succeed")
 
-	// And the matched rows landed: 3 of 4 emp rows have a matching dept.
 	var n int
 	g.Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM emp_dept").Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal(3))
+	g.Expect(n).To(gomega.Equal(4))
+
+	// Dave's row (the unmatched leg) stored a real NULL for did.
+	g.Expect(db.QueryRowContext(ctx, "SELECT COUNT(*) FROM emp_dept WHERE did IS NULL").Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(1))
 }
 
 // ====================== TASK D: boolean literals in WHERE/ON =================
@@ -739,8 +724,8 @@ func setupBoolDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	tmpl := "bool_tmpl_" + suffix
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE a (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))
-		CREATE TABLE b (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`, tmpl))
+		CREATE TABLE a (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))
+		CREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))`, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())

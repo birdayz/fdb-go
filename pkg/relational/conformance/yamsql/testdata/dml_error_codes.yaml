@@ -3,16 +3,19 @@
 # Error codes for DML operations aligned with Java behavior.
 name: dml_error_codes
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, name STRING NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'alice'), (2, 20, 'bob')
 tests:
   # UPDATE SET non-existent column.
   - query: UPDATE t SET nonexistent = 5 WHERE id = 1
     error_code: "42703"
-  # INSERT with NULL into NOT NULL column.
+  # NULL into a nullable column succeeds. (The scalar NOT NULL column this
+  # step once violated is gone: Java rejects NOT NULL on non-ARRAY columns
+  # at CREATE — "NOT NULL is only allowed for ARRAY column type" — and the
+  # DDL now ports that verbatim, so the 23502 surface is unexpressible.)
   - query: INSERT INTO t VALUES (3, 30, NULL)
-    error_code: "23502"
+    rowcount: 1
   # DELETE from non-existent table.
   - query: DELETE FROM nonexistent WHERE id = 1
     error_code: "42F01"
@@ -27,8 +30,9 @@ tests:
   - query: SELECT v FROM t WHERE id = 1
     rows:
       - [99]
-  # Baseline: valid DELETE works.
+  # Baseline: valid DELETE works (rows 1 and 3 remain — the NULL-name
+  # insert above succeeded).
   - query: DELETE FROM t WHERE id = 2
   - query: SELECT COUNT(*) FROM t
     rows:
-      - [1]
+      - [2]

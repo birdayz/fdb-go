@@ -127,11 +127,11 @@ func newMergedLegReaderShape(ctx context.Context, t *testing.T) *mergedLegReader
 		m := dynamicpb.NewMessage(stDesc)
 		m.Set(stDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(stDesc.Fields().ByName("C"), protoreflect.ValueOfInt64(c))
-		l := m.NewField(stDesc.Fields().ByName("ARR")).List()
+		vals := make([]protoreflect.Value, 0, len(arr))
 		for _, v := range arr {
-			l.Append(protoreflect.ValueOfInt64(v))
+			vals = append(vals, protoreflect.ValueOfInt64(v))
 		}
-		m.Set(stDesc.Fields().ByName("ARR"), protoreflect.ValueOfList(l))
+		setArrayField(m, stDesc.Fields().ByName("ARR"), vals...)
 		return m
 	}
 	otRow := dynamicpb.NewMessage(otDesc)

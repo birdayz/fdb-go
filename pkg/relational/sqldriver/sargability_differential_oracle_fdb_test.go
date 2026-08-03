@@ -510,19 +510,19 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sargoracle "+
-			"CREATE TABLE single_col (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE single_col (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX single_col_k ON single_col (k) "+
-			"CREATE TABLE composite_pk (id1 BIGINT NOT NULL, id2 BIGINT NOT NULL, k BIGINT NOT NULL, PRIMARY KEY (id1, id2)) "+
+			"CREATE TABLE composite_pk (id1 BIGINT, id2 BIGINT, k BIGINT, PRIMARY KEY (id1, id2)) "+
 			"CREATE INDEX composite_pk_k ON composite_pk (k) "+
-			"CREATE TABLE composite_idx (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE composite_idx (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX composite_idx_ab ON composite_idx (a, b) "+
-			"CREATE TABLE uniq_col (id BIGINT NOT NULL, u BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE uniq_col (id BIGINT, u BIGINT, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX uniq_col_u ON uniq_col (u) "+
-			"CREATE TABLE str_col (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE str_col (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX str_col_s ON str_col (s) "+
-			"CREATE TABLE dbl_col (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id)) "+
+			"CREATE TABLE dbl_col (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX dbl_col_d ON dbl_col (d) "+
-			"CREATE TABLE flt_col (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
+			"CREATE TABLE flt_col (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX flt_col_f ON flt_col (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
 	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)

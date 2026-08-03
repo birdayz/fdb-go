@@ -22,7 +22,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_fit")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fit")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE fit CREATE TABLE t (id BIGINT NOT NULL, f FLOAT, i INTEGER, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE fit CREATE TABLE t (id BIGINT, f FLOAT, i INTEGER, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fit/s WITH TEMPLATE fit")
 	dsn := fmt.Sprintf("fdbsql:///testdb_fit?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

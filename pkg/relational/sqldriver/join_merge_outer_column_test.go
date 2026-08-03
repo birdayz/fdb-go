@@ -38,9 +38,9 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE jm_outer_tmpl "+
 			// a <- b <- c chain. apay/cpay are OUTER-only payload columns (not join
 			// keys), the exact shape field pull-up (composeFieldOverConstructor) must not mis-resolve.
-			"CREATE TABLE a (aid BIGINT NOT NULL, apay STRING, PRIMARY KEY (aid)) "+
-			"CREATE TABLE b (bid BIGINT NOT NULL, b_aid BIGINT, PRIMARY KEY (bid)) "+
-			"CREATE TABLE c (cid BIGINT NOT NULL, c_bid BIGINT, c_aid BIGINT, cpay STRING, PRIMARY KEY (cid)) "+
+			"CREATE TABLE a (aid BIGINT, apay STRING, PRIMARY KEY (aid)) "+
+			"CREATE TABLE b (bid BIGINT, b_aid BIGINT, PRIMARY KEY (bid)) "+
+			"CREATE TABLE c (cid BIGINT, c_bid BIGINT, c_aid BIGINT, cpay STRING, PRIMARY KEY (cid)) "+
 			"CREATE INDEX b_by_a ON b (b_aid) "+
 			"CREATE INDEX c_by_b ON c (c_bid) "+
 			"CREATE INDEX c_by_a ON c (c_aid)")

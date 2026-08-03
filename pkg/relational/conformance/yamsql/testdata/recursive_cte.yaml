@@ -18,8 +18,8 @@
 #       └── 210
 name: recursive_cte
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))
-  CREATE TABLE edge (src BIGINT NOT NULL, dst BIGINT NOT NULL, PRIMARY KEY (src, dst))
+  CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))
+  CREATE TABLE edge (src BIGINT, dst BIGINT, PRIMARY KEY (src, dst))
 setup:
   - INSERT INTO t VALUES (1, -1), (10, 1), (20, 1), (40, 10), (50, 10), (70, 10), (100, 20), (210, 20), (250, 50)
   # Cycle: 1 → 2 → 3 → 1 (all edges form a 3-node cycle).

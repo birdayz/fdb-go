@@ -7,7 +7,7 @@
 # traversal gaps that were broken before the fix.
 name: recursive_cte_advanced
 schema_template: |
-  CREATE TABLE tree (id BIGINT NOT NULL, parent BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE tree (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO tree VALUES
       (1, null, 'root'), (2, 1, 'child1'), (3, 1, 'child2'),

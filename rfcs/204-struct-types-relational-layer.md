@@ -464,6 +464,46 @@ reworked to Java's shape before it becomes reachable.
   `TypeCodeRecord` operands with Java's error, and pin it — including the
   `IS NULL` case vector.yamsql keeps commented out. If Go currently accepts
   any of it, that is a conformance bug to close here.
+
+  **AMENDED — measured, and the bullet above is wrong on two counts.** The
+  measurement is `conformance/whole_struct_comparison_java_probe_test.go`,
+  both engines live against the 4.12.11.0 conformance server.
+
+  1. *There is no clean SQLSTATE to pin Go to.* Java's rejection comes from
+     `RelOpValue`'s primitive-comparand assert (`RelOpValue.java:333,:345,
+     :350` → `SemanticException.ErrorCode.
+     COMPARAND_TO_COMPARISON_IS_OF_COMPLEX_TYPE`, declared at
+     `SemanticException.java:45`), and `ExceptionUtil.translateErrorCode`'s
+     switch has **no case** for that code (`ExceptionUtil.java:88-103`), so it
+     falls through to `default: INTERNAL_ERROR` — `ErrorCode.java:177`,
+     `XX000`. What the probe MEASURES at the surface is weaker still: the raw
+     SemanticException text with an EMPTY sqlstate, not `XX000`. So the
+     original bullet's "reject with Java's error" describes an internal error
+     leaking to the client, and "pin it" would pin an artefact of a missing
+     switch case. Go rejects the same shapes today with `0AF00` "Cascades
+     planner could not plan query" — a different code for a shape both engines
+     refuse, which is the `engine-gap:error-class` family, not a silent-wrong.
+
+  2. *`IS NULL` on a whole struct must NOT be broken in Go.* vector.yamsql
+     keeps `where embedding is null` and `embeddingGrouped is null` commented
+     out against upstream issue 3700 — that is a Java **limitation filed as a
+     bug**, not a designed rejection, and Java answers those shapes with the
+     same internal error. Go answers them CORRECTLY (measured: `WHERE home IS
+     NULL` → the NULL-struct row, `IS NOT NULL` → the other, `SELECT home IS
+     NULL` → `true`). Deleting that to match an internal error would trade a
+     right answer for a wrong one, and the read-side reach rule is explicit
+     that a capability Java lacks entirely is an allowed extension so long as
+     wire compat holds — which it does; nothing here touches what is written.
+     The negative pin the original bullet asked for is therefore recorded as
+     what it is: the two commented-out vector.yamsql shapes are Java's
+     limitation, and the probe is the standing record of Go answering them.
+
+  One thing the probe DID surface that is a genuine Go defect, and it is
+  neither of the above: `SELECT id FROM T_S WHERE home = home` returns ZERO
+  rows in Go where the non-NULL row should match. Java errors on it. Go
+  neither errors nor answers correctly — it plans a whole-struct comparison
+  and silently evaluates it false. That is the one arm of this bullet that is
+  still open, and it is silent-wrong rather than an error-class difference.
 - The array-element landmine (§3 item 6) is closed at the type-system level:
   array types model their element type (Java `Type.Array` does; "7.6 does
   not model message element types" is the standing admission), retiring the
@@ -483,6 +523,58 @@ reworked to Java's shape before it becomes reachable.
   emptying `unsupported:result-metadata-nested` (a class that only becomes
   REACHABLE once struct DDL lands; today it is masked, corpus_run_test.go:295).
   Array type names render Java's `ARRAY(elem)` / `ARRAY(STRUCT)` forms.
+
+#### 4.5.1 The computed-record descriptor is BAKED onto the plan, not carried on the context
+
+A COMPUTED record — `SELECT (1, 1.0, 'a', true)`, the result of
+`RecordConstructorValue` — has no target column and therefore no stored
+descriptor, so it can only reach the driver as an `api.Struct` if a descriptor
+is SYNTHESISED for it (§4.2's emitter, driven from `values.Type` rather than
+`api.DataType`). Java synthesises it at OPTIMIZE time: `QueryPlan.java:639-643`
+builds one `TypeRepository` per plan from `usedTypes().evaluate(relationalExpression)`,
+hands it to the evaluation context, and `RecordConstructorValue.eval` reads it
+back with `context.getTypeRepository()` (RecordConstructorValue.java:113-114).
+
+Go builds the repository at the same point but carries it differently, and the
+difference is forced rather than chosen. Java can read the repository off the
+context because Java has exactly ONE `EvaluationContext` type. Go has no uniform
+context: `RecordConstructorValue.Evaluate` was measured receiving FOUR unrelated
+concrete types across three packages — `*executor.PositionalRow`,
+`*executor.EvaluationContext`, `*values.RowEvalContext` and `embedded.stmtClock`
+— and the most frequent is the BARE positional row, because `frontierRowContext`
+deliberately flows the row itself when no param / scalar-subquery / correlation
+binding is in play. A bare row has no binding surface, so there is nowhere for a
+repository to ride. That refusal is pinned by
+`executor.TestFrontierContextIsNotAUniformCarrier`, which names this decision in
+its failure message: if the contexts are ever unified, the context carrier
+becomes viable again and this divergence should be retired in favour of Java's
+shape.
+
+So the repository is built once per plan and each `RecordConstructorValue`'s
+resolved `protoreflect.MessageDescriptor` is STAMPED onto the value at plan
+time; `Evaluate` then builds its `dynamicpb` message context-free. This is
+semantically equivalent to Java rather than a weakening of it: the repository is
+per-plan on both sides, and every descriptor in one plan comes from the same
+repository build, so nested constructors *within a plan* agree on descriptor
+identity and the reconciliation Java needs for the mixed case
+(`RecordConstructorValue.deepCopyIfNeeded`, :165-216) has nothing left to do
+there. It is NOT a claim that a query has only one repository: a scalar subquery
+is planned and baked as its own plan (`scalar_subquery_planning.go` calls
+`FinalizePlan` on it separately) and therefore carries its own repository. That
+case is not a hole — it is the reconciliation path, ported: a message whose
+descriptor differs from the target field's goes through
+`values.rowMessageToProtoValue`'s by-number copy
+(`copyFieldsByNumber`, the port of `MessageHelpers.deepCopyMessageIfNeeded`,
+:247-295) and lands correctly. Stamping happens on the plan-cache MISS path only, before
+`PlanCache.Put`, and the field is immutable afterwards — the cache hands the
+same plan pointer to every later execution and each page rebuilds its cursor
+hierarchy from it concurrently, so a value mutated at execution time would be a
+data race.
+
+Rejected: reworking `frontierRowContext` to always wrap the frontier row in a
+`RowEvalContext`. It would restore Java's carrier, but it changes the dispatch a
+large body of ordinal-model census assertions is built around, for zero semantic
+gain over the bake.
 
 ### 4.6 Index expressions over nested fields (joint with RFC-202)
 

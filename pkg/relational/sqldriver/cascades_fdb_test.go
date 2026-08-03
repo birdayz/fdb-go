@@ -26,7 +26,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 	tmpl := fmt.Sprintf("casc_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -187,7 +187,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 	tmpl := fmt.Sprintf("idx_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Product (product_id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (product_id)) "+
+			"CREATE TABLE Product (product_id BIGINT, category STRING, price BIGINT, PRIMARY KEY (product_id)) "+
 			"CREATE INDEX idx_category ON Product (category)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -372,8 +372,8 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	tmpl := fmt.Sprintf("join_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
-			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Orders (order_id BIGINT, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -432,7 +432,7 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 	tmpl := fmt.Sprintf("grpby_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Sales (sale_id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY (sale_id))", tmpl)); err != nil {
+			"CREATE TABLE Sales (sale_id BIGINT, category STRING, amount BIGINT, PRIMARY KEY (sale_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -500,7 +500,7 @@ func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 	tmpl := fmt.Sprintf("distfilt_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Product (product_id BIGINT NOT NULL, category STRING, PRIMARY KEY (product_id))", tmpl)); err != nil {
+			"CREATE TABLE Product (product_id BIGINT, category STRING, PRIMARY KEY (product_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -595,7 +595,7 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	tmpl := fmt.Sprintf("orderby_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Product (product_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (product_id)) "+
+			"CREATE TABLE Product (product_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (product_id)) "+
 			"CREATE INDEX idx_name ON Product (name)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -1001,8 +1001,8 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 	tmpl := fmt.Sprintf("ctejoin_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
-			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Orders (order_id BIGINT, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1114,8 +1114,8 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	tmpl := fmt.Sprintf("joinon_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
-			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Orders (order_id BIGINT, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1291,9 +1291,9 @@ func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 	tmpl := fmt.Sprintf("j3_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE A (a_id BIGINT NOT NULL, val STRING, PRIMARY KEY (a_id)) "+
-			"CREATE TABLE B (b_id BIGINT NOT NULL, a_ref BIGINT, PRIMARY KEY (b_id)) "+
-			"CREATE TABLE C (c_id BIGINT NOT NULL, b_ref BIGINT, PRIMARY KEY (c_id))", tmpl)); err != nil {
+			"CREATE TABLE A (a_id BIGINT, val STRING, PRIMARY KEY (a_id)) "+
+			"CREATE TABLE B (b_id BIGINT, a_ref BIGINT, PRIMARY KEY (b_id)) "+
+			"CREATE TABLE C (c_id BIGINT, b_ref BIGINT, PRIMARY KEY (c_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1477,8 +1477,8 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	tmpl := fmt.Sprintf("joinob_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
-			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Orders (order_id BIGINT, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1540,7 +1540,7 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 	tmpl := fmt.Sprintf("reccte_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1640,7 +1640,7 @@ func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA TEMPLATE reccte_po CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+		"CREATE SCHEMA TEMPLATE reccte_po CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE reccte_po", dbPath)); err != nil {
@@ -1712,8 +1712,8 @@ func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 	tmpl := fmt.Sprintf("ssq_proj_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE T1 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE T2 (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE T1 (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1768,8 +1768,8 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 	tmpl := fmt.Sprintf("ssq_where_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE T1 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE T2 (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE T1 (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1904,7 +1904,7 @@ func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 	tmpl := fmt.Sprintf("mmempty_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1983,7 +1983,7 @@ func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 	tmpl := fmt.Sprintf("sumovf_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v INTEGER, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE t (id BIGINT, v INTEGER, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -2071,7 +2071,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	tmpl := fmt.Sprintf("sorttie_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE rp (id BIGINT NOT NULL, region STRING, plan STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE rp (id BIGINT, region STRING, plan STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_region_plan ON rp (region, plan)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -2208,7 +2208,7 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 	tmpl := fmt.Sprintf("sortelim_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_price ON items (price)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -2410,7 +2410,7 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 	tmpl := fmt.Sprintf("streamagg_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_region ON sales (region)", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -2588,7 +2588,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	tmpl := fmt.Sprintf("pc_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -2715,7 +2715,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	ddlTmpl := fmt.Sprintf("pc_ddl_tmpl_%s", t.Name())
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Other (id BIGINT NOT NULL, PRIMARY KEY (id))", ddlTmpl)); err != nil {
+			"CREATE TABLE Other (id BIGINT, PRIMARY KEY (id))", ddlTmpl)); err != nil {
 		t.Fatalf("DDL (CREATE SCHEMA TEMPLATE): %v", err)
 	}
 	t.Logf("DDL executed, plan cache invalidated")
@@ -2760,7 +2760,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	idxTmpl := fmt.Sprintf("pc_idx_tmpl_%s", t.Name())
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id)) "+
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_price ON Item (price)", idxTmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
 	}
@@ -2806,8 +2806,8 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	tmpl := fmt.Sprintf("flatmap_tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE customers (id BIGINT, name STRING, tier STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -2993,8 +2993,8 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE departments (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE employees (id BIGINT, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3149,9 +3149,9 @@ func TestFDB_NestedNotExists(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT NOT NULL, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE categories (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE reviews (id BIGINT, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3254,9 +3254,9 @@ func TestFDB_ExistsWithJoinInside(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE categories (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT, cat_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE reviews (id BIGINT, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3322,8 +3322,8 @@ func TestFDB_NotExistsWithOR(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE products (id BIGINT NOT NULL, name STRING, discontinued BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE inventory (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE products (id BIGINT, name STRING, discontinued BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE inventory (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3383,8 +3383,8 @@ func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE tags (id BIGINT NOT NULL, item_id BIGINT, tag STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE items (id BIGINT, category STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE tags (id BIGINT, item_id BIGINT, tag STRING, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3452,8 +3452,8 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE orders (id BIGINT, status STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE shipments (id BIGINT, order_id BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -3520,7 +3520,7 @@ func TestFDB_NestedAggregateRejection(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_na_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, g BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE t (id BIGINT, v BIGINT, g BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
@@ -3591,7 +3591,7 @@ func TestFDB_InListMultiValue(t *testing.T) {
 	tmpl := fmt.Sprintf("tmpl_in_%s", t.Name())
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+			"CREATE TABLE items (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {

@@ -57,8 +57,8 @@ func TestFDB_GroupBySameLeafKeys_PushedHavingStaysAboveTheAggregate(t *testing.T
 	gslkMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gb_same_leaf_push")
 	gslkMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gb_same_leaf_push "+
-			"CREATE TABLE outer_t (k BIGINT NOT NULL, PRIMARY KEY (k)) "+
-			"CREATE TABLE inner_t (k BIGINT NOT NULL, o_k BIGINT, PRIMARY KEY (k))")
+			"CREATE TABLE outer_t (k BIGINT, PRIMARY KEY (k)) "+
+			"CREATE TABLE inner_t (k BIGINT, o_k BIGINT, PRIMARY KEY (k))")
 	gslkMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gb_same_leaf_push/s WITH TEMPLATE gb_same_leaf_push")
 	dsn := fmt.Sprintf("fdbsql:///testdb_gb_same_leaf_push?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

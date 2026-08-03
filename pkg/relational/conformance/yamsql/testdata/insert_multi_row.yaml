@@ -4,7 +4,7 @@
 # and expression values.
 name: insert_multi_row
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))
 setup: []
 tests:
   # Single row INSERT

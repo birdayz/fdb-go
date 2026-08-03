@@ -23,7 +23,7 @@ func TestFDB_PipeOperatorProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_pipeop")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_pipeop")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE pipeop CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE pipeop CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pipeop/s WITH TEMPLATE pipeop")
 	dsn := fmt.Sprintf("fdbsql:///testdb_pipeop?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

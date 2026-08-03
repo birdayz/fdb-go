@@ -4,7 +4,7 @@
 name: empty_result_edge_cases_java
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     val BIGINT,
     cat STRING,
     PRIMARY KEY (id)

@@ -18,7 +18,7 @@ func corpus() []Scenario {
 		Name: "orders",
 		Seed: 1,
 		Tables: []string{
-			"CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))",
+			"CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))",
 			"CREATE INDEX idx_cat ON t(cat)",
 			"CREATE INDEX idx_val ON t(val)",
 		},
@@ -55,8 +55,8 @@ func corpus() []Scenario {
 		Name: "joins",
 		Seed: 2,
 		Tables: []string{
-			"CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))",
-			"CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
+			"CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))",
+			"CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
 			"CREATE INDEX ord_cid ON ord(cid)",
 		},
 		Data: []string{
@@ -82,7 +82,7 @@ func corpus() []Scenario {
 		Name: "multikey",
 		Seed: 3,
 		Tables: []string{
-			"CREATE TABLE t (region BIGINT NOT NULL, id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (region, id))",
+			"CREATE TABLE t (region BIGINT, id BIGINT, v BIGINT, PRIMARY KEY (region, id))",
 		},
 		Data: []string{
 			"INSERT INTO t (region, id, v) VALUES (1, 1, 100)",
@@ -108,7 +108,7 @@ func corpus() []Scenario {
 		Name: "aggidx",
 		Seed: 4,
 		Tables: []string{
-			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g",
 		},
@@ -145,7 +145,7 @@ func corpus() []Scenario {
 		Name: "setops",
 		Seed: 5,
 		Tables: []string{
-			"CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE t (id BIGINT, cat BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX cat_idx ON t (cat)",
 			"CREATE INDEX max_by_cat AS SELECT MAX(v) FROM t GROUP BY cat",
 			"CREATE INDEX min_by_cat AS SELECT MIN(v) FROM t GROUP BY cat",
@@ -173,8 +173,8 @@ func corpus() []Scenario {
 		Name: "subquery",
 		Seed: 6,
 		Tables: []string{
-			"CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))",
-			"CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
+			"CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))",
+			"CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
 			"CREATE INDEX ord_cid ON ord(cid)",
 		},
 		Data: []string{
@@ -342,7 +342,7 @@ func TestCaptureRefusesToBakeAnErrorIntoABaseline(t *testing.T) {
 			out, err := Capture(Scenario{
 				Name:   "err-" + tc.name,
 				Seed:   99,
-				Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))"},
+				Tables: []string{"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))"},
 				Data:   []string{"INSERT INTO t (id, name) VALUES (1, 'x')"},
 				// A good query first, so the failure is not the very first thing captured and
 				// the guard cannot pass by accident of ordering.

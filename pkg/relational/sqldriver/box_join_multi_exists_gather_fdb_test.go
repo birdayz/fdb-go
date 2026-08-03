@@ -49,12 +49,11 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("AID"), protoreflect.ValueOfInt64(aid))
 		m.Set(d.Fields().ByName("K"), protoreflect.ValueOfInt64(k))
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
-		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), pvals...)
 		return m
 	}
 	mk1 := func(table, f string, v int64) proto.Message {

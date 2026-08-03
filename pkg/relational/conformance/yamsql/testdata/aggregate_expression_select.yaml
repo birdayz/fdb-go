@@ -16,7 +16,7 @@
 # aggregate's computed value.
 name: aggregate_expression_select
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, grp STRING, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
       (1, 'x', 5, 10),

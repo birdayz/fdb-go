@@ -23,7 +23,7 @@ func TestFDB_MultiColIndexGapProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mcgap")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mcgap "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_abc ON t (a, b, c)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mcgap/s WITH TEMPLATE mcgap")
 	dsn := fmt.Sprintf("fdbsql:///testdb_mcgap?cluster_file=%s&schema=s", clusterFilePath)

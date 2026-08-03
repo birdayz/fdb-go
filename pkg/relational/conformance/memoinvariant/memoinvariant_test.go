@@ -140,7 +140,7 @@ type familyProbe struct {
 
 const probeOrdersSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   status STRING,
   amount BIGINT,
@@ -152,12 +152,12 @@ CREATE INDEX idx_amount ON ORDERS(amount)
 `
 
 const probeJoinSchema = `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, customer_id BIGINT, PRIMARY KEY (id))
-CREATE TABLE CUSTOMERS (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, customer_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE CUSTOMERS (id BIGINT, name STRING, PRIMARY KEY (id))
 CREATE INDEX idx_customer ON ORDERS(customer_id)
 `
 
-const probeTreeSchema = `CREATE TABLE tree (id BIGINT NOT NULL, parent_id BIGINT, name STRING, PRIMARY KEY (id))`
+const probeTreeSchema = `CREATE TABLE tree (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))`
 
 var familyProbes = []familyProbe{
 	{

@@ -7,7 +7,7 @@
 # divides explicitly through `float64(count)` so the result is float.
 name: avg
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 1), (2, 2), (3, 3)
 tests:

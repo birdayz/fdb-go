@@ -21,7 +21,7 @@ func TestFDB_DistinctMultiColProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_distmc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distmc "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distmc/s WITH TEMPLATE distmc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_distmc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -56,7 +56,7 @@ func TestFDB_OrderByComputedProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_obcomp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE obcomp "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, grp BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, grp BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_obcomp/s WITH TEMPLATE obcomp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_obcomp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -147,7 +147,7 @@ func TestFDB_OrderBySignedZeroProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sz")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE szt "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a DOUBLE, b DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a DOUBLE, b DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sz/s WITH TEMPLATE szt")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sz?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

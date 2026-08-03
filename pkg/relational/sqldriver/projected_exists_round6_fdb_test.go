@@ -99,14 +99,68 @@ func TestFDB_ProjectedExists_Round6(t *testing.T) {
 	})
 
 	// P2a expression-alias: ORDER BY an alias whose value is a COMPUTED
-	// expression (id*1). col1=90..50, id=1..5; `(id) AS y` ascends with t1.id.
-	// We can't easily distinguish a computed alias from a column here unless the
-	// expression diverges from a plain column; use `col1 + 0 AS y` so y = col1
-	// (DESC with id). ORDER BY y ASC ⇒ col1 50..90 ⇒ x 5,4,3,2,1.
+	// expression. col1=90..50, id=1..5; `col1 + 0 AS y` makes y = col1 (DESC
+	// with id), so ORDER BY y ASC ⇒ col1 50..90 ⇒ x 5,4,3,2,1. A plain column
+	// alias could not distinguish a computed alias from a column, which is why
+	// the expression has to diverge from one.
+	//
+	// The expression is deliberately UNPARENTHESISED. It was written
+	// `(col1 + 0)` — contradicting this comment's own `col1 + 0 AS y` — and
+	// that is not a formatting detail: a parenthesised expression in SELECT
+	// position is a one-field RECORD, not a scalar (measured against a live
+	// JVM in conformance/paren_star_java_probe_test.go), so the parenthesised
+	// form ordered by a struct and never tested a computed SCALAR alias at
+	// all. The struct-ordering shape is pinned separately below.
 	t.Run("p2a_orderby_expression_alias", func(t *testing.T) {
-		q := "SELECT (col1 + 0) AS y, id AS x, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +
+		q := "SELECT col1 + 0 AS y, id AS x, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +
 			"FROM t1 ORDER BY y"
 		assertXOrder(t, db, ctx, q, []int64{5, 4, 3, 2, 1})
+	})
+
+	// ORDER BY a PARENTHESISED select element orders by a one-field RECORD,
+	// and the engine has no ordering for records. It must say so LOUDLY: a
+	// silently misordered result set is the failure mode this pins against.
+	//
+	// The refusal is now PLAN-TIME, and that is the Java-aligned outcome.
+	// Java's generateSort feeds RequestedOrdering.ofPrimitiveParts
+	// (RequestedOrdering.java:313-326, LogicalOperator.java:552-571), which —
+	// unlike the GROUPING path — never expands a record into primitive leaves,
+	// so no plan can satisfy the ordering and Cascades raises
+	// UnableToPlanException (CascadesPlanner.java:407) → 0AF00
+	// (ExceptionUtil.java:79-80).
+	//
+	// This assertion previously required "no ordering defined", which was Go's
+	// in-memory sort COMPARATOR failing at ROW TIME with an internal message
+	// naming *dynamicpb.Message. That was strictly worse on two counts: it
+	// leaked an engine-internal type to the user, and it was DATA-DEPENDENT —
+	// a result set of fewer than two rows never invokes the comparator and
+	// answered normally. ImplementInMemorySortRule now declines the
+	// unorderable key, so the refusal is unconditional.
+	//
+	// This is a NEGATIVE pin and it is load-bearing: without it, giving
+	// records an ordering would go unnoticed here.
+	t.Run("p2a_orderby_parenthesised_element_is_a_record_and_is_refused", func(t *testing.T) {
+		q := "SELECT (col1 + 0) AS y, id AS x, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +
+			"FROM t1 ORDER BY y"
+		rows, err := db.QueryContext(ctx, q)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() { //nolint:revive // drain to reach the deferred error
+			}
+			err = rows.Err()
+		}
+		if err == nil {
+			t.Fatal("ORDER BY a parenthesised (record-typed) select element must fail, " +
+				"not silently pick an order")
+		}
+		if strings.Contains(err.Error(), "no ordering defined") {
+			t.Fatalf("ORDER BY over a record leaked the ROW-TIME comparator error again: %v\n"+
+				"The plan-time decline in ImplementInMemorySortRule is gone, so the refusal "+
+				"is back to being data-dependent and internal-looking.", err)
+		}
+		if !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("ORDER BY over a record failed for the wrong reason: %v", err)
+		}
 	})
 
 	// ════════════════════════════════════════════════════════════════════════

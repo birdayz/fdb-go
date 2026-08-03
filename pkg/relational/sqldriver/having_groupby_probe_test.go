@@ -21,7 +21,7 @@ func TestFDB_HavingGroupByProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_havgb")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_havgb")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE havgb CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE havgb CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_havgb/s WITH TEMPLATE havgb")
 	dsn := fmt.Sprintf("fdbsql:///testdb_havgb?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

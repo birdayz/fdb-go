@@ -6,8 +6,8 @@
 # ALL join columns agree (not just the first one).
 name: multi_column_join
 schema_template: |
-  CREATE TABLE products (category BIGINT NOT NULL, sku BIGINT NOT NULL, name STRING, PRIMARY KEY (category, sku))
-  CREATE TABLE inventory (warehouse_cat BIGINT NOT NULL, warehouse_sku BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (warehouse_cat, warehouse_sku))
+  CREATE TABLE products (category BIGINT, sku BIGINT, name STRING, PRIMARY KEY (category, sku))
+  CREATE TABLE inventory (warehouse_cat BIGINT, warehouse_sku BIGINT, qty BIGINT, PRIMARY KEY (warehouse_cat, warehouse_sku))
 setup:
   - INSERT INTO products VALUES
       (1, 100, 'Widget'),

@@ -4,7 +4,7 @@
 name: multi_column_index_java
 schema_template: |
   CREATE TABLE orders (
-    id BIGINT NOT NULL,
+    id BIGINT,
     customer_id BIGINT,
     status STRING,
     amount BIGINT,

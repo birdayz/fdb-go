@@ -14,6 +14,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/functions"
 )
 
 // storeAddressFlags is the shared flag set for every store-touching
@@ -98,10 +99,13 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 		return nil, err
 	}
 	target := &storeTarget{
-		cfgCtx:          cfgCtx,
-		metaFile:        f.metaFile,
-		database:        f.database,
-		schema:          f.schema,
+		cfgCtx:   cfgCtx,
+		metaFile: f.metaFile,
+		database: f.database,
+		// The schema is an SQL identifier: unquoted names fold to upper
+		// case (the same rule CREATE SCHEMA applies), so `--schema main`
+		// finds the schema `create schema /db/main` created (MAIN).
+		schema:          functions.StripIdentifierQuotes(f.schema),
 		clusterFileFlag: f.clusterFile,
 	}
 	if f.keyspaceTuple != "" {

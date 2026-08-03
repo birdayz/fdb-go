@@ -14,7 +14,7 @@
 name: distinct_streaming_ordered
 schema_template: |
   CREATE TABLE events (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     PRIMARY KEY (id)
   )

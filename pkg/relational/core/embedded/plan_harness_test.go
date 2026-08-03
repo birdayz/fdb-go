@@ -13,7 +13,7 @@ import (
 
 const ordersSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   status STRING,
   amount BIGINT,
@@ -219,7 +219,7 @@ func TestPlanHarness_GroupBySumNonCovering(t *testing.T) {
 func TestPlanHarness_GroupBySumCompositeIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 `
 	plan, err := PlanQueryForTest(
@@ -248,8 +248,8 @@ func TestPlanHarness_PKLookupAndFilter(t *testing.T) {
 func TestPlanHarness_JoinOnIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, customer_id BIGINT, PRIMARY KEY (id))
-CREATE TABLE CUSTOMERS (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, customer_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE CUSTOMERS (id BIGINT, name STRING, PRIMARY KEY (id))
 CREATE INDEX idx_customer ON ORDERS(customer_id)
 `
 	plan, err := PlanQueryForTest(
@@ -367,7 +367,7 @@ func TestPlanHarness_AggregateIndexCountGroupBy(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   status STRING,
   amount BIGINT,
@@ -390,7 +390,7 @@ func TestPlanHarness_AggregateIndexDDL_CombinedCountSum(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   amount BIGINT,
   PRIMARY KEY (id)
@@ -490,7 +490,7 @@ func TestPlanHarness_AggregateIndexDDL_Count(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   amount BIGINT,
   PRIMARY KEY (id)
@@ -513,7 +513,7 @@ func TestPlanHarness_AggregateIndexDDL_Sum(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   region STRING,
   amount BIGINT,
   PRIMARY KEY (id)
@@ -536,7 +536,7 @@ func TestPlanHarness_AggregateIndexDDL_Max(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -570,7 +570,7 @@ func TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -627,7 +627,7 @@ func TestPlanHarness_AggregateIndexDDL_Min(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -650,7 +650,7 @@ func TestPlanHarness_AggregateIndexDDL_MultiGroupBy(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   region STRING,
   status STRING,
   amount BIGINT,
@@ -674,7 +674,7 @@ func TestPlanHarness_AggregateIndexDDL_CountColumn(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   amount BIGINT,
   PRIMARY KEY (id)
@@ -697,7 +697,7 @@ func TestPlanHarness_AggregateIndexDDL_NoGroupBy(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   amount BIGINT,
   PRIMARY KEY (id)
 )
@@ -716,7 +716,7 @@ func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   PRIMARY KEY (id)
 )
@@ -733,7 +733,7 @@ func TestPlanHarness_AggregateIndexDDL_ParseError_NoFrom(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   PRIMARY KEY (id)
 )
@@ -750,7 +750,7 @@ func TestPlanHarness_AggregateIndexDDL_ParseError_AvgRejected(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   amount BIGINT,
   status STRING,
   PRIMARY KEY (id)
@@ -773,7 +773,7 @@ func TestPlanHarness_AggregateIndexDDL_ParseError_MultipleAggregates(t *testing.
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   amount BIGINT,
   status STRING,
   PRIMARY KEY (id)
@@ -805,7 +805,7 @@ func TestPlanHarness_AggregateIndexDDL_MinMaxPermutedType(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -849,7 +849,7 @@ func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -874,7 +874,7 @@ func TestPlanHarness_AggregateIndexDDL_MaxEver(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -899,7 +899,7 @@ CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY cat
 // no legitimate aggregate index to match.
 const everOnlySchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   price BIGINT,
   PRIMARY KEY (id)
@@ -952,14 +952,14 @@ func TestPlanHarness_PlainMaxMinOverEverIndex_FallsBackToBaseAgg(t *testing.T) {
 
 const multiTableSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   customer_id BIGINT,
   status STRING,
   amount BIGINT,
   PRIMARY KEY (id)
 )
 CREATE TABLE CUSTOMERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   name STRING,
   region STRING,
   PRIMARY KEY (id)
@@ -1108,8 +1108,8 @@ func TestPlanHarness_CompositePK(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ITEMS (
-  order_id BIGINT NOT NULL,
-  item_num BIGINT NOT NULL,
+  order_id BIGINT,
+  item_num BIGINT,
   name STRING,
   PRIMARY KEY (order_id, item_num)
 )
@@ -1128,8 +1128,8 @@ func TestPlanHarness_CompositePKPrefixScan(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ITEMS (
-  order_id BIGINT NOT NULL,
-  item_num BIGINT NOT NULL,
+  order_id BIGINT,
+  item_num BIGINT,
   name STRING,
   PRIMARY KEY (order_id, item_num)
 )
@@ -1150,7 +1150,7 @@ func TestPlanHarness_StatsAffectCost(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE EVENTS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   category STRING,
   PRIMARY KEY (id)
 )
@@ -1221,7 +1221,7 @@ func TestPlanHarness_RecursiveCTE(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE NODES (
-  id BIGINT NOT NULL,
+  id BIGINT,
   parent_id BIGINT,
   name STRING,
   PRIMARY KEY (id)
@@ -1300,8 +1300,8 @@ func TestPlanHarness_FilterOnNonIndexColumn(t *testing.T) {
 func TestPlanHarness_CrossJoin(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE A (id BIGINT NOT NULL, PRIMARY KEY (id))
-CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
+CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE B (id BIGINT, PRIMARY KEY (id))
 `
 	plan, err := PlanQueryForTest(
 		"SELECT a.id, b.id FROM a, b",
@@ -1412,7 +1412,7 @@ func TestPlanHarness_MultipleAggregates(t *testing.T) {
 func TestPlanHarness_SelfJoin(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE EMPLOYEES (id BIGINT NOT NULL, manager_id BIGINT, name STRING, PRIMARY KEY (id))
+CREATE TABLE EMPLOYEES (id BIGINT, manager_id BIGINT, name STRING, PRIMARY KEY (id))
 `
 	plan, err := PlanQueryForTest(
 		"SELECT e.name, m.name FROM employees e, employees m WHERE e.manager_id = m.id",
@@ -1490,7 +1490,7 @@ func TestPlanHarness_JoinWithAsymmetricStats(t *testing.T) {
 func TestPlanHarness_CoveringCompositeIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 `
 	plan, err := PlanQueryForTest(
@@ -1508,7 +1508,7 @@ CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 func TestPlanHarness_CoveringCompositeIndexPKAndIndexCols(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 `
 	plan, err := PlanQueryForTest(
@@ -1526,7 +1526,7 @@ CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 func TestPlanHarness_NonCoveringNeedsExtraColumn(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, tier STRING, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, status STRING, amount BIGINT, tier STRING, PRIMARY KEY (id))
 CREATE INDEX idx_status ON ORDERS(status)
 `
 	plan, err := PlanQueryForTest(
@@ -1575,8 +1575,8 @@ func TestPlanHarness_AtOrdinalityRejected(t *testing.T) {
 
 	// AT on a JOIN source is rejected too (the guard covers the JOIN lowering path).
 	joinSchema := `
-CREATE TABLE A (id BIGINT NOT NULL, PRIMARY KEY (id))
-CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
+CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE B (id BIGINT, PRIMARY KEY (id))
 `
 	_, err = PlanQueryForTest("SELECT a.id FROM A a JOIN B b AT p ON a.id = b.id", joinSchema, nil)
 	assertAtOrdinalityRejected(t, err)
@@ -1592,7 +1592,7 @@ CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
 func TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE ga (id BIGINT, p BIGINT, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX sum_by_p AS SELECT SUM(v) FROM ga AT p GROUP BY p
 `
 	_, err := PlanQueryForTest("SELECT id FROM ga", schema, nil)
@@ -1607,8 +1607,8 @@ CREATE INDEX sum_by_p AS SELECT SUM(v) FROM ga AT p GROUP BY p
 func TestPlanHarness_AggregateIndexJoinRejected(t *testing.T) {
 	t.Parallel()
 	schema := `
-CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
-CREATE TABLE gb (id BIGINT NOT NULL, p BIGINT, PRIMARY KEY (id))
+CREATE TABLE ga (id BIGINT, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE gb (id BIGINT, p BIGINT, PRIMARY KEY (id))
 CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb AT p ON ga.id = gb.id GROUP BY p
 `
 	_, err := PlanQueryForTest("SELECT id FROM ga", schema, nil)
@@ -1628,8 +1628,8 @@ CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb AT p ON ga.id = gb.id GROUP BY
 	// Java's message (MaterializedViewIndexGenerator.java:791-801;
 	// IndexTest.java:511-520).
 	schemaPlainJoin := `
-CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
-CREATE TABLE gb (id BIGINT NOT NULL, p BIGINT, PRIMARY KEY (id))
+CREATE TABLE ga (id BIGINT, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE gb (id BIGINT, p BIGINT, PRIMARY KEY (id))
 CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb ON ga.id = gb.id GROUP BY ga.p
 `
 	_, err = PlanQueryForTest("SELECT id FROM ga", schemaPlainJoin, nil)
@@ -1660,7 +1660,7 @@ func assertAtOrdinalityRejected(t *testing.T, err error) {
 // assert a bare `WHERE flag` matches the boolean index exactly as `flag = TRUE`.
 const boolSchema = `
 CREATE TABLE A (
-  id BIGINT NOT NULL,
+  id BIGINT,
   flag BOOLEAN,
   amount BIGINT,
   PRIMARY KEY (id)
@@ -1722,7 +1722,7 @@ func TestPlanHarness_BareNonBooleanWhereRejected(t *testing.T) {
 // CTE/derived columns whose projected type isn't propagated) stay permissive.
 func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 	t.Parallel()
-	const sch = `CREATE TABLE A (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))`
+	const sch = `CREATE TABLE A (id BIGINT, d DOUBLE, PRIMARY KEY (id))`
 	_, err := PlanQueryForTest("SELECT id FROM A WHERE d", sch, nil)
 	if err == nil {
 		t.Fatal("expected DATATYPE_MISMATCH for a bare DOUBLE WHERE, got nil")
@@ -1743,7 +1743,7 @@ func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 // boolean CTE columns with green CI (the dimensional-gap trap).
 func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 	t.Parallel()
-	const sch = `CREATE TABLE A (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))`
+	const sch = `CREATE TABLE A (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))`
 	plan, err := PlanQueryForTest(
 		"WITH c AS (SELECT NOT flag AS x, id FROM A) SELECT id FROM c WHERE x", sch, nil)
 	if err != nil {

@@ -3,7 +3,7 @@
 # Exercises unique PK and index violation error codes.
 name: unique_constraint_violation
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val STRING, PRIMARY KEY (id))
   CREATE UNIQUE INDEX idx_val ON t (val)
 setup:
   - INSERT INTO t VALUES (1, 'first'), (2, 'second')

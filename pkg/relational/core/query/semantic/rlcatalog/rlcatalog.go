@@ -30,7 +30,19 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 		c.storeRowVersions = md.IsStoreRecordVersions()
 		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
 		for rtName, rt := range md.RecordTypes() {
-			c.byFoldedName[semantic.NewUnquoted(rtName).Name()] = rt
+			// The SQL surface speaks USER identifiers; the descriptor
+			// (and every wire address derived from it) speaks STORAGE
+			// names. They differ exactly when the DDL name carried '$',
+			// '.' or "__" (ProtoUtils escaping). Java keeps both on the
+			// type — Type.Record.fromDescriptorPreservingName stores
+			// `ProtoUtils.toUserIdentifier(descriptor.getName())` as the
+			// NAME and the raw descriptor name as the storage name
+			// (Type.java:2591-2593), and Field does the same per column
+			// (Type.java:2874-2877). Indexing the folded USER name here
+			// is what lets `SELECT … FROM "foo$table"` find the record
+			// type stored as FOO__1TABLE; without it the table exists on
+			// the wire and is unreachable from SQL (42F01).
+			c.byFoldedName[semantic.NewUnquoted(recordlayer.ToUserIdentifier(rtName)).Name()] = rt
 		}
 	}
 	return c
@@ -93,8 +105,11 @@ func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
 	for rtName := range types {
 		// Wrap as unqualified QualifiedName since Record Layer has
 		// no schemas. FromSegments with caseSensitive=true
-		// preserves the source casing verbatim.
-		out = append(out, semantic.FromSegments([]string{rtName}, true))
+		// preserves the source casing verbatim. The USER identifier is
+		// what a caller can actually type back (INFORMATION_SCHEMA rows,
+		// "available tables: …" diagnostics), so the escaping is undone
+		// here for the same reason LookupTable indexes on it.
+		out = append(out, semantic.FromSegments([]string{recordlayer.ToUserIdentifier(rtName)}, true))
 	}
 	return out
 }
@@ -139,17 +154,8 @@ func (t *recordTypeTable) ensureColumnIndex() {
 		t.colOrdered = make([]semantic.Column, 0, fields.Len())
 		for i := 0; i < fields.Len(); i++ {
 			f := fields.Get(i)
-			id := semantic.NewUnquoted(string(f.Name()))
-			col := semantic.Column{
-				Id:       id,
-				Type:     protoFieldToSQL(f),
-				Nullable: isNullable(f),
-				// A repeated field is a SQL ARRAY. The Type string carries
-				// the element kind (protoKindToSQL maps the scalar Kind);
-				// IsArray is the signal that the column itself is an array,
-				// needed to type the resolved Value as an ArrayType.
-				IsArray: isRepeated(f),
-			}
+			col := columnForField(f, nil)
+			id := col.Id
 			// The EXACT proto field name is a lookup key (a quoted-DDL
 			// column's field preserves case — "x" — and a quoted lookup
 			// must hit it; folding it away 42703'd SELECT "x", the WS-N
@@ -157,7 +163,14 @@ func (t *recordTypeTable) ensureColumnIndex() {
 			// identifier everywhere: the runtime positional layout folds
 			// names too, so folded presentation keeps plan-time and
 			// runtime in one namespace.
+			// Both spellings are lookup keys: the STORAGE name (what the
+			// descriptor carries, and what an internally-minted reference
+			// addressing the proto field uses) and the USER name (what SQL
+			// text spells). They coincide unless the DDL name was escaped.
 			t.colIndex[string(f.Name())] = col
+			if userName := recordlayer.ToUserIdentifier(string(f.Name())); userName != string(f.Name()) {
+				t.colIndex[userName] = col
+			}
 			t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 			t.colOrdered = append(t.colOrdered, col)
 		}
@@ -283,6 +296,79 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // recognizing the special tuple_fields.UUID message as the scalar "UUID" type
 // (Java's DataType.Primitives.UUID) before falling back to the coarse
 // kind-based mapping. Every other MessageKind stays "RECORD".
+// columnForField builds the analyzer's view of ONE proto field. It is the
+// single place the array/nullable/UUID unwrapping happens, because a STRUCT
+// column's nested fields must get the identical treatment the table's own
+// columns get — a nullable array nested inside a struct is the same
+// NullableArrayWrapper shape as one at the top level, and a nested UUID is the
+// same tuple_fields.UUID message. Two implementations of that unwrapping would
+// disagree exactly one level down, where nothing looks.
+//
+// enclosing carries the message full-names already open on the current descent
+// path. A proto descriptor may be self-referential (nothing at the DESCRIPTOR
+// level forbids it — the DDL struct registry rejects cycles, but raw
+// record metadata never went through DDL), and this builder is eager, so a
+// cycle would recurse forever at catalog-build time. Re-entering a message
+// already on the path stops the descent and leaves StructFields empty: the
+// column is still a RECORD and still resolvable, only its nested field list is
+// unavailable, which resolution reports as an ordinary miss.
+func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.FullName) semantic.Column {
+	// A repeated field is a SQL ARRAY; so is a NullableArrayWrapper field (a
+	// singular message wrapping `repeated values` — the stored shape of a
+	// NULLABLE array, whose absence is the NULL array). The Type string
+	// carries the ELEMENT kind; IsArray is the signal that the column itself
+	// is an array, needed to type the resolved Value as an ArrayType.
+	elemF := f
+	isArr := isRepeated(f)
+	nullable := isNullable(f)
+	if inner, wrapped, ok := values.EffectiveListField(f); ok && wrapped {
+		elemF = inner
+		isArr = true
+		nullable = true
+	}
+	// The COLUMN identifier is the USER name: Java's Field carries
+	// `ProtoUtils.toUserIdentifier(fieldDescriptor.getName())` as its name
+	// and the raw descriptor name separately as the storage name
+	// (Type.java:2874-2877). Identical for every column whose DDL name had
+	// no '$', '.' or "__"; for the rest this is what makes `SELECT "a$b"`
+	// resolve against the field stored as A__1B.
+	col := semantic.Column{
+		Id:       semantic.NewUnquoted(recordlayer.ToUserIdentifier(string(f.Name()))),
+		Type:     protoFieldToSQL(elemF),
+		Nullable: nullable,
+		IsArray:  isArr,
+	}
+	// Only a field the type mapping calls RECORD carries a field list: the
+	// UUID message maps to "UUID" and is a scalar to every consumer, so
+	// descending into its proto fields would invent `id.msb` as a resolvable
+	// column that Java has no field for.
+	if col.Type != "RECORD" {
+		return col
+	}
+	msg := elemF.Message()
+	if msg == nil {
+		return col
+	}
+	for _, open := range enclosing {
+		if open == msg.FullName() {
+			return col
+		}
+	}
+	// COPY rather than append in place: sibling fields at one level would
+	// otherwise share the backing array and one sibling's descent would
+	// overwrite the path another sibling's descent is still reading.
+	path := make([]protoreflect.FullName, len(enclosing)+1)
+	copy(path, enclosing)
+	path[len(enclosing)] = msg.FullName()
+	enclosing = path
+	nested := msg.Fields()
+	col.StructFields = make([]semantic.Column, 0, nested.Len())
+	for i := 0; i < nested.Len(); i++ {
+		col.StructFields = append(col.StructFields, columnForField(nested.Get(i), enclosing))
+	}
+	return col
+}
+
 func protoFieldToSQL(f protoreflect.FieldDescriptor) string {
 	if f.Kind() == protoreflect.MessageKind {
 		if msg := f.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {

@@ -10,12 +10,12 @@
 name: parse_channel_pins
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     "x" BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE u (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     PRIMARY KEY (id)
   )

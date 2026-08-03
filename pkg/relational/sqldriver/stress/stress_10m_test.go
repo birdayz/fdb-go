@@ -48,8 +48,8 @@ func TestFDB_Ingest_10M(t *testing.T) {
 	// Minimal schema: single PK, no secondary indexes.
 	h.createSchema(`
 		CREATE TABLE items (
-			id BIGINT NOT NULL,
-			val BIGINT NOT NULL,
+			id BIGINT,
+			val BIGINT,
 			PRIMARY KEY (id)
 		)
 	`)

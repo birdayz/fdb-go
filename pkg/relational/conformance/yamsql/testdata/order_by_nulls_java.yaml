@@ -5,7 +5,7 @@
 name: order_by_nulls_java
 schema_template: |
   CREATE TABLE items (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     price BIGINT,
     rating BIGINT,

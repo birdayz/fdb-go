@@ -4,7 +4,7 @@
 name: derived_table_patterns_java
 schema_template: |
   CREATE TABLE orders (
-    id BIGINT NOT NULL,
+    id BIGINT,
     customer_id BIGINT,
     amount BIGINT,
     status STRING,

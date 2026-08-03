@@ -4,7 +4,7 @@
 # column types and combinations.
 name: where_is_null_is_not_null
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, c DOUBLE, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b STRING, c DOUBLE, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'x', 1.5), (2, null, 'y', 2.5), (3, 30, null, 3.5), (4, null, null, null), (5, 50, 'z', null)
 tests:

@@ -29,10 +29,10 @@ import (
 func TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan(t *testing.T) {
 	t.Parallel()
 
-	const schema = `CREATE TABLE na (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-CREATE TABLE nb (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-CREATE TABLE nc (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-CREATE TABLE nd (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`
+	const schema = `CREATE TABLE na (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE nb (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE nc (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE nd (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 
 	// A PROJECTED exists (in the select list) over >2 ForEach legs.
 	const sql = `SELECT a.v, EXISTS (SELECT 1 FROM nd d WHERE d.id = a.id) AS has_d

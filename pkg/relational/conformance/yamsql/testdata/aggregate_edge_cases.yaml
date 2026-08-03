@@ -4,7 +4,7 @@
 # Sourced from Java's groupby-tests.yamsql and standard-tests.yamsql.
 name: aggregate_edge_cases
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 2, 50)
 tests:

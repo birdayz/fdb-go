@@ -57,7 +57,7 @@ func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 	setup := openTestDB(t, "/testdb_cwfsort")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cwfsort")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
-		"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsort/s WITH TEMPLATE cwfsort")
 	dsn := fmt.Sprintf("fdbsql:///testdb_cwfsort?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -142,8 +142,8 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_cwfsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cwfsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsarg "+
-		"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, f FLOAT, PRIMARY KEY (id)) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, uf FLOAT, ud DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, d DOUBLE, f FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE u (id BIGINT, uf FLOAT, ud DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_d ON t (d) "+
 		"CREATE INDEX t_f ON t (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsarg/s WITH TEMPLATE cwfsarg")

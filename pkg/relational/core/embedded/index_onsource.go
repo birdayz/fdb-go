@@ -158,7 +158,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		var fv *values.FieldValue
 		if fd := fields.ByName(protoreflect.Name(name)); fd != nil {
 			typ := query.FieldTypeForFD(fd)
-			if fd.IsList() {
+			if _, _, isArr := values.EffectiveListField(fd); isArr {
 				// A repeated field must flow as an ARRAY-coded type: the
 				// generator's key rendering rejects a non-unnested array
 				// (MaterializedViewIndexGenerator.java:814-819), and

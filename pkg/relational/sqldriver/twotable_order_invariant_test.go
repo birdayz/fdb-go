@@ -27,8 +27,8 @@ func TestFDB_TwoTableOrderInvariantIndexJoin(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_2t")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE t2t "+
-			"CREATE TABLE t1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, t1_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_2t/s WITH TEMPLATE t2t")
 	dsn := fmt.Sprintf("fdbsql:///testdb_2t?cluster_file=%s&schema=s", clusterFilePath)

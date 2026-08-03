@@ -5,7 +5,7 @@
 # Verify Go matches.
 name: case_insensitive_keywords
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
 tests:

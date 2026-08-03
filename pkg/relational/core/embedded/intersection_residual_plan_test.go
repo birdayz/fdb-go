@@ -18,12 +18,12 @@ import (
 )
 
 const ixResSchema = `
-CREATE TABLE items (id BIGINT NOT NULL, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))
+CREATE TABLE items (id BIGINT, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_category ON items (category)
 CREATE INDEX idx_price ON items (price)`
 
 const ixFourWaySchema = `
-CREATE TABLE ix4 (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id))
+CREATE TABLE ix4 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id))
 CREATE INDEX idx_a ON ix4 (a)
 CREATE INDEX idx_b ON ix4 (b)
 CREATE INDEX idx_c ON ix4 (c)
@@ -31,10 +31,10 @@ CREATE INDEX idx_d ON ix4 (d)`
 
 const ixDescendingSchema = `
 CREATE TABLE ix_desc (
-	id BIGINT NOT NULL,
+	id BIGINT,
 	a BIGINT,
 	b BIGINT,
-	sort_key BIGINT NOT NULL,
+	sort_key BIGINT,
 	payload STRING,
 	PRIMARY KEY (id)
 )
@@ -174,7 +174,7 @@ func TestIntersectionResidual_CompensatedShape(t *testing.T) {
 func TestAdjustedSingleAccess_OrderedScanWithResidual(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, s STRING, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a BIGINT, s STRING, PRIMARY KEY (id))
 CREATE INDEX idx_a ON T(a)`
 	plan, err := PlanQueryForTest("SELECT * FROM t WHERE a > 3 AND s = 'x' ORDER BY a", schema, nil)
 	if err != nil {

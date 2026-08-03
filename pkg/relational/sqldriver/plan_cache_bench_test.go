@@ -35,7 +35,7 @@ func BenchmarkFDB_PlanCacheHit(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl))
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
@@ -96,7 +96,7 @@ func BenchmarkFDB_PlanCacheMiss(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl))
+			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
@@ -168,7 +168,7 @@ func BenchmarkFDB_TimestampInsert(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_events_ts ON Events (ts)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
@@ -208,7 +208,7 @@ func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_events_ts ON Events (ts)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
@@ -262,8 +262,8 @@ func BenchmarkFDB_JoinQuery(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id)) "+
-			"CREATE TABLE Orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE Customers (id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE Orders (id BIGINT, cust_id BIGINT, amount BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX idx_orders_cust ON Orders (cust_id)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
@@ -323,7 +323,7 @@ func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Sales (id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE Sales (id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX idx_sales_cat ON Sales (category)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
@@ -380,7 +380,7 @@ func BenchmarkFDB_IndexScanRange(b *testing.B) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Products (id BIGINT NOT NULL, price BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE Products (id BIGINT, price BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE INDEX idx_products_price ON Products (price)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))

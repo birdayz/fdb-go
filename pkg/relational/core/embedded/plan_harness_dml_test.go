@@ -21,8 +21,8 @@ import (
 )
 
 const dmlHarnessSchema = `
-CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
-CREATE TABLE keep_set (k BIGINT NOT NULL, PRIMARY KEY (k))
+CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE keep_set (k BIGINT, PRIMARY KEY (k))
 `
 
 // TestPlanPhysicalDMLForTest_DeleteWhereExists is the load-bearing regression:

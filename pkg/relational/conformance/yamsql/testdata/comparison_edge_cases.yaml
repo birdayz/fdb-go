@@ -4,7 +4,7 @@
 # zero, negative, large numbers, empty strings.
 name: comparison_edge_cases
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 0, ''), (2, -1, 'a'), (3, 9223372036854775807, 'zzz'), (4, -9223372036854775808, null)
 tests:

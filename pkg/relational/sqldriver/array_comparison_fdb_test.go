@@ -48,8 +48,8 @@ func TestFDB_ArrayComparison(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arraycmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arraycmp "+
-			"CREATE TABLE dummy (pk BIGINT NOT NULL, PRIMARY KEY (pk)) "+
-			"CREATE TABLE t1 (pk BIGINT NOT NULL, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
+			"CREATE TABLE dummy (pk BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE TABLE t1 (pk BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arraycmp/s WITH TEMPLATE arraycmp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_arraycmp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -183,18 +183,25 @@ func TestFDB_ArrayComparison(t *testing.T) {
 			{`SELECT pk FROM t1 WHERE arr = [1]`, []int64{1}},
 			{`SELECT pk FROM t1 WHERE arr_nn = [1]`, []int64{1}},
 			{`SELECT pk FROM t1 WHERE arr IS NOT DISTINCT FROM [1]`, []int64{1}},
-			// MEASURED DIVERGENCE PIN (RFC-143 §3a): Go writes a nullable
-			// array as a PLAIN repeated field — no `values` wrapper
-			// message — so a STORED empty array is byte-identical to a
-			// stored NULL and reads back as NULL. Java answers pk 0 for
-			// each of these three (arrays-operators.yamsql); Go returns
-			// NO rows because the empty array the setup inserted
-			// evaluates to NULL, and `NULL = []` is UNKNOWN. When the
-			// §3a wrapper write side lands, these three pins MUST flip
-			// to []int64{0} — a failure here is that re-arm signal, not
-			// a comparison-semantics regression.
-			{`SELECT pk FROM t1 WHERE arr = CAST([] AS INTEGER ARRAY)`, nil},
-			{`SELECT pk FROM t1 WHERE arr = []`, nil},
+			// A NULLABLE array now round-trips its emptiness: the
+			// NullableArrayWrapper write side means a stored `[]` is a
+			// wrapper message with an EMPTY repeated field, distinct
+			// from a stored NULL (absent wrapper). Both arms therefore
+			// answer pk 0, which is Java's answer
+			// (arrays-operators.yamsql: `result: [{pk: 0}]` for each).
+			// Before the wrapper these read back as NULL and `NULL = []`
+			// is UNKNOWN, so both returned no rows.
+			{`SELECT pk FROM t1 WHERE arr = CAST([] AS INTEGER ARRAY)`, []int64{0}},
+			{`SELECT pk FROM t1 WHERE arr = []`, []int64{0}},
+			// MEASURED DIVERGENCE PIN, and a DIFFERENT mechanism from the
+			// two above — the wrapper cannot close it. `arr_nn` is NOT
+			// NULL, so it is stored as a FLAT repeated field with no
+			// wrapper at all, and a flat repeated field that is empty is
+			// indistinguishable on the wire from one that was never set.
+			// Java answers pk 0 here too (same file, `"arr_nn" = [] AND
+			// "pk" != -1` → `result: [{pk: 0}]`). Closing it needs the
+			// empty/absent distinction for non-nullable arrays, not the
+			// nullable wrapper. A failure here is that fix landing.
 			{`SELECT pk FROM t1 WHERE arr_nn = [] AND pk != -1`, nil},
 		} {
 			got := pks(t, c.q)

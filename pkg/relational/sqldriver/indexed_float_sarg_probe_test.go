@@ -43,10 +43,10 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ifs")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ifs")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ifs "+
-		"CREATE TABLE noidx (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
-		"CREATE TABLE withidx (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
-		"CREATE TABLE dblidx (id BIGINT NOT NULL, f DOUBLE, PRIMARY KEY (id)) "+
-		"CREATE TABLE bnd (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE noidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE withidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE dblidx (id BIGINT, f DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE bnd (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX wi_f ON withidx (f) "+
 		"CREATE INDEX di_f ON dblidx (f) "+
 		"CREATE INDEX bnd_f ON bnd (f)")

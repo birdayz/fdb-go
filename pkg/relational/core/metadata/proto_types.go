@@ -214,3 +214,13 @@ func enumTypeFromDescriptor(ed protoreflect.EnumDescriptor, nullable bool) *api.
 	}
 	return api.NewEnumType(string(ed.Name()), enumValues, nullable)
 }
+
+// StructTypeFromDescriptor is messageTypeFromDescriptor's exported form:
+// the api.StructType a proto message descriptor describes. The read-side
+// struct materialization (pkg/relational/core/rowstruct, Java's
+// RelationalStructMetaData) needs the same descriptor→type mapping the
+// catalog uses, and a second implementation of it would be a second
+// opinion on nullability, wrapper unwrapping and UUID recognition.
+func StructTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool) (*api.StructType, error) {
+	return messageTypeFromDescriptor(md, nullable)
+}

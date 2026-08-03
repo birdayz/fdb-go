@@ -86,11 +86,7 @@ func TestFDB_FullOuterUnnestExists(t *testing.T) {
 	foa := dynamicpb.NewMessage(foaDesc)
 	foa.Set(foaDesc.Fields().ByName("AID"), protoreflect.ValueOfInt64(1))
 	foa.Set(foaDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(100))
-	arrFd := foaDesc.Fields().ByName("ARR")
-	arr := foa.NewField(arrFd).List()
-	arr.Append(protoreflect.ValueOfInt32(7))
-	arr.Append(protoreflect.ValueOfInt32(8))
-	foa.Set(arrFd, protoreflect.ValueOfList(arr))
+	setArrayField(foa, foaDesc.Fields().ByName("ARR"), protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
 
 	fobDesc := md.GetRecordType("FOB").Descriptor
 	fob := dynamicpb.NewMessage(fobDesc)

@@ -8,7 +8,7 @@
 # replacement as empty) — zero wire impact.
 name: trim_concat
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, '  hello  '), (2, 'abc'), (3, null)
 tests:

@@ -117,7 +117,15 @@ func (c *AggregateIndexMatchCandidate) ToScanPlan(
 //   - The grouping keys match the index's groupCols
 //   - The GroupBy has exactly one aggregate that matches the index's function + column
 func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExpression) bool {
-	keys := gb.GetGroupingKeys()
+	// Grouping subsumption is leaf-level (Java expands the grouping value
+	// via Values.primitiveAccessorsForType before matching,
+	// GroupByExpression.java:434): a RECORD-typed key contributes its
+	// primitive leaves, so it can never falsely name-match a candidate's
+	// scalar grouping column. Identity for all-primitive keys.
+	keys, err := expandGroupingKeysToPrimitives(gb.GetGroupingKeys())
+	if err != nil {
+		return false
+	}
 	if len(keys) != len(c.groupCols) {
 		return false
 	}
@@ -151,7 +159,11 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 // intersection path: each candidate covers one aggregate while all
 // share the same grouping columns.
 func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.GroupByExpression, aggIndex int) bool {
-	keys := gb.GetGroupingKeys()
+	// Same leaf-level matching as MatchesGroupBy (GroupByExpression.java:434).
+	keys, err := expandGroupingKeysToPrimitives(gb.GetGroupingKeys())
+	if err != nil {
+		return false
+	}
 	if len(keys) != len(c.groupCols) {
 		return false
 	}

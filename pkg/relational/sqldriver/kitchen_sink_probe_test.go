@@ -22,7 +22,7 @@ func TestFDB_KitchenSinkProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_kitchen")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE kitchen "+
-			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_kitchen/s WITH TEMPLATE kitchen")
 	dsn := fmt.Sprintf("fdbsql:///testdb_kitchen?cluster_file=%s&schema=s", clusterFilePath)

@@ -5,9 +5,9 @@
 # builds on the previous, stressing different code paths.
 name: join_group_having_exists
 schema_template: |
-  CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id))
-  CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT NOT NULL, rating BIGINT, PRIMARY KEY (id))
+  CREATE TABLE categories (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE reviews (id BIGINT, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books'), (3, 'Clothing')
   - INSERT INTO products VALUES (10, 1, 999), (11, 1, 499), (12, 2, 29), (13, 2, 19), (14, 3, 49)

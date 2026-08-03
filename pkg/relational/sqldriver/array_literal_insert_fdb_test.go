@@ -142,19 +142,16 @@ func TestFDB_ArrayLiteralInsertValues(t *testing.T) {
 
 	t.Run("empty_array", func(t *testing.T) {
 		// `[]` is Java's untyped empty array (emptyArrayOfNone), promoted
-		// by the INSERT target to a typed empty array. On Go's
-		// plain-repeated wire shape (RFC-143 §3a divergence — Java wraps
-		// a NULLABLE array in a `values` wrapper message) an empty
-		// repeated field serializes to no bytes, so it reads back as SQL
-		// NULL; Java's wrapper keeps [] ≠ NULL. If this assertion starts
-		// seeing []any{}, the wrapper divergence has been closed — move
-		// the expectation, don't delete it.
+		// by the INSERT target to a typed empty array. empty array is
+		// distinct from NULL through the NullableArrayWrapper (present
+		// wrapper, empty list) — Java's semantics: it reads back as an
+		// empty array, NOT SQL NULL (contrast the null_array subtest).
 		if _, err := db.ExecContext(ctx, "INSERT INTO t_int VALUES (2, [])"); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 		got := scanArrayCell(t, db, ctx, "t_int", 2)
-		if got != nil {
-			t.Fatalf("read back: got %#v, want nil (plain-repeated wire shape folds [] into NULL)", got)
+		if arr, ok := got.([]any); !ok || len(arr) != 0 {
+			t.Fatalf("read back: got %#v, want empty []any ([] ≠ NULL through the wrapper)", got)
 		}
 	})
 
@@ -212,12 +209,11 @@ func TestFDB_ArrayLiteralInsertValues(t *testing.T) {
 
 // TestFDB_ArrayLiteralInsertWireBytes pins the stored wire bytes of an
 // array-literal INSERT: the record must serialize as the table
-// descriptor's plain repeated field (Go's array wire shape — RFC-143
-// §3a documents the divergence from Java's nullable-array `values`
-// wrapper), byte-equal to the same message built directly through
-// protobuf. A representation change (e.g. accidentally introducing a
-// wrapper on one side only) breaks this before it corrupts a shared
-// cluster.
+// descriptor's array shape — for the NULLABLE column X that is the
+// NullableArrayWrapper message field (Java's nullable-array `values`
+// wrapper wire shape) — byte-equal to the same message built directly
+// through protobuf. A representation change (e.g. dropping the wrapper
+// on one side only) breaks this before it corrupts a shared cluster.
 func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 	t.Parallel()
 	db, ctx := arrayInsertDB(t, "wire")
@@ -247,7 +243,7 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	rlDB := recordlayer.NewFDBDatabase(rawDB)
-	ss := subspace.Sub().Sub(tuple.Tuple{"/arrins_wire", "main"})
+	ss := subspace.Sub().Sub(tuple.Tuple{"/arrins_wire", "MAIN"})
 
 	var storedBytes []byte
 	_, err = rlDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -277,15 +273,12 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 	}
 
 	// Golden: the identical message built straight through protobuf —
-	// pk=7, x = repeated int32 {10, 20, 30}.
+	// pk=7, x = {10, 20, 30} (the wrapper shape for the nullable column,
+	// via setArrayField).
 	golden := dynamicpb.NewMessage(desc)
 	golden.Set(desc.Fields().ByName("PK"), protoreflect.ValueOfInt64(7))
-	xfd := desc.Fields().ByName("X")
-	list := golden.NewField(xfd).List()
-	for _, v := range []int32{10, 20, 30} {
-		list.Append(protoreflect.ValueOfInt32(v))
-	}
-	golden.Set(xfd, protoreflect.ValueOfList(list))
+	setArrayField(golden, desc.Fields().ByName("X"),
+		protoreflect.ValueOfInt32(10), protoreflect.ValueOfInt32(20), protoreflect.ValueOfInt32(30))
 	goldenBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(golden)
 	if err != nil {
 		t.Fatalf("golden marshal: %v", err)

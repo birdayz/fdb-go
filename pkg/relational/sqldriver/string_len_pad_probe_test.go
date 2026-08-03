@@ -22,7 +22,7 @@ func TestFDB_StringLenPadProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_slpp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_slpp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE slpp CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE slpp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_slpp/s WITH TEMPLATE slpp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_slpp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -24,7 +24,7 @@ func TestFDB_UpdateUndefinedColumnProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uuc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuc")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE uuc CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE uuc CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuc/s WITH TEMPLATE uuc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uuc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

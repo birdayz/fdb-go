@@ -22,7 +22,7 @@ func TestFDB_MathFunctionsProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_mathfn")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mathfn")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE mathfn CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE mathfn CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mathfn/s WITH TEMPLATE mathfn")
 	dsn := fmt.Sprintf("fdbsql:///testdb_mathfn?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

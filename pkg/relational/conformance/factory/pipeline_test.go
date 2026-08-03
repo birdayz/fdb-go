@@ -32,7 +32,7 @@ func blessedOutcome(t *testing.T, name, featureVector, planShape string) factory
 		},
 		Scenario: &yamsql.Scenario{
 			Name:           name,
-			SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
+			SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))",
 			Setup:          []string{"INSERT INTO t VALUES (1, 2)"},
 			Tests: []yamsql.Test{{
 				Query:     "SELECT id FROM t WHERE a = 2",
@@ -272,7 +272,7 @@ func TestFindingsArePersisted(t *testing.T) {
 	f := &factory.Finding{
 		Oracle: "tlp", Seed: 99, Candidate: "fc_0000000099_q0_p0",
 		Detail: "partition size 3 != unfiltered 4",
-		DDL:    "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))",
+		DDL:    "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
 		Setup:  "INSERT INTO t VALUES (1)",
 		Queries: []string{
 			"SELECT id FROM t",

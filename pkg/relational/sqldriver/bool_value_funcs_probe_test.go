@@ -21,8 +21,8 @@ func TestFDB_BoolValueFuncsProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_boolvf")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE boolvf "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_boolvf/s WITH TEMPLATE boolvf")
 	dsn := fmt.Sprintf("fdbsql:///testdb_boolvf?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

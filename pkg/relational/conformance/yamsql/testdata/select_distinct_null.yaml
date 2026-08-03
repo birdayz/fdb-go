@@ -4,7 +4,7 @@
 # treated as a single distinct value.
 name: select_distinct_null
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 10), (4, null), (5, null), (6, 20)
 tests:

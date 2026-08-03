@@ -7,7 +7,7 @@
 # the regression to surface here, not in user code.
 name: scalar_subquery_advanced
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40), (5, 'c', null)
 tests:

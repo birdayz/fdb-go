@@ -25,7 +25,7 @@ func TestFDB_UpdateSetDefaultRejectedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_usd")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_usd")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE usd CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE usd CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usd/s WITH TEMPLATE usd")
 	dsn := fmt.Sprintf("fdbsql:///testdb_usd?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -25,7 +25,7 @@ func TestFDB_ComparisonTypecheckProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ctc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ctc")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ctc CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, flag BOOLEAN, d DOUBLE, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE ctc CREATE TABLE t (id BIGINT, n BIGINT, s STRING, flag BOOLEAN, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ctc/s WITH TEMPLATE ctc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ctc?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

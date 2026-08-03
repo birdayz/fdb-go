@@ -22,7 +22,7 @@ func TestFDB_TypeCoercionProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_coerce")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE coerce "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, f DOUBLE, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, f DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_coerce/s WITH TEMPLATE coerce")
 	dsn := fmt.Sprintf("fdbsql:///testdb_coerce?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

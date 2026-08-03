@@ -7,7 +7,7 @@
 # on both paths (preserved through the NULL-safe groupByKey encoding).
 name: group_by_multi
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES
       (1, 'east', 'a', 100),

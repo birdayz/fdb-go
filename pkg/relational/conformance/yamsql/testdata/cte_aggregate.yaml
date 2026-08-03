@@ -4,7 +4,7 @@
 # interaction between CTE scan and streaming/hash aggregation.
 name: cte_aggregate
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 1, 100), (2, 1, 200), (3, 2, 150), (4, 2, 250), (5, 3, 300)
 tests:

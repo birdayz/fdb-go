@@ -15,7 +15,7 @@
 # future refactor doesn't regress either direction.
 name: overflow_mixed
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b DOUBLE, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1e200)
 tests:

@@ -4,7 +4,7 @@
 name: scalar_functions_java
 schema_template: |
   CREATE TABLE vals (
-    id BIGINT NOT NULL,
+    id BIGINT,
     int_col BIGINT,
     str_col STRING,
     dbl_col DOUBLE,

@@ -22,9 +22,9 @@ func TestFDB_ProjectedExistsRound12_DMLScalar(t *testing.T) {
 	setup := openTestDB(t, "/testdb_pexr12dmlsc")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr12dmlsc")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12dmlsc_tmpl "+
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t2 (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t3 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t3 (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr12dmlsc/s WITH TEMPLATE pexr12dmlsc_tmpl")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_pexr12dmlsc?cluster_file=%s&schema=s", clusterFilePath))
 	if err != nil {

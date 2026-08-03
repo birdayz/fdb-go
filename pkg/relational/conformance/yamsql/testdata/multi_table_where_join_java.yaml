@@ -4,18 +4,18 @@
 name: multi_table_where_join_java
 schema_template: |
   CREATE TABLE regions (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE stores (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region_id BIGINT,
     store_name STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE sales (
-    id BIGINT NOT NULL,
+    id BIGINT,
     store_id BIGINT,
     amount BIGINT,
     PRIMARY KEY (id)

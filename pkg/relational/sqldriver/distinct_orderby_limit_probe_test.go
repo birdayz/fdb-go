@@ -20,7 +20,7 @@ func TestFDB_DistinctOrderByLimitProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dol")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dol")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE dol CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE dol CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dol/s WITH TEMPLATE dol")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dol?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

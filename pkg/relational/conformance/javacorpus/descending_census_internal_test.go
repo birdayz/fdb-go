@@ -47,10 +47,12 @@ func TestDescendingMetadataCorpusCost(t *testing.T) {
 			continue
 		}
 		descending = append(descending, path)
-		// `classifyDDLByDeclaration`'s own predicate: a template declaring a
-		// struct type is rejected by the DDL today, so the file is claimed by
-		// Phase 3 no matter what its metadata directive says.
-		if classifyDDLByDeclaration(file) == SkipDDLStruct {
+		// `classifyDDLByDeclaration`'s own predicate over the declaration
+		// scan (nil ddlError: only the struct-vs-function bucketing is
+		// wanted here, not the index-cause split): a struct-declaring file
+		// is claimed by the struct workstream no matter what its metadata
+		// directive says.
+		if classifyDDLByDeclaration(file, nil) == SkipDDLStruct {
 			structHeld = append(structHeld, path)
 		}
 	}

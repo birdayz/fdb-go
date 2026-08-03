@@ -26,7 +26,7 @@ func TestFDB_InOverIntersection_ResidualApplied(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE inovix CREATE TABLE t_rd (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX idx_b ON t_rd (b) CREATE INDEX idx_c ON t_rd (c)")
+		"CREATE SCHEMA TEMPLATE inovix CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX idx_b ON t_rd (b) CREATE INDEX idx_c ON t_rd (c)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inovix")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
 	if err != nil {

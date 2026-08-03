@@ -30,8 +30,8 @@ func TestFDB_UnionAggregateColumnRemap(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_union_aggremap")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_aggremap_tmpl "+
-			"CREATE TABLE a (id BIGINT NOT NULL, g BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, g BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_union_aggremap/s WITH TEMPLATE union_aggremap_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_union_aggremap?cluster_file=%s&schema=s", clusterFilePath)

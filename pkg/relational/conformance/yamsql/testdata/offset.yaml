@@ -4,7 +4,7 @@
 # Java's fdb-relational 4.11.1.0 rejects them at parse time.
 name: offset
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1), (2), (3), (4), (5)
 tests:

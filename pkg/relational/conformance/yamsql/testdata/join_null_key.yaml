@@ -6,8 +6,8 @@
 # let them through; `TestFDB_JoinWithNullKey` pins the contract.
 name: join_null_key
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, k BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, null), (3, 20)
   - INSERT INTO b VALUES (101, 10, 'alpha'), (102, null, 'beta'), (103, 20, 'gamma')

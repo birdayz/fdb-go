@@ -4,7 +4,7 @@
 name: cast_scalar_java
 schema_template: |
   CREATE TABLE test_cast (
-    id BIGINT NOT NULL,
+    id BIGINT,
     num_col BIGINT,
     str_col STRING,
     bool_col BOOLEAN,

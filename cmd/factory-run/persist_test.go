@@ -152,7 +152,7 @@ func seededCorpus(t *testing.T, dir string) string {
 		},
 		Doc: &yamsql.Scenario{
 			Name:           name,
-			SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))",
+			SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))",
 			Setup:          []string{"INSERT INTO t VALUES (1, 2)"},
 			Tests: []yamsql.Test{{
 				Query:     "SELECT id FROM t WHERE a = 2",

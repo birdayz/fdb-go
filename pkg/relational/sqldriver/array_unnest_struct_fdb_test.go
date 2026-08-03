@@ -169,7 +169,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 	md := buildStructArrayMetadata(t)
 	tsDesc := md.GetRecordType("TS").Descriptor
 	itemsFD := tsDesc.Fields().ByName("ITEMS")
-	sitemDesc := itemsFD.Message()
+	sitemDesc := arrayElementMessageDescriptor(itemsFD)
 
 	mkItem := func(sku string, qty int64) protoreflect.Value {
 		im := dynamicpb.NewMessage(sitemDesc)
@@ -181,11 +181,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		m := dynamicpb.NewMessage(tsDesc)
 		m.Set(tsDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(tsDesc.Fields().ByName("NAME"), protoreflect.ValueOfString(name))
-		list := m.NewField(itemsFD).List()
-		for _, it := range items {
-			list.Append(it)
-		}
-		m.Set(itemsFD, protoreflect.ValueOfList(list))
+		setArrayField(m, itemsFD, items...)
 		return m
 	}
 

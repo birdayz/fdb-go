@@ -5,8 +5,8 @@
 # distributes OR over the EXISTS predicate.
 name: not_exists_or
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, discontinued BIGINT, PRIMARY KEY (id))
-  CREATE TABLE inventory (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, discontinued BIGINT, PRIMARY KEY (id))
+  CREATE TABLE inventory (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 0), (2, 'Gadget', 1), (3, 'Doohickey', 0), (4, 'Thingamajig', 0)
   - INSERT INTO inventory VALUES (10, 1, 50), (20, 3, 10)

@@ -23,8 +23,8 @@ func TestFDB_NullSafeJoinProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nsjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nsjoin "+
-			"CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nsjoin/s WITH TEMPLATE nsjoin")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nsjoin?cluster_file=%s&schema=s", clusterFilePath)

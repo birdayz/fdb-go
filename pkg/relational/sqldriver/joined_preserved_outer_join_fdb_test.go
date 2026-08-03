@@ -27,9 +27,9 @@ func TestFDB_JoinedPreservedSide_LeftOuterRows(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_jps")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jps "+
-			"CREATE TABLE a (id BIGINT NOT NULL, flag BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jps/s WITH TEMPLATE jps")

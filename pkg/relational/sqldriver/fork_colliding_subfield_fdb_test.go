@@ -107,31 +107,26 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 
 	tcDesc := md.GetRecordType("TC").Descriptor
 	arrFD := tcDesc.Fields().ByName("ARR")
-	e1Desc := arrFD.Message()
+	e1Desc := arrayElementMessageDescriptor(arrFD)
 	ssFD := e1Desc.Fields().ByName("SS")
-	e2Desc := ssFD.Message()
+	e2Desc := arrayElementMessageDescriptor(ssFD)
 
+	int32Vals := func(vals []int32) []protoreflect.Value {
+		out := make([]protoreflect.Value, 0, len(vals))
+		for _, v := range vals {
+			out = append(out, protoreflect.ValueOfInt32(v))
+		}
+		return out
+	}
 	mkE2 := func(sub2 ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(e2Desc)
-		l := m.NewField(e2Desc.Fields().ByName("SUB2")).List()
-		for _, v := range sub2 {
-			l.Append(protoreflect.ValueOfInt32(v))
-		}
-		m.Set(e2Desc.Fields().ByName("SUB2"), protoreflect.ValueOfList(l))
+		setArrayField(m, e2Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkE1 := func(sub2 []int32, ss ...protoreflect.Value) protoreflect.Value {
 		m := dynamicpb.NewMessage(e1Desc)
-		l := m.NewField(e1Desc.Fields().ByName("SUB2")).List()
-		for _, v := range sub2 {
-			l.Append(protoreflect.ValueOfInt32(v))
-		}
-		m.Set(e1Desc.Fields().ByName("SUB2"), protoreflect.ValueOfList(l))
-		sl := m.NewField(ssFD).List()
-		for _, s := range ss {
-			sl.Append(s)
-		}
-		m.Set(ssFD, protoreflect.ValueOfList(sl))
+		setArrayField(m, e1Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
+		setArrayField(m, ssFD, ss...)
 		return protoreflect.ValueOfMessage(m)
 	}
 
@@ -144,9 +139,7 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 		// {1,2}; the mis-root at Y reads {100} SILENTLY.
 		m := dynamicpb.NewMessage(tcDesc)
 		m.Set(tcDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(1))
-		al := m.NewField(arrFD).List()
-		al.Append(mkE1([]int32{1, 2}, mkE2(100)))
-		m.Set(arrFD, protoreflect.ValueOfList(al))
+		setArrayField(m, arrFD, mkE1([]int32{1, 2}, mkE2(100)))
 		if _, e := store.SaveRecord(m); e != nil {
 			return nil, e
 		}

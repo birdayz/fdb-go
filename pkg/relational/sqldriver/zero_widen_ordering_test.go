@@ -44,7 +44,7 @@ func TestFDB_ZeroWidenBreaksSuffixOrdering(t *testing.T) {
 	setup := openTestDB(t, "/testdb_zwo")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_zwo")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwo "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_zwo/s WITH TEMPLATE zwo")
 	dsn := fmt.Sprintf("fdbsql:///testdb_zwo?cluster_file=%s&schema=s", clusterFilePath)

@@ -26,7 +26,7 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ssq_cte")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ssq_cte_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ssq_cte/s WITH TEMPLATE ssq_cte_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -98,8 +98,8 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq_noidx")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_noidx_tmpl "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -157,8 +157,8 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_tmpl "+
-			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_project_emp ON project (emp_id)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())

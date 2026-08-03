@@ -3,8 +3,8 @@
 # Exercises UPDATE ... WHERE with subqueries that reference other tables.
 name: update_with_join
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, category STRING, PRIMARY KEY (id))
-  CREATE TABLE discounts (id BIGINT NOT NULL, category STRING, pct BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, price BIGINT, category STRING, PRIMARY KEY (id))
+  CREATE TABLE discounts (id BIGINT, category STRING, pct BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 100, 'A'), (2, 'Gadget', 200, 'B'), (3, 'Doohickey', 50, 'A'), (4, 'Thingamajig', 300, 'C')
   - INSERT INTO discounts VALUES (10, 'A', 20)

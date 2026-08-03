@@ -4,7 +4,7 @@
 # expressions in SELECT with GROUP BY.
 name: mixed_agg_nonagg
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, cat STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, cat STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'B', 50)
 tests:

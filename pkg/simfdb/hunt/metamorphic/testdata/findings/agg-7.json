@@ -2,7 +2,7 @@
   "name": "aggregate-index-edge-sums",
   "seed": 7,
   "tables": [
-    "CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+    "CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
     "CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g"
   ],
   "data": [

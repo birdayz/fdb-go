@@ -1083,11 +1083,31 @@ func rowIsMergeShaped(pos *PositionalRow) bool {
 		return true
 	}
 	for _, f := range pos.Type.Fields {
-		if strings.IndexByte(f.Name, '.') >= 0 {
+		if isDottedQualifiedName(f.Name) {
 			return true
 		}
 	}
 	return false
+}
+
+// isDottedQualifiedName reports whether a column name is a DOTTED QUALIFIER
+// (`alias.column`) — the merge-row signal — as opposed to a name that merely
+// CONTAINS a dot.
+//
+// The distinction is load-bearing because a composite column's name is its
+// RENDERED TYPE, and a rendered record type contains the dots of every
+// qualified column inside it: a one-field record over `C.ID` renders as
+// `{_0: C.ID#0}`. Testing for a bare dot classified such a row as merge-shaped,
+// which sent a perfectly ordinary one-column leg into the leg adapter's
+// zero-match tripwire ("a gated join must not consume a merge-shaped leg")
+// instead of the slot-for-slot arm that is correct for it. A rendered composite
+// is delimited — a qualifier never is — so the delimiter, not the dot, is what
+// separates the two.
+func isDottedQualifiedName(name string) bool {
+	if strings.HasPrefix(name, "{") || strings.HasPrefix(name, "[") {
+		return false
+	}
+	return strings.IndexByte(name, '.') >= 0
 }
 
 // positionalMatchesLegType reports whether a leg's pre-existing positional

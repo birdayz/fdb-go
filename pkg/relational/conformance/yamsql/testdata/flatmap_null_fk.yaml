@@ -5,8 +5,8 @@
 # excluded. For LEFT JOIN, the outer row emits with NULL inner columns.
 name: flatmap_null_fk
 schema_template: |
-  CREATE TABLE parents (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE children (id BIGINT NOT NULL, parent_id BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE parents (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE children (id BIGINT, parent_id BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO parents VALUES (1, 'Alice'), (2, 'Bob')
   - INSERT INTO children VALUES (10, 1, 'child_a'), (20, NULL, 'orphan'), (30, 2, 'child_b')

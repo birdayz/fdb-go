@@ -301,27 +301,22 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
-		list := m.NewField(fd).List()
-		for _, v := range vals {
-			list.Append(protoreflect.ValueOfInt32(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(list))
-	}
-	setStrArr := func(m *dynamicpb.Message, name string, vals []string) {
-		fd := desc.Fields().ByName(protoreflect.Name(name))
-		list := m.NewField(fd).List()
-		for _, v := range vals {
-			list.Append(protoreflect.ValueOfString(v))
-		}
-		m.Set(fd, protoreflect.ValueOfList(list))
+		setArrayField(m, fd, pvals...)
 	}
 	setStrArrD := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []string) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
-		list := m.NewField(fd).List()
-		for _, v := range vals {
-			list.Append(protoreflect.ValueOfString(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfString(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(list))
+		setArrayField(m, fd, pvals...)
+	}
+	setStrArr := func(m *dynamicpb.Message, name string, vals []string) {
+		setStrArrD(m, desc, name, vals)
 	}
 	// rec builds a T1 record. arr1=nil leaves the array unset (NULL).
 	rec := func(id int64, arr1 []int32, arr1nn []int32, strs []string) proto.Message {
@@ -427,8 +422,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	}
 	// nstRec builds an NST record (class 2). hasRec=false leaves the STRUCT
 	// column NREC unset (NULL struct); arr=nil inside a set struct leaves the
-	// nested array unset (empty == unset on the proto2 wire) — both must
-	// explode to ZERO rows, never a NULL-element row.
+	// nested array unset (a NULL array) — both must explode to ZERO rows,
+	// never a NULL-element row.
 	nstRec := func(id int64, hasRec bool, sub int64, arr []int32) proto.Message {
 		m := dynamicpb.NewMessage(nstDesc)
 		m.Set(nstDesc.Fields().ByName("NSID"), protoreflect.ValueOfInt64(id))
@@ -4827,7 +4822,7 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 	}
 
 	t.Run("R31 P2b ordinal reports NOT NULL while the element stays NULLABLE in the same query", func(t *testing.T) {
-		// `SELECT * FROM T1, T1.ARR1 AS V AT O`. Columns: ID (BIGINT NOT NULL pk), ARR1
+		// `SELECT * FROM T1, T1.ARR1 AS V AT O`. Columns: ID (BIGINT pk), ARR1
 		// (array), V (the element), O (the 1-based ordinal). V and O are BOTH synthesized
 		// values with no backing descriptor field. The ordinal O must report NOT NULL
 		// (values.NotNullInt — Java's INT NOT NULL ordinal); the element V must report
@@ -4851,10 +4846,14 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 			t.Fatalf("element V nullability = %d, want %d (ColumnNullable); a blanket no-descriptor→NOT-NULL fix would regress this; all=%v",
 				got, api.ColumnNullable, nulls)
 		}
-		// The PK ID stays NOT NULL via its real descriptor (Required) — proves the
-		// descriptor-backed path is untouched by the no-descriptor branch.
-		if got := nulls[0]; got != api.ColumnNoNulls {
-			t.Fatalf("pk ID nullability = %d, want %d (ColumnNoNulls); all=%v", got, api.ColumnNoNulls, nulls)
+		// The PK ID reports NULLABLE via its real descriptor: every scalar
+		// column is proto OPTIONAL (scalar NOT NULL is unexpressible — Java
+		// parity: NOT NULL is only allowed for ARRAY column type, rejected at
+		// CREATE). Still proves the descriptor-backed path is untouched by
+		// the no-descriptor branch — a blanket no-descriptor→NOT-NULL fix
+		// would have flipped it the other way.
+		if got := nulls[0]; got != api.ColumnNullable {
+			t.Fatalf("pk ID nullability = %d, want %d (ColumnNullable); all=%v", got, api.ColumnNullable, nulls)
 		}
 	})
 
@@ -4949,11 +4948,11 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 	// schema-qualified table); DST/USRC (DML targets). All single-schema, plain
 	// scalar columns so rows can be seeded via SQL VALUES.
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ajt_dml_nds_tmpl"+
-		" CREATE TABLE PA (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE PB (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE DST (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE DST2 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE USRC (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE PA (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE PB (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE DST (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE DST2 (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE USRC (id BIGINT, v BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE ajt_dml_nds_tmpl"); err != nil {
@@ -5244,10 +5243,10 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	// non-colliding sibling table W (scalar X) drives the control INSERT that must
 	// still succeed.
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ajt_dml_dupalias_tmpl"+
-		" CREATE TABLE T1 (id BIGINT NOT NULL, arr INTEGER ARRAY, PRIMARY KEY (id))"+
-		" CREATE TABLE U (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE W (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE DST (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE T1 (id BIGINT, arr INTEGER ARRAY, PRIMARY KEY (id))"+
+		" CREATE TABLE U (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE W (id BIGINT, x BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE DST (id BIGINT, v BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ajt_dml_dupalias_tmpl"); err != nil {

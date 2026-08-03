@@ -27,7 +27,7 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 	indexable := func(name, ty string) {
 		t.Run(name, func(t *testing.T) {
 			tmpl := "idxty_" + name
-			q := fmt.Sprintf("CREATE SCHEMA TEMPLATE %s CREATE TABLE t (id BIGINT NOT NULL, v %s, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)", tmpl, ty)
+			q := fmt.Sprintf("CREATE SCHEMA TEMPLATE %s CREATE TABLE t (id BIGINT, v %s, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)", tmpl, ty)
 			if _, err := db.ExecContext(ctx, q); err != nil {
 				t.Errorf("CREATE INDEX on %s unexpectedly failed: %v", ty, err)
 			}
@@ -50,7 +50,7 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 	t.Run("uuid_indexable_and_roundtrips", func(t *testing.T) {
 		const u = "550e8400-e29b-41d4-a716-446655440000"
 		mwjoMustExec(t, db, ctx,
-			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
+			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
 		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_idxty?cluster_file=%s&schema=suuid", clusterFilePath))
 		if err != nil {

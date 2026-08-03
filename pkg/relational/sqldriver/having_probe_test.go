@@ -20,7 +20,7 @@ func TestFDB_OrderByAggregateExpression(t *testing.T) {
 	setup := openTestDB(t, "/testdb_obaggexpr")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_obaggexpr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA TEMPLATE obaggexpr_tmpl CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA TEMPLATE obaggexpr_tmpl CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_obaggexpr/s WITH TEMPLATE obaggexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 

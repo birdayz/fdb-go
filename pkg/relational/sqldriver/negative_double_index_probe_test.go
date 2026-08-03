@@ -20,7 +20,7 @@ func TestFDB_NegativeDoubleIndexProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ndi")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ndi")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ndi CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE ndi CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ndi/s WITH TEMPLATE ndi")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ndi?cluster_file=%s&schema=s", clusterFilePath)

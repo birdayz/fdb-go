@@ -4,9 +4,9 @@
 # This combines DML generation with the EXISTS predicate handling.
 name: insert_select_exists
 schema_template: |
-  CREATE TABLE src (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dst (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
-  CREATE TABLE filter_set (k BIGINT NOT NULL, PRIMARY KEY (k))
+  CREATE TABLE src (id BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dst (id BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE filter_set (k BIGINT, PRIMARY KEY (k))
 setup:
   - INSERT INTO src VALUES (1, 10), (2, 20), (3, 30), (4, 40)
   - INSERT INTO filter_set VALUES (1), (3)

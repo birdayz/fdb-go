@@ -6,9 +6,9 @@
 # semantics, anti-join, cross join, inequality, multi-predicate.
 name: nlj_predicate_edge_cases
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))
-  CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, customer STRING, total BIGINT, priority BIGINT, status STRING, PRIMARY KEY (id))
-  CREATE TABLE tags (id BIGINT NOT NULL, product_id BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, product_id BIGINT, customer STRING, total BIGINT, priority BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE tags (id BIGINT, product_id BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - >
     INSERT INTO products VALUES

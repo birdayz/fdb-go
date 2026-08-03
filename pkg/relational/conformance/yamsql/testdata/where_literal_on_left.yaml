@@ -6,7 +6,7 @@
 # column-on-left.
 name: where_literal_on_left
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 5, 'a'), (2, 10, 'b'), (3, 15, 'c')
 tests:

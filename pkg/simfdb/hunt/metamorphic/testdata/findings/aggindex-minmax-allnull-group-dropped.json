@@ -2,7 +2,7 @@
   "name": "aggindex-minmax-allnull-group-dropped",
   "seed": 191,
   "tables": [
-    "CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+    "CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
     "CREATE INDEX max_by_g AS SELECT MAX(v) FROM t GROUP BY g",
     "CREATE INDEX min_by_g AS SELECT MIN(v) FROM t GROUP BY g"
   ],

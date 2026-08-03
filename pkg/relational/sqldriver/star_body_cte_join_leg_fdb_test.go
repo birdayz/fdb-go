@@ -391,30 +391,26 @@ func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspa
 	t4Desc := md.GetRecordType("T4").Descriptor
 	scarrFD := t4Desc.Fields().ByName("SCARR")
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := sarrFD.Message()
+	elemDesc := arrayElementMessageDescriptor(sarrFD)
 	mkElem := func(sub ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
-		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
+		vals := make([]protoreflect.Value, 0, len(sub))
 		for _, s := range sub {
-			sl.Append(protoreflect.ValueOfInt32(s))
+			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
+		setArrayField(m, elemDesc.Fields().ByName("SUB"), vals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id, sub int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
-		sl := m.NewField(scarrFD).List()
+		vals := make([]protoreflect.Value, 0, len(scarr))
 		for _, s := range scarr {
-			sl.Append(protoreflect.ValueOfInt32(s))
+			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		m.Set(scarrFD, protoreflect.ValueOfList(sl))
-		al := m.NewField(sarrFD).List()
-		for _, e := range sarr {
-			al.Append(e)
-		}
-		m.Set(sarrFD, protoreflect.ValueOfList(al))
+		setArrayField(m, scarrFD, vals...)
+		setArrayField(m, sarrFD, sarr...)
 		return m
 	}
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

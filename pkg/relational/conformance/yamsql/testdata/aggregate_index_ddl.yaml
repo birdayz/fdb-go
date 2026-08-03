@@ -5,7 +5,7 @@
 name: aggregate_index_ddl
 schema_template: |
   CREATE TABLE orders (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     region STRING,
     amount BIGINT,

@@ -41,15 +41,16 @@ var engineGaps = []EngineGap{
 	// Array COMPARISON semantics are closed (`[1] = [1]` is TRUE, the
 	// NULL/NONE matrix and the 42804 rejections match Java — pinned by
 	// TestFDB_ArrayComparison and the live-Java ArrayComparisonJavaProbe).
-	// The file progressed 36 queries to its stored-row block, where the
-	// RFC-143 §3a wire divergence surfaces: Go writes a nullable array as
-	// a PLAIN repeated field (no `values` wrapper message), so the stored
-	// `[]` at pk 0 is byte-identical to NULL and reads back NULL — the
-	// row's IS_NULL/IS_EMPTY answers invert. Closes with the §3a
-	// nullable-array-wrapper WRITE follow-up (TODO R6).
+	// The file now progresses THROUGH its nullable stored-row block — the
+	// RFC-143 §3a wrapper write side landed, so a stored `[]` in the
+	// NULLABLE `arr` is no longer byte-identical to NULL and its
+	// IS_NULL/IS_EMPTY answers match Java. What it reaches instead is the
+	// NOT NULL column `arr_nn`: stored flat repeated (Java's layout too),
+	// empty is absent on the wire, and Go reads absent as NULL where the
+	// type forbids NULL and Java yields an empty array.
 	{
-		"arrays-operators.yamsql", SkipGapNullableArrayWrapper,
-		"actual: {ARR: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}", "RFC-143 §3a",
+		"arrays-operators.yamsql", SkipGapNonNullableArrayEmpty,
+		"actual: {ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}", "CQ-89",
 	},
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
@@ -154,14 +155,150 @@ var engineGaps = []EngineGap{
 	// signature matches the escaped form.
 	{"join-tests-outer.yamsql", SkipConformanceGoAccepts, `ORDER BY \"d\".\"name\";": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
 
-	// A `create schema template` issued as a SETUP STEP rather than as a
-	// schema_template block, declaring struct types. Same Phase-3 gap as the
-	// block form, reached by a different route, so it is classed with it.
-	// The rejection moved from the column-type check to the fail-closed
-	// template-clause guard (the CREATE TYPE AS STRUCT clause itself) when
-	// silently-skipped template clauses were banned.
-	{"showcasing-tests.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
-	{"create-drop-create-template.yamsql", SkipDDLStruct, "struct types (CREATE TYPE AS STRUCT) are not yet supported", "CQ-73"},
+	// ---- engine-gap:struct-query (RFC-204 Phase 2 → Phase 3) ----
+	//
+	// PHASE 2 CLOSED engine-gap:struct-dml (23 files): struct and
+	// array-of-struct literals write through the typed row-constructor
+	// push-down, UPDATE SET assigns a whole struct, INSERT … SELECT carries
+	// one, and a struct column reads back as an api.Struct the corpus
+	// matcher compares against a nested YAML map. Fifteen of the carriers
+	// pass outright; the eight below advanced to their NEXT rejection, and
+	// each is pinned at that exact statement so an unrelated new failure in
+	// the same file stays a hard failure.
+
+	// PHASE 3 (resolver) closed nested field access against a TABLE source:
+	// struct-type-nullability-variants.yamsql passes, because the semantic
+	// scope now applies Java's fifth matching rule — lookupNestedField
+	// (SemanticAnalyzer.java:481-488, :548-602) — so `home_address.city`
+	// descends into a struct COLUMN instead of demanding a FROM source named
+	// HOME_ADDRESS. The remaining five are the shapes that rule does not
+	// reach.
+	//
+	// RE-BOOKED, not closed-by-relabel: `item.sku` (item = a lateral unnest
+	// of a struct array) now RESOLVES — the unnest binding's virtual column
+	// carries the array ELEMENT's field list, so the same lookupNestedField
+	// descent that serves a struct column reaches it. The file then hits a
+	// gap that has nothing to do with structs: its FROM clause unnests TWO
+	// arrays, and the translator lowers only one. Booked to that gap, at its
+	// own exact rejection, so the struct class no longer claims it and the
+	// real blocker is counted under its own name.
+	{"arrays-unnesting-documentation-queries.yamsql", SkipGapMultipleLateralUnnests, "multiple lateral array unnests in one FROM clause are not yet supported", "RFC-142"},
+	// inserts-updates-deletes.yamsql PASSES: the record constructor now builds
+	// in EXPRESSION position (Java's ExpressionVisitor.visitRecordConstructor
+	// → RecordConstructorValue.ofColumns), and its `UPDATE … SET b3 =
+	// coalesce(b3, (b1, b2), …)` binds the anonymous literal to the target
+	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
+	// target type in hand.
+	//
+	// functions.yamsql: the struct-query gap CLOSED and the file RE-BOOKED, it
+	// did not pass. A COMPUTED record now reaches the driver as an api.Struct
+	// — RFC-204 §4.5.1's plan-time bake stamps each RecordConstructorValue
+	// with a descriptor from the plan's single type repository, so Evaluate
+	// builds a dynamic proto Message exactly as Java's
+	// RecordConstructorValue.eval does (RecordConstructorValue.java:113-139),
+	// and materializeDriverValue's ProtoMessage → api.Struct conversion (Java
+	// RowStruct.java:184-197) fires for a computed record just as it already
+	// did for a stored one.
+	//
+	// Clearing that exposed two further blockers, each independent of structs
+	// and of each other. The FIRST is fixed here rather than booked: LEAST and
+	// GREATEST admitted argument types Java rejects, and rejected them with
+	// the wrong SQLSTATE. Java runs a two-step admission
+	// (VariadicFunctionValue.encapsulate :190-212) — fold with maximumType,
+	// then look up a physical operator — and the two steps carry DIFFERENT
+	// codes: `greatest(bytes_col, 'a')` has no common type (22000), while
+	// `least(struct_col, struct_col)` has a common type with no operator
+	// registered for it (22F00). Go had neither check; both now run at plan
+	// time, modelled on Java's operator map rather than a reject list.
+	//
+	// The SECOND is what this entry books, and it has nothing to do with
+	// structs: `update … returning "new".st` produces no result set, because
+	// DML RETURNING is not implemented. Pinned at that exact statement so the
+	// struct and LEAST/GREATEST fixes above cannot silently regress behind it —
+	// the bare "no result set" text alone would swallow ANY other
+	// result-set-less assertion this 111-query file grows.
+	// (The %q-formatted statement text escapes the embedded quotes, so the
+	// signature matches the escaped form.)
+	{"functions.yamsql", SkipGapDMLReturning, `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st": actual result set is NULL, expecting non-NULL result set`, "CQ-72"},
+	// `SELECT (*)` — the parenthesised star, a record constructor over the
+	// expanded row (ExpressionVisitor.visitRecordConstructor's STAR arm,
+	// :902-916). Go declines it in the expression walker
+	// (walkRecordConstructorInner's "RecordConstructor over STAR"), so every
+	// shape in this file fails 0AF00.
+	//
+	// The naming and typing rule is MEASURED against the live JVM in
+	// conformance/paren_star_java_probe_test.go and agrees with this file's
+	// own expectations, so the file IS the spec:
+	//   - ONE for-each quantifier in scope → a SINGLE struct-typed column
+	//     named after that quantifier (table, alias, subquery alias, TVF
+	//     name), carrying the whole row. An explicit `AS x` overrides it.
+	//   - TWO OR MORE → the column is anonymous (`_0`) and the struct
+	//     FLATTENS every source's columns rather than nesting one struct per
+	//     source. Star.overQuantifiers (Star.java:141-148) builds
+	//     ofUnnamed(quantifiers), but ensureValueConsistentWithExpansion
+	//     replaces it with the flat record constructor over the expansion
+	//     whenever the types differ — which for two quantifiers they always
+	//     do. "Two or more" counts PartiQL unnest bindings, not just joins.
+	//   - `(T.*)` names the column after the qualifier and is unaffected by
+	//     how many sources are in scope.
+	//
+	// TWO THINGS GATE CLOSING THIS FILE, and neither is the star itself:
+	//   - the multi-quantifier arm produces a COMPUTED record, which is
+	//     CQ-86 — a computed record reaches the driver as a bare map, not an
+	//     api.Struct, so its rows would not match even once it plans.
+	//   - the function-source block needs `CREATE TEMPORARY FUNCTION`
+	//     (skip class unsupported:temporary-function) and the values-source
+	//     block needs VALUES as a FROM source. Both are other workstreams, so
+	//     this file re-books at the FIRST of those it reaches rather than
+	//     passing outright.
+	{"star-expression-metadata.yamsql", SkipGapStructQuery, `"SELECT (*) FROM foo"`, "RFC-204 P3"},
+	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
+	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
+	// `SELECT A.*, A.* FROM A` is legal and the 42702 comes from the OUTER
+	// reference finding two matching attributes (SemanticAnalyzer.java:417,
+	// :422); Go raised its own 22023 at the producer instead. Removing that
+	// rejection, deriving the derived table's schema THROUGH the star, and
+	// counting matches per-attribute makes Go answer the inner query with rows
+	// and the outer reference with 42702 and Java's exact message text — both
+	// halves live-JVM verified (conformance/duplicate_star_java_probe_test.go).
+	//
+	// The file then reaches a gap that has nothing to do with structs, and one
+	// this run measured rather than inferred: a qualified star in a SELECT list
+	// that ALSO carries GROUP BY. Java expands the star first and requires each
+	// expanded output to be composable from the grouping expressions plus the
+	// aggregates plus the outer correlations (LogicalOperator.java:435-441), so
+	// a star covering exactly the grouping list is legal and only a star
+	// exceeding it is 42803. Go rejects the shape unconditionally in the
+	// classifier, which runs before any schema is available to expand against.
+	// Booked to that gap at its own exact rejection, so the struct class no
+	// longer claims the file and the real blocker is counted under its own name.
+	{"select-a-star.yamsql", SkipGapStarGroupBy, "SELECT qualifier.* expands to columns not in GROUP BY", "CQ-72"},
+
+	// NOT struct-related, re-armed by the struct DML landing (these files'
+	// later blocks run for the first time):
+	// ORDER BY on a UUID column, which Java declines to plan (0AF00) and Go
+	// answers through its sanctioned in-memory sort — the same
+	// Go-accepts-what-Java-rejects class join-tests-outer.yamsql carries.
+	{"uuid-non-prepared.yamsql", SkipConformanceGoAccepts, `"select * from ta where b is not null order by b": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
+	// A lateral unnest of a DERIVED TABLE's array column with AT — the
+	// correlated-unnest-over-subquery shape Cascades declines. Pinned at the
+	// exact statement: this file is 30 queries of PartiQL AT shapes and the
+	// bare 0AF00 text would have counted a decline on ANY of them as this one.
+	// (The %q-formatted statement text escapes the embedded quotes, so the
+	// signature matches the escaped form.)
+	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\", \"subquery\".\"arr1\" AS \"val\" AT \"at\"": 0AF00: Cascades planner could not plan query`, "CQ-72"},
+
+	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
+	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
+	// applied to the literal), where Java lets the NULL reach message
+	// coercion and dies with an internal XX000 — the code class differs on
+	// a shared-surface statement, so it stays a counted divergence.
+	{"arrays.yamsql", SkipGapErrorClass, "expecting 'XX000' error code, got '23502'", "RFC-204 P2"},
+
+	// RE-ARMED by struct DDL landing (this class was masked while the file's
+	// template failed at its struct declarations): UPDATE … RETURNING with
+	// OPTIONS(DRY RUN) yields no result set through the driver.
+	{"update-delete-returning.yamsql", SkipGapReturningDryRun, "actual result set is NULL, expecting non-NULL result set", "RFC-201 Phase 5"},
 
 	// ---- Gaps armed by RFC-202 S2: these files' index DDL now succeeds, so
 	// their queries run for the first time and each reaches its own

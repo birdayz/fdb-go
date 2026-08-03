@@ -18,7 +18,7 @@
 name: composite_secondary_index_prefix_pushdown
 schema_template: |
   CREATE TABLE rp (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     plan STRING,
     tier BIGINT,

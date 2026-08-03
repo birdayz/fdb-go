@@ -4,7 +4,7 @@
 # secondary index order, and reverse scans.
 name: index_scan_order
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, name STRING, PRIMARY KEY (id))
   CREATE INDEX idx_val ON t (val)
 setup:
   - INSERT INTO t VALUES (1, 30, 'c'), (2, 10, 'a'), (3, 50, 'e'), (4, 20, 'b'), (5, 40, 'd')

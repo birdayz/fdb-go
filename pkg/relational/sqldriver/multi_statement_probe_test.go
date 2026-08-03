@@ -24,7 +24,7 @@ func TestFDB_MultiStatementProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_multip")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_multip")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE multip CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE multip CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_multip/s WITH TEMPLATE multip")
 	dsn := fmt.Sprintf("fdbsql:///testdb_multip?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

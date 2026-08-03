@@ -6,7 +6,7 @@
 # nightshift-39 IS DISTINCT FROM fixes through DML paths.
 name: dml_with_null_safe
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 30), (4, null)
 tests:

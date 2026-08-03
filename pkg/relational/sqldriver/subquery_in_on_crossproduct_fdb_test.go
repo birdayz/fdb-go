@@ -114,10 +114,10 @@ func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_subq_on")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE subq_on "+
-			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, w BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE d (id BIGINT NOT NULL, b_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, w BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE d (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_subq_on/s WITH TEMPLATE subq_on")

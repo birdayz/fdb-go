@@ -119,10 +119,10 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	// BV column (301-302) means all four asserted addresses discriminate.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_leg "+
-			"CREATE TABLE ta (aid BIGINT NOT NULL, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
-			"CREATE TABLE tb (bid BIGINT NOT NULL, bv BIGINT, PRIMARY KEY (bid)) "+
-			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
-			"CREATE TABLE tp (pid BIGINT NOT NULL, owner BIGINT, PRIMARY KEY (pid))")
+			"CREATE TABLE ta (aid BIGINT, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
+			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
+			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
+			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_leg?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -276,10 +276,10 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 	// tests is the presence of the join predicates.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_nopred "+
-			"CREATE TABLE ta (aid BIGINT NOT NULL, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
-			"CREATE TABLE tb (bid BIGINT NOT NULL, bv BIGINT, PRIMARY KEY (bid)) "+
-			"CREATE TABLE tc (cid BIGINT NOT NULL, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
-			"CREATE TABLE tp (pid BIGINT NOT NULL, owner BIGINT, PRIMARY KEY (pid))")
+			"CREATE TABLE ta (aid BIGINT, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
+			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
+			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
+			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nested_merge_nopred?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

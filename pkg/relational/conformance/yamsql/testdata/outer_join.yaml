@@ -5,9 +5,9 @@
 # LEFT/RIGHT OUTER JOIN implementation landed in swingshift-33.
 name: outer_join
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
-  CREATE TABLE a_empty (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a_empty (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, k BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
   - INSERT INTO b VALUES (101, 10, 'alpha'), (102, 20, 'beta'), (103, 99, 'gamma')

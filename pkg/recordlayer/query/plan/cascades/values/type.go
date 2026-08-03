@@ -32,7 +32,10 @@ package values
 // it grows past ~1500 LOC; only then does typing/ become its own
 // sub-package.
 
-import "strconv"
+import (
+	"strconv"
+	"sync"
+)
 
 // TypeCode enumerates the well-known SQL types. Mirrors Java's
 // `Type.TypeCode`; numeric values are NOT wire-stable (we don't
@@ -1636,6 +1639,12 @@ type TypeRepository struct {
 	// name. Empty by default — callers Register entries as they're
 	// declared.
 	types map[string]Type
+
+	// proto is the protobuf surface (Java's TypeRepository IS one; Go's grew
+	// as a name->Type map first). Built on first use so a repository that
+	// never synthesises a descriptor costs nothing. See proto_type.go.
+	protoOnce sync.Once
+	proto     *TypeProtoRepository
 }
 
 // NewTypeRepository constructs an empty TypeRepository.

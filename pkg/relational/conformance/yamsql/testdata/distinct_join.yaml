@@ -6,8 +6,8 @@
 # evaluator.
 name: distinct_join
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE tags (cust_id BIGINT NOT NULL, tag STRING, PRIMARY KEY (cust_id, tag))
+  CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tags (cust_id BIGINT, tag STRING, PRIMARY KEY (cust_id, tag))
 setup:
   - INSERT INTO orders VALUES (1, 10), (2, 10), (3, 20), (4, 20)
   - INSERT INTO tags VALUES (10, 'gold'), (10, 'pref'), (20, 'gold')

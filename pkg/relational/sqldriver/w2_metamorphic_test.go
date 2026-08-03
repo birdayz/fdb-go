@@ -48,7 +48,7 @@ func w2DB(t *testing.T, seed int64) (*sql.DB, []w2Row) {
 	}
 	tmpl := fmt.Sprintf("W2_TMPL_%d_%s", seed, t.Name())
 	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE w2t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))`, tmpl)
+		CREATE TABLE w2t (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))`, tmpl)
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}

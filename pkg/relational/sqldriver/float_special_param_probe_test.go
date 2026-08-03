@@ -24,7 +24,7 @@ func TestFDB_FloatSpecialParamProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_fspecialp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fspecialp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE fspecialp CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE fspecialp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fspecialp/s WITH TEMPLATE fspecialp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_fspecialp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

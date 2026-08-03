@@ -23,25 +23,25 @@
 name: like_prefix_pushdown
 schema_template: |
   CREATE TABLE t (
-    name STRING NOT NULL,
+    name STRING,
     tag STRING,
     v BIGINT,
     PRIMARY KEY (name)
   )
   CREATE TABLE t2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_status ON t2 (status)
   CREATE TABLE cp (
-    region STRING NOT NULL,
-    name STRING NOT NULL,
+    region STRING,
+    name STRING,
     v BIGINT,
     PRIMARY KEY (region, name)
   )
   CREATE TABLE ci (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     name STRING,
     PRIMARY KEY (id)

@@ -5,7 +5,7 @@
 # (unlike `=`, which is UNKNOWN on NULL) — SQL spec §8.2 General Rule 3.
 name: select_distinct
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'a', 1), (2, 'a', 1), (3, 'b', 2), (4, null, 3), (5, null, 3), (6, 'a', null), (7, 'a', null)
 tests:

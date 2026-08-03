@@ -6,7 +6,7 @@
 # one "<nil>"-literal row → two distinct groups.
 name: group_by_null
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'a', 1), (2, 'a', 2), (3, '<nil>', 3), (4, null, 4), (5, null, 5)
 tests:

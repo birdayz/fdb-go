@@ -299,7 +299,7 @@ func TestJavaEngine_HappyPath(t *testing.T) {
 	got := eng.Plan(context.Background(), Query{
 		Name:           "x",
 		SQL:            "SELECT * FROM t",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
 	})
 	if got.Err != nil {
 		t.Fatalf("unexpected error: %v", got.Err)

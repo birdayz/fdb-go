@@ -5,7 +5,7 @@
 # values, IN-list with NULL element edge cases.
 name: in_list_advanced
 schema_template: |
-  CREATE TABLE ta (a BIGINT NOT NULL, b BIGINT, PRIMARY KEY (a))
+  CREATE TABLE ta (a BIGINT, b BIGINT, PRIMARY KEY (a))
 setup:
   - INSERT INTO ta VALUES (1, 8), (2, 7), (3, 6), (4, 5), (5, 4), (6, 3), (7, 2), (8, 1)
 tests:

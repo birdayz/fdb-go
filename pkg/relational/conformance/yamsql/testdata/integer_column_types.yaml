@@ -13,8 +13,8 @@
 #   - Invalid CAST enforcement (22F3H)
 name: integer_column_types
 schema_template: |
-  CREATE TABLE t_int (id BIGINT NOT NULL, val INTEGER, label STRING, PRIMARY KEY (id))
-  CREATE TABLE t_int2 (id BIGINT NOT NULL, ref_id INTEGER, amount INTEGER, PRIMARY KEY (id))
+  CREATE TABLE t_int (id BIGINT, val INTEGER, label STRING, PRIMARY KEY (id))
+  CREATE TABLE t_int2 (id BIGINT, ref_id INTEGER, amount INTEGER, PRIMARY KEY (id))
 setup:
   - INSERT INTO t_int VALUES (1, 2147483647, 'max'), (2, -2147483648, 'min'), (3, 0, 'zero'), (4, 42, 'answer'), (5, null, 'null')
   - INSERT INTO t_int2 VALUES (10, 42, 100), (11, 42, 200), (12, 0, 300)

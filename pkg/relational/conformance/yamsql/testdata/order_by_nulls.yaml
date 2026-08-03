@@ -7,7 +7,7 @@
 # Go code had NULL > non-NULL, flipping both.
 name: order_by_nulls
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_v ON t (v)
 setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 5), (4, null), (5, 20)

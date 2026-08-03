@@ -235,6 +235,48 @@ func buildWherePredicateForDerived(
 	return pred, true
 }
 
+// renameCarriedColumn re-labels a resolved source column as one output column
+// of a derived table / CTE, carrying EVERYTHING ELSE across.
+//
+// The whole point is what it does NOT drop. A virtual column minted as
+// `semantic.Column{Id, Type, Nullable}` loses StructFields and IsArray, and a
+// STRUCT column then types UNKNOWN (structColumnType returns UNKNOWN on an
+// empty field list) instead of RECORD. UNKNOWN is deliberately ADMITTED by the
+// comparison operand gate — bound parameters need that carve-out — so a
+// whole-struct comparison that rejects 0AF00 on the base table planned
+// straight through a derived table and returned SILENT WRONG ROWS. Java never
+// has this hole: a derived table's columns are the body's Values and carry
+// their real Type, so the operand check (RelOpValue.isSupportedOperandType,
+// RelOpValue.java:320-322) sees the record either way.
+//
+// Ephemeral is CLEARED rather than carried: an explicitly projected item is a
+// visible output of the derived table, whatever its source column's star
+// visibility was.
+func renameCarriedColumn(src semantic.Column, outName string) semantic.Column {
+	src.Id = semantic.FromNormalized(outName)
+	src.Ephemeral = false
+	return src
+}
+
+// lookupSourceColumn finds the column a derived-table projection item reads,
+// trying the structured bare segment first and the full spelling second (a
+// rebased or computed item has no bare segment). A miss is not an error — the
+// caller falls back to an honestly UNKNOWN virtual column.
+func lookupSourceColumn(cols []semantic.Column, bare, full string) (semantic.Column, bool) {
+	for _, name := range [2]string{bare, full} {
+		if name == "" {
+			continue
+		}
+		id := semantic.FromNormalized(name)
+		for _, c := range cols {
+			if c.Id.Name() == id.Name() {
+				return c, true
+			}
+		}
+	}
+	return semantic.Column{}, false
+}
+
 // buildDerivedTableSource synthesises a virtual ScopeSource for
 // `FROM (SELECT col1, col2 FROM realtable) AS alias`. Walks the inner
 // query's parse tree via extractFromQueryTerm, then builds a
@@ -431,7 +473,8 @@ func buildDerivedTableSourceFromTerm(
 		}
 		aliasID := semantic.FromNormalized(alias)
 		// Apply inner projection aliases if present.
-		cols := innerSrc.Table.Columns()
+		srcCols := innerSrc.Table.Columns()
+		cols := srcCols
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
@@ -439,11 +482,29 @@ func buildDerivedTableSourceFromTerm(
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
-				cols = append(cols, semantic.Column{
-					Id:       semantic.FromNormalized(name),
-					Type:     "UNKNOWN",
-					Nullable: true,
-				})
+				// CARRY THE WHOLE RESOLVED COLUMN, rename only. Minting a bare
+				// {Id, Type:"UNKNOWN", Nullable} drops StructFields and IsArray,
+				// and every gate keyed on the flowed type then reads a struct
+				// column as UNKNOWN — which comparisonOperandSupported
+				// DELIBERATELY admits (bound parameters need that). The result
+				// was a whole-struct comparison that planned through a derived
+				// table and answered SILENT WRONG ROWS while the same predicate
+				// on the base table rejected 0AF00. The type is not decoration:
+				// it is what makes the operand gate, nested-field resolution
+				// (x.h.city) and array typing work at all.
+				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
+				if !found {
+					// Not attributable to a source column (a computed or
+					// rebased item): UNKNOWN is the honest answer, there is no
+					// column to carry.
+					cols = append(cols, semantic.Column{
+						Id:       semantic.FromNormalized(name),
+						Type:     "UNKNOWN",
+						Nullable: true,
+					})
+					continue
+				}
+				cols = append(cols, renameCarriedColumn(resolved, name))
 			}
 		}
 		virtualTable := &semantic.StaticTable{
@@ -466,12 +527,6 @@ func buildDerivedTableSourceFromTerm(
 			return semantic.ScopeSource{}, false
 		}
 	}
-	for _, qual := range innerSQ.projStarQualifiers {
-		if qual != "" {
-			return semantic.ScopeSource{}, false
-		}
-	}
-
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 	innerTbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
@@ -490,8 +545,36 @@ func buildDerivedTableSourceFromTerm(
 			projCols[i] = projCol{name: c.Id.Name(), bare: c.Id.Name()}
 		}
 	}
+	// The body's own visible source names, so a qualified-star slot can be
+	// expanded here: the body is single-source at this point (joins declined
+	// above), so `x.*` is the whole table exactly when `x` names it.
+	bodySourceName := innerSQ.tableAlias
+	if bodySourceName == "" {
+		segs := strings.Split(innerSQ.tableName, ".")
+		bodySourceName = segs[len(segs)-1]
+	}
+
 	columns := make([]semantic.Column, 0, len(projCols))
 	for i, col := range projCols {
+		// A qualified-star slot expands to the body source's columns — the
+		// SAME expansion the plan build performs (expandQualifiedStars), done
+		// here so the derived table's schema is the row the body really emits.
+		//
+		// Declining instead was silent, and silently WRONG: the caller drops
+		// the whole resolver on a decline, so the outer SELECT's references
+		// were never adjudicated at all. `SELECT id FROM (SELECT a.*, a.* FROM
+		// a) nested` answered rows off the first ID where Java raises 42702
+		// (live-JVM measured), because the ambiguity only exists in a schema
+		// nothing built.
+		if i < len(innerSQ.projStarQualifiers) && innerSQ.projStarQualifiers[i] != "" {
+			if !strings.EqualFold(innerSQ.projStarQualifiers[i], bodySourceName) {
+				return semantic.ScopeSource{}, false
+			}
+			for _, c := range semantic.NonEphemeral(innerTbl.Columns()) {
+				columns = append(columns, c)
+			}
+			continue
+		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
 		if bareName == "" {
@@ -507,12 +590,11 @@ func buildDerivedTableSourceFromTerm(
 		}
 		// The virtual column carries the OUTPUT name the derived-table
 		// projection emits (Java resolves references to the output column
-		// verbatim — no reverse-map to the underlying source column).
-		columns = append(columns, semantic.Column{
-			Id:       semantic.FromNormalized(outName),
-			Type:     innerCol.Type,
-			Nullable: innerCol.Nullable,
-		})
+		// verbatim — no reverse-map to the underlying source column) and
+		// EVERYTHING ELSE from the source column unchanged. See
+		// renameCarriedColumn: rebuilding it field-by-field is what dropped
+		// StructFields and let a struct comparison bypass the operand gate.
+		columns = append(columns, renameCarriedColumn(innerCol, outName))
 	}
 
 	aliasID := semantic.FromNormalized(alias)
@@ -1183,6 +1265,20 @@ func buildCTEColumnSource(
 				outName = innerSQ.projAliases[i]
 			}
 			if isComputed {
+				// UNKNOWN IS CORRECT HERE, unlike the non-computed arm below.
+				// A computed projection item (`SELECT a + b AS x`) has NO
+				// source column to carry a type from — this function works off
+				// the parse tree and never encapsulates the expression, so
+				// there is nothing more honest to say about x's type than
+				// "unknown". The sibling arms mint UNKNOWN for a struct column
+				// that DOES have a resolvable type, which is a lie the operand
+				// gate then trusts; this one is the genuine article.
+				//
+				// A computed item can therefore still carry a struct past the
+				// gate (`SELECT CASE … END AS s`), but only by way of a
+				// SELECT-list expression Go does not type at all — closing that
+				// needs the CTE body's expressions encapsulated here, not a
+				// wider carry.
 				columns = append(columns, semantic.Column{
 					Id:       semantic.FromNormalized(outName),
 					Type:     "UNKNOWN",
@@ -1203,12 +1299,11 @@ func buildCTEColumnSource(
 				return semantic.ScopeSource{}, false
 			}
 			// The virtual column carries the OUTPUT name the CTE body
-			// projection emits — references resolve to it verbatim.
-			columns = append(columns, semantic.Column{
-				Id:       semantic.FromNormalized(outName),
-				Type:     innerCol.Type,
-				Nullable: innerCol.Nullable,
-			})
+			// projection emits — references resolve to it verbatim — and
+			// EVERYTHING ELSE from the source column (renameCarriedColumn):
+			// dropping StructFields here typed a CTE's struct column UNKNOWN
+			// and bypassed the whole-struct comparison gate.
+			columns = append(columns, renameCarriedColumn(innerCol, outName))
 		}
 	}
 
@@ -1639,6 +1734,109 @@ func cteBodyAllAliasesCaseSafe(body *antlrgen.QueryTermDefaultContext) bool {
 	return true
 }
 
+// cteBodyLeg is one resolved FROM leg of a CTE body: the name it binds in the
+// body's scope, and the columns it contributes.
+type cteBodyLeg struct {
+	bind string // UPPERCASED alias, else table name
+	cols []semantic.Column
+}
+
+// cteBodyLegColumns resolves every FROM leg of a CTE body to its columns, by
+// the same three routes the rest of this file uses (a prior CTE's scope, a
+// derived sub-body, or the catalog). A leg that resolves to nothing is simply
+// omitted — callers treat an unattributable projection item as UNKNOWN, which
+// is what they did for EVERY item before.
+//
+// This exists so the ON-only wrap rebuild can carry a projected column's REAL
+// type instead of minting UNKNOWN. Minting UNKNOWN is not a neutral
+// placeholder: a STRUCT column typed UNKNOWN is admitted by the comparison
+// operand gate (the carve-out bound parameters need), so `ON c.h = c.o` over a
+// CTE planned a whole-struct comparison that the same predicate on the base
+// table rejects 0AF00 — and answered silent wrong rows.
+func cteBodyLegColumns(
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+	sq *selectQuery,
+) []cteBodyLeg {
+	if md == nil || sq == nil {
+		return nil
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	resolve := func(name, alias string, derived antlrgen.IQueryContext) (cteBodyLeg, bool) {
+		bind := alias
+		if bind == "" {
+			bind = name
+		}
+		if bind == "" {
+			return cteBodyLeg{}, false
+		}
+		leg := cteBodyLeg{bind: strings.ToUpper(bind)}
+		switch {
+		case derived != nil:
+			src, ok := buildDerivedTableSource(md, bind, derived)
+			if !ok || src.Table == nil {
+				return cteBodyLeg{}, false
+			}
+			leg.cols = src.Table.Columns()
+		default:
+			if src, found := cteScopes[strings.ToUpper(name)]; found {
+				if src.Table == nil {
+					return cteBodyLeg{}, false
+				}
+				leg.cols = src.Table.Columns()
+				break
+			}
+			tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(name, "."), false))
+			if err != nil || tbl == nil {
+				return cteBodyLeg{}, false
+			}
+			leg.cols = tbl.Columns()
+		}
+		return leg, true
+	}
+	var legs []cteBodyLeg
+	if leg, ok := resolve(sq.tableName, sq.tableAlias, sq.derivedQuery); ok {
+		legs = append(legs, leg)
+	}
+	for _, jc := range sq.joins {
+		if leg, ok := resolve(jc.tableName, jc.alias, jc.derivedQuery); ok {
+			legs = append(legs, leg)
+		}
+	}
+	return legs
+}
+
+// lookupCTEBodyColumn finds the source column a CTE-body projection item reads.
+// A QUALIFIED item is matched against the leg it names; a BARE item is searched
+// across every leg and must hit EXACTLY ONE — a bare name two legs both carry
+// is ambiguous, and picking either would be the arbitrary resolution the rest
+// of this function's admission rules exist to avoid.
+func lookupCTEBodyColumn(legs []cteBodyLeg, col projCol) (semantic.Column, bool) {
+	name := col.bare
+	if name == "" {
+		return semantic.Column{}, false
+	}
+	want := semantic.FromNormalized(name).Name()
+	var hit semantic.Column
+	found := 0
+	for _, leg := range legs {
+		if col.qualified && !strings.EqualFold(leg.bind, col.qualifier) {
+			continue
+		}
+		for _, c := range leg.cols {
+			if c.Id.Name() == want {
+				hit = c
+				found++
+			}
+		}
+	}
+	if found != 1 {
+		return semantic.Column{}, false
+	}
+	return hit, true
+}
+
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -1772,6 +1970,12 @@ func buildCTEOnOnlySource(
 	// per-source poison marker in the resolver — is a booked conformance slice;
 	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
 	aliasQuoted := cteBodyAliasQuoted(body)
+	// The body's legs, resolved to their columns, so each admitted output
+	// column can carry its SOURCE column's real type rather than UNKNOWN. The
+	// legs are enumerable by this point (cteBodyLegsEnumerable ran above), so
+	// a leg that fails to resolve here is genuinely unattributable, not merely
+	// unvisited.
+	bodyLegs := cteBodyLegColumns(md, cteScopes, innerSQ)
 	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
 	seen := make(map[string]int, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
@@ -1805,6 +2009,17 @@ func buildCTEOnOnlySource(
 			return semantic.ScopeSource{}, false
 		}
 		seen[runtimeName]++
+		// Carry the source column's type when the item is attributable to one
+		// (see cteBodyLegColumns for why UNKNOWN here was a correctness bug,
+		// not a cosmetic gap). A computed item has no source column and stays
+		// honestly UNKNOWN.
+		isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
+		if !isComputed {
+			if srcCol, ok := lookupCTEBodyColumn(bodyLegs, col); ok {
+				columns = append(columns, renameCarriedColumn(srcCol, runtimeName))
+				continue
+			}
+		}
 		columns = append(columns, semantic.Column{
 			Id:       semantic.FromNormalized(runtimeName),
 			Type:     "UNKNOWN",
@@ -2060,7 +2275,44 @@ func isLateralUnnestJoin(j joinClause, visible map[string]struct{}, resolvesToTa
 // scope via buildOuterScopeSources) derives it here so they cannot diverge. The
 // translator rewrites these references to the inner Explode binding when lowering
 // the unnest. ok=false when the source has neither an AS nor an AT alias. RFC-142.
+// unnestElementStructFields returns the declared field list of the ELEMENT
+// type of the array a lateral unnest ranges over, when that element is a
+// struct — and nil for a scalar-element array, which has no fields.
+//
+// This is what makes `FROM orders, orders.items AS item` support `item.sku`.
+// Java gets there structurally: the unnest quantifier's flowed object type IS
+// the array's element type, so a record element's fields are the quantifier's
+// own output attributes and `item.sku` matches by the ordinary
+// qualifier-prefixed rule (SemanticAnalyzer.java:475-480). Go's unnest binding
+// is instead a VIRTUAL one-column table (the AS alias), so the element's
+// fields have to be carried onto that column — where the same descent that
+// serves a struct COLUMN then reaches them (lookupNestedField, :548-602).
+// One mechanism, two entry points, rather than a second resolution path.
+//
+// The array column is looked up through the scope the unnest is being added
+// to, which already holds the outer source: `segments` is ["ORDERS","ITEMS"],
+// resolved as source-alias then column. A miss returns nil — an unnest over
+// something the scope cannot type is not this function's to reject, and the
+// reference simply fails to resolve as it did before.
+func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.Column {
+	if scope == nil || len(j.segments) != 2 {
+		return nil
+	}
+	col, _, err := scope.ResolveQualifiedColumn(
+		semantic.FromNormalized(j.segments[0]),
+		semantic.FromNormalized(j.segments[1]),
+	)
+	if err != nil || !col.IsArray {
+		return nil
+	}
+	return col.StructFields
+}
+
 func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
+	return unnestVirtualScopeSourceWithElement(j, nil)
+}
+
+func unnestVirtualScopeSourceWithElement(j joinClause, elemFields []semantic.Column) (semantic.ScopeSource, bool) {
 	// The (AS, AT) pair MUST come from the same normalization the logical
 	// lowering uses (unnestAliases) — otherwise the WHERE/projection scope
 	// binds the unnest column under the parser's DEFAULTED alias (the joined
@@ -2071,7 +2323,18 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	var cols []semantic.Column
 	corr := asAlias
 	if asAlias != "" {
-		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true})
+		// A STRUCT-element unnest binding types as RECORD and carries the
+		// element's fields, so `item.sku` descends; a scalar-element binding
+		// keeps UNKNOWN, which is what every non-struct consumer already
+		// expects. The type is not cosmetic — the descent's first gate is
+		// that the column HAS fields, and a column with fields that still
+		// claimed UNKNOWN would be two statements about one thing.
+		elemCol := semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true}
+		if len(elemFields) > 0 {
+			elemCol.Type = "RECORD"
+			elemCol.StructFields = elemFields
+		}
+		cols = append(cols, elemCol)
 	}
 	if atAlias != "" {
 		// The unnest WITH ORDINALITY ordinal is a 1-based, NON-NULL INT
@@ -2108,7 +2371,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 // resolves (RFC-142).
 func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 	return func(j joinClause) bool {
-		src, ok := unnestVirtualScopeSource(j)
+		src, ok := unnestVirtualScopeSourceWithElement(j, unnestElementStructFields(scope, j))
 		if !ok {
 			return false
 		}
@@ -3214,6 +3477,83 @@ func mapColumnResolveError(err error, display string) error {
 	return nil
 }
 
+// structStarQualifiers collects the STRUCT column names of the named tables.
+// A struct column is a LEGAL star qualifier: Java's expandStar tries the
+// qualifier as a relation first and falls through to "qualifying a column
+// inside a table, e.g. SELECT T.A.*" (SemanticAnalyzer.java:361-367), where
+// the qualifier resolves to an expression that must be a STRUCT and is then
+// expanded field-by-field. The relation-only gate rejected those with
+// "table X does not exist" before the expansion could run.
+//
+// The semantic view is deliberate: it already knows which message fields are
+// really STRUCTs, excluding the messages that map to scalars (UUID, the
+// nullable-array wrapper) that a bare "is a message" test would offer as
+// expandable.
+// structColumnFields returns the FIELD NAMES of the struct column named
+// `qual` on one of the given tables, in DECLARED (ordinal) order — Java
+// expands a struct star by ordinal, never by name (expandStructExpression,
+// SemanticAnalyzer.java:746-763).
+//
+// Reports false when `qual` names no struct column, and also when it names
+// one on MORE THAN ONE visible table: an ambiguous struct qualifier must not
+// silently expand the first match, so it is left to fail as an unresolved
+// qualifier instead.
+func structColumnFields(md *recordlayer.RecordMetaData, qual string, tableNames ...string) ([]string, bool) {
+	if md == nil || qual == "" {
+		return nil, false
+	}
+	catalog := rlcatalog.Wrap(md)
+	var found []string
+	seen := 0
+	for _, tableName := range tableNames {
+		if tableName == "" {
+			continue
+		}
+		tbl, ok := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false))
+		if !ok {
+			continue
+		}
+		for _, c := range tbl.Columns() {
+			if len(c.StructFields) == 0 || !strings.EqualFold(c.Id.Name(), qual) {
+				continue
+			}
+			seen++
+			names := make([]string, 0, len(c.StructFields))
+			for _, f := range c.StructFields {
+				names = append(names, strings.ToUpper(f.Id.Name()))
+			}
+			found = names
+		}
+	}
+	if seen != 1 {
+		return nil, false
+	}
+	return found, true
+}
+
+func structStarQualifiers(md *recordlayer.RecordMetaData, tableNames ...string) map[string]bool {
+	out := make(map[string]bool)
+	if md == nil {
+		return out
+	}
+	catalog := rlcatalog.Wrap(md)
+	for _, tableName := range tableNames {
+		if tableName == "" {
+			continue
+		}
+		tbl, found := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false))
+		if !found {
+			continue
+		}
+		for _, c := range tbl.Columns() {
+			if len(c.StructFields) > 0 {
+				out[strings.ToUpper(c.Id.Name())] = true
+			}
+		}
+	}
+	return out
+}
+
 func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaData) error {
 	if sq == nil || md == nil {
 		return nil
@@ -3234,11 +3574,16 @@ func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaDat
 		}
 		addUnnestStarAlias(validSources, j)
 	}
+	tableNames := []string{sq.tableName}
+	for _, j := range sq.joins {
+		tableNames = append(tableNames, j.tableName)
+	}
+	structQuals := structStarQualifiers(md, tableNames...)
 	check := func(qual string) error {
 		if qual == "" {
 			return nil
 		}
-		if !validSources[strings.ToUpper(qual)] {
+		if !validSources[strings.ToUpper(qual)] && !structQuals[strings.ToUpper(qual)] {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
 		}
 		return nil
@@ -3299,11 +3644,16 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 		}
 		addUnnestStarAlias(validSources, j)
 	}
+	tableNames := []string{fs.tableName}
+	for _, j := range fs.joins {
+		tableNames = append(tableNames, j.tableName)
+	}
+	structQuals := structStarQualifiers(md, tableNames...)
 	check := func(qual string) error {
 		if qual == "" {
 			return nil
 		}
-		if !validSources[strings.ToUpper(qual)] {
+		if !validSources[strings.ToUpper(qual)] && !structQuals[strings.ToUpper(qual)] {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
 		}
 		return nil
@@ -3311,23 +3661,20 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	if err := check(cls.projQualifier); err != nil {
 		return err
 	}
-	// Detect duplicate qualifier-star references. `SELECT a.*, a.* FROM a`
-	// would expand to duplicate columns (id, name, id, name). Java errors
-	// 42702 at the outer SELECT referencing the ambiguous column; Go
-	// surfaces 22023 here because expanding the same source twice produces
-	// a column list the downstream materialiser/executor can't disambiguate.
-	starSeen := make(map[string]bool, len(cls.projStarQualifiers))
+	// A qualifier repeated across star slots (`SELECT a.*, a.* FROM a`) is
+	// LEGAL: Java's expandStar has no uniqueness rule (SemanticAnalyzer.java
+	// :332-347 resolves each star independently), so the row simply carries
+	// the source's columns twice. Ambiguity is not a property of producing
+	// duplicate names — it is a property of REFERENCING one, and Java raises
+	// it exactly there, when resolveIdentifier's lookup returns more than one
+	// matching attribute (SemanticAnalyzer.java:417,:422 → AMBIGUOUS_COLUMN).
+	// Rejecting the producer instead reported 22023 on a query Java answers
+	// with rows, and reported it on the INNER select of
+	// `SELECT A1 FROM (SELECT A.*, A.* FROM A) nested` — before the outer
+	// reference that is the actual error.
 	for _, q := range cls.projStarQualifiers {
 		if err := check(q); err != nil {
 			return err
-		}
-		if q != "" {
-			up := strings.ToUpper(q)
-			if starSeen[up] {
-				return api.NewErrorf(api.ErrCodeInvalidParameter,
-					"qualifier %q expanded more than once in SELECT list — duplicate columns", q)
-			}
-			starSeen[up] = true
 		}
 	}
 	return nil
@@ -5144,7 +5491,29 @@ func buildLogicalPlanForUpdateWithCatalog(
 				continue
 			}
 			if idx < len(updOp.Sets) {
-				if v, err := resolver.WalkExpression(el.Expression()); err == nil && v != nil {
+				// A STRUCT target takes the same target-type push-down the
+				// INSERT path uses, so `SET s = (100, 100)` acquires the
+				// column's field names and types instead of dying as an
+				// untyped multi-element record constructor. Java reaches the
+				// same typed result from the other side — it builds an
+				// ANONYMOUS record here (visitUpdatedElement,
+				// ExpressionVisitor.java:1085-1090, with no target type in
+				// state) and coerces it into the target descriptor when the
+				// transform is applied (MessageHelpers.deepCopyMessageIfNeeded,
+				// keyed by field number = position). Pushing the type down is
+				// the same information applied earlier, and it is what lets a
+				// mistyped literal fail at plan time rather than at write.
+				var v values.Value
+				var err error
+				if fd := structSetTargetField(rt, updOp.Sets[idx].Column); fd != nil {
+					v, err = parseUpdateSetValue(fd, el.Expression(), resolver)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					v, err = resolver.WalkExpression(el.Expression())
+				}
+				if err == nil && v != nil {
 					updOp.Sets[idx].Value = v
 				}
 			}
@@ -6665,6 +7034,38 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	sourceColumns := make(map[string][]string)
 	derivedAliases := make(map[string]struct{})
+	// STRUCT columns of the visible sources, by column name. Java's
+	// expandStar tries the qualifier as a table FIRST and only then falls
+	// through to "qualifying a column inside a table, e.g. SELECT T.A.*"
+	// (SemanticAnalyzer.java:361-367): the qualifier is resolved as an
+	// expression, asserted to be a STRUCT, and expanded field-by-field in
+	// ORDINAL order (expandStructExpression, :746-763). Without the
+	// fall-through a struct qualifier died 42F01 "table HOME does not
+	// exist" — the qualifier was only ever looked up as a relation.
+	structColumns := make(map[string][]string)
+	catalog := rlcatalog.Wrap(md)
+	addStructColumns := func(cols []semantic.Column) {
+		for _, c := range cols {
+			if len(c.StructFields) == 0 {
+				continue
+			}
+			names := make([]string, 0, len(c.StructFields))
+			for _, f := range c.StructFields {
+				names = append(names, strings.ToUpper(f.Id.Name()))
+			}
+			// A struct column name is only a star qualifier when it is
+			// UNAMBIGUOUS across the visible sources; two sources exposing
+			// the same struct column name would otherwise silently expand
+			// the first. Ambiguity drops the entry so the qualifier misses
+			// and the existing diagnostics speak.
+			key := strings.ToUpper(c.Id.Name())
+			if _, dup := structColumns[key]; dup {
+				structColumns[key] = nil
+				continue
+			}
+			structColumns[key] = names
+		}
+	}
 	addSource := func(tableName, alias string) {
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 			if src.Table == nil {
@@ -6680,6 +7081,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 				key = strings.ToUpper(tableName)
 			}
 			sourceColumns[key] = cols
+			addStructColumns(cteCols)
 			return
 		}
 		rt := md.GetRecordType(tableName)
@@ -6696,6 +7098,13 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
 		}
 		sourceColumns[key] = cols
+		// The semantic view (not the raw descriptor) is what knows which
+		// message fields are STRUCTs: it already excludes the messages that
+		// map to scalars — UUID and the nullable-array wrapper — which a
+		// bare "is a message" test would wrongly offer as expandable.
+		if tbl, found := catalog.LookupTable(semantic.FromSegments([]string{tableName}, false)); found { //nolint:staticcheck // catalog is the semantic view; see addStructColumns
+			addStructColumns(tbl.Columns())
+		}
 	}
 	if sq.tableName != "" {
 		alias := sq.tableAlias
@@ -6777,6 +7186,24 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		// Qualified star — expand to individual columns.
 		cols, ok := sourceColumns[strings.ToUpper(qual)]
 		if !ok {
+			// Java's Case 3: not a relation, so try the qualifier as a
+			// STRUCT column and expand its fields
+			// (SemanticAnalyzer.java:361-367). The expansion mints the same
+			// one-level nested references the resolver already handles
+			// (`home.city`), so the descent needs nothing new.
+			if fields, isStruct := structColumns[strings.ToUpper(qual)]; isStruct && fields != nil {
+				for _, f := range fields {
+					newCols = append(newCols, projCol{
+						name: qual + "." + f, bare: f, qualifier: qual, qualified: true,
+					})
+					// Named after the FIELD, as expandStructExpression does
+					// (SemanticAnalyzer.java:756-760).
+					newAliases = append(newAliases, f)
+					newExprs = append(newExprs, nil)
+					newQuals = append(newQuals, "")
+				}
+				continue
+			}
 			newCols = append(newCols, col)
 			newAliases = append(newAliases, "")
 			newExprs = append(newExprs, nil)
@@ -7216,6 +7643,41 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 		}
 	}
 	if tableName == "" {
+		// Java's expandStar Case 3: the qualifier is not a relation, so try
+		// it as a STRUCT column of a visible source and expand its fields in
+		// ORDINAL order (SemanticAnalyzer.java:361-367, expandStructExpression
+		// :746-763). Without this, a whole-projection `SELECT home.*` left
+		// projCols nil and the nil-projCols path answered it as a plain
+		// `SELECT *` — the FULL TABLE, silently, instead of the struct's
+		// fields. (The mixed `SELECT id, home.*` shape takes the
+		// projStarQualifiers path in expandQualifiedStars instead.)
+		var visibleTables []string
+		if sq.tableName != "" {
+			visibleTables = append(visibleTables, sq.tableName)
+		}
+		for _, j := range sq.joins {
+			if j.tableName != "" {
+				visibleTables = append(visibleTables, j.tableName)
+			}
+		}
+		if fields, ok := structColumnFields(md, qual, visibleTables...); ok {
+			cols := make([]projCol, len(fields))
+			// Each expanded column is NAMED AFTER ITS FIELD. Java's
+			// expandStructExpression builds every expanded expression as
+			// `Identifier.of(field.getName(), qualifierParts)`
+			// (SemanticAnalyzer.java:756-760), so the output label is the
+			// FIELD name — not the qualifier, and not the dotted path.
+			aliases := make([]string, len(fields))
+			for i, f := range fields {
+				cols[i] = projCol{name: qual + "." + f, bare: f, qualifier: qual, qualified: true}
+				aliases[i] = f
+			}
+			sq.projCols = cols
+			sq.projAliases = aliases
+			sq.projExprs = make([]antlrgen.IExpressionContext, len(fields))
+			sq.projStarQualifiers = make([]string, len(fields))
+			sq.projQualifier = ""
+		}
 		return // unknown qualifier — validated elsewhere
 	}
 

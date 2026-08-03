@@ -145,36 +145,32 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 	md := buildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := sarrFD.Message()
+	elemDesc := arrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := substructFD.Message()
+	elem2Desc := arrayElementMessageDescriptor(substructFD)
 	scarrFD := t4Desc.Fields().ByName("SCARR")
 
 	// mkElem2 builds an ELEM2{DEEP:[…], LEAF:leaf} deepest-struct element.
 	mkElem2 := func(leaf int64, deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
 		m.Set(elem2Desc.Fields().ByName("LEAF"), protoreflect.ValueOfInt64(leaf))
-		dl := m.NewField(elem2Desc.Fields().ByName("DEEP")).List()
+		deepVals := make([]protoreflect.Value, 0, len(deep))
 		for _, d := range deep {
-			dl.Append(protoreflect.ValueOfInt32(d))
+			deepVals = append(deepVals, protoreflect.ValueOfInt32(d))
 		}
-		m.Set(elem2Desc.Fields().ByName("DEEP"), protoreflect.ValueOfList(dl))
+		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), deepVals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	// mkElem builds an ELEM{SUB:[…], K:k, SUBSTRUCT:[…]} mid-struct element.
 	mkElem := func(k int64, sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
 		m.Set(elemDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(k))
-		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
+		subVals := make([]protoreflect.Value, 0, len(sub))
 		for _, s := range sub {
-			sl.Append(protoreflect.ValueOfInt32(s))
+			subVals = append(subVals, protoreflect.ValueOfInt32(s))
 		}
-		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
-		ssl := m.NewField(substructFD).List()
-		for _, ss := range substruct {
-			ssl.Append(ss)
-		}
-		m.Set(substructFD, protoreflect.ValueOfList(ssl))
+		setArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
+		setArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
@@ -183,16 +179,12 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// The shadow SUB column: a fixed sentinel 999 on every row. A shadow bug
 		// (reading the outer-row SUB instead of x.SUB) would surface 999s.
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(999))
-		sl := m.NewField(sarrFD).List()
-		for _, e := range sarr {
-			sl.Append(e)
-		}
-		m.Set(sarrFD, protoreflect.ValueOfList(sl))
-		cl := m.NewField(scarrFD).List()
+		setArrayField(m, sarrFD, sarr...)
+		scarrVals := make([]protoreflect.Value, 0, len(scarr))
 		for _, c := range scarr {
-			cl.Append(protoreflect.ValueOfInt32(c))
+			scarrVals = append(scarrVals, protoreflect.ValueOfInt32(c))
 		}
-		m.Set(scarrFD, protoreflect.ValueOfList(cl))
+		setArrayField(m, scarrFD, scarrVals...)
 		return m
 	}
 

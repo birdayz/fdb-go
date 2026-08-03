@@ -22,7 +22,7 @@ func TestFDB_StringParamEscapingProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_stresc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stresc "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stresc/s WITH TEMPLATE stresc")
 	dsn := fmt.Sprintf("fdbsql:///testdb_stresc?cluster_file=%s&schema=s", clusterFilePath)

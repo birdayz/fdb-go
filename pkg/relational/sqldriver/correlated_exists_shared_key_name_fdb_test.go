@@ -48,8 +48,8 @@ func TestFDB_CorrelatedExistsSharedKeyName(t *testing.T) {
 	// products.ID and orders.ID are both the primary key, both named ID, both
 	// the first declared column. orders.product_id is the foreign key.
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cex_tmpl "+
-		"CREATE TABLE products (id BIGINT NOT NULL, category STRING, PRIMARY KEY (id)) "+
-		"CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE products (id BIGINT, category STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cexsharedkey/s WITH TEMPLATE cex_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_cexsharedkey?cluster_file=%s&schema=s", clusterFilePath))

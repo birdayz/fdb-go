@@ -49,18 +49,18 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nway_tmpl "+
 			// indexed chain t1(1) <- t2(20) <- t3(200) <- t4(2000)
-			"CREATE TABLE t1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, t1_id BIGINT, x STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE t3 (id BIGINT NOT NULL, t2_id BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t4 (id BIGINT NOT NULL, t3_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, x STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t4 (id BIGINT, t3_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id) "+
 			"CREATE INDEX t4_by_t3 ON t4 (t3_id) "+
 			// star: hub -> w, xx, yy
-			"CREATE TABLE hub (id BIGINT NOT NULL, w_id BIGINT, x_id BIGINT, y_id BIGINT, label STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE w (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE xx (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE yy (id BIGINT NOT NULL, PRIMARY KEY (id))")
+			"CREATE TABLE hub (id BIGINT, w_id BIGINT, x_id BIGINT, y_id BIGINT, label STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE w (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE xx (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE yy (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nway/s WITH TEMPLATE nway_tmpl")
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_nway?cluster_file=%s&schema=s", clusterFilePath)

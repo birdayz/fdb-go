@@ -22,7 +22,7 @@ func TestFDB_StringOrderingProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_strord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE strord "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_strord/s WITH TEMPLATE strord")
 	dsn := fmt.Sprintf("fdbsql:///testdb_strord?cluster_file=%s&schema=s", clusterFilePath)

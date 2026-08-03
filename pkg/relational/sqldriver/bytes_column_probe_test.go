@@ -23,7 +23,7 @@ func TestFDB_BytesColumnProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bytescol")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE bytescol "+
-			"CREATE TABLE t (id BIGINT NOT NULL, data BYTES, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, data BYTES, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_data ON t (data)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bytescol/s WITH TEMPLATE bytescol")
 	dsn := fmt.Sprintf("fdbsql:///testdb_bytescol?cluster_file=%s&schema=s", clusterFilePath)

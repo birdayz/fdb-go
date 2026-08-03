@@ -4,8 +4,8 @@
 # LEFT OUTER path (not NLJ fallback).
 name: flatmap_left_outer_coverage
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))
-  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')
   - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50), (40, 99, 75)

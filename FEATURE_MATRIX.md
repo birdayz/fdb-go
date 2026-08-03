@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**347 scenarios · 2760 query/assertion cases** across 18 feature areas — 2419 supported, 109 unsupported-feature pins, 232 error-path pins.
+**347 scenarios · 2763 query/assertion cases** across 18 feature areas — 2424 supported, 113 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -32,20 +32,20 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Subqueries (EXISTS / IN / scalar) | 44 | 301 | 246 | 35 | 20 |
 | CTEs | 13 | 108 | 75 | 9 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 25 | 210 | 191 | 1 | 18 |
+| DML (INSERT / UPDATE / DELETE) | 25 | 210 | 192 | 1 | 17 |
 | Ordering & pagination | 16 | 120 | 116 | 0 | 4 |
 | Scalar functions & expressions | 33 | 377 | 324 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
-| NULL handling | 5 | 26 | 22 | 0 | 4 |
+| NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
 | Index usage | 11 | 176 | 173 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
-| Error codes & validation | 4 | 37 | 8 | 2 | 27 |
+| Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **347** | **2760** | **2419** | **109** | **232** |
+| **Total** | **347** | **2763** | **2424** | **113** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -261,7 +261,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `delete_all_rows` | 6 | 6 | 0 | 0 | DELETE all rows from table |
 | `delete_complex_where` | 7 | 7 | 0 | 0 | DELETE with complex WHERE predicates |
 | `dml_conditional` | 6 | 6 | 0 | 0 | Conditional DML operations |
-| `dml_error_codes` | 9 | 4 | 0 | 5 | Error codes for DML operations aligned with Java behavior. |
+| `dml_error_codes` | 9 | 5 | 0 | 4 | Error codes for DML operations aligned with Java behavior. |
 | `dml_returning_probes` | 5 | 4 | 0 | 1 | Probes for DML RETURNING clause (Postgres / Java fdb-relational |
 | `dml_with_null_safe` | 7 | 7 | 0 | 0 | DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the |
 | `insert_arity` | 7 | 4 | 0 | 3 | INSERT column count mismatches (Java's inserts-updates-deletes.yamsql): |
@@ -376,8 +376,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Scenario | Cases | Supported | Unsupported | Error-path | What it pins |
 |---|--:|--:|--:|--:|---|
 | `not_in_null_behavior` | 2 | 2 | 0 | 0 | NOT IN with NULL values edge cases |
-| `not_null_constraint_java` | 7 | 5 | 0 | 2 | NOT NULL constraint enforcement. |
-| `not_null_violation` | 3 | 1 | 0 | 2 | swingshift-35 commits 1f389611/e9959ba9/38410fec: INSERT/UPDATE NULL |
+| `not_null_constraint_java` | 6 | 5 | 1 | 0 | NOT NULL constraint surface, Java parity. |
+| `not_null_violation` | 5 | 3 | 2 | 0 | NOT NULL on a NON-ARRAY column is rejected at CREATE — Java parity, |
 | `null_operator_alignment` | 7 | 7 | 0 | 0 | NULL operator tests aligned with Java's null-operator-tests.yamsql. |
 | `where_is_null_is_not_null` | 7 | 7 | 0 | 0 | IS NULL / IS NOT NULL predicates |
 
@@ -436,7 +436,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 
 | Scenario | Cases | Supported | Unsupported | Error-path | What it pins |
 |---|--:|--:|--:|--:|---|
-| `error_code_regression` | 17 | 3 | 0 | 14 | Comprehensive error-code regression test covering all SQLSTATE codes |
+| `error_code_regression` | 19 | 5 | 1 | 13 | Comprehensive error-code regression test covering all SQLSTATE codes |
 | `error_codes_java` | 10 | 0 | 2 | 8 | SQL error code conformance. |
 | `unique_constraint_violation` | 4 | 2 | 0 | 2 | Unique constraint error handling |
 | `unique_violation` | 6 | 3 | 0 | 3 | UNIQUE constraint violations raise SQLSTATE 23505 per the SQL |

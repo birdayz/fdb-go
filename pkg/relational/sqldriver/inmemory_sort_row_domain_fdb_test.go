@@ -34,7 +34,7 @@ func TestFDB_InMemorySortBytesOrder(t *testing.T) {
 	ctx := context.Background()
 	// NO index on data — forces the in-memory sort path.
 	db := setupPlanShapeDB(t, "imsbytes",
-		"CREATE TABLE t (id BIGINT NOT NULL, data BYTES, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, data BYTES, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
 		id   int64
@@ -116,7 +116,7 @@ func TestFDB_CoveringFloatRowDomain(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "covfloat",
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, f FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, a BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX af_idx ON t (a, f)")
 
 	if _, err := db.ExecContext(ctx,

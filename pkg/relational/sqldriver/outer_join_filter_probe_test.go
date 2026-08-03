@@ -25,8 +25,8 @@ func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_oj_filter")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE oj_filter "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oj_filter/s WITH TEMPLATE oj_filter")
 	dsn := fmt.Sprintf("fdbsql:///testdb_oj_filter?cluster_file=%s&schema=s", clusterFilePath)

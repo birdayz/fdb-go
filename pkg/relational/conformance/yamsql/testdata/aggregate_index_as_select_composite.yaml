@@ -12,7 +12,7 @@
 name: aggregate_index_as_select_composite
 schema_template: |
   CREATE TABLE sales (
-    id BIGINT NOT NULL,
+    id BIGINT,
     category STRING,
     region STRING,
     amount BIGINT,

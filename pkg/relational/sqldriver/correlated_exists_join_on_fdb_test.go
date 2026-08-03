@@ -47,10 +47,10 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cejo_tmpl "+
-		"CREATE TABLE p (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE q (qid BIGINT NOT NULL, PRIMARY KEY (qid)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, fid BIGINT, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid))")
+		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid)) "+
+		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cejo_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -246,10 +246,10 @@ func TestFDB_CorrelatedExistsInnerThenOuterJoinLevel(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cemj_tmpl "+
-		"CREATE TABLE p (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, fid BIGINT, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid)) "+
-		"CREATE TABLE g (gid BIGINT NOT NULL, PRIMARY KEY (gid))")
+		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
+		"CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cemj_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -339,10 +339,10 @@ func TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cebrf_tmpl "+
-		"CREATE TABLE p (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, fid BIGINT, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid)) "+
-		"CREATE TABLE g (gid BIGINT NOT NULL, PRIMARY KEY (gid))")
+		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
+		"CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cebrf_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -439,10 +439,10 @@ func TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cenon_tmpl "+
-		"CREATE TABLE p (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid)) "+
-		"CREATE TABLE h (hid BIGINT NOT NULL, PRIMARY KEY (hid))")
+		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
+		"CREATE TABLE h (hid BIGINT, PRIMARY KEY (hid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cenon_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -526,7 +526,7 @@ func TestFDB_CorrelatedExistsCteInnerNoWhereNoOn(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cecte_tmpl "+
-		"CREATE TABLE ord (order_id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (order_id))")
+		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cecte_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -586,8 +586,8 @@ func TestFDB_CorrelatedExistsCteInnerWithPredicate(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cectp_tmpl "+
-		"CREATE TABLE ord (order_id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (order_id)) "+
-		"CREATE TABLE t (tid BIGINT NOT NULL, PRIMARY KEY (tid))")
+		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id)) "+
+		"CREATE TABLE t (tid BIGINT, PRIMARY KEY (tid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cectp_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -689,10 +689,10 @@ func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cela_tmpl "+
-		"CREATE TABLE base (pk BIGINT NOT NULL, pval BIGINT, PRIMARY KEY (pk)) "+
-		"CREATE TABLE other (oid BIGINT NOT NULL, PRIMARY KEY (oid)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid))")
+		"CREATE TABLE base (pk BIGINT, pval BIGINT, PRIMARY KEY (pk)) "+
+		"CREATE TABLE other (oid BIGINT, PRIMARY KEY (oid)) "+
+		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cela_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
@@ -744,9 +744,9 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ceec_tmpl "+
-		"CREATE TABLE p (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE e (eid BIGINT NOT NULL, PRIMARY KEY (eid)) "+
-		"CREATE TABLE f (fid BIGINT NOT NULL, PRIMARY KEY (fid))")
+		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
+		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ceec_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))

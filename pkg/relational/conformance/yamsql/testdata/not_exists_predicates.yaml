@@ -6,8 +6,8 @@
 # (NLJ fallback) paths.
 name: not_exists_predicates
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, status STRING, customer_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, status STRING, customer_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE shipments (id BIGINT, order_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO orders VALUES (1, 'pending', 100), (2, 'shipped', 100), (3, 'pending', 200), (4, 'cancelled', 300)
   - INSERT INTO shipments VALUES (10, 2), (20, 3)

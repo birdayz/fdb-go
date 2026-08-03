@@ -21,7 +21,7 @@ func TestFDB_StringIndexRangeProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_stridx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stridx "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stridx/s WITH TEMPLATE stridx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_stridx?cluster_file=%s&schema=s", clusterFilePath)

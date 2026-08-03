@@ -4,8 +4,8 @@
 # and using RIGHT JOIN produces equivalent results.
 name: join_left_right_symmetry
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, tag STRING, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, val STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, a_id BIGINT, tag STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 'x'), (2, 'y'), (3, 'z')
   - INSERT INTO b VALUES (10, 1, 'alpha'), (20, 1, 'beta'), (30, 2, 'gamma')

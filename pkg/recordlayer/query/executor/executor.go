@@ -12,6 +12,7 @@ package executor
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -3578,16 +3579,28 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	// scalar lanes — the executor-side mirror of the relational
 	// ConvertToProtoValue repeated arm, so an array written via UPDATE
 	// is byte-identical to one written via INSERT … VALUES.
-	if fd.IsList() {
-		elems, ok := v.([]any)
-		if !ok {
+	if inner, wrapped, ok := values.EffectiveListField(fd); ok {
+		elems, elemsOK := v.([]any)
+		if !elemsOK {
 			// Fall to the scalar lanes' verbatim 22000 below.
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 		}
-		parent := dynamicpb.NewMessage(fd.ContainingMessage())
-		lv := parent.NewField(fd)
-		list := lv.List()
+		var list protoreflect.List
+		var result protoreflect.Value
+		if wrapped {
+			// NULLABLE array: write through the NullableArrayWrapper — a
+			// present wrapper with an empty list keeps [] distinct from
+			// NULL, Java's stored shape.
+			wrapperMsg, wl := values.NewWrappedArrayMessage(fd)
+			list = wl
+			result = protoreflect.ValueOfMessage(wrapperMsg)
+		} else {
+			parent := dynamicpb.NewMessage(fd.ContainingMessage())
+			lv := parent.NewField(fd)
+			list = lv.List()
+			result = lv
+		}
 		for _, e := range elems {
 			if e == nil {
 				// Java forbids NULL elements in collections
@@ -3597,13 +3610,13 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
 					"NULL as elements of a collection are currently not supported")
 			}
-			pv, err := goToProtoScalarValue(fd, e)
+			pv, err := goToProtoScalarValue(inner, e)
 			if err != nil {
 				return protoreflect.Value{}, err
 			}
 			list.Append(pv)
 		}
-		return lv, nil
+		return result, nil
 	}
 	return goToProtoScalarValue(fd, v)
 }
@@ -3727,6 +3740,36 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 				}
 				return uuidBytesToProtoMessage(fd, parsed)
 			}
+		}
+		// A STRUCT value flowing from a SELECT (INSERT … SELECT, UPDATE SET
+		// struct_col = other_struct_col): the value layer carries a struct
+		// cell as the proto message it was read from
+		// (values.protoScalarToRowValue), and Java writes it by COPYING that
+		// message into the target's descriptor rather than rebuilding it
+		// field by field — RecordConstructorValue.deepCopyIfNeeded's record
+		// arm (RecordConstructorValue.java:207-215), which exists precisely
+		// because the source message may be backed by a different (but
+		// wire-compatible) descriptor than the target.
+		if src, isMsg := v.(protoreflect.ProtoMessage); isMsg {
+			if pv, err := copyMessageIntoDescriptor(fd, src.ProtoReflect()); err == nil {
+				return pv, nil
+			}
+		}
+		// A struct LITERAL assigned by UPDATE: the typed row constructor the
+		// SET push-down built evaluates to a field map, and the message is
+		// assembled by the same builder the plan-time writer uses
+		// (values.BuildStructMessage — Java's RecordConstructorValue.eval
+		// structure), with THIS path's scalar lanes.
+		if m, isMap := v.(map[string]any); isMap {
+			pv, err := values.BuildStructMessage(fd.Message(), m, goToProtoValue)
+			if err != nil {
+				var nn *values.NonNullableFieldError
+				if errors.As(err, &nn) {
+					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNotNullViolation, "%s", nn.Error())
+				}
+				return protoreflect.Value{}, err
+			}
+			return pv, nil
 		}
 	}
 	// All promotable conversions are handled above, so anything reaching here is
@@ -4933,4 +4976,102 @@ func queryResultKey(qr QueryResult) (string, error) {
 		slots[i] = p.val
 	}
 	return packedDedupKey(slots)
+}
+
+// copyMessageIntoDescriptor is Java's MessageHelpers.deepCopyMessageIfNeeded
+// (MessageHelpers.java:247-255): a message already backed by the target
+// descriptor is used as-is; otherwise its fields are copied into a fresh
+// message of the target descriptor, keyed BY FIELD NUMBER, recursively
+// (:258-295).
+//
+// The copy exists because the SAME struct type reaches the write path
+// through descriptors built independently — the scan's record descriptor and
+// the insert target's — and protobuf identity is per-descriptor-instance.
+// Field NUMBER is the join key (never name), which is the same wire-identity
+// rule the rest of the layer follows; enum values cross by NAME, as Java's
+// copy does, because two descriptors may number an enum differently.
+func copyMessageIntoDescriptor(fd protoreflect.FieldDescriptor, src protoreflect.Message) (protoreflect.Value, error) {
+	target := fd.Message()
+	if target == nil {
+		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"field %s is not a message field", fd.FullName())
+	}
+	if src.Descriptor() == target {
+		return protoreflect.ValueOfMessage(src), nil
+	}
+	dst := dynamicpb.NewMessage(target)
+	if err := deepCopyMessageFields(dst, src); err != nil {
+		return protoreflect.Value{}, err
+	}
+	return protoreflect.ValueOfMessage(dst), nil
+}
+
+// deepCopyMessageFields copies every PRESENT field of src onto dst, matching
+// fields by number. Java's merge branch for an already-set message field
+// (MessageHelpers.java:277-286) has no counterpart here because dst is always
+// freshly built, so the "existing value is the default instance" test it
+// guards is unconditionally true.
+func deepCopyMessageFields(dst, src protoreflect.Message) error {
+	var err error
+	src.Range(func(sfd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		tfd := dst.Descriptor().Fields().ByNumber(sfd.Number())
+		if tfd == nil {
+			// A field the target does not declare. Java's copy would throw
+			// on the null target field; the assignment is genuinely
+			// incompatible, so it takes the caller's 22000.
+			err = api.NewErrorf(api.ErrCodeCannotConvertType,
+				"source field %s (number %d) has no counterpart in %s",
+				sfd.FullName(), sfd.Number(), dst.Descriptor().FullName())
+			return false
+		}
+		switch {
+		case sfd.IsList():
+			list := dst.Mutable(tfd).List()
+			srcList := v.List()
+			for i := 0; i < srcList.Len(); i++ {
+				ev, cerr := copyElement(tfd, sfd, srcList.Get(i))
+				if cerr != nil {
+					err = cerr
+					return false
+				}
+				list.Append(ev)
+			}
+		case sfd.IsMap():
+			err = api.NewErrorf(api.ErrCodeCannotConvertType,
+				"map field %s cannot be assigned", sfd.FullName())
+			return false
+		default:
+			ev, cerr := copyElement(tfd, sfd, v)
+			if cerr != nil {
+				err = cerr
+				return false
+			}
+			dst.Set(tfd, ev)
+		}
+		return true
+	})
+	return err
+}
+
+// copyElement copies one non-repeated value from a source field onto its
+// target field: messages recurse, enums cross by NAME, scalars pass through.
+func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (protoreflect.Value, error) {
+	switch sfd.Kind() {
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return copyMessageIntoDescriptor(tfd, v.Message())
+	case protoreflect.EnumKind:
+		srcVal := sfd.Enum().Values().ByNumber(v.Enum())
+		if srcVal == nil {
+			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"enum field %s carries unknown value %d", sfd.FullName(), v.Enum())
+		}
+		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
+		if tgtVal == nil {
+			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"enum value %s is not declared by %s", srcVal.Name(), tfd.Enum().FullName())
+		}
+		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
+	default:
+		return v, nil
+	}
 }

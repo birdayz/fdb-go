@@ -3,7 +3,7 @@
 # Exercises DELETE with various WHERE condition patterns.
 name: delete_complex_where
 schema_template: |
-  CREATE TABLE logs (id BIGINT NOT NULL, level STRING, ts BIGINT, msg STRING, PRIMARY KEY (id))
+  CREATE TABLE logs (id BIGINT, level STRING, ts BIGINT, msg STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO logs VALUES (1, 'INFO', 100, 'start'), (2, 'WARN', 200, 'slow'), (3, 'ERROR', 300, 'crash'), (4, 'INFO', 400, 'ok'), (5, 'ERROR', 500, 'timeout')
 tests:

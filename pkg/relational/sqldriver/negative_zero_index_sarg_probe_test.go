@@ -52,9 +52,9 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_nzsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzsarg "+
-		"CREATE TABLE d (id BIGINT NOT NULL, v DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
-		"CREATE TABLE f (id BIGINT NOT NULL, v FLOAT, PRIMARY KEY (id)) "+
+		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_v ON f (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzsarg/s WITH TEMPLATE nzsarg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nzsarg?cluster_file=%s&schema=s", clusterFilePath)

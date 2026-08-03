@@ -21,7 +21,7 @@ import (
 
 const clampReachableSchema = `
 CREATE TABLE ORDERS (
-  id BIGINT NOT NULL,
+  id BIGINT,
   status STRING,
   amount BIGINT,
   PRIMARY KEY (id)

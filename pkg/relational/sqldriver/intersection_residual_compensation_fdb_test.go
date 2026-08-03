@@ -27,7 +27,7 @@ func TestFDB_IntersectionResidualCompensation(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ixrescomp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ixrescomp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ixrescomp CREATE TABLE items (id BIGINT NOT NULL, category STRING, name STRING, price BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_category ON items (category) CREATE INDEX idx_price ON items (price)")
+		"CREATE SCHEMA TEMPLATE ixrescomp CREATE TABLE items (id BIGINT, category STRING, name STRING, price BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_category ON items (category) CREATE INDEX idx_price ON items (price)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ixrescomp/s WITH TEMPLATE ixrescomp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ixrescomp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -4,7 +4,7 @@
 # UPPER, LOWER, LENGTH, SUBSTRING used in comparisons.
 name: function_in_predicate
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'Alice', 10), (2, 'bob', 20), (3, 'CHARLIE', 30), (4, 'Dave', 40)
 tests:

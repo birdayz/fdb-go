@@ -177,7 +177,7 @@ func TestFDB_Errors_UndefinedTable(t *testing.T) {
 func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_errs_undef_col", "errs_undef_col",
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
 		t.Fatalf("setup INSERT: %v", err)
@@ -216,7 +216,7 @@ func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_errs_qual", "errs_qual",
-		"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 'hello')"); err != nil {
 		t.Fatalf("setup INSERT: %v", err)
@@ -254,7 +254,7 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_errs_join_undef", "errs_join_undef",
-		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
 		t.Fatalf("setup INSERT: %v", err)

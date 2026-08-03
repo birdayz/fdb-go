@@ -205,7 +205,7 @@ func qcNewHarness(seed uint64) (*qcHarness, error) {
 	for _, stmt := range []string{
 		"CREATE DATABASE " + qcDBPath,
 		"CREATE SCHEMA TEMPLATE tmpl " +
-			"CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+			"CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX idx_cat ON t (cat) " +
 			"CREATE INDEX idx_val ON t (val)",
 		"CREATE SCHEMA " + qcDBPath + "/s WITH TEMPLATE tmpl",

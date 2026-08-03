@@ -4,9 +4,9 @@
 # business logic queries.
 name: e2e_order_management
 schema_template: |
-  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id))
-  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, status STRING, created_at BIGINT, PRIMARY KEY (id))
-  CREATE TABLE line_items (id BIGINT NOT NULL, order_id BIGINT, product STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT, name STRING, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, customer_id BIGINT, status STRING, created_at BIGINT, PRIMARY KEY (id))
+  CREATE TABLE line_items (id BIGINT, order_id BIGINT, product STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO customers VALUES (1, 'Alice', 'gold'), (2, 'Bob', 'silver'), (3, 'Charlie', 'bronze')
   - INSERT INTO orders VALUES (10, 1, 'shipped', 1000), (20, 1, 'pending', 2000), (30, 2, 'shipped', 1500), (40, 3, 'cancelled', 1200)

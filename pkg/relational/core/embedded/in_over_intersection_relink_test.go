@@ -20,7 +20,7 @@ import (
 )
 
 const inRelinkSchema = `
-CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id))
+CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id))
 CREATE INDEX idx_c ON T_RD (c)
 CREATE INDEX idx_b ON T_RD (b)`
 
@@ -144,7 +144,7 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 func TestInJoinBelowFetch_RelinksRealChild(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE T_AB (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE TABLE T_AB (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_a ON T_AB (a)
 CREATE INDEX idx_b ON T_AB (b)`
 	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2) ORDER BY id"

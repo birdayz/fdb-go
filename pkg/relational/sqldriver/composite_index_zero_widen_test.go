@@ -48,11 +48,11 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	// s: single-column index only. c: composite only. u: no index at all.
 	// The same predicate must answer identically through all three.
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czw "+
-		"CREATE TABLE s (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE s (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX s_v ON s (v) "+
-		"CREATE TABLE c (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE c (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX c_vw ON c (v, w) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czw/s WITH TEMPLATE czw")
 	dsn := fmt.Sprintf("fdbsql:///testdb_czw?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

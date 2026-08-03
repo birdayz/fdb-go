@@ -88,7 +88,7 @@ func TestLoadRejectsAScenarioWithNoTests(t *testing.T) {
 		"#\n" +
 		h.Render() +
 		"---\n" +
-		"schema_template: |-\n  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))\n" +
+		"schema_template: |-\n  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"---\n" +
 		"setup:\n  connect: 1\n  steps:\n    - query: |-\n        INSERT INTO t VALUES (1)\n" +
 		"---\n" +

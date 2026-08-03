@@ -26,7 +26,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 	}
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_cj_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -99,7 +99,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 		// Create edge table for cycle test.
 		if _, err := setup.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE rcte_edge_tmpl "+
-				"CREATE TABLE edge (src BIGINT NOT NULL, dst BIGINT NOT NULL, PRIMARY KEY (src, dst))"); err != nil {
+				"CREATE TABLE edge (src BIGINT, dst BIGINT, PRIMARY KEY (src, dst))"); err != nil {
 			t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 		}
 		if _, err := setup.ExecContext(ctx,

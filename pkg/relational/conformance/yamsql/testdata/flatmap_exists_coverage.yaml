@@ -4,8 +4,8 @@
 # matches the correlated predicate (user_id IS the PK of sessions).
 name: flatmap_exists_coverage
 schema_template: |
-  CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE sessions (user_id BIGINT NOT NULL, token STRING, PRIMARY KEY (user_id))
+  CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sessions (user_id BIGINT, token STRING, PRIMARY KEY (user_id))
 setup:
   - INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
   - INSERT INTO sessions VALUES (1, 'tok_a'), (3, 'tok_c')

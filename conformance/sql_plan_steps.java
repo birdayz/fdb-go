@@ -20,6 +20,8 @@ import com.apple.foundationdb.relational.api.Options;
 import com.apple.foundationdb.relational.api.RelationalConnection;
 import com.apple.foundationdb.relational.api.RelationalPreparedStatement;
 import com.apple.foundationdb.relational.api.RelationalResultSet;
+import com.apple.foundationdb.relational.api.RelationalStruct;
+import com.apple.foundationdb.relational.api.StructMetaData;
 import com.apple.foundationdb.relational.api.Transaction;
 import com.apple.foundationdb.relational.api.catalog.StoreCatalog;
 import com.apple.foundationdb.relational.continuation.CompiledStatement;
@@ -965,6 +967,44 @@ class SqlPlanSteps {
         }
         if (v instanceof java.util.UUID) {
             return new JsonPrimitive(v.toString());
+        }
+        // A STRUCT column renders as its ATTRIBUTES, keyed by the struct
+        // metadata's column names. Without this a struct was indistinguishable
+        // from any other unsupported class, so a probe could see that a column
+        // was typed STRUCT but never what it CONTAINED — which is exactly the
+        // question when deciding whether Java wraps a scalar into a one-field
+        // record or returns the scalar itself.
+        if (v instanceof RelationalStruct) {
+            RelationalStruct s = (RelationalStruct) v;
+            JsonObject obj = new JsonObject();
+            try {
+                StructMetaData md = s.getMetaData();
+                int count = md.getColumnCount();
+                for (int i = 1; i <= count; i++) {
+                    obj.add(md.getColumnName(i), encodeValue(s.getObject(i)));
+                }
+            } catch (SQLException e) {
+                obj.addProperty("__struct_error__", e.getMessage());
+            }
+            return obj;
+        }
+        // An ARRAY renders as a JSON array of its materialized elements, each
+        // through the same encoder — an array OF structs is the composition,
+        // not a second mechanism.
+        if (v instanceof java.sql.Array) {
+            JsonArray arr = new JsonArray();
+            try {
+                Object raw = ((java.sql.Array) v).getArray();
+                int len = java.lang.reflect.Array.getLength(raw);
+                for (int i = 0; i < len; i++) {
+                    arr.add(encodeValue(java.lang.reflect.Array.get(raw, i)));
+                }
+            } catch (SQLException | IllegalArgumentException e) {
+                JsonObject err = new JsonObject();
+                err.addProperty("__array_error__", String.valueOf(e.getMessage()));
+                arr.add(err);
+            }
+            return arr;
         }
         JsonObject marker = new JsonObject();
         marker.addProperty("__unsupported__", v.getClass().getName());

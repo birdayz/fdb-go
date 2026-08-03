@@ -5,8 +5,8 @@
 # Verifies no duplicates, no skips at page boundaries.
 name: join_pagination
 schema_template: |
-  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE departments (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT, dept_id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO departments VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
   - INSERT INTO employees VALUES (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 1, 'Carol'), (4, 2, 'Dave'), (5, 2, 'Eve'), (6, 3, 'Frank')

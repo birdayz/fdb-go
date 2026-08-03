@@ -75,7 +75,7 @@ func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
 	// Index leads on the DOUBLE column so the ordered dedup is eligible: the
 	// inner ordering (D, A) prefix-matches the dedup columns (D, A).
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzmulti "+
-		"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_da ON t (d, a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzmulti/s WITH TEMPLATE nzmulti")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nzmulti?cluster_file=%s&schema=s", clusterFilePath)
@@ -133,8 +133,8 @@ func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_nzdedup")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzdedup")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzdedup "+
-		"CREATE TABLE d (id BIGINT NOT NULL, v DOUBLE, PRIMARY KEY (id)) "+
-		"CREATE TABLE f (id BIGINT NOT NULL, v FLOAT, PRIMARY KEY (id))")
+		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzdedup/s WITH TEMPLATE nzdedup")
 	dsn := fmt.Sprintf("fdbsql:///testdb_nzdedup?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

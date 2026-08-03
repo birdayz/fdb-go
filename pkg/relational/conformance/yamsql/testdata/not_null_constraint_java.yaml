@@ -1,10 +1,15 @@
-# not_null_constraint_java.yaml — NOT NULL constraint enforcement.
-# Tests that NOT NULL columns reject NULL inserts and updates.
+# not_null_constraint_java.yaml — NOT NULL constraint surface, Java parity.
+#
+# Java rejects NOT NULL on any non-ARRAY column at CREATE
+# (DdlVisitor.visitColumnDefinition: "NOT NULL is only allowed for ARRAY
+# column type", UNSUPPORTED_OPERATION). There is therefore no scalar
+# NOT NULL column to violate: nullable columns accept NULL freely, and the
+# 23502 surface exists only for constructs Java can express.
 name: not_null_constraint_java
 schema_template: |
   CREATE TABLE items (
-    id BIGINT NOT NULL,
-    name STRING NOT NULL,
+    id BIGINT,
+    name STRING,
     optional_val BIGINT,
     PRIMARY KEY (id)
   )
@@ -17,24 +22,20 @@ tests:
       - [1, 'first', 10]
       - [2, 'second', null]
 
-  # NULL in optional column is fine
+  # NULL in a nullable column is fine — including UPDATE to NULL.
   - query: INSERT INTO items VALUES (3, 'third', null)
     rowcount: 1
-
-  # NULL in NOT NULL column (name) → error
-  - query: INSERT INTO items VALUES (4, null, 10)
-    error: "23502"
-
-  # UPDATE setting NOT NULL column to NULL → error
-  - query: UPDATE items SET name = null WHERE id = 1
-    error: "23502"
-
-  # UPDATE setting optional column to NULL is fine
   - query: UPDATE items SET optional_val = null WHERE id = 1
     rowcount: 1
   - query: SELECT optional_val FROM items WHERE id = 1
     rows:
       - [null]
+
+  # The constraint itself is unexpressible: NOT NULL on a scalar column
+  # dies at CREATE with Java's exact error.
+  - exec: CREATE SCHEMA TEMPLATE bad_items_nn CREATE TABLE items2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+    error_code: "0A000"
+    error: "NOT NULL is only allowed for ARRAY column type"
 
   # Verify table state after operations
   - query: SELECT COUNT(*) FROM items

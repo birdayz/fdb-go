@@ -18,7 +18,7 @@
 # family: join3.left-outer|bit|none
 #
 # scenario: fc_0000001062_q5_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1062
 # query-index: 5
 # projection: 0
@@ -31,7 +31,7 @@
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
 ---
 setup:
   connect: 1
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 22, L_A: !null '', L_B: 4, L_C: 1, L_S: "gamma", L_F: true, L_D: 2.0, L_E: !f 9.0, M_ID: 22, M_A: !null '', M_B: 4, M_C: 1, M_S: "gamma", M_F: true, M_D: 2.0, M_E: !f 9.0, R_ID: 1, R_A: 8, R_B: 5, R_C: 4611686018427387904, R_S: "gamma", R_F: false, R_D: 7.0, R_E: !f -0.0}
 #
 # scenario: fc_0000001062_q5_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1062
 # query-index: 5
 # projection: 1
@@ -119,7 +119,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
 ---
 setup:
   connect: 2
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 22, M_ID: 22, R_ID: 1}
 #
 # scenario: fc_0000001062_q5_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 1062
 # query-index: 5
 # projection: 2
@@ -207,7 +207,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1062 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_e ON T_RD (e)
 ---
 setup:
   connect: 3

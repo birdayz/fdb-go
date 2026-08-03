@@ -24,7 +24,7 @@ func TestFDB_UpdateIndexMaintenanceProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_updidx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE updidx "+
-			"CREATE TABLE t (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_status ON t (status) CREATE INDEX t_amount ON t (amount)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_updidx/s WITH TEMPLATE updidx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_updidx?cluster_file=%s&schema=s", clusterFilePath)

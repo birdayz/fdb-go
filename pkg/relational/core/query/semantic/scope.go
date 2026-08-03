@@ -162,6 +162,43 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	return nil
 }
 
+// matchingColumns returns EVERY column of tbl whose name matches id — Java's
+// per-attribute lookup, which appends one candidate per matching output
+// expression rather than stopping at the first (SemanticAnalyzer.java:417,
+// :422 then reject a list longer than one with AMBIGUOUS_COLUMN).
+//
+// Base tables cannot repeat a column name, so this differs from
+// Table.LookupColumn only for the synthesised sources that CAN: a derived
+// table whose body repeats a star, or a CTE over one.
+//
+// The fast path is deliberate — Columns() copies defensively, and the
+// overwhelming majority of lookups are against base tables.
+func matchingColumns(tbl Table, id Identifier) []Column {
+	first, ok := tbl.LookupColumn(id)
+	if !ok {
+		return nil
+	}
+	var out []Column
+	seenFirst := false
+	for _, c := range tbl.Columns() {
+		if !c.Id.EqualsIgnoreQuoting(id) {
+			continue
+		}
+		if !seenFirst {
+			seenFirst = true
+			continue
+		}
+		if out == nil {
+			out = []Column{first}
+		}
+		out = append(out, c)
+	}
+	if out == nil {
+		return []Column{first}
+	}
+	return out
+}
+
 // ResolveColumn looks up a bare column reference (no qualifier)
 // against the scope's sources, following the parent chain if no
 // local match. Ambiguous matches within a single scope level
@@ -185,7 +222,15 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 		if src.hidesColumn(id) {
 			continue
 		}
-		if c, ok := src.Table.LookupColumn(id); ok {
+		// EVERY matching attribute of the source counts, not the first.
+		// Java's lookup walks the operator's output expressions and appends
+		// each match into one list, so a source that emits the name TWICE
+		// (a derived body with a repeated star: `SELECT a.*, a.* FROM a`)
+		// contributes two candidates and the reference is ambiguous
+		// (SemanticAnalyzer.java:417,:422). A first-match lookup answered
+		// such a reference off column 0 instead — silently, since duplicate
+		// output names are legal to PRODUCE and only illegal to REFERENCE.
+		for _, c := range matchingColumns(src.Table, id) {
 			matches = append(matches, struct {
 				col Column
 				src ScopeSource
@@ -243,14 +288,73 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 //     source existed anywhere on the chain (named after the innermost one),
 //     SourceNotFoundError when the qualifier matched nothing.
 func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, ScopeSource, error) {
+	c, src, _, err := s.ResolveQualifiedColumnNested(qualifier, col)
+	return c, src, err
+}
+
+// NestedAccessor is one resolved step of a descent INTO a struct column —
+// Java's FieldValue.Accessor(name, ordinal) as lookupNestedField mints it
+// (SemanticAnalyzer.java:586-588). Ordinal is the field's position in the
+// enclosing struct's declared field list, which is the ordinal Java's
+// resolveFieldPath ends up storing (FieldValue.java:288-295).
+type NestedAccessor struct {
+	// Name is the struct field's declared name.
+	Name string
+	// Ordinal is its position in the enclosing struct's field list.
+	Ordinal int
+	// Col is the field's own column view, so a consumer can type the result
+	// and a deeper descent can continue from it.
+	Col Column
+}
+
+// ResolveQualifiedColumnNested is ResolveQualifiedColumn plus Java's
+// lookupNestedField rule (SemanticAnalyzer.java:481-488 — the fifth and last
+// matching rule `lookup` applies per output attribute).
+//
+// Two candidate kinds compete at each scope level:
+//
+//   - a DIRECT match: `qualifier` names a FROM source and `col` is one of its
+//     columns. This is the shape every reference had before struct columns
+//     existed, and it is unchanged.
+//   - a NESTED match: `qualifier` names a STRUCT COLUMN of some source in
+//     scope and `col` is one of that struct's fields, so the reference
+//     `home_address.city` descends rather than addressing a source.
+//
+// They are counted TOGETHER, which is what makes a reference that both kinds
+// could answer an ambiguity rather than a silent preference. Java reaches the
+// same place by a different route: rules 1-4 and rule 5 all append into the
+// one `directMatchesBuilder` list and `resolveIdentifierMaybe` errors when
+// that list holds more than one entry (SemanticAnalyzer.java:433-437,
+// "Ambiguous reference %s", ErrorCode.AMBIGUOUS_COLUMN). A nested candidate
+// evaluated only after direct resolution FAILED would resolve that collision
+// by order of attempt, and order of attempt is not a semantics.
+//
+// Everything else about the level walk is unchanged, including the property
+// that a zero-match level falls through to the parent.
+func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column, ScopeSource, []NestedAccessor, error) {
 	var firstAliasTable QualifiedName
 	aliasSeen := false
 	for cur := s; cur != nil; cur = cur.parent {
 		var matches []struct {
-			col Column
-			src ScopeSource
+			col       Column
+			src       ScopeSource
+			accessors []NestedAccessor
 		}
 		for _, src := range cur.sources {
+			// Rule 5 (nested): the qualifier names a STRUCT column of this
+			// source. Checked for EVERY source, not only alias-matching ones,
+			// because the struct column is reached through the source's
+			// columns — the reference `home_address.city` carries no source
+			// qualifier at all.
+			if structCol, ok := src.Table.LookupColumn(qualifier); ok {
+				if field, ord, found := structCol.LookupStructField(col); found {
+					matches = append(matches, struct {
+						col       Column
+						src       ScopeSource
+						accessors []NestedAccessor
+					}{structCol, src, []NestedAccessor{{Name: field.Id.Name(), Ordinal: ord, Col: field}}})
+				}
+			}
 			if !src.Alias.EqualsIgnoreQuoting(qualifier) {
 				continue
 			}
@@ -258,16 +362,19 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 				aliasSeen = true
 				firstAliasTable = src.Table.Name()
 			}
-			if c, ok := src.Table.LookupColumn(col); ok {
+			// Per-attribute, exactly as the bare form: a source emitting the
+			// name twice makes `nested.id` ambiguous, not first-match.
+			for _, c := range matchingColumns(src.Table, col) {
 				matches = append(matches, struct {
-					col Column
-					src ScopeSource
-				}{c, src})
+					col       Column
+					src       ScopeSource
+					accessors []NestedAccessor
+				}{c, src, nil})
 			}
 		}
 		switch len(matches) {
 		case 1:
-			return matches[0].col, matches[0].src, nil
+			return matches[0].col, matches[0].src, matches[0].accessors, nil
 		case 0:
 			continue // zero-match level: fall through to the parent (Java)
 		default:
@@ -275,13 +382,13 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 			for _, m := range matches {
 				sources = append(sources, m.src.Alias)
 			}
-			return Column{}, ScopeSource{}, &AmbiguousColumnError{
+			return Column{}, ScopeSource{}, nil, &AmbiguousColumnError{
 				Id: col, Qualifier: qualifier, Matches: len(matches), Sources: sources,
 			}
 		}
 	}
 	if aliasSeen {
-		return Column{}, ScopeSource{}, &ColumnNotFoundError{TableName: firstAliasTable, Id: col}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: col}
 	}
 	// Collect all visible aliases across the chain for a better
 	// error message.
@@ -290,7 +397,7 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 	for _, src := range all {
 		avail = append(avail, src.Alias)
 	}
-	return Column{}, ScopeSource{}, &SourceNotFoundError{
+	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{
 		Alias: qualifier, Available: avail,
 	}
 }

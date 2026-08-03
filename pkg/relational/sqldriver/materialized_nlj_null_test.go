@@ -26,8 +26,8 @@ func TestFDB_MaterializedNLJNullKey(t *testing.T) {
 	// NOTE: no index on k — forces a materialized NLJ (not an index probe).
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE matnull "+
-			"CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_matnull/s WITH TEMPLATE matnull")
 	dsn := fmt.Sprintf("fdbsql:///testdb_matnull?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

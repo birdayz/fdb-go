@@ -20,7 +20,7 @@ func TestFDB_RowsAffectedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_rap")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rap")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE rap CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE rap CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rap/s WITH TEMPLATE rap")
 	dsn := fmt.Sprintf("fdbsql:///testdb_rap?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

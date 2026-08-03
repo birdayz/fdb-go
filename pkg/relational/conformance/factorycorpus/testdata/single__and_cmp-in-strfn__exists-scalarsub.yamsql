@@ -18,7 +18,7 @@
 # family: single|and(cmp+in+strfn)|exists+scalarsub
 #
 # scenario: fc_0000000088_q1_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 88
 # query-index: 1
 # projection: 0
@@ -31,7 +31,7 @@
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 88 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 1
@@ -92,7 +92,7 @@ test_block:
           - {ID: 14, A: 1, B: 5, C: 1, S: !null '', F: true, D: !null '', E: !f 9.0}
 #
 # scenario: fc_0000000088_q1_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 88
 # query-index: 1
 # projection: 1
@@ -105,7 +105,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 88 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 2
@@ -166,7 +166,7 @@ test_block:
           - {ID: 14}
 #
 # scenario: fc_0000000088_q1_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 88
 # query-index: 1
 # projection: 2
@@ -179,7 +179,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 88 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 3

@@ -1,5 +1,5 @@
 # scenario: setops (seed 5)
-#   CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE TABLE t (id BIGINT, cat BIGINT, v BIGINT, PRIMARY KEY (id))
 #   CREATE INDEX cat_idx ON t (cat)
 #   CREATE INDEX max_by_cat AS SELECT MAX(v) FROM t GROUP BY cat
 #   CREATE INDEX min_by_cat AS SELECT MIN(v) FROM t GROUP BY cat

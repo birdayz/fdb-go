@@ -3,8 +3,8 @@
 # Exercises the full pipeline: JOIN → GROUP BY → HAVING → ORDER BY.
 name: join_aggregate_having
 schema_template: |
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
   - INSERT INTO emp VALUES (10, 1, 100), (20, 1, 120), (30, 1, 110), (40, 2, 80), (50, 3, 90)

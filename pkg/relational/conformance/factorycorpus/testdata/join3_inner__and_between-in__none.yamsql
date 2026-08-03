@@ -18,7 +18,7 @@
 # family: join3.inner|and(between+in)|none
 #
 # scenario: fc_0000000569_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 569
 # query-index: 2
 # projection: 0
@@ -31,7 +31,7 @@
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 569 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 1
@@ -90,7 +90,7 @@ test_block:
           - {L_ID: 7, L_A: 4, L_B: 7, L_C: 4611686018427387904, L_S: " c ", L_F: false, L_D: 9.0, L_E: !f 8.0, M_ID: 4, M_A: 1, M_B: 8, M_C: !null '', M_S: "", M_F: true, M_D: !null '', M_E: !f 8.0, R_ID: 4, R_A: 1, R_B: 8, R_C: !null '', R_S: "", R_F: true, R_D: !null '', R_E: !f 8.0}
 #
 # scenario: fc_0000000569_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 569
 # query-index: 2
 # projection: 1
@@ -103,7 +103,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 569 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 2
@@ -162,7 +162,7 @@ test_block:
           - {L_ID: 7, M_ID: 4, R_ID: 4}
 #
 # scenario: fc_0000000569_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 569
 # query-index: 2
 # projection: 2
@@ -175,7 +175,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 569 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 3

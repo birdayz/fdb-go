@@ -298,6 +298,62 @@ func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.Record
 	return best
 }
 
+// TargetTypeForFD is the DML TARGET type of a column: the type a row
+// constructor is pushed down against, Java's `targetField.getFieldType()`
+// in ExpressionVisitor.parseRecordField (ExpressionVisitor.java:969). Unlike
+// FieldTypeForFD (below) it descends: a struct column states its
+// values.RecordType (named after the declared struct, fields in descriptor
+// order), an array column its values.ArrayType with a real element type.
+//
+// The two are separate on purpose and the separation is temporary in the
+// design, not in intent: FieldTypeForFD types the FLOWED scan row, where
+// collapsing structs and arrays to UnknownType is load-bearing today (the
+// anchored-leg column types, index-on-source, derived unnest all read that
+// collapse). RFC-204 §4.4/§4.5 unify them by making the flowed row carry the
+// nested types; until the query surface and metadata pipeline can consume
+// that, widening FieldTypeForFD would change plan-time typing for every
+// query rather than for DML alone.
+func TargetTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
+	if list, wrapped, ok := values.EffectiveListField(fd); ok {
+		// A NULLABLE array is stored wrapped; the ELEMENT type comes from
+		// the wrapper's repeated field either way, so both shapes state the
+		// same SQL type. Nullability follows the storage shape: a flat
+		// repeated field is the NOT NULL array.
+		//
+		// The element is typed by TargetElementType, NOT by recursing into
+		// TargetTypeForFD: the repeated field IS its own effective list
+		// field, so recursing would descend forever.
+		return values.NewArrayType(wrapped, TargetElementType(list))
+	}
+	return TargetElementType(fd)
+}
+
+// TargetElementType types what a field descriptor's VALUE is, with
+// repetition already accounted for by the caller: applied to an array
+// column's repeated field it yields the ELEMENT type, applied to a scalar or
+// struct field it yields that field's type. Struct fields recurse through
+// TargetTypeForFD, because a struct's fields are slots (an array field
+// inside a struct is an array), not elements.
+func TargetElementType(fd protoreflect.FieldDescriptor) values.Type {
+	if fd.Kind() == protoreflect.MessageKind && !fd.IsMap() {
+		if msg := fd.Message(); msg != nil &&
+			string(msg.FullName()) != functions.UUIDProtoMessageName &&
+			!values.IsWrappedArrayDescriptor(msg) {
+			fields := make([]values.Field, msg.Fields().Len())
+			for i := range fields {
+				sub := msg.Fields().Get(i)
+				fields[i] = values.Field{
+					Name:      string(sub.Name()),
+					FieldType: TargetTypeForFD(sub),
+					Ordinal:   i,
+				}
+			}
+			return values.NewRecordType(string(msg.Name()), true, fields)
+		}
+	}
+	return scalarTypeForKind(fd)
+}
+
 // FieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
 // jdbcTypeNameForFD (pkg/relational/core/embedded/select_helpers.go). Repeated/map
 // and non-UUID message fields collapse to values.UnknownType — 7.6 doesn't model
@@ -307,6 +363,14 @@ func FieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 	if fd.IsList() || fd.IsMap() {
 		return values.UnknownType
 	}
+	return scalarTypeForKind(fd)
+}
+
+// scalarTypeForKind maps a field descriptor's proto KIND to the SQL scalar
+// type, ignoring repetition. Shared by FieldTypeForFD (which collapses
+// repeated fields before asking) and TargetElementType (which asks about an
+// array's element, where the repetition belongs to the array, not the type).
+func scalarTypeForKind(fd protoreflect.FieldDescriptor) values.Type {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		return values.NewPrimitiveType(values.TypeCodeBoolean, true)
@@ -1469,7 +1533,9 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 		if fd == nil {
 			return values.UnknownType, "", false, false
 		}
-		if fd.IsList() || fd.Kind() != protoreflect.MessageKind {
+		// An intermediate must be a singular STRUCT: flat repeated fields
+		// and NullableArrayWrapper fields are both arrays here.
+		if fd.IsList() || fd.Kind() != protoreflect.MessageKind || values.IsWrappedArrayDescriptor(fd.Message()) {
 			return values.UnknownType, "", false, true
 		}
 		fields = fd.Message().Fields()
@@ -1478,10 +1544,14 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 	if fd == nil {
 		return values.UnknownType, "", false, false
 	}
-	if !fd.IsList() {
+	// The final segment is an array either as a flat repeated field or
+	// through the NullableArrayWrapper; the element type comes from the
+	// EFFECTIVE repeated field, the column name from the outer field.
+	inner, _, ok := values.EffectiveListField(fd)
+	if !ok {
 		return values.UnknownType, "", false, true
 	}
-	return arrayFieldElementType(fd), strings.ToUpper(string(fd.Name())), true, true
+	return arrayFieldElementType(inner), strings.ToUpper(string(fd.Name())), true, true
 }
 
 // containsLateralUnnest reports whether a logical sub-plan contains a

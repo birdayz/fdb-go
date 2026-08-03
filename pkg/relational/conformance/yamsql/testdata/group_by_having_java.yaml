@@ -4,7 +4,7 @@
 name: group_by_having_java
 schema_template: |
   CREATE TABLE sales (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     product STRING,
     amount BIGINT,

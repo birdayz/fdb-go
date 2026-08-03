@@ -9,7 +9,7 @@
 # Both return a two-valued boolean (never UNKNOWN).
 name: is_distinct_from
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'alpha'), (2, 'beta'), (3, null), (4, null)
 tests:

@@ -4,12 +4,12 @@
 name: exists_subquery_java
 schema_template: |
   CREATE TABLE customers (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE orders (
-    id BIGINT NOT NULL,
+    id BIGINT,
     customer_id BIGINT,
     amount BIGINT,
     PRIMARY KEY (id)

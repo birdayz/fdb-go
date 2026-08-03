@@ -11,7 +11,7 @@
 name: secondary_index_pushdown
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     status STRING,
     v BIGINT,
     PRIMARY KEY (id)
@@ -19,7 +19,7 @@ schema_template: |
   CREATE INDEX idx_status ON t (status)
   CREATE INDEX idx_v ON t (v)
   CREATE TABLE t2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     plan STRING,
     amount BIGINT,

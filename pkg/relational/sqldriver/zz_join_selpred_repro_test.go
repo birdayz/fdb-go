@@ -30,8 +30,8 @@ func TestFDB_JoinSelPred_Repro(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_jsp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jsp_tmpl "+
-			"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_customer ON orders (customer_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jsp/s WITH TEMPLATE jsp_tmpl")
 

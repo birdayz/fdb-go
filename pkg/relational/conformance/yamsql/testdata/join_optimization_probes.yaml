@@ -1,7 +1,7 @@
 name: join_optimization_probes
 schema_template: |
-  CREATE TABLE dept (did BIGINT NOT NULL, dname STRING, PRIMARY KEY (did))
-  CREATE TABLE emp (eid BIGINT NOT NULL, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))
+  CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))
+  CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))
   CREATE INDEX idx_emp_did ON emp (did)
 setup:
   - INSERT INTO dept VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')

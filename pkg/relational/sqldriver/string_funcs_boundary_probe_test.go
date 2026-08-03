@@ -23,7 +23,7 @@ func TestFDB_StringFuncsBoundaryProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_sfb")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sfb")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE sfb CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE sfb CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sfb/s WITH TEMPLATE sfb")
 	dsn := fmt.Sprintf("fdbsql:///testdb_sfb?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

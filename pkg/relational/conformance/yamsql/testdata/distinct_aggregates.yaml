@@ -6,7 +6,7 @@
 # Go deliberately aligned to that (commit cc303815c).
 name: distinct_aggregates
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 20), (4, null), (5, 30), (6, 10)
 tests:

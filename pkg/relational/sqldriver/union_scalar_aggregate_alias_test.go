@@ -24,9 +24,9 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	// `withidx` even HAS an ungrouped COUNT(*) index — used to prove the index is NOT
 	// engaged for a scalar aggregate (the load-bearing fact behind the gate relax).
 	db := setupPlanShapeDB(t, "usaa",
-		"CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE withidx (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE withidx (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_withidx AS SELECT COUNT(*) FROM withidx")
 
 	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10), (2, 20)")     // count=2, sum=30
@@ -90,13 +90,13 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ugag",
-		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
-			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h "+
 			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h "+
-			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
@@ -142,11 +142,11 @@ func TestFDB_UnionGroupedCountConstant(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ugcc",
-		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
-			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE gb (id BIGINT, h BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h "+
-			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100), (2, 100), (3, 200)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100), (20, 300)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
@@ -186,9 +186,9 @@ func TestFDB_UnionQualifiedAggregate(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "uqag",
-		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")

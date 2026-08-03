@@ -4,8 +4,8 @@
 # SELECT list, including with aggregates and constants.
 name: scalar_subquery_projection
 schema_template: |
-  CREATE TABLE settings (id BIGINT NOT NULL, max_val BIGINT, PRIMARY KEY (id))
-  CREATE TABLE data (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE settings (id BIGINT, max_val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE data (id BIGINT, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO settings VALUES (1, 100)
   - INSERT INTO data VALUES (1, 10), (2, 50), (3, 90)

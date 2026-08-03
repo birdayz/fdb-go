@@ -23,7 +23,7 @@ func TestFDB_InOrCompoundSargProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_insarg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE insarg "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_insarg/s WITH TEMPLATE insarg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_insarg?cluster_file=%s&schema=s", clusterFilePath)

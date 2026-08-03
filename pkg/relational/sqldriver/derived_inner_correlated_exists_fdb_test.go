@@ -41,7 +41,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cedi_tmpl "+
-		"CREATE TABLE ord (order_id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (order_id))")
+		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cedi_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))

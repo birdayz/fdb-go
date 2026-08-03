@@ -22,7 +22,7 @@ func TestFDB_IsNullIndexedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_inip")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inip")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE inip CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE inip CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inip/s WITH TEMPLATE inip")
 	dsn := fmt.Sprintf("fdbsql:///testdb_inip?cluster_file=%s&schema=s", clusterFilePath)

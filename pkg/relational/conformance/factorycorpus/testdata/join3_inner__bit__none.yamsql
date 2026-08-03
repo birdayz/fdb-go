@@ -18,7 +18,7 @@
 # family: join3.inner|bit|none
 #
 # scenario: fc_0000000206_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 206
 # query-index: 2
 # projection: 0
@@ -31,7 +31,7 @@
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 206 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 1
@@ -86,7 +86,7 @@ test_block:
           - {L_ID: 5, L_A: !null '', L_B: 7, L_C: 8, L_S: "", L_F: false, L_D: 1.0, L_E: !f 5.0, M_ID: 8, M_A: 6, M_B: 4, M_C: 1, M_S: "", M_F: true, M_D: 7.0, M_E: !null '', R_ID: 4, R_A: 6, R_B: 8, R_C: 5, R_S: " c ", R_F: !null '', R_D: 8.0, R_E: !f 9.0}
 #
 # scenario: fc_0000000206_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 206
 # query-index: 2
 # projection: 1
@@ -99,7 +99,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 206 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 2
@@ -154,7 +154,7 @@ test_block:
           - {L_ID: 5, M_ID: 8, R_ID: 4}
 #
 # scenario: fc_0000000206_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 206
 # query-index: 2
 # projection: 2
@@ -167,7 +167,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 206 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 3
@@ -222,7 +222,7 @@ test_block:
           - {R_ID: 4, M_ID: 8, L_ID: 5, M_B: 4}
 #
 # scenario: fc_0000000245_q2_p0
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 245
 # query-index: 2
 # projection: 0
@@ -235,7 +235,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 245 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 4
@@ -294,7 +294,7 @@ test_block:
           - {L_ID: 2, L_A: 8, L_B: 2, L_C: 4, L_S: !null '', L_F: false, L_D: 8.0, L_E: !f -0.0, M_ID: 2, M_A: 8, M_B: 2, M_C: 4, M_S: !null '', M_F: false, M_D: 8.0, M_E: !f -0.0, R_ID: 4, R_A: !null '', R_B: 4, R_C: 0, R_S: "alpha", R_F: true, R_D: 0.1, R_E: !f 9.0}
 #
 # scenario: fc_0000000245_q2_p1
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 245
 # query-index: 2
 # projection: 1
@@ -307,7 +307,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 245 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 5
@@ -366,7 +366,7 @@ test_block:
           - {L_ID: 2, M_ID: 2, R_ID: 4}
 #
 # scenario: fc_0000000245_q2_p2
-# generator: rowdiff-gen/1
+# generator: rowdiff-gen/2
 # seed: 245
 # query-index: 2
 # projection: 2
@@ -379,7 +379,7 @@ test_block:
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 245 -seeds 1 -date 2026-07-31 -out <dir>
 ---
 schema_template: |-
-  CREATE TABLE T_RD (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id))
 ---
 setup:
   connect: 6

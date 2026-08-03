@@ -5,7 +5,7 @@
 # nested CASE in the SET expression.
 name: update_case_when
 schema_template: |
-  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
+  CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
 setup:
   - INSERT INTO a VALUES (1, 100, 10), (2, 200, 20), (3, 300, 30)
 tests:

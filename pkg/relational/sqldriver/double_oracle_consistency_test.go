@@ -25,7 +25,7 @@ func TestFDB_DoubleOracleConsistency(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dbloracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dbloracle "+
-			"CREATE TABLE t (id BIGINT NOT NULL, k DOUBLE, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, k DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dbloracle/s WITH TEMPLATE dbloracle")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dbloracle?cluster_file=%s&schema=s", clusterFilePath)

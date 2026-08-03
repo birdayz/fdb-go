@@ -38,9 +38,12 @@ func TestCardinalityDDL_IndexShape(t *testing.T) {
 	if card.Name() != recordlayer.FunctionNameCardinality {
 		t.Errorf("function name = %q, want %q", card.Name(), recordlayer.FunctionNameCardinality)
 	}
-	// The single key column is the array field (upper-cased identifier).
-	if names := card.FieldNames(); len(names) != 1 || names[0] != "INT_ARR" {
-		t.Errorf("argument field names = %v, want [INT_ARR]", names)
+	// `int_arr` is a NULLABLE array, so the stored argument carries the
+	// NullableArrayWrapper hop: field(INT_ARR).nest(field(values,
+	// Concatenate)) — Java's NullableArrayUtils.wrapArray shape over the
+	// wrapped descriptor. FieldNames reports both path segments.
+	if names := card.FieldNames(); len(names) != 2 || names[0] != "INT_ARR" || names[1] != "values" {
+		t.Errorf("argument field names = %v, want [INT_ARR values] (wrapped nullable array)", names)
 	}
 	// createsDuplicates must be false (Java override).
 	if got := idx.RootExpression.ColumnSize(); got != 1 {

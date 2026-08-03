@@ -22,8 +22,8 @@ func TestFDB_ScalarSubqueryNonCorrelatedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ssqp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssqp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssqp "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE other (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE other (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssqp/s WITH TEMPLATE ssqp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ssqp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

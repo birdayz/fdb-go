@@ -35,10 +35,10 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_xtype")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE xtype "+
-			"CREATE TABLE a (id BIGINT NOT NULL, xbig BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE bi (id BIGINT NOT NULL, yint INTEGER, PRIMARY KEY (id)) "+
-			"CREATE TABLE bd (id BIGINT NOT NULL, ydbl DOUBLE, PRIMARY KEY (id)) "+
-			"CREATE TABLE bf (id BIGINT NOT NULL, yflt FLOAT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, xbig BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE bi (id BIGINT, yint INTEGER, PRIMARY KEY (id)) "+
+			"CREATE TABLE bd (id BIGINT, ydbl DOUBLE, PRIMARY KEY (id)) "+
+			"CREATE TABLE bf (id BIGINT, yflt FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX bi_y ON bi (yint) CREATE INDEX bd_y ON bd (ydbl) CREATE INDEX bf_y ON bf (yflt)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_xtype/s WITH TEMPLATE xtype")
 	dsn := fmt.Sprintf("fdbsql:///testdb_xtype?cluster_file=%s&schema=s", clusterFilePath)

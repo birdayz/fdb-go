@@ -41,7 +41,7 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidrt")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidrt "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidrt/s WITH TEMPLATE uuidrt")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uuidrt?cluster_file=%s&schema=s", clusterFilePath)
@@ -307,7 +307,7 @@ func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uuidsort")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidsort")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidsort/s WITH TEMPLATE uuidsort")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uuidsort?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -379,7 +379,7 @@ func TestFDB_UUIDPrimaryKey(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidpk")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpk "+
-			"CREATE TABLE t (k UUID NOT NULL, n BIGINT, PRIMARY KEY (k))")
+			"CREATE TABLE t (k UUID, n BIGINT, PRIMARY KEY (k))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpk/s WITH TEMPLATE uuidpk")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uuidpk?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -426,8 +426,8 @@ func TestFDB_UUIDInlJoin(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidjoin "+
-			"CREATE TABLE a (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, v UUID, label STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, v UUID, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, v UUID, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_v ON b (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uuidjoin?cluster_file=%s&schema=s", clusterFilePath)

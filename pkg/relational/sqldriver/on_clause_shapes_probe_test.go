@@ -24,8 +24,8 @@ func TestFDB_OnClauseShapes_StillWork(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_on_shapes")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE on_shapes "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, name STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, y BIGINT, name STRING, PRIMARY KEY (id))")
+			"CREATE TABLE a (id BIGINT, x BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, y BIGINT, name STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_on_shapes/s WITH TEMPLATE on_shapes")
 	dsn := fmt.Sprintf("fdbsql:///testdb_on_shapes?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

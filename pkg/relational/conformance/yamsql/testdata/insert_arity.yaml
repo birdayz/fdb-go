@@ -6,7 +6,7 @@
 # - Reordered column list works.
 name: insert_arity
 schema_template: |
-  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
+  CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
 setup: []
 tests:
   # Reordered column list with VALUES — INSERT INTO a (a3, a2, a1) puts

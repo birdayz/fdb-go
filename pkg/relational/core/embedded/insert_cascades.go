@@ -19,6 +19,17 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// fieldTypeIsNotNullable reports whether the target field's declared TYPE
+// is non-nullable — Java's `fieldType.isNullable()` gate
+// (ExpressionVisitor.parseRecordFieldsUnderReorderings:1067). With scalar
+// NOT NULL unexpressible, the only non-nullable declarable type is a
+// NOT NULL array, stored as a FLAT repeated field (a nullable array is the
+// NullableArrayWrapper message instead). proto2 `required` is kept for
+// hand-authored/Java-app descriptors, where it is the only non-null signal.
+func fieldTypeIsNotNullable(fd protoreflect.FieldDescriptor) bool {
+	return fd.Cardinality() == protoreflect.Required || fd.IsList()
+}
+
 // buildInsertValuesArray converts an INSERT … VALUES row list into a
 // Cascades array literal: one RecordConstructorValue per row, gathered
 // into an ArrayConstructorValue. translateInsert wraps this array in an
@@ -114,9 +125,18 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 			fds := desc.Fields()
 			for i := 0; i < fds.Len(); i++ {
 				fd := fds.Get(i)
+				// The explicit column list carries USER identifiers; the
+				// descriptor carries STORAGE names (Java keeps both on the
+				// field — Type.java:2874-2877). Comparing them raw silently
+				// failed to match an escaped column ("a$b" vs A__1B): the
+				// name matched nothing, the slot fell through to the
+				// NULL-fill arm, and the INSERT SUCCEEDED writing NULL over
+				// the value the caller supplied. Match on the user
+				// identifier, which is what the SQL text can spell.
+				fdUserName := recordlayer.ToUserIdentifier(string(fd.Name()))
 				idx := -1
 				for j, col := range cols {
-					if col == string(fd.Name()) {
+					if col == fdUserName || col == string(fd.Name()) {
 						idx = j
 						break
 					}
@@ -127,7 +147,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				case idx >= len(exprs):
 					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 						"Value of column \"%s\" is not provided", fd.Name())
-				case fd.Cardinality() == protoreflect.Required:
+				case fieldTypeIsNotNullable(fd):
 					return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 						"null value in column \"%s\" violates not-null constraint", fd.Name())
 				default:
@@ -162,15 +182,6 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				continue
 			}
 			cellExpr := s.expr
-			// A parenthesized record-constructor at a scalar slot —
-			// `VALUES (1, (2, 3))` — is a structural type error; Java
-			// rejects with byte-equal "expected Record but got Primitive".
-			if pred, ok := cellExpr.Expression().(*antlrgen.PredicatedExpressionContext); ok && pred.Predicate() == nil {
-				if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-						"expected Record but got Primitive")
-				}
-			}
 			// The pre-scan mirrors the SELECT path's registry gate: a
 			// function outside the Cascades-safe set rejects with Java's
 			// byte-equal "Unsupported operator <name>" before the walk.
@@ -186,19 +197,15 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"%s is not supported in this context", atom)
 			}
-			cell, walkErr := resolver.WalkExpressionForProjection(cellExpr.Expression())
+			cell, walkErr := parseRecordField(fd, cellExpr, resolver)
 			if walkErr != nil {
-				if mapped := mapPredicateWalkError(walkErr); mapped != nil {
-					return nil, mapped
-				}
-				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-					"unsupported INSERT VALUES expression: %v", walkErr)
+				return nil, walkErr
 			}
 			val, evalErr := cell.Evaluate(clock)
 			if evalErr != nil {
 				return nil, translateExecError(evalErr)
 			}
-			if val == nil && fd.Cardinality() == protoreflect.Required {
+			if val == nil && fieldTypeIsNotNullable(fd) {
 				return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 					"NULL value in column %q violates NOT NULL constraint", col)
 			}
@@ -230,6 +237,214 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 	}
 
 	return values.NewArrayConstructorValue(values.UnknownType, rows), nil
+}
+
+// parseRecordField is the target-type push-down: Java's
+// ExpressionVisitor.parseRecordField (ExpressionVisitor.java:967-1008),
+// which pushes the TARGET field's type as visitor state before visiting the
+// cell, so a bare positional tuple acquires the target's names and types
+// instead of having to state them.
+//
+// Go pushes the target as an argument rather than as visitor state because
+// the slot mapping that Java performs in parseRecordFieldsUnderReorderings
+// already lives here (buildInsertValuesArray's slot loop), holding the
+// descriptor the state would have carried. The recursion is Java's:
+//
+//   - a record constructor against a STRUCT target recurses per field
+//     (Java: visitRecordConstructor → parseRecordFieldsUnderReorderings,
+//     ExpressionVisitor.java:917-924, :1078-1084);
+//   - a record constructor against any other target is the structural type
+//     error Java raises when it casts the pushed target type to Type.Record
+//     (ExpressionVisitor.java:1047 through Assert.castUnchecked,
+//     Assert.java:211-212 — "expected Record but got Primitive");
+//   - an array constructor pushes the ELEMENT type before visiting the
+//     elements (Java: visitArrayConstructor, ExpressionVisitor.java:929-950),
+//     which is what types the structs inside `[(1, 'a'), (2, 'b')]`;
+//   - anything else is a scalar cell and takes the ordinary projection walk.
+func parseRecordField(
+	fd protoreflect.FieldDescriptor,
+	cell antlrgen.IExpressionWithOptionalNameContext,
+	resolver *expr.Resolver,
+) (values.Value, error) {
+	atom := unwrappedCellAtom(cell)
+	switch a := atom.(type) {
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		if !targetIsStruct(fd) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"expected Record but got Primitive")
+		}
+		return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver)
+	case *antlrgen.ArrayConstructorExpressionAtomContext:
+		list, _, isList := values.EffectiveListField(fd)
+		if isList && elementIsStruct(list) {
+			// Array of STRUCT: the element target types each element, so
+			// the bare tuples inside the brackets are record constructors
+			// against the element struct rather than the unsupported
+			// multi-element shape the projection walker declines.
+			return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver)
+		}
+	}
+	v, walkErr := resolver.WalkExpressionForProjection(cell.Expression())
+	if walkErr != nil {
+		if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+			return nil, mapped
+		}
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported INSERT VALUES expression: %v", walkErr)
+	}
+	return v, nil
+}
+
+// parseStructLiteral builds the typed row constructor for a struct literal
+// against its target struct descriptor — Java's
+// parseRecordFieldsUnderReorderings positional arm plus the
+// RecordConstructorValue.ofColumns it feeds (ExpressionVisitor.java:1078-1084,
+// :922-924).
+//
+// Each field is folded HERE, at the level that holds its descriptor, because
+// that is where Java decides whether a NULL is admissible
+// (ExpressionVisitor.java:1068). The resulting constructor therefore carries
+// already-evaluated constants: a VALUES cell is constant after parameter
+// substitution, which is the same property the top-level fold relies on.
+func parseStructLiteral(
+	md protoreflect.MessageDescriptor,
+	rc antlrgen.IRecordConstructorContext,
+	resolver *expr.Resolver,
+) (values.Value, error) {
+	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported record constructor context %T", rc)
+	}
+	if rcc.OfTypeClause() != nil || rcc.Uid() != nil || rcc.STAR() != nil {
+		// `(…) of type S`, `S(…)` and `t.*` are projection-side record
+		// constructors (Java: visitRecordConstructor's uid/STAR/ofType arms,
+		// ExpressionVisitor.java:889-921). They resolve against the query's
+		// scope, which a VALUES cell does not have — RFC-204 §4.4 is where
+		// the scope-resolving forms live.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported INSERT VALUES expression: named or star record constructor")
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	fds := md.Fields()
+	if fds.Len() != len(exprs) {
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"provided record cannot be assigned as its type is incompatible with the target type")
+	}
+	fields := make([]values.RecordConstructorField, 0, len(exprs))
+	for i, sub := range exprs {
+		subFD := fds.Get(i)
+		name := string(subFD.Name())
+		if ewon, isEwon := sub.(*antlrgen.ExpressionWithOptionalNameContext); isEwon && ewon.Uid() != nil {
+			// Java asserts a provided name equals the target field's name
+			// (ExpressionVisitor.java:1002-1003) rather than letting the
+			// literal rename the target's field.
+			given := functions.StripIdentifierQuotes(ewon.Uid().GetText())
+			if !strings.EqualFold(given, name) {
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"field %q cannot be assigned to target field %q", given, name)
+			}
+		}
+		v, err := parseRecordField(subFD, sub, resolver)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
+	}
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
+// parseStructArrayLiteral builds the array literal whose ELEMENTS are struct
+// literals typed by the array's element descriptor — Java's
+// visitArrayConstructor element-type push
+// (ExpressionVisitor.java:943-949 → handleArray).
+func parseStructArrayLiteral(
+	elemFD protoreflect.FieldDescriptor,
+	ac antlrgen.IArrayConstructorContext,
+	resolver *expr.Resolver,
+) (values.Value, error) {
+	acc, ok := ac.(*antlrgen.ArrayConstructorContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported array constructor context %T", ac)
+	}
+	elemType := query.TargetElementType(elemFD)
+	if acc.Expressions() == nil {
+		// `[]` against a struct array: the empty array of the element type,
+		// Java's LightArrayConstructorValue.emptyArray(elementType)
+		// (ExpressionVisitor.java:934-937).
+		return values.NewArrayConstructorValue(elemType, nil), nil
+	}
+	elems := acc.Expressions().AllExpression()
+	children := make([]values.Value, 0, len(elems))
+	for _, e := range elems {
+		if pred, isPred := e.(*antlrgen.PredicatedExpressionContext); isPred && pred.Predicate() == nil {
+			if rc, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+				v, err := parseStructLiteral(elemFD.Message(), rc.RecordConstructor(), resolver)
+				if err != nil {
+					return nil, err
+				}
+				children = append(children, v)
+				continue
+			}
+		}
+		// A NON-tuple element against a struct element type: walked as an
+		// ordinary expression and left for the converter to reject
+		// element-wise, which is where Java rejects it too — coercing the
+		// array literal coerces each element to the target element type
+		// (ExpressionVisitor.coerceValueIfNecessary:1030-1039) and a
+		// primitive→record coercion has no physical operator, so
+		// SemanticException INCOMPATIBLE_TYPE (PromoteValue.java:370-371)
+		// surfaces as the verbatim CANNOT_CONVERT_TYPE. Keeping the element
+		// in the array (rather than declining the whole literal here) is what
+		// makes a MIXED literal fail on its bad element rather than on shape.
+		v, err := resolver.WalkExpressionForProjection(e)
+		if err != nil {
+			if mapped := mapPredicateWalkError(err); mapped != nil {
+				return nil, mapped
+			}
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported INSERT VALUES expression: %v", err)
+		}
+		children = append(children, v)
+	}
+	return values.NewArrayConstructorValue(elemType, children), nil
+}
+
+// targetIsStruct reports whether the target FIELD is a STRUCT column — a
+// message that is neither an array (flat repeated or NullableArrayWrapper)
+// nor the tuple_fields.UUID message, both of which are SQL scalars at this
+// boundary.
+func targetIsStruct(fd protoreflect.FieldDescriptor) bool {
+	if _, _, isList := values.EffectiveListField(fd); isList {
+		return false
+	}
+	return elementIsStruct(fd)
+}
+
+// elementIsStruct is targetIsStruct for a slot whose repetition the caller
+// has already accounted for — an array column's repeated field IS a list,
+// so asking targetIsStruct about it would answer about the array rather
+// than about its elements.
+func elementIsStruct(fd protoreflect.FieldDescriptor) bool {
+	if fd == nil || fd.Kind() != protoreflect.MessageKind || fd.IsMap() {
+		return false
+	}
+	msg := fd.Message()
+	return msg != nil &&
+		string(msg.FullName()) != functions.UUIDProtoMessageName &&
+		!values.IsWrappedArrayDescriptor(msg)
+}
+
+// unwrappedCellAtom returns the cell's bare expression atom, or nil when the
+// cell is anything else (a comparison, a predicate-bearing expression). The
+// typed-node unwrap the record/array-literal arms dispatch on.
+func unwrappedCellAtom(cell antlrgen.IExpressionWithOptionalNameContext) antlrgen.IExpressionAtomContext {
+	pred, ok := cell.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return nil
+	}
+	return pred.ExpressionAtom()
 }
 
 // firstSubqueryOrExistsAtom walks an ANTLR expression tree with typed
@@ -293,7 +508,7 @@ func validateUpdateAssignments(upd *logical.LogicalUpdate, md *recordlayer.Recor
 		if fd == nil {
 			continue
 		}
-		if fd.Cardinality() == protoreflect.Required && isStaticNull(a.Value) {
+		if fieldTypeIsNotNullable(fd) && isStaticNull(a.Value) {
 			return api.NewErrorf(api.ErrCodeNotNullViolation,
 				"NULL value in column %q violates NOT NULL constraint", a.Column)
 		}
@@ -312,4 +527,56 @@ func isStaticNull(v values.Value) bool {
 	default:
 		return false
 	}
+}
+
+// structSetTargetField returns the descriptor of an UPDATE SET target column
+// when that column is a STRUCT (or an array of structs) — the only targets
+// whose right-hand side needs the type pushed into it. Anything else keeps
+// the ordinary expression walk.
+func structSetTargetField(rt *recordlayer.RecordType, column string) protoreflect.FieldDescriptor {
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	fields := rt.Descriptor.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if !strings.EqualFold(string(fd.Name()), column) {
+			continue
+		}
+		if targetIsStruct(fd) {
+			return fd
+		}
+		if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
+			return fd
+		}
+		return nil
+	}
+	return nil
+}
+
+// parseUpdateSetValue types an UPDATE SET right-hand side against its target
+// column. The cell arrives as a bare expression rather than the
+// name-carrying form an INSERT row uses, so it is adapted to the one
+// push-down (parseRecordField) rather than given a second implementation.
+func parseUpdateSetValue(
+	fd protoreflect.FieldDescriptor,
+	e antlrgen.IExpressionContext,
+	resolver *expr.Resolver,
+) (values.Value, error) {
+	pred, isPred := e.(*antlrgen.PredicatedExpressionContext)
+	if !isPred || pred.Predicate() != nil {
+		return resolver.WalkExpression(e)
+	}
+	switch a := pred.ExpressionAtom().(type) {
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		if !targetIsStruct(fd) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "expected Record but got Primitive")
+		}
+		return parseStructLiteral(fd.Message(), a.RecordConstructor(), resolver)
+	case *antlrgen.ArrayConstructorExpressionAtomContext:
+		if list, _, ok := values.EffectiveListField(fd); ok && elementIsStruct(list) {
+			return parseStructArrayLiteral(list, a.ArrayConstructor(), resolver)
+		}
+	}
+	return resolver.WalkExpression(e)
 }

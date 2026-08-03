@@ -5,8 +5,8 @@
 # can't silently split them into different execution paths.
 name: cross_join
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20)
   - INSERT INTO b VALUES (1, 100), (2, 200)

@@ -13750,3 +13750,273 @@ None is speculative: each was re-verified against the tree before booking.
   extending the cross-engine corpus where Java's bit-identity `=` diverges by
   design, i.e. new divergence classifications — its own corpus lap. Their
   comments now say so.
+
+- [ ] **CQ-88 (MED/L, cost model — statistics source, RFC-204 fallout) — port
+  the Java-sanctioned per-type statistics source: COUNT-type index reads +
+  `CardinalitiesProperty`.** RFC-204 P1 removed the record count key from
+  relational templates (the stored bytes must match Java's
+  `RecordMetadataSerializer`, which never sets one; Java core marks
+  `getRecordCountKey` `@API(DEPRECATED)`, superseded by COUNT-type indexes).
+  That made `fetchTableStatistics` (cascades_generator.go) dead on every
+  SQL-created schema: the cost model now plans on its 1e6 default for every
+  table. Measured consequences, each pinned with a re-arm comment:
+  `multiway_join_order_probe_test.go` no longer proves driving from the 1-row
+  table (relaxed to "not from the 200-row one");
+  `pkg/simfdb/hunt/golden/testdata/joins.golden` re-blessed with the flipped
+  join order; `statistics_fdb_test.go` renamed to
+  `TestFDB_DefaultStatisticsPlanSelection` (it proves size-independent index
+  selection, NOT a stats pipeline). The replacement, exactly as Java does it:
+  (a) read per-type row counts from COUNT-type aggregate indexes when the
+  schema declares them (`IndexTypes.COUNT`, grouped by record type);
+  (b) port `CardinalitiesProperty` (fdb-record-layer-core
+  query/plan/cascades/properties/CardinalitiesProperty.java) so the planner
+  derives cardinality bounds structurally where no index exists.
+  DONE = the join-order probe's exact-driver assertion is restored
+  (drive from the 1-row table) with a COUNT index declared in its DDL, and
+  the joins golden decision is re-derived from real counts.
+
+- [ ] **CQ-89 (MED, wrong rows) — a stored NOT NULL array that is EMPTY reads
+  back as NULL, so `IS NULL` is true and `= []` is UNKNOWN on a column the
+  type forbids to be NULL.** Newly VISIBLE, not newly broken: while the
+  NULLABLE arm was a wire divergence (RFC-143 §3a — Go wrote a plain repeated
+  field where Java writes the `message{ repeated values }` wrapper) it failed
+  first and claimed `arrays-operators.yamsql`. RFC-204 P1 landed the wrapper
+  write side, the nullable arm now matches Java, and the file progresses to
+  its NOT NULL column.
+  **This one is NOT a wire bug — the bytes already match Java.** A NOT NULL
+  array is stored as a FLAT repeated field in both engines, and that is
+  correct; on the wire an empty repeated field is indistinguishable from an
+  absent one. The distinction has to be made on READ, from the type: a field
+  whose type forbids NULL must materialize absent as an EMPTY ARRAY. Java
+  does; Go yields NULL.
+  **Java's answer, measured, not inferred** (`arrays-operators.yamsql`):
+  `SELECT "pk" FROM T1 WHERE "arr_nn" = [] AND "pk" != -1` → `result:
+  [{pk: 0}]`, and the same for the CAST variant.
+  **Currently pinned, both sides:** the corpus file is booked
+  `engine-gap:non-nullable-array-empty` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at its exact row
+  (`{ARR_NN: <NULL>, IS_NULL: true, IS_NOT_NULL: false, IS_EMPTY: <NULL>}`),
+  and `TestFDB_ArrayComparison/field_comparisons`
+  (`array_comparison_fdb_test.go`) pins the wrong answer with a comment
+  naming this item. DONE = both flip to Java's answer together; the sqldriver
+  pin becomes `[]int64{0}` and the gap entry is deleted with the corpus pass
+  count raised.
+
+- [ ] **CQ-84 (MED, query-engine — needs its own RFC + Graefe ACK): a
+  qualified star in a SELECT list that also carries GROUP BY is rejected
+  unconditionally, where Java expands the star FIRST and only then applies the
+  grouping rule.** Java: `LogicalOperator.generateGroupBy` walks
+  `outputExpressions.expanded()` — star ALREADY expanded — and asserts each is
+  `SemanticAnalyzer.isComposableFrom(expr, groupBy ∪ aggregates, aliasMap,
+  outerCorrelations)`, else `GROUPING_ERROR`
+  (LogicalOperator.java:435-441). So a star covering exactly the grouping list
+  is legal and only a star reaching past it is 42803. Go rejects every
+  star-with-GROUP-BY in `classifySelectElements`
+  (`select_parser.go:1354-1363`, "SELECT qualifier.* expands to columns not in
+  GROUP BY"), which runs before any schema is in hand to expand against.
+  MEASURED live, both engines, in
+  `conformance/duplicate_star_java_probe_test.go`:
+  - `SELECT a.* FROM T_A a GROUP BY id` → JAVA `42803 "Invalid reference to
+    non-grouping expression A.NAME|string ∪ ∅| ⇾ qf64031cb….NAME"`; GO `42803`
+    (same class, different text) — this arm AGREES.
+  - `SELECT a.* FROM T_A a GROUP BY id, name` → JAVA passes the semantic check
+    and fails only at planning (`"Cascades planner could not plan query"`, no
+    index on the probe table); GO `42803` — this arm DIVERGES.
+  - `SELECT b.bid FROM T_B b WHERE EXISTS (SELECT a.*, b.bid FROM T_A a GROUP
+    BY id, name)` → JAVA reaches planning; GO `42803`.
+  The corpus proof is `select-a-star.yamsql`, which asserts RESULTS for
+  `select B1 from B where exists (select A.*, B1 from A group by A1,A2,A3)`
+  (line 46, repeated at 85) and for the `B.*` variant (line 89) — its table has
+  index `A_idx` on exactly `(A1,A2,A3)`, so Java plans all three. The file is
+  booked `engine-gap:star-group-by-expansion` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at that exact rejection.
+  WHY IT IS NOT A ONE-LINER: the fix has to move star expansion AHEAD of the
+  aggregate reclassification that the same block performs
+  (`select_parser.go:1354-1397` rewrites `projCols` into `aggCols`), and that
+  block runs inside `extractFromQueryTerm`, which has NO metadata and has NINE
+  call sites — including the EXISTS-subquery planner, where an unexpanded star
+  reaching the aggregate pipeline would be silent-wrong rather than loud.
+  DONE = `select-a-star.yamsql` passes its three EXISTS-with-star-GROUP-BY
+  assertions, the two GROUPING_ERROR negatives in the same file (lines 59, 82)
+  still reject 42803, and the gap entry + its skip class are deleted.
+
+- [ ] **CQ-85 (SMALL, query surface): `SELECT *, a.*` — a bare star mixed with
+  any other select item — is rejected by Go and accepted by Java.** MEASURED
+  live, `conformance/duplicate_star_java_probe_test.go` probe
+  `bare_star_plus_qual_star`, `SELECT *, a.* FROM T_A AS a`:
+  JAVA `OK cols=[ID(BIGINT) NAME(STRING) ID(BIGINT) NAME(STRING)]
+  rows=[[1 alpha 1 alpha] [2 beta 2 beta]]`;
+  GO `ERROR sqlstate="0A000" msg="cannot mix * with named columns in SELECT
+  list"`. The rejection is `select_parser.go:777-780`, fired whenever a
+  `SelectStarElementContext` is not the sole select element. Java has no such
+  rule: `expandStar` resolves each star independently and concatenates, which
+  is the same property that makes the duplicate qualified star legal (fixed
+  separately — see the per-attribute ambiguity work). Related to CQ-84 in
+  mechanism (both are star expansion running too late or not at all) but
+  independent of it: this one needs no GROUP BY and no schema-time expansion,
+  only the removal of a rule Java does not have plus the plumbing to expand a
+  bare star into a non-sole slot.
+  DONE = `SELECT *, a.*`, `SELECT a.*, *` and `SELECT *, id` answer with
+  Java's column list, pinned against the live-JVM probe.
+
+- [x] **CQ-86 (MED, result surfacing): a COMPUTED record reaches the driver as
+  a bare `map[string]any`, so it is not an `api.Struct` and nothing downstream
+  can describe it as one.** DONE via RFC-204 §4.5.1's PLAN-TIME DESCRIPTOR
+  BAKE. `cascades.FinalizePlan` (`plan_finalize.go`) builds ONE
+  `values.NewTypeProtoRepository()` per plan and stamps every reachable
+  `*RecordConstructorValue` with `MessageDescriptorFor(rc.Type())`; a stamped
+  constructor's `Evaluate` builds a `dynamicpb` message POSITIONALLY, as Java's
+  `RecordConstructorValue.eval` does. The descriptor rides on the VALUE rather
+  than the evaluation context (Java's carrier) because Go has no uniform
+  context — see §4.5.1 and `TestFrontierContextIsNotAUniformCarrier`. Stamping
+  runs on the plan-cache MISS path only; the hit path shares one plan pointer
+  across concurrent pages, so a later write would race.
+  The descriptor EMITTER the entry called "the real work" already existed
+  (`values/proto_type.go`), so what was missing was only the per-plan walk.
+  Both predicted consumer breakages were real and are fixed:
+  `explodeElementRow` gained a message arm laying the row out in DECLARED
+  field order, and `protoFieldByName` gained the ESCAPED-name lookup it never
+  had — a field whose identifier `ToProtoBufCompliantName` mangles (`a$b` →
+  `a__1b`) previously resolved to nothing and read back as a silent NULL.
+  NOT DONE, and deliberately so: the bake stops at a DML plan
+  (`feedsAWrite`). A constructor feeding a WRITE must keep the map, because
+  the target's descriptor governs there and Go binds to it at coercion time
+  (`BuildStructMessage`); baking its own inferred descriptor loses width
+  promotion, the anonymous-positional bind, NOT NULL and the arity check.
+  MEASURED both ways — removing the guard breaks multi-row `INSERT … VALUES`
+  across 6+ corpus files.
+  `functions.yamsql` did NOT close: `engine-gap:struct-query` drops 2 → 1 as
+  predicted, but the file RE-BOOKS to `engine-gap:dml-returning-result-set`.
+  Clearing the struct blocker exposed two further gaps — LEAST/GREATEST
+  argument admission (FIXED here: Java's two-step fold-then-operator-map check,
+  22000 vs 22F00, which Go had neither of) and DML RETURNING, which is
+  unimplemented and is what the file now rests on.
+
+  Original booking follows. The query is
+  otherwise CORRECT — `SELECT COALESCE(null, (1, 1.0, 'a', true))` plans and
+  evaluates to `{_0: int64(1), _1: float64(1.0), _2: "a", _3: true}`, pinned in
+  `pkg/relational/sqldriver/record_constructor_expression_fdb_test.go` — so
+  this is purely the boundary conversion. `materializeDriverValue`
+  (`cascades_generator.go`) is Java's `RowStruct.getObject` Types.STRUCT arm
+  (RowStruct.java:184-197) and converts a `protoreflect.ProtoMessage` into a
+  `rowstruct.MessageStruct`; a computed record never reaches that arm because
+  it is not a message. THE JAVA ANSWER IS ALREADY HALF-WRITTEN IN GO: Java's
+  `RecordConstructorValue.eval` builds a dynamic proto Message from the record
+  type (RecordConstructorValue.java:113-139) — the SAME structural walk
+  `values.BuildStructMessage` already performs on the DML side — so in Java a
+  computed record IS a message and the existing conversion fires unchanged.
+  Go's `RecordConstructorValue.Evaluate` returns a map instead.
+  MEASURED, live JVM, `conformance/record_constructor_java_probe_test.go`
+  probe `bare_record_literal`: JAVA `OK cols=[_0(STRUCT)]`
+  rows=`[map[__unsupported__:com.apple.foundationdb.relational.api.ImmutableRowStruct]]`
+  (the harness cannot render a Java struct's contents, but the TYPE is STRUCT);
+  GO `OK cols=[_0(STRUCT)] rows=[[map[_0:1 _1:1 _2:a _3:true]]]` — a raw map.
+  Booked `engine-gap:struct-query` in
+  `pkg/relational/conformance/javacorpus/gaps.go` at the row-shape mismatch.
+  WHY IT IS NOT A ONE-LINER: `RecordConstructorValue` is also the whole-row
+  projection carrier, so changing `Evaluate` to return a message changes the
+  representation every projection flows. Either that conversion is done for
+  every projection row (matching Java, and the honest end state) or the
+  boundary is given the record TYPE so it can order the map —
+  `executor.ColumnDef` is a flat type string today (CQ-74), so it cannot carry
+  one.
+
+  **CORRECTION — "reuse `BuildStructMessage`, the conversion then fires
+  unchanged" DOES NOT WORK AS WRITTEN, and this is the blocker.**
+  `BuildStructMessage(md, fields, convert)` takes a
+  `protoreflect.MessageDescriptor` as its FIRST argument and walks it. Both
+  existing callers get `md` from the TARGET COLUMN's descriptor — the stored
+  table schema (`pkg/relational/core/functions/proto_value.go:363` via
+  `fd.Message()`, `pkg/recordlayer/query/executor/executor.go:3586` likewise).
+  A COMPUTED record has no target column and no stored descriptor, and
+  `RecordConstructorValue.Type()` (`values.go:4277-4289`) returns an ANONYMOUS
+  `*RecordType`. So there is nothing to pass as `md`.
+
+  Java does not have this problem because it SYNTHESISES the descriptor:
+  `RecordConstructorValue.eval` calls
+  `typeRepository.newMessageBuilder(getResultType())`
+  (RecordConstructorValue.java:113-139), which reaches
+  `TypeRepository.Builder.addTypeIfNeeded` → `Type.Record.defineProtoType`
+  (TypeRepository.java:498-503, Type.java:2339-2356) — emit a `DescriptorProto`
+  per record type, recursively, into a `FileDescriptorProto`.
+  **Go has no equivalent.** `values.TypeRepository`
+  (`values/type.go:1618-1697`) is a name→`Type` map with no protobuf surface
+  at all — no `newMessageBuilder`, no `DescriptorProto`, no `dynamicpb`. The
+  only descriptor-emitting machinery in the repo is DDL-time
+  (`pkg/relational/core/metadata/builder.go:659-978`,
+  `tableTypeRepo.defineStruct` at :905 explicitly "Mirrors
+  Type.Record.defineProtoType"), and it is unusable here: it works from
+  `api.DataType` / `api.StructType`, there is no `values.Type` ↔ `api.DataType`
+  bridge, and `defineStruct` errors on an empty name — which is exactly what a
+  computed record has.
+
+  SO THE REAL WORK IS: port `Type.Record.defineProtoType` against
+  `values.Type` — a `values.RecordType` → `protoreflect.MessageDescriptor`
+  emitter living in the `values` package (nested records recursively, arrays
+  as repeated + the `NullableArrayWrapper` identity, UUID as the
+  `com.apple.foundationdb.record.UUID` message dependency, deterministic
+  synthetic type names, and a cache so it is not rebuilt per row). Only then
+  does `BuildStructMessage` have an `md` and the existing
+  `materializeDriverValue` ProtoMessage arm fire unchanged.
+
+  SECOND BLAST RADIUS, also not in the original booking: two consumers read
+  the map SHAPE and break if `Evaluate` starts returning a message.
+  `executor.explodeElementRow` (`executor.go:3796-3827`) type-asserts
+  `elem.(map[string]any)` at :3806, and `FieldValue.descendResolvedPath`
+  (`values/values.go:825-869`) handles `OrdinalRow` and `proto.Message` but
+  DELIBERATELY refuses a map (:840-845 documents the refusal as "never a
+  silent name read"). Both need an arm before the representation flips.
+  DONE = `functions.yamsql` clears its struct-query blocker, `struct-query`
+  reaches 1, and a computed record reads back through the driver as an
+  `api.Struct` whose attribute ORDER matches the constructor's declaration
+  order. NOT "`functions.yamsql` passes": clearing the struct blocker only
+  moves the file to its NEXT rejection, and it lands on DML RETURNING
+  (`engine-gap:dml-returning-result-set`, pinned in `gaps.go` at
+  `update C set st = coalesce(st, null) where c1 = 4 returning "new".st`),
+  which is a different workstream. The file passing is CQ-72's bar, not this
+  item's.
+
+- [ ] **CQ-87 (SMALL, needs confirmation first): Java may wrap a
+  PARENTHESISED SCALAR into a one-field record where Go unwraps it.** Go's
+  `walkRecordConstructorInner` unwraps a one-element unnamed constructor
+  because that is the parser's shape for `(expr)`; Java's
+  `visitRecordConstructor` has NO such unwrap — it goes straight to
+  `RecordConstructorValue.ofColumns` (ExpressionVisitor.java:918-925).
+  **CONFIRMED — the "needs confirmation first" gate is now CLOSED.** The
+  blocker was that the harness rendered every Java struct as
+  `__unsupported__`, so only the column TYPE was visible. `encodeValue`
+  (`conformance/sql_plan_steps.java`) now renders a `RelationalStruct` as its
+  attributes and a `java.sql.Array` as its elements, so struct CONTENTS are
+  measurable. MEASURED, live JVM, `conformance/paren_star_java_probe_test.go`:
+
+    scalar_no_paren    `SELECT 1 + 2`     JAVA `_0(INTEGER)` `3`
+                                          GO   `_0(INTEGER)` `3`     agree
+    scalar_one_paren   `SELECT (1 + 2)`   JAVA `_0(STRUCT)`  `{_0: 3}`
+                                          GO   `_0(INTEGER)` `3`     DIVERGE
+    scalar_two_parens  `SELECT ((1 + 2))` JAVA `_0(STRUCT)`  `{_0: {_0: 3}}`
+                                          GO   `_0(INTEGER)` `3`     DIVERGE
+    column_one_paren   `SELECT (val)`     JAVA `_0(STRUCT)`  `{VAL: 10}`
+                                          GO   `VAL(BIGINT)` `10`    DIVERGE
+
+  So Java really does build a one-field record, it nests on each extra paren,
+  and the inner field takes the ELEMENT's name (`_0` for an expression, `VAL`
+  for a column reference) while the OUTER column is anonymous. Pinned by the
+  assertion spec in the same file, which goes red if either engine moves.
+
+  NEW CONSTRAINT, and it is the reason this is not simply "delete the unwrap".
+  The same parenthesis in an OPERAND position stays scalar in Java:
+
+    paren_scalar_arith        `SELECT (val) + 1`        JAVA `_0(BIGINT)` `11`
+    paren_scalar_in_predicate `WHERE (val) = 10`        JAVA answers row `1`
+
+  Both parse through the SAME `recordConstructor` rule, so Java is unwrapping
+  (or coercing) a one-field record somewhere downstream of
+  `visitRecordConstructor` — not in the constructor itself. Removing Go's
+  unwrap wholesale would therefore re-type `(val) + 1` and `WHERE (val) = 10`
+  into record-vs-scalar shapes Java does not produce. FIND THAT COERCION
+  FIRST: the fix is "move the unwrap from the constructor to wherever Java has
+  it", not "remove the unwrap". Both operand shapes are pinned in the
+  assertion spec so the constraint cannot be lost.
+  DONE = Go returns `{_0: 3}` for `SELECT (1+2)` and `{VAL: 10}` for
+  `SELECT (val)`, while `SELECT (val) + 1` still returns BIGINT `11` and
+  `WHERE (val) = 10` still matches — with the corpus run showing the cost.

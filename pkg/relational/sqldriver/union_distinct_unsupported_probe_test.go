@@ -27,7 +27,7 @@ func TestFDB_UnionDistinctUnsupportedProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_udu")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_udu")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE udu CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE udu CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_udu/s WITH TEMPLATE udu")
 	dsn := fmt.Sprintf("fdbsql:///testdb_udu?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -10,8 +10,8 @@
 # map-backed WHERE (JOINs / CTEs / HAVING).
 name: exists
 schema_template: |
-  CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE flags (k BIGINT NOT NULL, PRIMARY KEY (k))
+  CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE flags (k BIGINT, PRIMARY KEY (k))
 setup:
   - INSERT INTO orders VALUES (1, 10), (2, 20), (3, 30)
 tests:

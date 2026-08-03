@@ -22,7 +22,7 @@ func TestFDB_BooleanIndexProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bool")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE booltbl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, flag BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_flag ON t (flag)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bool/s WITH TEMPLATE booltbl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_bool?cluster_file=%s&schema=s", clusterFilePath)

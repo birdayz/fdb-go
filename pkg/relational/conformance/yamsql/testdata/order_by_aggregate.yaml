@@ -4,7 +4,7 @@
 # the ORDER BY to reference the aggregated output.
 name: order_by_aggregate
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES (1, 'east', 100), (2, 'east', 200), (3, 'west', 50), (4, 'north', 150), (5, 'north', 100), (6, 'north', 50)
 tests:

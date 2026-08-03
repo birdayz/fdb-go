@@ -4,7 +4,7 @@
 # case sensitivity, empty strings, Unicode.
 name: string_comparison
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'apple'), (2, 'banana'), (3, 'Apple'), (4, ''), (5, 'BANANA')
 tests:

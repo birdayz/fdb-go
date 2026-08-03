@@ -27,7 +27,7 @@ func TestGoEngine_CatalogAwarePathDiffersFromTextOnly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	eng := NewGoEngine()
-	const schema = "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY(id))"
+	const schema = "CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY(id))"
 	const sql = "SELECT id FROM Item WHERE val = 5"
 
 	textOnly := eng.Plan(ctx, Query{Name: "text", SQL: sql})
@@ -62,9 +62,9 @@ func TestGoEngine_CatalogAware_AcceptsBareSchemaBody(t *testing.T) {
 		name string
 		ddl  string
 	}{
-		{"bare-table", "CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id))"},
+		{"bare-table", "CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY(id))"},
 		{"explicit-template-header", "CREATE SCHEMA TEMPLATE my_T " +
-			"CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id))"},
+			"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY(id))"},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -116,7 +116,7 @@ func TestGoEngine_CatalogAware_DerivedTable_FoldsWhere(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	eng := NewGoEngine()
-	const schema = "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY(id))"
+	const schema = "CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY(id))"
 	const sqlBare = "SELECT id FROM Item WHERE val = 5"
 	const sqlDerived = "SELECT id FROM (SELECT id, val FROM Item) AS x WHERE val = 5"
 
@@ -146,7 +146,7 @@ func TestGoEngine_CatalogAware_DerivedTable_DeclinesComplex(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	eng := NewGoEngine()
-	const schema = "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY(id))"
+	const schema = "CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY(id))"
 
 	cases := []struct {
 		name string

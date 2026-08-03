@@ -22,7 +22,7 @@ func TestFDB_ArithmeticEdgeProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arith")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arith "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arith/s WITH TEMPLATE arith")
 	dsn := fmt.Sprintf("fdbsql:///testdb_arith?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

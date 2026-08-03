@@ -9,7 +9,7 @@
 # lines 136–185.
 name: derived_table_group_by
 schema_template: |
-  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
 setup:
   # Mirror Java's 13-row setup: col1=10 for ids 1..5, col1=20 for 6..13.
   # col2 ranges 1..13 in insert order.

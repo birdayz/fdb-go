@@ -29,7 +29,7 @@ func TestFDB_CaseNullBranchColumnType(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_casenull")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE casenull_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")).
+			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_casenull/s WITH TEMPLATE casenull_tmpl")).
 		Error().NotTo(gomega.HaveOccurred())

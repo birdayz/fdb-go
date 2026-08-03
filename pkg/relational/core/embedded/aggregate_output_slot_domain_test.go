@@ -74,7 +74,7 @@ func pinnedDomains(t *testing.T, pred predicates.QueryPredicate) map[string]valu
 func TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes(t *testing.T) {
 	t.Parallel()
 
-	const ddl = "CREATE TABLE t (k BIGINT NOT NULL, v BIGINT, w BIGINT, PRIMARY KEY (k))"
+	const ddl = "CREATE TABLE t (k BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (k))"
 
 	cases := []struct {
 		name string

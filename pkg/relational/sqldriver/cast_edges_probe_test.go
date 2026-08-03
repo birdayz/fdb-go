@@ -23,7 +23,7 @@ func TestFDB_CastEdgesProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_castp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_castp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE castp CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE castp CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_castp/s WITH TEMPLATE castp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_castp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -48,10 +48,10 @@ func TestFDB_CommaJoinProjectedExists_UnequalLegWidths(t *testing.T) {
 	// wa is WIDER than the harness's na (id, v): `k` is never referenced by the
 	// query, so it exists purely to shift the legs that follow it.
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE s4cjwide_tmpl"+
-		" CREATE TABLE wa (id BIGINT NOT NULL, v BIGINT, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE wb (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE wc (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE wd (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE wa (id BIGINT, v BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE wb (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE wc (id BIGINT, k BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE wd (id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE s4cjwide_tmpl"); err != nil {

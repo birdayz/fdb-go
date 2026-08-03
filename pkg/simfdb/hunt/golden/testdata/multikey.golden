@@ -1,5 +1,5 @@
 # scenario: multikey (seed 3)
-#   CREATE TABLE t (region BIGINT NOT NULL, id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (region, id))
+#   CREATE TABLE t (region BIGINT, id BIGINT, v BIGINT, PRIMARY KEY (region, id))
 
 === SELECT region, id, v FROM t ORDER BY region, id
 PLAN: Project([REGION#0, ID#1, V#2], Scan(T))

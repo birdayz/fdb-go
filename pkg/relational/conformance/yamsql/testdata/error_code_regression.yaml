@@ -6,8 +6,8 @@
 # or SemanticAnalyzer.
 name: error_code_regression
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING NOT NULL, PRIMARY KEY (id))
-  CREATE TABLE t2 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'hello'), (2, 20, 'world')
   - INSERT INTO t2 VALUES (1, 100), (2, 200)
@@ -45,9 +45,15 @@ tests:
   # 42804 — IN-list type mismatch.
   - query: SELECT id FROM t WHERE n IN ('text', 'other')
     error_code: "42804"
-  # 23502 — NOT NULL violation.
+  # 0A000 — scalar NOT NULL is unexpressible (Java parity: NOT NULL is
+  # only allowed for ARRAY column type, rejected at CREATE), so the 23502
+  # scalar surface is gone; the regression pin moved to the DDL rejection.
+  - exec: CREATE SCHEMA TEMPLATE err_nn_probe CREATE TABLE tn (id BIGINT NOT NULL, PRIMARY KEY (id))
+    error_code: "0A000"
+  # NULL into the (nullable) s column now simply succeeds.
   - query: INSERT INTO t VALUES (3, 30, NULL)
-    error_code: "23502"
+    rowcount: 1
+  - query: DELETE FROM t WHERE id = 3
   # 23505 — PK uniqueness violation.
   - query: INSERT INTO t VALUES (1, 99, 'dup')
     error_code: "23505"

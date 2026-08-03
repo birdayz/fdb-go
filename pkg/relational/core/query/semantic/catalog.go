@@ -91,6 +91,44 @@ type Column struct {
 	// column still occupies its trailing slot in the flowed row layout, so
 	// ordinal binding (sourceRowType) keeps it.
 	Ephemeral bool
+
+	// StructFields is the DECLARED field list of a STRUCT column (Type
+	// "RECORD"), in declared order, and empty for every other column. It is
+	// the thing Java's lookupNestedField scans when it turns the path
+	// segments left over after the matched attribute prefix into
+	// FieldValue.Accessor(name, ordinal) entries (SemanticAnalyzer.java:
+	// 578-597, `((DataType.StructType) type).getFields()`).
+	//
+	// The ORDINAL a nested accessor carries is the field's POSITION IN THIS
+	// SLICE, which is why declared order is part of the contract and not an
+	// incidental property of how the slice was built: Java resolves the same
+	// accessor against Type.Record's field list and stores that list position
+	// (FieldValue.java:288-295 via getFieldNameToOrdinalMap), so the two
+	// agree only while both lists are the descriptor's own field order.
+	//
+	// Recursive by construction — a nested struct field carries its own
+	// StructFields — because a path may descend more than one level.
+	StructFields []Column
+}
+
+// LookupStructField scans a STRUCT column's declared fields for one named by
+// id and returns it with its ORDINAL (position in StructFields).
+//
+// This is Java's lookupNestedField inner loop (SemanticAnalyzer.java:584-593):
+// a linear scan, FIRST name match wins, and — the load-bearing part — a MISS
+// is not an error. Java returns Optional.empty() both for "this is not a
+// struct" (:581-583) and for "no field of that name" (:594-596); the failure
+// surfaces later and generically as UNDEFINED_COLUMN once every attribute of
+// every operator has declined. Reporting a bespoke "no such field" here would
+// turn a candidate that merely lost into a hard error, and a reference that
+// Java resolves against a LATER source would die on an EARLIER one.
+func (c Column) LookupStructField(id Identifier) (Column, int, bool) {
+	for i, f := range c.StructFields {
+		if f.Id.EqualsIgnoreQuoting(id) {
+			return f, i, true
+		}
+	}
+	return Column{}, 0, false
 }
 
 // InMemoryCatalog is a test-friendly Catalog built from a fixed list

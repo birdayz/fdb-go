@@ -24,7 +24,7 @@ func TestFDB_PrecedenceLevelsProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_preclvl")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_preclvl")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE preclvl CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE preclvl CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_preclvl/s WITH TEMPLATE preclvl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_preclvl?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

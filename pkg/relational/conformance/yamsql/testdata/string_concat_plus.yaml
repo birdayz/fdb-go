@@ -8,7 +8,7 @@
 name: string_concat_plus
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     n BIGINT,
     d DOUBLE,
     s STRING,

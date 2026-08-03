@@ -5,7 +5,7 @@
 # Both are spec-level functions over the three-valued logic system.
 name: coalesce_nullif
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a STRING, b STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'x', 'y'), (2, null, 'y'), (3, 'x', null), (4, null, null)
 tests:

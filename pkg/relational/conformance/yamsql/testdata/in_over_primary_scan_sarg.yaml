@@ -36,8 +36,8 @@
 name: in_over_primary_scan_sarg
 schema_template: |
   CREATE TABLE tbl (
-    id BIGINT NOT NULL,
-    k BIGINT NOT NULL,
+    id BIGINT,
+    k BIGINT,
     a BIGINT,
     b BIGINT,
     PRIMARY KEY (id, k)

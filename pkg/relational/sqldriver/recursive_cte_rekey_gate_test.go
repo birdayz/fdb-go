@@ -36,7 +36,7 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_rekey_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_rekey_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -130,7 +130,7 @@ func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_computed_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_computed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
@@ -185,7 +185,7 @@ func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_star_tmpl "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_star_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 

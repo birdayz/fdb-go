@@ -24,8 +24,8 @@ func dmlCascadesDB(t *testing.T, tag string) *sql.DB {
 	}
 	tmpl := "dmlc_tmpl_" + tag
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmpl+
-		" CREATE TABLE Item (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE Flag (name STRING NOT NULL, PRIMARY KEY (name))"); err != nil {
+		" CREATE TABLE Item (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE Flag (name STRING, PRIMARY KEY (name))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {

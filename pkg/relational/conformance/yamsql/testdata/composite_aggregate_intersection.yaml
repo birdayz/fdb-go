@@ -8,7 +8,7 @@
 name: composite_aggregate_intersection
 schema_template: |
   CREATE TABLE orders (
-    id BIGINT NOT NULL,
+    id BIGINT,
     customer_id BIGINT,
     amount BIGINT,
     PRIMARY KEY (id)

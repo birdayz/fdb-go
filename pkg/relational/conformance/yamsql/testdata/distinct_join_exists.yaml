@@ -4,8 +4,8 @@
 # with EXISTS subqueries.
 name: distinct_join_exists
 schema_template: |
-  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT, genre STRING, PRIMARY KEY (id))
+  CREATE TABLE authors (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT, author_id BIGINT, genre STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO authors VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
   - INSERT INTO books VALUES (10, 1, 'fiction'), (11, 1, 'science'), (12, 2, 'fiction'), (13, 2, 'fiction'), (14, 3, 'history')

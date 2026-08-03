@@ -4,7 +4,7 @@
 # Tests DDL, INSERT, SELECT, WHERE comparison, and CAST.
 name: float_column
 schema_template: |
-  CREATE TABLE Measurements (id BIGINT NOT NULL, temp FLOAT, PRIMARY KEY (id))
+  CREATE TABLE Measurements (id BIGINT, temp FLOAT, PRIMARY KEY (id))
 setup:
   - INSERT INTO Measurements VALUES (1, 36.6)
   - INSERT INTO Measurements VALUES (2, 98.6)

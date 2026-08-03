@@ -14,7 +14,7 @@ import (
 func TestCostSelectivity_PrefersEqualityIndex(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_a ON T(a)
 CREATE INDEX idx_b ON T(b)`
 

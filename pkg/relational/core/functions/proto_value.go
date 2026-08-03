@@ -3,6 +3,7 @@ package functions
 import (
 	"database/sql/driver"
 	"encoding/binary"
+	"errors"
 	"math"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -119,11 +121,20 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 	case protoreflect.MessageKind:
 		// UUID columns return the canonical 36-char string form for
 		// SQL consumption — matches Java's getString(uuidColumn) and
-		// our cross-engine plandiff harness's expectation. Other
-		// MessageKind fields are not supported as SQL columns.
+		// our cross-engine plandiff harness's expectation.
 		if isUUIDMessageField(fd) {
 			return uuidProtoMessageToString(v.Message())
 		}
+		// A NullableArrayWrapper column reads back as the []any it stores.
+		if inner, wrapped, ok := values.EffectiveListField(fd); ok && wrapped {
+			list := v.Message().Get(inner).List()
+			out := make([]any, list.Len())
+			for i := 0; i < list.Len(); i++ {
+				out[i] = ProtoValueToDriver(inner, list.Get(i))
+			}
+			return out
+		}
+		// Other MessageKind fields are not supported as SQL columns.
 		return v.Interface()
 	default:
 		return v.Interface()
@@ -137,46 +148,63 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 // NaN/Inf in float columns are rejected as silent-data-corruption
 // vectors.
 //
-// A repeated field (an ARRAY column) takes the evaluated array
-// literal — the []any an ArrayConstructorValue produces (Java's
-// LightArrayConstructorValue evals to a List) — and converts each
-// element through the same scalar lanes, mirroring Java's
-// MessageHelpers.coerceArray element-wise coercion. An empty []any
-// sets an empty (present) list; on Go's plain-repeated wire shape
-// (RFC-143 §3a — Java wraps a NULLABLE array in a `values` wrapper
-// message) an empty array serializes to no bytes and is therefore
-// indistinguishable from NULL on read, unlike Java where the wrapper
-// keeps [] ≠ NULL.
+// An ARRAY column takes the evaluated array literal — the []any an
+// ArrayConstructorValue produces (Java's LightArrayConstructorValue
+// evals to a List) — and converts each element through the same
+// scalar lanes, mirroring Java's MessageHelpers.coerceArray
+// element-wise coercion. A NON-nullable array is a flat repeated
+// field; a NULLABLE array is stored through the NullableArrayWrapper
+// (`message W { repeated E values = 1; }`), where a present wrapper
+// with an empty list keeps [] distinct from NULL — Java's exact wire
+// shape.
 func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
-	if fd.IsList() {
-		elems, ok := val.([]any)
-		if !ok {
+	if inner, wrapped, ok := values.EffectiveListField(fd); ok {
+		elems, elemsOK := val.([]any)
+		if !elemsOK {
 			// A scalar (or anything that is not an evaluated array
 			// literal) into an ARRAY column: same verbatim 22000 the
 			// scalar lanes end in.
 			return protoreflect.Value{}, cannotConvertTypeError()
 		}
-		parent := dynamicpb.NewMessage(fd.ContainingMessage())
-		lv := parent.NewField(fd)
-		list := lv.List()
-		for _, e := range elems {
-			if e == nil {
-				// Java forbids NULL elements in collections
-				// (MessageHelpers.coerceArray, SemanticException
-				// UNSUPPORTED — surfaces as an internal error;
-				// tracked upstream as fdb-record-layer#3646).
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
-					"NULL as elements of a collection are currently not supported")
-			}
-			pv, err := convertScalarProtoValue(fd, e)
-			if err != nil {
+		if wrapped {
+			// NULLABLE array: build the NullableArrayWrapper message —
+			// a PRESENT wrapper with an empty list keeps [] distinct
+			// from NULL (the absent field), exactly Java's stored shape.
+			wrapperMsg, list := values.NewWrappedArrayMessage(fd)
+			if err := appendArrayElements(list, inner, elems); err != nil {
 				return protoreflect.Value{}, err
 			}
-			list.Append(pv)
+			return protoreflect.ValueOfMessage(wrapperMsg), nil
+		}
+		parent := dynamicpb.NewMessage(fd.ContainingMessage())
+		lv := parent.NewField(fd)
+		if err := appendArrayElements(lv.List(), inner, elems); err != nil {
+			return protoreflect.Value{}, err
 		}
 		return lv, nil
 	}
 	return convertScalarProtoValue(fd, val)
+}
+
+// appendArrayElements converts each evaluated array-literal element through
+// the scalar lanes against the (effective) repeated field descriptor.
+func appendArrayElements(list protoreflect.List, elemFD protoreflect.FieldDescriptor, elems []any) error {
+	for _, e := range elems {
+		if e == nil {
+			// Java forbids NULL elements in collections
+			// (MessageHelpers.coerceArray, SemanticException
+			// UNSUPPORTED — surfaces as an internal error;
+			// tracked upstream as fdb-record-layer#3646).
+			return api.NewErrorf(api.ErrCodeInternalError,
+				"NULL as elements of a collection are currently not supported")
+		}
+		pv, err := convertScalarProtoValue(elemFD, e)
+		if err != nil {
+			return err
+		}
+		list.Append(pv)
+	}
+	return nil
 }
 
 func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
@@ -296,8 +324,64 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 				return uuidStringToProtoMessage(fd, uuid.UUID(v).String())
 			}
 		}
+		// A STRUCT cell. The typed row constructor the DML target-type
+		// push-down builds (Java: RecordConstructorValue, typed by
+		// ExpressionVisitor.parseRecordField's recursion,
+		// ExpressionVisitor.java:967-1008) evaluates to a map keyed by the
+		// TARGET field names — the names the push-down adopted from the
+		// column's Type.Record — so the nested message is built by walking
+		// the TARGET descriptor's fields, which is Java's own pairing:
+		// RecordConstructorValue.eval sets child i on
+		// `fieldDescriptors.get(i)` (RecordConstructorValue.java:113-139).
+		if m, ok := val.(map[string]any); ok {
+			return structToProtoValue(fd.Message(), m)
+		}
 	}
 	return protoreflect.Value{}, cannotConvertTypeError()
+}
+
+// structToProtoValue builds the nested dynamic message for a STRUCT cell
+// from the evaluated record constructor's field map.
+//
+// A field whose value is NULL is left ABSENT rather than set — Java's
+// RecordConstructorValue.eval takes the same branch (a null child is not
+// set on the builder at all, RecordConstructorValue.java:135), and absence
+// is what makes a nullable struct field read back as NULL. A NULL at a
+// NON-nullable field is rejected HERE and not one level up, because here is
+// where Java rejects it too: eval's `Verify.verify(fieldType.isNullable(),
+// "Cannot set a non-nullable field to the NULL value")` (:135) sits at the
+// message build, which is the one point every writer reaches — INSERT …
+// VALUES, INSERT … SELECT and UPDATE alike. The visitor-level gate
+// (ExpressionVisitor.java:1068) covers only the column a statement did not
+// mention at all.
+//
+// Each field is converted through ConvertToProtoValue, not the scalar
+// lanes, so a struct field that is itself an ARRAY takes the list arm —
+// including the NullableArrayWrapper build, which Java performs at this
+// same point in eval (RecordConstructorValue.java:127-131).
+func structToProtoValue(md protoreflect.MessageDescriptor, fields map[string]any) (protoreflect.Value, error) {
+	pv, err := values.BuildStructMessage(md, fields, ConvertToProtoValue)
+	if err != nil {
+		return protoreflect.Value{}, structBuildError(err)
+	}
+	return pv, nil
+}
+
+// structBuildError states the shared builder's typed failures in the SQL
+// layer's vocabulary: a NULL at a non-nullable field is the same 23502 the
+// top-level column gate reports, and a name the target struct does not
+// declare is unreachable from the DML push-down (every name is adopted FROM
+// the target descriptor), so it is loud rather than a silently dropped value.
+func structBuildError(err error) error {
+	var nn *values.NonNullableFieldError
+	if errors.As(err, &nn) {
+		return api.NewErrorf(api.ErrCodeNotNullViolation, "%s", nn.Error())
+	}
+	var ud *values.UndeclaredStructFieldError
+	if errors.As(err, &ud) {
+		return api.NewErrorf(api.ErrCodeInternalError, "%s", ud.Error())
+	}
+	return err
 }
 
 // cannotConvertTypeError is the Java-verbatim 22000: 'A value cannot

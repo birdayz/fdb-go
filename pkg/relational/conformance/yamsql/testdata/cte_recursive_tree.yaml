@@ -4,7 +4,7 @@
 # parent-child relationships, depth tracking.
 name: cte_recursive_tree
 schema_template: |
-  CREATE TABLE tree (id BIGINT NOT NULL, parent_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE tree (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO tree VALUES (1, null, 'Root'), (2, 1, 'A'), (3, 1, 'B'), (4, 2, 'A1'), (5, 2, 'A2'), (6, 3, 'B1')
 tests:

@@ -4,7 +4,7 @@
 # pattern for conditional counting and pivoting.
 name: aggregate_case_expression
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, product STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, region STRING, product STRING, amount BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES (1, 'east', 'A', 100), (2, 'east', 'B', 200), (3, 'west', 'A', 150), (4, 'west', 'B', 50), (5, 'east', 'A', 300)
 tests:

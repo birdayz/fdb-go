@@ -50,33 +50,29 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	md := buildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := sarrFD.Message()
+	elemDesc := arrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := substructFD.Message()
+	elem2Desc := arrayElementMessageDescriptor(substructFD)
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
 		m.Set(elem2Desc.Fields().ByName("LEAF"), protoreflect.ValueOfInt64(0))
-		dl := m.NewField(elem2Desc.Fields().ByName("DEEP")).List()
-		for _, d := range deep {
-			dl.Append(protoreflect.ValueOfInt32(d))
+		dvals := make([]protoreflect.Value, len(deep))
+		for i, d := range deep {
+			dvals[i] = protoreflect.ValueOfInt32(d)
 		}
-		m.Set(elem2Desc.Fields().ByName("DEEP"), protoreflect.ValueOfList(dl))
+		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
 		m.Set(elemDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(0))
-		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
-		for _, s := range sub {
-			sl.Append(protoreflect.ValueOfInt32(s))
+		svals := make([]protoreflect.Value, len(sub))
+		for i, s := range sub {
+			svals[i] = protoreflect.ValueOfInt32(s)
 		}
-		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
-		ssl := m.NewField(substructFD).List()
-		for _, ss := range substruct {
-			ssl.Append(ss)
-		}
-		m.Set(substructFD, protoreflect.ValueOfList(ssl))
+		setArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
+		setArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	// sub is the top-level SHADOW scalar (same bare name as the element's SUB
@@ -87,11 +83,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
-		sl := m.NewField(sarrFD).List()
-		for _, e := range sarr {
-			sl.Append(e)
-		}
-		m.Set(sarrFD, protoreflect.ValueOfList(sl))
+		setArrayField(m, sarrFD, sarr...)
 		return m
 	}
 

@@ -20,7 +20,7 @@ func TestFDB_OrderByDNFProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ob_dnf")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ob_dnf "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ob_dnf/s WITH TEMPLATE ob_dnf")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ob_dnf?cluster_file=%s&schema=s", clusterFilePath)

@@ -31,9 +31,9 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_usingstar")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE usingstar "+
-			"CREATE TABLE ja (c1 BIGINT NOT NULL, a2 STRING, PRIMARY KEY (c1)) "+
-			"CREATE TABLE jb (c1 BIGINT NOT NULL, b2 STRING, PRIMARY KEY (c1)) "+
-			"CREATE TABLE jd (c1 BIGINT NOT NULL, d2 STRING, PRIMARY KEY (c1))")
+			"CREATE TABLE ja (c1 BIGINT, a2 STRING, PRIMARY KEY (c1)) "+
+			"CREATE TABLE jb (c1 BIGINT, b2 STRING, PRIMARY KEY (c1)) "+
+			"CREATE TABLE jd (c1 BIGINT, d2 STRING, PRIMARY KEY (c1))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usingstar/s WITH TEMPLATE usingstar")
 	dsn := fmt.Sprintf("fdbsql:///testdb_usingstar?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

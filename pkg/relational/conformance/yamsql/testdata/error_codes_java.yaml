@@ -4,13 +4,13 @@
 name: error_codes_java
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     val BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE t2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     ref_id BIGINT,
     PRIMARY KEY (id)
   )

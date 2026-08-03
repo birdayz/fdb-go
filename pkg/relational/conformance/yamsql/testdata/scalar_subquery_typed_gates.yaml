@@ -1,7 +1,7 @@
 name: scalar_subquery_typed_gates
 schema_template: |
   CREATE TABLE gt (
-    id BIGINT NOT NULL,
+    id BIGINT,
     big BIGINT,
     small INTEGER,
     flag BOOLEAN,

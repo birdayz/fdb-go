@@ -57,11 +57,11 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	rejectsCode("create_database_exists", "CREATE DATABASE /testdb_ddlerrp", "42F04")
 	rejectsCode("drop_nonexistent_database", "DROP DATABASE /testdb_nope_xyz_123", "42F63")
 	rejectsCode("table_without_primary_key",
-		"CREATE SCHEMA TEMPLATE de_nopk CREATE TABLE t (id BIGINT NOT NULL, x BIGINT)", "42601")
+		"CREATE SCHEMA TEMPLATE de_nopk CREATE TABLE t (id BIGINT, x BIGINT)", "42601")
 	// duplicate column → clean 42701 (validated in parseTableDefinition before the
 	// proto-descriptor build that used to leak an XX000 internal error).
 	rejectsCode("duplicate_column",
-		"CREATE SCHEMA TEMPLATE de_dup CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))", "42701")
+		"CREATE SCHEMA TEMPLATE de_dup CREATE TABLE t (id BIGINT, x BIGINT, x STRING, PRIMARY KEY (id))", "42701")
 
 	// CASE-COLLIDING quoted columns ("y" alongside Y — legitimately
 	// distinct in Java) reject cleanly at CREATE: Go's positional row
@@ -69,17 +69,17 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	// PANIC deep in planning (XX000 "NewRecordType: duplicate field
 	// name") on the first statement touching the table (WS-N).
 	rejectsCode("case-colliding quoted columns reject at CREATE",
-		"CREATE SCHEMA TEMPLATE de_fold CREATE TABLE t (id BIGINT NOT NULL, \"y\" BIGINT, y BIGINT, PRIMARY KEY (id))", "0A000")
+		"CREATE SCHEMA TEMPLATE de_fold CREATE TABLE t (id BIGINT, \"y\" BIGINT, y BIGINT, PRIMARY KEY (id))", "0A000")
 	// PK over an unknown column → clean 42703 (validated in parseTableDefinition
 	// before the metadata build that used to leak an XX000 internal error).
 	rejectsCode("pk_unknown_column",
-		"CREATE SCHEMA TEMPLATE de_badpk CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (nope))", "42703")
+		"CREATE SCHEMA TEMPLATE de_badpk CREATE TABLE t (id BIGINT, PRIMARY KEY (nope))", "42703")
 	rejects("unknown_column_type",
-		"CREATE SCHEMA TEMPLATE de_badtype CREATE TABLE t (id BIGINT NOT NULL, x FROBNICATE, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE de_badtype CREATE TABLE t (id BIGINT, x FROBNICATE, PRIMARY KEY (id))")
 
 	t.Run("duplicate_template_name", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
-		_, err := db.ExecContext(ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE u (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+		_, err := db.ExecContext(ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
 		if err == nil || !strings.Contains(err.Error(), "42F59") {
 			t.Errorf("duplicate template error = %v, want 42F59", err)
 		}

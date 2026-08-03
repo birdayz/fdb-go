@@ -66,7 +66,7 @@ func explainOnlyTextWithSchema(t *testing.T, schemaDDL, sql string) string {
 func TestExplainOnlyModeWithSchema_StillRendersLogicalText(t *testing.T) {
 	t.Parallel()
 	got := explainOnlyTextWithSchema(t,
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		"SELECT * FROM t WHERE id > 5")
 	if want := "Filter(ID#0 > 5)\n  Scan(T)"; got != want {
 		t.Fatalf("explain-only-with-schema text = %q, want %q", got, want)
@@ -87,10 +87,10 @@ func TestExplainOnlyModeWithSchema_StillRendersLogicalText(t *testing.T) {
 func TestExplainOnlyMode_KeepsCrossDerivedPredicate(t *testing.T) {
 	t.Parallel()
 	const schema = "CREATE SCHEMA TEMPLATE evasion_tmpl " +
-		"CREATE TABLE a (id BIGINT NOT NULL, av BIGINT, PRIMARY KEY (id)) " +
-		"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) " +
-		"CREATE TABLE c (id BIGINT NOT NULL, cv BIGINT, PRIMARY KEY (id)) " +
-		"CREATE TABLE d (id BIGINT NOT NULL, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))"
+		"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) " +
+		"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) " +
+		"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) " +
+		"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))"
 	const evasion = "SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
 		"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
 		"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
@@ -126,7 +126,7 @@ func TestExplainMirrorsThePlansOwnExplain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			const schema = "CREATE SCHEMA TEMPLATE mirror_tmpl " +
-				"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"
+				"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"
 			gen, err := NewExplainOnlyGeneratorWithSchema(schema)
 			if err != nil {
 				t.Fatalf("NewExplainOnlyGeneratorWithSchema: %v", err)

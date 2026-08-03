@@ -52,7 +52,7 @@ func TestSQL_OverSimFDB(t *testing.T) {
 	defer setup.Close()
 	mustExecSQL(t, setup, ctx, "CREATE DATABASE /simdb")
 	mustExecSQL(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///simdb?cluster_file=%s&schema=s", key))

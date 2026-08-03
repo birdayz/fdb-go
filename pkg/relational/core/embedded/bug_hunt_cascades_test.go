@@ -17,7 +17,7 @@ import (
 func TestBugHunt_AggregateIndexResidualNotDropped(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, region STRING, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, region STRING, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_status ON ORDERS(status)
 CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region`
 
@@ -77,7 +77,7 @@ CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 func TestBugHunt_AggregateIndexMultiKeyResidual(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a STRING, b STRING, c STRING, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 
 	// Must NOT use the aggregate index — the residual can't be faithfully bound.
@@ -123,7 +123,7 @@ CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 // the same as `SUM(v) < g` (filter above the aggregation).
 func TestBugHunt_HavingAggregateNotPushedBelowGroupBy(t *testing.T) {
 	t.Parallel()
-	const schema = `CREATE TABLE T (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))`
+	const schema = `CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))`
 
 	for _, sql := range []string{
 		"SELECT g, SUM(v) FROM t GROUP BY g HAVING g > SUM(v)",
@@ -159,7 +159,7 @@ func TestBugHunt_HavingAggregateNotPushedBelowGroupBy(t *testing.T) {
 func TestBugHunt_CountColumnNotForcedCovering(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_amount ON ORDERS(amount)`
 
 	// COUNT(status) over an idx_amount range: status is NOT in idx_amount, so a
@@ -204,7 +204,7 @@ CREATE INDEX idx_amount ON ORDERS(amount)`
 func TestBugHunt_InListLimitNoNilInner(t *testing.T) {
 	t.Parallel()
 	const schema = `
-CREATE TABLE ORDERS (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+CREATE TABLE ORDERS (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_customer ON ORDERS(customer_id)`
 	for _, sql := range []string{
 		"SELECT id, amount FROM orders WHERE customer_id IN (0,1,2,3,4) LIMIT 5", // non-covering
@@ -226,7 +226,7 @@ CREATE INDEX idx_customer ON ORDERS(customer_id)`
 // and elide the enclosing DISTINCT.
 func TestBugHunt_DistinctOverUnionAllKeepsDedup(t *testing.T) {
 	t.Parallel()
-	const schema = `CREATE TABLE T (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`
+	const schema = `CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 	const sql = "SELECT DISTINCT * FROM (SELECT * FROM t WHERE id > 0 UNION ALL SELECT * FROM t WHERE id > 0) AS u"
 	plan, err := PlanQueryForTest(sql, schema, nil)
 	if err != nil {

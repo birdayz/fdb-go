@@ -24,7 +24,7 @@ func TestFDB_IndexOracleConsistency(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_idxoracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxoracle "+
-			"CREATE TABLE t (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxoracle/s WITH TEMPLATE idxoracle")
 	dsn := fmt.Sprintf("fdbsql:///testdb_idxoracle?cluster_file=%s&schema=s", clusterFilePath)

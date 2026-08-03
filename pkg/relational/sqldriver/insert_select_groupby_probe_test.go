@@ -24,8 +24,8 @@ func TestFDB_InsertSelectGroupByProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_isg")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_isg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE isg "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE dst (g BIGINT NOT NULL, total BIGINT, PRIMARY KEY (g))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE dst (g BIGINT, total BIGINT, PRIMARY KEY (g))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_isg/s WITH TEMPLATE isg")
 	dsn := fmt.Sprintf("fdbsql:///testdb_isg?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

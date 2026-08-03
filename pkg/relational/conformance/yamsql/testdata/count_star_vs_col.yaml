@@ -4,7 +4,7 @@
 # COUNT(col) only counts non-NULL values in that column.
 name: count_star_vs_col
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'a'), (2, null, 'b'), (3, 30, null), (4, null, null)
 tests:

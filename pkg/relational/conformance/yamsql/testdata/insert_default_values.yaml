@@ -3,7 +3,7 @@
 # Exercises INSERT where optional (non-PK) columns are set to NULL.
 name: insert_default_values
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, name STRING, score BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, name STRING, score BIGINT, PRIMARY KEY (id))
 setup: []
 tests:
   # Insert with explicit NULL

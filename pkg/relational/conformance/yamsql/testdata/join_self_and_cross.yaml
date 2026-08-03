@@ -3,7 +3,7 @@
 # Exercises self-join within the same query as a cross-join to a lookup table.
 name: join_self_and_cross
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'CEO', null), (2, 'VP', 1), (3, 'Director', 2), (4, 'Manager', 2)
 tests:

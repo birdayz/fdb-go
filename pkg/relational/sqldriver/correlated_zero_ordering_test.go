@@ -46,9 +46,9 @@ func TestFDB_CorrelatedZeroOrdering(t *testing.T) {
 	setup := openTestDB(t, "/testdb_czo")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czo")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czo "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
-		"CREATE TABLE o (id BIGINT NOT NULL, k DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czo/s WITH TEMPLATE czo")
 	dsn := fmt.Sprintf("fdbsql:///testdb_czo?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

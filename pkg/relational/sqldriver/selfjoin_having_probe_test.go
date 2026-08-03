@@ -22,8 +22,8 @@ func TestFDB_SelfJoinHavingProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_selfjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfjoin "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) CREATE INDEX a_x ON a (x)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfjoin/s WITH TEMPLATE selfjoin")
 	dsn := fmt.Sprintf("fdbsql:///testdb_selfjoin?cluster_file=%s&schema=s", clusterFilePath)

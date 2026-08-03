@@ -9,7 +9,7 @@
 # live-pinned in plandiff.
 name: order_by_limit
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_v ON t (v)
 setup:
   - INSERT INTO t VALUES (1, 'a', 3), (2, 'a', 1), (3, 'b', 4), (4, 'b', 1), (5, 'a', 2)

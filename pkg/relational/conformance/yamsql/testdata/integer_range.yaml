@@ -7,7 +7,7 @@
 # SQLSTATE: 22003 (NUMERIC_VALUE_OUT_OF_RANGE).
 name: integer_range
 schema_template: |
-  CREATE TABLE IntTest (id BIGINT NOT NULL, val INTEGER, PRIMARY KEY (id))
+  CREATE TABLE IntTest (id BIGINT, val INTEGER, PRIMARY KEY (id))
 setup:
   - INSERT INTO IntTest VALUES (1, 2147483647)
   - INSERT INTO IntTest VALUES (2, -2147483648)

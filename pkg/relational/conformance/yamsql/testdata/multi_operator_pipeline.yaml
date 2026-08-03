@@ -5,8 +5,8 @@
 # These catch integration bugs between operators.
 name: multi_operator_pipeline
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))
-  CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_category ON products (category)
 setup:
   - INSERT INTO products VALUES (1, 'electronics', 100), (2, 'electronics', 200), (3, 'books', 50), (4, 'books', 30), (5, 'clothing', 80)

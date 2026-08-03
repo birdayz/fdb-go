@@ -32,7 +32,7 @@ func TestFDB_ReturningClauseProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_ret")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ret")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE ret CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE ret CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ret/s WITH TEMPLATE ret")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ret?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

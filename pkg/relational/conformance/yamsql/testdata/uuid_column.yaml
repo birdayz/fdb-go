@@ -7,7 +7,7 @@
 # Tests: DDL, INSERT, SELECT, WHERE equality, CAST(string AS UUID).
 name: uuid_column
 schema_template: |
-  CREATE TABLE Sessions (id BIGINT NOT NULL, session_id UUID, PRIMARY KEY (id))
+  CREATE TABLE Sessions (id BIGINT, session_id UUID, PRIMARY KEY (id))
 setup:
   - INSERT INTO Sessions VALUES (1, CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID))
   - INSERT INTO Sessions VALUES (2, CAST('6ba7b810-9dad-11d1-80b4-00c04fd430c8' AS UUID))

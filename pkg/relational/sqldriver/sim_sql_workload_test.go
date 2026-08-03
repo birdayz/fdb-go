@@ -25,7 +25,7 @@ func TestSQL_SimFDB_WorkloadDriver(t *testing.T) {
 	defer setup.Close()
 	mustExecSQL(t, setup, ctx, "CREATE DATABASE /wl")
 	mustExecSQL(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE wt CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE wt CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /wl/s WITH TEMPLATE wt")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///wl?cluster_file=%s&schema=s", key))

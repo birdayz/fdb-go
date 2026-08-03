@@ -1,6 +1,6 @@
 # scenario: joins (seed 2)
-#   CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))
-#   CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
+#   CREATE TABLE cust (cid BIGINT, region BIGINT, PRIMARY KEY (cid))
+#   CREATE TABLE ord (oid BIGINT, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid
@@ -18,7 +18,7 @@ ROWS(2) cols=[REGION, SUM(O.AMT)]:
   [20, 30]
 
 === SELECT o.oid FROM ord o JOIN cust c ON o.cid = c.cid WHERE c.region = 10 ORDER BY o.oid
-PLAN: Project([O.OID#0], InMemorySort([O.OID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(CUST), [1 preds]), inner=Fetch(IndexScan(ORD_CID, [=])))))
+PLAN: Project([O.OID#0], FlatMap(outer=Scan(ORD), inner=PredicatesFilter(Scan(CUST, [=]), [1 preds])))
 ROWS(3) cols=[OID]:
   [100]
   [101]

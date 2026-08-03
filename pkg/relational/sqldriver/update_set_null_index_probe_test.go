@@ -22,7 +22,7 @@ func TestFDB_UpdateSetNullIndexProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_usni")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_usni")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE usni CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE SCHEMA TEMPLATE usni CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usni/s WITH TEMPLATE usni")
 	dsn := fmt.Sprintf("fdbsql:///testdb_usni?cluster_file=%s&schema=s", clusterFilePath)

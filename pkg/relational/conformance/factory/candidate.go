@@ -11,7 +11,11 @@ import (
 // seed produce a different candidate — otherwise a committed file claims a
 // reproduction recipe that no longer reproduces it, and TestFactoryDeterminism
 // is the thing that notices.
-const GeneratorVersion = "rowdiff-gen/1"
+// gen/2: the emitted schema template dropped the scalar `NOT NULL` on the
+// id column (rejected at CREATE since the DdlVisitor parity port — scalar
+// non-nullability is unrepresentable in RecordMetaData), so every seed's
+// DDL text changed; the committed corpus was rewritten in the same change.
+const GeneratorVersion = "rowdiff-gen/2"
 
 // FactoryRowCap bounds a case's row count.
 //

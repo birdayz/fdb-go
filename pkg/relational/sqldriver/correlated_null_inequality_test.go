@@ -24,8 +24,8 @@ func TestFDB_CorrelatedNullInequality(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrineq")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrineq "+
-			"CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, k BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_k ON b (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrineq/s WITH TEMPLATE corrineq")
 	dsn := fmt.Sprintf("fdbsql:///testdb_corrineq?cluster_file=%s&schema=s", clusterFilePath)

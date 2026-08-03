@@ -4,7 +4,7 @@
 # must be in the SELECT list (SQL standard requirement for DISTINCT).
 name: distinct_order_by
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, category STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, category STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 10), (5, 'B', 20)
 tests:

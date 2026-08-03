@@ -10,12 +10,12 @@ import (
 
 const correlatedScalarCardinalitySchema = `
 CREATE TABLE PARENT (
-  id BIGINT NOT NULL,
+  id BIGINT,
   wanted BIGINT,
   PRIMARY KEY (id)
 )
 CREATE TABLE CHILD (
-  id BIGINT NOT NULL,
+  id BIGINT,
   parent_id BIGINT,
   grp STRING,
   val BIGINT,

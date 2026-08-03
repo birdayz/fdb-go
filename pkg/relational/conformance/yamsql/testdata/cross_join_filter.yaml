@@ -4,8 +4,8 @@
 # create filtered Cartesian products.
 name: cross_join_filter
 schema_template: |
-  CREATE TABLE sizes (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
-  CREATE TABLE colors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sizes (id BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE colors (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO sizes VALUES (1, 'S'), (2, 'M'), (3, 'L')
   - INSERT INTO colors VALUES (10, 'Red'), (20, 'Blue'), (30, 'Green')

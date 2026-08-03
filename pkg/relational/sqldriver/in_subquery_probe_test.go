@@ -24,8 +24,8 @@ func TestFDB_InSubqueryProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_insubqp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_insubqp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE insubqp "+
-		"CREATE TABLE outr (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE inr (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE outr (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE inr (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_insubqp/s WITH TEMPLATE insubqp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_insubqp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

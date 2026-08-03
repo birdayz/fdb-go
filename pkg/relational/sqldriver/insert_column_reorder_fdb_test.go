@@ -12,7 +12,10 @@ package sqldriver_test
 //     to 42703-reject, a shared-surface divergence armed the moment RFC-202
 //     S3 let that file's DDL through);
 //   - a nullable target field absent from the list is filled with NULL;
-//   - a NON-nullable target field absent from the list is 23502;
+//   - a NON-nullable target field absent from the list is 23502 (the only
+//     non-nullable columns are ARRAY NOT NULL ones — scalar NOT NULL is
+//     unexpressible, Java parity: NOT NULL is only allowed for ARRAY column
+//     type, rejected at CREATE — so the arm is probed through an array);
 //   - more VALUES than named columns is 42601 "Too many parameters";
 //   - a named target field with no value is 42601 "Value of column X is not
 //     provided".
@@ -34,8 +37,8 @@ func TestFDB_InsertColumnListReorderings(t *testing.T) {
 	setup := openTestDB(t, "/testdb_iclr")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_iclr")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iclr "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, a BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE u (id BIGINT, a BIGINT ARRAY NOT NULL, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_iclr/s WITH TEMPLATE iclr")
 	dsn := fmt.Sprintf("fdbsql:///testdb_iclr?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -70,10 +73,11 @@ func TestFDB_InsertColumnListReorderings(t *testing.T) {
 		t.Fatalf("a = %v, want NULL", aNull.Int64)
 	}
 
-	// (3) NOT NULL field absent from the list → 23502.
+	// (3) Non-nullable field absent from the list → 23502. u.a is
+	// BIGINT ARRAY NOT NULL — the one remaining non-nullable column shape.
 	_, err = db.ExecContext(ctx, "INSERT INTO u(id) VALUES (3)")
 	if err == nil || !strings.Contains(err.Error(), "23502") {
-		t.Fatalf("absent NOT NULL column must be 23502 (Java :1068), got: %v", err)
+		t.Fatalf("absent NOT NULL ARRAY column must be 23502 (Java :1068), got: %v", err)
 	}
 	if err != nil && !strings.Contains(err.Error(), "violates not-null constraint") {
 		t.Fatalf("want Java's wording 'violates not-null constraint', got: %v", err)

@@ -36,7 +36,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 	// across parallel fuzz workers sharing the one FDB container.
 	_, _ = setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	_, _ = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE fuzz_tmpl "+
-		"CREATE TABLE t (id BIGINT NOT NULL, name STRING, amount BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))")
 	_, _ = setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE fuzz_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))

@@ -4,8 +4,8 @@
 # join-tests.yamsql.
 name: join_error_codes
 schema_template: |
-  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
   - INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Marketing')

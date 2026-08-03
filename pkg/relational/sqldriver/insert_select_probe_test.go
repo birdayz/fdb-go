@@ -27,10 +27,10 @@ func TestFDB_InsertSelectProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inssel")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inssel "+
-			"CREATE TABLE src (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE dst (id BIGINT NOT NULL, x DOUBLE, y BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE src (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dst (id BIGINT, x DOUBLE, y BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX dst_x ON dst (x) "+
-			"CREATE TABLE lk (id BIGINT NOT NULL, label BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE lk (id BIGINT, label BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inssel/s WITH TEMPLATE inssel")
 	dsn := fmt.Sprintf("fdbsql:///testdb_inssel?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

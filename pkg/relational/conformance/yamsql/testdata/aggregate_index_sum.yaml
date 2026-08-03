@@ -5,7 +5,7 @@
 name: aggregate_index_sum
 schema_template: |
   CREATE TABLE sales (
-    id BIGINT NOT NULL,
+    id BIGINT,
     region STRING,
     category STRING,
     amount BIGINT,

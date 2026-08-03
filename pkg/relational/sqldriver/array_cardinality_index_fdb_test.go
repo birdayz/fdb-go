@@ -34,10 +34,11 @@ import (
 // reworked ordered-index-scan + predicate matching that bind by Value-tree
 // equality rather than FieldValue-name strings.
 //
-// Data semantics follow Go's array WRITE representation (RFC-143 §3a): Go
-// writes plain repeated array fields, so an empty array is wire-
-// indistinguishable from NULL/unset — both read back as SQL NULL. The index
-// key agrees: empty/unset → NULL key; populated → element count.
+// Data semantics follow the array WRITE representation: a NULLABLE array
+// column stores the NullableArrayWrapper, so an empty array (present wrapper,
+// empty list) stays distinct from NULL/unset — cardinality 0 vs NULL. A NOT
+// NULL array column stays a flat repeated field, where empty is wire-
+// indistinguishable from unset (NULL key). The index key agrees.
 //
 // Array literals are not expressible in SQL INSERT here, so rows are written
 // via the record-store API (dynamicpb repeated fields), and the cardinality
@@ -92,11 +93,11 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
-		list := m.NewField(fd).List()
-		for _, v := range vals {
-			list.Append(protoreflect.ValueOfInt32(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(list))
+		setArrayField(m, fd, pvals...)
 	}
 	arrRec := func(d protoreflect.MessageDescriptor, id int32, arr []int32, set bool) proto.Message {
 		m := dynamicpb.NewMessage(d)
@@ -247,25 +248,31 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 
 	// --- WHERE CARDINALITY(arr) IS [NOT] NULL → null-range index scan. ---
 	t.Run("is null uses index null-range", func(t *testing.T) {
-		// id0 (NULL array) and id1 (empty array, reads as NULL per §3a) both
-		// have a NULL cardinality key → the [null] equality range.
+		// Only id0 (unset array) has a NULL cardinality key → the [null]
+		// equality range. id1's [] counts 0 — empty array is distinct from NULL
+		// through the NullableArrayWrapper (present wrapper, empty list) —
+		// Java's semantics.
 		assertSetWithExplain(t,
 			`SELECT "ID" FROM "TAB_IDX" WHERE CARDINALITY("INT_ARR") IS NULL`,
-			[]string{"ID=0", "ID=1"},
+			[]string{"ID=0"},
 			[]string{"IndexScan(TAB_IDX_CARD"},
 			[]string{"Scan(TAB_IDX)", "PredicatesFilter"})
 	})
 	t.Run("is not null uses index null-range", func(t *testing.T) {
+		// empty array is distinct from NULL through the NullableArrayWrapper
+		// (present wrapper, empty list) — Java's semantics: id1 (card 0) is
+		// NOT NULL alongside the populated id2/id3.
 		assertSetWithExplain(t,
 			`SELECT "ID" FROM "TAB_IDX" WHERE CARDINALITY("INT_ARR") IS NOT NULL`,
-			[]string{"ID=2", "ID=3"},
+			[]string{"ID=1", "ID=2", "ID=3"},
 			[]string{"IndexScan(TAB_IDX_CARD"},
 			[]string{"Scan(TAB_IDX)", "PredicatesFilter"})
 	})
 
 	// --- ORDER BY CARDINALITY(arr) ASC/DESC → ordered index scan (no sort). ---
 	t.Run("order by asc uses index (no in-memory sort)", func(t *testing.T) {
-		// Index order: NULL first, then card 1, card 2 — ids 0,1 (NULL), 2, 3.
+		// Index order: NULL first (id0 unset), then card 0 (id1's []), 1, 2 —
+		// ids 0, 1, 2, 3.
 		assertOrderedWithExplain(t,
 			`SELECT "ID" FROM "TAB_IDX" ORDER BY CARDINALITY("INT_ARR")`,
 			[]string{"ID=0", "ID=1", "ID=2", "ID=3"},
@@ -273,7 +280,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 			[]string{"InMemorySort", "Sort("})
 	})
 	t.Run("order by desc uses index reverse (no in-memory sort)", func(t *testing.T) {
-		// REVERSE: card 2, card 1, then NULLs last — ids 3, 2, 1, 0.
+		// REVERSE: card 2, 1, 0, then the NULL (unset) last — ids 3, 2, 1, 0.
 		assertOrderedWithExplain(t,
 			`SELECT "ID" FROM "TAB_IDX" ORDER BY CARDINALITY("INT_ARR") DESC`,
 			[]string{"ID=3", "ID=2", "ID=1", "ID=0"},

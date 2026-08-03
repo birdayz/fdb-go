@@ -7,7 +7,7 @@
 # documenting the current limitation.
 name: bug_hunt_probes
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, null), (4, null, 'd')
 tests:

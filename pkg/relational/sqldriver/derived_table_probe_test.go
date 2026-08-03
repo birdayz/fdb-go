@@ -23,8 +23,8 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_derived")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE derived "+
-			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_derived/s WITH TEMPLATE derived")
 	dsn := fmt.Sprintf("fdbsql:///testdb_derived?cluster_file=%s&schema=s", clusterFilePath)

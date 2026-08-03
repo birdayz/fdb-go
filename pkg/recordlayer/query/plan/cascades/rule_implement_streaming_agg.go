@@ -83,8 +83,26 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	sortKeys := make([]plans.SortKey, len(groupingKeys))
-	for i, gk := range groupingKeys {
+	// The pre-aggregate ordering requirement is expressed over the PRIMITIVE
+	// LEAF accessors of each grouping key, not the key itself — Java's
+	// Values.primitiveAccessorsForType (Values.java:99-121), applied on the
+	// grouping path at ImplementStreamingAggregationRule.java:111. This is
+	// what makes GROUP BY <struct> answerable: a RECORD-typed key flattens
+	// into its leaves in field order (recursively), so the sort comparator
+	// only ever orders primitives — the "no ordering defined between
+	// *dynamicpb.Message" row-time crash is unreachable. Group-break
+	// EQUALITY still evaluates the original keys (the executor packs
+	// composite key values losslessly), matching Java, where equality is
+	// message-level while ordering is leaf-level.
+	orderingKeys, expandErr := expandGroupingKeysToPrimitives(groupingKeys)
+	if expandErr != nil {
+		// A grouping key with no leaf decomposition (ARRAY/RELATION):
+		// declining yields no plan — the ORDER-path outcome for an
+		// unsatisfiable ordering — rather than a bolted-on type check.
+		return
+	}
+	sortKeys := make([]plans.SortKey, len(orderingKeys))
+	for i, gk := range orderingKeys {
 		// ValueExpr ALWAYS drives the pre-aggregate sort — the aggregateCursor
 		// groups by `gk.Evaluate(row)`, so the REQUIRED sort must order by the
 		// SAME evaluated key (a qualified `V.V` leg reference collapsed to its
@@ -133,7 +151,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// reads every row via random PK lookups, always slower than
 	// InMemorySort(FullScan). Selective Fetches (WHERE predicate
 	// consumed by the index) are kept — they read fewer rows.
-	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
+	orderedExpr := findOrderedPhysicalExpr(innerRef, orderingKeys)
 	if orderedExpr != nil {
 		if fw, isFetch := orderedExpr.(*plans.RecordQueryFetchFromPartialRecordPlan); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
@@ -152,11 +170,12 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// (memoizePlan); this is that discipline extended through the
 			// delegation spine. Declining (nil) keeps the InMemorySort
 			// alternative, which is always order-correct.
-			parts := make([]properties.RequestedOrderingPart, len(groupingKeys))
-			for i, gk := range groupingKeys {
+			parts := make([]properties.RequestedOrderingPart, len(orderingKeys))
+			for i, gk := range orderingKeys {
 				// Streaming aggregation needs equal keys ADJACENT — any
 				// consistent per-key direction works, matching the
-				// direction-agnostic admission above.
+				// direction-agnostic admission above. Leaf accessors, same
+				// set the admission matched on.
 				parts[i] = properties.RequestedOrderingPart{Value: gk, SortOrder: properties.RequestedSortOrderAny}
 			}
 			groupReq := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)

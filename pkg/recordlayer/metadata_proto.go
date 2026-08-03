@@ -18,8 +18,15 @@ import (
 func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	md := &gen.MetaData{}
 
-	// 1. File descriptor
-	md.Records = protodesc.ToFileDescriptorProto(m.fileDescriptor)
+	// 1. File descriptor. The retained source proto (when present) is
+	// emitted verbatim — Java's toProto() returns the original
+	// FileDescriptorProto, and the protodesc reconstruction would diverge
+	// byte-wise (absolutized type names, json_name).
+	if m.recordsSourceProto != nil {
+		md.Records = proto.Clone(m.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
+	} else {
+		md.Records = protodesc.ToFileDescriptorProto(m.fileDescriptor)
+	}
 
 	// 2. Dependencies (transitive)
 	deps := collectDependencies(m.fileDescriptor)
@@ -50,12 +57,21 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Record types (sorted by name for determinism)
+	// 5. Record types, in DECLARATION order (the union field number):
+	// Java's serializer emits them in visit order, so the stored bytes
+	// carry union order, not name order — byte-golden-pinned. Name is the
+	// deterministic tiebreak for equal indexes (hand-built metadata).
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)
 	}
-	sort.Strings(rtNames)
+	sort.Slice(rtNames, func(i, j int) bool {
+		a, b := m.recordTypes[rtNames[i]], m.recordTypes[rtNames[j]]
+		if a.RecordTypeIndex != b.RecordTypeIndex {
+			return a.RecordTypeIndex < b.RecordTypeIndex
+		}
+		return rtNames[i] < rtNames[j]
+	})
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]
@@ -106,6 +122,16 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		return nil, &MetaDataError{Message: "nil metadata proto"}
 	}
 
+	// Retain the stored records proto VERBATIM before the rebuild: a re-save
+	// must emit the same bytes Java (or a previous Go) wrote, and
+	// rebuildFileDescriptor mutates its input (absolutizeFieldTypeNames
+	// rewrites relative type names in place), so the retained copy is cloned
+	// first and the rebuild operates on a second clone.
+	var recordsSource *descriptorpb.FileDescriptorProto
+	if md.Records != nil {
+		recordsSource = proto.Clone(md.Records).(*descriptorpb.FileDescriptorProto)
+	}
+
 	// 1. Rebuild file descriptor from proto
 	fd, err := rebuildFileDescriptor(md.Records, md.Dependencies)
 	if err != nil {
@@ -120,6 +146,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	// message is annotated with usage=UNION.
 	unionName := findUnionDescriptorName(fd)
 	builder := NewRecordMetaDataBuilder().setRecordsWithUnionName(fd, unionName)
+	builder.SetRecordsSourceProto(recordsSource)
 
 	// 3. Load indexes first (need them before record type association)
 	indexMap := make(map[string]*Index)
@@ -487,6 +514,13 @@ func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDesc
 	}
 	walk(fd)
 	return deps
+}
+
+// AbsolutizeFieldTypeNames is the exported form of
+// absolutizeFieldTypeNames, for builders that retain a Java-shaped
+// (relative-name) proto but need a protodesc-buildable clone.
+func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
+	absolutizeFieldTypeNames(fd)
 }
 
 // absolutizeFieldTypeNames rewrites relative FieldDescriptorProto.type_name to absolute. protodesc.NewFile resolves relative type_names against the enclosing message scope; Java's buildFrom searches outward.

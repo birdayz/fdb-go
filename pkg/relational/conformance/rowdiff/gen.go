@@ -1586,7 +1586,7 @@ func (c *Case) DDL() string {
 	var b strings.Builder
 	b.WriteString("CREATE TABLE ")
 	b.WriteString(c.Table.Name)
-	b.WriteString(" (id BIGINT NOT NULL")
+	b.WriteString(" (id BIGINT")
 	for _, col := range c.Table.Cols {
 		b.WriteString(", ")
 		b.WriteString(strings.ToLower(col.Name))

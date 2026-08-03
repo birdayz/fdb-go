@@ -22,7 +22,7 @@ func TestFDB_LikePatternProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_like")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_like")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE likep CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE likep CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like/s WITH TEMPLATE likep")
 	dsn := fmt.Sprintf("fdbsql:///testdb_like?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

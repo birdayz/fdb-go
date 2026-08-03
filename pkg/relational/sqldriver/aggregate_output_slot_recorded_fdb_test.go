@@ -71,8 +71,8 @@ func TestFDB_AggregateOutputSlotIsRecordedAtComposition(t *testing.T) {
 	aosrMustExec(t, setup, ctx, "CREATE DATABASE /testdb_agg_slot_recorded")
 	aosrMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_slot_recorded "+
-			"CREATE TABLE ot (k BIGINT NOT NULL, v BIGINT, PRIMARY KEY (k)) "+
-			"CREATE TABLE it (k BIGINT NOT NULL, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
+			"CREATE TABLE ot (k BIGINT, v BIGINT, PRIMARY KEY (k)) "+
+			"CREATE TABLE it (k BIGINT, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
 	aosrMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_agg_slot_recorded/s WITH TEMPLATE agg_slot_recorded")
 	db, err := sql.Open("fdbsql",
 		fmt.Sprintf("fdbsql:///testdb_agg_slot_recorded?cluster_file=%s&schema=s", clusterFilePath))

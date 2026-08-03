@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"errors"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -269,6 +271,18 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 			s.MetadataName(), tmpl.MetadataName(), tmpl.Version())
 	}
 
+	// A REBIND (an existing schema row moving to different template
+	// metadata) must pass the metadata-evolution validator before the row
+	// flips: the record type key is the LEADING element of every stored
+	// record key, so a key-changing evolution makes the store read old type
+	// A's rows as new type B's — silent data corruption, not an error. This
+	// is the same guard the frl CLI applies (the faithful
+	// MetaDataEvolutionValidator.java:418 port); RepairSchema funnels
+	// through here too.
+	if err := c.validateSchemaRebind(txn, s); err != nil {
+		return err
+	}
+
 	rec := &gen.Schemas{
 		DATABASE_ID:      proto.String(s.DatabaseName()),
 		SCHEMA_NAME:      proto.String(s.MetadataName()),
@@ -277,6 +291,62 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
 		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema")
+	}
+	return nil
+}
+
+// validateSchemaRebind runs the ported MetaDataEvolutionValidator over an
+// existing schema binding when SaveSchema would change which template
+// metadata the schema resolves to. A first-time save (no existing row) and a
+// no-op save (same template name + version) validate nothing. When the OLD
+// binding's template version no longer exists in the catalog, there is
+// nothing to diff against and the save proceeds — the guard protects live
+// data under a KNOWN old shape, it cannot resurrect a dropped one.
+func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s api.Schema) error {
+	existing, err := c.LoadSchema(txn, s.DatabaseName(), s.MetadataName())
+	if err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) &&
+			(apiErr.Code == api.ErrCodeUndefinedSchema || apiErr.Code == api.ErrCodeUnknownSchemaTemplate) {
+			return nil
+		}
+		return err
+	}
+	oldTmpl := existing.SchemaTemplate()
+	newTmpl := s.SchemaTemplate()
+	if oldTmpl.MetadataName() == newTmpl.MetadataName() && oldTmpl.Version() == newTmpl.Version() {
+		return nil
+	}
+	oldRL, oldOK := oldTmpl.(*metadata.RecordLayerSchemaTemplate)
+	newRL, newOK := newTmpl.(*metadata.RecordLayerSchemaTemplate)
+	if !oldOK || !newOK {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"schema rebind of %s/%s cannot be validated: template types %T -> %T",
+			s.DatabaseName(), s.MetadataName(), oldTmpl, newTmpl)
+	}
+	// Version monotonicity is judged on the SQL-layer TEMPLATE VERSION — the
+	// axis this catalog itself stores (TEMPLATES.TEMPLATE_VERSION,
+	// fdb_template_catalog.go's Templates row) and the one the SQL layer
+	// advances per CREATE. The record-layer METADATA version is not a
+	// substitute: it is seeded from the template version and then bumped once
+	// per index (RecordMetaDataBuilder.addIndexCommon:1093-1097), so a v2
+	// template with fewer indexes than v1 legitimately carries a LOWER
+	// metadata version. Comparing versions ACROSS template names is
+	// meaningless, so a name-changing rebind is validated structurally only.
+	if oldTmpl.MetadataName() == newTmpl.MetadataName() && newTmpl.Version() <= oldTmpl.Version() {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"cannot rebind schema %s/%s to template %s@%d: version does not advance past the bound %s@%d",
+			s.DatabaseName(), s.MetadataName(),
+			newTmpl.MetadataName(), newTmpl.Version(),
+			oldTmpl.MetadataName(), oldTmpl.Version())
+	}
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
+		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
+			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",
+			s.DatabaseName(), s.MetadataName(),
+			oldTmpl.MetadataName(), oldTmpl.Version(),
+			newTmpl.MetadataName(), newTmpl.Version())
 	}
 	return nil
 }

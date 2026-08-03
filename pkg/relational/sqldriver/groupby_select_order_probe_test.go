@@ -24,8 +24,8 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gso")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gso "+
-			"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE m (id BIGINT NOT NULL, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE m (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gso/s WITH TEMPLATE gso")
 	dsn := fmt.Sprintf("fdbsql:///testdb_gso?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

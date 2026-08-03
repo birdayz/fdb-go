@@ -48,10 +48,10 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	setup := openTestDB(t, "/testdb_czs")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czs")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czs "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
-		"CREATE TABLE t2 (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE o (id BIGINT NOT NULL, k DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE t2 (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czs/s WITH TEMPLATE czs")
 	dsn := fmt.Sprintf("fdbsql:///testdb_czs?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -185,11 +185,11 @@ func TestFDB_CorrelatedZeroForkShapes(t *testing.T) {
 	setup := openTestDB(t, "/testdb_czf")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czf")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czf "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
-		"CREATE TABLE m (id BIGINT NOT NULL, a DOUBLE, b DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE m (id BIGINT, a DOUBLE, b DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX m_abw ON m (a, b, w) "+
-		"CREATE TABLE o (id BIGINT NOT NULL, k DOUBLE, k2 DOUBLE, PRIMARY KEY (id))")
+		"CREATE TABLE o (id BIGINT, k DOUBLE, k2 DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czf/s WITH TEMPLATE czf")
 	dsn := fmt.Sprintf("fdbsql:///testdb_czf?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

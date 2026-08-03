@@ -23,8 +23,8 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE existstpl "+
-			"CREATE TABLE parent (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE child (id BIGINT NOT NULL, pid BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE parent (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE child (id BIGINT, pid BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX child_pid ON child (pid)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists/s WITH TEMPLATE existstpl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_exists?cluster_file=%s&schema=s", clusterFilePath)

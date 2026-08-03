@@ -8,12 +8,12 @@
 name: join_leg_name_pins
 schema_template: |
   CREATE TABLE a (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE b (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v STRING,
     PRIMARY KEY (id)
   )

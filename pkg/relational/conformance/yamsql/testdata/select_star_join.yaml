@@ -3,8 +3,8 @@
 # Exercises SELECT * with joins — all columns from both tables.
 name: select_star_join
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, tag STRING, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, val STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, a_id BIGINT, tag STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 'x'), (2, 'y')
   - INSERT INTO b VALUES (10, 1, 'foo'), (20, 2, 'bar')

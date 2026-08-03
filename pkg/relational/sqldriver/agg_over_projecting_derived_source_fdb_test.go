@@ -34,8 +34,8 @@ func TestFDB_AggregateOverProjectingDerivedSource(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggproj_ord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggproj_ord "+
-			"CREATE TABLE t1 (id BIGINT NOT NULL, y BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE t2 (id BIGINT NOT NULL, b BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE t1 (id BIGINT, y BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggproj_ord/s WITH TEMPLATE aggproj_ord")
 	dsn := fmt.Sprintf("fdbsql:///testdb_aggproj_ord?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

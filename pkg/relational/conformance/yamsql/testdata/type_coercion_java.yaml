@@ -4,7 +4,7 @@
 name: type_coercion_java
 schema_template: |
   CREATE TABLE nums (
-    id BIGINT NOT NULL,
+    id BIGINT,
     int_val BIGINT,
     dbl_val DOUBLE,
     str_val STRING,

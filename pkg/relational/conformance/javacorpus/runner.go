@@ -428,10 +428,10 @@ func classifyDDLGap(f *javayamsql.File, ddl *ddlError) SkipClass {
 	// MaterializedViewIndexGenerator port, its three classifier messages no
 	// longer exist in the engine, and every former carrier lands in pass or a
 	// narrower named class.
-	return classifyDDLByDeclaration(f)
+	return classifyDDLByDeclaration(f, ddl)
 }
 
-func classifyDDLByDeclaration(f *javayamsql.File) SkipClass {
+func classifyDDLByDeclaration(f *javayamsql.File, ddl *ddlError) SkipClass {
 	var body strings.Builder
 	var walk func(*javayamsql.File)
 	walk = func(file *javayamsql.File) {
@@ -451,6 +451,24 @@ func classifyDDLByDeclaration(f *javayamsql.File) SkipClass {
 	}
 	walk(f)
 	text := body.String()
+	// Struct DDL itself builds (RFC-204 Phase 1), so a struct-declaring
+	// template that still fails does so on a DIFFERENT declaration — and the
+	// engine's own rejection message names which one. Bucketing by that
+	// message (function / view / nested index) keeps "struct types don't
+	// declare" (closed) from wearing the label of the gap that actually
+	// blocks the file; the declaration scan remains the fallback for
+	// rejections the message rule doesn't name.
+	if ddl != nil {
+		msg := ddl.Error()
+		switch {
+		case strings.Contains(msg, "SQL functions (CREATE FUNCTION)"):
+			return SkipDDLFunction
+		case strings.Contains(msg, "views (CREATE VIEW)"):
+			return SkipDDLOther
+		case strings.Contains(text, "create type as struct") && strings.Contains(msg, "index"):
+			return SkipDDLStructIndex
+		}
+	}
 	switch {
 	case strings.Contains(text, "create type as struct"):
 		return SkipDDLStruct

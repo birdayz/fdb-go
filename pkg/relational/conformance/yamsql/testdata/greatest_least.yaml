@@ -6,7 +6,7 @@
 # PhysicalOperator which short-circuits `if (i == null) return null`.
 name: greatest_least
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1)
 tests:

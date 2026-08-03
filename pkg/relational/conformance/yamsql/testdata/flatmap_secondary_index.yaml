@@ -7,9 +7,9 @@
 # keeps the InMemorySort fallback live.
 name: flatmap_secondary_index
 schema_template: |
-  CREATE TABLE categories (id BIGINT NOT NULL, name STRING, priority BIGINT, PRIMARY KEY (id))
+  CREATE TABLE categories (id BIGINT, name STRING, priority BIGINT, PRIMARY KEY (id))
   CREATE INDEX idx_categories_name ON categories (name)
-  CREATE TABLE items (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+  CREATE TABLE items (id BIGINT, cat_id BIGINT, title STRING, PRIMARY KEY (id))
   CREATE INDEX idx_items_cat ON items (cat_id)
 setup:
   # Names deliberately run opposite to PK order for ids 1 and 2, so the

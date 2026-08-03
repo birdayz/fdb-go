@@ -32,7 +32,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dryrun")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dryrun")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE dryrun CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE dryrun CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	// newDB creates an ISOLATED schema (its own table instance) seeded with
 	// (1,10),(2,20),(3,30). Called before t.Parallel() in each subtest so the schema

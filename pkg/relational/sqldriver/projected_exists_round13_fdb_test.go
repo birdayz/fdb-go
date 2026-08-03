@@ -36,9 +36,9 @@ func TestFDB_ProjectedExistsRound13_NestedSubqueryBoundary(t *testing.T) {
 	setup := openTestDB(t, "/testdb_pexr13")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr13")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr13_tmpl "+
-		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t2 (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE t3 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t3 (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr13/s WITH TEMPLATE pexr13_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_pexr13?cluster_file=%s&schema=s", clusterFilePath))

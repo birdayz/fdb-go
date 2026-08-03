@@ -44,7 +44,7 @@ func TestFDB_ExistsAliasShadow(t *testing.T) {
 	setup := openTestDB(t, "/testdb_existsaliasshadow")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_existsaliasshadow")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eas_tmpl "+
-		"CREATE TABLE t (id BIGINT NOT NULL, sk BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, sk BIGINT, PRIMARY KEY (id))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsaliasshadow/s WITH TEMPLATE eas_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_existsaliasshadow?cluster_file=%s&schema=s", clusterFilePath))

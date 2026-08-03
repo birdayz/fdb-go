@@ -5,8 +5,8 @@
 # and cross-table predicates stay as join conditions.
 name: multi_predicate_push
 schema_template: |
-  CREATE TABLE users (id BIGINT NOT NULL, name STRING, active BIGINT, PRIMARY KEY (id))
-  CREATE TABLE logs (id BIGINT NOT NULL, user_id BIGINT, action STRING, ts BIGINT, PRIMARY KEY (id))
+  CREATE TABLE users (id BIGINT, name STRING, active BIGINT, PRIMARY KEY (id))
+  CREATE TABLE logs (id BIGINT, user_id BIGINT, action STRING, ts BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0), (3, 'Charlie', 1)
   - INSERT INTO logs VALUES (10, 1, 'login', 100), (11, 1, 'view', 200), (12, 2, 'login', 150), (13, 3, 'login', 300)

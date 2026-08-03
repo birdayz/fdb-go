@@ -13,8 +13,8 @@
 # fan-out.
 name: comma_join_exists
 schema_template: |
-  CREATE TABLE p (id BIGINT NOT NULL, region BIGINT, PRIMARY KEY (id))
-  CREATE TABLE e (eid BIGINT NOT NULL, eref BIGINT, sal BIGINT, PRIMARY KEY (eid))
+  CREATE TABLE p (id BIGINT, region BIGINT, PRIMARY KEY (id))
+  CREATE TABLE e (eid BIGINT, eref BIGINT, sal BIGINT, PRIMARY KEY (eid))
 setup:
   - INSERT INTO p VALUES (1, 10), (2, 20)
   # p=1 has two e rows (one with sal>600 → EXISTS true); p=2 has one e row (sal<=600 → EXISTS false).

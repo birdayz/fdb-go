@@ -22,7 +22,7 @@ func TestFDB_CoveringIndexScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := setupPlanShapeDB(t, "covidx",
-		"CREATE TABLE items (id BIGINT NOT NULL, cat STRING, price BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cat_idx ON items (cat)")
 
 	for _, c := range []struct {

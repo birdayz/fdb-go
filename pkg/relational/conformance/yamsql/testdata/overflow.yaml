@@ -16,7 +16,7 @@
 # class-22 code instead of leaking as a generic RuntimeException.)
 name: overflow
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   # MaxInt64 = 9223372036854775807, MinInt64 = -9223372036854775808.
   - INSERT INTO t VALUES (1, 9223372036854775807, 1), (2, -9223372036854775808, 1), (3, 4611686018427387904, 3), (4, -9223372036854775808, -1)

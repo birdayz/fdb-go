@@ -143,10 +143,14 @@ func TestFDB_AggregateOverMixedNestingOuterJoin(t *testing.T) {
 
 // TestFDB_NullSupplyingLegMetadataNullable pins the column-metadata contract
 // for a NULL-SUPPLYING clustered window (mirrors Java's
-// pullUpResultColumnsWithNullability(true)): a NOT NULL column served
-// through a NULL-SUPPLYING clustered window must report NULLABLE in the
-// driver's column metadata (its slot serves NULL on padded rows), while the
-// preserved side's NOT NULL column keeps nullable=false.
+// pullUpResultColumnsWithNullability(true)): a column served through a
+// NULL-SUPPLYING clustered window must report NULLABLE in the driver's column
+// metadata (its slot serves NULL on padded rows). The preserved side's PK also
+// reports nullable — every scalar column is proto OPTIONAL now that scalar NOT
+// NULL is unexpressible (Java parity: NOT NULL is only allowed for ARRAY
+// column type, rejected at CREATE) — so nullability is uniform here; what the
+// null-supplying assertions keep pinning is that a padded window may NEVER
+// report NoNulls.
 func TestFDB_NullSupplyingLegMetadataNullable(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -159,9 +163,9 @@ func TestFDB_NullSupplyingLegMetadataNullable(t *testing.T) {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE i3meta_tmpl"+
-		" CREATE TABLE ma (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE mb (bid BIGINT NOT NULL, ref BIGINT, PRIMARY KEY (bid))"+
-		" CREATE TABLE mc (cid BIGINT NOT NULL, w BIGINT, PRIMARY KEY (cid))"); err != nil {
+		" CREATE TABLE ma (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE mb (bid BIGINT, ref BIGINT, PRIMARY KEY (bid))"+
+		" CREATE TABLE mc (cid BIGINT, w BIGINT, PRIMARY KEY (cid))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE i3meta_tmpl"); err != nil {
@@ -190,14 +194,14 @@ func TestFDB_NullSupplyingLegMetadataNullable(t *testing.T) {
 	if len(cts) != 3 {
 		t.Fatalf("columns = %d, want 3", len(cts))
 	}
-	if n, ok := cts[0].Nullable(); !ok || n {
-		t.Errorf("ma.id (preserved, NOT NULL) nullable = (%v, %v), want (false, true)", n, ok)
+	if n, ok := cts[0].Nullable(); !ok || !n {
+		t.Errorf("ma.id (preserved PK, proto OPTIONAL like every scalar) nullable = (%v, %v), want (true, true)", n, ok)
 	}
 	if n, ok := cts[1].Nullable(); !ok || !n {
-		t.Errorf("b.bid (null-supplying window, declared NOT NULL) nullable = (%v, %v), want (true, true) — padded rows serve NULL here", n, ok)
+		t.Errorf("b.bid (null-supplying window) nullable = (%v, %v), want (true, true) — padded rows serve NULL here", n, ok)
 	}
 	if n, ok := cts[2].Nullable(); !ok || !n {
-		t.Errorf("c.cid (null-supplying window, declared NOT NULL) nullable = (%v, %v), want (true, true)", n, ok)
+		t.Errorf("c.cid (null-supplying window) nullable = (%v, %v), want (true, true)", n, ok)
 	}
 }
 

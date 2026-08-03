@@ -8,7 +8,7 @@
 # tracked feature work.
 name: aggregate_distinct_count
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, category STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, category STRING, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 10), (4, 'B', 30), (5, 'A', 10)
 tests:

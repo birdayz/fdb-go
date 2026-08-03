@@ -4,7 +4,7 @@
 name: dml_rowcount_java
 schema_template: |
   CREATE TABLE t (
-    id BIGINT NOT NULL,
+    id BIGINT,
     val BIGINT,
     status STRING,
     PRIMARY KEY (id)

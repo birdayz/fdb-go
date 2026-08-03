@@ -8,7 +8,7 @@
 # each group).
 name: group_by_proj_expr
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
       (1, 1, 1, 10),

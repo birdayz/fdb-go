@@ -5,7 +5,7 @@
 # → constant with target type) and CastValue constant folding.
 name: type_promotion
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, i INTEGER NOT NULL, d DOUBLE, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, i INTEGER, d DOUBLE, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 1.5), (2, 20, 2.5), (3, 30, null)
 tests:

@@ -7,8 +7,8 @@
 # correlated subquery evaluation, and NOT EXISTS semantics.
 name: normalized_exists_predicates
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))
-  CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE reviews (id BIGINT, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO products VALUES (1, 'electronics', 100), (2, 'clothing', 25), (3, 'electronics', 40), (4, 'food', 10), (5, 'clothing', 60), (6, 'food', 80)
   - INSERT INTO reviews VALUES (1, 1, 5), (2, 2, 3), (3, 3, 1), (4, 4, 4)

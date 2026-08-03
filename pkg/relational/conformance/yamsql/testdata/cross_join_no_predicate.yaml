@@ -4,8 +4,8 @@
 # No equi-join predicate → NLJ path (not FlatMap).
 name: cross_join_no_predicate
 schema_template: |
-  CREATE TABLE colors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
-  CREATE TABLE sizes (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+  CREATE TABLE colors (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sizes (id BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO colors VALUES (1, 'Red'), (2, 'Blue')
   - INSERT INTO sizes VALUES (1, 'S'), (2, 'M'), (3, 'L')

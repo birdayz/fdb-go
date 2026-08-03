@@ -41,7 +41,7 @@ func TestFDB_UniqueIndexSignedZero(t *testing.T) {
 	setup := openTestDB(t, "/testdb_uiz")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uiz")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uiz "+
-		"CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uiz/s WITH TEMPLATE uiz")
 	dsn := fmt.Sprintf("fdbsql:///testdb_uiz?cluster_file=%s&schema=s", clusterFilePath)

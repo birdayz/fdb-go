@@ -35,8 +35,8 @@ func setupFullOuterDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	tmpl := "foj_tmpl_" + suffix
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
-		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Ord (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT NOT NULL, PRIMARY KEY (id))`, tmpl))
+		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
+		CREATE TABLE Ord (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())

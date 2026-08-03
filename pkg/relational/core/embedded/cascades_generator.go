@@ -39,6 +39,7 @@ import (
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -443,6 +444,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed query plan: "+err.Error())
 	}
+	// RFC-204 §4.5.1: bake one type repository into the plan's record
+	// constructors. This is the plan-cache MISS path — the hit path above
+	// returns the same plan pointer to concurrent executions, so this is the
+	// only point at which stamping is not a data race.
+	cascades.FinalizePlan(physPlan)
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
@@ -1034,6 +1040,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
+	cascades.FinalizePlan(physPlan)
 
 	// Plan the DML statement's scalar subqueries (`DELETE … WHERE v > (SELECT
 	// …)`) through the same shared pipeline as SELECT and carry them on the
@@ -1724,12 +1731,36 @@ func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason rec
 // (RFC-162, decision (b)). A fixed [16]byte / tuple.UUID at this boundary
 // is unambiguously a UUID: BYTES columns surface as a []byte slice, never a
 // 16-array, so the type switch never misfires.
+// A STRUCT column arrives here as the raw proto message the value layer
+// carries (values.protoScalarToRowValue keeps nested non-UUID messages raw
+// for further descent) and must NOT leave as one: Java hands a struct column
+// to the client as a RelationalStruct, built at exactly this boundary —
+// RowStruct.getObject's Types.STRUCT arm wraps the Message in an
+// ImmutableRowStruct (RowStruct.java:184-197, :293-294). An ARRAY of structs
+// is the same conversion per element (Java: getArray → the array's element
+// materialization → getStruct).
 func materializeDriverValue(v any) any {
 	switch u := v.(type) {
 	case [16]byte:
 		return tuple.UUID(u).String()
 	case tuple.UUID:
 		return u.String()
+	case protoreflect.ProtoMessage:
+		s, err := rowstruct.New(u.ProtoReflect())
+		if err != nil {
+			// The descriptor could not be described as a struct type. Left
+			// as the raw message rather than dropped: the row still carries
+			// the value, and the client sees an unconverted message instead
+			// of a silent NULL.
+			return v
+		}
+		return s
+	case []any:
+		out := make([]any, len(u))
+		for i, e := range u {
+			out[i] = materializeDriverValue(e)
+		}
+		return out
 	default:
 		return v
 	}
@@ -1967,10 +1998,21 @@ func translateExecError(err error) error {
 // statistics are best-effort; a failed stats read should never prevent
 // query planning.
 //
+// DEAD ON EVERY PRODUCTION PATH for SQL-created schemas: relational
+// templates carry NO record count key — Java's RecordMetadataSerializer
+// never sets one (the stored bytes must match Java's, and Java core marks
+// getRecordCountKey @API(DEPRECATED), superseded by COUNT-type indexes) —
+// so the countKey==nil arm below returns nil and the cost model runs on
+// defaults. The function is kept because it is still live for metadata
+// that DOES carry a RecordTypeKeyExpression count key (hand-built stores,
+// Java-authored legacy metadata opened through this engine). The
+// Java-sanctioned replacement — COUNT-type index reads +
+// CardinalitiesProperty — is booked in TODO.md.
+//
 // Only returns real statistics when the metadata uses RecordTypeKeyExpression
-// as the count key (the default for multi-table SQL schemas). For intermingled
-// schemas (EmptyKey), per-type counts are unavailable — returns nil rather
-// than fabricating an equal distribution that would mislead the cost model.
+// as the count key. For an EmptyKey count key, per-type counts are
+// unavailable — returns nil rather than fabricating an equal distribution
+// that would mislead the cost model.
 func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *recordlayer.RecordMetaData) properties.StatisticsProvider {
 	c := g.c
 	if c.sess == nil || c.sess.DB == nil || md == nil {
@@ -2413,6 +2455,18 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 		}
 		return names, true
 	case expression.Nesting != nil:
+		// The NullableArrayWrapper hop is storage-only: field(X).nest(
+		// field("values", FAN_OUT/CONCATENATE)) is the stored spelling of the
+		// wrapped nullable array column X — the LOGICAL key column is X, not
+		// "values" (Java collapses the hop in
+		// KeyExpressionExpansionVisitor via NullableArrayTypeUtils.matchArrayWrapper).
+		if p := expression.Nesting.GetParent(); p != nil && p.GetFanType() == gen.Field_SCALAR {
+			if cf := expression.Nesting.GetChild().GetField(); cf != nil &&
+				cf.GetFieldName() == values.WrappedArrayValuesFieldName &&
+				(cf.GetFanType() == gen.Field_FAN_OUT || cf.GetFanType() == gen.Field_CONCATENATE) {
+				return []string{p.GetFieldName()}, true
+			}
+		}
 		return indexKeyColumnNames(expression.Nesting.GetChild())
 	case expression.Function != nil:
 		return indexKeyColumnNames(expression.Function.GetArguments())
@@ -4083,9 +4137,13 @@ func descriptorOrdinalDomain(d protoreflect.MessageDescriptor) values.OrdinalDom
 // field's ELEMENT. A repeated field's Kind IS its element kind; a non-UUID
 // message element is a STRUCT column (java.sql.Types.STRUCT).
 func arrayElementTypeNameOfField(fd protoreflect.FieldDescriptor) string {
-	if fd == nil || !fd.IsList() {
+	// The EFFECTIVE repeated field: a NullableArrayWrapper column's element
+	// kind lives on the wrapper's `values` field.
+	inner, _, ok := values.EffectiveListField(fd)
+	if !ok {
 		return ""
 	}
+	fd = inner
 	if fd.Kind() == protoreflect.MessageKind {
 		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
 			return "OTHER"
@@ -4603,6 +4661,13 @@ func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string
 				return "OTHER"
 			}
 		}
+		// A NULLABLE array column stores through the NullableArrayWrapper;
+		// the reported type name stays the measured CQ-74 truncation (the
+		// bare ELEMENT kind), same as a flat repeated field — the wrapper is
+		// storage shape, not a type.
+		if inner, wrapped, _ := values.EffectiveListField(fd); wrapped {
+			fd = inner
+		}
 		return protoKindToTypeName(fd.Kind())
 	}
 	return "UNKNOWN"
@@ -5035,9 +5100,11 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 		// NOT WRONG_OBJECT_TYPE. Leave it to the translator.
 		return false
 	}
-	// Present field: an array is a genuine unnest (not rejected); a scalar is the
-	// "repeated type" assert → WRONG_OBJECT_TYPE.
-	return !fd.IsList()
+	// Present field: an array (flat repeated OR NullableArrayWrapper) is a
+	// genuine unnest (not rejected); a scalar is the "repeated type" assert
+	// → WRONG_OBJECT_TYPE.
+	_, _, isArr := values.EffectiveListField(fd)
+	return !isArr
 }
 
 // lookupFieldFold returns the proto field descriptor named `name` on `desc`
@@ -5789,6 +5856,19 @@ func BuildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	return buildSchemaTemplateFromDDL(schemaDDL)
 }
 
+// BuildSchemaTemplateFromDDLNamed is BuildSchemaTemplateFromDDL with an
+// explicit template name for bare clause bodies. The name matters at the
+// wire level: it is the descriptor FILE name inside the persisted
+// RecordMetaData, so a cross-engine byte comparison must build under the
+// same name Java persisted. Quoted to preserve case (Java's harness sets
+// the name programmatically, case intact).
+func BuildSchemaTemplateFromDDLNamed(schemaDDL, name string) (*metadata.RecordLayerSchemaTemplate, error) {
+	if startsWithCreateSchemaTemplate(schemaDDL) {
+		return buildSchemaTemplateFromDDL(schemaDDL)
+	}
+	return buildSchemaTemplateFromDDL(`CREATE SCHEMA TEMPLATE "` + name + `" ` + schemaDDL)
+}
+
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
 // RecordLayerSchemaTemplate without performing any catalog write.
@@ -5822,7 +5902,7 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
 	}
 
-	templateID := stCtx.SchemaTemplateId().GetText()
+	templateID := trimIdentifierQuotes(stCtx.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
 	// applies, parsed BEFORE the table/index passes because they change how
@@ -5847,6 +5927,9 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
 		return nil, rejErr
 	}
+	if serr := registerStructDefinitions(stCtx.AllTemplateClause(), b); serr != nil {
+		return nil, serr
+	}
 	for _, clause := range stCtx.AllTemplateClause() {
 		td := clause.TableDefinition()
 		if td == nil {
@@ -5856,11 +5939,11 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		// the column/index parsers do (StripIdentifierQuotes upper-cases
 		// unquoted identifiers), so index lookups by table name match.
 		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
-		cols, pkCols, tdErr := parseTableDefinition(td)
+		cols, pkCols, tdErr := parseTableDefinition(td, b)
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
 		}
-		b.AddTable(tableName, cols, pkCols)
+		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
 	}
 	for _, clause := range stCtx.AllTemplateClause() {
 		idxDef := clause.IndexDefinition()

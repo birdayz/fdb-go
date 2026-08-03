@@ -6,8 +6,8 @@
 # 23502), and the primary-key-duplicate-during-bulk-copy path.
 name: insert_select
 schema_template: |
-  CREATE TABLE src (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE dst (id BIGINT NOT NULL, v BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dst (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO src VALUES (1, 10), (2, 20), (3, 30)
 tests:

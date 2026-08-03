@@ -24,7 +24,7 @@ func TestFDB_BitwisePrecedenceProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_bwp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bwp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE bwp CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE bwp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bwp/s WITH TEMPLATE bwp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_bwp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

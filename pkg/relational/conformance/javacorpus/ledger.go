@@ -110,7 +110,40 @@ const (
 
 	// SkipDDLStruct is a schema template the engine rejects because it
 	// declares a struct type. RFC-201 Phase 3, the largest engine gap.
+	//
+	// RFC-204 Phase 1 emptied this class: CREATE TYPE AS STRUCT registers,
+	// struct columns declare, and the descriptor emits Java's wire shape.
+	// The class name stays declared for the classifier's declaration scan;
+	// struct-declaring files whose DDL still fails do so on their NESTED
+	// AS-SELECT indexes and book to SkipDDLStructIndex below.
 	SkipDDLStruct SkipClass = "unsupported-DDL:struct"
+
+	// SkipDDLStructIndex is a struct-declaring schema template whose struct
+	// DDL succeeds but whose CREATE INDEX ... AS SELECT over NESTED struct
+	// fields the generator cannot build yet — the RFC-204 Phase 5 surface
+	// (multi-accessor chains through MaterializedViewIndexGenerator).
+	SkipDDLStructIndex SkipClass = "unsupported-DDL:struct-index"
+
+	// SkipGapStructDML is a struct-declaring file whose DDL now builds
+	// (RFC-204 Phase 1) and whose first struct-VALUE touch — a struct or
+	// array-of-struct literal in INSERT — declines loudly. The typed
+	// row-constructor push-down that accepts these literals is RFC-204
+	// Phase 2; until then each file is pinned to its exact rejection.
+	//
+	// EMPTY as of Phase 2: struct literals write, structs read back as
+	// api.Struct, and every carrier either passes or moved on to the
+	// QUERY-surface class below. Kept declared because the ledger's classes
+	// are the vocabulary the corpus reports in, and a re-armed struct-DML
+	// regression belongs back here rather than in a new name.
+	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
+
+	// SkipGapStructQuery is a struct-declaring file whose DML now works and
+	// which reaches a struct QUERY-surface gap: nested field access
+	// (`s.field` in a predicate or projection), a record constructor in an
+	// expression position, or `SELECT (*)`. This is RFC-204 Phase 3's work
+	// list — Java resolves these through SemanticAnalyzer's lookupNestedField
+	// descent and RecordConstructorValue in expression position.
+	SkipGapStructQuery SkipClass = "engine-gap:struct-query"
 
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.
@@ -141,17 +174,27 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapNullableArrayWrapper is a query over a STORED nullable array
-	// whose answer depends on distinguishing NULL from empty: Go writes a
-	// plain repeated field for nullable arrays instead of Java's
-	// `message{ repeated values }` wrapper (RFC-143 §3a), so a stored `[]`
-	// is byte-identical to a stored NULL and reads back as NULL. The
-	// array COMPARISON semantics themselves are closed (the former
-	// engine-gap:array-comparison class): `[1] = [1]` is TRUE, the
-	// NULL/NONE operand matrix matches the corpus, mismatched ARRAY types
-	// reject 42804 — pinned by TestFDB_ArrayComparison (sqldriver) and
-	// ArrayComparisonJavaProbe (conformance, live-Java measured).
-	SkipGapNullableArrayWrapper SkipClass = "engine-gap:nullable-array-wrapper"
+	// SkipGapNonNullableArrayEmpty is a query over a stored NOT NULL array
+	// that is EMPTY. Such a field is stored as a FLAT repeated field — that
+	// is Java's layout too, and it is correct: only a NULLABLE array gets
+	// the `message{ repeated values }` wrapper. On the wire an empty
+	// repeated field is indistinguishable from an absent one, so the
+	// distinction has to be made on READ, from the type: a column the type
+	// forbids to be NULL must materialize absent as an EMPTY ARRAY, which
+	// is what Java does. Go yields NULL instead, so `IS NULL` answers true
+	// and `= []` answers UNKNOWN on a column that cannot hold NULL.
+	//
+	// This is a READ-side type-interpretation gap, not a wire-format one —
+	// the bytes already match Java. Its NULLABLE sibling WAS a wire gap
+	// (RFC-143 §3a: Go wrote a plain repeated field where Java writes the
+	// wrapper) and is CLOSED, which is what exposed this one: while the
+	// nullable arm failed first it claimed the file. Array COMPARISON
+	// semantics are closed too (the former engine-gap:array-comparison
+	// class): `[1] = [1]` is TRUE, the NULL/NONE operand matrix matches
+	// the corpus, mismatched ARRAY types reject 42804 — pinned by
+	// TestFDB_ArrayComparison (sqldriver) and ArrayComparisonJavaProbe
+	// (conformance, live-Java measured).
+	SkipGapNonNullableArrayEmpty SkipClass = "engine-gap:non-nullable-array-empty"
 	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
 	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
 	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
@@ -192,6 +235,22 @@ const (
 	// (compression/encryption) the store layer does not implement, so reads
 	// that Java rejects (wrong key, missing encryption) succeed in Go.
 	SkipGapSerializationOptions SkipClass = "engine-gap:serialization-options"
+	// SkipGapMultipleLateralUnnests is a FROM clause carrying MORE THAN ONE
+	// lateral array unnest (`FROM t, t.a AS x AT i, t.b AS y AT j`). The
+	// single-unnest form works; the translator has no lowering for a second
+	// one, and declines loudly (0AF00) rather than dropping a leg. RFC-142.
+	SkipGapMultipleLateralUnnests SkipClass = "engine-gap:multiple-lateral-unnests"
+	// SkipGapStarGroupBy is a qualified star in a SELECT list that also carries
+	// GROUP BY. Java expands the star FIRST and then requires each expanded
+	// output to be composable from the grouping expressions, the aggregates and
+	// the outer correlations (LogicalOperator.java:435-441, isComposableFrom →
+	// GROUPING_ERROR), so `SELECT a.* … GROUP BY a1, a2, a3` over a table with
+	// exactly those columns is LEGAL. Go rejects every star-with-GROUP-BY
+	// unconditionally at parse time, where no schema is in hand to expand
+	// against — measured against the live JVM in
+	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
+	// group_by_star_exceeds).
+	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -219,7 +278,7 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLStruct,
 		SkipDDLFunction,
 		SkipDDLOther,
-		SkipGapNullableArrayWrapper,
+		SkipGapNonNullableArrayEmpty,
 		SkipGapCommaJoinFrom,
 		SkipGapDMLReturning,
 		SkipGapCatalogTables,
@@ -235,6 +294,8 @@ func AllSkipClasses() []SkipClass {
 		SkipConformanceGoAccepts,
 		SkipGapResultMetadata,
 		SkipGapSerializationOptions,
+		SkipGapMultipleLateralUnnests,
+		SkipGapStarGroupBy,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,

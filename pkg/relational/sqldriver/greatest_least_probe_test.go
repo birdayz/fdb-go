@@ -20,7 +20,7 @@ func TestFDB_GreatestLeastProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_glp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_glp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE glp CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE glp CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_glp/s WITH TEMPLATE glp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_glp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

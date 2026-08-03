@@ -6,8 +6,8 @@
 #   - Column counts must match.
 name: union
 schema_template: |
-  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
-  CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
   - INSERT INTO b VALUES (101, 20), (102, 30), (103, 40)

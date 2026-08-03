@@ -23,8 +23,8 @@ func TestFDB_DerivedTableShapesProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dts")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dts")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dts "+
-		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id)) "+
-		"CREATE TABLE u (id BIGINT NOT NULL, b BIGINT, PRIMARY KEY (id))")
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE u (id BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dts/s WITH TEMPLATE dts")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dts?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

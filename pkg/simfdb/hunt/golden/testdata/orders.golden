@@ -1,5 +1,5 @@
 # scenario: orders (seed 1)
-#   CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))
+#   CREATE TABLE t (id BIGINT, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))
 #   CREATE INDEX idx_cat ON t(cat)
 #   CREATE INDEX idx_val ON t(val)
 

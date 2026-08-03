@@ -23,7 +23,7 @@ func TestFDB_BoolPrecedenceProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_boolprec")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_boolprec")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE boolprec CREATE TABLE t (id BIGINT NOT NULL, a BOOLEAN, b BOOLEAN, c BOOLEAN, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE boolprec CREATE TABLE t (id BIGINT, a BOOLEAN, b BOOLEAN, c BOOLEAN, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_boolprec/s WITH TEMPLATE boolprec")
 	dsn := fmt.Sprintf("fdbsql:///testdb_boolprec?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

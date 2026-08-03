@@ -23,12 +23,12 @@
 name: map_path_predicate_kleene
 schema_template: |
   CREATE TABLE a (
-    id BIGINT NOT NULL,
+    id BIGINT,
     v BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE b (
-    id BIGINT NOT NULL,
+    id BIGINT,
     flag1 BOOLEAN,
     flag2 BOOLEAN,
     PRIMARY KEY (id)

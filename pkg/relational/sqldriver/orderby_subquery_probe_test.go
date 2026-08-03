@@ -23,7 +23,7 @@ func TestFDB_OrderBySubqueryExtension(t *testing.T) {
 	setup := openTestDB(t, "/testdb_obsubx")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_obsubx")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE obsubx CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE obsubx CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_obsubx/s WITH TEMPLATE obsubx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_obsubx?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

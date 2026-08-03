@@ -9,7 +9,7 @@
 # extraction (YEAR/MONTH/DAY on stored columns).
 name: datetime_column_types
 schema_template: |
-  CREATE TABLE Events (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
+  CREATE TABLE Events (id BIGINT, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
 setup:
   - INSERT INTO Events VALUES (1, '2024-03-15', '2024-03-15 10:30:00')
   - INSERT INTO Events VALUES (2, '2024-06-20', '2024-06-20 14:45:30')

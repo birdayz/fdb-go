@@ -7,7 +7,7 @@
 #   - multiple columns in a single SET (comma-separated)
 name: update_set_expr
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, label STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')
 tests:

@@ -3,12 +3,12 @@
 name: scalar_subquery_java
 schema_template: |
   CREATE TABLE departments (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     PRIMARY KEY (id)
   )
   CREATE TABLE employees (
-    id BIGINT NOT NULL,
+    id BIGINT,
     name STRING,
     dept_id BIGINT,
     salary BIGINT,

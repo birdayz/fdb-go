@@ -6,8 +6,8 @@
 # reduces to a plain HAVING test until pullUp for EXISTS is added.
 name: having_not_exists
 schema_template: |
-  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
-  CREATE TABLE blacklist (id BIGINT NOT NULL, region STRING, PRIMARY KEY (id))
+  CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE blacklist (id BIGINT, region STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO sales VALUES (1, 'east', 100), (2, 'east', 200), (3, 'west', 150), (4, 'south', 50)
   - INSERT INTO blacklist VALUES (10, 'south')

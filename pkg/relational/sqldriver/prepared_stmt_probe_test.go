@@ -23,7 +23,7 @@ func TestFDB_PreparedStmtProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_psp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_psp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE psp CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE psp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_psp/s WITH TEMPLATE psp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_psp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

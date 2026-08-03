@@ -43,9 +43,9 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 	setup := openTestDB(t, "/testdb_existsabovejoin")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_existsabovejoin")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eaj_tmpl "+
-		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, fname STRING, PRIMARY KEY (id)) "+
-		"CREATE TABLE dept (id BIGINT NOT NULL, dname STRING, PRIMARY KEY (id)) "+
-		"CREATE TABLE proj (pid BIGINT NOT NULL, owner_id BIGINT, dept_ref BIGINT, pname STRING, PRIMARY KEY (pid))")
+		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, fname STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE dept (id BIGINT, dname STRING, PRIMARY KEY (id)) "+
+		"CREATE TABLE proj (pid BIGINT, owner_id BIGINT, dept_ref BIGINT, pname STRING, PRIMARY KEY (pid))")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsabovejoin/s WITH TEMPLATE eaj_tmpl")
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_existsabovejoin?cluster_file=%s&schema=s", clusterFilePath))
@@ -228,9 +228,9 @@ func TestFDB_ProjectedExists_FastPath_AliasBinding(t *testing.T) {
 	setup := openTestDB(t, "/testdb_projexistsfast")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projexistsfast")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pef_tmpl "+
-		"CREATE TABLE t1(id BIGINT NOT NULL, ref BIGINT, PRIMARY KEY(id)) "+
-		"CREATE TABLE t2(id BIGINT NOT NULL, payload STRING, PRIMARY KEY(id)) "+
-		"CREATE TABLE t3(id BIGINT NOT NULL, sec BIGINT, payload STRING, PRIMARY KEY(id)) "+
+		"CREATE TABLE t1(id BIGINT, ref BIGINT, PRIMARY KEY(id)) "+
+		"CREATE TABLE t2(id BIGINT, payload STRING, PRIMARY KEY(id)) "+
+		"CREATE TABLE t3(id BIGINT, sec BIGINT, payload STRING, PRIMARY KEY(id)) "+
 		"CREATE INDEX t3_sec ON t3 (sec)")
 	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexistsfast/s WITH TEMPLATE pef_tmpl")
 

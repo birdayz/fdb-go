@@ -10,7 +10,7 @@
 # nightshift-36 (harness caught the divergence).
 name: arithmetic
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0), (3, 10, 3)
 tests:

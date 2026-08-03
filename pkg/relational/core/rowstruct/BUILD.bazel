@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "rowstruct",
+    srcs = ["rowstruct.go"],
+    importpath = "fdb.dev/pkg/relational/core/rowstruct",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+        "//pkg/relational/core/functions",
+        "//pkg/relational/core/metadata",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)

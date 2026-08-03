@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
@@ -22,6 +23,13 @@ type RecordMetaData struct {
 
 	// The protobuf file descriptor
 	fileDescriptor protoreflect.FileDescriptor
+
+	// recordsSourceProto, when non-nil, is the ORIGINAL FileDescriptorProto
+	// fileDescriptor was built from; ToProto() emits it verbatim (Java:
+	// FileDescriptor.toProto() returns the source proto unchanged). Nil for
+	// metadata built from compiled Go protos, where the
+	// protodesc.ToFileDescriptorProto reconstruction is the only source.
+	recordsSourceProto *descriptorpb.FileDescriptorProto
 
 	// Schema version
 	version int
@@ -148,6 +156,7 @@ type KeyExpression interface {
 type RecordMetaDataBuilder struct {
 	recordTypes              map[string]*RecordType
 	fileDescriptor           protoreflect.FileDescriptor
+	recordsSourceProto       *descriptorpb.FileDescriptorProto
 	version                  int
 	recordCountKey           KeyExpression
 	storeRecordVersions      bool
@@ -236,6 +245,22 @@ func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDesc
 		b.recordTypes[recordTypeName] = recordType
 	}
 
+	return b
+}
+
+// FileDescriptor returns the schema's protobuf file descriptor.
+func (m *RecordMetaData) FileDescriptor() protoreflect.FileDescriptor { return m.fileDescriptor }
+
+// SetRecordsSourceProto retains the ORIGINAL FileDescriptorProto the file
+// descriptor was built from, so ToProto() can emit it verbatim. Java keeps
+// the source proto inside Descriptors.FileDescriptor and toProto() returns
+// it unchanged; Go's protodesc.ToFileDescriptorProto instead RECONSTRUCTS
+// the proto — absolutizing type names (".T" where Java stored "T") and
+// materializing json_name — which changes the stored bytes. Descriptor
+// bytes are wire (the catalog persists RecordMetaData.toProto()), so the
+// source proto must survive to serialization untouched.
+func (b *RecordMetaDataBuilder) SetRecordsSourceProto(fdp *descriptorpb.FileDescriptorProto) *RecordMetaDataBuilder {
+	b.recordsSourceProto = fdp
 	return b
 }
 
@@ -841,6 +866,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	return &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
+		recordsSourceProto:      b.recordsSourceProto,
 		version:                 b.version,
 		recordCountKey:          b.recordCountKey,
 		storeRecordVersions:     b.storeRecordVersions,
@@ -890,9 +916,29 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 	return rtb
 }
 
-// GetRecordType returns the record type for the given name
+// GetRecordType returns the record type for the given name.
+//
+// Record types are keyed by their STORAGE name — the ProtoUtils-escaped
+// descriptor name, which is what the wire carries. A caller holding a USER
+// identifier (SQL text: a table declared `"foo$table"` is stored as
+// FOO__1TABLE) resolves through the escape on a miss.
+//
+// Java does not need this because its relational layer keeps its OWN table
+// map keyed by the user name (RecordLayerSchemaTemplate.getTable) and never
+// addresses RecordMetaData with a user identifier; Go's relational layer
+// uses RecordMetaData directly as its table catalog, so the translation
+// lives here — ONE boundary that every SQL path already funnels through —
+// rather than being sprinkled over the 25 call sites. Storage names stay
+// canonical: the fallback fires only when the direct key misses, so it can
+// never shadow a real type, and ToProtoBufCompliantName is deterministic.
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {
-	return m.recordTypes[name]
+	if rt, ok := m.recordTypes[name]; ok {
+		return rt
+	}
+	if storage, err := ToProtoBufCompliantName(name); err == nil && storage != name {
+		return m.recordTypes[storage]
+	}
+	return nil
 }
 
 // RecordTypes returns all record types

@@ -4,7 +4,7 @@
 # any arithmetic with NULL produces NULL.
 name: null_arithmetic
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 5), (2, null, 5), (3, 10, null), (4, null, null)
 tests:

@@ -6,8 +6,8 @@
 # form with expressions.
 name: insert_values_expr
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
-  CREATE TABLE tb (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tb (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))
 setup: []
 tests:
   # INSERT VALUES with arithmetic.

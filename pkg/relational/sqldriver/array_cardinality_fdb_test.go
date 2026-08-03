@@ -87,15 +87,18 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
-		list := m.NewField(fd).List()
-		for _, v := range vals {
-			list.Append(protoreflect.ValueOfInt32(v))
+		pvals := make([]protoreflect.Value, len(vals))
+		for i, v := range vals {
+			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		m.Set(fd, protoreflect.ValueOfList(list))
+		setArrayField(m, fd, pvals...)
 	}
 	// tab1Rec builds a TAB1 record. arr=nil leaves the array field UNSET, the
-	// wire representation of a NULL array (Go writes a plain repeated field; an
-	// absent repeated field reads back as SQL NULL, distinct from an empty one).
+	// wire representation of a NULL array. A nullable array column is stored as
+	// the NullableArrayWrapper (setArrayField writes the wrapper), so an EMPTY
+	// array (present wrapper, empty list) stays distinct from NULL (absent
+	// wrapper); a NOT NULL array column stays a flat repeated field, where an
+	// empty list is wire-indistinguishable from unset.
 	tab1Rec := func(d protoreflect.MessageDescriptor, id int32, arr []int32) proto.Message {
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("ID"), protoreflect.ValueOfInt32(id))
@@ -242,14 +245,13 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 
 	// --- Element-count semantics on the NOT NULL array column. ---
 	//
-	// IMPORTANT (RFC-143 §3a): Go writes a plain repeated proto field with NO
-	// nullable-array wrapper, so an EMPTY array and a NULL/unset array are
+	// A NOT NULL array column is a plain repeated proto field (no
+	// NullableArrayWrapper), so an EMPTY array and an unset array are
 	// wire-indistinguishable — both read back as SQL NULL (protoreflect's Has()
 	// is false for an empty list, so the scan→datum conversion omits the key).
-	// CARDINALITY of such an empty/unset array is therefore NULL here, where
-	// Java (whose wrapper distinguishes them) would return 0 for a non-null
-	// empty array. That divergence is the latent nullable-array-wrapper-WRITE
-	// gap, out of scope for the Phase 1 function. The CARDINALITY function
+	// CARDINALITY of such an empty/unset array is therefore NULL here. The
+	// NULLABLE column TAB1 stores the wrapper and keeps [] distinct from NULL —
+	// see "count on nullable array column" below. The CARDINALITY function
 	// itself is faithful: a populated array → its length, a nil array → nil
 	// (pinned at the eval level by TestCardinalityValue_NullInputReturnsNil /
 	// _EmptyArray / _Counts in the values package). These FDB subtests pin the
@@ -257,7 +259,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 	// empty/NULL case as it actually flows through Go-written records.
 	t.Run("count on not-null array column", func(t *testing.T) {
 		// Populated arrays: {x} → 1, {x,y} → 2. The empty array (id1) reads as
-		// NULL per §3a above.
+		// NULL (flat repeated field, empty == unset on the wire).
 		want := []string{"id=1,card=<nil>", "id=2,card=1", "id=3,card=2"}
 		gotPairs := cardPairs(t, `SELECT "ID", CARDINALITY("INT_ARR") AS "CARD" FROM TAB1_NN`)
 		sort.Strings(want)
@@ -288,14 +290,14 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		}
 	})
 
-	// --- Counts on a nullable-array column (populated vs empty/unset). ---
+	// --- Counts on a nullable-array column (populated vs empty vs unset). ---
 	t.Run("count on nullable array column", func(t *testing.T) {
-		// id0 (array field never written) and id1 ([]) both read as NULL (§3a):
-		// a Go plain-repeated empty/unset array is wire-indistinguishable from
-		// NULL. id2 → 1, id3 → 2.
+		// id0 (array field never written) reads as NULL; id1 ([]) counts 0 —
+		// empty array is distinct from NULL through the NullableArrayWrapper
+		// (present wrapper, empty list) — Java's semantics. id2 → 1, id3 → 2.
 		got := cardPairs(t, `SELECT "ID", CARDINALITY("INT_ARR") AS "CARD" FROM TAB1`)
 		want := []string{
-			"id=0,card=<nil>", "id=1,card=<nil>", "id=2,card=1", "id=3,card=2",
+			"id=0,card=<nil>", "id=1,card=0", "id=2,card=1", "id=3,card=2",
 		}
 		sort.Strings(want)
 		if !unnestEqualStrs(got, want) {
@@ -327,32 +329,34 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		unnestMustContain(t, plan, "PredicatesFilter")
 		unnestMustNotContain(t, plan, "ISCAN")
 	})
-	t.Run("where cardinality equals zero matches nothing for Go arrays", func(t *testing.T) {
-		// An empty Go array reads as NULL (§3a), so `= 0` matches no rows — the
-		// empty-array-is-0 case requires Java's nullable wrapper (out of scope).
-		assertRows(t, `SELECT "ID" FROM TAB1 WHERE CARDINALITY("INT_ARR") = 0`, nil)
+	t.Run("where cardinality equals zero matches the empty array", func(t *testing.T) {
+		// empty array is distinct from NULL through the NullableArrayWrapper
+		// (present wrapper, empty list) — Java's semantics: id1's [] counts 0.
+		assertRows(t, `SELECT "ID" FROM TAB1 WHERE CARDINALITY("INT_ARR") = 0`, []string{
+			"ID=1",
+		})
 	})
 
 	// --- WHERE CARDINALITY(arr) IS [NOT] NULL. ---
-	// Per §3a, an empty/unset Go array reads as NULL, so CARDINALITY is NULL for
-	// the empty rows (id0, id1) and the populated count for the rest. IS NULL
-	// thus matches the empty/unset rows; IS NOT NULL the populated ones. This
-	// genuinely exercises the null-test predicate over a CardinalityValue — and
-	// pins that an empty Go array participates in IS NULL exactly as the §3a
-	// limitation dictates.
-	t.Run("where cardinality IS NULL matches the empty arrays", func(t *testing.T) {
+	// On the nullable column CARDINALITY is NULL only for the truly unset row
+	// (id0): empty array is distinct from NULL through the NullableArrayWrapper
+	// (present wrapper, empty list) — Java's semantics — so id1's [] counts 0
+	// and is NOT NULL. This genuinely exercises the null-test predicate over a
+	// CardinalityValue.
+	t.Run("where cardinality IS NULL matches the unset array", func(t *testing.T) {
 		plan := assertRows(t, `SELECT "ID" FROM TAB1 WHERE CARDINALITY("INT_ARR") IS NULL`, []string{
-			"ID=0", "ID=1",
+			"ID=0",
 		})
 		unnestMustContain(t, plan, "PredicatesFilter")
 	})
-	t.Run("where cardinality IS NOT NULL matches the populated arrays", func(t *testing.T) {
+	t.Run("where cardinality IS NOT NULL matches the present arrays", func(t *testing.T) {
 		assertRows(t, `SELECT "ID" FROM TAB1 WHERE CARDINALITY("INT_ARR") IS NOT NULL`, []string{
-			"ID=2", "ID=3",
+			"ID=1", "ID=2", "ID=3",
 		})
 	})
 	t.Run("where cardinality IS NULL on NOT NULL array matches the empty row", func(t *testing.T) {
-		// tab1_nn id1 is an empty array → NULL (§3a); id2/id3 are populated.
+		// tab1_nn id1 is an empty array → NULL (flat repeated, empty == unset
+		// on the wire); id2/id3 are populated.
 		assertRows(t, `SELECT "ID" FROM TAB1_NN WHERE CARDINALITY("INT_ARR") IS NULL`, []string{
 			"ID=1",
 		})
@@ -366,7 +370,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 	// --- ORDER BY CARDINALITY(arr) ASC/DESC (InMemorySort, exact order). ---
 	t.Run("order by cardinality ascending", func(t *testing.T) {
 		plan := assertRowsOrdered(t, `SELECT "ID" FROM TAB1_NN ORDER BY CARDINALITY("INT_ARR")`, []string{
-			"ID=1", "ID=2", "ID=3", // cards NULL,1,2 (id1's [] reads NULL in Go — sorts first ASC; see §3a)
+			"ID=1", "ID=2", "ID=3", // cards NULL,1,2 (id1's [] reads NULL on the flat NOT NULL column — sorts first ASC)
 		})
 		unnestMustContain(t, plan, "InMemorySort")
 		unnestMustNotContain(t, plan, "ISCAN")

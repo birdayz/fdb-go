@@ -28,7 +28,7 @@ func TestFDB_ArithPrecedenceProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_arithprec")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arithprec")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE arithprec CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE arithprec CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arithprec/s WITH TEMPLATE arithprec")
 	dsn := "fdbsql:///testdb_arithprec?cluster_file=" + clusterFilePath + "&schema=s"
 	db, err := sql.Open("fdbsql", dsn)

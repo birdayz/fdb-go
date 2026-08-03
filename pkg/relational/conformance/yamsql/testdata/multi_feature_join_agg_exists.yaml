@@ -3,9 +3,9 @@
 # Exercises complex queries combining multiple SQL features.
 name: multi_feature_join_agg_exists
 schema_template: |
-  CREATE TABLE stores (id BIGINT NOT NULL, name STRING, city STRING, PRIMARY KEY (id))
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
-  CREATE TABLE inventory (store_id BIGINT NOT NULL, product_id BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (store_id, product_id))
+  CREATE TABLE stores (id BIGINT, name STRING, city STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE inventory (store_id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (store_id, product_id))
 setup:
   - INSERT INTO stores VALUES (1, 'Downtown', 'NYC'), (2, 'Mall', 'NYC'), (3, 'Outlet', 'LA')
   - INSERT INTO products VALUES (10, 'Widget', 100), (20, 'Gadget', 200), (30, 'Doohickey', 50)

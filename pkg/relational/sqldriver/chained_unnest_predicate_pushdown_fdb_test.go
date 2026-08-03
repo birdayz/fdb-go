@@ -63,27 +63,23 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	md := buildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := sarrFD.Message()
+	elemDesc := arrayElementMessageDescriptor(sarrFD)
 
 	mkElem := func(k int64, sub ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
 		m.Set(elemDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(k))
-		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
+		subVals := make([]protoreflect.Value, 0, len(sub))
 		for _, s := range sub {
-			sl.Append(protoreflect.ValueOfInt32(s))
+			subVals = append(subVals, protoreflect.ValueOfInt32(s))
 		}
-		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
+		setArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(777)) // outer shadow of the element SUB
-		sl := m.NewField(sarrFD).List()
-		for _, e := range sarr {
-			sl.Append(e)
-		}
-		m.Set(sarrFD, protoreflect.ValueOfList(sl))
+		setArrayField(m, sarrFD, sarr...)
 		return m
 	}
 

@@ -21,7 +21,7 @@ func TestFDB_AggregateEdgeProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_agg_edge")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_edge "+
-			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, grp STRING, PRIMARY KEY (id))")
+			"CREATE TABLE t (id BIGINT, v BIGINT, grp STRING, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_agg_edge/s WITH TEMPLATE agg_edge")
 	dsn := fmt.Sprintf("fdbsql:///testdb_agg_edge?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

@@ -4,9 +4,9 @@
 # products, warehouses, stock levels, restocking.
 name: e2e_inventory
 schema_template: |
-  CREATE TABLE products (id BIGINT NOT NULL, name STRING, min_stock BIGINT, PRIMARY KEY (id))
-  CREATE TABLE warehouses (id BIGINT NOT NULL, city STRING, PRIMARY KEY (id))
-  CREATE TABLE stock (product_id BIGINT NOT NULL, warehouse_id BIGINT NOT NULL, quantity BIGINT, PRIMARY KEY (product_id, warehouse_id))
+  CREATE TABLE products (id BIGINT, name STRING, min_stock BIGINT, PRIMARY KEY (id))
+  CREATE TABLE warehouses (id BIGINT, city STRING, PRIMARY KEY (id))
+  CREATE TABLE stock (product_id BIGINT, warehouse_id BIGINT, quantity BIGINT, PRIMARY KEY (product_id, warehouse_id))
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 10), (2, 'Gadget', 5), (3, 'Doohickey', 20)
   - INSERT INTO warehouses VALUES (10, 'NYC'), (20, 'LA'), (30, 'Chicago')

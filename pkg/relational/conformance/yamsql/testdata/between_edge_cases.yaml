@@ -3,7 +3,7 @@
 # Exercises BETWEEN with various value types and boundary conditions.
 name: between_edge_cases
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma'), (4, 40, 'delta'), (5, 50, 'epsilon')
 tests:

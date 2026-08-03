@@ -7,7 +7,7 @@
 #   - NULL propagation through LIKE — 'abc' LIKE NULL is UNKNOWN.
 name: like
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'hello'), (2, 'help'), (3, 'world'), (4, null), (5, '')
 tests:

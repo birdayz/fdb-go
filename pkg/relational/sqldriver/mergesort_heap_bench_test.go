@@ -39,7 +39,7 @@ func benchInUnionMergeSort(b *testing.B, numLegs, rowsPerLeg int) {
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE T (id BIGINT NOT NULL, g BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON T (g)", tmpl))
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))

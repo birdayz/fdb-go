@@ -22,7 +22,7 @@ func TestFDB_DoublePrecisionProbe(t *testing.T) {
 	setup := openTestDB(t, "/testdb_dpp")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dpp")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE dpp CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")
+		"CREATE SCHEMA TEMPLATE dpp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dpp/s WITH TEMPLATE dpp")
 	dsn := fmt.Sprintf("fdbsql:///testdb_dpp?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)

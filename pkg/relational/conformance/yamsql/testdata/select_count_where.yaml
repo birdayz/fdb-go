@@ -5,7 +5,7 @@
 # grammars — the original schema never created.)
 name: select_count_where
 schema_template: |
-  CREATE TABLE events (id BIGINT NOT NULL, kind STRING, severity BIGINT, PRIMARY KEY (id))
+  CREATE TABLE events (id BIGINT, kind STRING, severity BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO events VALUES (1, 'error', 3), (2, 'warn', 2), (3, 'error', 3), (4, 'info', 1), (5, 'warn', 2), (6, 'error', 1)
 tests:

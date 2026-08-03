@@ -98,12 +98,11 @@ func TestFDB_OrderByGather(t *testing.T) {
 		d := md.GetRecordType(table).Descriptor
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName(protoreflect.Name(idField)), protoreflect.ValueOfInt64(id))
-		fd := d.Fields().ByName(protoreflect.Name(arrField))
-		l := m.NewField(fd).List()
+		elems := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
 		return m
 	}
 	mkP := func(pid, k int64, kNull bool, vals ...int32) proto.Message {
@@ -111,12 +110,11 @@ func TestFDB_OrderByGather(t *testing.T) {
 		m := dynamicpb.NewMessage(d)
 		m.Set(d.Fields().ByName("PID"), protoreflect.ValueOfInt64(pid))
 		longOrNull(m, d, "K", k, kNull)
-		fd := d.Fields().ByName("ARR")
-		l := m.NewField(fd).List()
+		elems := make([]protoreflect.Value, 0, len(vals))
 		for _, v := range vals {
-			l.Append(protoreflect.ValueOfInt32(v))
+			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		m.Set(fd, protoreflect.ValueOfList(l))
+		setArrayField(m, d.Fields().ByName("ARR"), elems...)
 		return m
 	}
 	mk2 := func(table, f1, f2 string, v1, v2 int64) proto.Message {

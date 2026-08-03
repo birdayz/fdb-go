@@ -3,7 +3,7 @@
 # LIMIT 0 must return empty result set immediately.
 name: limit_zero
 schema_template: |
-  CREATE TABLE data (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+  CREATE TABLE data (id BIGINT, val STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO data VALUES (1, 'a'), (2, 'b'), (3, 'c')
 tests:

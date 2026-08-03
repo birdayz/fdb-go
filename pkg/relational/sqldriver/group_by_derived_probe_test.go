@@ -21,7 +21,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_gbderived")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE gbderived_tmpl "+
-			"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_gbderived/s WITH TEMPLATE gbderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -152,7 +152,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setupA.ExecContext(ctx, "CREATE DATABASE /testdb_gbalias")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupA.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbalias_tmpl "+
-				"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+				"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupA.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbalias/s WITH TEMPLATE gbalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -190,7 +190,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup2.ExecContext(ctx, "CREATE DATABASE /testdb_gbpe")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup2.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbpe_tmpl "+
-				"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+				"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup2.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbpe/s WITH TEMPLATE gbpe_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -239,7 +239,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup4.ExecContext(ctx, "CREATE DATABASE /testdb_gbexpr")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup4.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbexpr_tmpl "+
-				"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+				"CREATE TABLE sales (id BIGINT, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup4.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbexpr/s WITH TEMPLATE gbexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -278,7 +278,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setup3.ExecContext(ctx, "CREATE DATABASE /testdb_gbpe2")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup3.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbpe2_tmpl "+
-				"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+				"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup3.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_gbpe2/s WITH TEMPLATE gbpe2_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -319,7 +319,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(setupCJ.ExecContext(ctx, "CREATE DATABASE /testdb_cjderived")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupCJ.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE cjderived_tmpl "+
-				"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+				"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupCJ.ExecContext(ctx,
 			"CREATE SCHEMA /testdb_cjderived/s WITH TEMPLATE cjderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 

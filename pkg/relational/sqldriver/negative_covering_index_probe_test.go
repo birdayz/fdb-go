@@ -21,7 +21,7 @@ func TestFDB_NegativeCoveringIndexProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_negidx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE negidx "+
-			"CREATE TABLE t (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_negidx/s WITH TEMPLATE negidx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_negidx?cluster_file=%s&schema=s", clusterFilePath)

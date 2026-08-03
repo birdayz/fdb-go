@@ -4,7 +4,7 @@
 # and INSERT with expressions.
 name: dml_conditional
 schema_template: |
-  CREATE TABLE accounts (id BIGINT NOT NULL, name STRING, balance BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE accounts (id BIGINT, name STRING, balance BIGINT, status STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO accounts VALUES (1, 'Alice', 1000, 'active'), (2, 'Bob', 50, 'active'), (3, 'Charlie', 0, 'active'), (4, 'Dave', -100, 'active')
 tests:

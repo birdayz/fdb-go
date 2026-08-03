@@ -3,7 +3,7 @@
 # Exercises all comparison operators: =, !=, <, >, <=, >=.
 name: select_where_comparison_types
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
 tests:

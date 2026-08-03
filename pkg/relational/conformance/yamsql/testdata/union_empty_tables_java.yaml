@@ -4,19 +4,19 @@
 name: union_empty_tables_java
 schema_template: |
   CREATE TABLE empty1 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE empty2 (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)
   )
   CREATE TABLE has_data (
-    id BIGINT NOT NULL,
+    id BIGINT,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)

@@ -20,8 +20,8 @@ func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE diag_nce_tmpl
-		CREATE TABLE Product (id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id))
-		CREATE TABLE Flag (name STRING NOT NULL, PRIMARY KEY (name))`); err != nil {
+		CREATE TABLE Product (id BIGINT, price BIGINT, PRIMARY KEY (id))
+		CREATE TABLE Flag (name STRING, PRIMARY KEY (name))`); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /diag_nce/main WITH TEMPLATE diag_nce_tmpl"); err != nil {

@@ -64,7 +64,18 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 		return
 	}
 
-	groupingKeys := gb.GetGroupingKeys()
+	// The pushed constraint speaks PRIMITIVE LEAVES — Java expands the
+	// grouping value via Values.primitiveAccessorsForType before building
+	// the required ordering set
+	// (PushRequestedOrderingThroughGroupByRule.java:141), so a RECORD-typed
+	// grouping key contributes its leaf accessors, never itself.
+	groupingKeys, expandErr := expandGroupingKeysToPrimitives(gb.GetGroupingKeys())
+	if expandErr != nil {
+		// No leaf decomposition (ARRAY/RELATION key): push no constraint —
+		// the implementation rule declines the same key, so no plan below
+		// could satisfy it anyway.
+		return
+	}
 
 	var synthesized []*properties.RequestedOrdering
 	for _, reqOrd := range orderings {

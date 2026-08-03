@@ -33,7 +33,7 @@ func SeedCorpus() []Scenario {
 	base := Scenario{
 		Name:   "rewrites",
 		Seed:   1,
-		Tables: []string{"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))"},
+		Tables: []string{"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))"},
 		Data: []string{
 			"INSERT INTO t (id, a, b) VALUES (1, 1, 10)",
 			"INSERT INTO t (id, a, b) VALUES (2, 2, 20)",
@@ -145,7 +145,7 @@ func nulls() Scenario {
 	return Scenario{
 		Name:   "nulls",
 		Seed:   3,
-		Tables: []string{"CREATE TABLE tn (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))"},
+		Tables: []string{"CREATE TABLE tn (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))"},
 		Data: []string{
 			"INSERT INTO tn (id, a, b) VALUES (1, 1, 1)",
 			"INSERT INTO tn (id, a, b) VALUES (2, 2, 3)",
@@ -253,8 +253,8 @@ func joins() Scenario {
 		Name: "joins",
 		Seed: 2,
 		Tables: []string{
-			"CREATE TABLE emp (id BIGINT NOT NULL, dept BIGINT, sal BIGINT, PRIMARY KEY (id))",
-			"CREATE TABLE dept (did BIGINT NOT NULL, budget BIGINT, PRIMARY KEY (did))",
+			"CREATE TABLE emp (id BIGINT, dept BIGINT, sal BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE dept (did BIGINT, budget BIGINT, PRIMARY KEY (did))",
 		},
 		Data: []string{
 			"INSERT INTO emp (id, dept, sal) VALUES (1, 10, 100)",
@@ -364,7 +364,7 @@ func indexed() Scenario {
 		Name: "indexed",
 		Seed: 4,
 		Tables: []string{
-			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
 			"CREATE INDEX by_v ON t (v)",
 			"CREATE INDEX by_g_v ON t (g, v)",
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
