@@ -173,9 +173,10 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 		}
 		mwjoMustExec(t, udb, ctx, "DELETE FROM e")
 		if n := count("emptied"); n != 0 {
-			t.Fatalf("COUNT(*) after emptying the table = %d, want 0. clearWhenZero removes the "+
-				"ungrouped entry at zero, so this asserts the empty scan still coalesces to 0 "+
-				"instead of returning no row.", n)
+			t.Fatalf("COUNT(*) after emptying the table = %d, want 0. An ungrouped aggregate has "+
+				"exactly one group, which exists whether or not the table has rows, so any fix "+
+				"that makes vacated GROUPS disappear must not make this row disappear -- the "+
+				"empty scan has to keep coalescing to 0 rather than returning no row.", n)
 		}
 	})
 }
@@ -233,11 +234,27 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 // The SUM hazard is not theoretical -- it was measured. Forcing clearWhenZero
 // on for SUM and re-running this test yields exactly "[2 60]": the phantoms go,
 // and groups 4 and 6 go with them, which is the wrong answer in the other
-// direction. That measurement was initially masked by a second defect: the
-// grouped SUM insert fast path in the maintainer wrote its ADD inline and never
-// issued the clear, so nothing was dropped on insert and the option looked
-// harmless. That defect is fixed (atomicMutationIndexMaintainer.clearIfZero),
-// and with it fixed the contract's stated behaviour reproduces exactly.
+// direction.
+//
+// That measurement was masked at first by a second, unrelated defect, and the
+// masking is worth stating because the evidence it produced looked
+// self-contradictory. updateInsertOnlyGrouped served grouped SUM inserts from
+// two inline AddBytes fast paths that wrote the ADD directly instead of calling
+// sumMutation.applyMutation, and so never issued the COMPARE_AND_CLEAR. Three
+// legs, three different routes:
+//
+//   - groups 4 and 6 are grouped SUM INSERTs -> inline fast path -> no clear,
+//     so they survived and the option looked harmless;
+//   - groups 1 and 3 are vacated by UPDATE/DELETE -> the general Update path ->
+//     applyMutation -> the clear fired, so the phantoms did go;
+//   - the record-layer sibling test is UNGROUPED -> updateInsertOnly ->
+//     applyMutation -> the clear fired, so the adding path looked correct.
+//
+// Hence "the adding path clears in one test and not in the other" was never
+// about the planner or about which index was chosen; it was about which of the
+// three maintenance routes each case took. The fast paths now go through
+// atomicMutationIndexMaintainer.clearIfZero, and with that fixed the
+// CLEAR_WHEN_ZERO contract reproduces exactly as documented.
 //
 // This is not a Go slip. Java's SQL layer has the identical defect: relational
 // DDL never sets clearWhenZero (MaterializedViewIndexGenerator.java:235-243) and
@@ -349,4 +366,151 @@ func TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins(t *testing.T) {
 		"SELECT g, COUNT(v) FROM ai GROUP BY g",
 		"[1 0] [2 3] [3 0] [4 2] [6 2]",
 		"[2 3] [4 2] [5 0] [6 2]")
+}
+
+// TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable pins a NEGATIVE
+// result: the ungrouped `SELECT SUM(v) FROM t` divergence that Java has does
+// NOT reproduce in Go, and it is important to pin exactly WHY, because the
+// reason is an accident of planning rather than a property of the design.
+//
+// Java's corpus has the divergence in one file: aggregate-empty-table.yamsql
+// :547-550 runs `select sum(col1) from T1` with no aggregate index over an
+// emptied table and expects NULL, while :577-580 runs the same query over T2,
+// which carries SUM index t2_i5, plans it as `AISCAN(T2_I5 <,> BY_GROUP ...)`
+// and expects 0. Oracle and index-backed answer, same block, disagreeing.
+//
+// Go agrees with the oracle on both axes below -- but ONLY because Go's planner
+// does not route an ungrouped SUM through the aggregate index at all; the plan
+// is a StreamingAgg over a full scan even on the indexed table. There is no
+// index-backed path here, so there is nothing to diverge. That is what the plan
+// assertions below pin. The moment an ungrouped SUM becomes index-backed, this
+// test goes red and the fact it was protecting is gone: the companion-existence
+// rule (RFC-209) has to cover the ungrouped case too, and an emptied table must
+// then yield NULL rather than the stored 0.
+//
+// Note this is the opposite conclusion from the grouped COUNT(*) case, where an
+// empty scan legitimately coalesces to 0. Do not generalise one to the other.
+func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_aggvacsum")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggvacsum")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE aggvacsum "+
+			"CREATE TABLE si (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE TABLE so (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE INDEX si_sum AS SELECT SUM(v) FROM si")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
+	dsn := fmt.Sprintf("fdbsql:///testdb_aggvacsum?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sumOf := func(t *testing.T, tbl string) (val sql.NullInt64, plan string) {
+		t.Helper()
+		if err := db.QueryRowContext(ctx, "EXPLAIN SELECT SUM(v) FROM "+tbl).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN SUM(v) FROM %s: %v", tbl, err)
+		}
+		if err := db.QueryRowContext(ctx, "SELECT SUM(v) FROM "+tbl).Scan(&val); err != nil {
+			t.Fatalf("SELECT SUM(v) FROM %s: %v", tbl, err)
+		}
+		return val, plan
+	}
+
+	show := func(v sql.NullInt64) string {
+		if v.Valid {
+			return fmt.Sprintf("%d", v.Int64)
+		}
+		return "NULL"
+	}
+
+	// assertAgrees pins both halves of the negative result: the answers match the
+	// oracle, AND the reason they match is that the indexed table is not planned
+	// through the aggregate index.
+	assertAgrees := func(t *testing.T, label string, iv, ov sql.NullInt64, iplan, oplan string) {
+		t.Helper()
+		if iv.Valid != ov.Valid || iv.Int64 != ov.Int64 {
+			t.Fatalf("%s: ungrouped SUM disagrees with the unindexed oracle\n"+
+				"  indexed(si)   = %s  plan: %s\n  unindexed(so) = %s  plan: %s\n"+
+				"This is Java's aggregate-empty-table.yamsql :547-550 vs :577-580 divergence "+
+				"reproducing in Go. It must be fixed by RFC-209's companion-existence rule, "+
+				"not by relaxing this test.",
+				label, show(iv), iplan, show(ov), oplan)
+		}
+		if strings.Contains(iplan, "AggregateIndex") || strings.Contains(iplan, "AISCAN") {
+			t.Fatalf("%s: the ungrouped SUM over the INDEXED table is now served by the "+
+				"aggregate index:\n  plan: %s\n"+
+				"That is a real capability change, and it re-arms a bug this test was pinning "+
+				"as unreachable. An index-backed ungrouped SUM reads a stored 0 for an emptied "+
+				"table, where the correct answer is NULL. Extend the companion-existence rule "+
+				"(RFC-209) to the ungrouped case, then update this test -- do not delete it.",
+				label, iplan)
+		}
+	}
+
+	// Axis 1: emptied table (INSERT then DELETE all rows).
+	t.Run("emptied-by-delete", func(t *testing.T) {
+		mwjoMustExec(t, db, ctx, "INSERT INTO si (pk,v) VALUES (1,10),(2,20)")
+		mwjoMustExec(t, db, ctx, "INSERT INTO so (pk,v) VALUES (1,10),(2,20)")
+		mwjoMustExec(t, db, ctx, "DELETE FROM si")
+		mwjoMustExec(t, db, ctx, "DELETE FROM so")
+		iv, iplan := sumOf(t, "si")
+		ov, oplan := sumOf(t, "so")
+		assertAgrees(t, "emptied-by-delete", iv, ov, iplan, oplan)
+		if iv.Valid {
+			t.Fatalf("emptied-by-delete: SUM(v) over an emptied table = %d, want NULL. "+
+				"SUM over zero rows is NULL; a 0 here is the stored accumulator leaking out.",
+				iv.Int64)
+		}
+	})
+
+	// Axis 2: live rows whose values legitimately cancel to zero (+5, -5),
+	// never deleted.
+	t.Run("cancels-to-zero-live-rows", func(t *testing.T) {
+		mwjoMustExec(t, setup, ctx,
+			"CREATE SCHEMA TEMPLATE aggvacsum2 "+
+				"CREATE TABLE si (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+				"CREATE TABLE so (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+				"CREATE INDEX si_sum AS SELECT SUM(v) FROM si")
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacsum/s2 WITH TEMPLATE aggvacsum2")
+		dsn2 := fmt.Sprintf("fdbsql:///testdb_aggvacsum?cluster_file=%s&schema=s2", clusterFilePath)
+		db2, err := sql.Open("fdbsql", dsn2)
+		if err != nil {
+			t.Fatalf("sql.Open: %v", err)
+		}
+		defer db2.Close()
+		mwjoMustExec(t, db2, ctx, "INSERT INTO si (pk,v) VALUES (1,5)")
+		mwjoMustExec(t, db2, ctx, "INSERT INTO si (pk,v) VALUES (2,-5)")
+		mwjoMustExec(t, db2, ctx, "INSERT INTO so (pk,v) VALUES (1,5)")
+		mwjoMustExec(t, db2, ctx, "INSERT INTO so (pk,v) VALUES (2,-5)")
+
+		var iv, ov sql.NullInt64
+		var iplan, oplan string
+		if err := db2.QueryRowContext(ctx, "EXPLAIN SELECT SUM(v) FROM si").Scan(&iplan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if err := db2.QueryRowContext(ctx, "SELECT SUM(v) FROM si").Scan(&iv); err != nil {
+			t.Fatalf("query si: %v", err)
+		}
+		if err := db2.QueryRowContext(ctx, "EXPLAIN SELECT SUM(v) FROM so").Scan(&oplan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if err := db2.QueryRowContext(ctx, "SELECT SUM(v) FROM so").Scan(&ov); err != nil {
+			t.Fatalf("query so: %v", err)
+		}
+		assertAgrees(t, "cancels-to-zero-live-rows", iv, ov, iplan, oplan)
+		// The mirror of the emptied case: here 0 is the CORRECT answer, because
+		// two live rows sum to zero. Any fix that turns an emptied table's 0 into
+		// NULL must leave this one alone.
+		if !iv.Valid || iv.Int64 != 0 {
+			t.Fatalf("cancels-to-zero-live-rows: SUM(v) = %s, want 0. Two live rows sum to "+
+				"zero, so 0 is correct here and NULL would be the opposite wrong answer.",
+				show(iv))
+		}
+	})
 }

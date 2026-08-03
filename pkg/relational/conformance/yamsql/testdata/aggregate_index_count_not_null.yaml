@@ -25,7 +25,16 @@ tests:
   #   temp: 2 non-null readings (72, 68)
   #   humidity: 1 non-null reading (45)
   #   pressure: 0 non-null readings (all NULL)
-  # Note: pressure group may not appear (ClearWhenZero removes 0-count entries)
+  # The pressure group is MISSING below, and not because of clearWhenZero --
+  # SQL never sets that option. A COUNT_NOT_NULL index writes no entry at all
+  # for a NULL value (AtomicMutation.Standard.getMutationParam returns null,
+  # AtomicMutation.java:165-171), so a group whose every reading is NULL has no
+  # key to scan and vanishes. That is a live wrong answer: GROUP BY yields one
+  # group per distinct sensor present, and COUNT over an all-NULL group is 0,
+  # so ["pressure", 0] belongs here. It is pinned as a divergence in
+  # TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins (group g=5) and is
+  # fixed by RFC-209's companion-COUNT(*) group set, at which point this
+  # expectation flips to include ["pressure", 0].
   - query: SELECT sensor, COUNT(reading) FROM measurements GROUP BY sensor ORDER BY sensor
     plan_contains: AggregateIndex
     rows:

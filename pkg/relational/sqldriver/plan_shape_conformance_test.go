@@ -2646,8 +2646,13 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows.Err: %v", err)
 		}
-		// temp: 2 non-null (72,68), humidity: 1 non-null (45)
-		// pressure: 0 non-null → ClearWhenZero removes entry
+		// temp: 2 non-null (72,68), humidity: 1 non-null (45).
+		// pressure is all-NULL and is MISSING below -- not because of
+		// clearWhenZero, which SQL never sets, but because COUNT_NOT_NULL writes
+		// no entry at all for a NULL value (AtomicMutation.java:165-171), so an
+		// all-NULL group has no key to scan. ["pressure", 0] is the correct
+		// answer; this pins the divergence until RFC-209's companion-COUNT(*)
+		// group set supplies the missing group, at which point want gains it.
 		want := []row{{"humidity", 1}, {"temp", 2}}
 		if len(got) != len(want) {
 			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)

@@ -568,4 +568,66 @@ var _ = Describe("SumIndex", func() {
 		save(4, 3, 0)
 		Expect(groups()).To(Equal(map[int64]int64{2: 7}))
 	})
+
+	// The guard, not the clear. Everything above asserts what happens when
+	// clearWhenZero IS set; this asserts that without it the zero entry SURVIVES,
+	// which is the default every SQL-created SUM index runs under.
+	//
+	// It is the SUM sibling of count_index_test.go's "without ClearWhenZero
+	// leaves zero-value entries", and it was missing. Dropping the guard from all
+	// three atomic arms at once is caught by that count test, so the option
+	// looked covered; dropping it from the SUM arm ALONE was green across the
+	// whole package. An unguarded SUM clear would make every SQL-created SUM
+	// index silently drop groups that sum to zero -- live groups, wrong rows,
+	// and a divergence from a Java store maintaining the same index from the
+	// same metadata.
+	It("without ClearWhenZero leaves a zero-valued sum entry in place", func() {
+		ks := specSubspace()
+
+		sumIdx := NewSumIndex("sum_price_unguarded", GroupBy(Field("price"), Field("quantity")))
+		// Deliberately NOT SetClearWhenZero: this is the SQL default.
+		builder := baseMetaData()
+		builder.AddIndex("Order", sumIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		save := func(id int64, quantity, price int32) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				return store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(id),
+					Quantity: proto.Int32(quantity),
+					Price:    proto.Int32(price),
+				})
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Reach zero on the ADDING path, which is the path the inline grouped
+		// fast path serves and the one an unguarded clear would fire on.
+		save(1, 1, 42)
+		save(2, 1, -42)
+		// And on the adding path with a value that is itself zero.
+		save(3, 2, 0)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			got := map[int64]int64{}
+			for _, e := range entries {
+				got[e.Key[0].(int64)] = e.Value[0].(int64)
+			}
+			Expect(got).To(Equal(map[int64]int64{1: 0, 2: 0}),
+				"clearWhenZero is NOT set, so both zero-summing groups must keep their "+
+					"entries at 0. A clear firing here would drop live groups and diverge "+
+					"from a Java store reading the same metadata.")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
