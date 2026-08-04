@@ -1,7 +1,9 @@
 # Road to production
 
-**Revision 2026-08-01.** Measured against `a1d281a63` (= `origin/master`). Supersedes the
-2026-07-29 revision.
+**Revision 2026-08-04.** Amends the 2026-08-01 revision in place: B1/Tier-1 confirmed at
+`5ab0a87a3`, B2/Tier-2 closed at `d6f635073`. Counts below were measured against `a1d281a63`
+(= `origin/master` at the 2026-08-01 drafting) unless a later SHA is cited inline. Supersedes
+the 2026-07-29 revision.
 
 Every count below carries the SHA it was measured at. This revision was drafted against `f5c2c7f0e`
 and two merges (#555, #556) landed mid-pass and invalidated three of its findings — so the SHA is
@@ -220,8 +222,11 @@ would make the list read cleaner than the code is. Entries 2 and 4 have since be
 refuted by measurement, entry 4 fixed and pinned — see the entries); 8 and 12 remain marked.
 
 Wrong rows / wrong data:
-1. No read-your-writes in `BeginTx` (= B2). IMPLEMENTATION IN FLIGHT (feat/rfc198-explicit-tx-isolation). Pinned —
-   `sqldriver/tx_select_isolation_probe_test.go:62`.
+1. **RETIRED 2026-08-04: no read-your-writes in `BeginTx` (= B2) — FIXED by #607 (`d6f635073`).**
+   Inside `BeginTx`, SELECT now joins the FDB transaction: read-your-writes holds, reads take
+   conflict ranges, and cross-transaction read-modify-write conflicts surface as 40001. The probe
+   (`sqldriver/tx_select_isolation_probe_test.go`) asserts the CORRECT semantics per the section
+   contract, with a `dml_still_atomic_on_commit` control alongside.
 2. **REFUTED and retired: "INSERT of NULL into a PRIMARY KEY column silently stores 0."**
    Measurement inverted the claim: Go stores the same REAL tuple null (0x00) Java does — Java raises
    no error here (a relational scalar column is never non-nullable, DdlVisitor.java:156-161;
