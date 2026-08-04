@@ -48,9 +48,19 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 		return fmt.Errorf("rebuild index %q: insert full range: %w", index.Name, err)
 	}
 
-	// Step 3: Scan all records and build index entries.
+	// Step 3: Scan the records that can possibly feed this index, and build entries.
+	// Java's inline rebuild is NOT a whole-store scan: rebuildIndexInternalAsync starts
+	// from common.computeRecordsRange() and "can skip indexing records that are outside
+	// this range" (IndexingMultiTargetByRecords.java:187-193). Note the range set above
+	// is still marked built over the WHOLE range — the skipped keys cannot hold a record
+	// of an indexed type, so there is nothing there left to build.
 	scanProps := ForwardScan()
-	cursor := store.ScanRecords(nil, scanProps)
+	var cursor RecordCursor[*FDBStoredRecord[proto.Message]]
+	if low, high, ok := store.indexedRecordTypesRange(index); ok {
+		cursor = store.ScanRecordsInRange(low, high, EndpointTypeRangeInclusive, EndpointTypeRangeInclusive, nil, scanProps)
+	} else {
+		cursor = store.ScanRecords(nil, scanProps)
+	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {
 		return fmt.Errorf("rebuild index %q: get maintainer: %w", index.Name, err)
@@ -77,6 +87,54 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	}
 
 	return nil
+}
+
+// indexedRecordTypesRange returns the inclusive record-type-key bounds spanning the
+// record types index covers, and ok=false when the whole records space may be
+// relevant. Port of Java's IndexingCommon.computeRecordsRange
+// (IndexingCommon.java:211-229):
+//
+//	for (RecordType recordType : getAllRecordTypes()) {
+//	    if (!recordType.primaryKeyHasRecordTypePrefix() || recordType.isSynthetic()) {
+//	        // If any of the types to build for does not have a prefix, give up.
+//	        return null;
+//	    }
+//	    Tuple prefix = recordType.getRecordTypeKeyTuple();
+//	    ...low = min, high = max...
+//	}
+//
+// One type gives that type's range; several give the span from the lexicographically
+// first type key to the last, which may include records of types in between — Java
+// accepts that, and the per-record type test still filters them.
+//
+// This is the index's OWN record types, not the caller's single-type narrowing: a
+// rebuild is per index and knows exactly what it indexes, whereas
+// singleRecordTypeWithPrefixKey answers a different question (do ALL the indexes being
+// built agree on one type) that only the shared record-count probe needs.
+func (store *FDBRecordStore) indexedRecordTypesRange(index *Index) (low, high tuple.Tuple, ok bool) {
+	var lowKey, highKey int64
+	found := false
+	for _, recordType := range store.metaData.RecordTypesForIndex(index) {
+		if !recordType.PrimaryKeyHasRecordTypePrefix() || recordType.IsSynthetic() {
+			return nil, nil, false
+		}
+		typeKey, isInt := recordTypeKeyInt64(recordType)
+		if !isInt {
+			return nil, nil, false
+		}
+		switch {
+		case !found:
+			lowKey, highKey, found = typeKey, typeKey, true
+		case typeKey < lowKey:
+			lowKey = typeKey
+		case typeKey > highKey:
+			highKey = typeKey
+		}
+	}
+	if !found {
+		return nil, nil, false
+	}
+	return tuple.Tuple{lowKey}, tuple.Tuple{highKey}, true
 }
 
 // validateFormatVersion checks that the stored format version is supported.
@@ -207,11 +265,11 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Check record counts BEFORE the version gate — this compares the stored
 	// RecordCountKey proto against the current one, independent of version.
 	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
-	countHeaderWrite, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
+	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
 	if err != nil {
 		return fmt.Errorf("rebuild record counts: %w", err)
 	}
-	needHeaderWrite := formatUpgraded || countHeaderWrite
+	needHeaderWrite := formatUpgraded || rebuildRecordCounts
 
 	if newMetaDataVersion == oldMetaDataVersion {
 		// Even when versions match, the record count check may have modified
@@ -259,8 +317,14 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 			}
 		}
 
+		// If all the new indexes are only for a record type whose primary key has a
+		// type prefix, then we can scan less. Matches Java's checkRebuildIndexes
+		// (FDBRecordStore.java:4747-4754), which computes this once and threads it
+		// through both the record count and the record size.
+		singleRecordType := store.singleRecordTypeWithPrefixKey(indexesToBuild)
+
 		// Get record count for the policy decision (lazy in Java, eager here).
-		recordCount, err := store.getRecordCountForRebuildPolicy()
+		recordCount, err := store.getRecordCountForRebuildPolicy(indexesToBuild, singleRecordType, rebuildRecordCounts)
 		if err != nil {
 			return fmt.Errorf("check record count for rebuild: %w", err)
 		}
@@ -444,12 +508,37 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 }
 
 // recordsSubspaceEmpty reports whether the records subspace contains no keys.
+func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
+	return store.recordsRangeEmpty(nil)
+}
+
+// recordsRangeEmpty reports whether the records subspace holds no keys — for the
+// WHOLE store when recordType is nil, and for exactly that type's record-type-keyed
+// sub-range otherwise. The scoped form is Java's
+//
+//	records = scanRecords(TupleRange.allOf(singleRecordTypeWithPrefixKey.getRecordTypeKeyTuple()), null, scanProperties)
+//
+// (FDBRecordStore.java:4872): when every index being built is on one type whose
+// records live in a contiguous sub-range, only that sub-range decides whether there
+// is anything to index. Probing the whole store instead reports "non-empty" for
+// records of types the new index will never touch, which routes an index over an
+// empty type to DISABLED where Java builds it inline.
+//
 // Uses a non-snapshot limited range read so the read-conflict over the scanned
 // range makes a decision based on emptiness safe against a concurrent insert
 // (the transaction will conflict and retry). Matches the safety of Java's
-// addRecordsReadConflict() following its snapshot record count.
-func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
+// addRecordsReadConflict() following its snapshot record count. Scoping shrinks
+// that conflict range to the type actually being indexed, which is strictly
+// better: an insert of an unrelated type no longer invalidates the decision.
+func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, error) {
 	recSub := store.subspace.Sub(RecordKey)
+	if recordType != nil {
+		typeKey, ok := recordTypeKeyInt64(recordType)
+		if !ok {
+			return false, fmt.Errorf("record type %q has no integer record type key", recordType.Name)
+		}
+		recSub = recSub.Sub(typeKey)
+	}
 	begin, end := recSub.FDBRangeKeys()
 	kvs, err := store.context.Transaction().
 		GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{Limit: 1}).
@@ -460,38 +549,156 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 	return len(kvs) == 0, nil
 }
 
-// getRecordCountForRebuildPolicy returns the record count the
-// IndexRebuildPolicy decides on. Port of Java's
-// getRecordCountForRebuildIndexes (FDBRecordStore.java:4836-4901).
+// recordTypeKeyInt64 returns the record type key as the int64 the tuple encoder
+// actually writes into primary keys, and ok=false when the type key is not an
+// integer.
 //
-// With a record-count key the exact snapshot count is available and is what
-// the policy sees. WITHOUT one there is no cheap count, and Java does NOT
-// treat that as "zero records": it scans for a SINGLE record
-// (FDBRecordStore.java:4862-4884) and reports Long.MAX_VALUE the moment the
-// store turns out to be non-empty, 0 only when it is genuinely empty.
+// Java encodes every record-type-key flavour, but Go's RecordTypeKeyExpression
+// only binds INTEGER type keys (metadata.go bindTypeKeys builds map[string]int64)
+// and falls back to the message type NAME for any other explicit key at save time
+// (key_expression.go RecordTypeKeyExpression.Evaluate). Bounds derived from a
+// non-integer key would therefore not match where the records are, so every caller
+// treats "not an integer" as "this type's records are not addressable as a range"
+// and falls back to the unscoped behaviour. Same restriction, same reason, as
+// OnlineIndexer.computeRecordsRange.
+func recordTypeKeyInt64(recordType *RecordType) (int64, bool) {
+	switch k := recordType.GetRecordTypeKey().(type) {
+	case int:
+		return int64(k), true
+	case int32:
+		return int64(k), true
+	case int64:
+		return k, true
+	default:
+		return 0, false
+	}
+}
+
+// singleRecordTypeWithPrefixKey returns the one record type all the indexes being
+// built are on, when there is exactly one and its primary key is prefixed by the
+// record type key — otherwise nil. Port of Java's
+// FDBRecordStore.singleRecordTypeWithPrefixKey (FDBRecordStore.java:4909-4929):
 //
-// The distinction is the whole safety property. Reporting 0 for an unknown
-// count makes DefaultIndexRebuildPolicy answer READABLE unconditionally, so
-// EVERY index added by a metadata evolution is built INLINE, inside the
-// transaction that opened the store — a full index build against the 5s /
-// 10MB / 100k-key transaction limits on any store big enough to matter.
-// Reporting MAX_VALUE for a non-empty store instead routes such an index to
-// DISABLED (or WRITE_ONLY under WriteOnlyIfTooLargePolicy) for a background
-// build, and leaves the inline path to the small and empty stores where Java
-// also takes it — recordCount <= MAX_RECORDS_FOR_REBUILD, FDBRecordStore.java:2471.
+//	RecordType recordType = null;
+//	for (List<RecordType> entry : indexes.values()) {
+//	    Collection<RecordType> types = entry != null ? entry : getRecordMetaData().getRecordTypes().values();
+//	    if (types.size() != 1) {
+//	        return null;
+//	    }
+//	    RecordType type1 = entry != null ? entry.get(0) : types.iterator().next();
+//	    if (recordType == null) {
+//	        if (!type1.primaryKeyHasRecordTypePrefix()) {
+//	            return null;
+//	        }
+//	        recordType = type1;
+//	    } else if (type1 != recordType) {
+//	        return null;
+//	    }
+//	}
+//	return recordType;
 //
-// The emptiness probe is non-snapshot (see recordsSubspaceEmpty) so a
-// concurrent insert invalidates an "empty, build inline" decision rather than
-// racing it.
-func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
-	if store.metaData.GetRecordCountKey() != nil {
-		count, err := store.GetRecordCount()
+// Java's map value is null for a UNIVERSAL index, and the null case widens to every
+// record type in the meta-data — so a universal index qualifies only in a
+// single-type store. RecordTypesForIndex reproduces that exactly (universal index →
+// all record types), so the len(types) != 1 test covers both.
+//
+// The record-type-prefix test is written against the FIRST entry only, as in Java;
+// every later entry must be the same type, so it applies to all of them.
+func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *RecordType {
+	var recordType *RecordType
+	for _, index := range indexes {
+		types := store.metaData.RecordTypesForIndex(index)
+		if len(types) != 1 {
+			return nil
+		}
+		type1 := types[0]
+		if recordType == nil {
+			if !type1.PrimaryKeyHasRecordTypePrefix() {
+				return nil
+			}
+			recordType = type1
+		} else if type1 != recordType {
+			return nil
+		}
+	}
+	if recordType != nil {
+		if _, ok := recordTypeKeyInt64(recordType); !ok {
+			return nil
+		}
+	}
+	return recordType
+}
+
+// getRecordCountForRebuildPolicy returns the record count the IndexRebuildPolicy
+// decides on. Port of Java's getRecordCountForRebuildIndexes
+// (FDBRecordStore.java:4836-4898), whose selection chain is, in order:
+//
+//  1. If all the indexes being built are on ONE record type whose primary key is
+//     record-type-prefixed, a count for JUST that type — from a COUNT index on the
+//     type, or from a COUNT index grouped by record type (FDBRecordStore.java:4842-4849).
+//  2. Otherwise, unless the record counts are being rebuilt in this very
+//     transaction, the whole-store count — from the record-count key, or from an
+//     ungrouped/roll-uppable COUNT index (FDBRecordStore.java:4850-4861).
+//  3. Only when neither yields a count: a scan limited to a SINGLE record, reporting
+//     Long.MAX_VALUE the moment the store turns out to be non-empty and 0 only when
+//     it is genuinely empty (FDBRecordStore.java:4862-4897). Scoped to the single
+//     record type's range when there is one.
+//
+// Steps 1 and 2 are not an optimisation — they change the ANSWER. The probe cannot
+// distinguish 1 record from 10^9, so it reports MAX_VALUE for both; a store with a
+// usable COUNT index reporting 12 is one Java rebuilds INLINE and marks READABLE,
+// and skipping straight to the probe leaves that index DISABLED forever pending a
+// background build nobody asked for.
+//
+// The other direction is the safety property: reporting 0 for an unknown count makes
+// DefaultIndexRebuildPolicy answer READABLE unconditionally, so EVERY index added by
+// a metadata evolution is built INLINE, inside the transaction that opened the store
+// — a full index build against the 5s / 10MB / 100k-key transaction limits on any
+// store big enough to matter. MAX_VALUE for a non-empty store instead routes such an
+// index to DISABLED (or WRITE_ONLY under WriteOnlyIfTooLargePolicy), and leaves the
+// inline path to the small and empty stores where Java also takes it — recordCount <=
+// MAX_RECORDS_FOR_REBUILD, FDBRecordStore.java:2471.
+//
+// The indexes being built are excluded from every count-index lookup: they hold no
+// entries yet and have no index state on disk, so an unbuilt COUNT index would answer
+// 0 for a full store. Java does this with an IndexQueryabilityFilter
+// (FDBRecordStore.java:4839-4841) — "Do this with the new indexes filtered out to
+// avoid using one of them when evaluating the snapshot record count. At this point we
+// won't have written that any new indexes are disabled".
+//
+// rebuildRecordCounts is Java's flag of the same name, threaded from
+// checkPossiblyRebuildRecordCounts (FDBRecordStore.java:4728): when the counts have
+// just been cleared and re-derived, Java does not consult them.
+//
+// The emptiness probe is non-snapshot (see recordsRangeEmpty) so a concurrent insert
+// invalidates an "empty, build inline" decision rather than racing it.
+func (store *FDBRecordStore) getRecordCountForRebuildPolicy(indexesToBuild []*Index, singleRecordType *RecordType, rebuildRecordCounts bool) (int64, error) {
+	// The queryability filter: exclude the indexes currently being built.
+	excluded := make(map[string]bool, len(indexesToBuild))
+	for _, index := range indexesToBuild {
+		excluded[index.Name] = true
+	}
+
+	if singleRecordType != nil {
+		count, ok, err := store.snapshotRecordCountForRecordType(singleRecordType, excluded)
 		if err != nil {
 			return 0, err
 		}
-		return count, nil
+		if ok {
+			return count, nil
+		}
 	}
-	empty, err := store.recordsSubspaceEmpty()
+	if !rebuildRecordCounts {
+		count, ok, err := store.snapshotTotalRecordCount(excluded)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			return count, nil
+		}
+	}
+
+	empty, err := store.recordsRangeEmpty(singleRecordType)
 	if err != nil {
 		return 0, err
 	}
@@ -499,6 +706,147 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 		return 0, nil
 	}
 	return math.MaxInt64, nil
+}
+
+// snapshotTotalRecordCount is Java's
+// getSnapshotRecordCount(EmptyKeyExpression.EMPTY, Key.Evaluated.EMPTY, filter)
+// (FDBRecordStore.java:2283-2323) specialised to the empty key and value the rebuild
+// path always passes. ok=false is Java's RecordCoreException — "no appropriate index
+// on count" — which the caller swallows to fall through to the next source.
+//
+// A read error is NOT ok=false. Java's catch can only see the SYNCHRONOUS throw from
+// index selection; a failed range read arrives on the future and propagates. Folding
+// one into "unknown count" would silently downgrade a transient FDB error into a
+// rebuild-policy decision.
+func (store *FDBRecordStore) snapshotTotalRecordCount(excluded map[string]bool) (int64, bool, error) {
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil && store.recordCountStateIsReadable() {
+		countSubspace := store.subspace.Sub(RecordCountKey)
+		tr := store.context.Transaction().Snapshot()
+		if _, isEmpty := countKey.(*EmptyKeyExpression); isEmpty {
+			// Java: recordMetaData.getRecordCountKey().equals(key) — a single get.
+			value, err := tr.Get(countSubspace.Pack(tuple.Tuple{})).Get()
+			if err != nil {
+				return 0, false, fmt.Errorf("read record count: %w", err)
+			}
+			return decodeRecordCount(value), true, nil
+		}
+		// Java: key.isPrefixKey(recordCountKey) — the empty key is a prefix of every
+		// count key, so a GROUPED count key is rolled up by summing every group.
+		// Reading only the ungrouped slot would report 0 for a fully counted store.
+		begin, end := countSubspace.FDBRangeKeys()
+		kvs, err := tr.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return 0, false, fmt.Errorf("read grouped record counts: %w", err)
+		}
+		var total int64
+		for _, kv := range kvs {
+			total += decodeRecordCount(kv.Value)
+		}
+		return total, true, nil
+	}
+
+	// Java: evaluateAggregateFunction(emptyList(), count(EMPTY), allOf(EMPTY), SNAPSHOT, filter).
+	// The empty record-type list means UNIVERSAL indexes only
+	// (IndexFunctionHelper.indexesForRecordTypes, IndexFunctionHelper.java:178-183); a
+	// COUNT index grouped by anything still qualifies, because count(EMPTY)'s empty
+	// grouping is a prefix of it, and rolling it up sums every group.
+	fn := NewCountAggregateFunction(GroupAll(EmptyKey()))
+	return store.evaluateCountIndex(fn, store.metaData.GetUniversalIndexes(), TupleRangeAll, excluded)
+}
+
+// snapshotRecordCountForRecordType is Java's
+// getSnapshotRecordCountForRecordType(name, filter) (FDBRecordStore.java:2326-2348):
+// a COUNT index on JUST that record type first, then a COUNT index grouped by record
+// type restricted to that type's key. ok=false is Java's terminal
+// "Require a COUNT index on <type>" throw, which the caller swallows.
+func (store *FDBRecordStore) snapshotRecordCountForRecordType(recordType *RecordType, excluded map[string]bool) (int64, bool, error) {
+	// A COUNT index on this record type. Java looks at
+	// getIndexableRecordType(name).getIndexes() — the type's OWN indexes, not the
+	// multi-type ones, which by definition also cover other types and so cannot count
+	// this type alone.
+	fn := NewCountAggregateFunction(GroupAll(EmptyKey()))
+	count, ok, err := store.evaluateCountIndex(fn, recordType.indexes, TupleRangeAll, excluded)
+	if err != nil || ok {
+		return count, ok, err
+	}
+
+	// A universal COUNT index grouped by record type. In Java's words: "In fact, any
+	// COUNT index by record type that applied to this record type would work, no
+	// matter what other types it applied to."
+	typeKey, hasTypeKey := recordTypeKeyInt64(recordType)
+	if !hasTypeKey {
+		return 0, false, nil
+	}
+	fn = NewCountAggregateFunction(GroupAll(RecordTypeKey()))
+	return store.evaluateCountIndex(fn, store.metaData.GetUniversalIndexes(), TupleRangeAllOf(tuple.Tuple{typeKey}), excluded)
+}
+
+// evaluateCountIndex picks the cheapest candidate index that can evaluate fn and
+// evaluates it over scanRange, returning ok=false when no candidate qualifies. Port of
+// IndexFunctionHelper.indexMaintainerForAggregateFunction (IndexFunctionHelper.java:105-122):
+//
+//	return indexesForRecordTypes(store, recordTypeNames)
+//	        .filter(store::isIndexReadable)
+//	        .filter(indexFilter::isQueryable)
+//	        .map(store::getIndexMaintainer)
+//	        .filter(i -> i.canEvaluateAggregateFunction(function))
+//	        // Prefer the one that does it in the fewest number of columns, because that will mean less rolling-up.
+//	        .min(Comparator.comparing(i -> i.state.index.getColumnSize()));
+//
+// "Readable" is exactly IndexState.READABLE (RecordStoreState.java:172-174):
+// READABLE_UNIQUE_PENDING and WRITE_ONLY do not count, because a partially built index
+// would answer with a partial count.
+//
+// This does its own candidate enumeration rather than going through
+// EvaluateAggregateFunction, whose auto-selection widens an empty record-type list to
+// EVERY index instead of the universal ones Java restricts it to.
+func (store *FDBRecordStore) evaluateCountIndex(fn *IndexAggregateFunction, candidates []*Index, scanRange TupleRange, excluded map[string]bool) (int64, bool, error) {
+	var best *Index
+	for _, index := range candidates {
+		if excluded[index.Name] || !store.IsIndexReadable(index.Name) {
+			continue
+		}
+		if !canEvaluateAggregate(fn, index) {
+			continue
+		}
+		if best == nil || index.RootExpression.ColumnSize() < best.RootExpression.ColumnSize() {
+			best = index
+		}
+	}
+	if best == nil {
+		return 0, false, nil
+	}
+
+	maintainer, err := store.getIndexMaintainer(best)
+	if err != nil {
+		return 0, false, fmt.Errorf("count index %q: %w", best.Name, err)
+	}
+	result, err := evaluateAggregate(store.context.ctx, fn, maintainer, scanRange, IsolationLevelSnapshot)
+	if err != nil {
+		return 0, false, fmt.Errorf("count index %q: %w", best.Name, err)
+	}
+	if len(result) == 0 {
+		return 0, false, fmt.Errorf("count index %q returned an empty aggregate", best.Name)
+	}
+	count, isInt := result[0].(int64)
+	if !isInt {
+		return 0, false, fmt.Errorf("count index %q returned %T, want int64", best.Name, result[0])
+	}
+	return count, true, nil
+}
+
+// recordCountStateIsReadable reports whether the stored record counts may be read.
+// Java checks the header state directly and notes that "We can always check the state,
+// even if the formatVersion is older, because older versions will always have the
+// default of READABLE" (FDBRecordStore.java:2290-2293).
+func (store *FDBRecordStore) recordCountStateIsReadable() bool {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	if store.storeHeader == nil {
+		return false
+	}
+	return store.storeHeader.GetRecordCountState() == gen.DataStoreInfo_READABLE
 }
 
 // createStoreHeader creates a DataStoreInfo header for a new record store.

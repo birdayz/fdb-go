@@ -286,6 +286,7 @@ go_test(
         "range_set_test.go",
         "rank_index_test.go",
         "ranked_set_test.go",
+        "rebuild_count_selection_test.go",
         "rebuild_index_test.go",
         "record_count_test.go",
         "record_version_test.go",
