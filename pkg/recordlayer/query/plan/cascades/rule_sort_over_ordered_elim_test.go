@@ -681,35 +681,117 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	}
 }
 
+// distinctnessProbeLayout is the FLOWED row the sort keys resolve against.
+// A real record type is load-bearing, not scaffolding: the ordering-truncation
+// machinery resolves key names against the flowed layout, and values.UnknownType
+// never terminates that resolution — so an untyped fixture silently advertises
+// an UNtruncated ordering and never reaches the arm under test at all.
+func distinctnessProbeLayout(bType values.Type) values.Type {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "B", FieldType: bType, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+}
+
+// distinctnessProbeSortKey mints a sort key that can actually MATCH an
+// advertised ordering key. A bare &values.FieldValue{Field: "A"} explains as
+// "A" while the advertised key explains as "A#0", so the coverage loop compares
+// two strings that never agree and the arm is skipped — which is how a test can
+// look like it exercises this and exercise nothing.
+func distinctnessProbeSortKey(layout values.Type, name string) values.Value {
+	ident, ok := values.OrdinalOfNameIn(layout, name)
+	if !ok {
+		panic("distinctness probe: " + name + " is not in the probe layout")
+	}
+	return values.NewFieldValueWithResolvedOrdinalInDomain(
+		name, ident.Ordinal, values.UnknownType, ident.Domain)
+}
+
+// ImplementSortRule's distinct-partition arm marks a plan STRICTLY sorted on
+// the strength of record distinctness. That is sound only when the storage key
+// whose order is being borrowed agrees with the logical comparator over every
+// coordinate it advertises — index key and appended primary-key suffix both.
+//
+// The two arms are a FILTER test, not an on/off test, and both are required:
+//
+//   - FLOAT arm. B is DOUBLE, so raw NaN sign and payload survive to disk and
+//     put two logically-equal keys on opposite sides of every finite value.
+//     The advertised ordering is truncated to [A] at that barrier, which means
+//     ORDER BY A covers every advertised key and the arm IS entered. The proof
+//     is then the only thing standing between record distinctness and a
+//     strictness claim the storage cannot honour — the PK suffix past the
+//     barrier is not in comparator order.
+//   - All-LONG control. Nothing truncates, so ORDER BY A, B, ID is needed to
+//     cover the advertised keys, and the arm must still yield STRICT. Without
+//     this the FLOAT arm is satisfied by a gate that refuses everything, which
+//     is indistinguishable from deleting the optimization.
 func TestPlanner_NaNBarrierPrefixIsOrderedButNotStrict(t *testing.T) {
 	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		bType      values.Type
+		sortKeys   []string
+		wantStrict bool
+	}{
+		{
+			name:     "DOUBLE barrier truncates the advertised ordering to [A]",
+			bType:    values.NotNullDouble,
+			sortKeys: []string{"A"},
+		},
+		{
+			name:       "all-LONG key advertises A, B, ID and may be strict",
+			bType:      values.NotNullLong,
+			sortKeys:   []string{"A", "B", "ID"},
+			wantStrict: true,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			layout := distinctnessProbeLayout(test.bType)
+			idx := plans.NewRecordQueryIndexPlan(
+				"T_AB", nil, []string{"T"}, layout, false,
+			).WithIndexMetadata(
+				[]string{"A", "B"}, []string{"ID"}, false,
+			).WithKeyComponentTypes(
+				[]values.Type{values.NotNullLong, test.bType},
+			).WithPrimaryKeyComponentTypes(
+				[]values.Type{values.NotNullLong},
+			).WithDistinctRecordsSignal(false)
 
-	// Physical storage order is (A LONG, B DOUBLE, ID LONG). ORDER BY A is
-	// satisfied by the prefix, but A is not unique: the NaN barrier at B removes
-	// B and the later PK suffix from the advertised logical ordering. Record
-	// distinctness must not turn that truncated prefix into a strict ordering.
-	idx := plans.NewRecordQueryIndexPlan(
-		"T_AB", nil, []string{"T"}, values.UnknownType, false,
-	).WithIndexMetadata(
-		[]string{"A", "B"}, []string{"ID"}, false,
-	).WithKeyComponentTypes(
-		[]values.Type{values.NotNullLong, values.NotNullDouble},
-	).WithPrimaryKeyComponentTypes(
-		[]values.Type{values.NotNullLong},
-	).WithDistinctRecordsSignal(false)
-	innerRef := expressions.InitialOf(idx)
-	computeRefPlanProperties(innerRef)
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.NotNullLong}}},
-		expressions.ForEachQuantifier(innerRef),
-	)
-	yielded := FireImplementationRule(NewImplementSortRule(), expressions.InitialOf(sortExpr))
-	if len(yielded) == 0 {
-		t.Fatal("physical A prefix should satisfy ORDER BY A")
-	}
-	for _, expr := range yielded {
-		if plan, ok := expr.(*plans.RecordQueryIndexPlan); ok && plan.IsStrictlySorted() {
-			t.Fatalf("NaN-truncated A prefix was marked strict: %s", plan.Explain())
-		}
+			innerRef := expressions.InitialOf(idx)
+			computeRefPlanProperties(innerRef)
+			keys := make([]expressions.SortKey, 0, len(test.sortKeys))
+			for _, name := range test.sortKeys {
+				keys = append(keys, expressions.SortKey{
+					Value: distinctnessProbeSortKey(layout, name),
+				})
+			}
+			sortExpr := expressions.NewLogicalSortExpression(
+				keys, expressions.ForEachQuantifier(innerRef),
+			)
+			yielded := FireImplementationRule(
+				NewImplementSortRule(), expressions.InitialOf(sortExpr),
+			)
+			if len(yielded) == 0 {
+				t.Fatal("the physical key prefix should satisfy the requested ordering")
+			}
+			gotStrict := false
+			for _, expr := range yielded {
+				if plan, ok := expr.(*plans.RecordQueryIndexPlan); ok && plan.IsStrictlySorted() {
+					gotStrict = true
+				}
+			}
+			if gotStrict != test.wantStrict {
+				if test.wantStrict {
+					t.Fatal("a fully comparator-congruent storage key was refused a " +
+						"strict ordering — the gate is an off switch, not a filter, " +
+						"and the float arm above now proves nothing")
+				}
+				t.Fatal("record distinctness claimed a strict ordering across a raw " +
+					"NaN barrier, which the storage key does not deliver")
+			}
+		})
 	}
 }

@@ -723,3 +723,65 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 		t.Fatalf("the plain inner must resolve to the member's plan; got %T", dpPlain.GetInner())
 	}
 }
+
+// The DISTINCT elision has TWO arms, and until now only one had unit coverage.
+// The other — the PLAN-PARTITION arm, which absorbs the operator when the
+// partition already produces distinct RECORDS — was caught solely by an
+// end-to-end FDB test, so the cascades package alone stayed green when its
+// guard was removed. A package that can be made wrong while its own suite
+// passes is a package with a hole in it.
+//
+// Record distinctness is distinctness of stored RECORDS. That is a stand-in for
+// SQL row distinctness only while record identity agrees with logical equality,
+// and a raw NaN float coordinate in the primary key breaks the agreement: two
+// physically distinct keys, one logical row.
+//
+// Both arms are needed here for the same reason as elsewhere — the LONG control
+// is what distinguishes a filter from an off switch.
+func TestDistinctFinal_PartitionDistinctnessNeedsLogicalEquality(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		pkType     values.Type
+		wantElided bool
+	}{
+		{name: "DOUBLE primary key", pkType: values.NotNullDouble},
+		{name: "LONG primary key", pkType: values.NotNullLong, wantElided: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+				WithPrimaryKey([]values.Value{
+					values.NewFieldValueWithResolvedOrdinal("PK", 0, test.pkType),
+				}).
+				WithKeyComponentTypes([]values.Type{test.pkType})
+			innerRef := expressions.InitialOf(scan)
+			computeRefPlanProperties(innerRef)
+			distinctExpr := expressions.NewLogicalDistinctExpression(
+				expressions.ForEachQuantifier(innerRef),
+			)
+			results := FireImplementationRule(
+				NewImplementDistinctFinalRule(), expressions.InitialOf(distinctExpr),
+			)
+			if len(results) == 0 {
+				t.Fatal("ImplementDistinctFinalRule should fire over a stored-record partition")
+			}
+			elided := true
+			for _, result := range results {
+				if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+					elided = false
+				}
+			}
+			if elided != test.wantElided {
+				if test.wantElided {
+					t.Fatal("a comparator-congruent primary key was denied the elision — " +
+						"the guard is an off switch, not a filter, and the float arm " +
+						"above now proves nothing")
+				}
+				t.Fatal("record distinctness absorbed DISTINCT over a raw NaN primary key, " +
+					"where two distinct records are ONE logical row")
+			}
+		})
+	}
+}
