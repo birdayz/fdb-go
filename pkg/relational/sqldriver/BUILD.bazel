@@ -392,6 +392,7 @@ go_test(
         "projection_over_setop_columns_fdb_test.go",
         "quality_probes_test.go",
         "quoted_machine_alias_fdb_test.go",
+        "rawnan_pk_suffix_fdb_test.go",
         "rcte_crossjoin_probe_test.go",
         "readable_index_view_latency_fdb_test.go",
         "record_constructor_expression_fdb_test.go",

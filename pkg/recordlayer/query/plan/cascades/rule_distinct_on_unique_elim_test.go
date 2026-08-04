@@ -53,6 +53,8 @@ var distinctScanLayouts = map[string][]string{
 	"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID", "QTY"},
 	"ITEMS":       {"ID", "NAME"},
 	"T":           {"TAGS", "SCORE", "CITY", "EMAIL"},
+	"FLOAT_PK":    {"ID", "PAD"},
+	"DOUBLE_PK":   {"ID", "PAD"},
 }
 
 func distinctScanType(recType string) values.Type {
@@ -62,9 +64,56 @@ func distinctScanType(recType string) values.Type {
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fieldType := values.NullableString
+		switch c {
+		case "ID", "ORDER_ID", "ITEM_ID":
+			fieldType = values.NotNullLong
+		case "QTY", "SCORE", "PAD":
+			fieldType = values.NullableLong
+		}
+		if recType == "FLOAT_PK" && c == "ID" {
+			fieldType = values.NotNullFloat
+		}
+		if recType == "DOUBLE_PK" && c == "ID" {
+			fieldType = values.NotNullDouble
+		}
+		fields[i] = values.Field{Name: c, FieldType: fieldType, Ordinal: i}
 	}
 	return &values.RecordType{Fields: fields}
+}
+
+func TestDistinctFinal_FloatingPrimaryKeyNeverEliminates(t *testing.T) {
+	t.Parallel()
+	for _, recType := range []string{"FLOAT_PK", "DOUBLE_PK"} {
+		recType := recType
+		t.Run(recType, func(t *testing.T) {
+			t.Parallel()
+			ctx := &pkPlanContext{pk: map[string][]string{recType: {"ID"}}}
+			for _, distinctRef := range []*expressions.Reference{
+				buildDistinctOverProjection(recType, []values.Value{
+					distinctRead(recType, "ID"),
+					distinctRead(recType, "PAD"),
+				}),
+				buildDistinctOverScan(recType),
+			} {
+				results := FireImplementationRuleWithContext(
+					NewImplementDistinctFinalRule(), distinctRef, ctx, nil,
+				)
+				if len(results) == 0 {
+					t.Fatal("ImplementDistinctFinalRule should fire")
+				}
+				foundDistinct := false
+				for _, result := range results {
+					if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+						foundDistinct = true
+					}
+				}
+				if !foundDistinct {
+					t.Fatal("raw NaN primary-key variants require logical row DISTINCT")
+				}
+			}
+		})
+	}
 }
 
 // distinctRead is a projected BARE column reference, baked at the column's
@@ -414,7 +463,7 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 	fanOut := true
 	scalar := false
 	scalarFanType := gen.Field_SCALAR
-	newUniqueCandidate := func(name, column string, createsDuplicates *bool) MatchCandidate {
+	newUniqueCandidate := func(name, column string, createsDuplicates *bool) *ValueIndexScanMatchCandidate {
 		return NewValueIndexScanMatchCandidateWithFunctions(
 			name,
 			[]string{"T"},
@@ -425,7 +474,7 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 			true,
 			nil,
 			createsDuplicates,
-		)
+		).WithKeyComponentTypes([]values.Type{values.NotNullString})
 	}
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newUniqueCandidate("T$tags_unique_fanout", "TAGS", &fanOut),
@@ -439,7 +488,7 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 			true,
 			nil,
 			&scalar,
-		),
+		).WithKeyComponentTypes([]values.Type{values.NotNullLong}),
 		NewValueIndexScanMatchCandidateWithFunctions(
 			"T$addr_city_unique",
 			[]string{"T"},
@@ -450,13 +499,14 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 			true,
 			nil,
 			&scalar,
-		).WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
-			Parent: &gen.Field{
-				FieldName: proto.String("ADDR"),
-				FanType:   &scalarFanType,
-			},
-			Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
-		}}),
+		).WithKeyComponentTypes([]values.Type{values.NotNullString}).
+			WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
+				Parent: &gen.Field{
+					FieldName: proto.String("ADDR"),
+					FanType:   &scalarFanType,
+				},
+				Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
+			}}),
 		newUniqueCandidate("T$email_unique", "EMAIL", &scalar),
 	}}
 
@@ -508,6 +558,40 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 				"stopped being one the four assertions above would prove nothing")
 		}
 	}
+}
+
+func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) {
+	t.Parallel()
+	// Physical keys include a record-type discriminator, so A/1 and B/1 are
+	// distinct records but collide after projecting the visible ID column.
+	layout := values.NewRecordType("AB", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	domain := values.OrdinalDomainOfType(layout)
+	id := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"ID", 0, values.NotNullLong, domain,
+	)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"A", "B"}, layout)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projection := expressions.NewLogicalProjectionExpression([]values.Value{id}, scanQ)
+	projectionRef := expressions.InitialOf(projection)
+	projectionRef.Insert(plans.NewRecordQueryScanPlan([]string{"A", "B"}, layout, false))
+	distinct := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(projectionRef),
+	)
+	ctx := &pkPlanContext{pk: map[string][]string{
+		"A": {"ID"},
+		"B": {"ID"},
+	}}
+	results := FireImplementationRuleWithContext(
+		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil,
+	)
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			return
+		}
+	}
+	t.Fatal("DISTINCT(ID) was elided over a multi-type stream whose visible primary keys can collide")
 }
 
 // TestDistinctFinal_WrapsAllMembers verifies the wrapping path

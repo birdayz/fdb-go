@@ -89,18 +89,12 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		handled = true
 
-		if pkDistinct || partition.IsDistinct() {
-			for _, expr := range partition.GetExpressions() {
+		for _, expr := range partition.GetExpressions() {
+			if pkDistinct || (partition.IsDistinct() &&
+				expressionRecordIdentityMatchesLogicalEquality(expr)) {
 				call.YieldFinalExpression(expr)
-			}
-		} else {
-			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
-			for _, rp := range rolled {
-				for _, expr := range rp.GetExpressions() {
-					if w := newPhysicalDistinctFor(call, expr); w != nil {
-						call.YieldFinalExpression(w)
-					}
-				}
+			} else if w := newPhysicalDistinctFor(call, expr); w != nil {
+				call.YieldFinalExpression(w)
 			}
 		}
 	}
@@ -157,9 +151,14 @@ func distinctEliminatedByUniqueKey(
 		return false
 	}
 
-	for _, rt := range recordTypes {
-		pkCols := ctx.GetPrimaryKeyColumns(rt)
-		if len(pkCols) > 0 && uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
+	// A visible PK is globally unique only inside one record type. In a
+	// multi-type stream, A/1 and B/1 are different physical primary keys but
+	// collide after projecting the visible ID coordinate.
+	if len(recordTypes) == 1 {
+		pkCols := ctx.GetPrimaryKeyColumns(recordTypes[0])
+		pkTypes := physicalTypesFromFlatRow(layoutType, pkCols, nil)
+		if properties.TupleKeyUniquenessMatchesLogicalEquality(pkTypes, len(pkCols)) &&
+			uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
 			return true
 		}
 	}
