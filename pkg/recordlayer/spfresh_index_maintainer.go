@@ -503,7 +503,7 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 		}
 	}
 
-	results, err := m.searchCurrentGeneration(queryVector, k, efSearch, wProbe, cRerank, epsilon, epsilonSet)
+	results, err := m.searchCurrentGeneration(m.readTx(scanProperties), queryVector, k, efSearch, wProbe, cRerank, epsilon, epsilonSet)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -588,7 +588,7 @@ func (m *spfreshIndexMaintainer) resolveSearcher() (*spfreshSearcher, *spfreshSt
 
 // searchCurrentGeneration resolves the readable generation, refreshes/loads
 // the per-process cache, and runs the search in the maintainer's transaction.
-func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
+func (m *spfreshIndexMaintainer) searchCurrentGeneration(readTx fdb.ReadTransaction, query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
 	searcher, storage, err := m.resolveSearcher()
 	if err != nil {
 		return nil, err
@@ -613,7 +613,7 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	if epsilonSet {
 		searcher.epsilon = epsilon // ≤ 0 disables pruning
 	}
-	results, serr := searcher.search(m.tx, query, k)
+	results, serr := searcher.search(readTx, query, k)
 	if serr != nil {
 		return nil, serr
 	}
@@ -645,7 +645,7 @@ func (m *spfreshIndexMaintainer) ScanByDistanceOrderedStream(scanRange TupleRang
 // ScanByDistanceOrderedStream supplies the calibrated default; white-box tests
 // pass a small budget to force/observe truncation and the bounded-memory cap
 // without a huge corpus.
-func (m *spfreshIndexMaintainer) newOrderedStreamCursor(scanRange TupleRange, budget spfreshStreamBudget, continuation []byte, _ ScanProperties) RecordCursor[*IndexEntry] {
+func (m *spfreshIndexMaintainer) newOrderedStreamCursor(scanRange TupleRange, budget spfreshStreamBudget, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	if scanRange.Low == nil || len(scanRange.Low) < 1 {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("SPFresh BY_DISTANCE stream requires query vector in TupleRange.Low")}
 	}
@@ -710,7 +710,7 @@ func (m *spfreshIndexMaintainer) newOrderedStreamCursor(scanRange TupleRange, bu
 		searcher.epsilon = epsilon // ≤ 0 disables pruning
 	}
 
-	f, ferr := searcher.searchInit(m.tx, queryVector)
+	f, ferr := searcher.searchInit(m.readTx(scanProperties), queryVector)
 	if ferr != nil {
 		return &errorCursor[*IndexEntry]{err: ferr}
 	}

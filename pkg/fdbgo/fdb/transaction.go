@@ -3,6 +3,7 @@ package fdb
 import (
 	"context"
 	"errors"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -107,6 +108,14 @@ func (tr Transaction) GetReadVersion() FutureInt64 {
 		v, err := inner.GetReadVersion(ctx)
 		return v, convertError(err)
 	})
+}
+
+// ReadVersionInstant implements ReadVersionInstantReporter by forwarding to the
+// client transaction, which stamps the instant at each GRV. Unlike GetReadVersion
+// it never triggers one: a caller asking when the MVCC window opened must not be
+// the thing that opens it.
+func (tr Transaction) ReadVersionInstant() (time.Time, bool) {
+	return tr.t.inner.ReadVersionInstant()
 }
 
 // GetDatabase returns the Database this transaction is operating on.

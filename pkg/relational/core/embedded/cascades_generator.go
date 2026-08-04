@@ -1227,7 +1227,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
 		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
-		respectActiveTx:  p.IsUpdate(),
+		tx:               c.activeTx,
+		isUpdate:         p.IsUpdate(),
 		dryRun:           p.dryRun,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
@@ -1356,12 +1357,30 @@ type paginatingRows struct {
 	closed       bool
 	fetchErr     error
 
-	// respectActiveTx routes page execution through the connection's
-	// open explicit transaction (runInTx) instead of a fresh auto-commit
-	// transaction (DB.Run). Set for DML so INSERT/UPDATE/DELETE inside a
-	// BeginTx block join that transaction and commit only on COMMIT —
-	// matching the naive path. SELECT keeps the auto-commit snapshot.
-	respectActiveTx bool
+	// tx is the explicit transaction that was open when Execute ran, or nil in
+	// auto-commit mode. EVERY page of EVERY statement kind executes on it —
+	// SELECT included, which is what gives an explicit transaction
+	// read-your-writes and read conflict ranges (RFC-198 Decision 1; Java
+	// reads through conn.getTransaction() at BackingRecordStore.java:235).
+	// Captured HERE, at Execute time, rather than resolved per page: pages are
+	// fetched after QueryContext returned, so resolving c.activeTx at fetch
+	// time would let a result set whose transaction ended resume in a fresh
+	// auto-commit transaction, silently (Decision 3). A dead captured
+	// transaction is a loud 25F01 in runInCapturedTx.
+	//
+	// Routing through the transaction REMOVES automatic retry: DB.Run's retry
+	// loop is not in this path, so a conflict reaches the application, which
+	// re-runs the transaction — the driver cannot, because it does not hold
+	// the statements the application has not issued yet.
+	tx *embeddedTx
+
+	// isUpdate is the statement-kind fact that used to share a field with the
+	// routing decision above (`respectActiveTx`), conflating two independent
+	// questions. It answers exactly one: is this a DML plan whose page scan
+	// must never be bounded by the returned-row cap (pageRowBudget)? Keying
+	// that off the routing field would silently unbound the page scan of every
+	// in-transaction SELECT that sets MAX_ROWS (RFC-198 Decision 4).
+	isUpdate bool
 }
 
 func (r *paginatingRows) Columns() []string {
@@ -1597,7 +1616,7 @@ func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
 // offset+limit (executor.go executeLimit). DML plans report an affected-row
 // count, not a result set, so the cap must NOT bound their scan.
 func (r *paginatingRows) pageRowBudget() int {
-	if r.respectActiveTx { // DML (INSERT/UPDATE/DELETE): never bound the scan
+	if r.isUpdate { // DML (INSERT/UPDATE/DELETE): never bound the scan
 		return 0
 	}
 	rowCap := int64(math.MaxInt64)
@@ -1660,6 +1679,22 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// byte limit errors (54F01) instead of paginating (Java's
 	// setFailOnScanLimitReached(true)). Default off.
 	props.FailOnScanLimitReached = r.conn.failOnScanLimitReached
+
+	// Inside an explicit transaction the scan/time/byte counters are
+	// TRANSACTION-scoped (RFC-198 Decision 5): every page of every statement
+	// charges one shared ScanLimiterState held on the embeddedTx, so N pages
+	// get one budget against FDB's 5-second wall instead of N fresh 4s
+	// budgets — Java's transaction-scoped ExecuteState plus its
+	// transactionCreateTime anchor, reproduced by one object. The state's
+	// time anchor is corrected to the read-version instant by
+	// preflightTxBudget before each page. Auto-commit keeps the fresh
+	// per-page state DefaultExecutePropertiesIn minted above — a page IS a
+	// transaction there. The armed record/byte limits are opt-in, so the
+	// whole-transaction tightening reaches only callers who armed them
+	// (Decision 5a).
+	if r.tx != nil {
+		props.ScanState = r.tx.scanStateIn(r.env())
+	}
 
 	// RFC-130: thread the statement-wide ExecuteState into this page's props so
 	// the in-memory buffering operators charge the shared memory byte budget.
@@ -1772,27 +1807,26 @@ func materializeDriverValue(v any) any {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
-	// DML joins an open explicit transaction (runInTx); SELECT runs in a
-	// fresh auto-commit transaction (DB.Run). runInTx falls back to DB.Run
-	// when no explicit transaction is active, so auto-commit DML behaves
-	// identically to before.
-	runTx := c.sess.DB.Run
-	if r.respectActiveTx {
-		runTx = c.runInTx
-	}
-
-	_, txErr := runTx(r.ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// Every statement kind joins the explicit transaction captured at Execute
+	// time (r.tx) — SELECT included, which is what gives an explicit
+	// transaction read-your-writes and read conflict ranges (RFC-198
+	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
+	// in its own auto-commit transaction via DB.Run, unchanged. A captured
+	// transaction that has since ended is a loud 25F01, never a silent fresh
+	// transaction (Decision 3).
+	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if r.tx != nil {
+			if err := r.preflightTxBudget(rctx); err != nil {
+				return nil, err
+			}
+		}
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 
-		store, storeErr := c.newStoreBuilder().
-			SetContext(rctx).
-			SetSubspace(r.ss).
-			SetMetaDataProvider(c.cachedMetaData()).
-			// Revalidation must observe FDB, not a database-level state-cache
-			// entry that can outlive a non-cacheable store's state transition.
-			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
-			Open()
+		// One store per subspace per transaction, reused by every page
+		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
+		// store per page, because there each page IS a transaction.
+		store, storeErr := c.storeIn(rctx, r.tx, r.ss)
 		if storeErr != nil {
 			return nil, storeErr
 		}
@@ -1881,6 +1915,54 @@ func (r *paginatingRows) fetchPage() error {
 
 	if txErr != nil {
 		return translateExecErrorCtx(r.ctx, txErr)
+	}
+	return nil
+}
+
+// preflightTxBudget enforces the whole-transaction time budget before a page
+// runs (RFC-198 Decisions 5 and 6, interim state). The budget is anchored on
+// the CLIENT'S READ-VERSION INSTANT — when FDB's 5-second MVCC window actually
+// opened — never on statement start (the refuted proxy: a first statement need
+// not take a read version at all) and never on BeginTx (an idle transaction
+// has no window yet).
+//
+// Three arms:
+//   - the backend cannot report the instant (the cgo escape hatch has no such
+//     accessor), or no read version has been taken yet: no window is open, the
+//     page proceeds on the fresh statement-anchored budget;
+//   - the window is open and the budget remains: re-anchor the shared
+//     transaction ScanLimiterState on the instant so every leaf cursor's
+//     elapsed measurement counts from the true window start (idempotent
+//     between GRVs), and proceed;
+//   - the budget is exhausted: fail 40001 NAMING THE 5-SECOND WINDOW. It is
+//     40001 and not 54F01 because no limit the caller can raise makes an FDB
+//     transaction live longer than five seconds, and it is the same code
+//     translateFDBCode assigns to FDB's own transaction_too_old (1007), so
+//     retry logic is uniform whether the driver pre-empts or FDB does.
+//     Pre-empting here also keeps the zero-progress liveness tripwire honest:
+//     without it an exhausted budget produces a rowless unadvanced page and a
+//     54F01 telling the user to raise limits that are not the problem.
+//
+// INTERIM, by RFC-198 Decision 6: the end state is Java's clean stop — a
+// transaction-bound continuation with reason TRANSACTION_LIMIT_REACHED and the
+// transaction left open — which needs RFC-203's in-transaction continuation
+// surface (OptContinuation is still rejected at this head). The stated
+// retirement condition: when RFC-203's G12a/G12b land, this error becomes a
+// boundary and the test written for it is rewritten, not deleted.
+func (r *paginatingRows) preflightTxBudget(rctx *recordlayer.FDBRecordContext) error {
+	rep, ok := rctx.Transaction().(fdb.ReadVersionInstantReporter)
+	if !ok {
+		return nil
+	}
+	instant, ok := rep.ReadVersionInstant()
+	if !ok {
+		return nil
+	}
+	env := r.env()
+	r.tx.scanStateIn(env).AnchorAt(instant)
+	if env.Since(instant) >= txPageTimeLimit {
+		return api.NewError(api.ErrCodeSerializationFailure,
+			"transaction read budget exhausted: the explicit transaction's reads are bound to FDB's 5-second MVCC window, which opened at the transaction's first read; commit sooner or decompose the work into smaller transactions")
 	}
 	return nil
 }
@@ -2004,7 +2086,13 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
-	return err
+	// FDB tail: page ≥ 2 errors reach the application through THIS function,
+	// not through the QueryContext/ExecContext translateFDBError wrap (which
+	// only sees the eagerly-fetched first page). An in-transaction page fetch
+	// has no DB.Run retry loop to absorb FDB codes, so 1020/1007/1025/1021
+	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
+	// idempotent on *api.Error, so double translation is harmless.
+	return translateFDBError(err)
 }
 
 // fetchTableStatistics reads per-record-type row counts from FDB using a

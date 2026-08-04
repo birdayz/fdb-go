@@ -885,17 +885,39 @@ each `Open()` reads the store header, so an N-page in-transaction SELECT spends 
 header reads out of the same 5-second budget the query itself is competing for —
 the cost lands directly on the scarcest resource this RFC introduces.
 
-Java does not pay it: `RecordLayerSchema` caches exactly one store per
-transaction (`:98-108`, `currentStore` returned at `:102-104` when already
-built) and drops it when the transaction terminates (`:106`).
+Java does not pay it *within a statement*, and this is narrower than revision 2
+claimed. `RecordLayerSchema.loadStore` caches `currentStore` (`:99-107`,
+returned at `:102-104` when already built), so every page of one statement
+shares one store. But the cache is **statement-scoped in practice**, not
+transaction-scoped: `AbstractEmbeddedStatement.java:82` loads the schema in a
+try-with-resources, and `RecordLayerSchema.close()` (`:90-91`) nulls
+`currentStore` when the statement ends. `AbstractDatabase.loadSchema:81-95`
+does keep the `RecordLayerSchema` *object* in a per-database map across
+statements, but it hands back an object whose `currentStore` the previous
+statement already cleared — so the next statement rebuilds the store. The
+`conn.addCloseListener(() -> currentStore = null)` at `:106` is a **backstop**
+for direct-access callers that reach `loadStore()` outside a statement's
+try-with-resources, not the mechanism that governs the statement path.
 
-**Decision: port it.** The store is cached on the `*embeddedTx` and reused for
-every page of every statement in that transaction, invalidated when the terminal
-flag from Decision 3 is set — the same flag, so there is one lifecycle, not two.
-This is Java's structure and it removes a cost this RFC would otherwise create.
+**Decision: cache on the transaction anyway.** Within a statement this is
+Java's structure exactly. Across statements in one transaction it is a Go
+**extension beyond Java**, and it is sound for the reason stated below: every
+piece of state the store carries — context, metadata, subspace, store header,
+index states, index-maintainer cache — is a transaction-scoped fact, so
+widening the cache from statement to transaction changes lifetime and not
+semantics. Java's narrower scope is not a correctness constraint Go is
+violating; it is a cost Java pays that Go does not have to.
+
+The extension is not free of consequence, and the consequence is named
+precisely at Open Question 4: because Java rebuilds the store per statement, a
+DDL committed mid-transaction cannot leave a *later* statement holding stale
+metadata there. Go's cross-statement reuse is what creates that window, which
+makes the DDL-driven invalidation of this cache **load-bearing** — the thing
+that keeps the extension sound — rather than defence in depth.
+
 Stating the divergence and its measured cost was the alternative the review
 offered; it loses, because the measurement would be of a regression we chose to
-ship when the fix is Java's existing shape.
+ship when a store rebuilt per page is a cost neither engine needs to pay.
 
 ## Rejected alternatives
 
@@ -1356,8 +1378,12 @@ right things. (Revision 1 numbered these 1, 3, 4 — there was no 2. Fixed.)
    explicit-transaction one, so it is a live sample rather than a control.
 
 4. **Whether the per-transaction store cache (Decision 10) changes any observable
-   plan or result.** It should not — Java caches the same object — but a store
-   built once and reused across statements in a transaction is a lifetime change,
+   plan or result.** Java is *not* the reassurance here: its `currentStore` is
+   statement-scoped in practice (`AbstractEmbeddedStatement.java:82`'s
+   try-with-resources closes the schema, and `RecordLayerSchema.close():90-91`
+   nulls the store), so reuse across statements is a Go extension with no Java
+   precedent to lean on. A store built once and reused across statements in a
+   transaction is a lifetime change,
    and the store-state cache interaction with a long-lived transaction is the
    place a stale read would hide. Measured at implementation, with the terminal
    flag's invalidation as the thing under test. (Note the store-**state** cache
@@ -1373,11 +1399,16 @@ right things. (Revision 1 numbered these 1, 3, 4 — there was no 2. Fixed.)
    `SetMetaDataProvider(c.cachedMetaData())`. So a DDL issued *inside* an
    explicit transaction commits, invalidates the cache, and leaves that
    transaction's cached store holding **stale metadata for the remainder of the
-   transaction**. Decision 10's cache is what makes this reachable; it is
-   in-scope for Decision 10's implementation, and the resolution is that the DDL
-   invalidation must drop the transaction-scoped store too, not only the schema
-   entry — the same one-lifecycle rule 8b states, applied to an invalidation that
-   originates outside the transaction rather than at its end.
+   transaction**. Decision 10's cache is what makes this reachable — and
+   specifically the *cross-statement* half of it, the part with no Java
+   precedent: Java rebuilds the store at the next statement, so the collision
+   cannot arise there. The resolution is that the DDL invalidation must drop
+   the transaction-scoped store too, not only the schema entry — the same
+   one-lifecycle rule 8b states, applied to an invalidation that originates
+   outside the transaction rather than at its end. That invalidation is
+   **load-bearing**, not defence in depth: it is the sole thing standing
+   between the extension and a stale-metadata read, and removing it (mutation
+   M3) produces one.
 
 ## Citations re-verified
 
@@ -1398,6 +1429,14 @@ over, and the claims that were **refuted** rather than merely relocated.
   same machinery, different keys. (Decision 2.)
 - Revision 1's "**The executor plumbing this needs is zero**" — contradicted by
   the per-page store rebuild. (Deleted; Decision 10.)
+- Revision 2's "Java caches exactly one store per transaction
+  (`RecordLayerSchema.java:98-108`) and drops it when the transaction
+  terminates" — the *lines* are right, the *scope* is not.
+  `AbstractEmbeddedStatement.java:82` loads the schema in a try-with-resources
+  and `RecordLayerSchema.close():90-91` nulls `currentStore`, so Java's cache
+  is statement-scoped in practice; `:106`'s close listener is a backstop for
+  direct-access callers. Go's cross-statement reuse is therefore an extension,
+  not a port. (Decision 10, Open Question 4.)
 - Revision 1's `ExecuteProperties.java:334-336` for "declares SERIALIZABLE the
   only supported level" — that range is the protected `copy(...)` overload
   (`:333-338`), unrelated. The line numbers were a stray duplicate of the

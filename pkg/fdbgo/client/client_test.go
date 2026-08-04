@@ -548,8 +548,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 		{
 			name: "batch priority returns cached version",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
-				c.lastTime.Store(time.Now().UnixNano())
+				c.publish(c.token(), time.Now(), 1000000)
 			},
 			priority: grvPriorityBatch,
 			wantOK:   true,
@@ -558,9 +557,8 @@ func TestGrvCache_TryCache(t *testing.T) {
 		{
 			name: "batch ratekeeper throttle",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
-				c.lastTime.Store(time.Now().UnixNano())
-				c.lastRkBatch.Store(time.Now().UnixNano())
+				c.publish(c.token(), time.Now(), 1000000)
+				c.markThrottled(c.token(), time.Now(), false, true)
 			},
 			priority: grvPriorityBatch,
 			wantOK:   false,
@@ -568,9 +566,8 @@ func TestGrvCache_TryCache(t *testing.T) {
 		{
 			name: "default ratekeeper throttle",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
-				c.lastTime.Store(time.Now().UnixNano())
-				c.lastRkDefault.Store(time.Now().UnixNano())
+				c.publish(c.token(), time.Now(), 1000000)
+				c.markThrottled(c.token(), time.Now(), true, false)
 			},
 			priority: grvPriorityDefault,
 			wantOK:   false,
@@ -582,8 +579,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			// for grvPrioritySystemImmediate re-reds this (and the throttle-immunity case below).
 			name: "system immediate serves cache (never ratekeeper-throttled)",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
-				c.lastTime.Store(time.Now().UnixNano())
+				c.publish(c.token(), time.Now(), 1000000)
 			},
 			priority: grvPrioritySystemImmediate,
 			wantOK:   true,
@@ -594,10 +590,8 @@ func TestGrvCache_TryCache(t *testing.T) {
 			// so a fresh cache serves even when both DEFAULT and BATCH are in cooldown.
 			name: "system immediate serves cache despite default+batch throttle",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
-				c.lastTime.Store(time.Now().UnixNano())
-				c.lastRkDefault.Store(time.Now().UnixNano())
-				c.lastRkBatch.Store(time.Now().UnixNano())
+				c.publish(c.token(), time.Now(), 1000000)
+				c.markThrottled(c.token(), time.Now(), true, true)
 			},
 			priority: grvPrioritySystemImmediate,
 			wantOK:   true,
@@ -606,9 +600,9 @@ func TestGrvCache_TryCache(t *testing.T) {
 		{
 			name: "stale cache expired",
 			setup: func(c *grvCache) {
-				c.version.Store(1000000)
 				// Set lastTime to 1 second ago — well beyond 100ms maxVersionCacheLag.
-				c.lastTime.Store(time.Now().Add(-1 * time.Second).UnixNano())
+
+				c.publish(c.token(), time.Now().Add(-1*time.Second), 1000000)
 			},
 			priority: grvPriorityDefault,
 			wantOK:   false,
@@ -629,7 +623,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			t.Parallel()
 			var c grvCache
 			tt.setup(&c)
-			v, ok := c.tryCache(tt.priority)
+			v, _, ok := c.tryCache(tt.priority)
 			if ok != tt.wantOK {
 				t.Fatalf("tryCache ok: got %v, want %v", ok, tt.wantOK)
 			}
@@ -646,20 +640,20 @@ func TestGrvCache_UpdateMonotonic(t *testing.T) {
 	var c grvCache
 
 	// First update: version advances to 200.
-	c.updateFromGRV(time.Now(), 200)
-	if v := c.version.Load(); v != 200 {
+	c.updateFromGRV(c.token(), time.Now(), 200)
+	if v := c.cachedVersion(); v != 200 {
 		t.Fatalf("after update(200): got %d, want 200", v)
 	}
 
 	// Backwards update: version must stay at 200.
-	c.updateFromGRV(time.Now(), 100)
-	if v := c.version.Load(); v != 200 {
+	c.updateFromGRV(c.token(), time.Now(), 100)
+	if v := c.cachedVersion(); v != 200 {
 		t.Fatalf("after update(100): got %d, want 200 (should not go backwards)", v)
 	}
 
 	// Forward update: version advances to 300.
-	c.updateFromGRV(time.Now(), 300)
-	if v := c.version.Load(); v != 300 {
+	c.updateFromGRV(c.token(), time.Now(), 300)
+	if v := c.cachedVersion(); v != 300 {
 		t.Fatalf("after update(300): got %d, want 300", v)
 	}
 }

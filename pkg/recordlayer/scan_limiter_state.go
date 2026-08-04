@@ -23,6 +23,16 @@ import (
 // INSIDE the retried transaction closure, so every retry attempt and every
 // page gets its own honest scan/byte/time budget, matching Java's
 // CursorLimitManager being rebuilt from a fresh FDBRecordContext each attempt.
+//
+// That per-page lifetime is the AUTO-COMMIT story, and it is the whole story
+// only there, because a page IS a transaction there. Inside an explicit SQL
+// transaction the SQL layer overrides the freshly minted state with one held
+// on the transaction (RFC-198 Decision 5), so every page of every statement
+// charges ONE budget against FDB's single 5-second window instead of N fresh
+// ones — which is the same thing Java gets from a transaction-scoped
+// ExecuteState plus a transactionCreateTime anchor. AnchorAt below is what
+// re-anchors that longer-lived state on the read-version instant; nothing on
+// the auto-commit path calls it.
 // Do not read this comment's resemblance to "ExecuteState" as a naming
 // correspondence with Go's existing ExecuteState type; it names the Java
 // class this ports, not the sibling Go type.
@@ -129,6 +139,27 @@ func NewScanLimiterState() *ScanLimiterState {
 // nondeterminism in the exact layer RFC-199 exists to make reproducible.
 func NewScanLimiterStateIn(env *dst.Env) *ScanLimiterState {
 	return &ScanLimiterState{startTime: env.Now(), env: env}
+}
+
+// AnchorAt moves the time anchor to t, keeping the records/bytes counters.
+// It exists for the ONE state whose lifetime outlives the instant it was
+// minted at: the transaction-scoped state of an explicit SQL transaction
+// (RFC-198 Decision 5). That state is minted at the first statement's
+// executeProps — before any read has happened — but the budget it enforces is
+// FDB's 5-second MVCC window, which opens at the GRV. Minting time is the
+// refuted proxy (a first statement need not take a read version at all: a
+// RYW-covered read or a store-state-cache hit reads nothing), so the page
+// preflight re-anchors on the client's read-version instant once one exists.
+// Re-anchoring is idempotent between GRVs, and a retry's fresh GRV re-anchors
+// automatically at the next page.
+//
+// A zero t is ignored: "no instant" must never look like an epoch-zero anchor
+// that makes every elapsed measurement astronomical.
+func (s *ScanLimiterState) AnchorAt(t time.Time) {
+	if s == nil || t.IsZero() {
+		return
+	}
+	s.startTime = t
 }
 
 // RecordsScanned returns the number of records charged against this state so

@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/binary"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +18,7 @@ import (
 func TestGRVCache_TryCacheBeforeUpdate(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	if v, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
 		t.Errorf("got (%d, %v), want (0, false)", v, ok)
 	}
 }
@@ -27,8 +26,8 @@ func TestGRVCache_TryCacheBeforeUpdate(t *testing.T) {
 func TestGRVCache_UpdateThenTryCacheReturnsValue(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 9999)
-	v, ok := c.tryCache(grvPriorityDefault)
+	c.updateFromGRV(c.token(), time.Now(), 9999)
+	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 9999 {
 		t.Errorf("got (%d, %v), want (9999, true)", v, ok)
 	}
@@ -38,9 +37,8 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
 	// Stamp the cache as updated 1 second ago (way past maxVersionCacheLag = 100ms).
-	c.version.Store(1234)
-	c.lastTime.Store(time.Now().Add(-time.Second).UnixNano())
-	if v, ok := c.tryCache(grvPriorityDefault); ok {
+	c.publish(c.token(), time.Now().Add(-time.Second), 1234)
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Errorf("stale entry returned: got (%d, true), want stale-miss", v)
 	}
 }
@@ -52,8 +50,8 @@ func TestGRVCache_SystemImmediateServesCache(t *testing.T) {
 	// IMMEDIATE read is served from a fresh cache exactly like DEFAULT. (Was TestGRVCache_SystemImmediateBypass,
 	// which pinned the pre-#16 divergence where Go excluded IMMEDIATE.)
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 9999)
-	if v, ok := c.tryCache(grvPrioritySystemImmediate); !ok || v != 9999 {
+	c.updateFromGRV(c.token(), time.Now(), 9999)
+	if v, _, ok := c.tryCache(grvPrioritySystemImmediate); !ok || v != 9999 {
 		t.Errorf("SYSTEM_IMMEDIATE must serve a fresh cache (#16); got (%d, %v), want (9999, true)", v, ok)
 	}
 }
@@ -61,9 +59,9 @@ func TestGRVCache_SystemImmediateServesCache(t *testing.T) {
 func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
-	c.updateFromGRV(time.Now(), 50) // older — must be rejected
-	v, _ := c.tryCache(grvPriorityDefault)
+	c.updateFromGRV(c.token(), time.Now(), 100)
+	c.updateFromGRV(c.token(), time.Now(), 50) // older — must be rejected
+	v, _, _ := c.tryCache(grvPriorityDefault)
 	if v != 100 {
 		t.Errorf("got %d, want 100 (older update must be ignored)", v)
 	}
@@ -72,9 +70,9 @@ func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 func TestGRVCache_Invalidate(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
+	c.updateFromGRV(c.token(), time.Now(), 100)
 	c.invalidate()
-	if v, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
 		t.Errorf("got (%d, %v), want (0, false) after invalidate", v, ok)
 	}
 }
@@ -82,14 +80,14 @@ func TestGRVCache_Invalidate(t *testing.T) {
 func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.updateFromGRV(time.Now(), 100)
+	c.updateFromGRV(c.token(), time.Now(), 100)
 	// Mark BATCH priority as throttled less than grvCacheRKCooldown ago.
-	c.lastRkBatch.Store(time.Now().UnixNano())
-	if _, ok := c.tryCache(grvPriorityBatch); ok {
+	c.markThrottled(c.token(), time.Now(), false, true)
+	if _, _, ok := c.tryCache(grvPriorityBatch); ok {
 		t.Error("BATCH priority must miss cache while ratekeeper throttled")
 	}
 	// DEFAULT priority should NOT be affected by BATCH throttle.
-	if _, ok := c.tryCache(grvPriorityDefault); !ok {
+	if _, _, ok := c.tryCache(grvPriorityDefault); !ok {
 		t.Error("DEFAULT priority should not be affected by lastRkBatch")
 	}
 }
@@ -103,21 +101,22 @@ func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 // one is ignored (the floor must not rise past a pinned version).
 func TestUpdateMinAcceptable_TracksMinimum(t *testing.T) {
 	t.Parallel()
-	var min atomic.Int64
-	updateMinAcceptable(&min, 100) // first → sets the floor
-	if v := min.Load(); v != 100 {
+	db := &database{}
+	ep := db.grvCache.epochNow()
+	db.updateMinAcceptable(ep, 100) // first → sets the floor
+	if v := db.minAcceptable(); v != 100 {
 		t.Errorf("got %d, want 100", v)
 	}
-	updateMinAcceptable(&min, 200) // larger → ignored
-	if v := min.Load(); v != 100 {
+	db.updateMinAcceptable(ep, 200) // larger → ignored
+	if v := db.minAcceptable(); v != 100 {
 		t.Errorf("got %d, want 100 (a larger version must not raise the floor)", v)
 	}
-	updateMinAcceptable(&min, 50) // smaller → lowers the floor
-	if v := min.Load(); v != 50 {
+	db.updateMinAcceptable(ep, 50) // smaller → lowers the floor
+	if v := db.minAcceptable(); v != 50 {
 		t.Errorf("got %d, want 50 (a smaller version lowers the floor)", v)
 	}
-	updateMinAcceptable(&min, 0) // unset/invalid → ignored
-	if v := min.Load(); v != 50 {
+	db.updateMinAcceptable(ep, 0) // unset/invalid → ignored
+	if v := db.minAcceptable(); v != 50 {
 		t.Errorf("got %d, want 50 (v<=0 ignored)", v)
 	}
 }
@@ -133,7 +132,7 @@ func TestUpdateMinAcceptable_TracksMinimum(t *testing.T) {
 func TestValidateVersion_BelowMinReturnsTooOld(t *testing.T) {
 	t.Parallel()
 	db := &database{}
-	db.minAcceptableReadVersion.Store(1000)
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1000})
 	err := db.validateVersion(500)
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTooOld {
@@ -144,7 +143,7 @@ func TestValidateVersion_BelowMinReturnsTooOld(t *testing.T) {
 func TestValidateVersion_AtMinIsAccepted(t *testing.T) {
 	t.Parallel()
 	db := &database{}
-	db.minAcceptableReadVersion.Store(1000)
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1000})
 	if err := db.validateVersion(1000); err != nil {
 		t.Errorf("got %v, want nil at exactly min", err)
 	}
@@ -152,7 +151,7 @@ func TestValidateVersion_AtMinIsAccepted(t *testing.T) {
 
 func TestValidateVersion_NoMinAcceptsAnyReasonable(t *testing.T) {
 	t.Parallel()
-	db := &database{} // minAcceptableReadVersion = 0 → no floor check
+	db := &database{} // no stamp → floor reads unset
 	if err := db.validateVersion(1); err != nil {
 		t.Errorf("got %v, want nil when no min set", err)
 	}
@@ -274,19 +273,19 @@ func TestGRVCache_CommitUpdateAdvancesFreshness(t *testing.T) {
 	t.Parallel()
 	var c grvCache
 	// A real GRV reply older than maxVersionCacheLag — the cache is stale.
-	c.updateFromGRV(time.Now().Add(-2*maxVersionCacheLag), 100)
-	if _, ok := c.tryCache(grvPriorityDefault); ok {
+	c.updateFromGRV(c.token(), time.Now().Add(-2*maxVersionCacheLag), 100)
+	if _, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Fatal("precondition: the cache should be stale before the commit")
 	}
 	// A commit "now" advances the version AND renews freshness (C++ :6657).
-	c.update(200)
-	v, ok := c.tryCache(grvPriorityDefault)
+	c.update(c.token(), time.Now(), 200)
+	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 200 {
 		t.Fatalf("tryCache = (%d, %v), want (200, true): a commit must advance version AND freshness", v, ok)
 	}
 	// Monotonicity of the commit path: a backwards version is rejected.
-	c.update(150)
-	if got := c.version.Load(); got != 200 {
+	c.update(c.token(), time.Now(), 150)
+	if got := c.cachedVersion(); got != 200 {
 		t.Fatalf("version = %d after backwards commit update, want 200", got)
 	}
 }

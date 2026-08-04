@@ -11,10 +11,14 @@ var (
 	_ ReadTransaction     = Transaction{}
 	_ ReadTransaction     = Snapshot{}
 	_ WritableTransaction = Transaction{}
-	_ TransactionOptions  = goTransactionOptions{}
-	_ KeyConvertible      = Key{}
-	_ ExactRange          = KeyRange{}
-	_ Range               = KeyRange{}
-	_ Range               = SelectorRange{}
-	_ Selectable          = KeySelector{}
+	// The pure-Go backend reports the GRV instant; the capability is optional at
+	// the call site but not optional here, so dropping the forwarder is a build
+	// break rather than a silent fallback to a coarser budget anchor.
+	_ ReadVersionInstantReporter = Transaction{}
+	_ TransactionOptions         = goTransactionOptions{}
+	_ KeyConvertible             = Key{}
+	_ ExactRange                 = KeyRange{}
+	_ Range                      = KeyRange{}
+	_ Range                      = SelectorRange{}
+	_ Selectable                 = KeySelector{}
 )

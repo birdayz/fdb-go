@@ -26,10 +26,33 @@ import (
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
 func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflicts []KeyRange) error {
-	proxy, err := tx.db.getCommitProxy()
+	// beforeCommitProxySelect is the seam for the one window this function's
+	// design is about: between the caller entering Commit (where the cache token
+	// is captured) and the proxy selection below (where the attempt binds to a
+	// cluster). A coordinator handoff landing exactly there is what used to strand
+	// a commit with a token describing a cluster it never talked to, and no
+	// arrangement of goroutines can hit a window this narrow reliably. Nil in
+	// production; a test installs it to fire the handoff at that exact instant.
+	if hook := tx.db.beforeCommitProxySelect.Load(); hook != nil {
+		(*hook)()
+	}
+	// The epoch comes out of the SAME atomic load as the proxy, so it is the
+	// epoch of the cluster this attempt actually binds to — not an approximation
+	// of it, and not a value a handoff can overtake. There is no window here to
+	// close by ordering, because there is only one load.
+	//
+	// What that buys is specific to the COMMIT path. A commit whose token says
+	// "previous cluster" fails sameEpoch, which costs not only the install (a
+	// cache miss, harmless) but the DURABLE FLOOR — and the floor is what stops a
+	// lower GRV from the new cluster repopulating the cache underneath a commit
+	// the caller has already been told succeeded. On the GRV path a refusal is
+	// merely conservative; here it costs read-your-committed-writes, the
+	// invariant the floor exists to hold.
+	proxy, commitEpoch, err := tx.db.getCommitProxy()
 	if err != nil {
 		return &wire.FDBError{Code: ErrAllProxiesUnreachable}
 	}
+	tx.commitEpoch.Store(commitEpoch)
 
 	conn, err := tx.db.getOrDial(ctx, proxy.Address)
 	if err != nil {

@@ -58,7 +58,10 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	}
 	// Zero probe knobs => the searcher's frozen defaults (kc=64, w default,
 	// c=200, ε=7); generous for the small topologies these callers inspect.
-	results, err := m.searchCurrentGeneration(queryVector, k, 0, 0, 0, 0, false)
+	// SNAPSHOT: the verification API is a diagnostic, not a plan leaf — it
+	// must not contend with the workload it is verifying (same reasoning as
+	// the HNSW SearchKNN direct API).
+	results, err := m.searchCurrentGeneration(m.tx.Snapshot(), queryVector, k, 0, 0, 0, 0, false)
 	if err != nil {
 		return nil, err
 	}

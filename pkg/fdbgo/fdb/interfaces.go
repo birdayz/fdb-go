@@ -1,6 +1,9 @@
 package fdb
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Transactor can execute a function that requires a Transaction.
 // Both Database and Transaction implement Transactor.
@@ -31,6 +34,21 @@ type CtxTransactor interface {
 // loop + backoff by the caller context).
 type CtxReadTransactor interface {
 	ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error)
+}
+
+// ReadVersionInstantReporter is an OPTIONAL capability: a transaction that can say
+// WHEN its current read version was obtained, i.e. when FDB's 5-second MVCC window
+// opened for it. ok is false when no read version is held or when the version was
+// supplied by the caller (SetReadVersion), whose window opened at an instant the
+// client never observed.
+//
+// Optional, and type-asserted at the call site, for the same reason CtxTransactor is
+// (RFC-109): a backend that cannot report it — the cgo escape hatch has no such
+// accessor — must not be forced to fake one. A layer budgeting against the MVCC
+// window falls back to its own anchor when the assertion fails, so the capability
+// SHARPENS the budget where available and never gates correctness on it.
+type ReadVersionInstantReporter interface {
+	ReadVersionInstant() (time.Time, bool)
 }
 
 // ReadTransaction can asynchronously read from a FoundationDB database.

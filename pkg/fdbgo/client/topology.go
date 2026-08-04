@@ -81,6 +81,7 @@ func (db *database) refreshTopology() {
 	if err != nil {
 		// Path B: all coordinators unreachable — adopt a rotated set from the file.
 		if db.connRecord.adoptStoredIfChanged() {
+			db.onCoordinatorSetAdopted()
 			db.kickTopology()
 		}
 		return
@@ -88,6 +89,7 @@ func (db *database) refreshTopology() {
 	if newInfo.Forward != "" {
 		// Path A: a coordinator forwarded us to a new set. Adopt + re-poll now.
 		if db.followForward(snap, newInfo.Forward) {
+			db.onCoordinatorSetAdopted()
 			db.kickTopology()
 		}
 		return
@@ -96,7 +98,9 @@ func (db *database) refreshTopology() {
 	// The new coordinators answered with real proxies — now safe to persist a
 	// forward we adopted in memory on a previous round (deferred-persist, Path A).
 	db.connRecord.persistIfDirty()
-	db.applyDBInfo(newInfo)
+	// Installing the proxies IS the handoff when a coordinator-set adoption was
+	// pending: the epoch changes here, inside the same act that publishes them.
+	db.installProxySet(newInfo)
 }
 
 // followForward adopts a forwarded connection string (RFC-111 Path A). Returns
@@ -129,15 +133,111 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 	return true
 }
 
-// applyDBInfo replaces dbInfo and broadcasts the proxy-changed channel
-// when newInfo differs from the current value. Returns true on apply.
-// Split out from refreshTopology so the apply/broadcast contract can be
-// pinned without faking tryAllCoordinators.
-func (db *database) applyDBInfo(newInfo *DBInfo) bool {
+// installProxySet publishes a proxy set, broadcasts the proxy-changed channel,
+// and — when this installation completes a pending coordinator-set adoption —
+// performs the cluster handoff in the SAME act. Returns true on apply. Split out
+// from refreshTopology so the contract can be pinned without faking
+// tryAllCoordinators.
+//
+// THE COHERENCE RULE, and why the handoff cannot be a separate call:
+//
+//   - DBInfo.Epoch is what a REQUEST binds to. It rides the snapshot the request
+//     takes its proxies from, so an epoch can never describe a proxy set the
+//     request did not use. That is what closes the commit path's window: the
+//     epoch used to be sampled and the proxy selected afterwards, so a handoff
+//     landing between the two made the commit's own token stale against the
+//     cluster it actually committed to. The publication then failed sameEpoch,
+//     the durable floor was never raised, and a lower GRV from the new cluster
+//     repopulated the cache underneath a commit the caller had already been told
+//     succeeded. On the GRV path refusing is merely conservative; on the commit
+//     path it costs read-your-committed-writes, which is the invariant the whole
+//     floor mechanism exists to hold.
+//   - grvCache's fence word is what a PUBLICATION is judged against.
+//
+// The two are kept coherent by DERIVATION, not by the order of two statements:
+// the published epoch is read from the fence at publication (see below), so
+// DBInfo.Epoch <= fence epoch holds at every instant no matter where the bump
+// sits. The only reachable disagreement is (new fence, old proxies) — a request
+// binding there carries the OLD epoch, talks to the OLD cluster, and is refused,
+// which is the correct outcome rather than a conservative approximation of one,
+// and the next install republishes from the fence and heals it.
+//
+// The disagreement in the other direction is what must never occur, and it is
+// worth naming precisely because an earlier version of this function guarded it
+// with statement order and a test that only appeared to check it. A snapshot
+// published AHEAD of the fence lets a commit bind epoch N+1, reply while the
+// fence still reads N, fail sameEpoch and lose its DURABLE FLOOR — the same loss
+// the epoch-before-proxies sampling used to cause, reached from the other side.
+// Deriving the published value from the fence removes the state rather than
+// forbidding it.
+//
+// C++ reaches the same observable state by a different mechanism: switchConnectionRecord
+// clears commitProxies and grvProxies inside the same block as its cluster-state
+// reset (NativeAPI.actor.cpp:2196-2197, and again on the published clientInfo at
+// :2206-2209), so nothing can be dispatched to the previous cluster at all.
+func (db *database) installProxySet(newInfo *DBInfo) bool {
+	// The whole load-derive-bump-store sequence, not each step: see installMu.
+	// Two concurrent installers that interleave here publish an epoch the fence
+	// has already passed, with clusterSwitchPending spent, and nothing ever
+	// republishes — a permanent wedge rather than a stale read.
+	db.installMu.Lock()
+	defer db.installMu.Unlock()
+
 	old := db.dbInfo.Load()
+	if db.clusterSwitchPending.CompareAndSwap(true, false) {
+		// The returned epoch is deliberately DISCARDED. Using it would make the
+		// published value a fact about when the bump happened; reading the fence
+		// below makes it a fact about what the fence holds at publication, which
+		// is the property that has to be true.
+		db.grvCache.resetForNewCoordinators()
+		// C++ resets minAcceptableReadVersion in the same block
+		// (switchConnectionRecord, NativeAPI.actor.cpp:2201) and re-derives it
+		// from the new cluster's first GRV. Go's floor is the SMALLEST version
+		// seen and 0 means unset, so an empty stamp is the faithful reset:
+		// carried across, the previous cluster's smallest rejects a perfectly
+		// current user-set version from a cluster whose version space sits lower.
+		//
+		// Publishing it AT THE NEW EPOCH is belt-and-braces rather than the
+		// mechanism — a previous epoch's stamp already reads as unset, because
+		// every reader validates the stamp's epoch in the load that produced it.
+		// This makes the reset explicit rather than relying on that alone.
+		db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow()})
+	}
+
+	// THE ORDER INVARIANT, held BY CONSTRUCTION rather than by a check or by the
+	// order of two statements: the published epoch is READ FROM THE FENCE, so it
+	// is whatever the fence holds at publication and cannot be ahead of it. Not
+	// carried from the old snapshot, not taken from the bump's return value —
+	// either of those is a value from an earlier instant, and publishing an
+	// earlier instant's epoch is precisely how a snapshot gets ahead of the fence.
+	//
+	// This is what makes the guarantee independent of where the bump sits. Move
+	// the bump anywhere after this read and the publication simply does not carry
+	// the new epoch: the fence ends up AHEAD of the published snapshot. That is
+	// the safe disagreement — a request binding there does reach the NEW cluster
+	// (the snapshot carries the new proxies), but it binds an epoch the fence has
+	// passed, so nothing it brings back can install and nothing can be served from
+	// it. Refused, not misapplied. The next install republishes from the fence and
+	// heals it.
+	//
+	// The harmful direction — a snapshot ahead of the fence, where a commit binds
+	// an epoch the fence has not reached, replies, fails sameEpoch and loses its
+	// durable floor — has no way to arise.
+	newInfo.Epoch = db.grvCache.epochNow()
+
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
+	// ONE seam, immediately before the publication. It exists to let a test hold
+	// an installer inside installMu and to read the fence at publication; it is
+	// NOT what enforces the order, which the derivation above does.
+	//
+	// It used to bracket the publication, on a theory — that a hook on each side
+	// catches the bump wherever it moves — which was simply false: a bump landing
+	// between the two left both observations consistent. A pin that depends on
+	// where a hook sits tests the hook's position, not the property, and that
+	// theory cost two failed pins before the invariant was made structural.
+	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
 
 	// Broadcast proxy change to in-flight commits. Close the old channel
@@ -186,8 +286,19 @@ func (db *database) recordConnFailure(addr string) {
 	}
 }
 
-// dbInfoEqual returns true if two DBInfo have identical proxy lists.
+// dbInfoEqual returns true if two DBInfo have identical proxy lists AND the same
+// cluster epoch.
+//
+// The epoch belongs in this comparison, not merely for completeness: a handoff
+// onto a coordinator set that happens to publish an identical proxy list would
+// otherwise be skipped as "no change", leaving the fence word bumped while the
+// published DBInfo.Epoch stayed behind. Every subsequent request would then bind
+// an epoch the fence has already passed and every publication would be refused —
+// a permanent wedge, reached through the one case where the proxies did not move.
 func dbInfoEqual(a, b *DBInfo) bool {
+	if a.Epoch != b.Epoch {
+		return false
+	}
 	if len(a.GRVProxies) != len(b.GRVProxies) || len(a.CommitProxies) != len(b.CommitProxies) {
 		return false
 	}
@@ -205,3 +316,40 @@ func dbInfoEqual(a, b *DBInfo) bool {
 	}
 	return true
 }
+
+// onCoordinatorSetAdopted records that the handle has adopted a coordinator set
+// it did not previously have. It does NOT reset the cache yet, and that timing
+// is the point: adoption only changes which COORDINATORS we will ask. The
+// proxies in db.dbInfo still belong to the previous cluster until a later
+// successful refresh installs new ones, so a request dispatched in this window
+// still goes to the OLD cluster. Bumping the epoch here would stamp those
+// in-flight requests as belonging to the new one, and their replies would
+// install the old cluster's versions into the new epoch — with no second reset
+// when the real proxies arrive.
+//
+// C++ closes the same window from the other side, clearing commitProxies and
+// grvProxies in the same block as its cache reset (switchConnectionRecord,
+// NativeAPI.actor.cpp:2196-2207) so nothing can be dispatched to the old
+// cluster at all. Go reaches the same OBSERVABLE state by moving the epoch
+// change to the handoff instead: anything dispatched while the old proxies are
+// installed carries the old fences and is refused the moment they change.
+func (db *database) onCoordinatorSetAdopted() {
+	db.clusterSwitchPending.Store(true)
+}
+
+// observeProxyInstall runs the duringProxyInstall seam when one is installed.
+// Nil in production, so this is a load and a branch on the topology path.
+//
+// The call site is INSIDE installMu, which is not reentrant: a hook that
+// calls back into installProxySet deadlocks the calling goroutine against
+// itself. Hooks may observe and block; they may not install.
+func (db *database) observeProxyInstall() {
+	if hook := db.duringProxyInstall.Load(); hook != nil {
+		(*hook)()
+	}
+}
+
+// The handoff itself lives in installProxySet: the instant the handle starts
+// talking to the new cluster is the instant its proxies are published, and
+// making that one act is what leaves no window between the epoch and the proxies
+// it describes.

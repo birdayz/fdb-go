@@ -3,6 +3,7 @@ package simfdb
 import (
 	"bytes"
 	"sort"
+	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
@@ -42,6 +43,12 @@ type simTxn struct {
 
 	readVersion int64
 	rvSet       bool
+	// rvInstant is when the read version was pinned, on the ENV clock — the sim's
+	// analog of the client's GRV stamp. It must come from env.Now() and never
+	// time.Now(): a budget measured against it decides how much work a page does,
+	// and a run whose page boundaries move with the host's speed is not a
+	// deterministic replay. Zero until rvSet.
+	rvInstant time.Time
 
 	buffer         []mutation // RYW write buffer, in issue order
 	readConflicts  []keyRange
@@ -64,7 +71,10 @@ type simTxn struct {
 	opts fdb.TransactionOptions
 }
 
-var _ fdb.WritableTransaction = (*simTxn)(nil)
+var (
+	_ fdb.WritableTransaction        = (*simTxn)(nil)
+	_ fdb.ReadVersionInstantReporter = (*simTxn)(nil)
+)
 
 func (db *SimDB) newTxn() *simTxn {
 	tx := &simTxn{db: db}
@@ -82,6 +92,17 @@ func (tx *simTxn) ensureReadVersion() {
 	tx.readVersion = tx.db.currentReadVersion()
 	tx.db.mu.Unlock()
 	tx.rvSet = true
+	tx.rvInstant = tx.db.env.Now()
+}
+
+// ReadVersionInstant implements fdb.ReadVersionInstantReporter. ok is false before
+// the lazy GRV has fired, so a caller cannot mistake "not yet pinned" for "pinned
+// at the zero time" — the distinction the whole capability exists to make.
+func (tx *simTxn) ReadVersionInstant() (time.Time, bool) {
+	if !tx.rvSet || tx.rvInstant.IsZero() {
+		return time.Time{}, false
+	}
+	return tx.rvInstant, true
 }
 
 // ---- reads ----------------------------------------------------------------------------
@@ -780,6 +801,7 @@ func (tx *simTxn) Commit() fdb.FutureNil {
 func (tx *simTxn) postCommitReset() {
 	tx.readVersion = 0
 	tx.rvSet = false
+	tx.rvInstant = time.Time{}
 	tx.buffer = nil
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
@@ -792,6 +814,7 @@ func (tx *simTxn) Cancel() { tx.cancelled = true }
 func (tx *simTxn) Reset() {
 	tx.readVersion = 0
 	tx.rvSet = false
+	tx.rvInstant = time.Time{}
 	tx.buffer = nil
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
@@ -852,6 +875,16 @@ func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 func (tx *simTxn) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.rvSet = true
+	// A caller-supplied version's MVCC window opened on the cluster at an
+	// instant this process never observed, so there is no anchor to report.
+	// Clearing (rather than leaving a prior GRV's stamp) keeps "the instant
+	// describes the CURRENT read version" true — a stale stamp reads as a
+	// window that is still open, and a budget anchored on it under-counts the
+	// transaction's age. rvSet stays true, so the accessor's rvSet gate cannot
+	// stand in for this clear; the zero instant is what makes it report
+	// ok=false. Same contract as the pure client (client/transaction.go
+	// SetReadVersion), which a backend of the same interface owes.
+	tx.rvInstant = time.Time{}
 }
 
 // ---- post-commit ----------------------------------------------------------------------

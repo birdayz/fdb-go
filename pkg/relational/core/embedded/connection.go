@@ -17,7 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/wire"
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
@@ -175,18 +177,167 @@ func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 type embeddedTx struct {
 	conn *EmbeddedConnection
 	rctx *recordlayer.FDBRecordContext
+
+	// terminated records that this transaction has ENDED — through any of the
+	// four doors: Commit, Rollback, EmbeddedConnection.Close, ResetSession
+	// (the last two cancel the context without going through Rollback, which
+	// is why the flag cannot live inside Rollback alone). It exists because a
+	// result set (paginatingRows) outlives the Execute that made it: pages are
+	// fetched from Next after QueryContext returned, so a SELECT whose
+	// transaction ended mid-iteration would otherwise resume reading in a
+	// fresh auto-commit transaction — silently, at a different read version,
+	// right after its reads were made transactional. An asserted boundary,
+	// never a silent fallback (RFC-198 Decision 3).
+	//
+	// The flag lives on the transaction, not the connection: the connection
+	// outlives the transaction and is reused from the pool, so a
+	// connection-level flag would be cleared by the next BeginTx and a stale
+	// paginatingRows would see it cleared and resume. The flag has to live on
+	// the object whose death it records. It is the ONE lifecycle every
+	// transaction-scoped object dies on (result sets here; the schema-cache
+	// binding and the per-transaction store follow the same flag).
+	terminated atomic.Bool
+
+	// scanState is the TRANSACTION-scoped scanned-records/scanned-bytes/time
+	// counter set (RFC-198 Decision 5). Minted lazily on first use through
+	// NewScanLimiterStateIn(env) — the seamed constructor — and shared by
+	// every page of every statement in this transaction, so N pages get one
+	// budget against FDB's 5-second wall instead of N fresh 4s budgets. Its
+	// time anchor is re-anchored to the client's read-version instant at each
+	// page preflight (paginatingRows.preflightTxBudget); the counters are
+	// Java's transaction-scoped ExecuteState by another name
+	// (ExecuteProperties.java Builder copies the state reference, and
+	// newExecuteProperties runs once per transaction). Auto-commit statements
+	// never see this field — each page stays its own transaction with its own
+	// fresh state, unchanged.
+	//
+	// NOT to be confused with paginatingRows.execState (RFC-130's memory byte
+	// budget), which deliberately stays STATEMENT-scoped: a memory budget is a
+	// property of one statement's buffering operators, and sharing it across a
+	// transaction would make the third statement fail for memory the first two
+	// released.
+	scanState *recordlayer.ScanLimiterState
+
+	// schemaCache is the TRANSACTION-scoped catalog cache (RFC-198 Decision
+	// 8b). While this transaction is open, catalog resolution consults THIS
+	// map and never the session cache in either direction: a session-cache hit
+	// populated by an earlier transaction (or an auto-commit statement) would
+	// hand back metadata from a different read version with no FDB read and no
+	// conflict range — the plan-at-snapshot-A / rows-at-snapshot-B skew whose
+	// failure mode is zero rows with no error. A miss here reads the catalog
+	// INSIDE the transaction, which both pins the schema to the transaction's
+	// snapshot and adds the read conflict range that makes a concurrent DDL
+	// conflict this transaction with 40001 — the accepted, correct cost.
+	// Java's shape: RecordLayerSchema caches per transaction and drops the
+	// binding via a transaction close listener (RecordLayerSchema.java:98-108);
+	// here the map simply dies with the embeddedTx — one lifecycle for every
+	// transaction-scoped object.
+	schemaCache map[string]api.Schema
+
+	// stores is the TRANSACTION-scoped record-store cache (RFC-198 Decision
+	// 10), keyed by store subspace. Every page of every statement in this
+	// transaction reuses one open store per subspace instead of rebuilding it
+	// per page.
+	//
+	// Per-page rebuilding is free in auto-commit — each page is its own
+	// transaction and the store must be rebuilt anyway — and stops being free
+	// the moment pages share one transaction: each Open() reads the store
+	// header, so an N-page in-transaction SELECT would spend N header reads
+	// out of the same 5-second window the query itself is competing for. The
+	// cost would land on the scarcest resource this RFC introduces.
+	//
+	// Java caches the store too (RecordLayerSchema.loadStore:99-107), but only
+	// for the duration of ONE statement: AbstractEmbeddedStatement.java:82
+	// loads the schema in a try-with-resources and RecordLayerSchema.close()
+	// (:90-91) nulls currentStore when the statement ends. So reuse across the
+	// pages of one statement is Java's shape; reuse across statements in one
+	// transaction, which is what this map does, is a Go extension beyond Java.
+	//
+	// It is sound because the store carries no statement-scoped state —
+	// context, metadata, subspace, store header, index states and the
+	// per-transaction index maintainer cache are all transaction-scoped facts —
+	// so widening the cache from statement to transaction changes lifetime,
+	// not semantics.
+	//
+	// One lifecycle, as everywhere else here: the map dies with the
+	// embeddedTx, and no page can reach it after the terminal flag is set
+	// because runInCapturedTx refuses the transaction first. It is ALSO
+	// dropped by invalidateSchemaCache, because a DDL issued inside an
+	// explicit transaction auto-commits in its own transaction (Decision 8f)
+	// and would otherwise leave this store holding metadata its own DDL
+	// replaced for the rest of the transaction. That drop is LOAD-BEARING and
+	// not defence in depth: it is exactly the cross-statement reuse above that
+	// opens the window, since Java rebuilds the store at the next statement
+	// and so cannot reach the stale-metadata state at all.
+	stores map[string]*recordlayer.FDBRecordStore
 }
+
+// storeIn returns the record store for ss inside rctx, reusing this
+// transaction's open store when there is one (RFC-198 Decision 10). tx == nil
+// is auto-commit, where each page is its own transaction and the store must be
+// built fresh — unchanged.
+func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *embeddedTx, ss subspace.Subspace) (*recordlayer.FDBRecordStore, error) {
+	if tx != nil {
+		if store, ok := tx.stores[string(ss.Bytes())]; ok {
+			return store, nil
+		}
+	}
+	store, err := c.newStoreBuilder().
+		SetContext(rctx).
+		SetSubspace(ss).
+		SetMetaDataProvider(c.cachedMetaData()).
+		// Revalidation must observe FDB, not a database-level state-cache
+		// entry that can outlive a non-cacheable store's state transition.
+		//
+		// It belongs HERE rather than at the call site now that every store is
+		// opened through this one function: the transaction-scoped reuse above
+		// is a different lifetime question (one store per subspace per
+		// transaction, dying with the transaction) and does not answer this one.
+		// Reusing a store whose state was read through the database-level cache
+		// would carry that staleness across every page of the transaction.
+		SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
+		Open()
+	if err != nil {
+		return nil, err
+	}
+	if tx != nil {
+		if tx.stores == nil {
+			tx.stores = make(map[string]*recordlayer.FDBRecordStore)
+		}
+		tx.stores[string(ss.Bytes())] = store
+	}
+	return store, nil
+}
+
+// scanStateIn returns the transaction-scoped ScanLimiterState, minting it on
+// first use through the seamed constructor so the sim clock governs the anchor
+// and every elapsed measurement.
+func (tx *embeddedTx) scanStateIn(env *dst.Env) *recordlayer.ScanLimiterState {
+	if tx.scanState == nil {
+		tx.scanState = recordlayer.NewScanLimiterStateIn(env)
+	}
+	return tx.scanState
+}
+
+// terminate marks the transaction ended. Idempotent; called at all four doors.
+func (tx *embeddedTx) terminate() { tx.terminated.Store(true) }
 
 // Commit runs pre-commit hooks, flushes version mutations, commits the FDB
 // transaction, runs post-commit hooks, and clears the connection's activeTx.
+// The transaction is terminal whether or not the commit succeeded: an
+// explicit transaction never retries (there is no OnError loop on this path —
+// the driver does not hold the statements it would have to replay), so a
+// failed commit leaves a dead handle, not a resumable one.
 func (tx *embeddedTx) Commit() error {
 	err := tx.rctx.CommitWithHooks()
+	tx.terminate()
 	tx.conn.activeTx = nil
-	return err
+	return translateFDBError(err)
 }
 
 // Rollback cancels the FDB transaction and clears the connection's activeTx.
 func (tx *embeddedTx) Rollback() error {
+	tx.terminate()
 	tx.conn.activeTx = nil
 	tx.rctx.Cancel()
 	return nil
@@ -196,40 +347,77 @@ func (tx *embeddedTx) Rollback() error {
 // exists) or inside a new auto-commit transaction via fdbDB.Run.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
-	if c.activeTx != nil {
-		return fn(c.activeTx.rctx)
+	return c.runInCapturedTx(ctx, c.activeTx, fn)
+}
+
+// runInCapturedTx executes fn inside tx when one was captured, or inside a new
+// auto-commit transaction via fdbDB.Run when tx is nil (auto-commit is the
+// intended mode — no transaction was ever open). A captured transaction that
+// has since ended is an ERROR (25F01), never a silent fallback to a fresh
+// transaction: the caller captured the transaction precisely because its reads
+// belong to it, and resuming them at a different read version would splice one
+// logical result set across two snapshots with no error (RFC-198 Decision 3).
+// One policy for every route — the paginating SELECT/DML page loop and the
+// system-table reads all come through here.
+//
+// In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
+// would have to re-run the whole transaction, and the driver does not hold the
+// statements the application has not issued yet.
+func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	if tx != nil {
+		if tx.terminated.Load() {
+			return nil, api.NewError(api.ErrCodeTransactionInactive,
+				"transaction has ended: the result set was created inside an explicit transaction that has since committed, rolled back, or been closed")
+		}
+		return fn(tx.rctx)
 	}
 	return c.sess.DB.Run(ctx, fn)
 }
 
-// cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
-// connection-level cache to avoid repeated FDB reads within the same session.
-// The cache is invalidated by any DDL that modifies schema definitions.
+// cachedLoadSchema returns the api.Schema for (dbPath, schemaName).
 //
-// When an explicit user transaction is active we read the catalog via a
-// separate auto-commit transaction so that catalog reads do not add read
-// conflict ranges to the user's write transaction, which would cause spurious
-// not_committed (1020) conflicts when other tests run DDL concurrently.
+// AUTO-COMMIT: the session-level cache memoises the lookup for the session's
+// lifetime, and a miss reads through the caller's txn — unchanged; there is no
+// transaction to bind to and no serializable promise to keep.
+//
+// EXPLICIT TRANSACTION (RFC-198 Decision 8b): resolution binds to the
+// transaction. The TRANSACTION-scoped cache on the embeddedTx is consulted —
+// never the session cache, whose entries were populated at other read
+// versions and would serve a plan-at-snapshot-A / rows-at-snapshot-B skew
+// with no read and no conflict range. A miss reads the catalog INSIDE the
+// active transaction, pinning the schema to the transaction's snapshot and
+// adding the read conflict range that makes a concurrent DDL conflict this
+// transaction loudly (40001) instead of letting it return wrong rows
+// silently. This is Java's shape (BackingRecordStore builds on
+// conn.getTransaction(); RecordLayerSchema caches per transaction). The
+// in-transaction read result is deliberately NOT copied into the session
+// cache: it describes one transaction's snapshot, not the session's present.
 func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
 	key := session.SchemaCacheKey(dbPath, schemaName)
+	if tx := c.activeTx; tx != nil {
+		if s, ok := tx.schemaCache[key]; ok {
+			return s, nil
+		}
+		var s api.Schema
+		_, err := c.runInTx(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			readTxn := catalog.NewFDBTransaction(rctx)
+			var loadErr error
+			s, loadErr = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
+			return nil, loadErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if tx.schemaCache == nil {
+			tx.schemaCache = make(map[string]api.Schema)
+		}
+		tx.schemaCache[key] = s
+		return s, nil
+	}
 	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
-	var s api.Schema
-	var err error
-	if c.activeTx != nil {
-		// Read catalog outside the user transaction to avoid adding catalog
-		// read-conflict ranges that conflict with concurrent DDL.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err = c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-			readTxn := catalog.NewFDBTransaction(rctx)
-			s, err = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
-			return nil, err
-		})
-	} else {
-		s, err = c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
-	}
+	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +427,28 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	c.sess.InvalidateSchema(dbPath, schemaName)
+	// A DDL issued while an explicit transaction is open (runDDL auto-commits
+	// even inside BeginTx — Decision 8f) must also drop the transaction-scoped
+	// binding, or the rest of the transaction keeps planning against metadata
+	// its own DDL just replaced. Same one-lifecycle rule as the terminal flag,
+	// applied to an invalidation that originates outside the transaction's
+	// end.
+	if c.activeTx != nil {
+		delete(c.activeTx.schemaCache, session.SchemaCacheKey(dbPath, schemaName))
+		// And the transaction's OPEN STORES with it (RFC-198 Decision 10):
+		// a cached store was built with SetMetaDataProvider(cachedMetaData())
+		// and holds that metadata for its lifetime, so leaving it in place
+		// would let the rest of the transaction execute against metadata this
+		// very DDL replaced — the collision Decision 10's cache creates and
+		// this invalidation is the resolution to.
+		//
+		// ALL of them, not just the invalidated schema's: over-invalidating
+		// costs one store header read, under-invalidating ships stale
+		// metadata, and mapping (dbPath, schemaName) back to a store subspace
+		// needs a keyspace lookup that can itself fail — a failure path whose
+		// only safe handling is to drop everything anyway.
+		c.activeTx.stores = nil
+	}
 }
 
 // invalidatePlanCache clears all cached query plans. Called after any
@@ -266,7 +476,19 @@ func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
 		return nil
 	}
 	key := session.SchemaCacheKey(c.sess.DBPath, c.sess.Schema)
-	schema, ok := c.sess.SchemaCache[key]
+	var schema api.Schema
+	var ok bool
+	if c.activeTx != nil {
+		// While an explicit transaction is open, metadata comes from the
+		// TRANSACTION-scoped binding only (RFC-198 Decision 8b) — a
+		// session-cache entry here was read at some other transaction's
+		// read version and serving it would split plan and data across
+		// snapshots. A nil return sends the caller through ensureMetaData,
+		// which populates the binding inside the transaction.
+		schema, ok = c.activeTx.schemaCache[key]
+	} else {
+		schema, ok = c.sess.SchemaCache[key]
+	}
 	if !ok || schema == nil {
 		return nil
 	}
@@ -288,7 +510,10 @@ func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
 	if c.cachedMetaData() != nil {
 		return nil
 	}
-	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// runInTx, not DB.Run: with an explicit transaction open the catalog read
+	// must join it (RFC-198 Decision 8b — this is enumeration site (c)); in
+	// auto-commit it is the same fresh transaction as before.
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		_, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		return nil, loadErr
@@ -454,6 +679,11 @@ func (c *EmbeddedConnection) Close() error {
 	if c.activeTx != nil {
 		tx := c.activeTx
 		c.activeTx = nil
+		// This door bypasses Rollback, so it must set the terminal flag
+		// itself — a flag set only in Commit/Rollback would leave a result
+		// set from this transaction free to resume in a fresh auto-commit
+		// transaction (RFC-198 Decision 3).
+		tx.terminate()
 		tx.rctx.Cancel()
 	}
 	return nil
@@ -466,7 +696,10 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 
 // BeginTx implements driver.ConnBeginTx. Opens an FDB transaction that spans
 // all subsequent statements until Commit or Rollback is called.
-// Isolation levels other than the default and ReadCommitted return an error.
+// The accepted levels are LevelDefault and LevelSerializable; every other level
+// returns an error. ReadCommitted is NOT among them — naming it here was a stale
+// comment that advertised a weaker level this driver has never accepted, which is
+// the opposite of the direction a reader needs to be wrong in.
 // Read-only transactions are not separately enforced at the FDB level.
 //
 // KNOWN GAP (database/sql ctx not honored): the caller's ctx is dropped here, and
@@ -547,9 +780,12 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	c.sess.Schema = c.sess.DefaultSchema
 	if c.activeTx != nil {
 		// Best-effort rollback; we're about to release the connection
-		// back to the pool and must not leak the open FDB tx.
+		// back to the pool and must not leak the open FDB tx. Like Close,
+		// this door bypasses Rollback and must set the terminal flag itself
+		// (RFC-198 Decision 3).
 		tx := c.activeTx
 		c.activeTx = nil
+		tx.terminate()
 		tx.rctx.Cancel()
 	}
 	c.sess.ResetSchemaCache()
@@ -686,6 +922,15 @@ func translateFDBCode(code int, err error) error {
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
 	case 1007: // transaction_too_old
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case 1021: // commit_unknown_result
+		// 40003, NOT 40001: the transaction may or may not have committed and
+		// the client cannot tell. The application must determine the outcome
+		// before retrying — a blind retry double-applies any non-idempotent
+		// statement on the applied branch (RFC-198 Decision 7).
+		return api.WrapError(api.ErrCodeStatementCompletionUnknown,
+			"FDB commit outcome unknown: the transaction may or may not have committed; determine the outcome before retrying", err)
+	case 1025: // transaction_cancelled
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction cancelled", err)
 	case 2017: // used_during_commit
 		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
 	}

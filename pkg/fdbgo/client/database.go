@@ -177,6 +177,16 @@ type DBInfo struct {
 	// field (CommitProxyInterface.h:132). Set during a `coordinators auto`/`change`
 	// rotation; the proxies on a forward reply are ignored (RFC-111 Path A).
 	Forward string
+
+	// Epoch is the cluster epoch these proxies belong to. It rides the SNAPSHOT
+	// rather than living beside it, so a caller that loads the proxies gets the
+	// epoch of the very set it is about to talk to — the epoch a request binds
+	// to cannot describe a proxy set the request did not use, because there is
+	// no second load in which the two could disagree.
+	//
+	// Set exclusively by installProxySet, which also owns the ordering against
+	// grvCache's fence word. See the coherence rule documented there.
+	Epoch int64
 }
 
 // ProxyInfo holds addressing info for a proxy.
@@ -225,6 +235,35 @@ type database struct {
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
 	dbInfo atomic.Pointer[DBInfo]
+	// installMu serialises installProxySet's read-modify-write of dbInfo. The
+	// sequence loads dbInfo, derives the next epoch from it, possibly bumps the
+	// fence, and stores — and atomic.Pointer gives atomicity of each step, never
+	// of the sequence. A lost update here is not a stale read that self-corrects
+	// on the next poll: the losing writer publishes DBInfo.Epoch=N after the fence
+	// moved to N+1 with clusterSwitchPending ALREADY consumed, so nothing will
+	// ever bump DBInfo.Epoch again. Every request from then on binds an epoch the
+	// fence has passed, every publication is refused, and the refresher pins at
+	// its 1ms clamp — permanently, on a handle that merely polled topology twice.
+	//
+	// Production has one writer today (bootstrap completes before topologyMonitor
+	// starts), but that is an emergent property of the startup order rather than
+	// anything this function can rely on, and tests already call it from a second
+	// goroutine while the monitor is live.
+	installMu sync.Mutex
+	// beforeCommitProxySelect runs at the top of Transaction.commit, immediately
+	// before it binds to a commit proxy. A deterministic seam for the
+	// handoff-inside-the-commit-window case, which is a few instructions wide and
+	// therefore untestable by racing. Always nil in production.
+	beforeCommitProxySelect atomic.Pointer[func()]
+	// duringProxyInstall runs inside installProxySet, immediately before the dbInfo
+	// publication. It exists so a test can hold an installer inside the critical
+	// section (see installMu) and observe the fence at publication. Always nil in
+	// production.
+	//
+	// IT RUNS UNDER installMu, which is not reentrant: a hook that calls back into
+	// installProxySet deadlocks the calling goroutine against itself. Hooks here
+	// may observe and block; they may not install.
+	duringProxyInstall atomic.Pointer[func()]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send
 	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
@@ -260,7 +299,18 @@ type database struct {
 	// minAcceptableReadVersion tracks the minimum version this client has seen
 	// from the cluster. SetReadVersion below this throws transaction_too_old
 	// client-side, matching C++ DatabaseContext::validateVersion().
-	minAcceptableReadVersion atomic.Int64
+	//
+	// It carries the EPOCH it was observed in, in the same value, for the reason
+	// grvCacheEntry does: a floor is a claim about a VERSION SPACE, and the two
+	// clusters' spaces are unrelated. Stamped, a value written just before a
+	// handoff becomes inert the moment the fence moves — a reader validates the
+	// epoch in the same load that produced the version, so there is no window in
+	// which the two disagree, and no reliance on anyone remembering to clear it.
+	minAcceptableReadVersion atomic.Pointer[minAcceptableStamp]
+
+	// clusterSwitchPending is set when a coordinator set is adopted and cleared
+	// at the proxy handoff that completes it. See onCoordinatorSetAdopted.
+	clusterSwitchPending atomic.Bool
 
 	// Tag throttle state — updated from GRV reply tagThrottleInfo.
 	// Maps priority -> (tag -> throttle limits). Matches C++ cx->throttledTags.
@@ -370,23 +420,27 @@ func (db *database) getGRVProxy() (*ProxyInfo, error) {
 	return &info.GRVProxies[idx], nil
 }
 
-// getCommitProxy returns a commit proxy address using round-robin selection.
-func (db *database) getCommitProxy() (*ProxyInfo, error) {
+// getCommitProxy returns a commit proxy address using round-robin selection,
+// together with the cluster epoch that proxy belongs to. ONE load: the epoch a
+// commit binds to is the epoch of the proxy set it is about to use, never one
+// sampled separately and overtaken by a handoff in between.
+func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.CommitProxies) == 0 {
-		return nil, fmt.Errorf("no commit proxies available")
+		return nil, 0, fmt.Errorf("no commit proxies available")
 	}
 	idx := db.proxyRR.nextCommit(len(info.CommitProxies))
-	return &info.CommitProxies[idx], nil
+	return &info.CommitProxies[idx], info.Epoch, nil
 }
 
-// getGRVProxies returns all GRV proxies from the current topology.
-func (db *database) getGRVProxies() []ProxyInfo {
+// getGRVProxies returns all GRV proxies from the current topology and the
+// cluster epoch they belong to, from ONE load — see getCommitProxy.
+func (db *database) getGRVProxies() ([]ProxyInfo, int64) {
 	info := db.dbInfo.Load()
 	if info == nil {
-		return nil
+		return nil, 0
 	}
-	return info.GRVProxies
+	return info.GRVProxies, info.Epoch
 }
 
 // getCommitProxies returns all commit proxies from the current topology.
@@ -597,6 +651,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 		case err == nil && info.Forward != "":
 			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
 			if db.followForward(snap, info.Forward) {
+				db.onCoordinatorSetAdopted()
 				continue
 			}
 			// self/empty/over-bound forward → fall through to backoff.
@@ -606,13 +661,14 @@ func (db *database) bootstrap(ctx context.Context) error {
 			// New coordinators answered — persist a forward adopted in memory on a
 			// previous iteration now that the set is confirmed reachable (Path A).
 			db.connRecord.persistIfDirty()
-			db.dbInfo.Store(info)
+			db.installProxySet(info)
 			close(db.connected)
 			return nil
 		default:
 			// Path B: all coordinators unreachable — another process may have
 			// rotated the set and rewritten the cluster file. Re-read it.
 			if db.connRecord.adoptStoredIfChanged() {
+				db.onCoordinatorSetAdopted()
 				continue
 			}
 		}
@@ -1018,7 +1074,7 @@ func (d *Database) SetMaxWatches(n int64) error {
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
 // a fresh read version from the GRV proxy. Use after external writes.
 func (d *Database) InvalidateGRVCache() {
-	d.db.grvCache.version.Store(0)
+	d.db.grvCache.invalidate()
 }
 
 // GetDBInfo returns the current cluster topology (proxy lists, cluster ID).

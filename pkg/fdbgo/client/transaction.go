@@ -302,6 +302,11 @@ type Transaction struct {
 	state   atomic.Int32 // txState values
 	isDummy bool         // commitDummyTransaction marker; prevents recursive dummies
 
+	// commitEpoch is the cluster epoch captured when commit() bound to a commit
+	// proxy — the epoch the committed version actually belongs to, which is not
+	// necessarily the one current when the caller entered Commit.
+	commitEpoch atomic.Int64
+
 	// Every option-backing field lives on the embedded txOptions (RFC-175 C2);
 	// accessors and all field references work unchanged via promotion.
 	txOptions
@@ -318,6 +323,37 @@ type Transaction struct {
 	hasReadVersion     bool
 	userSetReadVersion bool // SetReadVersion was called → validateVersion applies
 	metricStart        time.Time
+
+	// readVersionInstant is when THIS read version was obtained from the cluster —
+	// the instant FDB's 5-second MVCC window opened for it.
+	//
+	// It rides with hasReadVersion STRUCTURALLY rather than by hand: the accessor
+	// reports not-ok whenever no read version is held, so every path that drops the
+	// version (reset on OnError, postCommitReset on commit-reuse) retires the
+	// instant with it and cannot forget to. Explicit clears at those sites were
+	// tried and removed — they were redundant with the gate, and redundancy there
+	// is actively harmful: with two mechanisms covering one rule, neither is
+	// individually detectable by a mutation, so a test can go on passing while
+	// either is broken.
+	//
+	// SetReadVersion is the one path the gate cannot cover, because it leaves
+	// hasReadVersion true; it clears this field explicitly, and that clear IS
+	// mutation-detectable on its own.
+	//
+	// It is a SEPARATE field from metricStart and must stay one, because the two
+	// need OPPOSITE reset disciplines. metricStart deliberately survives OnError so
+	// RFC-114's total latency spans retries. This must NOT: OnError takes a NEW read
+	// version, so the 5-second window RESTARTS, and a budget anchored on a
+	// spans-retries field would charge a fresh window for a previous attempt's time
+	// and fail work the cluster would have served. Per-attempt is also what C++ does
+	// (trState->startTime is re-stamped at cloneAndReset); metricStart's spanning is
+	// the documented RFC-114 divergence, not the model.
+	//
+	// Zero means "no instant known", which is the honest answer for a user-supplied
+	// read version (SetReadVersion): that version's window opened on the cluster at
+	// a time this client never saw. Consumers must handle the not-ok case rather
+	// than treat zero as an anchor.
+	readVersionInstant time.Time
 
 	// Commit results — written by the commit path, consumed by
 	// GetCommittedVersion/GetVersionstamp after a commit; preserved by
@@ -703,7 +739,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return tx.mapTimeout(parentCtx, err)
@@ -721,6 +757,17 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
+		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
+		// clears it and the retry's GRV opens a new 5-second window.
+		//
+		// The instant comes FROM the GRV, not from now(): for a proxy round
+		// trip it is the pre-RPC request time, and for a USE_GRV_CACHE hit it is
+		// when that cached version was originally obtained — up to
+		// maxVersionCacheLag ago. Stamping now() here instead made the anchor
+		// NEWER than the window it names, so a budget built on it under-counted
+		// the age and could let a nominally-in-budget page start against a
+		// version FDB was about to refuse with 1007.
+		tx.readVersionInstant = rvAt
 	}
 	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
 	// version below the smallest-seen floor (genuinely ancient) or an absurd
@@ -732,10 +779,14 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	rv := tx.readVersion
 	tx.readVersionMu.Unlock()
 	if tx.db != nil && userSet {
-		if tx.db.minAcceptableReadVersion.Load() == 0 {
+		// Read through the stamp: a floor established under a PREVIOUS cluster
+		// reads as unset, which re-arms this bootstrap so the floor is re-derived
+		// from the cluster now being served. That is the repair a straggler's
+		// write used to suppress, and the reason the floor carries its epoch.
+		if tx.db.minAcceptable() == 0 {
 			// Bootstrap: fetch a version to establish the baseline.
 			flags := tx.grvFlags()
-			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err
@@ -1861,7 +1912,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
 	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	// Captured together, both BEFORE dispatch: the instant this version's MVCC
+	// window opened, and the cache generation it is entitled to publish
+	// against. Loading the generation after the commit returns would let a
+	// commit dispatched before InvalidateGRVCache install its pre-invalidation
+	// version as though it were a post-invalidation observation, and an
+	// opted-in reader would then miss the very write the caller invalidated to
+	// observe.
 	commitStart := time.Now()
+	var commitTok cacheToken
+	if tx.db != nil {
+		commitTok = tx.db.grvCache.token()
+	}
 	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
 	}
@@ -1892,12 +1954,25 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 
 	// Feed committed version to GRV cache so a later opted-in read sees this
-	// write. Advances version + freshness, matching C++ updateCachedReadVersion
-	// at the commit site (NativeAPI.actor.cpp:6657, t=now()). Unconditional —
-	// population runs for every transaction regardless of USE_GRV_CACHE; only
-	// cache READS are opt-in (RFC-104).
+	// write. Unconditional — population runs for every transaction regardless
+	// of USE_GRV_CACHE; only cache READS are opt-in (RFC-104).
+	//
+	// Stamped with commitStart, the instant BEFORE the commit was dispatched,
+	// never with now(): this version's MVCC window opened when the proxy
+	// assigned it, which is somewhere inside the round trip that just
+	// finished. Dating it now() would claim the window opened after it closed
+	// on the far side, and an opted-in reader served this entry would then
+	// budget against a window already partly spent. C++ stamps the same site
+	// from a pre-reply instant — `state double grvTime = now();` captured
+	// before `wait(reply)` and handed to updateCachedReadVersion
+	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
+	// still (before dispatch rather than after), which is the safe direction.
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(tx.committedVersion)
+		// Generation from dispatch (an invalidation during the commit must still
+		// refuse it); EPOCH from the proxy binding inside commit(), which is the
+		// cluster this version actually came from.
+		tx.db.grvCache.update(commitTok.withEpoch(tx.commitEpoch.Load()),
+			commitStart, tx.committedVersion)
 	}
 
 	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs
@@ -2454,7 +2529,42 @@ func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
+	// A caller-supplied version's MVCC window opened on the cluster at an instant
+	// this client never observed, so there is no anchor to report. Zeroing (rather
+	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
+	// version" true — a stale anchor would read as a window that is still open.
+	// This is the ONE clear the accessor's hasReadVersion gate cannot stand in for,
+	// because SetReadVersion leaves that flag true.
+	tx.readVersionInstant = time.Time{}
 	tx.readVersionMu.Unlock()
+}
+
+// ReadVersionInstant reports when this transaction's current read version was
+// obtained from the cluster, i.e. when FDB's 5-second MVCC window opened for it.
+// ok is false when no read version is held, or when the version was supplied by
+// SetReadVersion (whose window opened at an instant this client never observed).
+//
+// It exists so a layer above can budget against the window that actually applies.
+// Anchoring such a budget on "when I started working" is wrong in both directions:
+// a transaction that idles before its first read has not yet opened a window, and
+// a retried transaction opened a fresh one. Only the GRV instant tracks it.
+//
+// Callers MUST honour ok rather than treating a zero time as an anchor.
+//
+// The hasReadVersion term is the whole reset discipline, deliberately. Every path
+// that drops the read version (reset on the OnError retry, postCommitReset on
+// commit-reuse) retires the instant through this one gate, so a new reset path
+// cannot forget to clear it. Explicit clears were tried at those sites and removed:
+// they were redundant with the gate, and two mechanisms covering one rule means
+// neither is individually detectable by a mutation — the tests kept passing with
+// either one broken, which is worse than having only one.
+func (tx *Transaction) ReadVersionInstant() (time.Time, bool) {
+	tx.readVersionMu.Lock()
+	defer tx.readVersionMu.Unlock()
+	if !tx.hasReadVersion || tx.readVersionInstant.IsZero() {
+		return time.Time{}, false
+	}
+	return tx.readVersionInstant, true
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
