@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -147,6 +148,28 @@ func (l *transitionPlanLogger) err() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.transErr
+}
+
+func queryIndexStateStrings(t *testing.T, ctx context.Context, conn *sql.Conn, query string) []string {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	sort.Strings(got)
+	return got
 }
 
 func assertSerializationFailure(t *testing.T, err error) {
@@ -313,5 +336,111 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexIsNotADistinctnessProof(t *t
 		t.Fatalf("a READABLE secondary UNIQUE index eliminated DISTINCT — if that "+
 			"was deliberate, the pending-unique state now needs its own coverage "+
 			"here rather than this assertion: %s", events[0].PlanExplain)
+	}
+}
+
+// writeGhostIndexState plants a state key for an index name the METADATA does
+// not have. This is not a contrived state: an index-state key outlives the
+// index whose name it holds whenever metadata is evolved to drop an index
+// without vacuuming its state key, and nothing in the read path removes it.
+func (f *indexStatePlanningFixture) writeGhostIndexState(ctx context.Context, name string) error {
+	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		key := f.ss.Sub(recordlayer.IndexStateSpaceKey).Pack(tuple.Tuple{name})
+		rctx.Transaction().Set(key, tuple.Tuple{int64(recordlayer.IndexStateWriteOnly)}.Pack())
+		return nil, nil
+	})
+	return err
+}
+
+// A signature compared across two DOMAINS is not a weaker version of a
+// signature compared across one — it is a different property, and it fails
+// catastrophically rather than gradually.
+//
+// The planning side once read the raw index-state subspace while execution read
+// the metadata's index set. On a healthy store the two agree, which is exactly
+// what makes the divergence invisible until a store has a state key for a name
+// the metadata no longer carries. Then the signatures can never match: every
+// query fails 40001 forever, and because 40001 means "retry", a client obeys and
+// the replan re-derives the same mismatch.
+//
+// A stray key must therefore be INERT. The store still answers, and the
+// staleness check still works — the second half is what stops this from being
+// satisfied by simply deleting the check.
+func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newIndexStatePlanningFixture(t)
+	if err := f.writeGhostIndexState(ctx, "IDX_DROPPED_LONG_AGO"); err != nil {
+		t.Fatalf("plant stray index-state key: %v", err)
+	}
+	// One row per page, so the armed-check below spans real page boundaries
+	// rather than finding every row already buffered from a single fetch.
+	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, 1).Build())
+	})
+
+	// Repeated, because the failure this pins is PERMANENT: the first query
+	// misses the plan cache and the second hits it, and both re-derive the
+	// signature, so one attempt could pass by luck where three cannot.
+	for i := 0; i < 3; i++ {
+		got := queryIndexStateStrings(t, ctx, conn, "SELECT EMAIL FROM T")
+		if strings.Join(got, ",") != "a@example,b@example,c@example" {
+			t.Fatalf("attempt %d returned %v", i, got)
+		}
+	}
+
+	// The check is still armed: a REAL transition on an index the metadata DOES
+	// name must still be caught. Without this, deleting the check outright
+	// would satisfy the assertions above.
+	rows, err := conn.QueryContext(ctx, "SELECT ID FROM T")
+	if err != nil {
+		t.Fatalf("query before transition: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if err := f.makeUniqueIndexPending(ctx); err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	for rows.Next() {
+	}
+	assertSerializationFailure(t, rows.Err())
+}
+
+// The planning-path store open FAILS CLOSED: a store that cannot be opened is
+// an error, not a silent "assume every index is readable".
+//
+// EXPLAIN is the arm that decides it. planExplain's own contract says that from
+// the point the Cascades plan is built, "the Cascades plan IS the plan. Every
+// failure below is the failure `SELECT ...` would raise, so it is surfaced
+// verbatim." Failing open broke exactly that: EXPLAIN rendered a plan for a
+// store that does not exist, while the SELECT it claims to describe could not
+// run at all. Planning against a GUESSED state and then validating the guess
+// downstream is incoherent in the same way.
+func TestFDB_IndexStatePlanning_MissingStoreFailsClosed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newIndexStatePlanningFixture(t)
+	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {})
+
+	if _, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, recordlayer.DeleteStore(rctx, f.ss)
+	}); err != nil {
+		t.Fatalf("clear the schema's store subspace: %v", err)
+	}
+
+	rows, err := conn.QueryContext(ctx, "SELECT ID FROM T")
+	if rows != nil {
+		_ = rows.Close()
+	}
+	if err == nil {
+		t.Fatal("SELECT against a nonexistent store succeeded")
+	}
+	explainRows, explainErr := conn.QueryContext(ctx, "EXPLAIN SELECT ID FROM T")
+	if explainRows != nil {
+		_ = explainRows.Close()
+	}
+	if explainErr == nil {
+		t.Fatal("EXPLAIN rendered a plan for a store that does not exist, " +
+			"while the SELECT it claims to describe cannot run")
 	}
 }

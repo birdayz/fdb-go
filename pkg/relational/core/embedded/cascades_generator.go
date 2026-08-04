@@ -2227,11 +2227,12 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	return properties.MapStatistics{PerType: counts}
 }
 
-// fetchIndexStateSnapshot opens the record store and returns the raw
-// index-state map — the states that DIFFER from READABLE, the same contract
-// LoadIndexStates has and the same one Java's RecordStoreState applies: an
-// absent index is readable. A nil map means there is no authoritative snapshot
-// (offline planning, or a schema with no indexes at all).
+// fetchIndexStateSnapshot opens the record store and returns the state of every
+// index the METADATA names, with an index carrying no stored state defaulted to
+// READABLE — Java's RecordStoreState default. The domain is the metadata's
+// index set, deliberately and load-bearingly so; see the invariant at the
+// GetAllIndexStates call below. A nil map means there is no authoritative
+// snapshot (offline planning, or a schema with no indexes at all).
 //
 // This is the ONE store open on the planning path, shared by the readable-index
 // view and the plan's index-state signature. Both must come from the same read:
@@ -2289,7 +2290,27 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 		if storeErr != nil {
 			return nil, storeErr
 		}
-		return store.GetAllIndexStatesMap(), nil
+		// GetAllIndexStates, NOT GetAllIndexStatesMap. The two answer in
+		// different DOMAINS: this one iterates the METADATA's indexes and
+		// defaults an absent entry to READABLE; the raw map returns whatever
+		// keys the index-state subspace happens to hold, including a key for a
+		// name the metadata no longer has.
+		//
+		// THE INVARIANT: the signature comparison is ONE function evaluated
+		// TWICE — here and again at execution — never two functions that
+		// usually agree. Two domains that agree on healthy stores is not a
+		// weaker version of that property, it is a different property, and the
+		// disagreement is unbounded in consequence: a single stray state key
+		// for a dropped index appears on the planning side and never on the
+		// execution side, so EVERY query fails 40001, forever. 40001 tells the
+		// client to retry, and the replan re-derives the same mismatch.
+		//
+		// Java scopes its equivalent to metadata objects for the same reason —
+		// DatabaseObjectDependenciesPredicate.eval walks the plan's used
+		// indexes and asks recordMetaData.hasIndex first
+		// (DatabaseObjectDependenciesPredicate.java:90-101). Storage that
+		// metadata does not name is not part of the dependency.
+		return store.GetAllIndexStates(), nil
 	})
 	if runErr != nil {
 		return nil, runErr

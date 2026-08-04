@@ -43,10 +43,12 @@ import (
 // NON-readable index names is the minimal complete identity. Names are
 // length-prefixed before encoding, so no name boundary can be forged.
 //
-// It takes the RAW snapshot — the states that differ from READABLE — and that
-// is the same answer a complete map would give: this filters to the
-// non-readable names anyway, and an index that LEAVES a non-readable state
-// drops out of the raw map exactly as it drops out of this set.
+// The snapshot it reads is in the METADATA domain — every index the metadata
+// names, absent-state defaulted to READABLE — and that domain is part of the
+// contract, not an implementation detail. The same function must produce this
+// signature on both sides of the comparison, from the same domain; a planning
+// side that could see a state key for an index the metadata does not name would
+// disagree with the execution side forever. See fetchIndexStateSnapshot.
 //
 // nil returns "", which disables validation, and covers the two cases where
 // there is nothing to validate: offline plan harnesses, and a schema with no
