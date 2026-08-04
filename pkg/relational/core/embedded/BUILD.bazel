@@ -138,6 +138,7 @@ go_test(
         "parse_decimal_test.go",
         "plan_cache_key_test.go",
         "plan_cache_planner_bench_test.go",
+        "plan_cache_scope_encoding_test.go",
         "plan_cache_test.go",
         "plan_determinism_test.go",
         "plan_harness_dml_test.go",
@@ -306,6 +307,7 @@ go_test(
         "index_name_guard.go",
         "group_existence_cost_decision_test.go",
         "sparse_aggregate_candidate_test.go",
+        "plan_cache_scope_encoding_test.go",
     ],
     deps = [
         "//gen",

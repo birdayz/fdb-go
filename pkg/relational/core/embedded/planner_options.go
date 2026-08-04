@@ -224,16 +224,18 @@ func optBool(opts *api.Options, name api.OptionName, fallback bool) bool {
 //   - blank names, which can never match a rule; and
 //   - names containing planCacheScopeDelim. A Go rule's simple type name is a
 //     Go identifier and can hold no control character, so such a name never
-//     matches a rule either — but these names ARE user-controlled and they flow
-//     into the plan-cache scope through cacheKeyPart. Letting one through would
-//     make the scope non-injective: a delimiter inside the options component is
-//     indistinguishable from the component boundary, so
-//     (schema "S", DISABLED_PLANNER_RULES ["\x010"]) and
-//     (schema "S\x010\x01,", no options) render the same scope and collide in
-//     the plan cache. The pre-option scope was unconditionally injective —
-//     the version is always digits, so a parse from the right always resolves —
-//     and this user-controlled component is what introduced the corner, so it
-//     is closed here rather than documented.
+//     matches a rule either, and dropping it therefore cannot change how any
+//     query plans.
+//
+// The second drop is NOT what keeps the plan-cache scope injective, and must
+// not be relied on for that. It once was, and that was the wrong place for the
+// property: a filter has to be proved complete against every component that
+// ever reaches the scope, and the readable-index component defeated it — index
+// names are quotable SQL identifiers, arrive from the STORE rather than from
+// options, and never pass through here. planCacheScope now length-prefixes each
+// component, which is unambiguous for arbitrary bytes and cannot be defeated by
+// a cleverer name. This drop remains only because a delimiter-bearing rule name
+// is meaningless to begin with.
 func optStringSet(opts *api.Options, name api.OptionName) map[string]struct{} {
 	out := map[string]struct{}{}
 	names, ok := opts.Get(name).([]string)

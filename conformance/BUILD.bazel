@@ -115,6 +115,7 @@ go_test(
         "paren_star_java_probe_test.go",
         "permuted_min_max_index_conformance_test.go",
         "plan_diff_conformance_test.go",
+        "probe_zerokey_allnull_java_test.go",
         "rangeset_conformance_test.go",
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",

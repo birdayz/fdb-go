@@ -7,9 +7,11 @@ import (
 	"unicode/utf8"
 )
 
-// planCacheScopeDelim separates the schema/version scope from the query text
-// in a plan-cache key. It cannot occur in a schema name or SQL source, so the
-// scope can never bleed into the query text.
+// planCacheScopeDelim separates a scope component's LENGTH from the component
+// bytes that follow it. Unlike a separator between components, it needs no
+// property of the component bytes to be unambiguous: a length prefix is always
+// digits, so the first delimiter after it ends the prefix, and the component is
+// then consumed by count rather than by looking for the next delimiter.
 const planCacheScopeDelim = "\x01"
 
 // planCacheScope builds the VERBATIM (un-normalized) plan-cache scope — the
@@ -40,27 +42,63 @@ const planCacheScopeDelim = "\x01"
 // from the same key. Java's QueryCacheKey carries the whole PlannerConfiguration
 // for exactly this reason.
 //
-// The all-defaults case renders empty and the delimiter is then omitted
-// ENTIRELY, so the default scope is byte-identical to what it was before
-// planner options were keyed at all. Appending a bare trailing delimiter would
-// have been harmless in practice but would still mean this feature changed the
-// key for every user who sets no options; not emitting it makes "no options
-// changes nothing" literally true.
+// Injectivity is by CONSTRUCTION, not by a property of the components: every
+// component is length-prefixed (decimal byte count, delimiter, then exactly
+// that many bytes), so a decoder never infers a boundary from content and no
+// component byte — the delimiter itself included — can be mistaken for one.
+// This is the scheme cacheKeyPart already uses within the planner-option
+// component, and values.ProjectionOutputIdentityKey uses for the same problem.
 //
-// Injectivity: plannerOpts is non-empty only when at least one option is set,
-// and it is delimiter-free because optStringSet DROPS any rule name containing
-// planCacheScopeDelim (such a name can never match a Go rule anyway). That is
-// an enforced property, not an assumption about what users pass — the rule
-// names in this component are user-controlled, and a delimiter inside them
-// would be indistinguishable from the component boundary. See optStringSet for
-// the collision pair this closes; TestPlanCacheScope_InjectiveWithOptions
-// verifies it.
+// Joining the components with a delimiter instead was NOT safe, and the corner
+// was reachable: index names reach this key verbatim through cacheKeyPart's
+// readable-index section, and an index name is a quotable SQL identifier rather
+// than a restricted character class. Under a delimiter join,
+//
+//	planCacheScope("S", 0, "i2:\x010") == planCacheScope("S\x010\x01i2:", 0, "")
+//
+// — one schema/readable-index-set's compiled plan served for a DIFFERENT one.
+// The readable-index view is in this key precisely so a plan built while an
+// index was readable is not served after that index goes WRITE_ONLY, so a
+// collision reinstates exactly that wrong-plan bug. Restricting the components
+// instead would have meant proving a filter complete against every future
+// component; length-prefixing cannot be defeated by a cleverer name.
+//
+// The empty plannerOpts case is still emitted (as a zero-length component)
+// rather than dropped: an omitted component would make component COUNT
+// content-dependent, which is the same ambiguity one level up.
+//
+// The cost on the plan-cache lookup path is three small decimal renderings
+// (strconv.Itoa returns a shared constant for small values, so they do not
+// allocate) into an EXACTLY pre-sized builder — one allocation of the same size
+// the delimiter join used, since the length prefixes replace the separators
+// byte-for-byte for components under ten bytes.
 func planCacheScope(schema string, metaDataVersion int, plannerOpts string) string {
-	scope := schema + planCacheScopeDelim + strconv.Itoa(metaDataVersion)
-	if plannerOpts == "" {
-		return scope
+	version := strconv.Itoa(metaDataVersion)
+	var b strings.Builder
+	b.Grow(lengthPrefixedSize(schema) + lengthPrefixedSize(version) + lengthPrefixedSize(plannerOpts))
+	writeLengthPrefixed(&b, schema)
+	writeLengthPrefixed(&b, version)
+	writeLengthPrefixed(&b, plannerOpts)
+	return b.String()
+}
+
+// writeLengthPrefixed appends one self-delimiting scope component: the byte
+// count in canonical decimal (so no two counts render the same digits), the
+// delimiter, then the bytes verbatim.
+func writeLengthPrefixed(b *strings.Builder, s string) {
+	b.WriteString(strconv.Itoa(len(s)))
+	b.WriteString(planCacheScopeDelim)
+	b.WriteString(s)
+}
+
+// lengthPrefixedSize is the exact byte count writeLengthPrefixed will append,
+// so the scope builder allocates once and never grows.
+func lengthPrefixedSize(s string) int {
+	digits := 1
+	for n := len(s); n >= 10; n /= 10 {
+		digits++
 	}
-	return scope + planCacheScopeDelim + plannerOpts
+	return digits + len(planCacheScopeDelim) + len(s)
 }
 
 // normalizeSQL strips comments, collapses whitespace, uppercases

@@ -3,9 +3,9 @@ package embedded
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
-	"strconv"
 	"testing"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -328,32 +328,47 @@ func TestPlannerOptions_Defaults(t *testing.T) {
 }
 
 // TestPlanCacheScope_DefaultKeyUnchanged pins the claim that keying the plan
-// cache by planner options changed NOTHING for a caller who sets none. The
-// assertion is on the RENDERED scope against the literal pre-change form, not
-// on cacheKeyPart() being empty: an empty part still appended a trailing
-// delimiter in the first cut of this change, which the part-is-empty check
-// could not see. A user who sets no options must get byte-for-byte the key
-// they got before.
+// cache by planner options changed NOTHING OBSERVABLE for a caller who sets
+// none: the default scope must still be a function of (schema, version) alone,
+// must still separate distinct (schema, version) pairs, and must still differ
+// from a scope with options set.
+//
+// The assertion is deliberately NOT on a literal byte form. The scope is an
+// in-memory cache key with no persisted or wire representation, and pinning its
+// exact bytes here once blocked the encoding from being made injective over
+// arbitrary component bytes — which is a correctness property, where the byte
+// form is only a convention. What must not regress is over-partitioning (a
+// default caller keying differently on each call, i.e. never hitting the cache)
+// and under-partitioning (two different (schema, version) pairs sharing a key).
 func TestPlanCacheScope_DefaultKeyUnchanged(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
+	defaults := []struct {
 		schema  string
 		version int
 	}{
 		{"S", 0},
 		{"SCHEMA_A", 17},
 		{"", 0},
-	} {
-		// The pre-change rendering, spelled out rather than computed, so a
-		// change to planCacheScope cannot silently redefine "unchanged".
-		want := tc.schema + planCacheScopeDelim + strconv.Itoa(tc.version)
+		// The pre-change rendering of ("S", 0) spelled out as a SCHEMA: the
+		// default scope of this pair must not collide with the default scope of
+		// ("S", 0) itself.
+		{"S" + planCacheScopeDelim + "0", 0},
+	}
+	seen := map[string]string{}
+	for _, tc := range defaults {
 		got := planCacheScope(tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart())
-		if got != want {
-			t.Errorf("default scope for (%q, %d) = %q (len %d), want %q (len %d) — keying planner "+
-				"options must not change the key for callers who set none",
-				tc.schema, tc.version, got, len(got), want, len(want))
+		// Stable: a default caller must key identically on every call, or the
+		// cache would miss 100% of the time without any test going red.
+		if again := planCacheScope(tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart()); again != got {
+			t.Errorf("default scope for (%q, %d) is unstable: %q then %q", tc.schema, tc.version, got, again)
 		}
+		// Distinct: no two (schema, version) pairs may share a default scope.
+		if prev, dup := seen[got]; dup {
+			t.Errorf("default scopes for %q and (%q, %d) both render %q — distinct schemas or "+
+				"metadata versions must not share a plan-cache entry", prev, tc.schema, tc.version, got)
+		}
+		seen[got] = fmt.Sprintf("(%q, %d)", tc.schema, tc.version)
 	}
 
 	// And a scope WITH options must differ from the default one, or the
@@ -368,18 +383,19 @@ func TestPlanCacheScope_DefaultKeyUnchanged(t *testing.T) {
 // TestPlanCacheScope_InjectiveWithOptions pins that adding a USER-CONTROLLED
 // component to the plan-cache scope did not cost it injectivity.
 //
-// The scope was unconditionally injective before planner options were keyed:
-// its only variable parts were the schema and a metadata version that is always
-// digits, so a parse from the right always resolves. DISABLED_PLANNER_RULES is
-// the first component whose content a caller chooses freely, and a delimiter
-// byte inside a rule name would be indistinguishable from the component
-// boundary. optStringSet therefore drops such names, and this is the exact
-// collision pair that would otherwise result — two DIFFERENT (schema, options)
+// DISABLED_PLANNER_RULES is the first scope component whose content a caller
+// chooses freely, and under the old delimiter-joined scope a delimiter byte
+// inside a rule name was indistinguishable from a component boundary. This is
+// the exact collision pair that resulted — two DIFFERENT (schema, options)
 // inputs rendering one scope, which is a plan-cache collision.
 //
-// Dropping them is free: a rule name is matched against a Go simple type name,
-// which is an identifier and can hold no control character, so a name
-// containing the delimiter could never have disabled anything.
+// The property is now carried by planCacheScope's length-prefixed encoding,
+// which holds for arbitrary component bytes (see
+// TestPlanCacheScope_ArbitraryBytesInjective); this test keeps the option-path
+// pair pinned end to end. The assertions below on optStringSet's drop are about
+// the drop itself, which survives only because a rule name is matched against a
+// Go simple type name and so a delimiter-bearing name could never have disabled
+// anything — NOT because injectivity depends on it.
 func TestPlanCacheScope_InjectiveWithOptions(t *testing.T) {
 	t.Parallel()
 
