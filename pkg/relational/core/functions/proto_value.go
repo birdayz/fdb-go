@@ -273,6 +273,14 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 			// that converter and INSERT … VALUES through this one, and a column
 			// that accepts a value through one syntax and not another is a
 			// defect no matter which answer is the good one.
+			//
+			// The split is Java's own, not our reasoning imposed on it.
+			// CastValue.DOUBLE_TO_FLOAT asks the two questions SEPARATELY: NaN
+			// and Infinite at CastValue.java:168-170, and magnitude at
+			// :171-173 (`value > Float.MAX_VALUE || value < -Float.MAX_VALUE`
+			// → INVALID_CAST, 22F3H). Keeping the magnitude check while
+			// dropping the finiteness one lands exactly on Java's second
+			// condition.
 			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %v out of range for FLOAT column %q", v, fd.Name())
@@ -293,7 +301,7 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 			// Every IEEE-754 double, NaN and ±Infinity included. Java stores
 			// them: nothing on its write or query path inspects a double's
 			// finiteness (the whole of fdb-record-layer-core's NaN awareness is
-			// CastValue.java:139-169, which is about explicit numeric CASTs),
+			// CastValue.java:139-173, which is about explicit numeric CASTs),
 			// and its comparator is Double.compareTo, which ranks NaN rather
 			// than refusing it. A guard here also contradicted the executor's
 			// converter, which UPDATE and INSERT … SELECT reach — the same

@@ -24,19 +24,38 @@ package sqldriver_test
 // passes when both sides are wrong in the same way; an expectation alone
 // passes when the oracle path is the one that broke.
 //
-// JAVA DIVERGES HERE, DELIBERATELY. Java builds exactly ONE TupleRange per
-// scan — ScanComparisons.toTupleRange returns a single range
-// (ScanComparisons.java:670-675) from a comparand passed through verbatim
-// (toTupleItem, :332-343, which touches ByteString/EnumLite/FDBRecordVersion
-// and nothing else), and IndexScanRange holds one TupleRange
-// (IndexScanRange.java:33-52). No NaN, isFinite or normalization appears
-// anywhere on that path; a grep of fdb-record-layer-core for NaN handling finds
-// only CastValue.java:139-169, which is about numeric CASTs. Yet Java's runtime
-// comparator IS Double.compareTo (Comparisons.java:236-239, :757-761), so
-// `NaN > 5.0` is TRUE there. Java therefore has this row loss, and cannot
-// express the fix without a union of scans above the index. Go's range-set
-// binder can, so it answers exactly. This is a read-side extension: nothing
-// about which keys are WRITTEN changes, only which are read.
+// JAVA DIVERGES HERE, DELIBERATELY — AND ON THE NEGATIVE NaN ONLY. The
+// narrowness matters, because a divergence license gets quoted later and the
+// quotable sentence has to be the true one.
+//
+// Java builds exactly ONE TupleRange per scan: ScanComparisons.toTupleRange
+// returns a single range (ScanComparisons.java:670-675) from a comparand passed
+// through verbatim (toTupleItem, :332-343, which touches
+// ByteString/EnumLite/FDBRecordVersion and nothing else), and IndexScanRange
+// holds one TupleRange (IndexScanRange.java:33-52). No NaN, isFinite or
+// normalization appears anywhere on that path — fdb-record-layer-core's entire
+// NaN awareness is CastValue.java:139-173, explicit numeric CASTs, which no
+// scan-range construction goes through.
+//
+// That single range is NOT the problem by itself. `dbl > 5.0` compiles to
+// TupleRange((5.0), null, EXCLUSIVE, TREE_END) — buildEndpointTuple returns
+// null for an absent endpoint (ScanComparisons.java:660-666) and TREE_END
+// expands to the end of the subspace. POSITIVE NaN packs above +Inf and is
+// still inside that subspace, so Java's index scan DOES return it, and Java
+// agrees with its own full scan on every positive NaN.
+//
+// The divergence is the NEGATIVE NaN, and its cause is two encoders disagreeing
+// about one bit. Tuple packing is sign-PRESERVING (TupleUtil's
+// doubleToRawLongBits), so a negative NaN lands at the very bottom of the key
+// space, below -Inf. The comparator is Double.compareTo (Comparisons.java
+// :236-239, :757-761), which CANONICALIZES every NaN and ranks it greatest, so
+// `NaN > 5.0` is TRUE. One contiguous range starting at 5.0 can never reach a
+// row that sits below -Inf, so Java loses exactly the negative-NaN rows and
+// cannot express the fix without a union of scans above the index.
+//
+// Go's range-set binder can express it, so it answers exactly. This is a
+// read-side extension: nothing about which keys are WRITTEN changes, only which
+// are read.
 //
 // The ladder is seedFloatOrderingLadder from the ordering-claim differential —
 // every IEEE edge class with BOTH NaN signs carrying DISTINCT payloads. A

@@ -469,30 +469,34 @@ func valueReadsBakedOrdinal(v values.Value) bool {
 	return false
 }
 
-// canonicalizeGroupKeyFloat / canonicalizeGroupKeyFloat32 apply the GROUPING
-// identity to a float before it is packed into the group key: every NaN payload
-// becomes one value, and the two signed zeros stay distinct.
+// canonicalizeGroupKeyFloat applies the GROUPING identity to a float before it
+// is packed into the group key: every NaN payload becomes one value, and the
+// two signed zeros stay distinct.
 //
-// That is java.lang.Double.equals / Float.equals — doubleToLongBits and
-// floatToIntBits — which is what Java's streaming aggregation compares
-// (StreamGrouping.java:186 decides a group break with `!currentGroup.equals(
-// nextGroup)` over a protobuf message, and protobuf compares a double field
-// with Double.equals). It is deliberately NOT IEEE `==`, under which the two
-// zeros would merge and no two NaNs would ever match.
+// That is java.lang.Double.equals — doubleToLongBits — which is what Java's
+// streaming aggregation compares (StreamGrouping.java:186 decides a group break
+// with `!currentGroup.equals(nextGroup)` over a protobuf message, and protobuf
+// compares a double field with Double.equals). It is deliberately NOT IEEE
+// `==`, under which the two zeros would merge and no two NaNs would ever match.
 //
-// They share the canonical payloads with packedDedupKey — DISTINCT and GROUP BY
-// are two dedup paths over the same column and an engine that answers them
-// differently is wrong however either one reads alone.
+// THERE IS NO float32 COMPANION, and its absence is a measured fact rather than
+// an oversight. A 32-bit FLOAT column arrives at this layer already WIDENED to
+// float64 — the SQL row path hands back float64 for both carriers — so a
+// float32 never reaches computeGroupKey from a query. MEASURED: a panic at the
+// top of a float32 arm here passed the entire SQL-level gate untouched, and a
+// `GROUP BY` on a FLOAT column carrying the payloads 0x7fc00000 and 0xffc00000
+// is served correctly by the float64 arm above
+// (TestFDB_FloatGroupByNaNAuthority_Float32 pins exactly that, and goes red
+// with this canonicalization removed).
+//
+// A float32 that somehow did arrive is still handled: the switch has no
+// float32 case, so it falls to appendDistinctValue, which canonicalizes NaN at
+// every nesting level. Correct by fall-through beats a specialized arm no
+// caller reaches — a dead arm cannot be mutation-tested, so it is a claim the
+// suite can never check.
 func canonicalizeGroupKeyFloat(v float64) float64 {
 	if math.IsNaN(v) {
 		return math.Float64frombits(distinctCanonicalNaN64Bits)
-	}
-	return v
-}
-
-func canonicalizeGroupKeyFloat32(v float32) float32 {
-	if math.IsNaN(float64(v)) {
-		return math.Float32frombits(distinctCanonicalNaN32Bits)
 	}
 	return v
 }
@@ -558,9 +562,13 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// at every nesting level, exactly as protobuf message equality does.
 		// (appendContValue remains the reversible continuation codec and must
 		// keep every raw bit; the two encoders differ on purpose.)
+		//
+		// The canonical NaN payloads are the ones packedDedupKey uses, so
+		// GROUP BY and DISTINCT agree on the DOUBLE carrier — which is the
+		// carrier both actually see. Neither sees a float32 from a query (see
+		// canonicalizeGroupKeyFloat), so that is a shared CONSTANT, not a
+		// shared exercised path, and it is not claimed as one.
 		switch tv := v.(type) {
-		case float32:
-			t[i] = canonicalizeGroupKeyFloat32(tv)
 		case float64:
 			t[i] = canonicalizeGroupKeyFloat(tv)
 		case nil, int64, string, []byte, bool:

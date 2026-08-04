@@ -40,6 +40,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -276,19 +277,124 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 	plan := floatOrderingExplain(t, db, ctx, q)
 	groups := readFloatGroups(t, db, ctx, q)
 	nanGroups, _, _, _ := summarize(groups)
-	// Only meaningful if the aggregate index is what served the query; served
-	// by the streaming path it would (correctly) report one, and the test would
-	// be asserting the opposite thing under the same name.
-	t.Logf("plan: %s\n  groups: %+v", plan, groups)
+	// The plan assertion comes FIRST and is fatal. This test only says anything
+	// if the aggregate index actually served the query: answered by the
+	// streaming path it would (correctly) report ONE NaN group, and a test that
+	// quietly returned on that reading would go silent at precisely the moment
+	// its subject stopped being reachable — the failure mode that lets a pinned
+	// divergence rot into an untested assumption.
+	if !strings.Contains(strings.ToUpper(strings.ReplaceAll(plan, " ", "")), "AGGREGATEINDEX") {
+		t.Fatalf("this query was NOT served by the aggregate index, so the payload split "+
+			"this test exists to pin is not exercised at all\n  query: %s\n  plan: %s", q, plan)
+	}
 	if nanGroups == 1 {
-		t.Logf("this query was NOT served by the aggregate index (one NaN group means the "+
-			"streaming path answered); the split is therefore not exercised\n  plan: %s", plan)
-		return
+		t.Fatalf("the aggregate index reported ONE NaN group. Either the index has started "+
+			"MERGING NaN payloads — a WIRE change, since the grouping prefix is the packed "+
+			"index key and Java splits them (AtomicMutationIndexMaintainer.java:141,158) — "+
+			"or the ladder no longer carries two distinct payloads\n  groups: %+v\n  plan: %s",
+			groups, plan)
 	}
 	if nanGroups != 2 {
 		t.Errorf("the aggregate index reported %d NaN groups, want 2 — the grouping prefix "+
 			"is the packed index key and tuple encoding preserves the NaN payload, in Go and "+
 			"in Java alike. Merging them is a WIRE change, not a fix\n  groups: %+v\n  plan: %s",
 			nanGroups, groups, plan)
+	}
+}
+
+// A 32-bit FLOAT column groups by the SAME identity, and this test exists
+// because of HOW it gets there rather than merely THAT it does.
+//
+// There is no float32 arm in the group-key encoder. A FLOAT column arrives at
+// the executor already WIDENED to float64, so `GROUP BY <float>` is served by
+// the float64 canonicalization — MEASURED: a panic in a float32 arm passes the
+// entire SQL-level gate untouched. A specialized float32 arm would therefore be
+// dead code, and dead code cannot be mutation-tested: it is a claim the suite
+// can never check.
+//
+// So the widening is what carries correctness here, and the widening is what
+// this test pins. It goes RED if the float64 canonicalization is removed
+// (proving the FLOAT carrier really does route through it) and it would also go
+// red if the SQL layer ever stopped widening — which is the signal that a
+// float32 arm has become necessary.
+func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_fgna32")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fgna32")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
+		"CREATE TABLE t (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna32/s WITH TEMPLATE fgna32")
+	dsn := fmt.Sprintf("fdbsql:///testdb_fgna32?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// A FLOAT column holds no ±Inf (the narrowing range check rejects it), so
+	// the NEGATIVE NaN is computed in DOUBLE arithmetic in helper column h and
+	// narrowed on assignment, which preserves the sign bit. Narrowing also maps
+	// the two payloads to the 32-bit quiet NaNs 0x7fc00000 / 0xffc00000 — two
+	// DISTINCT float32 bit patterns, which is what this test needs.
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, g, h, a) VALUES "+
+		"(20, -1.5, 1.0e308, 1), (30, -0.0, 1.0e308, 1), (40, 0.0, 1.0e308, 1), "+
+		"(70, 1.0, 1.0e308, 1), (5, CAST('NaN' AS DOUBLE), 1.0e308, 1)")
+	mwjoMustExec(t, db, ctx, "UPDATE t SET g = (h * 10.0) + (h * -10.0) WHERE id = 70")
+
+	// Vacuity guard: two NaNs with the SAME payload would make the merge
+	// trivially true and the test would pass with the canonicalization gone.
+	var negBits, posBits uint64
+	rows, err := db.QueryContext(ctx, "SELECT id, g FROM t WHERE id IN (5, 70)")
+	if err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	for rows.Next() {
+		var id int64
+		var g sql.NullFloat64
+		if err := rows.Scan(&id, &g); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		if !g.Valid || !math.IsNaN(g.Float64) {
+			rows.Close()
+			t.Fatalf("id=%d is %v, want a NaN", id, g.Float64)
+		}
+		if id == 70 {
+			negBits = math.Float64bits(g.Float64)
+			if !math.Signbit(g.Float64) {
+				rows.Close()
+				t.Fatalf("id=70 is a POSITIVE NaN; the ladder needs a negative one")
+			}
+		} else {
+			posBits = math.Float64bits(g.Float64)
+		}
+	}
+	rows.Close()
+	if negBits == posBits {
+		t.Fatalf("both FLOAT NaN rows widened to bit pattern %#016x; the test cannot "+
+			"express the defect without two DISTINCT payloads", negBits)
+	}
+
+	q := "SELECT g, COUNT(*) FROM t GROUP BY g"
+	groups := readFloatGroups(t, db, ctx, q)
+	nanGroups, nanRows, negZero, posZero := summarize(groups)
+	plan := floatOrderingExplain(t, db, ctx, q)
+	if nanGroups != 1 || nanRows != 2 {
+		t.Errorf("GROUP BY on a FLOAT column over two distinct NaN payloads produced %d NaN "+
+			"group(s) covering %d row(s), want 1 covering 2. The FLOAT carrier reaches the "+
+			"group-key encoder WIDENED to float64, so it is the float64 canonicalization "+
+			"that must serve it\n  groups: %+v\n  plan: %s", nanGroups, nanRows, groups, plan)
+	}
+	if negZero != 1 || posZero != 1 {
+		t.Errorf("FLOAT signed zeros produced %d -0.0 and %d +0.0 group(s), want 1 and 1\n"+
+			"  groups: %+v\n  plan: %s", negZero, posZero, groups, plan)
+	}
+	if len(groups) != 4 {
+		t.Errorf("GROUP BY on a FLOAT produced %d groups, want 4 (-1.5, -0.0, +0.0, NaN)\n"+
+			"  groups: %+v\n  plan: %s", len(groups), groups, plan)
 	}
 }

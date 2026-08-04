@@ -27,8 +27,17 @@ package sqldriver_test
 // ±Infinity is rejected by it only incidentally — as NumericValueOutOfRange
 // (22003), which is what the executor path already answered, not 22023.
 //
-// (Java cannot even express that narrowing: PromoteValue's table has
-// FLOAT_TO_DOUBLE but no DOUBLE_TO_FLOAT (PromoteValue.java:76-81), so a DOUBLE
+// THAT SURVIVING RULE IS JAVA'S OWN, not a first-principles invention of ours.
+// CastValue.java:171-173 is a check SEPARATE from the NaN/Infinite one three
+// lines above it: `value > Float.MAX_VALUE || value < -Float.MAX_VALUE` raises
+// INVALID_CAST (22F3H). Java splits the two conditions exactly where this file
+// splits them — non-finiteness is one question, magnitude is another — so
+// keeping the magnitude half while dropping the finiteness half is parity, not
+// a compromise between correctness and compatibility.
+//
+// (Java cannot even express that narrowing implicitly: PromoteValue's numeric
+// promotions run INT/LONG/FLOAT upward only — FLOAT_TO_DOUBLE at :81, no
+// DOUBLE_TO_FLOAT anywhere in PromoteValue.java:77-85 — so a DOUBLE
 // literal into a FLOAT column needs an explicit CAST there. Go accepting the
 // narrowing is a pre-existing extension; this file only requires that the
 // extension answer the same way through every syntax.)
