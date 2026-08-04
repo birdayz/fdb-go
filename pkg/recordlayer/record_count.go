@@ -197,16 +197,20 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	//
 	// INTENDED END STATE: delete the mode argument and take Java's default. The single
 	// condition is that this client's ITERATOR saturates its per-fetch target instead of
-	// doubling without bound. Serial is not a better choice than ITERATOR here — it is
-	// only the mode whose buffer this client currently bounds — so once that holds, keeping
-	// Serial would be a gratuitous divergence from Java on a wire-neutral knob.
+	// doubling without bound — the clamp #613 carries. That clamp is not merged: the
+	// progression above is still 2 << (iteration-1) with no ceiling, so the condition is
+	// unmet and the mode argument stays. Serial is not a better choice than ITERATOR here
+	// — it is only the mode whose buffer this client currently bounds — so the moment the
+	// clamp lands, keeping Serial becomes a gratuitous divergence from Java on a
+	// wire-neutral knob, and this argument should go with it.
 	//
-	// A second, independent client defect on this path is already fixed: the RYW snapshot
-	// cache used to merge each fetched page into its neighbours by concatenating and
-	// re-sorting everything cached so far, which made any sequential scan quadratic in CPU
-	// and allocation. It now fragments per fetch, as C++'s SnapshotCache does. That fix
-	// changes nothing here — it is why the mode's page SIZE no longer affects the cost of
-	// caching, so the choice above turns purely on the per-fetch buffer.
+	// A second, independent client defect on this path is fixed, and the fix is on master:
+	// the RYW snapshot cache used to merge each fetched page into its neighbours by
+	// concatenating and re-sorting everything cached so far, which made any sequential scan
+	// quadratic in CPU and allocation. It now keeps one fragment per fetch, as C++'s
+	// SnapshotCache does (#614). That is why the mode's page SIZE no longer affects the
+	// cost of caching, which is what leaves the choice above turning purely on the
+	// per-fetch buffer.
 	//
 	// What is NOT a defect, and must not be "fixed" here: the snapshot cache retains every
 	// row of this scan for the life of the transaction. libfdb_c does exactly the same (its
