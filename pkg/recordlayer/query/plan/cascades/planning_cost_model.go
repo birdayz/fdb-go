@@ -2397,6 +2397,13 @@ func countClassifiedConcreteNode(
 		//      branch (that branch is LIVE, not dead: it executes during this
 		//      query's planning and prices the merge below the rival)
 		//
+		// Reproducing this by DELETING that branch does not work, and the
+		// failure is silent: HintCost then falls back to IntersectionCost, whose
+		// min-of-legs cardinality understates the merge and whose CPU drops the
+		// companion leg, so rung 3 still prefers the merge — more strongly, not
+		// less. Neutralizing rung 3 means bypassing the comparison, not removing
+		// the formula.
+		//
 		// The choice is therefore over-determined and STRUCTURAL: neutralizing
 		// any one of the three changes nothing, and the winner does not move
 		// when table statistics are swept across nine orders of magnitude. Rung

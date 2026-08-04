@@ -14,12 +14,19 @@ import (
 // shapes RFC-209 §5.3.1 reasons about, ACROSS THE CARDINALITY AXIS §5.3.1 is
 // actually about.
 //
-// §5.3.1 claims that as the group count approaches base-table cardinality,
-// streaming aggregation over the base table should WIN on cost, and §7 turns
-// that claim into an acceptance criterion. A single measurement at one ratio
-// cannot settle that claim in either direction: the claim is a statement about
-// a LIMIT, so the measurement has to walk the axis. Four regimes at a fixed
-// row count do exactly that:
+// §5.3.1 ONCE claimed that as the group count approaches base-table
+// cardinality, streaming aggregation over the base table should win on cost,
+// and §7 turned that claim into an acceptance criterion. This test is what
+// refuted it, and the claim has since been struck: the merge is faster at every
+// regime below, including the unique limit. §5.3.1 now records why the flip was
+// not built — Java's Cascades will not construct the plan it prescribed, and
+// the measurement went the other way.
+//
+// The test is kept, and kept assertion-free about which plan wins, because a
+// struck claim is not a settled one: the numbers are what re-open it. A single
+// measurement at one ratio could not settle the question in either direction —
+// it is a statement about a LIMIT, so the measurement has to walk the axis.
+// Four regimes at a fixed row count do exactly that:
 //
 //	unique       groups == rows        (1 row per group — the limit itself)
 //	near-unique  groups == rows/1.25   (§7's "near-unique")
@@ -34,7 +41,8 @@ import (
 //     two BY_GROUP index scans (2 * groupCount index entries).
 //   - "noagg" declares no aggregate index on customer_id, so the only available
 //     plan is aggregation over a base-table scan (rowCount records, plus the
-//     grouping work) — the plan §5.3.1 says should win at high group counts.
+//     grouping work) — the plan the struck §5.3.1 flip said should win at high
+//     group counts.
 //
 // There is deliberately NO assertion about which plan is faster: which one wins
 // is the question being asked, so hardcoding an answer would make the
@@ -229,13 +237,14 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		name, rows, groups, float64(rows)/float64(groups), threshold, mergeRows,
 		mergeMs, baseMs, baseMs/mergeMs, winner)
 	if winner == "base" {
-		// Not a failure. It is the outcome §5.3.1 predicts, and the whole
-		// reason this test walks the axis instead of asserting one point:
-		// wherever the base-table plan wins, the cost-model flip §5.3.1
-		// describes is worth building, and §7's criterion should be written
-		// against the regime boundary this run reports rather than against an
-		// argument.
-		t.Logf("GEMERGE_BASE_WINS name=%s groups=%d base=%.2fms merge=%.2fms — §5.3.1's premise holds at this regime",
+		// Not a failure — this is the RE-OPENER, and the reason this test walks
+		// the axis instead of asserting one point. §5.3.1 no longer predicts this
+		// outcome; it records that the flip was struck because the measurement
+		// went the other way at every regime. So reaching this branch contradicts
+		// the amended text: it means the cost-model flip §5.3.1 describes and
+		// rejects has become worth building after all, and §7.'s bound must be
+		// rewritten against the regime boundary this run reports.
+		t.Logf("GEMERGE_BASE_WINS name=%s groups=%d base=%.2fms merge=%.2fms — the struck §5.3.1 flip is re-armed at this regime",
 			name, groups, baseMs, mergeMs)
 	}
 }

@@ -606,7 +606,9 @@ type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
 	// childWidth is the per-child span the resultValue's ordinals were baked
-	// against; 0 disables the check. See mergeChildEvalArg.
+	// against. It has NO usable zero value: leaving it unset is an error at
+	// evaluation time, not a silently disabled check. Set
+	// mergeChildWidthUnchecked to opt out deliberately. See mergeChildEvalArg.
 	childWidth int
 	closed     bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
@@ -673,6 +675,12 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
+// mergeChildWidthUnchecked is the explicit opt-out from the per-child width
+// assertion, for callers that genuinely cannot state a width. It is a NEGATIVE
+// sentinel rather than zero so that forgetting to set the width can never be
+// mistaken for choosing to skip the check.
+const mergeChildWidthUnchecked = -1
+
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
 // evaluated against: the CONCATENATED PositionalRow of the matched child rows
 // (a bare OrdinalRow whose plan-produced concatenated type the baked
@@ -690,8 +698,26 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 // every row well-formed and the row count unchanged. That is the silent
 // wrong-rows class, so it is an error, not a best-effort nil.
 //
-// expectedWidth <= 0 disables the check for callers that cannot state a width.
+// The contract is INVERTED from the obvious one, deliberately: the zero value
+// fails CLOSED. An unset width is an error, and opting out takes the explicit
+// mergeChildWidthUnchecked sentinel.
+//
+// The obvious spelling — "0 disables the check" — made the assertion fail OPEN,
+// and it did so invisibly. Deleting the caller's `childWidth:` line left the
+// struct field at its zero value, the check silently disabled, and the entire
+// gate green: the tests below call this function with an explicit width, so
+// they prove the function CHECKS but never that the caller ASKS. An assertion
+// whose disarmed state is also its default is not an assertion; it is a
+// suggestion that happens to be followed.
 func mergeChildEvalArg(childResults []QueryResult, expectedWidth int) (any, error) {
+	if expectedWidth == 0 {
+		return nil, fmt.Errorf(
+			"group-existence merge: no per-child width was stated, so the plan's baked " +
+				"result-value ordinals cannot be validated against the rows actually " +
+				"flowed. This is a wiring bug in the cursor's construction, not a " +
+				"property of the data: set childWidth from the plan, or " +
+				"mergeChildWidthUnchecked to opt out on purpose")
+	}
 	var fields []values.Field
 	var slots []any
 	ord := 0

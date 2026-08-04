@@ -100,15 +100,25 @@ func TestMergeChildEvalArg_AcceptsTheExactBakedWidth(t *testing.T) {
 	}
 }
 
-func TestMergeChildEvalArg_WidthCheckDisabledWhenNoWidthCanBeStated(t *testing.T) {
+func TestMergeChildEvalArg_OptOutRequiresTheExplicitSentinel(t *testing.T) {
 	t.Parallel()
 
-	// expectedWidth <= 0 is the documented escape for callers that cannot state
-	// a width. Pinned so the escape stays deliberate: if it ever starts
-	// rejecting, callers that legitimately pass 0 begin failing at runtime.
 	children := []QueryResult{childRow(2), childRow(5)}
 
-	if _, err := mergeChildEvalArg(children, 0); err != nil {
-		t.Fatalf("expectedWidth 0 must disable the check, got: %v", err)
+	// The escape hatch is a NEGATIVE sentinel, and it still works.
+	if _, err := mergeChildEvalArg(children, mergeChildWidthUnchecked); err != nil {
+		t.Fatalf("the explicit opt-out must disable the check, got: %v", err)
+	}
+
+	// The zero value must NOT be that escape. This is the half the previous
+	// version of this test got backwards: it blessed 0 as "the documented
+	// escape", which meant a caller that simply forgot to set childWidth
+	// disarmed the assertion and every test stayed green. An assertion whose
+	// default state is disarmed cannot catch the wiring bug it exists for.
+	if _, err := mergeChildEvalArg(children, 0); err == nil {
+		t.Fatal("an UNSTATED width was accepted. The zero value must fail closed: " +
+			"deleting the cursor's childWidth wiring leaves the field at 0, and if 0 " +
+			"means 'skip the check' that deletion is invisible to the whole suite. " +
+			"Opting out must cost an explicit mergeChildWidthUnchecked.")
 	}
 }

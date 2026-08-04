@@ -509,7 +509,13 @@ Three consequences, each worth stating because each is a trap:
    choice, not tidying an estimate.
 3. **The driving-leg `HintCost` branch is live, and inert only as a decider.** It
    executes during ordinary planning; it is merely never the rung that settles
-   this pair. Deleting it as dead code is a mistake.
+   this pair. Deleting it as dead code is a mistake — and note that deleting it
+   is *not* how one neutralizes rung 3 to reproduce the finding above. Without
+   that branch `HintCost` falls back to `IntersectionCost`, whose min-of-legs
+   cardinality understates the merge and whose CPU stops charging the companion
+   leg, so rung 3 then prefers the merge *more* strongly. Reproducing this
+   section means bypassing the comparison, not removing the formula; a literal
+   delete-the-branch reproduction gets the wrong answer.
 
 Both facts are pinned:
 `TestGroupExistenceMerge_DecisionIsStructuralNotEconomic` and
