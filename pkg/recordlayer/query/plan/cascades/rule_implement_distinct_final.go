@@ -89,18 +89,12 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		handled = true
 
-		if pkDistinct || partition.IsDistinct() {
-			for _, expr := range partition.GetExpressions() {
+		for _, expr := range partition.GetExpressions() {
+			if pkDistinct || (partition.IsDistinct() &&
+				expressionRecordIdentityMatchesLogicalEquality(expr)) {
 				call.YieldFinalExpression(expr)
-			}
-		} else {
-			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
-			for _, rp := range rolled {
-				for _, expr := range rp.GetExpressions() {
-					if w := newPhysicalDistinctFor(call, expr); w != nil {
-						call.YieldFinalExpression(w)
-					}
-				}
+			} else if w := newPhysicalDistinctFor(call, expr); w != nil {
+				call.YieldFinalExpression(w)
 			}
 		}
 	}
@@ -157,9 +151,14 @@ func distinctEliminatedByUniqueKey(
 		return false
 	}
 
-	for _, rt := range recordTypes {
-		pkCols := ctx.GetPrimaryKeyColumns(rt)
-		if len(pkCols) > 0 && uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
+	// A visible PK is globally unique only inside one record type. In a
+	// multi-type stream, A/1 and B/1 are different physical primary keys but
+	// collide after projecting the visible ID coordinate.
+	if len(recordTypes) == 1 {
+		pkCols := ctx.GetPrimaryKeyColumns(recordTypes[0])
+		pkTypes := physicalTypesFromFlatRow(layoutType, pkCols, nil)
+		if properties.TupleKeyUniquenessMatchesLogicalEquality(pkTypes, len(pkCols)) &&
+			uniqueKeysCovered(pkCols, layoutType, projectedOrds) {
 			return true
 		}
 	}
@@ -184,17 +183,30 @@ func distinctEliminatedByUniqueKey(
 	// exact equality with READABLE (RecordStoreState.java:172-174) and so
 	// excludes READABLE_UNIQUE_PENDING from planning entirely.
 	//
-	// Go builds match candidates from metadata alone, so no candidate here
-	// carries an index state and that structural guarantee does not exist. The
-	// executor's per-leaf state backstop cannot stand in for it: eliding a
-	// DISTINCT changes a plan that never READS the pending index — a base-record
-	// scan — so no leaf is ever checked and the duplicate rows flow out verbatim.
+	// This decline was originally forced by two gaps, and BOTH have since
+	// closed. It is recorded accurately here because the reasons a rule refuses
+	// something outlive the refusal, and a stale "until" reads as a live
+	// blocker:
 	//
-	// Trusting a secondary unique index again requires the candidate set to be
-	// state-filtered the way Java's is; until then the primary-key arm above is
-	// the only uniqueness this proof may rest on, being a storage invariant
-	// rather than a declared intent. Declining costs a DISTINCT that was
-	// redundant; assuming costs duplicate rows.
+	//   - Go built match candidates from metadata alone, so no candidate carried
+	//     an index state. The candidate set is now state-filtered the way Java's
+	//     is (cascades.ReadableIndexes, the port of
+	//     PlanContext.Builder.getReadableIndexes), on Java's strict isReadable,
+	//     which excludes READABLE_UNIQUE_PENDING from planning entirely.
+	//   - The executor's per-leaf state backstop could not stand in for it,
+	//     because eliding a DISTINCT yields a plan that never READS the pending
+	//     index — a base-record scan — so no leaf was ever checked. The plan's
+	//     index-state dependency is now revalidated in every execution
+	//     transaction against the whole-snapshot signature, which is exactly the
+	//     case a used-index-scoped check would miss.
+	//
+	// So the decline is now a CONSERVATIVE LEFTOVER, not a necessity, and the
+	// primary-key arm above remains the only uniqueness this proof rests on —
+	// a storage invariant rather than a declared intent. Lifting it is a real
+	// behaviour change (it decides when a general-purpose rule fires) and needs
+	// its own RFC and review; it is deliberately NOT done here. Until that
+	// happens the trade stands: declining costs a DISTINCT that was redundant,
+	// assuming costs duplicate rows.
 
 	return false
 }
