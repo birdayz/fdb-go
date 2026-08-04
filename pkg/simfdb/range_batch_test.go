@@ -1,6 +1,7 @@
 package simfdb
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
@@ -336,6 +337,153 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("batch %d = %d, want %d (full sequence %v, want %v)",
 				i+1, got[i], want[i], got, want)
+		}
+	}
+}
+
+// TestCursorPageCostsThePageNotTheTail is the sim's cost pin, the counterpart to the client's
+// TestSnapshotCacheWalkCostsThePageNotTheTail.
+//
+// Every cursor fetch resolves its page through buildViewRange, which used to clone, map and
+// SORT the entire unconsumed range before slicing off one page. That was tolerable while the
+// ITERATOR progression doubled without bound (a drain took a logarithmic number of fetches);
+// once the progression saturates, a drain takes LINEARLY many fetches, so linearly many full
+// builds — a quadratic drain, which is what makes large deterministic-sim workloads
+// impractical.
+//
+// As with the client, no assertion on the returned rows can see this: the page is identical
+// either way. The pin is on the work, via the viewRowsTouched counter.
+func TestCursorPageCostsThePageNotTheTail(t *testing.T) {
+	t.Parallel()
+
+	// Past saturation by a wide margin, so the tail behind an early page is far larger than
+	// the page itself and the two costs are unmistakably different.
+	const nRows = 20000
+	const cap = 1024
+	var kvs []string
+	for i := 0; i < nRows; i++ {
+		kvs = append(kvs, fmt.Sprintf("k%06d", i), "v")
+	}
+	db := New(nil)
+	seed(db, kvs...)
+
+	for _, reverse := range []bool{false, true} {
+		reverse := reverse
+		name := "forward"
+		if reverse {
+			name = "reverse"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := db.newTxn()
+			it := tx.GetRange(fdb.KeyRange{Begin: k("k"), End: k("l")},
+				fdb.RangeOptions{Mode: fdb.StreamingModeIterator, Reverse: reverse}).Iterator()
+
+			// Drain past saturation so several equal-sized pages are resolved, then measure
+			// ONE page in isolation.
+			rows := 0
+			for rows < 4000 && it.Advance() {
+				rows++
+			}
+			before := tx.viewRowsTouched
+			target := rows + cap
+			for rows < target && it.Advance() {
+				rows++
+			}
+			touched := tx.viewRowsTouched - before
+
+			// A page costs the page (plus at most the geometric widening a clear would
+			// force, and there are no clears here), not the ~15000 rows still ahead of it.
+			if touched > 4*cap {
+				t.Fatalf("%s: resolving a %d-row page touched %d store rows with ~%d rows "+
+					"still unconsumed — a page must cost the page, not the tail. An "+
+					"unbounded view build makes a saturated drain quadratic.",
+					name, cap, touched, nRows-rows)
+			}
+		})
+	}
+}
+
+// TestCursorBoundedViewMatchesUnbounded is the sim's correctness control for the bounded view
+// build: with the write buffer OVERLAPPING the scanned range — sets that add keys, sets that
+// overwrite existing ones, a clear, and a clear range that removes a run — a bounded drain must
+// return exactly the rows an unbounded build returns, in both directions, with and without a
+// row limit. This is where the sub-window reasoning could be wrong, so it is checked against
+// the unbounded build itself rather than hand-written expectations.
+func TestCursorBoundedViewMatchesUnbounded(t *testing.T) {
+	t.Parallel()
+
+	const nRows = 3000
+	var seedKV []string
+	for i := 0; i < nRows; i++ {
+		seedKV = append(seedKV, fmt.Sprintf("k%06d", i), fmt.Sprintf("v%06d", i))
+	}
+	db := New(nil)
+	seed(db, seedKV...)
+
+	// Mutations chosen to exercise every arm the merge has: a key BELOW everything, a key
+	// interleaved mid-range, an overwrite, a single clear, and a clear range spanning a run
+	// that straddles page boundaries.
+	apply := func(tx *simTxn) {
+		tx.Set(k("k000000a"), []byte("inserted-mid"))
+		tx.Set(k("j999999"), []byte("inserted-low"))
+		tx.Set(fdb.Key(fmt.Sprintf("k%06d", 1500)), []byte("overwritten"))
+		tx.Clear(fdb.Key(fmt.Sprintf("k%06d", 2)))
+		tx.ClearRange(fdb.KeyRange{
+			Begin: fdb.Key(fmt.Sprintf("k%06d", 1000)),
+			End:   fdb.Key(fmt.Sprintf("k%06d", 1400)),
+		})
+	}
+
+	kr := fdb.KeyRange{Begin: k("j"), End: k("l")}
+	for _, reverse := range []bool{false, true} {
+		for _, limit := range []int{0, 1, 7, 1024, 2500} {
+			// Reference: one unbounded build of the whole range, then the same limit and
+			// direction applied to it by hand.
+			ref := db.newTxn()
+			// The iterator path pins the read version lazily on first read; a direct
+			// buildViewRange call does not, and at version 0 no committed row is visible.
+			ref.ensureReadVersion()
+			apply(ref)
+			refRows := ref.buildViewRange([]byte("j"), []byte("l"))
+			if reverse {
+				reverseKVs(refRows)
+			}
+			if limit > 0 && len(refRows) > limit {
+				refRows = refRows[:limit]
+			}
+
+			// Actual: a real paged drain through the iterator, which uses the bounded build.
+			tx := db.newTxn()
+			apply(tx)
+			it := tx.GetRange(kr, fdb.RangeOptions{
+				Mode: fdb.StreamingModeIterator, Reverse: reverse, Limit: limit,
+			}).Iterator()
+			var got []fdb.KeyValue
+			for it.Advance() {
+				kv, err := it.Get()
+				if err != nil {
+					t.Fatalf("reverse=%v limit=%d: %v", reverse, limit, err)
+				}
+				got = append(got, kv)
+			}
+
+			if len(got) != len(refRows) {
+				t.Fatalf("reverse=%v limit=%d: drained %d rows, unbounded build gives %d",
+					reverse, limit, len(got), len(refRows))
+			}
+			for i := range refRows {
+				if !bytes.Equal([]byte(got[i].Key), []byte(refRows[i].Key)) {
+					t.Fatalf("reverse=%v limit=%d: row %d key = %q, want %q — the bounded "+
+						"view's sub-window must fold in exactly the mutations the "+
+						"unbounded build would have",
+						reverse, limit, i, got[i].Key, refRows[i].Key)
+				}
+				if !bytes.Equal(got[i].Value, refRows[i].Value) {
+					t.Fatalf("reverse=%v limit=%d: row %d (%q) value = %q, want %q",
+						reverse, limit, i, got[i].Key, got[i].Value, refRows[i].Value)
+				}
+			}
 		}
 	}
 }

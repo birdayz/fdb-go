@@ -681,7 +681,7 @@ func (c *rywCache) getRange(
 	if !hasWrites && !hasClears {
 		// Fast path: no local mutations. Check snapshot cache first.
 		c.mu.Lock()
-		cachedKVs, fullyKnown := c.serverCache.getRangeKVs(begin, end)
+		cachedKVs, fullyKnown := c.serverCache.getRangeKVsLimited(begin, end, cacheWalkBudget(limit), reverse)
 		c.mu.Unlock()
 		if fullyKnown {
 			kvs := applyLimitAndDirection(cachedKVs, limit, reverse)
@@ -801,7 +801,7 @@ func (c *rywCache) fetchOrCached(
 	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
 ) ([]KeyValue, bool, error) {
 	c.mu.Lock()
-	cachedKVs, fullyKnown := c.serverCache.getRangeKVs(begin, end)
+	cachedKVs, fullyKnown := c.serverCache.getRangeKVsLimited(begin, end, cacheWalkBudget(limit), reverse)
 	c.mu.Unlock()
 
 	if fullyKnown {
@@ -887,6 +887,18 @@ func applyLimitAndDirection(kvs []KeyValue, limit int, reverse bool) []KeyValue 
 // computeMore returns true if applying the limit would leave remaining KVs.
 func computeMore(kvs []KeyValue, limit int) bool {
 	return limit > 0 && len(kvs) > limit
+}
+
+// cacheWalkBudget is how many cached KVs a snapshot-cache walk must produce before the
+// answer to a `limit`-row read is final: one more than the limit. The limit itself
+// supplies the page; the extra row is what computeMore's `len(kvs) > limit` reads to
+// decide `more`, so stopping at exactly `limit` would report more=false on a range that
+// has further rows. limit <= 0 is unlimited and cannot be bounded.
+func cacheWalkBudget(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	return limit + 1
 }
 
 // limitReached ports C++ GetRangeLimits::isReached() for a row-only limit: the

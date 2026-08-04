@@ -41,6 +41,12 @@ type keyRange struct{ begin, end []byte }
 type simTxn struct {
 	db *SimDB
 
+	// viewRowsTouched counts store entries examined while building range views. It makes
+	// the per-page cost observable: a page is supposed to cost the page, not the tail
+	// still ahead of it, and no assertion on the returned rows can tell the two apart.
+	// Read only by tests.
+	viewRowsTouched int
+
 	readVersion int64
 	rvSet       bool
 	// rvInstant is when the read version was pinned, on the ENV clock — the sim's
@@ -212,27 +218,67 @@ func (tx *simTxn) buildView() []fdb.KeyValue {
 // either — the store scan is a binary search plus a walk to `end`, so a batch costs the size of
 // the window it reads rather than the size of the whole keyspace.
 func (tx *simTxn) buildViewRange(begin, end []byte) []fdb.KeyValue {
+	view, _ := tx.buildViewRangeLimited(begin, end, 0, false)
+	return view
+}
+
+// buildViewRangeLimited is buildViewRange bounded by demand: it resolves only as much of
+// [begin, end) as it takes to answer for `want` rows from the `reverse` end, and reports
+// whether the range was consumed in full. want <= 0 is unbounded.
+//
+// Why this exists: every cursor fetch calls this, and the unbounded form cloned, mapped and
+// SORTED the entire unconsumed range before slicing off one page. Bounding the ITERATOR
+// progression turned a large drain into linearly many pages, so linearly many full builds —
+// a quadratic drain, which is what makes big deterministic-sim workloads impractical. The
+// sim's job is to mirror the real backend's observable semantics, above all its batch
+// BOUNDARIES; it is not obliged to mirror how much it copies to find them.
+//
+// The merge is what needs care, and it is handled by the store's sub-window rather than by
+// truncating a merged stream. A bounded store read is COMPLETE within [coveredBegin,
+// coveredEnd) and says nothing outside it, so folding in exactly the mutations that overlap
+// that sub-window yields the same rows the whole-range build would have produced there — a
+// write above it cannot belong in a forward page it sorts after, and a clear above it cannot
+// remove a row from one. What the sub-window cannot predict is how many rows SURVIVE the
+// merge: a clear inside it can leave the page short. So the budget grows geometrically until
+// the page is filled or the range is exhausted, which costs O(final window) in total rather
+// than O(range) per page.
+func (tx *simTxn) buildViewRangeLimited(begin, end []byte, want int, reverse bool) ([]fdb.KeyValue, bool) {
 	if bytes.Compare(begin, end) >= 0 {
-		return nil
+		return nil, true
 	}
-	m := make(map[string][]byte)
-	tx.db.mu.Lock()
-	rows := tx.db.store.rangeAt(begin, end, tx.readVersion)
-	tx.db.mu.Unlock()
-	for _, kv := range rows {
-		m[string(kv.Key)] = kv.Value
-	}
-	if !tx.rywDisabled {
-		for _, mut := range tx.buffer {
-			// Mutations outside the window are skipped so they cannot introduce a key beyond
-			// it; applyMutationToView's clear-range arm only walks keys already in the map, so
-			// an overlapping clear range trims to the intersection on its own.
-			if mutationOverlaps(mut, begin, end) {
-				applyMutationToView(m, mut)
+	budget := want
+	for {
+		tx.db.mu.Lock()
+		rows, cBegin, cEnd, exhausted, touched := tx.db.store.rangeAtLimited(
+			begin, end, tx.readVersion, budget, reverse)
+		tx.db.mu.Unlock()
+		tx.viewRowsTouched += touched
+
+		m := make(map[string][]byte, len(rows))
+		for _, kv := range rows {
+			m[string(kv.Key)] = kv.Value
+		}
+		if !tx.rywDisabled {
+			for _, mut := range tx.buffer {
+				// Mutations outside the window are skipped so they cannot introduce a key
+				// beyond it; applyMutationToView's clear-range arm only walks keys already
+				// in the map, so an overlapping clear range trims to the intersection on
+				// its own. The window is the store's covered sub-window, not the caller's
+				// range: outside it the store result is not complete, so a mutation there
+				// has nothing well-defined to apply to.
+				if mutationOverlaps(mut, cBegin, cEnd) {
+					applyMutationToView(m, mut)
+				}
 			}
 		}
+		view := sortedView(m)
+		if exhausted || budget <= 0 || len(view) >= budget {
+			return view, exhausted
+		}
+		// The page came up short — a clear inside the sub-window removed rows the store
+		// had counted. Widen and re-derive rather than guess how many were lost.
+		budget *= 2
 	}
-	return sortedView(m)
 }
 
 // mutationOverlaps reports whether mut can change the contents of [begin, end).
@@ -268,7 +314,11 @@ func sortedView(m map[string][]byte) []fdb.KeyValue {
 // returned data (over-conflict), and a cursor over SimFDB sees a different exhaustion signal
 // than over real FDB.
 func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.KeyValue, bool) {
-	rows := tx.buildViewRange(begin, end)
+	// Bounded by the page the caller asked for: rangeRows is the cursor fetch path, so an
+	// unbounded build here is what made a saturated drain quadratic. more is still
+	// len(rows) >= limit, which the bounded build preserves — it returns fewer than limit
+	// rows only when it exhausted the range.
+	rows, _ := tx.buildViewRangeLimited(begin, end, limit, reverse)
 	if reverse {
 		reverseKVs(rows)
 	}
