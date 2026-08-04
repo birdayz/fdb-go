@@ -471,16 +471,41 @@ func TestSeam_FloorStampIsInertAfterAHandoff(t *testing.T) {
 // THE STORE defends, which is NOT what the reader's stamp check defends. The two
 // are independent and neither substitutes for the other:
 //
-//   - the READER's check stops a foreign-epoch floor being ENFORCED. A straggler's
-//     value is stamped with its own epoch, so it never rejects anything.
-//   - the STORE's check stops a foreign-epoch reply DESTROYING the floor this
-//     cluster legitimately established. Without it the straggler's CAS succeeds,
-//     the current epoch's stamp is overwritten with an inert one, and a floor that
-//     was doing real work is silently gone.
+//   - the READER's check stops a foreign-epoch floor being ENFORCED. A stamp
+//     carrying a previous epoch rejects nothing; it reads as unset.
+//   - the STORE's check stops a foreign-epoch reply replacing the floor this
+//     cluster legitimately established. Without it the straggler's CAS succeeds
+//     and a floor that was doing real work is gone.
 //
-// Losing it fails open — validateVersion stops rejecting genuinely ancient
-// pinned versions, and the handle pays an unnecessary bootstrap GRV to rebuild
-// what it already knew.
+// THE TWO WAYS THE STORE'S CHECK CAN BE BROKEN produce DIFFERENT damage, because
+// the CAS always stamps curEpoch — so what the surviving stamp says depends on
+// what curEpoch was left holding:
+//
+//   - delete the check outright: curEpoch is still this cluster's, so the stamp
+//     that lands is THIS cluster's epoch carrying ANOTHER cluster's version. It
+//     is not inert — it is actively enforced, and validateVersion starts
+//     answering with a foreign version space. Here: floor = 100.
+//   - inherit the caller's verdict instead of re-reading (curEpoch := replyEpoch):
+//     the stamp lands under the PREVIOUS epoch, so it reads as unset and the
+//     guard is simply gone. Here: floor = 0.
+//
+// Both readings were run, and this is the only test that catches BOTH — which is
+// why the assertion prints the floor: the value tells them apart. Measured:
+//
+//	delete the check    → this test, TestSeam_MinAcceptableFromAPreviousEpochIsIgnored,
+//	                      TestSeam_FloorRefusesAStragglerWritingAfterTheHandoff
+//	inherit the verdict → this test ONLY
+//
+// The second list is short for a reason worth knowing: an inherited verdict
+// stamps the PREVIOUS epoch, and every other floor test asserts the floor reads
+// unset — which an inert stamp satisfies. Only an assertion that a LEGITIMATE
+// floor survives can see it.
+//
+// The straggler's version must be BELOW the established floor for any of this to
+// be observable. The floor is a min, so a higher value is refused by the min rule
+// before the epoch check is ever consulted — the first version of this test used
+// 9,000,000 against a floor of 500 and was therefore a tautology: green with the
+// epoch check deleted, passing for a reason unrelated to its own name.
 func TestSeam_StragglerCannotDestroyTheCurrentFloor(t *testing.T) {
 	t.Parallel()
 
@@ -497,25 +522,28 @@ func TestSeam_StragglerCannotDestroyTheCurrentFloor(t *testing.T) {
 	if got := db.minAcceptable(); got != 500 {
 		t.Fatalf("precondition: floor = %d, want 500", got)
 	}
-	if err := db.validateVersion(100); err == nil {
-		t.Fatal("precondition: 100 must be rejected against B's floor of 500")
+	if err := db.validateVersion(200); err == nil {
+		t.Fatal("precondition: 200 must be rejected against B's floor of 500")
 	}
 
-	// A's reply lands late and attempts the write.
-	db.updateMinAcceptable(straggler.epoch(), 9_000_000)
+	// A's reply lands late and attempts the write. Its version is BELOW B's
+	// floor, and that is the load-bearing part of this test rather than a
+	// detail: the floor is a min, so a value ABOVE it is refused by the min rule
+	// on its own and the epoch check is never reached. With 9,000,000 here — the
+	// first version of this test — the assertion held for a reason that had
+	// nothing to do with the property in the test's name, and deleting the epoch
+	// check outright left it green.
+	db.updateMinAcceptable(straggler.epoch(), 100)
 
 	if got := db.minAcceptable(); got != 500 {
 		t.Fatalf("floor = %d after a PREVIOUS cluster's reply attempted a write, want "+
 			"500 preserved.\n"+
-			"The straggler's value is inert to readers because it carries its own "+
-			"epoch — but the write still landed and overwrote the floor this cluster "+
-			"established. The epoch check belongs ON THE STORE as well: a reply from "+
-			"another version space must not be able to destroy this one's floor, or "+
-			"validateVersion silently stops rejecting the ancient versions it exists "+
-			"to reject", got)
+			"The epoch check belongs ON THE STORE: a reply from another version space "+
+			"must not be able to lower this cluster's floor, or validateVersion "+
+			"silently stops rejecting the versions it exists to reject", got)
 	}
-	if err := db.validateVersion(100); err == nil {
-		t.Fatal("100 is accepted again: the floor that was rejecting it was destroyed " +
+	if err := db.validateVersion(200); err == nil {
+		t.Fatal("200 is accepted again: the floor that was rejecting it was lowered " +
 			"by a reply from a cluster whose version space is unrelated")
 	}
 }
