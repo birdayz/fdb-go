@@ -65,9 +65,10 @@ import (
 // correctness — the two plans must return the same rows, both must match a
 // ground truth computed from the generated data in Go, and the reference must
 // match its own independently computed ground truth. The numbers are logged,
-// two greppable lines per regime (prefixes GEMERGE_REGIME for merge-vs-base and
-// GEMERGE_REFERENCE for merge-vs-single-scan), for §7's acceptance criterion to
-// be written against.
+// three greppable lines per regime (GEMERGE_REGIME for merge-vs-base,
+// GEMERGE_REFERENCE for merge-vs-single-scan, and GEMERGE_RATIO for the median
+// statistic and its spread). §7.'s cost bound IS asserted, on the median ratio;
+// what stays unasserted is which plan is faster.
 func TestFDB_GroupExistenceMerge_VsStreamingAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -98,18 +99,36 @@ func TestFDB_GroupExistenceMerge_VsStreamingAggregation(t *testing.T) {
 
 // groupExistenceRefBound is §7's acceptance bound: the group-existence merge
 // must stay within this multiple of a single-BY_GROUP-scan reference at matched
-// cardinality. Measured merge-over-reference across the axis, over three runs:
-// unique 2.34-2.40, near-unique 2.86-3.08, moderate 2.12-2.47, low 1.01-1.05.
+// cardinality, measured as the MEDIAN of 5 back-to-back pairs (see the pairing
+// note at the measurement site).
 //
-// near-unique is the worst regime and the noisiest, moving ~7% between runs, so
-// the bound is set at 3.5 — roughly 14% over the worst observed point. 3x was
-// rejected outright: it sits BELOW a point already observed at 3.08, so it would
-// fail the RFC on a clean run.
+// The single-pair figure was not a usable basis for a bound. Successive runs put
+// near-unique at 2.86, 3.08, then 3.24 with no code change between them — a ~13%
+// swing, which is how three places in this repo came to quote three different
+// "worst observed" numbers, each stale on arrival. The spread below is recorded
+// from the median statistic instead, which is what makes it stable enough to
+// write down at all.
 //
-// The headroom is deliberately modest, which means this bound is a real
-// constraint rather than a formality: a regression much past ~15% on the
-// near-unique regime fails here. If it starts flapping without a code change,
-// the honest fix is more samples per regime (median of N), not a looser number.
+// Median-of-5 medians, three consecutive runs:
+//
+//	unique       2.46 / 2.52 / 2.49     headroom to 3.5: ~28-30%
+//	near-unique  3.08 / 2.86 / 2.98     headroom to 3.5: ~12-18%   <- worst
+//	moderate     2.08 / 2.08 / 1.97     headroom to 3.5: ~41-44%
+//	low          1.05 / 1.08 / 1.07     (excluded from the bound)
+//
+// The median is not a formality here, and one datum proves it: in the first of
+// those runs an individual near-unique PAIR came in at 3.63 — above the bound.
+// A single-pair assertion would have failed that run with nothing wrong. Five
+// pairs put the median at 3.08 and the run passed, which is the whole reason
+// the statistic is a median of pairs rather than a measurement.
+//
+// The bound stays 3.5. Worst observed median headroom is ~12% against a median
+// that itself drifts ~7% run to run, so this is genuinely tight — tight enough
+// that it is worth saying outright that an occasional flake is possible on a
+// loaded or nearly-full disk. If that happens WITHOUT a code change, the fix is
+// more pairs (raise ratioPairs to 9 or 11, which costs seconds), never a looser
+// bound. Loosening it would silently buy back exactly the regression headroom
+// the number exists to deny.
 const groupExistenceRefBound = 3.5
 
 // groupExistenceBoundMinGroups is the group count below which the reference
@@ -335,7 +354,55 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 
 	mergeRows, mergeMs := best(withAgg, query)
 	baseRows, baseMs := best(noAgg, query)
-	refRows, refMs := best(refCount, refQuery)
+	refRows, _ := best(refCount, refQuery)
+
+	// §7's ratio is measured as the MEDIAN over back-to-back PAIRS, not as one
+	// pair or as a ratio of two independently-taken bests.
+	//
+	// Both of those were tried and both drift. A single pair put near-unique at
+	// 2.86, then 3.08, then 3.24 on later runs — the number moved ~13% with no
+	// code change, which is enough to turn an acceptance criterion into a coin
+	// flip, and enough that three separate places in this repo ended up quoting
+	// three different "worst observed" figures.
+	//
+	// Pairing is what makes it stable: merge and reference are timed
+	// consecutively against the same warm store, so whatever slow moment the
+	// machine is having lands on BOTH and divides out of that pair's ratio.
+	// Taking the median over the pairs then discards the pair that got unlucky
+	// anyway rather than letting it set the result, which a min or a mean cannot
+	// do.
+	//
+	// N=5: the median of 5 survives two bad pairs, and the pairs are pure query
+	// time against an already-populated store — the ~30s of inserts per regime
+	// dominates, so five pairs cost seconds, not minutes.
+	const ratioPairs = 5
+	ratios := make([]float64, 0, ratioPairs)
+	pairMerge := make([]float64, 0, ratioPairs)
+	pairRef := make([]float64, 0, ratioPairs)
+	for range ratioPairs {
+		rm := withAgg.timeQuery(query)
+		rm.mustSucceed(t, "HAVING")
+		rr := refCount.timeQuery(refQuery)
+		rr.mustSucceed(t, "HAVING")
+		mMs := float64(rm.Duration.Microseconds()) / 1000.0
+		rMs := float64(rr.Duration.Microseconds()) / 1000.0
+		if rMs <= 0 {
+			t.Fatalf("regime %s: reference query timed at %.3fms; cannot form a ratio", name, rMs)
+		}
+		pairMerge = append(pairMerge, mMs)
+		pairRef = append(pairRef, rMs)
+		ratios = append(ratios, mMs/rMs)
+	}
+	medianOf := func(xs []float64) float64 {
+		s := append([]float64(nil), xs...)
+		slices.Sort(s)
+		return s[len(s)/2]
+	}
+	medianRatio := medianOf(ratios)
+	medianMergeMs := medianOf(pairMerge)
+	medianRefMs := medianOf(pairRef)
+	sortedRatios := append([]float64(nil), ratios...)
+	slices.Sort(sortedRatios)
 
 	// Correctness first — the one invariant, and it holds regardless of which
 	// plan is faster.
@@ -363,7 +430,10 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	// from: how many times the correct two-stream merge costs over the
 	// single-scan shape it stands in for.
 	t.Logf("GEMERGE_REFERENCE name=%s rows=%d groups=%d refHaving=%d refUniform=%t refRows=%d refMs=%.2f mergeMs=%.2f mergeOverRef=%.2f",
-		name, rows, groups, refThreshold, refUniform, refRows, refMs, mergeMs, mergeMs/refMs)
+		name, rows, groups, refThreshold, refUniform, refRows, medianRefMs, medianMergeMs, medianRatio)
+	t.Logf("GEMERGE_RATIO name=%s pairs=%d medianRatio=%.2f spread=%.2f..%.2f bound=%.2f headroomPct=%.1f",
+		name, ratioPairs, medianRatio, sortedRatios[0], sortedRatios[len(sortedRatios)-1],
+		groupExistenceRefBound, 100*(groupExistenceRefBound-medianRatio)/groupExistenceRefBound)
 
 	// §7's acceptance criterion, ASSERTED. It was computed and logged and
 	// nothing checked it, which makes it a number in a report rather than a
@@ -378,16 +448,22 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	// lands at ~0.95-1.01 and would only add noise to a bound about scan cost.
 	// Excluding it is not excluding an inconvenient result: the merge is at its
 	// CHEAPEST relative to the reference there.
+	//
+	// The exclusion is load-bearing, not decorative: driving the bound down to
+	// 0.5 reds every regime above the threshold and STILL leaves `low` passing,
+	// which is what shows the skip is doing the work rather than `low` happening
+	// to sit under whatever number is written here.
 	if groups >= groupExistenceBoundMinGroups {
-		if ratio := mergeMs / refMs; ratio > groupExistenceRefBound {
-			t.Errorf("regime %s: the merge costs %.2fx the single-BY_GROUP-scan reference, "+
-				"over §7's bound of %.2fx (merge %.2fms, reference %.2fms).\n"+
+		if ratio := medianRatio; ratio > groupExistenceRefBound {
+			t.Errorf("regime %s: the merge costs %.2fx the single-BY_GROUP-scan reference "+
+				"(median of %d back-to-back pairs), over §7's bound of %.2fx "+
+				"(median merge %.2fms, median reference %.2fms).\n"+
 				"§7 bounds the correct plan against the shape it stands in for — the "+
 				"pre-RFC aggregate-index-only plan is unconstructible by design, so this "+
 				"reference is what the criterion is measured against. Exceeding it means "+
 				"group existence now costs materially more than reading one aggregate "+
 				"index, which is the trade the RFC was accepted on.",
-				name, ratio, groupExistenceRefBound, mergeMs, refMs)
+				name, ratio, ratioPairs, groupExistenceRefBound, medianMergeMs, medianRefMs)
 		}
 	}
 	if winner == "base" {

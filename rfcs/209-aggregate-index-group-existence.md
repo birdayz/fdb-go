@@ -738,13 +738,42 @@ regimes as §5.3.1(c):
 | moderate | 10000 | 53.84 ms | 21.77 ms | 2.47x |
 | low | 10 | 5.33 ms | 5.28 ms | 1.01x |
 
-A repeat of the worst regime agreed: 2.90x. **The criterion is that the merge
-stays within 3.5x of the single-scan reference at every regime.** The bound comes
-from the numbers, not from an argument: the worst timed point is 2.88x and 3.5x
-sits about 20% above it — enough that ordinary run-to-run noise does not fail the
-RFC, tight enough that nothing a second co-grouped `BY_GROUP` scan can explain
-gets through. The earlier 3x was not chosen from data and is superseded; it would
-have left 4% of headroom over a point that moves by 1% between runs.
+**The criterion is that the merge stays within 3.5x of the single-scan reference
+at every regime whose reference actually measures scan work.**
+
+Single-pair ratios proved too unstable to set a bound from: successive runs put
+the worst regime (near-unique) at 2.86x, 3.08x, then 3.24x with no code change
+between them. Each ratio is therefore the MEDIAN of 5 back-to-back
+merge/reference pairs — pairing puts any slow moment on both sides so it divides
+out of that pair's ratio, and the median discards the pair that got unlucky
+anyway. Median-of-5 over three consecutive runs:
+
+| regime | median-of-5 ratios | headroom to 3.5x |
+| --- | --- | --- |
+| unique | 2.46 / 2.52 / 2.49 | ~28-30% |
+| near-unique | 3.08 / 2.86 / 2.98 | ~12-18% |
+| moderate | 2.08 / 2.08 / 1.97 | ~41-44% |
+| low | 1.05 / 1.08 / 1.07 | excluded, see below |
+
+The median is load-bearing, not cosmetic: in the first of those runs an
+individual near-unique pair measured 3.63x — above the bound. A single-pair
+criterion would have failed a clean run.
+
+Worst observed median headroom is about 12%, against a median that still drifts
+~7% run to run. That is tight on purpose, and the consequence is stated rather
+than hidden: an occasional flake is possible on a loaded or nearly-full disk. The
+remedy is more pairs (9 or 11, costing seconds), never a looser bound —
+loosening would buy back precisely the regression headroom the number exists to
+deny. The earlier 3x is superseded twice over: it was not chosen from data, and
+it sits below medians already observed at 3.08x.
+
+The bound is applied only where the reference measures scan work. Below 1000
+groups the reference reads too few index entries for its runtime to be anything
+but fixed per-query cost, so the ratio would measure harness overhead. That
+exclusion is load-bearing rather than convenient, and it is probed: driving the
+bound down to 0.5x reds every regime above the threshold and still leaves `low`
+passing, which shows the skip is doing the work rather than `low` happening to
+sit under whatever number is written here.
 
 Two readings the table demands, both about output cardinality rather than
 scanning. The reference's `HAVING` cannot be tuned to the merge's selectivity:
@@ -768,9 +797,13 @@ and did not find; if it ever appears, the flip becomes worth building.
 
 The stress test no longer asserts "merge wins". It records all four regimes,
 logging `GEMERGE_REGIME` for merge-versus-base-table and `GEMERGE_REFERENCE` for
-merge-versus-single-scan, and checks all three plans' row counts against ground
-truth computed in Go. The bound above is therefore a **review-time reading of
-recorded numbers**, not an automatic assertion. Runs must live on the same
+merge-versus-single-scan and `GEMERGE_RATIO` for the median statistic and its
+spread, and checks all three plans' row counts against ground truth computed in
+Go. The bound above **is asserted automatically**: the median ratio is compared
+against 3.5x in every regime at or above 1000 groups, and exceeding it fails the
+run. Which plan is *faster* remains unasserted — that is the question the axis
+exists to answer — but the cost criterion itself is enforced, not read off by a
+reviewer. Runs must live on the same
 filesystem with headroom, per the repo's stress-comparison rule; a run taken
 above ~95% disk utilisation measures the disk, not the plan. The run recorded
 above was taken at 97%, which is why the bound is read from the *ratio* of two
