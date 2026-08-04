@@ -1,7 +1,9 @@
 # Road to production
 
-**Revision 2026-08-01.** Measured against `a1d281a63` (= `origin/master`). Supersedes the
-2026-07-29 revision.
+**Revision 2026-08-04.** Amends the 2026-08-01 revision in place: B1/Tier-1 confirmed at
+`5ab0a87a3`, B2/Tier-2 closed at `d6f635073`. Counts below were measured against `a1d281a63`
+(= `origin/master` at the 2026-08-01 drafting) unless a later SHA is cited inline. Supersedes
+the 2026-07-29 revision.
 
 Every count below carries the SHA it was measured at. This revision was drafted against `f5c2c7f0e`
 and two merges (#555, #556) landed mid-pass and invalidated three of its findings — so the SHA is
@@ -35,8 +37,8 @@ dominate this revision:
 3. **Documentation authority was itself a defect (B6), and this pass is its fix.** Three status docs
    contradicted each other; the corrections are recorded inline below rather than applied silently.
 
-Explicit-transaction isolation (B2) remains the single most dangerous defect for a real
-application, and is now the top item outright.
+Explicit-transaction isolation (B2) — formerly the single most dangerous defect for a real
+application — is CLOSED as of 2026-08-04 (#607, merged as `d6f635073`). Tier 2 is confirmed.
 
 ## Deployment tiers
 
@@ -123,19 +125,21 @@ conformance total moved 1362→1363 and SQL coverage 2399→2401 between two SHA
 coverage move is not noise: it is the two CASE shapes flipping from unsupported-pin to supported.
 
 ### Tier 2 — full SQL surface incl. explicit transactions
-**Distance: one PR from confirmation.** Dominated by B2, which is the Tier-2 gate outright:
+**CONFIRMED 2026-08-04.** B2, the Tier-2 gate outright, is closed — #607 merged as `d6f635073`:
 
-- The defect this gate exists for: inside `BeginTx`, DML joined the FDB transaction but SELECT ran
+- The defect this gate existed for: inside `BeginTx`, DML joined the FDB transaction but SELECT ran
   in a fresh auto-commit transaction — no read-your-writes, no read-conflict ranges, so
   read-modify-write across two transactions was last-writer-wins with no 1020/40001. **Silent lost
-  updates.** Formerly pinned by `tx_select_isolation_probe_test.go` asserting the broken semantics.
-- The design is **RFC-198** (`rfcs/198-explicit-transactions-read-your-writes.md`), joint review
-  complete (#529). **Implementation is COMPLETE on #607** — all five phases, including the
-  SimFDB/RFC-199 acceptance harness with injected 1007 and both 1021 branches; the isolation probe
-  now pins the CORRECT semantics. #607 is in final review: the joint Graefe+Torvalds lap ACK'd at
-  the phase boundary, the 1M stress ran clean (−0.9% wall, plans byte-identical), and the GRV-cache
-  span that grew out of OQ-1 is under a C++-client + Torvalds delta review with a prescribed fence
-  reshape in progress. Tier 2 confirms when #607 merges.
+  updates.** The isolation probe (`tx_select_isolation_probe_test.go`) now pins the CORRECT
+  semantics.
+- Shipped as **RFC-198** (`rfcs/198-explicit-transactions-read-your-writes.md`): all five phases,
+  including the SimFDB/RFC-199 acceptance harness with injected 1007 and both 1021 branches. The
+  review trail: joint Graefe+Torvalds lap ACK'd at the phase boundary; 1M stress clean (−0.9% wall,
+  plans byte-identical); the GRV-cache span that grew out of OQ-1 went through a C++-client +
+  Torvalds design review (one structural reshape: single packed fence word, epoch in the DBInfo
+  snapshot, epoch-stamped min-acceptable floor) and fifteen codex rounds, every finding landed.
+  The durable lesson from that span: five successive tests were green for reasons other than the
+  property they named, and every one was caught by RUNNING the mutation, never by reading the test.
 
 The RFC-197 identity migration does not gate Tier 2. Its wrong-rows channels are closed; what the
 ratchet still holds is machinery-gated stops and boundary-layer sites, which gate the *migration's
@@ -151,7 +155,7 @@ entries mean the same query returns different rows or different errors on the tw
 | # | Item | Impact | Size | State |
 |---|---|---|---|---|
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 still open (CQ-47) |
-| B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **The Tier-2 gate; implementation COMPLETE and in final review (#607).** RFC-198 phases 1–5 implemented; joint Graefe+Torvalds lap ACK'd at the phase boundary; 1M stress clean (−0.9% wall, plans byte-identical); the GRV-cache span that grew out of OQ-1 is under a C++-client + Torvalds delta review with a prescribed fence reshape in progress. Merges when that lap and codex go clean |
+| B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 (`TODO.md:10046`, open)** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 52 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
@@ -218,8 +222,11 @@ would make the list read cleaner than the code is. Entries 2 and 4 have since be
 refuted by measurement, entry 4 fixed and pinned — see the entries); 8 and 12 remain marked.
 
 Wrong rows / wrong data:
-1. No read-your-writes in `BeginTx` (= B2). IMPLEMENTATION IN FLIGHT (feat/rfc198-explicit-tx-isolation). Pinned —
-   `sqldriver/tx_select_isolation_probe_test.go:62`.
+1. **RETIRED 2026-08-04: no read-your-writes in `BeginTx` (= B2) — FIXED by #607 (`d6f635073`).**
+   Inside `BeginTx`, SELECT now joins the FDB transaction: read-your-writes holds, reads take
+   conflict ranges, and cross-transaction read-modify-write conflicts surface as 40001. The probe
+   (`sqldriver/tx_select_isolation_probe_test.go`) asserts the CORRECT semantics per the section
+   contract, with a `dml_still_atomic_on_commit` control alongside.
 2. **REFUTED and retired: "INSERT of NULL into a PRIMARY KEY column silently stores 0."**
    Measurement inverted the claim: Go stores the same REAL tuple null (0x00) Java does — Java raises
    no error here (a relational scalar column is never non-nullable, DdlVisitor.java:156-161;
@@ -389,9 +396,9 @@ Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN
 The path to zero KNOWN correctness errors, in execution order. "Done" for each = the watch-list
 entry's pin goes red and the entry is retired with the fix cited.
 
-1. **B2 / RFC-198** (entry 1) — all five phases COMPLETE and mutation-verified on #607
-   (`feat/rfc198-explicit-tx-isolation`), joint lap ACK'd, 1M stress clean; in final review
-   (GRV-cache fence reshape + C++-client/Torvalds delta lap). Retires when #607 merges.
+1. **B2 / RFC-198** (entry 1) — **RETIRED 2026-08-04**: #607 merged (`d6f635073`), the isolation
+   probe pins the correct semantics, full review trail closed (joint lap, C++-client + Torvalds
+   design review with fence reshape, fifteen codex rounds).
 2. **The unpinned-or-unowned batch** (entries 2, 4, 3, 9) — INSERT-NULL-into-PK
    (measurement REFUTED the entry: Java allows NULL PKs and Go matches — real pins landed,
    fake pin deleted, on `fix/watchlist-insert-null-pk-timestamp`), CURRENT_TIMESTAMP drift
@@ -521,8 +528,8 @@ Booked by THIS revision, from defects the verification pass found:
 
 1. **~~Confirm B1.~~ DONE 2026-08-03** — two consecutive genuinely green reconciles (see B1);
    Tier 1 is confirmed. Residuals CQ-46/CQ-47 stay booked below, not tier-gating.
-2. **B2 explicit-tx isolation.** The Tier-2 gate and the top item outright. Implementation
-   complete on #607; in final review (GRV-cache fence reshape + delta laps), merges on clean.
+2. **~~B2 explicit-tx isolation.~~ DONE 2026-08-04** — #607 merged (`d6f635073`); Tier 2 is
+   confirmed. Booked follow-up: RFC-209 implementation was held behind #607 and is now unblocked.
 3. **CQ-80** — pin the watch-list entries that claim a test they do not have (entries 2 and 4 done;
    8 and 12 remain). Small, and it is what makes the list handable to an adopter.
 4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
