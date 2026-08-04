@@ -272,10 +272,30 @@ func (tx *simTxn) buildViewRangeLimited(begin, end []byte, want int, reverse boo
 			}
 		}
 		view := sortedView(m)
-		if exhausted || budget <= 0 || len(view) >= budget {
+		// Stop as soon as the REQUESTED page is filled. Testing against the current
+		// (doubled) budget instead is what makes a buffered clear pathological: the store
+		// hands back `budget` live rows, the clear removes some, so len(view) lands just
+		// under budget at every retry and the loop widens until the tail is exhausted —
+		// one clear turned a 1024-row page over 10k rows into 25,360 rows examined, and
+		// clears spread through a saturated drain put the quadratic back, worse than the
+		// one-pass build this replaced. Headroom past `want` is not information anyone
+		// asked for.
+		//
+		// Stopping at `want` is sound because the sub-window makes the short view a
+		// PREFIX (forward) or SUFFIX (reverse) of the full merged view, not an arbitrary
+		// subset of it. Forward, coveredBegin is always `begin`, so V_sub is exactly the
+		// rows of V_full below coveredEnd; reverse, coveredEnd is always `end`, so V_sub
+		// is exactly the rows at or above coveredBegin. Both are complete within that
+		// span. So once |V_sub| >= want, every row of the requested page already lies
+		// inside the covered span, and no row outside it can displace one: a key the
+		// buffer ADDS outside the span sorts past every row in V_sub (beyond coveredEnd
+		// forward, below coveredBegin reverse), hence past the page; a clear outside the
+		// span can only remove rows that were already not in the page. Widening further
+		// would return the same `want` rows after more work.
+		if exhausted || want <= 0 || len(view) >= want {
 			return view, exhausted
 		}
-		// The page came up short — a clear inside the sub-window removed rows the store
+		// Still short of the page: a clear inside the sub-window removed rows the store
 		// had counted. Widen and re-derive rather than guess how many were lost.
 		budget *= 2
 	}

@@ -487,3 +487,73 @@ func TestCursorBoundedViewMatchesUnbounded(t *testing.T) {
 		}
 	}
 }
+
+// TestCursorPageWithBufferedClearsCostsThePage pins the widening loop's exit condition.
+//
+// A bounded view build cannot know in advance how many of the rows the store counted will
+// survive the merge, so a buffered clear leaves the page short and the budget has to widen.
+// The trap is what it widens UNTIL: comparing len(view) against the current, already-doubled
+// budget is never satisfied while a clear keeps removing rows, so the loop widens all the way
+// to the end of the range. One clear made a 1024-row page over 10k rows examine 25,360 store
+// rows; clears spread through a saturated drain restore the quadratic drain the bound was
+// added to remove, and make it slower than the unbounded one-pass build it replaced.
+//
+// The exit has to be "the requested page is filled" — budget headroom past `want` is not
+// information the caller asked for. TestCursorBoundedViewMatchesUnbounded is the correctness
+// half of this (it drains with clears and a clear RANGE in the buffer and compares against the
+// unbounded build); this is the cost half.
+func TestCursorPageWithBufferedClearsCostsThePage(t *testing.T) {
+	t.Parallel()
+
+	const nRows = 10000
+	const page = 1024
+	var kvs []string
+	for i := 0; i < nRows; i++ {
+		kvs = append(kvs, fmt.Sprintf("k%06d", i), "v")
+	}
+	db := New(nil)
+	seed(db, kvs...)
+
+	for _, reverse := range []bool{false, true} {
+		reverse := reverse
+		name := "forward"
+		if reverse {
+			name = "reverse"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := db.newTxn()
+			// Clears spread through the range so EVERY page hits the shortfall, which is
+			// the case that compounds across a drain.
+			for i := 0; i < nRows; i += 500 {
+				tx.Clear(fdb.Key(fmt.Sprintf("k%06d", i)))
+			}
+
+			it := tx.GetRange(fdb.KeyRange{Begin: k("k"), End: k("l")},
+				fdb.RangeOptions{Mode: fdb.StreamingModeIterator, Reverse: reverse}).Iterator()
+
+			// Drain into the saturated region, then measure ONE page in isolation.
+			rows := 0
+			for rows < 3000 && it.Advance() {
+				rows++
+			}
+			before := tx.viewRowsTouched
+			target := rows + page
+			for rows < target && it.Advance() {
+				rows++
+			}
+			touched := tx.viewRowsTouched - before
+
+			// A shortfall costs at most a geometric widening or two, never the tail. The
+			// budget-comparing exit examines thousands of rows here instead.
+			if touched > 6*page {
+				t.Fatalf("%s: resolving a %d-row page with buffered clears touched %d store "+
+					"rows over a %d-row range — a clear-driven shortfall must cost a "+
+					"widening, not the whole tail. The loop has to stop once the REQUESTED "+
+					"page is filled; comparing against the doubled budget never terminates "+
+					"early while a clear keeps removing rows.",
+					name, page, touched, nRows)
+			}
+		})
+	}
+}
