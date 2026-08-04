@@ -137,17 +137,28 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 		case int64:
 			fmt.Fprintf(&b, "%d", val)
 		case float64:
-			// NaN/±Inf have no SQL literal form: rendering them with %g yields
-			// "NaN"/"+Inf"/"-Inf", which the parser then rejects with a confusing
-			// 42601 syntax error (an identifier reference). Reject up front with a
-			// clear, type-accurate error. (Proper non-text parameter binding would
-			// let a DOUBLE column carry these IEEE-754 values; that is the broader
-			// text-interpolation divergence, tracked separately.)
-			if math.IsNaN(val) || math.IsInf(val, 0) {
-				return "", api.NewErrorf(api.ErrCodeInvalidParameter,
-					"non-finite float64 parameter (NaN/Inf) is not supported for placeholder %d", argIdx)
+			// NaN and ±Infinity have no BARE literal form — "%g" renders them
+			// as NaN/+Inf/-Inf, which the parser reads as identifiers and
+			// rejects with a confusing 42601. They do have a CAST form, and it
+			// is the same one on both sides of the port: 'NaN', 'Infinity' and
+			// '-Infinity' are exactly the strings Go's strconv.ParseFloat and
+			// Java's Double.parseDouble both accept.
+			//
+			// The alternative — refusing the parameter — made a DOUBLE column
+			// unable to carry values it stores perfectly well through every
+			// other syntax, on the grounds of how this driver happens to
+			// transport parameters. A transport limitation must not become a
+			// type restriction.
+			switch {
+			case math.IsNaN(val):
+				b.WriteString("CAST('NaN' AS DOUBLE)")
+			case math.IsInf(val, 1):
+				b.WriteString("CAST('Infinity' AS DOUBLE)")
+			case math.IsInf(val, -1):
+				b.WriteString("CAST('-Infinity' AS DOUBLE)")
+			default:
+				fmt.Fprintf(&b, "%g", val)
 			}
-			fmt.Fprintf(&b, "%g", val)
 		case string:
 			// Escape single quotes by doubling them.
 			b.WriteByte('\'')

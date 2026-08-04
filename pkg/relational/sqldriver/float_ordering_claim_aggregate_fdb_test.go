@@ -50,9 +50,12 @@ func (g aggFloatGroup) String() string {
 //   - BOTH NaN signs, with DISTINCT payloads. A positive NaN alone hides the
 //     defect entirely: it is physically and logically last. The negative NaN is
 //     the one that packs BEFORE -Inf while comparing GREATEST.
-//   - id 80 is BALLAST, and it is not decoration. The non-finite rows can only
-//     be created by UPDATE (INSERT ... VALUES and bind parameters reject
-//     non-finite floats with 22023), and they are seeded at 1.0e308. Without a
+//   - id 80 is BALLAST, and it is not decoration. The non-finite rows are
+//     created by UPDATE out of a 1.0e308 seed — arithmetic is how the two
+//     DISTINCT NaN payloads are obtained, since no literal spells the
+//     sign-bit-SET quiet NaN that `(+Inf) + (-Inf)` yields. (It was once also
+//     the only path that accepted them at all; every write path does now — see
+//     nonfinite_float_write_symmetry_fdb_test.go.) Without a
 //     row that KEEPS 1.0e308, those updates vacate that group — and the SUM
 //     index then reports a phantom `{1e+308 sum=0}` group that no oracle
 //     produces. That is an index-maintenance defect, entirely independent of

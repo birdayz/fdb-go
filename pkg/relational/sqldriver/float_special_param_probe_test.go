@@ -1,10 +1,20 @@
 package sqldriver_test
 
-// Regression: a non-finite float64 parameter (NaN / ±Inf) has no SQL literal form
-// under the driver's text-interpolation param path. Previously it rendered as
-// "NaN"/"+Inf" and the parser rejected it with a confusing 42601 syntax error;
-// now substituteParams rejects it up front with a clear invalid-parameter error.
-// Finite floats (incl. very large/small) still round-trip.
+// A non-finite float64 parameter (NaN / ±Infinity) has no BARE SQL literal
+// form: "%g" renders it as NaN/+Inf/-Inf, which the parser reads as an
+// identifier and rejects with a confusing 42601. It does have a CAST form, and
+// substituteParams emits it — 'NaN', 'Infinity' and '-Infinity' are exactly the
+// strings both Go's strconv.ParseFloat and Java's Double.parseDouble accept.
+//
+// The earlier answer was to refuse the parameter with 22023, which turned a
+// TRANSPORT limitation of this driver into a TYPE restriction: a DOUBLE column
+// stores these values happily through INSERT … VALUES, UPDATE and
+// INSERT … SELECT, and only the `?` path could not reach them.
+//
+// Each value gets its OWN primary key. The previous revision reused id=1 for
+// all three, so the second and third writes were rejected as duplicate keys and
+// the assertion "an error came back" held for a reason that had nothing to do
+// with the parameter — two thirds of it was vacuous.
 
 import (
 	"context"
@@ -33,21 +43,30 @@ func TestFDB_FloatSpecialParamProbe(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	rejected := func(name string, v float64) {
+	roundTrips := func(id int64, name string, v float64, ok func(float64) bool) {
 		t.Run(name, func(t *testing.T) {
-			_, err := db.ExecContext(ctx, "INSERT INTO t (id, d) VALUES (1, ?)", v)
-			if err == nil {
-				t.Fatalf("%s param unexpectedly accepted", name)
+			if _, err := db.ExecContext(ctx,
+				"INSERT INTO t (id, d) VALUES (?, ?)", id, v); err != nil {
+				if strings.Contains(err.Error(), "42601") {
+					t.Fatalf("%s param produced a SYNTAX error (%v) — the interpolated form "+
+						"is not parseable", name, err)
+				}
+				t.Fatalf("%s param rejected: %v — a DOUBLE column carries every IEEE-754 "+
+					"value through every other syntax", name, err)
 			}
-			// clear, type-accurate rejection (not a confusing 42601 syntax error).
-			if strings.Contains(err.Error(), "42601") {
-				t.Errorf("%s gave a syntax error (%v); want a clear non-finite param rejection", name, err)
+			var got float64
+			if err := db.QueryRowContext(ctx,
+				fmt.Sprintf("SELECT d FROM t WHERE id = %d", id)).Scan(&got); err != nil {
+				t.Fatalf("%s readback: %v", name, err)
+			}
+			if !ok(got) {
+				t.Errorf("%s param round-tripped as %v (bits %#016x)", name, got, math.Float64bits(got))
 			}
 		})
 	}
-	rejected("nan", math.NaN())
-	rejected("pos_inf", math.Inf(1))
-	rejected("neg_inf", math.Inf(-1))
+	roundTrips(1, "nan", math.NaN(), func(v float64) bool { return math.IsNaN(v) })
+	roundTrips(2, "pos_inf", math.Inf(1), func(v float64) bool { return math.IsInf(v, 1) })
+	roundTrips(3, "neg_inf", math.Inf(-1), func(v float64) bool { return math.IsInf(v, -1) })
 
 	t.Run("finite_floats_roundtrip", func(t *testing.T) {
 		for i, v := range []float64{0.0, -1.5, 1e300, -1e-300, math.MaxFloat64} {

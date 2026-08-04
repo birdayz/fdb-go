@@ -70,12 +70,17 @@ import (
 // accident and hide half the defect from a test that is otherwise correct.
 type floatOrderingRow struct {
 	id   int64
-	seed string // what INSERT ... VALUES accepts
+	seed string
 	// makeNonFinite is an UPDATE assignment expression run afterwards, or ""
-	// when the seed is already the final value. NaN and +/-Inf cannot be
-	// written through INSERT ... VALUES — the proto-write boundary rejects
-	// them with 22023 "cannot store NaN or Infinity" — but UPDATE does not
-	// route through that guard.
+	// when the seed is already the final value.
+	//
+	// The two-step seeding is HISTORICAL, not required: INSERT … VALUES once
+	// rejected NaN and +/-Inf with 22023 while UPDATE did not, so the ladder
+	// was built around the one path that worked. Every write path now accepts
+	// them (see nonfinite_float_write_symmetry_fdb_test.go). It is kept because
+	// the arithmetic is how the ladder OBTAINS its two distinct NaN payloads —
+	// `(+Inf) + (-Inf)` is the invalid operation that yields the sign-bit-SET
+	// quiet NaN, which no literal spells.
 	makeNonFinite string
 	label         string
 }

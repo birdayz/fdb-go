@@ -144,9 +144,14 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 // ConvertToProtoValue converts a SQL-level driver.Value (int64,
 // float64, string, bool, []byte) to a protoreflect.Value matching
 // the field descriptor's kind. Range checks match Java's CastValue
-// behaviour (LONG_TO_INT / DOUBLE_TO_LONG / DOUBLE_TO_FLOAT etc.);
-// NaN/Inf in float columns are rejected as silent-data-corruption
-// vectors.
+// behaviour (LONG_TO_INT / DOUBLE_TO_LONG / DOUBLE_TO_FLOAT etc.).
+//
+// A FLOAT/DOUBLE column carries every IEEE-754 value, NaN and ±Infinity
+// included — Java's does, and so does the executor-side converter that UPDATE
+// and INSERT … SELECT reach. The only float rejection left is the DOUBLE→FLOAT
+// narrowing range check, and it is about what the NARROWING would CHANGE (a
+// finite double past ±MaxFloat32 silently becomes Infinity), not about
+// finiteness as such.
 //
 // An ARRAY column takes the evaluated array literal — the []any an
 // ArrayConstructorValue produces (Java's LightArrayConstructorValue
@@ -258,13 +263,16 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 	case protoreflect.FloatKind:
 		switch v := val.(type) {
 		case float64:
-			// Java CastValue.DOUBLE_TO_FLOAT range-checks against ±MaxFloat
-			// and rejects NaN/Inf. Reject here too — silent +Inf from
-			// overflow is a value corruption.
-			if math.IsNaN(v) || math.IsInf(v, 0) {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-					"cannot store NaN or Infinity in FLOAT column %q", fd.Name())
-			}
+			// The range check rejects what the NARROWING would CHANGE: a finite
+			// double beyond ±MaxFloat32 becomes Infinity in float32, which is
+			// silent value corruption. NaN and ±Infinity narrow exactly, so
+			// they are not this check's business — NaN passes it (every
+			// comparison against NaN is false) and ±Infinity fails it, which is
+			// the same verdict the executor's converter reaches for the same
+			// reason. Both must agree: UPDATE and INSERT … SELECT go through
+			// that converter and INSERT … VALUES through this one, and a column
+			// that accepts a value through one syntax and not another is a
+			// defect no matter which answer is the good one.
 			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %v out of range for FLOAT column %q", v, fd.Name())
@@ -282,13 +290,14 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 	case protoreflect.DoubleKind:
 		switch v := val.(type) {
 		case float64:
-			// NaN/Inf are silent data corruption vectors — a later read
-			// via ProtoValueToDriver would pass them through and confuse
-			// comparisons / aggregates.
-			if math.IsNaN(v) || math.IsInf(v, 0) {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-					"cannot store NaN or Infinity in DOUBLE column %q", fd.Name())
-			}
+			// Every IEEE-754 double, NaN and ±Infinity included. Java stores
+			// them: nothing on its write or query path inspects a double's
+			// finiteness (the whole of fdb-record-layer-core's NaN awareness is
+			// CastValue.java:139-169, which is about explicit numeric CASTs),
+			// and its comparator is Double.compareTo, which ranks NaN rather
+			// than refusing it. A guard here also contradicted the executor's
+			// converter, which UPDATE and INSERT … SELECT reach — the same
+			// column accepted or refused the same value by syntax alone.
 			return protoreflect.ValueOfFloat64(v), nil
 		case int64:
 			return protoreflect.ValueOfFloat64(float64(v)), nil
