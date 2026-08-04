@@ -393,6 +393,7 @@ go_test(
         "quality_probes_test.go",
         "quoted_machine_alias_fdb_test.go",
         "rcte_crossjoin_probe_test.go",
+        "readable_index_view_latency_fdb_test.go",
         "record_constructor_expression_fdb_test.go",
         "recursive_cte_alias_frontier_test.go",
         "recursive_cte_computed_leg_projection_fdb_test.go",

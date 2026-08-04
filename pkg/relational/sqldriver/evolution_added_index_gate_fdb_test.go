@@ -1,38 +1,36 @@
 package sqldriver_test
 
 // An index added by METADATA EVOLUTION has no index-state key until the store
-// header is reconciled at store open (checkPossiblyRebuild). The planner reads
-// index states BEFORE any store is opened — fetchReadableIndexes runs on the
-// planning path, ahead of the plan-cache lookup — and treats "no stored state"
-// as READABLE, which is Java's RecordStoreState default.
+// header is reconciled at store open (checkPossiblyRebuild). Two behaviours
+// decide what a query issued in that window sees, and they are only correct
+// TOGETHER — each one alone is a live defect:
 //
-// That optimism is only safe because reconciliation happens in the SAME
-// transaction that then executes the scan, and because Go's
-// getRecordCountForRebuildPolicy reports 0 records for a store with no record
-// count key (the relational metadata never sets one), so
-// DefaultIndexRebuildPolicy always returns READABLE and the index is built
-// inline at open, before the scan reads it.
+//  1. WHAT RECONCILIATION DOES. getRecordCountForRebuildPolicy has no cheap
+//     count to consult (the relational metadata sets no record-count key), so
+//     it does what Java's getRecordCountForRebuildIndexes does
+//     (FDBRecordStore.java:4862-4884): scan for a single record and report
+//     MAX_VALUE for a non-empty store. Above MAX_RECORDS_FOR_REBUILD the
+//     evolution-added index is therefore left DISABLED for a background build
+//     instead of being rebuilt INLINE inside the store-open transaction — an
+//     inline build on a large store is a full index build against the 5s /
+//     10MB / 100k-key limits.
 //
-// The tests below pin the OBSERVABLE contract, not that mechanism: a query
-// issued after a metadata evolution and before any reconciliation must return
-// CORRECT rows. It holds under the current inline-rebuild behaviour and it
-// would equally hold under a planner gate that declined the unbuilt index and
-// fell back to a base-table scan. What it does NOT tolerate is the planner
-// selecting an index the store then refuses.
+//  2. WHAT THE PLANNER SEES. fetchReadableIndexes takes the readable-index
+//     view off the OPENED store (PlanContext.java:250-252 does exactly that),
+//     so the state it consults is the state reconciliation has already
+//     settled. Read speculatively from the index-state subspace instead, and
+//     an evolution-added index — which has no state key yet — reads as
+//     READABLE and gets planned into a scan the store then refuses.
 //
-// This is a live tripwire, not decoration. Java's
-// getRecordCountForRebuildIndexes (FDBRecordStore.java:4862-4880) falls back to
-// a one-record scan and reports Long.MAX_VALUE for a NON-EMPTY store, so under
-// Java's default checker the evolution-added index is left DISABLED rather than
-// built inline. Aligning Go's fallback with Java's turns the planner's
-// optimistic default into a live defect, and these tests are what says so:
-// measured under exactly that change, both fail with
+// Fixing 1 without 2 ARMS the planner hole: the index really is DISABLED and
+// the planner really would pick it. Fixing 2 without 1 hides it: everything is
+// rebuilt inline, so the planner's guess is never wrong.
 //
-//	index is not readable: T_BY_C is DISABLED
-//
-// on a plan that still names the index. If they redden, the remedy is in the
-// planner gate (fetchReadableIndexes must not assume an index added since the
-// store's recorded metadata version is readable), not here.
+// The tests below pin the OBSERVABLE contract on both axes. Above the
+// threshold: the query returns CORRECT rows, the plan does NOT name the
+// unbuilt index, and the index really is DISABLED (so the fallback is being
+// exercised, not bypassed by an inline rebuild). Below it: the inline build
+// still happens, as it does in Java, and the index IS used.
 
 import (
 	"context"
@@ -293,6 +291,45 @@ func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) 
 			"that it did — strictly worse than the execution error.", got, wantRows, plan)
 	}
 	t.Logf("plan on the evolved metadata: %s", plan)
+
+	// AXIS 1 — RECONCILIATION. The store is above MAX_RECORDS_FOR_REBUILD, so
+	// the store open that has now happened must have left T_BY_C DISABLED, not
+	// built it inline. Without this the correct answer above proves nothing:
+	// an inline rebuild produces exactly the same rows, and the whole planner
+	// gate is untested because the index was never unreadable.
+	evolRequireState(t, dbPath, schemaName, "T_BY_C", recordlayer.IndexStateDisabled,
+		"a 250-record store is far above Java's MAX_RECORDS_FOR_REBUILD (200, "+
+			"FDBRecordStore.java:194,2471), so an evolution-added index must be left for a "+
+			"background build. READABLE here means getRecordCountForRebuildPolicy reported a "+
+			"count small enough to rebuild inline — i.e. it is back to reporting 0 for a store "+
+			"with no record-count key, and every evolution-added index on every store is now "+
+			"built inside the store-open transaction.")
+
+	// AXIS 2 — THE PLANNER GATE. A DISABLED index must not appear in the plan.
+	// The correct answer above already implies this (a scan of it would have
+	// errored), but naming it explicitly is what fails LOUDLY and locally if
+	// the planner ever selects it again.
+	if strings.Contains(plan, "T_BY_C") {
+		t.Fatalf("the plan names the DISABLED evolution-added index: %s\n"+
+			"fetchReadableIndexes must take its view from the OPENED store "+
+			"(PlanContext.java:250-252), where reconciliation has already settled the state.", plan)
+	}
+}
+
+// evolRequireState asserts the stored state of one index, with `why` explaining
+// what a mismatch means.
+func evolRequireState(t *testing.T, dbPath, schemaName, index string, want recordlayer.IndexState, why string) {
+	t.Helper()
+	states := evolIndexStates(t, dbPath, schemaName)
+	got, stored := states[index]
+	if !stored {
+		// Absent means READABLE: only the exceptions are written down.
+		got = recordlayer.IndexStateReadable
+	}
+	if got != want {
+		t.Fatalf("index %s is %v after reconciliation, want %v (all states: %v)\n%s",
+			index, got, want, states, why)
+	}
 }
 
 // TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation is the
@@ -364,4 +401,126 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 			got, wantRows, plan)
 	}
 	t.Logf("plan on the evolved metadata: %s", plan)
+
+	// AXIS 1 — both the owner AND its auto-emitted companion are
+	// evolution-added, and on a store this size both must be left for a
+	// background build. Checking only the owner would miss the companion,
+	// which is the index that decides which groups EXIST: a merge driven from
+	// an unbuilt companion drops live groups silently.
+	const owner = "T_SUM_V_BY_C"
+	companion := recordlayer.GroupCountCompanionName(owner)
+	const why = "a 250-record store is above Java's MAX_RECORDS_FOR_REBUILD (200, " +
+		"FDBRecordStore.java:194,2471), so neither the grouped SUM index nor its " +
+		"__GROUP_COUNT companion may be rebuilt inline in the store-open transaction."
+	evolRequireState(t, dbPath, schemaName, owner, recordlayer.IndexStateDisabled, why)
+	evolRequireState(t, dbPath, schemaName, companion, recordlayer.IndexStateDisabled, why)
+
+	// AXIS 2 — neither may appear in the plan; the answer above must come from
+	// streaming aggregation over the base table.
+	for _, name := range []string{owner, companion} {
+		if strings.Contains(plan, name) {
+			t.Fatalf("the plan names the DISABLED evolution-added index %s: %s\n"+
+				"Falling back to streaming aggregation until the background build "+
+				"completes is the CORRECT behaviour here; planning the unbuilt index is not.",
+				name, plan)
+		}
+	}
+}
+
+// TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline is the
+// other side of the threshold, and it is what stops the fix above from
+// degenerating into "never build anything inline".
+//
+// WHICH stores are still inline is worth being exact about, because "small
+// stores build inline" is only true when a cheap count EXISTS. Java's
+// getRecordCountForRebuildIndexes (FDBRecordStore.java:4836-4901) tries a
+// record-type COUNT index, then a universal COUNT index, and only when both
+// are absent does it fall back to the one-record scan — which reports
+// Long.MAX_VALUE for ANY non-empty store, not a small number for a small one
+// (FDBRecordStore.java:4862-4884). The relational metadata sets no
+// record-count key, so at the SQL layer the fallback is always what runs and
+// EMPTY is the only remaining inline case. A store with 20 records is
+// therefore left for a background build exactly as a store with 250 is; that
+// is Java's behaviour, not a Go conservatism.
+//
+// So: evolve an EMPTY store, and the RFC-209 companion must be built at open
+// and the group-existence merge must fire on the rows loaded afterwards — the
+// index is used, not fallen back from.
+func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	h := newEvolHarness(t)
+
+	const dbPath = "/testdb_evolaggempty"
+	const schemaName = "S"
+	const tmplName = "evolaggempty"
+
+	// rows = 0: the schema is created and the aggregate index is added before
+	// any data lands, which is the ordinary "add an index up front" shape.
+	db := evolSetup(t, h, dbPath, schemaName, tmplName, 0)
+	_ = db
+
+	tmpl2 := evolTemplate(t, tmplName, 2, false, true)
+	h.mustRun(t, "evolve", func(txn api.Transaction) error {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+			return err
+		}
+		return h.cat.RepairSchema(txn, dbPath, schemaName)
+	})
+
+	if states := evolIndexStates(t, dbPath, schemaName); len(states) != 0 {
+		t.Fatalf("an evolution-added aggregate index already has a stored state (%v); "+
+			"the pre-reconciliation window this test guards has moved", states)
+	}
+
+	// Load the rows AFTER the evolution. Reconciliation happens on the store
+	// open this INSERT performs; the index is built inline over an empty store
+	// and then maintained by the writes.
+	db2 := evolReopen(t, dbPath, schemaName)
+	var vals []string
+	for i := 1; i <= 20; i++ {
+		vals = append(vals, fmt.Sprintf("(%d,%d,%d)", i, i%10, i*10))
+	}
+	mwjoMustExec(t, db2, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
+
+	// C = PK%10 over PK 1..20: each group holds two rows. Group g (1..9) has
+	// PKs g and g+10, so SUM(V) = 10*(2g+10) = 20g+100; group 0 has PKs 10 and
+	// 20, SUM 300.
+	const q = "SELECT C, SUM(V) FROM T GROUP BY C ORDER BY C"
+	const wantRows = "[0 300] [1 120] [2 140] [3 160] [4 180] " +
+		"[5 200] [6 220] [7 240] [8 260] [9 280]"
+
+	plan := evolExplain(t, db2, ctx, q)
+	got, err := evolQueryPairs(t, db2, ctx, q)
+	if err != nil {
+		t.Fatalf("query on an EMPTY-at-evolution store failed: %v\n  plan: %s", err, plan)
+	}
+	if got != wantRows {
+		t.Fatalf("empty-at-evolution store returned wrong rows: got %s, want %s\n  plan: %s",
+			got, wantRows, plan)
+	}
+
+	// The inline build must actually have happened: DISABLED here would mean
+	// the record-count fallback stopped distinguishing an EMPTY store from an
+	// unbounded one and now refuses every inline build — correct answers, but
+	// Java's inline path silently gone.
+	const owner = "T_SUM_V_BY_C"
+	companion := recordlayer.GroupCountCompanionName(owner)
+	const why = "an EMPTY store reports a record count of 0 in Java too " +
+		"(FDBRecordStore.java:4884), which is <= MAX_RECORDS_FOR_REBUILD, so Java " +
+		"builds the index inline at store open (FDBRecordStore.java:2471)."
+	evolRequireState(t, dbPath, schemaName, owner, recordlayer.IndexStateReadable, why)
+	evolRequireState(t, dbPath, schemaName, companion, recordlayer.IndexStateReadable, why)
+
+	// And, the built index being readable, the group-existence merge must be
+	// what answers the query — otherwise "built inline" is true but inert.
+	if !strings.Contains(plan, owner) {
+		t.Fatalf("the inline-built aggregate index is not in the plan: %s\n"+
+			"Both indexes are READABLE, so the RFC-209 merge should be driving this "+
+			"query rather than streaming aggregation over the base table.", plan)
+	}
+	t.Logf("plan on the empty-at-evolution store: %s", plan)
 }

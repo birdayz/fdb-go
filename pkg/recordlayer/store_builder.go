@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"fdb.dev/pkg/dst"
@@ -442,10 +443,6 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 	return nil
 }
 
-// getRecordCountForRebuildPolicy returns the approximate record count
-// for the IndexRebuildPolicy decision. Uses GetRecordCount if available,
-// falls back to 0 (which triggers inline rebuild — safe default for stores
-// without counting enabled).
 // recordsSubspaceEmpty reports whether the records subspace contains no keys.
 // Uses a non-snapshot limited range read so the read-conflict over the scanned
 // range makes a decision based on emptiness safe against a concurrent insert
@@ -463,6 +460,29 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 	return len(kvs) == 0, nil
 }
 
+// getRecordCountForRebuildPolicy returns the record count the
+// IndexRebuildPolicy decides on. Port of Java's
+// getRecordCountForRebuildIndexes (FDBRecordStore.java:4836-4901).
+//
+// With a record-count key the exact snapshot count is available and is what
+// the policy sees. WITHOUT one there is no cheap count, and Java does NOT
+// treat that as "zero records": it scans for a SINGLE record
+// (FDBRecordStore.java:4862-4884) and reports Long.MAX_VALUE the moment the
+// store turns out to be non-empty, 0 only when it is genuinely empty.
+//
+// The distinction is the whole safety property. Reporting 0 for an unknown
+// count makes DefaultIndexRebuildPolicy answer READABLE unconditionally, so
+// EVERY index added by a metadata evolution is built INLINE, inside the
+// transaction that opened the store — a full index build against the 5s /
+// 10MB / 100k-key transaction limits on any store big enough to matter.
+// Reporting MAX_VALUE for a non-empty store instead routes such an index to
+// DISABLED (or WRITE_ONLY under WriteOnlyIfTooLargePolicy) for a background
+// build, and leaves the inline path to the small and empty stores where Java
+// also takes it — recordCount <= MAX_RECORDS_FOR_REBUILD, FDBRecordStore.java:2471.
+//
+// The emptiness probe is non-snapshot (see recordsSubspaceEmpty) so a
+// concurrent insert invalidates an "empty, build inline" decision rather than
+// racing it.
 func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 	if store.metaData.GetRecordCountKey() != nil {
 		count, err := store.GetRecordCount()
@@ -471,11 +491,14 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 		}
 		return count, nil
 	}
-	// Without counting, we can't know the count cheaply.
-	// Return 0 to trigger inline rebuild (safe for small stores,
-	// matches Java's lazy evaluation where count is only fetched
-	// if the checker explicitly requests it).
-	return 0, nil
+	empty, err := store.recordsSubspaceEmpty()
+	if err != nil {
+		return 0, err
+	}
+	if empty {
+		return 0, nil
+	}
+	return math.MaxInt64, nil
 }
 
 // createStoreHeader creates a DataStoreInfo header for a new record store.

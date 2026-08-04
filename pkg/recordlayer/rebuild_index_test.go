@@ -448,6 +448,14 @@ var _ = Describe("RebuildIndex", func() {
 
 			// Phase 2: Open with metadata that has a new price index.
 			// This should auto-rebuild the index.
+			//
+			// The policy is stated explicitly because the DEFAULT one would not
+			// rebuild inline here: with no record-count key the count fallback
+			// reports an unbounded store for any non-empty one (Java's
+			// getRecordCountForRebuildIndexes, FDBRecordStore.java:4862-4884),
+			// so five records is already "too many". This spec is about the
+			// rebuild MACHINERY, not about which stores the default policy
+			// picks — that is pinned separately.
 			priceIndex := NewIndex("Order$price", Field("price"))
 			builder2 := baseMetaData()
 			builder2.AddIndex("Order", priceIndex)
@@ -456,7 +464,8 @@ var _ = Describe("RebuildIndex", func() {
 
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(AlwaysRebuildPolicy).CreateOrOpen()
 				if err != nil {
 					return nil, err
 				}
@@ -613,9 +622,13 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
+			// Explicit policy, for the reason given on the single-index spec
+			// above: the default one leaves an evolution-added index for a
+			// background build on any non-empty store.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(AlwaysRebuildPolicy).CreateOrOpen()
 				if err != nil {
 					return nil, err
 				}

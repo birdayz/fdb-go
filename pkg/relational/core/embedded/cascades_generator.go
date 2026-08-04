@@ -310,11 +310,16 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// gate below would be defeated for exactly the queries that run often
 	// enough to be cached.
 	//
-	// Java gets the store state for free: its store is already open when
-	// planning starts. Go plans before opening one, so this is a real read on
-	// the planning path. It is a single snapshot range read over the
-	// index-state subspace, which holds only the indexes whose state differs
-	// from READABLE — empty on a healthy store.
+	// This OPENS the store, as Java does before planning begins, so the state
+	// consulted is the one checkVersion has reconciled — see
+	// fetchReadableIndexes. That open is the cost of the readable-index view
+	// on this path, and it is a small REGRESSION against the speculative
+	// index-state read it replaces — see TestFDB_ReadableIndexViewLatency,
+	// which is the harness those numbers come from and the way to re-derive
+	// them: ~1.28 ms of a 2.71 ms cached point-lookup SELECT, against ~1.21 ms
+	// for the speculative read. About 70 microseconds, ~2.6%, and it buys a
+	// view that reconciliation has already settled rather than one execution
+	// is relied upon to make true afterwards.
 	popts.config.ReadableIndexes = g.fetchReadableIndexes(ctx, md)
 	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
@@ -2207,30 +2212,27 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 // execution with its own diagnostic rather than being silently re-planned into
 // a full scan here.
 //
-// COST, and why it is paid every time. This runs BEFORE the plan-cache lookup
-// (it is part of the cache key), so a plan-cache HIT still pays for it.
-// Measured on a cached point-lookup SELECT, 500 iterations after a 20-query
-// warmup, three runs each: 5.489 / 5.503 / 5.510 ms per query with this read
-// against 4.277 / 4.278 / 4.280 ms with it short-circuited to
-// AllIndexesReadable(). That is ~1.22 ms, about 22% of the cached-SELECT
-// latency — material, not noise (the spread within each condition is under
-// 25 microseconds).
+// WHERE THE STATE COMES FROM, and why it must be an OPENED store. Java reads
+// the state off a store that is already open: PlanContext.Builder.fromRecordStore
+// (PlanContext.java:250-252) passes recordStore.getRecordStoreState(), and the
+// store reached that call through checkVersion, which has already reconciled
+// every index added since the header's recorded metadata version
+// (FDBRecordStore.checkRebuildIndexes, FDBRecordStore.java:4743-4767). So in
+// Java the planner never sees an index whose state is still undecided.
 //
-// The obvious remedy is a session-scoped memo keyed on the metadata version,
-// and it is WRONG. Index state is stored in its own subspace and changing it
-// does not bump md.Version(), so such a memo pins a readable-index view for the
-// life of the session: an index that goes WRITE_ONLY keeps being planned into
-// scans that then fail at execution — the exact failure this function exists to
-// prevent, moved one level up where the plan-cache key can no longer catch it.
-// That is measured, not argued: the memo reddens the three withdrawn arms of
-// TestFDB_NonReadableIndexIsNotAMatchCandidate (and, tellingly, leaves its
-// "restored" arm green).
+// Reading the index-state subspace directly instead — cheaper, and what this
+// did — reproduces Java's answer only for indexes the metadata has already
+// been reconciled against. An index added by a metadata EVOLUTION has no state
+// key at all until some store open writes one, and "no stored state" means
+// READABLE, so the planner would hand the query an index that holds no
+// entries. Opening the store here makes that structurally impossible: the
+// state consulted is the state reconciliation has already settled and
+// committed, not a guess that execution's own store open is then relied upon
+// to make true.
 //
-// A sound memo needs an invalidation signal that tracks index STATE. Nothing
-// cheaper than this read currently carries one, so the read stays. The honest
-// framing is Java's: Java pays nothing here only because its store is already
-// open when planning begins, which is a difference in when the store is opened,
-// not a cheaper way to learn the same fact.
+// It also runs through the same storeIn as execution, so an explicit
+// transaction reuses one open store across planning and every page rather than
+// opening a second one.
 func (g *cascadesGenerator) fetchReadableIndexes(ctx context.Context, md *recordlayer.RecordMetaData) cascades.ReadableIndexes {
 	c := g.c
 	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
@@ -2245,12 +2247,15 @@ func (g *cascadesGenerator) fetchReadableIndexes(ctx context.Context, md *record
 		return cascades.AllIndexesReadable()
 	}
 
-	result, runErr := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		states, stateErr := recordlayer.LoadIndexStates(rtx, ss)
-		if stateErr != nil {
-			return nil, stateErr
+	result, runErr := c.runInCapturedTx(ctx, c.activeTx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, storeErr := c.storeIn(rctx, c.activeTx, ss)
+		if storeErr != nil {
+			return nil, storeErr
 		}
-		return states, nil
+		// The raw map holds only the states that DIFFER from READABLE, the
+		// same contract LoadIndexStates has and the same one Java's
+		// RecordStoreState applies: an absent index is readable.
+		return store.GetAllIndexStatesMap(), nil
 	})
 	if runErr != nil || result == nil {
 		return cascades.AllIndexesReadable()
