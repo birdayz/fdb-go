@@ -16,7 +16,7 @@ package sqldriver_test
 //     10MB / 100k-key limits.
 //
 //  2. WHAT THE PLANNER SEES. fetchReadableIndexes takes the readable-index
-//     view off the OPENED store (PlanContext.java:249-251 does exactly that),
+//     view off the OPENED store (PlanContext.java:249-252 does exactly that),
 //     so the state it consults is the state reconciliation has already
 //     settled. Read speculatively from the index-state subspace instead, and
 //     an evolution-added index — which has no state key yet — reads as
@@ -312,7 +312,7 @@ func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) 
 	if strings.Contains(plan, "T_BY_C") {
 		t.Fatalf("the plan names the DISABLED evolution-added index: %s\n"+
 			"fetchReadableIndexes must take its view from the OPENED store "+
-			"(PlanContext.java:249-251), where reconciliation has already settled the state.", plan)
+			"(PlanContext.java:249-252), where reconciliation has already settled the state.", plan)
 	}
 }
 
