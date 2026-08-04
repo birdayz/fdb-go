@@ -34,7 +34,7 @@ import (
 //	low          groups == rows/10000  (10 groups — the aggregate index's
 //	                                    home turf, for the other end of the axis)
 //
-// Each regime builds two schemas over IDENTICAL data:
+// Each regime builds three schemas over IDENTICAL data:
 //
 //   - "withagg" declares SUM(amount) GROUP BY customer_id, so RFC-209's
 //     companion discovery applies and the query plans GroupExistenceMerge over
@@ -43,14 +43,31 @@ import (
 //     plan is aggregation over a base-table scan (rowCount records, plus the
 //     grouping work) — the plan the struck §5.3.1 flip said should win at high
 //     group counts.
+//   - "refcount" declares ONLY a grouped COUNT(*) on customer_id. By §5.3(a) a
+//     grouped COUNT(*) is its own group-existence oracle, so it needs no
+//     companion and plans as a BARE SINGLE BY_GROUP aggregate-index scan over
+//     groupCount entries. This is the REFERENCE: the plan shape §7's cost
+//     criterion is written against.
+//
+// The reference exists because §7's real baseline — the pre-RFC
+// aggregate-index-only plan, one scan and wrong — is UNCONSTRUCTIBLE by design.
+// Once a SUM owner exists the companion is auto-emitted and the planner always
+// builds the merge, so there is nothing to start a stopwatch on. A grouped
+// COUNT(*) at the same group cardinality executes the identical physical shape
+// (one BY_GROUP scan, one aggregate value per group, an ORDER BY the scan
+// already satisfies, a HAVING over the aggregate) and IS constructible. §7's
+// bound is therefore timed against something that runs, not derived from an
+// argument about index I/O.
 //
 // There is deliberately NO assertion about which plan is faster: which one wins
 // is the question being asked, so hardcoding an answer would make the
 // measurement unable to report the interesting outcome. What is asserted is
-// correctness — both plans must return the same rows, and both must match a
-// ground truth computed from the generated data in Go. The numbers are logged,
-// one greppable line per regime (prefix GEMERGE_REGIME), for §7's acceptance
-// criterion to be written against.
+// correctness — the two plans must return the same rows, both must match a
+// ground truth computed from the generated data in Go, and the reference must
+// match its own independently computed ground truth. The numbers are logged,
+// two greppable lines per regime (prefixes GEMERGE_REGIME for merge-vs-base and
+// GEMERGE_REFERENCE for merge-vs-single-scan), for §7's acceptance criterion to
+// be written against.
 func TestFDB_GroupExistenceMerge_VsStreamingAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -106,6 +123,7 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	statuses := []string{"pending", "shipped", "delivered", "cancelled"}
 	orders := make([]orderRow, rows)
 	groupSums := make([]int64, groups)
+	groupCounts := make([]int64, groups)
 	for i := range orders {
 		orders[i] = orderRow{
 			custID: custIDs[i],
@@ -113,6 +131,7 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 			status: statuses[i%len(statuses)],
 		}
 		groupSums[orders[i].custID] += int64(orders[i].amount)
+		groupCounts[orders[i].custID]++
 	}
 
 	// The HAVING threshold is the MEDIAN group sum, computed from the data
@@ -144,7 +163,67 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	query := fmt.Sprintf("SELECT customer_id, SUM(amount) FROM orders "+
 		"GROUP BY customer_id HAVING SUM(amount) > %d ORDER BY customer_id", threshold)
 
-	build := func(sfx string, aggIndex bool) *stressHarness {
+	// The REFERENCE query's threshold cannot be picked the same way, because
+	// the median trick relies on a spread the group SIZES do not have. custID is
+	// an exact partition (i % groups), so every group's row count is either
+	// floor(rows/groups) or that plus one — at most two distinct values, and
+	// exactly ONE whenever groups divides rows. Three of the four regimes
+	// (unique, moderate, low) are that uniform case, and there no `COUNT(*) > T`
+	// is non-degenerate: every threshold selects all groups or none.
+	//
+	// So the threshold is chosen by SEARCH over the count values actually
+	// present, taking the non-degenerate one closest to 50% selectivity. Where
+	// none exists — the uniform regimes — the fallback is min-1, which selects
+	// EVERY group, and the log line says so (refUniform=true). Selecting every
+	// group is the honest choice of the two available degeneracies: it makes the
+	// reference do at least as much work as the merge does (same scan, more rows
+	// out), so the merge/reference ratio it produces is not flattered by a
+	// reference that skipped the output path. A threshold selecting nothing
+	// would scan the same entries but return none, understating the reference
+	// and inflating the ratio.
+	distinct := append([]int64(nil), groupCounts...)
+	slices.Sort(distinct)
+	distinct = slices.Compact(distinct)
+	refThreshold := distinct[0] - 1
+	refUniform := true
+	bestGap := 0
+	for _, cand := range distinct {
+		n := 0
+		for _, c := range groupCounts {
+			if c > cand {
+				n++
+			}
+		}
+		if n == 0 || n == groups {
+			continue
+		}
+		gap := n - groups/2
+		if gap < 0 {
+			gap = -gap
+		}
+		if refUniform || gap < bestGap {
+			refThreshold, bestGap, refUniform = cand, gap, false
+		}
+	}
+	refExpectedRows := 0
+	for _, c := range groupCounts {
+		if c > refThreshold {
+			refExpectedRows++
+		}
+	}
+	if refExpectedRows == 0 {
+		t.Fatalf("regime %s: reference threshold %d selects no group out of %d — the reference would measure an empty result, not a scan",
+			name, refThreshold, groups)
+	}
+	if refUniform && refExpectedRows != groups {
+		t.Fatalf("regime %s: uniform-count fallback threshold %d selected %d of %d groups, expected all",
+			name, refThreshold, refExpectedRows, groups)
+	}
+
+	refQuery := fmt.Sprintf("SELECT customer_id, COUNT(*) FROM orders "+
+		"GROUP BY customer_id HAVING COUNT(*) > %d ORDER BY customer_id", refThreshold)
+
+	build := func(sfx string, extraIndexDDL string) *stressHarness {
 		h := newStressHarness(t, sfx)
 		ddl := `
 		CREATE TABLE orders (
@@ -156,9 +235,7 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		)
 		CREATE INDEX idx_customer ON orders (customer_id)
 		`
-		if aggIndex {
-			ddl += "\nCREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id\n"
-		}
+		ddl += extraIndexDDL
 		h.createSchema(ddl)
 		h.bulkInsert("orders", rows, func(i int) string {
 			o := orders[i]
@@ -167,9 +244,9 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		return h
 	}
 
-	explainOf := func(h *stressHarness) string {
+	explainOf := func(h *stressHarness, q string) string {
 		out := &strings.Builder{}
-		rs, err := h.db.Query("EXPLAIN " + query)
+		rs, err := h.db.Query("EXPLAIN " + q)
 		if err != nil {
 			t.Fatalf("EXPLAIN: %v", err)
 		}
@@ -184,13 +261,18 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		return out.String()
 	}
 
-	withAgg := build(suffix+"_withagg", true)
-	noAgg := build(suffix+"_noagg", false)
+	withAgg := build(suffix+"_withagg",
+		"\nCREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id\n")
+	noAgg := build(suffix+"_noagg", "")
+	refCount := build(suffix+"_refcount",
+		"\nCREATE INDEX count_by_customer AS SELECT COUNT(*) FROM orders GROUP BY customer_id\n")
 
-	mergePlan := explainOf(withAgg)
-	basePlan := explainOf(noAgg)
+	mergePlan := explainOf(withAgg, query)
+	basePlan := explainOf(noAgg, query)
+	refPlan := explainOf(refCount, refQuery)
 	t.Logf("  merge plan: %s", mergePlan)
 	t.Logf("  base  plan: %s", basePlan)
+	t.Logf("  ref   plan: %s", refPlan)
 
 	if !strings.Contains(mergePlan, "GroupExistenceMerge") {
 		t.Fatalf("regime %s: with the aggregate index declared, expected the companion-joined plan; got %s", name, mergePlan)
@@ -199,13 +281,26 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		t.Fatalf("regime %s: without the aggregate index, expected a base-table plan; got %s", name, basePlan)
 	}
 
+	// The reference is only a reference if it is the SINGLE-SCAN shape. A
+	// grouped COUNT(*) is its own group-existence oracle (§5.3(a)), so companion
+	// discovery must find the index already sufficient and emit no second scan.
+	// If either assertion fails, the reference is measuring some other plan and
+	// §7's bound would be written against the wrong thing — that is a finding
+	// about companion discovery, not a knob to loosen.
+	if strings.Contains(refPlan, "GroupExistenceMerge") {
+		t.Fatalf("regime %s: the grouped COUNT(*) reference is its own existence oracle (§5.3(a)) and must not be companion-joined; got %s", name, refPlan)
+	}
+	if n := strings.Count(refPlan, "AggregateIndex("); n != 1 {
+		t.Fatalf("regime %s: the reference must be a single aggregate-index scan; found %d AggregateIndex scans in %s", name, n, refPlan)
+	}
+
 	// Time each side twice and keep the faster run, so a cold first touch of a
 	// freshly written index subspace is not reported as the plan's cost.
-	best := func(h *stressHarness) (int, float64) {
+	best := func(h *stressHarness, q string) (int, float64) {
 		bestMs := -1.0
 		rowCount := -1
 		for range 2 {
-			r := h.timeQuery(query)
+			r := h.timeQuery(q)
 			r.mustSucceed(t, "HAVING")
 			ms := float64(r.Duration.Microseconds()) / 1000.0
 			if bestMs < 0 || ms < bestMs {
@@ -216,8 +311,9 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		return rowCount, bestMs
 	}
 
-	mergeRows, mergeMs := best(withAgg)
-	baseRows, baseMs := best(noAgg)
+	mergeRows, mergeMs := best(withAgg, query)
+	baseRows, baseMs := best(noAgg, query)
+	refRows, refMs := best(refCount, refQuery)
 
 	// Correctness first — the one invariant, and it holds regardless of which
 	// plan is faster.
@@ -228,6 +324,10 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 		t.Fatalf("regime %s: both plans returned %d rows, but the data says %d groups have SUM(amount) > %d",
 			name, mergeRows, expectedRows, threshold)
 	}
+	if refRows != refExpectedRows {
+		t.Fatalf("regime %s: the reference returned %d rows, but the data says %d groups have COUNT(*) > %d",
+			name, refRows, refExpectedRows, refThreshold)
+	}
 
 	winner := "merge"
 	if baseMs < mergeMs {
@@ -236,6 +336,12 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	t.Logf("GEMERGE_REGIME name=%s rows=%d groups=%d rowsPerGroup=%.2f having=%d resultRows=%d mergeMs=%.2f baseMs=%.2f ratio=%.2f winner=%s",
 		name, rows, groups, float64(rows)/float64(groups), threshold, mergeRows,
 		mergeMs, baseMs, baseMs/mergeMs, winner)
+	// The single-BY_GROUP-scan reference, on its own line so the merge-vs-base
+	// line keeps its existing field set. mergeOverRef is what §7's bound is read
+	// from: how many times the correct two-stream merge costs over the
+	// single-scan shape it stands in for.
+	t.Logf("GEMERGE_REFERENCE name=%s rows=%d groups=%d refHaving=%d refUniform=%t refRows=%d refMs=%.2f mergeMs=%.2f mergeOverRef=%.2f",
+		name, rows, groups, refThreshold, refUniform, refRows, refMs, mergeMs, mergeMs/refMs)
 	if winner == "base" {
 		// Not a failure — this is the RE-OPENER, and the reason this test walks
 		// the axis instead of asserting one point. §5.3.1 no longer predicts this
