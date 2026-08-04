@@ -10,6 +10,7 @@ import com.apple.foundationdb.record.ScanProperties;
 import com.apple.foundationdb.record.TupleRange;
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.provider.foundationdb.FDBMetaDataStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
@@ -867,6 +868,126 @@ class MetaDataStoreSteps extends ConformanceBase {
             if (sumIndexName != null && !sumIndexName.isEmpty()) {
                 result.put("sumRows", scanGroupedLongIndex(store, metaData, sumIndexName));
             }
+            return result;
+        });
+    }
+
+    /**
+     * RFC-209 interop: EVOLVE the stored metadata through Java's mutating
+     * FDBMetaDataStore API — the VALIDATING path, which is a different
+     * code path from the load used by every other step here.
+     *
+     * loadAndSetCurrent / loadVersion build with validate=false
+     * (FDBMetaDataStore.java:252, :279, :366), so a store that only ever
+     * READS Go's metadata never runs MetaDataValidator over it. Every
+     * mutating API — addIndex among them — funnels into saveAndSetCurrent,
+     * which builds the NEW proto with validate=true
+     * (FDBMetaDataStore.java:376) and, when metadata is already stored,
+     * re-builds the OLD proto with validate=true as well before running the
+     * evolution validator (FDBMetaDataStore.java:394-396). That old-side
+     * rebuild is the interesting one: it drags the Go-written companion
+     * through RecordMetaDataBuilder.build(true) →
+     * MetaDataValidator.validate() (RecordMetaDataBuilder.java:1493-1496),
+     * hence through AtomicMutationIndexMaintainerFactory's IndexValidator.
+     *
+     * addIndex of an unrelated VALUE index is the smallest idiomatic
+     * evolution: FDBMetaDataStore.addIndex(String, Index) →
+     * addIndexAsync → saveAndSetCurrent (FDBMetaDataStore.java:633,
+     * :670-674).
+     *
+     * Validation failures are RETURNED, not thrown, so the Go side owns the
+     * assertion and can quote the engine's own wording either way — a step
+     * that threw would surface as harness plumbing rather than as a verdict
+     * about the companion.
+     */
+    @ConformanceStep("evolveMetaDataViaFDBMetaDataStoreJava")
+    public Map<String, Object> evolveMetaDataViaFDBMetaDataStoreJava(String clusterFile,
+                                                                     byte[] mdSubspace,
+                                                                     String recordTypeName,
+                                                                     String newIndexName,
+                                                                     String newIndexFieldName) {
+        return runInContext(clusterFile, null, context -> {
+            Map<String, Object> result = new HashMap<>();
+            FDBMetaDataStore mdStore = new FDBMetaDataStore(context, new Subspace(mdSubspace), null);
+            mdStore.setExtensionRegistry(EXTENSION_REGISTRY);
+            try {
+                mdStore.addIndex(recordTypeName,
+                    new Index(newIndexName, Key.Expressions.field(newIndexFieldName)));
+            } catch (RuntimeException e) {
+                result.put("ok", false);
+                Throwable root = e;
+                StringBuilder chain = new StringBuilder();
+                while (true) {
+                    if (chain.length() > 0) {
+                        chain.append(" <- ");
+                    }
+                    chain.append(root.getClass().getName()).append(": ").append(root.getMessage());
+                    if (root.getCause() == null || root.getCause() == root) {
+                        break;
+                    }
+                    root = root.getCause();
+                }
+                result.put("errorClass", root.getClass().getName());
+                result.put("errorMessage", String.valueOf(root.getMessage()));
+                result.put("errorChain", chain.toString());
+                return result;
+            }
+            RecordMetaData evolved = mdStore.getRecordMetaData();
+            List<String> indexNames = new ArrayList<>();
+            for (Index index : evolved.getAllIndexes()) {
+                indexNames.add(index.getName());
+            }
+            result.put("ok", true);
+            result.put("version", evolved.getVersion());
+            result.put("indexNames", indexNames);
+            return result;
+        });
+    }
+
+    /**
+     * Copy the stored metadata from one subspace to another with a single
+     * index's TYPE rewritten, writing the result with SplitHelper directly so
+     * that NEITHER engine validates it on the way in.
+     *
+     * This exists to hold a corrupted control case next to the real companion.
+     * "Java refused this metadata" is only evidence about the companion if the
+     * companion is the ONLY thing that differs, so the corrupted shape has to
+     * be produced deliberately and its exception quoted, rather than recalled.
+     */
+    @ConformanceStep("copyMetaDataWithIndexTypeJava")
+    public Map<String, Object> copyMetaDataWithIndexTypeJava(String clusterFile,
+                                                              byte[] srcSubspace,
+                                                              byte[] dstSubspace,
+                                                              String indexName,
+                                                              String newIndexType) {
+        return runInContext(clusterFile, null, context -> {
+            Map<String, Object> result = new HashMap<>();
+            Subspace srcSS = new Subspace(srcSubspace);
+            byte[] data = context.ensureActive().get(srcSS.pack(Tuple.from((Object) null, 0L))).join();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaDataProto.MetaData.Builder b = proto.toBuilder();
+            boolean rewrote = false;
+            for (int i = 0; i < b.getIndexesCount(); i++) {
+                if (b.getIndexes(i).getName().equals(indexName)) {
+                    b.getIndexesBuilder(i).setType(newIndexType);
+                    rewrote = true;
+                }
+            }
+            if (!rewrote) {
+                throw new RuntimeException("no index named " + indexName + " in stored metadata");
+            }
+            SplitHelper.saveWithSplit(context, new Subspace(dstSubspace),
+                Tuple.from((Object) null), b.build().toByteArray(), null);
+            result.put("found", true);
             return result;
         });
     }

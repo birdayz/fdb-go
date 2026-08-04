@@ -233,6 +233,52 @@ Dropping that zero is the read side's job, which Go does via `liveGroupsOnly`, s
 Go's correctness never depends on Java clearing anything. If Java ever begins
 clearing zeroed groups, that expectation is where it surfaces.
 
+Caveat 1 says "open through `FDBMetaDataStore`", and that leaves one question the
+read path cannot answer: **evolution**. Every read entry point builds with
+`validate=false` (`FDBMetaDataStore.java:252,279,366`), but every *mutating* entry
+point — `addIndex`, `dropIndex`, `updateRecords`, `mutateMetaData` — funnels into
+`saveAndSetCurrent`, which builds the new proto with `validate=true`
+(`FDBMetaDataStore.java:376`) **and re-builds the old, Go-written proto with
+`validate=true`** before running the evolution validator
+(`FDBMetaDataStore.java:394-396`). That old-side rebuild drags the companion
+through `RecordMetaDataBuilder.build(true)` → `MetaDataValidator.validate()`
+(`RecordMetaDataBuilder.java:1493-1496`) and hence through
+`AtomicMutationIndexMaintainerFactory`'s `IndexValidator`. Had the companion
+failed there, a Go-written schema would be a poison pill: readable by a Java app
+forever, evolvable never.
+
+MEASURED — it does not fail, so there is no caveat 5. The same conformance file
+runs `FDBMetaDataStore.addIndex("T", …)` (`FDBMetaDataStore.java:633,670-674`) of
+an unrelated `VALUE` index against Go's stored template; Java returns
+`{Ok:true Version:4 IndexNames:[I_SUM I_SUM__GROUP_COUNT J_V_IDX]}`, and Go then
+re-loads the evolved metadata, still finds `I_SUM__GROUP_COUNT`, and re-scans it
+to `{a:2 b:1}`. (The read-side spec was already stronger than caveat 2 needed:
+its `RecordMetaData.build(proto)` resolves to `build(true)`
+(`RecordMetaData.java:578-580`, `RecordMetaDataBuilder.java:1431-1445`), so
+`MetaDataValidator` has always run over the companion there. What the evolution
+step adds is the old→new `MetaDataEvolutionValidator` leg and the real mutating
+API.)
+
+That measurement also settles an `InvalidExpressionException: index type does not
+support non-group fields` observed during an earlier mutation experiment on this
+branch. It is not about the companion. The throw is at
+`AtomicMutationIndexMaintainerFactory.java:99-104` and is reachable only when an
+index's *type* disagrees with its *expression* — a value-less type (`count`) over
+an expression that has grouped columns. Both directions are reproduced
+deliberately in the spec, by rewriting one index's type in the stored bytes
+(neither engine validates on that path) and re-running the same evolution:
+
+- companion (`GroupAll`, zero grouped columns) retyped `sum` → `index type only
+  supports integer field`, thrown at
+  `AtomicMutationIndexMaintainerFactory.java:131-150`. Not the observed message:
+  the per-record-type hook runs before any grouping check
+  (`IndexValidator.java:51-52`), and the companion's only column is the `STRING`
+  grouping column, so the integer check fires first and `validateGrouping(1)` is
+  never reached.
+- owner `I_SUM` (one grouped column) retyped `count` → `index type does not
+  support non-group fields; use COUNT_NOT_NULL`. This is the observed message,
+  and it comes from the corrupted type, never from the companion as Go emits it.
+
 ## 5. Design
 
 ### 5.1 Group existence is a `COUNT(*)`

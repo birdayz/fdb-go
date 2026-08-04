@@ -678,7 +678,8 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 // mergeChildWidthUnchecked is the explicit opt-out from the per-child width
 // assertion, for callers that genuinely cannot state a width. It is a NEGATIVE
 // sentinel rather than zero so that forgetting to set the width can never be
-// mistaken for choosing to skip the check.
+// mistaken for choosing to skip the check, and it is matched by EQUALITY so a
+// computed negative cannot opt out by accident.
 const mergeChildWidthUnchecked = -1
 
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
@@ -698,9 +699,12 @@ const mergeChildWidthUnchecked = -1
 // every row well-formed and the row count unchanged. That is the silent
 // wrong-rows class, so it is an error, not a best-effort nil.
 //
-// The contract is INVERTED from the obvious one, deliberately: the zero value
-// fails CLOSED. An unset width is an error, and opting out takes the explicit
-// mergeChildWidthUnchecked sentinel.
+// The contract is INVERTED from the obvious one, deliberately: any width that
+// is not a real width fails CLOSED. An unset (or otherwise nonsensical) width
+// is an error, and opting out takes the exact mergeChildWidthUnchecked
+// sentinel -- not merely "some negative number". A -2 arriving from arithmetic
+// on an empty grouping key is a bug and must be loud; only the constant means
+// "I have considered this and there is no width to state".
 //
 // The obvious spelling — "0 disables the check" — made the assertion fail OPEN,
 // and it did so invisibly. Deleting the caller's `childWidth:` line left the
@@ -710,7 +714,7 @@ const mergeChildWidthUnchecked = -1
 // whose disarmed state is also its default is not an assertion; it is a
 // suggestion that happens to be followed.
 func mergeChildEvalArg(childResults []QueryResult, expectedWidth int) (any, error) {
-	if expectedWidth == 0 {
+	if expectedWidth != mergeChildWidthUnchecked && expectedWidth <= 0 {
 		return nil, fmt.Errorf(
 			"group-existence merge: no per-child width was stated, so the plan's baked " +
 				"result-value ordinals cannot be validated against the rows actually " +
@@ -726,7 +730,7 @@ func mergeChildEvalArg(childResults []QueryResult, expectedWidth int) (any, erro
 		if p == nil || p.Type == nil {
 			return nil, nil
 		}
-		if expectedWidth > 0 && len(p.Type.Fields) != expectedWidth {
+		if expectedWidth != mergeChildWidthUnchecked && len(p.Type.Fields) != expectedWidth {
 			return nil, fmt.Errorf(
 				"group-existence merge: child %d flowed %d columns, but the plan's result "+
 					"value was baked against %d per child; every later child's aggregate "+

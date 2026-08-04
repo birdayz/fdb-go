@@ -121,4 +121,17 @@ func TestMergeChildEvalArg_OptOutRequiresTheExplicitSentinel(t *testing.T) {
 			"means 'skip the check' that deletion is invisible to the whole suite. " +
 			"Opting out must cost an explicit mergeChildWidthUnchecked.")
 	}
+
+	// Nor may any OTHER negative opt out. The sentinel is matched by equality,
+	// not by sign: a -2 falling out of arithmetic on an unexpected grouping key
+	// is a bug, and a guard spelled `> 0` would silently accept it as a request
+	// to skip the check — the same fail-open shape this contract was inverted to
+	// remove, one step further from the default.
+	for _, w := range []int{-2, -7} {
+		if _, err := mergeChildEvalArg(children, w); err == nil {
+			t.Fatalf("width %d opted out of the check. Only the exact "+
+				"mergeChildWidthUnchecked sentinel may disable it; an arbitrary negative "+
+				"is arithmetic gone wrong and must be loud.", w)
+		}
+	}
 }
