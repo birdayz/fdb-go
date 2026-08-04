@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
@@ -1540,5 +1542,79 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 	}
 	if decoded.mins[0] != nil || decoded.maxs[0] != nil {
 		t.Fatalf("nil extrema round-tripped non-nil: min=%v max=%v", decoded.mins[0], decoded.maxs[0])
+	}
+}
+
+// TestAggGroupKey_FloatKeyIsBinarySafe pins that a FLOAT/DOUBLE group key
+// survives the aggregate continuation as BYTES.
+//
+// A float packs to a tuple element whose bytes are not valid UTF-8 — 1.5 packs
+// to 0x21 BF F8 00 00 00 00 00 00, and 0xBF alone is an invalid UTF-8 start
+// byte. An encoder that treated the packed key as text would corrupt it on
+// resume and split the straddling group in two.
+//
+// This lives at the codec level deliberately. The SQL-visible version of this
+// case (agg_continuation_straddle_fdb_test.go's double_group_key) can no longer
+// require a sort-free plan: a float grouping key always plans a sort beneath
+// the aggregation, because index order does not cluster the grouping identity
+// (Double.equals collapses NaN payloads that tuple encoding scatters to
+// opposite ends of the key space). Leaving the encoder's proof to rest on a
+// plan shape that had to change is how coverage evaporates while the suite
+// stays green.
+func TestAggGroupKey_FloatKeyIsBinarySafe(t *testing.T) {
+	t.Parallel()
+	packed := string(tuple.Tuple{1.5}.Pack())
+	if utf8.ValidString(packed) {
+		t.Fatalf("packed float key %q is valid UTF-8, so this test cannot express the "+
+			"defect it exists for", packed)
+	}
+	keyVals := []any{1.5}
+	enc, err := encodeAggGroupKey(packed, keyVals)
+	if err != nil {
+		t.Fatalf("encodeAggGroupKey: %v", err)
+	}
+	gotKey, gotVals, err := decodeAggGroupKey(enc)
+	if err != nil {
+		t.Fatalf("decodeAggGroupKey: %v", err)
+	}
+	if gotKey != packed {
+		t.Errorf("group key round-tripped as %q, want %q", gotKey, packed)
+	}
+	if len(gotVals) != 1 {
+		t.Fatalf("keyVals len = %d, want 1", len(gotVals))
+	}
+	if v, ok := gotVals[0].(float64); !ok || v != 1.5 {
+		t.Errorf("keyVals[0] = %#v (%T), want float64(1.5)", gotVals[0], gotVals[0])
+	}
+}
+
+// TestAggGroupKey_NaNPayloadsShareOneKey pins the grouping IDENTITY at the
+// encoder that decides it: two different NaN payloads must pack to the SAME
+// group key, and the two signed zeros to DIFFERENT ones.
+//
+// That asymmetry is not a choice made here — it is java.lang.Double.equals,
+// which Java's streaming aggregation uses to decide a group break
+// (StreamGrouping.java:186, over a protobuf message whose double fields compare
+// by doubleToLongBits). doubleToLongBits canonicalizes every NaN and preserves
+// the zero sign.
+func TestAggGroupKey_NaNPayloadsShareOneKey(t *testing.T) {
+	t.Parallel()
+	nanA := math.Float64frombits(0x7ff8000000000001)
+	nanB := math.Float64frombits(0xfff8000000000000)
+	if math.Float64bits(nanA) == math.Float64bits(nanB) {
+		t.Fatal("the two NaN payloads are identical; this test cannot express the defect")
+	}
+	keyA := string(tuple.Tuple{canonicalizeGroupKeyFloat(nanA)}.Pack())
+	keyB := string(tuple.Tuple{canonicalizeGroupKeyFloat(nanB)}.Pack())
+	if keyA != keyB {
+		t.Errorf("two NaN payloads packed to different group keys (%x vs %x); Double.equals "+
+			"makes every NaN one value", keyA, keyB)
+	}
+	negZero := string(tuple.Tuple{canonicalizeGroupKeyFloat(math.Copysign(0, -1))}.Pack())
+	posZero := string(tuple.Tuple{canonicalizeGroupKeyFloat(0.0)}.Pack())
+	if negZero == posZero {
+		t.Errorf("-0.0 and +0.0 packed to the same group key (%x); Double.equals compares "+
+			"BITS, and an aggregate index stores them as two physical entries Java reads "+
+			"the same way", negZero)
 	}
 }

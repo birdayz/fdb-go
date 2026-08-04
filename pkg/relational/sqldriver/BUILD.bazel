@@ -207,6 +207,7 @@ go_test(
         "fanout_exists_index_fdb_test.go",
         "filtered_box_unnest_fdb_test.go",
         "flatmap_continuation_drop_fdb_test.go",
+        "float_group_nan_authority_fdb_test.go",
         "float_integer_types_probe_test.go",
         "float_order_pk_tie_fdb_test.go",
         "float_ordering_claim_aggregate_fdb_test.go",

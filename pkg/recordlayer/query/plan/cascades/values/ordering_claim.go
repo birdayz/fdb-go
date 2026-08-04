@@ -127,3 +127,38 @@ func ClaimableOrderingPrefix(layout Type, names []string) int {
 	}
 	return len(names)
 }
+
+// ClaimableTypedKeyPrefix is ClaimableOrderingPrefix for keys that carry their
+// OWN declared type and have no flowed layout to resolve against — grouping
+// keys, which the translator mints already typed.
+//
+// A nil key is skipped rather than treated as terminating: an unidentifiable
+// key is the same "burden of proof sits on the float side" trade
+// TypeTerminatesOrderingClaim documents.
+//
+// Two DIFFERENT questions are answered by this one count, and it is worth
+// naming both because only the first is about ordering:
+//
+//   - Does the producer's advertised ORDER hold? Only for the leading prefix,
+//     so the claim is truncated there.
+//   - Is the input CLUSTERED by the full grouping key? A streaming aggregation
+//     compares each row against the PREVIOUS group only, which is sound exactly
+//     when rows equal under the grouping identity are ADJACENT. A float
+//     coordinate breaks that too, and more sharply: the grouping identity is
+//     java.lang.Double.equals, which makes every NaN payload one value, while
+//     the tuple encoding scatters those payloads into two blocks at OPPOSITE
+//     ENDS of the key space. So the same group opens, closes and reopens, and
+//     the aggregation emits it twice. A consumer asking that question needs the
+//     count to reach len(keys) — a prefix is not enough, because clustering is
+//     a property of the whole key.
+func ClaimableTypedKeyPrefix(keys []Value) int {
+	for i, k := range keys {
+		if k == nil {
+			continue
+		}
+		if TypeTerminatesOrderingClaim(k.Type()) {
+			return i
+		}
+	}
+	return len(keys)
+}

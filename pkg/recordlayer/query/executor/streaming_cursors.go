@@ -469,6 +469,34 @@ func valueReadsBakedOrdinal(v values.Value) bool {
 	return false
 }
 
+// canonicalizeGroupKeyFloat / canonicalizeGroupKeyFloat32 apply the GROUPING
+// identity to a float before it is packed into the group key: every NaN payload
+// becomes one value, and the two signed zeros stay distinct.
+//
+// That is java.lang.Double.equals / Float.equals — doubleToLongBits and
+// floatToIntBits — which is what Java's streaming aggregation compares
+// (StreamGrouping.java:186 decides a group break with `!currentGroup.equals(
+// nextGroup)` over a protobuf message, and protobuf compares a double field
+// with Double.equals). It is deliberately NOT IEEE `==`, under which the two
+// zeros would merge and no two NaNs would ever match.
+//
+// They share the canonical payloads with packedDedupKey — DISTINCT and GROUP BY
+// are two dedup paths over the same column and an engine that answers them
+// differently is wrong however either one reads alone.
+func canonicalizeGroupKeyFloat(v float64) float64 {
+	if math.IsNaN(v) {
+		return math.Float64frombits(distinctCanonicalNaN64Bits)
+	}
+	return v
+}
+
+func canonicalizeGroupKeyFloat32(v float32) float32 {
+	if math.IsNaN(float64(v)) {
+		return math.Float32frombits(distinctCanonicalNaN32Bits)
+	}
+	return v
+}
+
 func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error) {
 	if c.scalarMode {
 		return "", nil, nil
@@ -495,22 +523,50 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// with this same encoding. The group's surfaced VALUE rides separately
 		// in keyVals (typed, lossless).
 		//
-		// A zero-valued float is packed VERBATIM, so -0.0 and +0.0 are two
-		// groups. This is deliberate and must stay: when the same GROUP BY is
-		// served by a maintained aggregate index, the grouping prefix IS the
-		// index key, so the two signed zeros are two physical entries that Java
-		// reads the same way (Java's own grouping splits them too — StreamGrouping
-		// compares DynamicMessage grouping values by object-field equality, so a
-		// DOUBLE field ultimately uses Double.equals). Canonicalizing here
-		// would make the answer depend on whether an aggregate index exists.
-		// packedDedupKey follows the same rule for the same reason; see its doc
-		// comment for the full argument, including why the opposite choice
-		// broke the ordered dedup path.
+		// FLOAT/DOUBLE grouping identity is java.lang.Double.equals, and it says
+		// two different things that must BOTH be honoured. Java's streaming
+		// aggregation compares grouping values with
+		// `!currentGroup.equals(nextGroup)` (StreamGrouping.java:186) over the
+		// protobuf DynamicMessage that RecordConstructorValue.eval builds
+		// (RecordConstructorValue.java:113-140), and protobuf message equality
+		// compares a double field with Double.equals — doubleToLongBits:
+		//
+		//   every NaN payload is ONE value (the bits are canonicalized)
+		//   -0.0 and +0.0 are TWO values   (the bits differ — the OPPOSITE of
+		//                                   IEEE `==`)
+		//
+		// So NaN is canonicalized here and zero is packed VERBATIM. Packing
+		// both verbatim — which is what this did — takes the correct half of
+		// that rule and applies it to the case it does not cover.
+		//
+		// The zero half must stay: when the same GROUP BY is served by a
+		// maintained aggregate index the grouping prefix IS the index key, so
+		// the two signed zeros are two physical entries Java reads the same
+		// way, and merging them would change what is on the wire.
+		//
+		// The NaN half does NOT have that constraint in the direction that
+		// matters. An aggregate index splits NaN payloads in Java too
+		// (AtomicMutationIndexMaintainer.java:141,158 packs the prefix, and
+		// tuple encoding preserves the payload), so Java is itself
+		// plan-dependent on NaN — one group through the streaming plan, two
+		// through the index. Reproducing that split is conformance; inventing a
+		// THIRD answer, where Go's streaming path splits and its own DISTINCT
+		// (executor.packedDedupKey) merges, is not.
+		//
+		// Composites go through appendDistinctValue rather than appendContValue
+		// so a NaN inside an ARRAY or STRUCT grouping key obeys the same rule
+		// at every nesting level, exactly as protobuf message equality does.
+		// (appendContValue remains the reversible continuation codec and must
+		// keep every raw bit; the two encoders differ on purpose.)
 		switch tv := v.(type) {
-		case nil, int64, float64, string, []byte, bool:
+		case float32:
+			t[i] = canonicalizeGroupKeyFloat32(tv)
+		case float64:
+			t[i] = canonicalizeGroupKeyFloat(tv)
+		case nil, int64, string, []byte, bool:
 			t[i] = tv
 		default:
-			b, cerr := appendContValue(nil, v)
+			b, cerr := appendDistinctValue(nil, v)
 			if cerr != nil {
 				return "", nil, fmt.Errorf("group key slot %d: %w", i, cerr)
 			}

@@ -191,9 +191,31 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	})
 
 	// ---- F4 (float key): DOUBLE group key (1.5 packs to a float tuple — invalid UTF-8) ----
+	//
+	// This one does NOT use requireStreaming, and the reason is the subject of
+	// its own assertion. A FLOAT/DOUBLE grouping key always plans with a sort
+	// beneath the aggregation: index order does not cluster a float grouping
+	// key, because the grouping identity (Double.equals) makes every NaN payload
+	// one value while tuple encoding scatters those payloads to opposite ends of
+	// the key space, so a streaming aggregation reading raw index order emits
+	// the NaN group twice. StreamingAggFromIndexRule declines for that reason.
+	//
+	// What survives, and is what this case was ever about, is that a float group
+	// key round-trips as a TUPLE element rather than as text: `1.5` packs to
+	// bytes that are not valid UTF-8, and the straddling group must come back as
+	// one row.
 	t.Run("double_group_key", func(t *testing.T) {
 		const q = "SELECT g, COUNT(*) FROM td GROUP BY g"
-		requireStreaming(q)
+		plan := planExplainVia(t, ctx, db, q)
+		if !strings.Contains(plan, "StreamingAgg") {
+			t.Fatalf("query must plan as a streaming aggregate; got:\n%s", plan)
+		}
+		if !strings.Contains(plan, "Sort") {
+			t.Fatalf("a FLOAT/DOUBLE grouping key must plan a sort BENEATH the aggregation — "+
+				"without one the aggregation reads raw key order, which does not cluster the "+
+				"grouping identity, and a table holding two NaN payloads gets the NaN group "+
+				"emitted twice; got:\n%s", plan)
+		}
 		for _, r := range []struct {
 			id int64
 			g  float64
