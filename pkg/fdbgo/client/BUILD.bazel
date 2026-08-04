@@ -135,6 +135,7 @@ go_test(
         "ryw_fuzz_test.go",
         "ryw_getkey_test.go",
         "ryw_integration_test.go",
+        "ryw_snapshot_cache_scan_test.go",
         "ryw_snapshot_cache_test.go",
         "ryw_test.go",
         "self_conflict_test.go",

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -68,7 +69,13 @@ func TestSnapshotCache_InsertAndGetRangeKVs(t *testing.T) {
 	g.Expect(ok).To(BeFalse())
 }
 
-func TestSnapshotCache_MergeAdjacentInserts(t *testing.T) {
+// Adjacent inserts stay SEPARATE fragments, exactly as C++
+// SnapshotCache::insert does (SnapshotCache.h:345-382) — it inserts one new
+// IndexedSet node per fetched range and never coalesces a neighbour in. What
+// callers depend on is coverage, not layout: the union still reads back as one
+// fully-known range. Coalescing instead would concatenate and re-sort the whole
+// cached prefix on every page, making a sequential scan quadratic.
+func TestSnapshotCache_AdjacentInsertsStayFragmented(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
@@ -82,14 +89,22 @@ func TestSnapshotCache_MergeAdjacentInserts(t *testing.T) {
 		{Key: []byte("d"), Value: []byte("4")},
 	})
 
-	// After two adjacent inserts, the full range should be known.
+	// After two adjacent inserts, the full range is known across the fragments.
 	kvs, ok := sc.getRangeKVs([]byte("a"), []byte("f"))
 	g.Expect(ok).To(BeTrue())
 	g.Expect(kvs).To(HaveLen(4))
-	g.Expect(sc.entries).To(HaveLen(1)) // merged into one entry
+	g.Expect(sc.entries).To(HaveLen(2))
+	g.Expect(sc.entries[0].end).To(Equal([]byte("c")))
+	g.Expect(sc.entries[1].begin).To(Equal([]byte("c")))
 }
 
-func TestSnapshotCache_MergeOverlappingInserts(t *testing.T) {
+// An insert whose front overlaps a known entry is TRIMMED to the unknown
+// suffix, and the values it carried below that point are discarded rather than
+// merged — C++ advances `begin` to the known entry's endKey and lower_bounds
+// the value vector to match (SnapshotCache.h:357-362). Already-cached state
+// wins; at a fixed read version the two can only agree anyway, so this is a
+// layout rule, not a contents rule.
+func TestSnapshotCache_OverlappingInsertTrimsToUnknownSuffix(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
@@ -103,11 +118,106 @@ func TestSnapshotCache_MergeOverlappingInserts(t *testing.T) {
 		{Key: []byte("e"), Value: []byte("5")},
 	})
 
-	// Overlapping inserts should merge.
+	g.Expect(sc.entries).To(HaveLen(2))
+	g.Expect(sc.entries[0].begin).To(Equal([]byte("a")))
+	g.Expect(sc.entries[0].end).To(Equal([]byte("d")))
+	g.Expect(sc.entries[1].begin).To(Equal([]byte("d")))
+	g.Expect(sc.entries[1].end).To(Equal([]byte("f")))
+
+	// [a,f) is fully covered; "b" is absent because the cached [a,d) already
+	// asserted it does not exist at this read version.
 	kvs, ok := sc.getRangeKVs([]byte("a"), []byte("f"))
 	g.Expect(ok).To(BeTrue())
-	g.Expect(kvs).To(HaveLen(4)) // a, b, c, e
+	g.Expect(kvs).To(HaveLen(3))
+	g.Expect(kvs[0].Key).To(Equal([]byte("a")))
+	g.Expect(kvs[1].Key).To(Equal([]byte("c")))
+	g.Expect(kvs[2].Key).To(Equal([]byte("e")))
+}
+
+// An insert spanning existing fragments SUPERSEDES them: C++ erases every node
+// strictly inside the trimmed range before inserting the new one
+// (SnapshotCache.h:373-376). Leaving them behind would break the sorted,
+// non-overlapping invariant that getRangeKVs and getKey binary-search on.
+func TestSnapshotCache_SpanningInsertErasesInteriorFragments(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	var sc snapshotCache
+	sc.insert([]byte("a"), []byte("c"), []KeyValue{{Key: []byte("a"), Value: []byte("1")}})
+	sc.insert([]byte("e"), []byte("g"), []KeyValue{{Key: []byte("f"), Value: []byte("6")}})
+	g.Expect(sc.entries).To(HaveLen(2))
+
+	sc.insert([]byte("a"), []byte("i"), []KeyValue{
+		{Key: []byte("a"), Value: []byte("1")},
+		{Key: []byte("f"), Value: []byte("6")},
+		{Key: []byte("h"), Value: []byte("8")},
+	})
+
 	g.Expect(sc.entries).To(HaveLen(1))
+	g.Expect(sc.entries[0].begin).To(Equal([]byte("a")))
+	g.Expect(sc.entries[0].end).To(Equal([]byte("i")))
+
+	kvs, ok := sc.getRangeKVs([]byte("a"), []byte("i"))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(kvs).To(HaveLen(3))
+
+	// The gap that used to sit between [a,c) and [e,g) is now known-empty.
+	_, known := sc.getKey([]byte("d"))
+	g.Expect(known).To(BeTrue())
+}
+
+// Re-inserting a range that is already entirely known is a no-op: both ends
+// trim inward until the range is empty, and C++ returns false without touching
+// the tree (`if (begin < end)`, SnapshotCache.h:373).
+func TestSnapshotCache_InsertOfKnownRangeIsNoOp(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	var sc snapshotCache
+	sc.insert([]byte("a"), []byte("z"), []KeyValue{{Key: []byte("m"), Value: []byte("1")}})
+	before := sc.entries
+
+	sc.insert([]byte("c"), []byte("f"), []KeyValue{{Key: []byte("d"), Value: []byte("9")}})
+
+	g.Expect(sc.entries).To(HaveLen(1))
+	g.Expect(sc.entries[0].begin).To(Equal(before[0].begin))
+	g.Expect(sc.entries[0].end).To(Equal(before[0].end))
+	// The cached range already asserted "d" does not exist; a later insert
+	// claiming otherwise must not be able to rewrite it.
+	v, known := sc.getKey([]byte("d"))
+	g.Expect(known).To(BeTrue())
+	g.Expect(v).To(BeNil())
+}
+
+// A sequential scan must leave one fragment per fetched page and must not
+// re-touch the values already cached. The entry count IS the anti-quadratic
+// property: coalescing collapses it to 1 and pays Θ(prefix) per page.
+func TestSnapshotCache_SequentialScanIsLinear(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	const pages, pageSize = 64, 32
+	var sc snapshotCache
+	key := func(i int) []byte { return []byte(fmt.Sprintf("k%06d", i)) }
+
+	for p := 0; p < pages; p++ {
+		kvs := make([]KeyValue, pageSize)
+		for i := range kvs {
+			kvs[i] = KeyValue{Key: key(p*pageSize + i), Value: []byte("v")}
+		}
+		sc.insert(key(p*pageSize), key((p+1)*pageSize), kvs)
+	}
+
+	g.Expect(sc.entries).To(HaveLen(pages))
+	for _, e := range sc.entries {
+		g.Expect(e.kvs).To(HaveLen(pageSize))
+	}
+
+	kvs, ok := sc.getRangeKVs(key(0), key(pages*pageSize))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(kvs).To(HaveLen(pages * pageSize))
+	g.Expect(kvs[0].Key).To(Equal(key(0)))
+	g.Expect(kvs[len(kvs)-1].Key).To(Equal(key(pages*pageSize - 1)))
 }
 
 func TestSnapshotCache_NonOverlappingInserts(t *testing.T) {
