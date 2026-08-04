@@ -282,12 +282,12 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 	// The expected progression, written out independently of fdb.BatchSize rather than
 	// derived from it — a test that asked the implementation what it does would agree with
 	// any implementation, including the unbounded one.
-	const cap = 1024
+	const wantCap = 1024
 	var want []int
 	remaining := nRows
 	for size := 2; remaining > 0; size *= 2 {
-		if size > cap {
-			size = cap
+		if size > wantCap {
+			size = wantCap
 		}
 		if size > remaining {
 			size = remaining
@@ -320,13 +320,13 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 			peak = n
 		}
 	}
-	if peak > cap {
+	if peak > wantCap {
 		t.Fatalf("peak batch = %d, want <= %d — the ITERATOR progression must SATURATE, "+
-			"not keep doubling; batches were %v", peak, cap, got)
+			"not keep doubling; batches were %v", peak, wantCap, got)
 	}
-	if peak != cap {
+	if peak != wantCap {
 		t.Fatalf("peak batch = %d, want exactly %d — the progression must still grow up to "+
-			"the saturation point; batches were %v", peak, cap, got)
+			"the saturation point; batches were %v", peak, wantCap, got)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("batches = %v (%d fetches), want %v (%d fetches)",
