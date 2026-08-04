@@ -142,6 +142,55 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 		"SELECT g, MAX(v) FROM ai GROUP BY g",
 		"SELECT g, MAX(v) FROM ao GROUP BY g")
 
+	// The MULTI-AGGREGATE shape (RFC-209 §5.3, "Multi-aggregate"; §7's dimension
+	// coverage). Two aggregates in one SELECT are served by two separate
+	// aggregate indexes merged on the grouping key, and before this the merge
+	// was an INNER intersection with no companion at all — which is the same
+	// two defects in their worst form. A group vacated by UPDATE or DELETE has
+	// a zero-valued key in BOTH indexes, so an intersection keeps it as a
+	// phantom; a group whose every value is NULL has a key in NEITHER, so an
+	// intersection drops it twice over. It was also the one remaining route by
+	// which a SUM index answered a grouped query with no group-existence source
+	// whatsoever, bypassing §5.3(c) entirely.
+	//
+	// Group existence is decided ONCE, not per aggregate: the companion is a
+	// third, DRIVING stream and each aggregate independently contributes its
+	// stored value or its own identity — NULL for SUM, 0 for COUNT(col). That
+	// per-aggregate identity split is why g=5 must read [5 NULL 0] and not
+	// [5 NULL NULL]; a single shared filler would get one of the two wrong.
+	t.Run("multi-aggregate-is-companion-driven", func(t *testing.T) {
+		indexedQ := "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "GroupExistenceMerge(") || !strings.Contains(plan, "driving=0") {
+			t.Fatalf("the multi-aggregate merge is not companion-driven.\n  query: %s\n"+
+				"  plan : %s\nAn inner MultiIntersection here keeps every vacated group (a "+
+				"zero key in BOTH indexes survives the intersection) and drops every "+
+				"all-NULL group (a key in NEITHER), and reaches the aggregate indexes with "+
+				"no group-existence source at all.", indexedQ, plan)
+		}
+		if !strings.Contains(plan, "live_groups_only") {
+			t.Fatalf("the driving companion leg does not carry the vacated-group drop.\n"+
+				"  plan: %s", plan)
+		}
+		got := rowsOf(t, indexedQ)
+		oracle := rowsOf(t, "SELECT g, SUM(v), COUNT(v) FROM ao GROUP BY g")
+		if strings.Join(got, ",") != strings.Join(oracle, ",") {
+			t.Fatalf("multi-aggregate answer disagrees with the oracle\n  indexed: %v\n"+
+				"  oracle : %v", got, oracle)
+		}
+		const want = "[2 60 3],[4 0 2],[5 NULL 0]"
+		if strings.Join(got, ",") != want {
+			t.Fatalf("multi-aggregate rows wrong.\n  got : %v\n  want: %s\n"+
+				"g=1 and g=3 are vacated and must be absent; g=4 cancels to zero and is LIVE; "+
+				"g=5 is all-NULL and must read SUM NULL with COUNT(v) 0 — the two aggregates "+
+				"have DIFFERENT empty-group identities and each must supply its own.",
+				got, want)
+		}
+	})
+
 	// HAVING over the identity rows (RFC-209 §5.3, "Compensation under outer
 	// semantics"; §7). These two predicates change their answers as a DIRECT
 	// result of the merge, and they are the ones that most look like a
@@ -786,6 +835,52 @@ func TestFDB_AggregateIndexGroupExistence_FailsClosedWithoutCompanion(t *testing
 			}
 		})
 	}
+
+	// The MULTI-AGGREGATE route must fail closed too. It reaches the aggregate
+	// indexes through a different rule path than the single-aggregate one, so a
+	// fail-closed check on that path alone leaves this one open — and it is the
+	// worse leak, because an inner intersection of a SUM and a COUNT(col) index
+	// answers from two indexes that can neither of them decide group existence.
+	t.Run("multi-aggregate-fails-closed-too", func(t *testing.T) {
+		indexedQ := "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if strings.Contains(plan, "AggregateIndex(") {
+			t.Fatalf("the multi-aggregate path used aggregate indexes with NO readable "+
+				"group-existence companion.\n  query: %s\n  plan : %s\n"+
+				"RFC-209 §5.3(c) is a property of every route to an aggregate index, not of "+
+				"the single-aggregate route only.", indexedQ, plan)
+		}
+		rows, err := db.QueryContext(ctx, indexedQ)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var g int64
+			var s, c sql.NullInt64
+			if err := rows.Scan(&g, &s, &c); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			sv := "NULL"
+			if s.Valid {
+				sv = fmt.Sprintf("%d", s.Int64)
+			}
+			out = append(out, fmt.Sprintf("[%d %s %d]", g, sv, c.Int64))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		sort.Strings(out)
+		const want = "[2 60 3],[4 0 2],[5 NULL 0]"
+		if strings.Join(out, ",") != want {
+			t.Fatalf("streaming-aggregation fallback rows wrong.\n  got : %v\n  want: %s",
+				out, want)
+		}
+	})
 
 	// The COUNT(*) index that exists is grouped on h, and a query grouped on h
 	// is still index-backed: fail-closed must be scoped to the shape that cannot

@@ -77,7 +77,7 @@ var knownUnknownTypeMints = map[string]int{
 	"pkg/recordlayer/query/plan/cascades/intersector_primary_key.go":        1,
 	"pkg/recordlayer/query/plan/cascades/max_match_map.go":                  1,
 	"pkg/recordlayer/query/plan/cascades/primary_scan_match_candidate.go":   1,
-	"pkg/recordlayer/query/plan/cascades/rule_aggregate_data_access.go":     2,
+	"pkg/recordlayer/query/plan/cascades/rule_aggregate_data_access.go":     1,
 	"pkg/recordlayer/query/plan/cascades/rule_implement_unordered_union.go": 1,
 	"pkg/recordlayer/query/plan/cascades/rule_in_to_explode.go":             1,
 	"pkg/recordlayer/query/plan/cascades/rule_ordered_primary_scan.go":      1,

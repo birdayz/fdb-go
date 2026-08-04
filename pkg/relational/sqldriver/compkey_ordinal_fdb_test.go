@@ -45,12 +45,22 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	// g=1: v=10,20,30 → SUM=60 MIN=10 MAX=30 ; g=2: v=25,45 → SUM=70 MIN=25 MAX=45
 	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30), (4, 2, 25), (5, 2, 45)")
 
-	// The two-aggregate grouped query plans as MultiIntersection (each aggregate index
-	// supplies one column; the intersection merges on the shared group key g). Pin the
-	// realization so the test proves the comparison-key extractor actually fires.
+	// The two-aggregate grouped query plans as the multi-aggregate merge (each
+	// aggregate index supplies one column; the merge aligns them on the shared
+	// group key g). Pin the realization so the test proves the comparison-key
+	// extractor actually fires.
+	//
+	// Two spellings of the SAME operator are accepted. A SUM leg cannot decide
+	// group existence, so RFC-209 §5.3 gives the merge a driving companion and
+	// it EXPLAINs as GroupExistenceMerge; without such a leg it stays an inner
+	// MultiIntersection. Either way it is a
+	// RecordQueryMultiIntersectionOnValuesPlan and the comparison key is what
+	// aligns the streams — which is what this test is about. What must NOT
+	// appear is a streaming-aggregation fallback.
 	twoAgg := "SELECT g, SUM(v), MAX(v) FROM ga GROUP BY g"
-	if plan := planExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection") {
-		t.Fatalf("two-aggregate grouped query must plan as MultiIntersection (exercises the comp-key extractor), got: %s", plan)
+	if plan := planExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection(") &&
+		!strings.Contains(plan, "GroupExistenceMerge(") {
+		t.Fatalf("two-aggregate grouped query must plan as the multi-aggregate merge (exercises the comp-key extractor), got: %s", plan)
 	}
 
 	rowsGMM := func(t *testing.T, q string, n int) string {
@@ -89,12 +99,15 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 		}
 	})
 
-	// (2) Three-aggregate MultiIntersection: SUM + MIN + MAX merged on g — three child
-	// scans intersected on the same comparison key.
+	// (2) Three-aggregate merge: SUM + MIN + MAX aligned on g — three child scans
+	// on the same comparison key (four once the SUM leg's group-existence
+	// companion joins them, which is why both spellings are accepted; see the
+	// two-aggregate case above).
 	t.Run("three_aggregate_sum_min_max", func(t *testing.T) {
 		threeAgg := "SELECT g, SUM(v), MIN(v), MAX(v) FROM ga GROUP BY g"
-		if plan := planExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection") {
-			t.Fatalf("three-aggregate grouped query must plan as MultiIntersection, got: %s", plan)
+		if plan := planExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection(") &&
+			!strings.Contains(plan, "GroupExistenceMerge(") {
+			t.Fatalf("three-aggregate grouped query must plan as the multi-aggregate merge, got: %s", plan)
 		}
 		if got := rowsGMM(t, threeAgg, 4); got != "1|60|10|30 2|70|25|45" {
 			t.Errorf("g,SUM,MIN,MAX = %q, want %q", got, "1|60|10|30 2|70|25|45")

@@ -10021,8 +10021,10 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 	// Prove the multi-aggregate intersection plan actually fires — otherwise
 	// the correct counts below could be coming from a streaming-agg fallback.
 	plan := planExplainVia(t, ctx, db, q)
-	if !strings.Contains(plan, "Intersection(") {
-		t.Fatalf("expected multi-aggregate Intersection plan, got: %s", plan)
+	// GroupExistenceMerge is the same operator with a driving group-existence
+	// stream (RFC-209 §5.3): the SUM leg cannot decide group existence alone.
+	if !strings.Contains(plan, "Intersection(") && !strings.Contains(plan, "GroupExistenceMerge(") {
+		t.Fatalf("expected the multi-aggregate merge plan, got: %s", plan)
 	}
 
 	rows := collectRows(t, db, q)

@@ -411,8 +411,20 @@ CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM ORDERS GROUP BY sta
 	// whole table. This was the 5.6s/1M perf bug: the MultiIntersection plan was
 	// generated but lost winner-selection, and THIS test only logged the plan
 	// instead of asserting it (a fake checkbox that hid the gap from day one).
-	if !strings.Contains(plan, "MultiIntersection") {
-		t.Errorf("expected MultiIntersection of the two aggregate indexes for COUNT(*)+SUM(amount) GROUP BY status, got: %s", plan)
+	// Either spelling of the operator is the merge: the SUM leg cannot decide
+	// group existence, so RFC-209 §5.3 designates a driving group-existence
+	// stream and it EXPLAINs as GroupExistenceMerge. Here that stream is the
+	// query's OWN COUNT(*) leg rather than an extra scan — count_by_status is
+	// already grouped by status, so it serves both roles and the merge stays two
+	// legs wide. A third leg here would mean one index is being scanned twice.
+	if !strings.Contains(plan, "MultiIntersection(") && !strings.Contains(plan, "GroupExistenceMerge(") {
+		t.Errorf("expected the merge of the two aggregate indexes for COUNT(*)+SUM(amount) GROUP BY status, got: %s", plan)
+	}
+	if strings.Count(plan, "COUNT_BY_STATUS") > 1 {
+		t.Errorf("the group-existence companion duplicated an aggregate leg — one index "+
+			"scanned twice in a single merge, and group existence decided twice over. The "+
+			"query's own COUNT(*) leg IS the existence stream and must be designated, not "+
+			"copied. got: %s", plan)
 	}
 	if strings.Contains(plan, "InMemorySort") || strings.Contains(plan, "Scan(ORDERS)") {
 		t.Errorf("multi-aggregate GROUP BY must not full-scan + sort when per-aggregate indexes exist, got: %s", plan)

@@ -627,6 +627,64 @@ func tryMultiAggregateIntersection(
 		}
 	}
 
+	// RFC-209 §5.3, "Multi-aggregate": group existence is decided ONCE, not per
+	// aggregate. If any leg is a grouped SUM or COUNT(col) — neither of which
+	// can decide it alone — the companion COUNT(*) becomes an additional
+	// DRIVING stream with outer semantics against every aggregate stream, and
+	// each aggregate independently contributes its stored value or its identity.
+	//
+	// Without this the multi-aggregate shape keeps both defects the
+	// single-aggregate path just lost, and keeps them in their worst form:
+	// inner intersection means a vacated group present in BOTH indexes survives
+	// as a phantom, and an all-NULL group absent from both is dropped twice
+	// over. It would also be the one route by which a SUM index still answers a
+	// grouped query with no group-existence source at all, which is exactly the
+	// fail-closed property §5.3(c) asserts.
+	//
+	// EVERY leg needing a companion must resolve to the SAME one: the legs can
+	// differ in sparse predicate, and a companion matching one leg's row
+	// population is the wrong group set for another's.
+	legs := matched
+	aggLegOffset := 0
+	var companion *AggregateIndexMatchCandidate
+	needsCompanion := false
+	for _, mc := range matched {
+		if mc.NeedsGroupExistenceCompanion() {
+			needsCompanion = true
+			c := findGroupCountCompanion(mc, candidates)
+			if c == nil {
+				return // fail closed — streaming aggregation over base rows
+			}
+			if companion != nil && c != companion {
+				return
+			}
+			companion = c
+		}
+	}
+	drivingLeg := -1
+	if needsCompanion {
+		// The query may already SELECT the companion's own COUNT(*) over this
+		// grouping key, in which case that aggregate leg IS the group-existence
+		// stream and must be designated rather than duplicated. Prepending a
+		// second copy would scan one index twice in a single merge and decide
+		// existence twice over — the opposite of §5.3's "decided once, not per
+		// aggregate". The leg already carries the vacated-group drop, because
+		// that is a property of being a grouped COUNT(*), not of the position.
+		for i, mc := range matched {
+			if mc == companion {
+				drivingLeg = i
+				break
+			}
+		}
+		if drivingLeg < 0 {
+			// No leg is the companion: it becomes an extra leg 0 and every
+			// aggregate shifts one child-span right in the merged row.
+			legs = append([]*AggregateIndexMatchCandidate{companion}, matched...)
+			aggLegOffset = 1
+			drivingLeg = 0
+		}
+	}
+
 	// Build child aggregate-index scan plans. Each child MUST be a
 	// RecordQueryAggregateIndexPlan (not a bare RecordQueryIndexPlan): an
 	// aggregate index stores the running aggregate IN the index entry
@@ -636,8 +694,8 @@ func tryMultiAggregateIntersection(
 	// {groupCol: value, "FUNC(col)": aggregate} — the same shape the
 	// single-aggregate path produces — which the comparison key and the
 	// merge step below depend on.
-	childPlans := make([]plans.RecordQueryPlan, len(matched))
-	for i, mc := range matched {
+	childPlans := make([]plans.RecordQueryPlan, len(legs))
+	for i, mc := range legs {
 		prefix := buildAggScanPrefix(mc, innerFilterPreds)
 		if !candidateBindingRangesEligible(mc, prefix) {
 			return
@@ -707,9 +765,18 @@ func tryMultiAggregateIntersection(
 	}
 	for i := range aggs {
 		colName := aggregateFlowedColumnName(matched[i].aggFunction.String(), matched[i].aggColumn)
+		// aggLegOffset shifts past the driving companion when one is present.
+		pickUp := values.Value(values.NewFieldValueWithResolvedOrdinal(
+			colName, (i+aggLegOffset)*childWidth+len(groupCols), values.UnknownType))
+		if needsCompanion {
+			// A group the companion lists but this aggregate's index has no entry
+			// for arrives as NULL, which is already SUM's empty-group answer but
+			// not COUNT(col)'s — that one owes 0.
+			pickUp = emptyGroupIdentity(matched[i], pickUp)
+		}
 		fields = append(fields, values.RecordConstructorField{
 			Name:  colName,
-			Value: values.NewFieldValueWithResolvedOrdinal(colName, i*childWidth+len(groupCols), values.UnknownType),
+			Value: pickUp,
 		})
 	}
 	resultValue := values.NewRecordConstructorValue(fields...)
@@ -731,9 +798,15 @@ func tryMultiAggregateIntersection(
 	}
 
 	// The multi-intersection carries its stream edges directly (RFC-184 W2).
-	call.Yield(plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+	merge := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
 		childQuants, comparisonKey, resultValue,
-	))
+	)
+	if needsCompanion {
+		// The designation travels as an ALIAS so a later relink cannot silently
+		// point it at a different stream.
+		merge = merge.WithDrivingStream(childQuants[drivingLeg].GetAlias())
+	}
+	call.Yield(merge)
 }
 
 var _ ExpressionRule = (*AggregateDataAccessRule)(nil)

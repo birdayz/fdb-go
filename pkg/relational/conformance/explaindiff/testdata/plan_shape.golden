@@ -2738,16 +2738,18 @@ shape:       RecordQueryAggregateIndexPlan
 shape:       RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#5
 sql:   SELECT customer_id, SUM(amount), COUNT(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Project([CUSTOMER_ID#0, SUM(AMOUNT)#1, COUNT(AMOUNT)#2], MultiIntersection(AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0]))
+plan:  Project([CUSTOMER_ID#0, SUM(AMOUNT)#1, COUNT(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#6
 sql:   SELECT customer_id, SUM(amount) / COUNT(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Project([CUSTOMER_ID#0, (SUM(AMOUNT)#1 / COUNT(AMOUNT)#2)], MultiIntersection(AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0]))
+plan:  Project([CUSTOMER_ID#0, (SUM(AMOUNT)#1 / COUNT(AMOUNT)#2)], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_pk.yaml#0
