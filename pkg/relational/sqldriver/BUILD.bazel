@@ -247,6 +247,7 @@ go_test(
         "index_oracle_consistency_test.go",
         "index_readability_gate_fdb_test.go",
         "index_sarg_probe_test.go",
+        "index_state_planning_fdb_test.go",
         "indexable_types_probe_test.go",
         "indexed_float_sarg_probe_test.go",
         "injoin_sorted_claim_fdb_test.go",
