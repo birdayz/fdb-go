@@ -257,16 +257,44 @@ func NewGroupCountCompanion(idx *Index) (*Index, bool) {
 	if !ok || groupingKey == nil {
 		return nil, false
 	}
+	// A FILTERING owner gets no companion at all, and this is the whole gate.
+	//
+	// The companion is write cost — an index entry maintained on every insert,
+	// update and delete — bought in exchange for one thing: letting the planner
+	// serve a grouped aggregate from indexes without inventing groups. If the
+	// planner cannot build an aggregate candidate for the owner in the first
+	// place, that exchange has no second half. It cannot: buildMatchCandidates
+	// declines to build aggregate candidates for any index carrying a filtering
+	// predicate, so a filtered owner and its equally-filtered companion are both
+	// invisible to the read path. Emitting one would be dead metadata maintained
+	// forever on the write path, which is precisely the standard
+	// TestGroupCountCompanion_NotEmittedWhereItCannotHelp exists to hold.
+	//
+	// Declining is also the only SAFE answer while the two sides disagree. A
+	// companion is not interchangeable with its owner: it must count exactly the
+	// rows the owner indexed, so a dense companion paired with a filtered owner
+	// over-reports groups and a filtered companion paired with a dense owner
+	// under-reports them. Both are wrong sums, not slow ones.
+	//
+	// The tautology case is deliberately NOT special-cased into an exemption: a
+	// predicate that provably rejects nothing is not filtering, HasFilteringPredicate
+	// says so, and such an owner is candidate-buildable and does get a companion.
+	//
+	// When sparse aggregate candidates land, this gate is what has to be lifted,
+	// together with the predicate transfer below — not before.
+	if idx.HasFilteringPredicate() {
+		return nil, false
+	}
 	companion := NewIndex(GroupCountCompanionName(idx.Name), GroupAll(groupingKey))
 	companion.Type = IndexTypeCount
 	if p := idx.GetPredicateProto(); p != nil {
+		// Reached only for a non-filtering (tautology) predicate. Carried anyway
+		// so the companion's predicate signature keeps matching its owner's —
+		// the create-if-absent lookup is by signature, and a companion that
+		// dropped a tautology would not be recognised as already existing.
 		if err := companion.SetPredicateProto(p); err != nil {
 			return nil, false
 		}
-	} else if idx.Predicate != nil {
-		// A programmatic predicate cannot be transferred (it does not serialize),
-		// and a companion without it would count the wrong rows. Decline.
-		return nil, false
 	}
 	return companion, true
 }

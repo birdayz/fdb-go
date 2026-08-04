@@ -126,52 +126,81 @@ func TestGroupCountCompanion_CreateIfAbsent(t *testing.T) {
 	}
 }
 
-// TestGroupCountCompanion_SparseOwnerGetsSparseCompanion pins the divergence
-// from the RFC text (§5.2 defines the structural match on the grouping key
-// alone): a SPARSE owner's companion must carry the SAME predicate.
+// TestGroupCountCompanion_SparseOwnerGetsNoCompanion pins the emission gate for
+// FILTERED aggregate indexes, and it replaces a test that asserted the opposite.
 //
-// A dense COUNT(*) counts rows the sparse owner never indexed, so its key set
-// contains groups holding no qualifying row. Driving the merge from it would
-// INVENT groups — precisely the over-approximation the companion exists to
-// remove, reintroduced through the back door.
-func TestGroupCountCompanion_SparseOwnerGetsSparseCompanion(t *testing.T) {
+// The earlier reading was that a sparse owner needs a companion carrying the
+// same predicate, on the grounds that a DENSE companion would count rows the
+// owner never indexed and so invent groups. That reasoning is sound and still
+// holds — but it answers "which companion", when the prior question is
+// "whether". The answer to that one is no: buildMatchCandidates declines to
+// build an aggregate candidate for any index with a filtering predicate, so a
+// filtered owner is not plannable as an aggregate at all. Its companion could
+// never be read, only written — an index entry maintained on every insert,
+// update and delete, forever, in exchange for nothing. That is exactly the
+// dead metadata TestGroupCountCompanion_NotEmittedWhereItCannotHelp exists to
+// forbid; the sparse case was simply missing from its list.
+//
+// This is what re-arms it: the day sparse aggregate indexes become plannable
+// candidates, THIS test is the one that must be reopened, and the predicate
+// transfer in NewGroupCountCompanion (still present, still needed) is what it
+// must be reopened to.
+func TestGroupCountCompanion_SparseOwnerGetsNoCompanion(t *testing.T) {
 	t.Parallel()
 
-	t.Run("companion carries the predicate", func(t *testing.T) {
+	t.Run("filtered owner", func(t *testing.T) {
 		t.Parallel()
 		indexes := buildIndexes(t,
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 				"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai WHERE v > 3 GROUP BY g")
 		owner := indexes["AI_SUM_G"]
-		companion := indexes[recordlayer.GroupCountCompanionName("AI_SUM_G")]
-		if owner == nil || companion == nil {
-			t.Fatalf("missing owner or companion; have %v", indexNameList(indexes))
+		if owner == nil {
+			t.Fatalf("the owner index itself is missing; have %v", indexNameList(indexes))
 		}
-		ownerPred := recordlayer.PredicateSignature(owner)
-		if len(ownerPred) == 0 {
-			t.Fatalf("the owner index is not sparse — this test no longer covers the sparse " +
-				"dimension; fix the fixture, do not relax the assertion")
+		// Guard the fixture: if the WHERE stopped reaching the index metadata,
+		// the owner is dense and this test silently stops covering its dimension.
+		if !owner.HasFilteringPredicate() {
+			t.Fatalf("the owner index is not filtered — this test no longer covers the " +
+				"sparse dimension; fix the fixture, do not relax the assertion")
 		}
-		companionPred := recordlayer.PredicateSignature(companion)
-		if !recordlayer.SamePredicateSignature(ownerPred, companionPred) {
-			t.Fatalf("sparse owner's companion carries a DIFFERENT predicate.\n"+
-				"  owner:     %x\n  companion: %x\nIt therefore counts a different row "+
-				"population, and every group it lists that the owner never saw becomes an "+
-				"invented row in the merged answer.", ownerPred, companionPred)
+		if name := recordlayer.GroupCountCompanionName("AI_SUM_G"); indexes[name] != nil {
+			t.Fatalf("emitted companion %s for a FILTERED owner.\n  have: %v\n"+
+				"buildMatchCandidates builds no aggregate candidate for a filtered index, "+
+				"so neither the owner nor this companion can ever be read — it is pure "+
+				"write cost on every insert, update and delete. If sparse aggregate "+
+				"candidates have just landed, this test is the gate to reopen.",
+				name, indexNameList(indexes))
 		}
 	})
 
-	t.Run("a dense COUNT(*) does not satisfy a sparse owner", func(t *testing.T) {
+	t.Run("unfiltered owner still gets one", func(t *testing.T) {
 		t.Parallel()
+		// The control. Without it, a gate that declined EVERY owner would pass
+		// the arm above while silently withdrawing the companion everywhere and
+		// bringing the phantom groups back.
+		//
+		// This arm cannot cover the narrower question of whether the gate is
+		// drawn at "has a predicate" or at "has a FILTERING predicate", because
+		// an unfiltered DDL index has no predicate proto at all and both
+		// predicates read false on it. The distinguishing case — a predicate
+		// that exists but provably rejects nothing — has no DDL spelling
+		// (generatePredicate only serializes scan-prefix comparison ranges), so
+		// it is pinned where it is reachable, as a unit test on
+		// NewGroupCountCompanion: see TestNewGroupCountCompanion_TautologyIsNotAFilter.
 		indexes := buildIndexes(t,
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
-				"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai WHERE v > 3 GROUP BY g "+
-				"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g")
-		if _, ok := indexes[recordlayer.GroupCountCompanionName("AI_SUM_G")]; !ok {
-			t.Fatalf("create-if-absent accepted the DENSE AI_CNT_G as the sparse owner's "+
-				"companion and emitted nothing.\n  have: %v\nThe dense index counts rows "+
-				"WHERE v <= 3 too, so its group set is strictly larger than the sparse "+
-				"owner's population.", indexNameList(indexes))
+				"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g")
+		owner := indexes["AI_SUM_G"]
+		if owner == nil {
+			t.Fatalf("the owner index is missing; have %v", indexNameList(indexes))
+		}
+		if owner.HasFilteringPredicate() {
+			t.Fatalf("fixture is filtered; it cannot cover the non-filtering case")
+		}
+		if name := recordlayer.GroupCountCompanionName("AI_SUM_G"); indexes[name] == nil {
+			t.Fatalf("no companion for a NON-filtering owner.\n  have: %v\nThe emission "+
+				"gate is meant to exclude indexes that cannot be planned, not every "+
+				"grouped SUM.", indexNameList(indexes))
 		}
 	})
 }

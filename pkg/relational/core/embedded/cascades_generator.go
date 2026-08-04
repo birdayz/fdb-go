@@ -2206,6 +2206,31 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 // fetchTableStatistics, and a query against a store this broken fails at
 // execution with its own diagnostic rather than being silently re-planned into
 // a full scan here.
+//
+// COST, and why it is paid every time. This runs BEFORE the plan-cache lookup
+// (it is part of the cache key), so a plan-cache HIT still pays for it.
+// Measured on a cached point-lookup SELECT, 500 iterations after a 20-query
+// warmup, three runs each: 5.489 / 5.503 / 5.510 ms per query with this read
+// against 4.277 / 4.278 / 4.280 ms with it short-circuited to
+// AllIndexesReadable(). That is ~1.22 ms, about 22% of the cached-SELECT
+// latency — material, not noise (the spread within each condition is under
+// 25 microseconds).
+//
+// The obvious remedy is a session-scoped memo keyed on the metadata version,
+// and it is WRONG. Index state is stored in its own subspace and changing it
+// does not bump md.Version(), so such a memo pins a readable-index view for the
+// life of the session: an index that goes WRITE_ONLY keeps being planned into
+// scans that then fail at execution — the exact failure this function exists to
+// prevent, moved one level up where the plan-cache key can no longer catch it.
+// That is measured, not argued: the memo reddens the three withdrawn arms of
+// TestFDB_NonReadableIndexIsNotAMatchCandidate (and, tellingly, leaves its
+// "restored" arm green).
+//
+// A sound memo needs an invalidation signal that tracks index STATE. Nothing
+// cheaper than this read currently carries one, so the read stays. The honest
+// framing is Java's: Java pays nothing here only because its store is already
+// open when planning begins, which is a difference in when the store is opened,
+// not a cheaper way to learn the same fact.
 func (g *cascadesGenerator) fetchReadableIndexes(ctx context.Context, md *recordlayer.RecordMetaData) cascades.ReadableIndexes {
 	c := g.c
 	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
@@ -2403,8 +2428,27 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// predicate provably rejects nothing holds an entry for every record, so
 		// its aggregates cover the whole table and the family suppression below
 		// has nothing to protect against.
-		sparse := !cascades.IndexPredicateProtoIsTautology(idx.GetPredicateProto()) &&
-			idx.GetPredicateProto() != nil
+		//
+		// Ask recordlayer.Index rather than reading the predicate proto here.
+		// The two agree today on everything this path can see, and the reason is
+		// worth stating because it is the only thing making them agree: an index
+		// can carry a predicate as a serialized proto OR as a programmatic Go
+		// closure, but SetPredicateProto publishes BOTH representations at once
+		// (index.go), so metadata loaded from a store never presents a
+		// closure-only predicate. Deriving sparseness from the proto alone was
+		// therefore correct by a property of the loader, not by anything stated
+		// here.
+		//
+		// It is not a property worth depending on. A closure-only predicate is
+		// assignable through the record-layer Go API, and reading such an index
+		// as DENSE would hand it an aggregate candidate that ignores the filter
+		// — an aggregate over the rows the index happens to contain, reported as
+		// the aggregate over the group. That is a wrong answer, not a missed
+		// optimization, and it is one field assignment away. HasFilteringPredicate
+		// covers both representations and treats a proved tautology as
+		// non-filtering; a closure is opaque and cannot be proved tautological,
+		// so it fails closed.
+		sparse := idx.HasFilteringPredicate()
 		if !sparse {
 			// A SPARSE aggregate/vector index must not become a candidate that
 			// ignores its predicate: the maintained aggregates cover only the

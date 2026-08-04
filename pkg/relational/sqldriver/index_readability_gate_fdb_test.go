@@ -145,6 +145,17 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 		t.Fatalf("baseline rows: got %s, want %s", got, wantRows)
 	}
 
+	// These three arms are also what holds the readable-index view OUT of any
+	// staleness. The baseline above plans the index in, so by the time an arm
+	// withdraws it there is already a cached plan naming it; if the view the
+	// planner consults were served from anything that survives the state change,
+	// the arm would keep seeing the old plan. Measured: adding a session-scoped
+	// memo over fetchReadableIndexes keyed on the METADATA VERSION reddens all
+	// three arms below and leaves the "restored" subtest green — index state
+	// lives in its own subspace and does not bump md.Version(), so such a memo
+	// serves a stale view for the life of the session. Anyone reaching for that
+	// memo to buy back the per-query read (measured at ~1.2ms of a ~5.5ms cached
+	// SELECT — see fetchReadableIndexes) will be stopped here, by these arms.
 	for _, tc := range []struct {
 		name  string
 		state recordlayer.IndexState
@@ -185,10 +196,16 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 		})
 	}
 
-	// Restored: the gate must not be sticky. A plan cached while the index was
-	// withdrawn must not outlive the withdrawal, which is why the readable-index
-	// view is part of the plan-cache key (Java: QueryCacheKey carries the whole
-	// PlannerConfiguration).
+	// Restored: withdrawing an index must be REVERSIBLE. This arm covers the
+	// direction the arms above cannot — a plan cached while the index was
+	// withdrawn must not outlive the withdrawal.
+	//
+	// It does NOT cover the other direction, and it used to be credited with
+	// doing so. Under a mutation that makes the readable-index view stale (a
+	// memo keyed on metadata version), this subtest PASSES: it only ever asks
+	// for the index to come back, and a stale view that still says "readable"
+	// answers that correctly by accident. The withdrawn arms above are what
+	// redden. Keep both — they fail on opposite mutations.
 	t.Run("restored", func(t *testing.T) {
 		plan := planFor(t)
 		if !strings.Contains(plan, "T_BY_C") {

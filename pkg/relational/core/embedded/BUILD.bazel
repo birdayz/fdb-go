@@ -157,6 +157,7 @@ go_test(
         "select_helpers_test.go",
         "sort_projection_layering_test.go",
         "sort_pullup_test.go",
+        "sparse_aggregate_candidate_test.go",
         "sql_plan_fuzz_test.go",
         "struct_ddl_test.go",
         "system_rows_test.go",
@@ -304,6 +305,7 @@ go_test(
         "group_count_companion_ddl_test.go",
         "index_name_guard.go",
         "group_existence_cost_decision_test.go",
+        "sparse_aggregate_candidate_test.go",
     ],
     deps = [
         "//gen",
