@@ -74,6 +74,17 @@ func (o nonFiniteOutcome) code() string {
 	return "non-api-error: " + o.err.Error()
 }
 
+// ONE NARROW EXCEPTION to the syntax-independence this file asserts, and it is
+// about BITS rather than about the value class. A NaN's sign and payload are
+// observable, and the bound-parameter path reaches the engine only as
+// interpolated SQL text, where the sole NaN spelling parses to one fixed
+// pattern. A payload-bearing or negative NaN therefore cannot be BOUND — it is
+// refused rather than silently rewritten (see
+// TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused). It can still be written
+// through UPDATE arithmetic, so the COLUMN holds it; only the `?` transport
+// cannot carry it. Everything below binds the canonical NaN, which every path
+// accepts and round-trips bit-exact.
+//
 // nonFiniteExprs are the SQL spellings of the three non-finite doubles.
 // strconv.ParseFloat and Java's Double.parseDouble both accept exactly these
 // three strings, so the literal form is portable.

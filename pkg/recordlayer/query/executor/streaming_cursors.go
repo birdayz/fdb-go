@@ -238,8 +238,36 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 // withPartialState restores accumulator state from a previous transaction's
 // continuation. Mirrors Java's StreamGrouping constructor with
 // PartialAggregationResult parameter.
+//
+// The saved groupKey bytes are DELIBERATELY NOT the resumed key. They were
+// packed by whichever binary minted the token, under whatever group-key
+// encoding that binary had, and the very next row is keyed by THIS binary's
+// encoder — so installing them verbatim compares two different encodings and
+// reports a group break that is not one.
+//
+// That is not hypothetical: canonicalizing NaN in the group key changed the
+// encoding, and Go's own math.NaN() is 0x7ff8000000000001 rather than the
+// canonical 0x7ff8000000000000, so an ordinary mid-group token minted before
+// that change carries a key this binary would never produce. Resuming it
+// verbatim finalizes the partial group on its own and emits the same group
+// TWICE — a wrong answer produced purely by upgrading.
+//
+// So the key is RE-DERIVED from the continuation's decoded keyVals, which ride
+// typed and lossless precisely so this is possible. The saved bytes are used
+// for nothing. A future encoding change is then automatically compatible for
+// the same reason, rather than needing its own migration.
+//
+// Re-derivation can fail only if a keyVal is unencodable, which
+// encodeAggGroupKey already refuses to write; on that path the saved bytes are
+// the best remaining answer and are used unchanged rather than dropping the
+// partial group.
 func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *groupState) {
 	c.currentGroupKey = groupKey
+	if !c.scalarMode && len(keyVals) > 0 {
+		if rederived, err := packGroupKey(keyVals); err == nil {
+			c.currentGroupKey = rederived
+		}
+	}
 	c.currentKeyVals = keyVals
 	c.current = gs
 }
@@ -506,13 +534,30 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		return "", nil, nil
 	}
 	keyParts := make([]any, len(c.groupingKeys))
-	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
 		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
 		}
 		keyParts[i] = v
+	}
+	packed, err := packGroupKey(keyParts)
+	if err != nil {
+		return "", nil, err
+	}
+	return packed, keyParts, nil
+}
+
+// packGroupKey turns evaluated grouping-key VALUES into the packed group key.
+//
+// It is separate from computeGroupKey because the resume path has values but no
+// row to evaluate: withPartialState re-derives the key from the continuation's
+// decoded keyVals rather than trusting the bytes the continuation carries. Both
+// callers must use the same encoder or a resume compares keys from two
+// different ones.
+func packGroupKey(keyParts []any) (string, error) {
+	t := make(tuple.Tuple, len(keyParts))
+	for i, v := range keyParts {
 		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
 		// Any other slot type (UUID [16]byte, composite ARRAY/STRUCT values)
 		// encodes LOSSLESSLY via the continuation codec as one []byte tuple
@@ -520,12 +565,14 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// ([]any{"a b"} vs []any{"a","b"}) and merged distinct groups
 		// (RFC-180 C3).
 		//
-		// The packed key rides through the aggregate continuation VERBATIM
-		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
-		// compared byte-for-byte on resume to detect a group change, so any
-		// deterministic packing is safe; both sides of a resume re-derive it
-		// with this same encoding. The group's surfaced VALUE rides separately
-		// in keyVals (typed, lossless).
+		// The packed key rides through the aggregate continuation as raw bytes
+		// (encodeAggGroupKey, not a JSON string) and is compared byte-for-byte
+		// on resume to detect a group change. Those saved bytes are NOT trusted
+		// as the resumed key: withPartialState re-derives it from the
+		// continuation's keyVals through this same function, so a token minted
+		// by an older binary under an older encoding still compares against
+		// keys built by this one. The group's surfaced VALUE rides separately
+		// in keyVals (typed, lossless), which is what makes that possible.
 		//
 		// FLOAT/DOUBLE grouping identity is java.lang.Double.equals, and it says
 		// two different things that must BOTH be honoured. Java's streaming
@@ -576,12 +623,12 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		default:
 			b, cerr := appendDistinctValue(nil, v)
 			if cerr != nil {
-				return "", nil, fmt.Errorf("group key slot %d: %w", i, cerr)
+				return "", fmt.Errorf("group key slot %d: %w", i, cerr)
 			}
 			t[i] = b
 		}
 	}
-	return string(t.Pack()), keyParts, nil
+	return string(t.Pack()), nil
 }
 
 func (c *aggregateCursor) newGroupState() *groupState {

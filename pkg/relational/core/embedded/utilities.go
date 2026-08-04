@@ -53,6 +53,21 @@ func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error
 	return functions.ApplyMathOp(left, right, op)
 }
 
+// nanLiteralBits is the bit pattern the SQL text `CAST('NaN' AS DOUBLE)`
+// produces. It is DERIVED from the same strconv.ParseFloat call the CAST path
+// makes (functions/cast.go) rather than written as a constant, so the one NaN a
+// bound parameter may carry is by construction the one the parser returns — if
+// the standard library's NaN ever changed, this follows it instead of silently
+// becoming a rule about a pattern nothing produces.
+var nanLiteralBits = func() uint64 {
+	parsed, err := strconv.ParseFloat("NaN", 64)
+	if err != nil {
+		// Unreachable: "NaN" is a valid ParseFloat input by definition.
+		return math.Float64bits(math.NaN())
+	}
+	return math.Float64bits(parsed)
+}()
+
 // substituteParams replaces positional '?' placeholders in a query with
 // SQL literal representations of the supplied driver values. Named params
 // (@name) are not supported — only positional '?' is handled.
@@ -144,19 +159,60 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			// '-Infinity' are exactly the strings Go's strconv.ParseFloat and
 			// Java's Double.parseDouble both accept.
 			//
-			// The alternative — refusing the parameter — made a DOUBLE column
-			// unable to carry values it stores perfectly well through every
-			// other syntax, on the grounds of how this driver happens to
-			// transport parameters. A transport limitation must not become a
-			// type restriction.
+			// A blanket refusal of non-finite parameters was wrong: it made a
+			// DOUBLE column unable to carry values it stores perfectly well
+			// through every other syntax, on the grounds of how this driver
+			// happens to transport parameters. A transport limitation must not
+			// become a type restriction.
+			//
+			// But that argument reaches exactly as far as VALUES THE TEXT FORM
+			// PRESERVES, and it does not license rewriting the ones it does
+			// not. Every finite double and both infinities render exactly; NaN
+			// PAYLOADS do not, and the NaN arm below refuses precisely those
+			// rather than quietly substituting the parse constant. Refusing to
+			// carry a value states a limit; changing it while reporting success
+			// is corruption.
 			switch {
 			case math.IsNaN(val):
+				// A NaN carries a SIGN and a 51-bit PAYLOAD, and those bits are
+				// OBSERVABLE: they come back on readback and they are what an
+				// index or aggregate-index key is packed from — two payloads are
+				// two physical entries. The 'NaN' literal parses to exactly one
+				// of them (strconv.ParseFloat, the same call the CAST path
+				// makes), so rendering every NaN that way would SILENTLY
+				// REPLACE the user's bits with the parse constant.
+				//
+				// That is the defect this whole item was fixing, one level
+				// down: a write whose stored value depends on which syntax
+				// carried it. Preserving arbitrary bits is not possible here —
+				// parameters reach the engine only as interpolated SQL TEXT
+				// (substituteParams is the sole channel; there is no typed
+				// parameter path), and no literal in this grammar denotes an
+				// arbitrary double bit pattern. Arithmetic reaches ±Infinity
+				// and one negative NaN, not a payload.
+				//
+				// So the honest answer is a NARROW refusal: the one NaN the
+				// text form round-trips exactly is accepted, and any other is
+				// rejected saying so. Silently rewriting bits would be worse
+				// than either alternative, and a blanket refusal would break
+				// the ordinary case — math.NaN() IS the accepted pattern, so
+				// binding it works and round-trips bit-exact.
+				if math.Float64bits(val) != nanLiteralBits {
+					return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+						"NaN parameter for placeholder %d has bit pattern %#016x, which the "+
+							"driver's text parameter path cannot represent without changing it "+
+							"(the 'NaN' literal parses to %#016x); bind that pattern, or write "+
+							"the value with an expression",
+						argIdx, math.Float64bits(val), nanLiteralBits)
+				}
 				b.WriteString("CAST('NaN' AS DOUBLE)")
 			case math.IsInf(val, 1):
 				b.WriteString("CAST('Infinity' AS DOUBLE)")
 			case math.IsInf(val, -1):
 				b.WriteString("CAST('-Infinity' AS DOUBLE)")
 			default:
+				// %g with no precision is the shortest representation that
+				// round-trips, so every finite double survives exactly.
 				fmt.Fprintf(&b, "%g", val)
 			}
 		case string:
