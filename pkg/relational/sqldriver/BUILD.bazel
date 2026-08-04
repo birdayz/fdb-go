@@ -211,6 +211,7 @@ go_test(
         "float_order_pk_tie_fdb_test.go",
         "float_ordering_claim_aggregate_fdb_test.go",
         "float_ordering_claim_differential_fdb_test.go",
+        "float_range_row_loss_fdb_test.go",
         "float_special_param_probe_test.go",
         "fork_colliding_subfield_fdb_test.go",
         "full_outer_join_fdb_test.go",
