@@ -28,6 +28,83 @@ type RecordQueryMultiIntersectionOnValuesPlan struct {
 	childQs       []expressions.Quantifier // N input plans (one per aggregate index)
 	comparisonKey []values.Value           // grouping columns to match on
 	resultValue   values.Value             // result constructor (grouping + aggregates)
+
+	// drivingAlias designates ONE stream as the group-existence source and
+	// switches the merge from inner to OUTER (RFC-209 §5.3(b)). The zero value
+	// means the plain inner intersection.
+	//
+	// Under outer semantics the driving stream decides the group set:
+	//   - group in the driving stream, entry in another stream → its value;
+	//   - group in the driving stream, NO entry in another stream → that stream
+	//     contributes NULL, which the result value turns into the aggregate's
+	//     empty-group identity (NULL for SUM, 0 for COUNT(col));
+	//   - entry in another stream, group NOT in the driving stream → dropped.
+	//
+	// The first two repair the all-NULL group a SUM or COUNT(col) index never
+	// wrote an entry for; the third repairs the phantom a vacated group left
+	// behind. Inner semantics get the third right and the second wrong, which is
+	// why this is not the existing operator with a filter bolted on top.
+	//
+	// Stored as an ALIAS, never as an index into childQs: WithQuantifiers
+	// relinks the streams, and an index would silently designate a different
+	// stream after a reorder — turning a correct plan into a wrong-rows one with
+	// no structural change to notice.
+	drivingAlias values.CorrelationIdentifier
+}
+
+// WithDrivingStream returns a copy of this plan whose merge is OUTER, driven by
+// the stream carried by the given quantifier alias (RFC-209 §5.3(b)).
+//
+// The alias must belong to one of this plan's streams. A plan whose driving
+// alias resolves to nothing is not executable as an outer merge — the executor
+// refuses it rather than silently running an intersection, which is the
+// fail-closed property §5.3 asks for.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithDrivingStream(
+	alias values.CorrelationIdentifier,
+) *RecordQueryMultiIntersectionOnValuesPlan {
+	cp := *p
+	cp.drivingAlias = alias
+	return &cp
+}
+
+// GetDrivingAlias returns the group-existence stream's alias, or the zero value
+// when this is a plain inner intersection.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) GetDrivingAlias() values.CorrelationIdentifier {
+	return p.drivingAlias
+}
+
+// DrivingStreamIndex resolves the driving alias to a position in stream order,
+// or -1 when this plan is an inner intersection.
+//
+// A non-zero alias that names no stream returns -1 too, and every caller treats
+// -1 as "not an outer merge". That is deliberate: an unresolvable designation
+// must not silently degrade to "drive from stream 0".
+func (p *RecordQueryMultiIntersectionOnValuesPlan) DrivingStreamIndex() int {
+	// Nil-safe: the cardinality and cost taxonomies probe plan methods on a nil
+	// receiver to enumerate which shapes are covered, and library code must
+	// answer rather than panic.
+	if p == nil || p.drivingAlias.IsZero() {
+		return -1
+	}
+	for i, q := range p.childQs {
+		if q.GetAlias() == p.drivingAlias {
+			return i
+		}
+	}
+	return -1
+}
+
+// HasDrivingAlias reports whether a driving stream was DESIGNATED, regardless of
+// whether it still resolves. The executor uses this to tell "inner intersection"
+// (nothing designated) from "outer merge whose designation was lost" (designated
+// but unresolvable) — the latter must fail loudly, never run as an intersection.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) HasDrivingAlias() bool {
+	return p != nil && !p.drivingAlias.IsZero()
+}
+
+// IsOuter reports whether this merge has a resolvable driving stream.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) IsOuter() bool {
+	return p != nil && p.DrivingStreamIndex() >= 0
 }
 
 // NewRecordQueryMultiIntersectionOnValuesPlan constructs an N-way
@@ -119,7 +196,12 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
 // The same key drives both EqualsPlanWithoutChildren and
 // HashCodeWithoutChildren.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Values(p.comparisonKey).Value(p.resultValue)
+	// The driving alias MUST be folded in. Without it the memo interns the OUTER
+	// merge and the inner intersection over the same key and result value into a
+	// single expression and serves whichever arrived first — and the two differ
+	// on exactly the groups this operator exists to get right.
+	return newStructuralKey().Values(p.comparisonKey).Value(p.resultValue).
+		Str(p.drivingAlias.Name())
 }
 
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -147,6 +229,13 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) Explain() string {
 	keys := make([]string, len(p.comparisonKey))
 	for i, k := range p.comparisonKey {
 		keys[i] = values.ExplainValue(k)
+	}
+	if idx := p.DrivingStreamIndex(); idx >= 0 {
+		// Plan-visible because it changes the answer: a reader of EXPLAIN must be
+		// able to tell the group-existence merge from an intersection, and which
+		// stream supplies the group set.
+		return fmt.Sprintf("GroupExistenceMerge(%s; keys=[%s], driving=%d)",
+			strings.Join(parts, ", "), strings.Join(keys, ", "), idx)
 	}
 	return fmt.Sprintf("MultiIntersection(%s; keys=[%s])",
 		strings.Join(parts, ", "), strings.Join(keys, ", "))
@@ -185,6 +274,20 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 		return p
 	}
 	cp := *p
+	// Carry the group-existence designation across the relink. WithQuantifiers
+	// replaces the streams with fresh quantifiers over the finalized references,
+	// and those carry NEW aliases — so an alias stored verbatim stops resolving
+	// the moment the plan is finalized, and the outer merge silently degrades to
+	// an intersection that drops every all-NULL group.
+	//
+	// The arity check above is what makes the positional carry-over sound: the
+	// relink preserves stream order, so the driving stream is still at the same
+	// position. The designation is re-derived from the OLD quantifiers and
+	// re-expressed as the NEW stream's alias, so it stays an alias — a bare
+	// index would still be wrong under any future reordering relink.
+	if driving := p.DrivingStreamIndex(); driving >= 0 {
+		cp.drivingAlias = qs[driving].GetAlias()
+	}
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
 }

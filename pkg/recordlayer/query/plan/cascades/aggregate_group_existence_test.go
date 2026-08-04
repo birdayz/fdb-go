@@ -11,7 +11,7 @@ import (
 // nothing else.
 //
 // Three of the four axes are also reachable from SQL and pinned there
-// (TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins). The fourth — the
+// (TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle). The fourth — the
 // UNGROUPED row count — is not: tryAggregateIndexCandidate declines any index
 // whose grouping count is zero, so an ungrouped aggregate never becomes a
 // candidate and no SQL query can reach the guard. Without this test the

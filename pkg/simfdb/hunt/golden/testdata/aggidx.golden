@@ -4,11 +4,12 @@
 #   CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g
 
 === SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g
-PLAN: Project([G#0, SUM(V)#1], AggregateIndex(SUM, SUM_BY_G, [G], T))
-ROWS(3) cols=[G, SUM(V)]:
+PLAN: Project([G#0, SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], T); keys=[G#0], driving=0))
+ROWS(4) cols=[G, SUM(V)]:
   [1, 90]
   [2, 70]
   [3, 50]
+  [4, NULL]
 
 === SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY g
 PLAN: Project([G#0, COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only))

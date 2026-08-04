@@ -2372,6 +2372,17 @@ func countClassifiedConcreteNode(
 		// it as 1 ties the scan on count, then it wins on the scan-vs-covering-
 		// index criterion exactly like the single-aggregate path. Skip the child
 		// walk so the per-child scans aren't also counted.
+		//
+		// This holds for the RFC-209 group-existence merge too, and deliberately.
+		// §5.3.1 requires the companion COUNT(*) scan to be charged as a real
+		// scan child rather than folded in as a constant — but THIS criterion is
+		// a discrete structural count, not the magnitude cost. Counting the
+		// merge's two legs as two accesses was measured here: it makes criterion
+		// #3 prefer a full Scan (count 1) unconditionally, so the
+		// companion-joined plan never wins on ANY grouping key, however few
+		// groups there are. That does not price the companion, it bars it. The
+		// real charge lives in the plan's HintCost, which sums every leg's work
+		// and takes cardinality from the driving leg.
 		counts.coveringIndexCount++
 		counts.unboundedDataAccess = true
 		validateSkippedConcreteCountSubtrees(p.GetChildren(), ctx)

@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // Group existence for aggregate indexes (RFC-209).
@@ -158,14 +160,14 @@ func PredicateSignature(idx *Index) []byte {
 		if idx.Predicate != nil {
 			// Unserializable, so unmatchable. A non-nil, never-equal marker keeps
 			// this out of the dense bucket.
-			return []byte("p!opaque")
+			return []byte(cascades.OpaquePredicateSignatureMarker)
 		}
 		return nil
 	}
 	clearProto2Defaults(p.ProtoReflect())
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(p)
 	if err != nil {
-		return []byte("p!opaque")
+		return []byte(cascades.OpaquePredicateSignatureMarker)
 	}
 	return append([]byte{'p'}, encoded...)
 }
@@ -175,7 +177,7 @@ func PredicateSignature(idx *Index) []byte {
 // predicate is unmatchable in principle, so it must decline against everything
 // including another one.
 func SamePredicateSignature(a, b []byte) bool {
-	if string(a) == "p!opaque" || string(b) == "p!opaque" {
+	if string(a) == cascades.OpaquePredicateSignatureMarker || string(b) == cascades.OpaquePredicateSignatureMarker {
 		return false
 	}
 	return string(a) == string(b)

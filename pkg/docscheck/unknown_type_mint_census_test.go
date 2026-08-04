@@ -54,8 +54,16 @@ const unknownTypeMintAllowedFile = "pkg/relational/api/datatype_primitive.go"
 // composite-literal UnknownType mints. Measured; on any mismatch
 // TestUnknownTypeMintCensus prints the live census to re-pin from.
 var knownUnknownTypeMints = map[string]int{
-	"pkg/recordlayer/primary_key_translation.go":       2,
-	"pkg/recordlayer/query/executor/positional_row.go": 1,
+	"pkg/recordlayer/primary_key_translation.go": 2,
+	// absentAggregateRow: the filler a group-existence merge substitutes for a
+	// child index that holds NO entry for the driving stream's group. There is
+	// no stored value whose type could be read, and the child plan it stands in
+	// for carries UnknownType as its own result type, so deriving would launder
+	// Unknown through one more hop rather than answer it. Only the row's WIDTH
+	// is load-bearing — the merged row takes its grouping values from the
+	// driving stream and its aggregate through the plan's result value.
+	"pkg/recordlayer/query/executor/executor_new_plans.go": 1,
+	"pkg/recordlayer/query/executor/positional_row.go":     1,
 	// query_result.go is GONE from the census. Its single mint was
 	// PositionalTypeForDescriptor stamping UnknownType on every field of a
 	// stored record's row layout, and it was the supply side of a real

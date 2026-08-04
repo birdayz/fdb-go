@@ -3168,7 +3168,11 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		singleRecordTypeRowType(md, idx),
 		groupTypes,
 		groupingCount,
-	).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke))
+	).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
+		WithGroupExistenceCompanionNeed(
+			recordlayer.PredicateSignature(idx),
+			recordlayer.NeedsGroupCountCompanion(idx),
+		)
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector

@@ -89,6 +89,29 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
+		// RFC-209 §5.3(b)/(c). A grouped SUM or COUNT(col) index cannot answer on
+		// its own: its stored zero is byte-identical whether the group cancelled
+		// to zero or was vacated, and an all-NULL group has no entry at all. It is
+		// therefore companion-joined when a readable COUNT(*) over the same
+		// grouping key and predicate exists, and DECLINED otherwise so planning
+		// falls back to streaming aggregation over base rows.
+		//
+		// Declining is the fail-closed direction and the only acceptable one:
+		// the alternative is the index-backed plan that is fast and wrong.
+		if aggCand.NeedsGroupExistenceCompanion() {
+			companion := findGroupCountCompanion(aggCand, candidates)
+			if companion == nil {
+				continue
+			}
+			mergePlan := buildGroupExistenceMerge(call, companion, aggCand, innerFilterPreds)
+			if mergePlan == nil {
+				continue
+			}
+			call.Yield(mergePlan)
+			singleMatched = true
+			continue
+		}
+
 		prefix := buildAggScanPrefix(aggCand, innerFilterPreds)
 		if !candidateBindingRangesEligible(aggCand, prefix) {
 			continue
@@ -137,6 +160,211 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 // single group exists whether or not the table has rows.
 func dropsVacatedGroups(cand *AggregateIndexMatchCandidate) bool {
 	return cand.countsRows && len(cand.groupCols) > 0
+}
+
+// findGroupCountCompanion returns the candidate whose index can act as owner's
+// group-existence source (RFC-209 §5.2), or nil.
+//
+// Discovery is STRUCTURAL and re-runs against the current candidate list at
+// plan time: a COUNT(*) index over the same record types, the same normalized
+// grouping key expression and the same sparse predicate. The name is never
+// consulted, so a user-declared COUNT(*) serves exactly as well as one the DDL
+// emitted, and a companion written by an older binary under a different name
+// still matches.
+//
+// READABILITY comes for free and must: the candidate list has already been
+// filtered to indexes the store can read, so an index in WRITE_ONLY, disabled
+// or mid-backfill is not here to be found. That matters more than it looks —
+// such an index has a PARTIAL key set, and driving the merge from it would drop
+// LIVE groups, which is a brand-new wrong answer strictly worse than today's
+// phantom.
+func findGroupCountCompanion(owner *AggregateIndexMatchCandidate, candidates []MatchCandidate) *AggregateIndexMatchCandidate {
+	if len(owner.groupingSignature) == 0 {
+		// No derivable signature declines every match rather than guessing.
+		return nil
+	}
+	for _, cand := range candidates {
+		ac, ok := cand.(*AggregateIndexMatchCandidate)
+		if !ok || ac == owner || !ac.countsRows {
+			continue
+		}
+		if string(ac.groupingSignature) != string(owner.groupingSignature) {
+			continue
+		}
+		if !samePredicateSignature(ac.predicateSignature, owner.predicateSignature) {
+			continue
+		}
+		if !sameRecordTypeNames(ac.GetRecordTypes(), owner.GetRecordTypes()) {
+			continue
+		}
+		if len(ac.groupCols) != len(owner.groupCols) {
+			// The signature already implies this; the physical column list is what
+			// the merge's comparison key is built from, so disagreement here would
+			// bake ordinals against the wrong width.
+			continue
+		}
+		return ac
+	}
+	return nil
+}
+
+// OpaquePredicateSignatureMarker is the signature a sparse index carries when
+// its predicate is a programmatic Go closure rather than a serialized proto.
+//
+// It lives here, not in the record layer, because the record layer imports the
+// planner and not the other way round — and both sides must agree on the exact
+// bytes or companion matching silently changes meaning. The record layer's
+// PredicateSignature produces it; SamePredicateSignature there and
+// samePredicateSignature here both refuse it.
+const OpaquePredicateSignatureMarker = "p!opaque"
+
+// samePredicateSignature reports whether two sparse-predicate signatures denote
+// the same row population.
+//
+// An opaque signature is unmatchable in principle — the predicate does not
+// serialize, so there is nothing to compare — and therefore declines against
+// everything, including another opaque one.
+func samePredicateSignature(a, b []byte) bool {
+	if string(a) == OpaquePredicateSignatureMarker || string(b) == OpaquePredicateSignatureMarker {
+		return false
+	}
+	return string(a) == string(b)
+}
+
+// sameRecordTypeNames reports set equality. A companion over a different (or
+// wider) set of record types counts different rows, so equality — not overlap —
+// is required.
+func sameRecordTypeNames(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, n := range a {
+		seen[n] = struct{}{}
+	}
+	for _, n := range b {
+		if _, ok := seen[n]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// buildGroupExistenceMerge builds the two-stream outer merge of RFC-209
+// §5.3(b): the companion COUNT(*) scan drives the group set, the owner's
+// aggregate scan supplies the value, and a group the owner has no entry for
+// gets the aggregate's empty-group identity.
+//
+// Returns nil when the merge cannot be built, in which case the caller declines
+// the candidate entirely and planning falls back to streaming aggregation. The
+// resolved companion is a precondition of construction, so there is no path
+// that builds this plan and then validates it.
+func buildGroupExistenceMerge(
+	call *ExpressionRuleCall,
+	companion, owner *AggregateIndexMatchCandidate,
+	innerFilterPreds []*predicates.ComparisonPredicate,
+) plans.RecordQueryPlan {
+	groupCols := owner.groupCols
+	if len(groupCols) == 0 {
+		return nil
+	}
+
+	// The companion carries the same grouping columns, so the WHERE-equality
+	// bounds derived for the owner apply to it verbatim; both streams then emit
+	// exactly the groups the query asked for.
+	legs := []*AggregateIndexMatchCandidate{companion, owner}
+	childPlans := make([]plans.RecordQueryPlan, len(legs))
+	for i, cand := range legs {
+		prefix := buildAggScanPrefix(cand, innerFilterPreds)
+		if !candidateBindingRangesEligible(cand, prefix) {
+			return nil
+		}
+		idxPlan := extractIndexPlan(cand.ToScanPlan(prefix, false))
+		if idxPlan == nil {
+			return nil
+		}
+		// A merge, not a hash match: both streams must physically stream in the
+		// complete logical grouping-key order, or the driven advance compares
+		// keys that are not congruent and silently mis-pairs groups.
+		if cand.GetPhysicalGroupingPrefixCount() != len(groupCols) ||
+			properties.PhysicalOrderingPrefixLength(
+				idxPlan.GetScanComparisons(), idxPlan.GetKeyComponentTypes(), len(groupCols),
+			) != len(groupCols) {
+			return nil
+		}
+		var recordTypeName string
+		if rts := cand.GetRecordTypes(); len(rts) > 0 {
+			recordTypeName = rts[0]
+		}
+		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, values.UnknownType, cand.aggFunction.String(),
+		).WithGroupColumns(cand.groupCols, cand.aggColumn).
+			WithGroupColumnLayout(cand.GetBaseRowType()).
+			// The COMPANION carries the vacated-group drop, and it is load-bearing
+			// here: the companion is itself subject to the over-approximation
+			// defect, so without the drop its own zero-valued keys would put every
+			// vacated group straight back into the merged group set.
+			WithLiveGroupsOnly(dropsVacatedGroups(cand))
+	}
+
+	childWidth := len(groupCols) + 1
+	// The grouping columns' types come from the candidate's declared key types,
+	// which are positionally aligned with groupCols and normalized to its
+	// length. Stating them here rather than minting UnknownType keeps every
+	// downstream reader off name-keyed re-derivation; where the index genuinely
+	// cannot state a component's type the candidate already carries Unknown for
+	// it, so the honest answer flows through unchanged.
+	groupKeyTypes := owner.GetKeyComponentTypes()
+	comparisonKey := make([]values.Value, len(groupCols))
+	for i, col := range groupCols {
+		comparisonKey[i] = values.NewFieldValueWithResolvedOrdinal(col, i, groupKeyTypes[i])
+	}
+
+	// Result row = grouping columns from the DRIVING stream, then the owner's
+	// aggregate from its own stream. The grouping values must come from the
+	// companion: for a group the owner has no entry for, the owner's slots are
+	// the absent filler and carry nothing.
+	fields := make([]values.RecordConstructorField, 0, len(groupCols)+1)
+	for i, col := range groupCols {
+		fields = append(fields, values.RecordConstructorField{
+			Name:  col,
+			Value: values.NewFieldValueWithResolvedOrdinal(col, i, groupKeyTypes[i]),
+		})
+	}
+	aggName := aggregateFlowedColumnName(owner.aggFunction.String(), owner.aggColumn)
+	aggField := values.Value(values.NewFieldValueWithResolvedOrdinal(
+		aggName, childWidth+len(groupCols), values.UnknownType))
+	fields = append(fields, values.RecordConstructorField{
+		Name:  aggName,
+		Value: emptyGroupIdentity(owner, aggField),
+	})
+
+	childQuants := make([]expressions.Quantifier, len(childPlans))
+	for i, cp := range childPlans {
+		childQuants[i] = expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(&scanPlanExpression{plan: cp}))
+	}
+	merge := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+		childQuants, comparisonKey, values.NewRecordConstructorValue(fields...))
+	// Leg 0 is the companion, and the designation travels as its ALIAS so a
+	// later relink cannot silently point it at the aggregate stream.
+	return merge.WithDrivingStream(childQuants[0].GetAlias())
+}
+
+// emptyGroupIdentity wraps an aggregate pick-up so a group the aggregate index
+// has no entry for answers what SQL requires rather than NULL.
+//
+// SUM's empty group IS NULL, so a SUM pick-up is returned unchanged. COUNT(col)
+// counts non-NULL values, so a group whose every value is NULL has no index
+// entry yet must answer 0 — a COALESCE supplies it. This is the same split Java
+// uses for the ungrouped case, where the plan yields NULL on an empty stream
+// and a coalesce_long above it turns that into 0 for COUNT.
+func emptyGroupIdentity(owner *AggregateIndexMatchCandidate, pickUp values.Value) values.Value {
+	if owner.countsRows || owner.aggFunction != expressions.AggCount {
+		return pickUp
+	}
+	return values.NewScalarFunctionValue("COALESCE", values.UnknownType,
+		pickUp, &values.ConstantValue{Value: int64(0)})
 }
 
 // aggInnerFilterFullyConsumable reports whether EVERY predicate on the

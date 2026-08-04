@@ -274,6 +274,14 @@ func (p *RecordQueryIntersectionPlan) ProvenCardinalities(child []properties.Car
 // ProvenCardinalities: an intersection is bounded by its smallest leg, and can
 // be empty whenever two legs are independently bounded.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
+	if driving := p.DrivingStreamIndex(); driving >= 0 && driving < len(child) {
+		// An OUTER merge emits one row per DRIVING-stream row regardless of what
+		// the other legs hold, so its bounds are the driving leg's. Intersecting
+		// would claim a maximum below the number of rows this plan actually
+		// produces — precisely the groups the merge adds back — and any consumer
+		// trusting that bound would be wrong about them.
+		return child[driving]
+	}
 	return properties.IntersectCardinalities(child)
 }
 

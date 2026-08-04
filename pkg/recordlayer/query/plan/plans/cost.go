@@ -507,6 +507,30 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintCost(child []properties.C
 			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
 		}
 	}
+	if driving := p.DrivingStreamIndex(); driving >= 0 && driving < len(child) {
+		// RFC-209 §5.3.1: the group-existence merge is NOT a cheaper spelling of
+		// the aggregate-index plan — it is a SECOND index scan, and pricing the
+		// companion at zero is the specific way this design regresses.
+		//
+		// Cardinality is the DRIVING leg's, not the min of the legs: an outer
+		// merge emits one row per driving-stream group whether or not the other
+		// legs have an entry, so IntersectionCost's min-of-legs would understate
+		// it by exactly the groups the merge exists to add back.
+		//
+		// Work is the SUM over every leg, because every leg is genuinely scanned
+		// — the companion is a real BY_GROUP scan over an index with one entry
+		// per group that ever existed, not a constant. That is what lets
+		// streaming aggregation win as the grouping key approaches uniqueness:
+		// the merge then reads about twice the base-table cardinality in index
+		// entries to produce about that many rows, while a streaming aggregation
+		// reads the base table once.
+		cost := properties.Cost{Cardinality: child[driving].Cardinality}
+		for _, c := range child {
+			cost.CPU += c.CPU
+		}
+		cost.CPU += cost.Cardinality * properties.IntersectionCPU * float64(len(child))
+		return cost
+	}
 	return properties.IntersectionCost(child)
 }
 

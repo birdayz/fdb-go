@@ -471,17 +471,79 @@ func executeMultiIntersection(
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
 
-	// IntersectionMulti returns, per matching comparison key, the list of
-	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
-	// the regular intersection keeps only the first child, which would drop
-	// every aggregate but the first.
-	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
+	var innerCursor recordlayer.RecordCursor[[]QueryResult]
+	if p.HasDrivingAlias() {
+		// RFC-209 §5.3(b): the group-existence merge. Its correctness rests
+		// entirely on the driving stream being the one the planner designated, so
+		// a designation that no longer resolves must fail the query rather than
+		// quietly run as an intersection — an intersection here silently drops
+		// every all-NULL group, which is one of the two defects this plan exists
+		// to fix.
+		driving := p.DrivingStreamIndex()
+		if driving < 0 {
+			return nil, fmt.Errorf("group-existence merge: driving stream %q resolves to "+
+				"no child; the plan's quantifiers were relinked without carrying the "+
+				"designation", p.GetDrivingAlias().Name())
+		}
+		if len(keyVals) == 0 {
+			return nil, fmt.Errorf("group-existence merge: no comparison key; the merge " +
+				"has no grouping key to align the streams on")
+		}
+		// Every child of this plan is an aggregate-index scan whose row is
+		// [groupCols..., aggregate], so a child spans len(keyVals)+1 slots. An
+		// absent child must occupy exactly that many, or the result value's baked
+		// ordinals address the wrong slots in every later child.
+		width := len(keyVals) + 1
+		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, false, resume,
+			driving, func(int) QueryResult { return absentAggregateRow(width) })
+	} else {
+		// IntersectionMulti returns, per matching comparison key, the list of
+		// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
+		// the regular intersection keeps only the first child, which would drop
+		// every aggregate but the first.
+		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
+	}
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// absentAggregateRow is the row a non-driving aggregate-index stream
+// contributes for a group it holds no entry for (RFC-209 §5.3(b)).
+//
+// All slots are NULL, including the grouping columns: the merged row takes its
+// grouping values from the DRIVING stream, so the absent child's copies are
+// never read. What matters is the WIDTH — the result value's field ordinals are
+// baked at plan time against the flat concatenation of the child rows, so a
+// short row would shift every later child's aggregate by however many slots
+// were missing and hand each group another group's value.
+//
+// NULL, not the aggregate's identity: the identity is the result value's job.
+// SUM's empty group is NULL and COUNT(col)'s is 0, and only the plan knows
+// which aggregate a stream carries. Keeping the cursor's filler uniform is the
+// same split Java uses for the ungrouped case, where the plan supplies NULL on
+// an empty stream and a coalesce above it turns that into 0 for COUNT.
+// The field types are UnknownType, and here that is not discarded knowledge:
+// there is no type to state. This row stands in for a group the child index
+// holds NO entry for, so no stored value exists whose type could be read, and
+// the child plan it substitutes for carries UnknownType as its own result type
+// — deriving from it would launder Unknown through one more hop rather than
+// answer. Nothing downstream reads these types either: the merged row takes its
+// grouping values from the driving stream and its aggregate through the plan's
+// result value, so only the WIDTH is load-bearing.
+func absentAggregateRow(width int) QueryResult {
+	fields := make([]values.Field, width)
+	slots := make([]any, width)
+	for i := range fields {
+		fields[i] = values.Field{Ordinal: i, FieldType: values.UnknownType}
+	}
+	return QueryResult{Positional: &PositionalRow{
+		Type:  &values.RecordType{Fields: fields},
+		Slots: slots,
+	}}
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {

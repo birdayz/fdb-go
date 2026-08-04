@@ -24,7 +24,7 @@ Nothing in this design changes a byte that is written to FDB.
 
 ## 2. The defect, as measured
 
-Real FDB, via `TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins` and
+Real FDB, via `TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle` and
 `TestFDB_AggregateIndexVacatedGroup` in
 `pkg/relational/sqldriver/aggregate_index_vacated_group_fdb_test.go` (PR #604).
 Each query runs twice: once against a table carrying the aggregate indexes, once
@@ -475,7 +475,7 @@ about the plan.
 **Companion present.** Every shape in §2's table equals the oracle, *and*
 `EXPLAIN` shows the companion-joined plan — so a "fix" that silently stops using
 the index fails. The existing pins
-(`TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins`) assert today's wrong
+(`TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle`) assert today's wrong
 answers and are written to go RED when this lands; they get deleted and folded
 into oracle assertions.
 
