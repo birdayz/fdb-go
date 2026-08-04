@@ -64,6 +64,71 @@ func (s *mvccStore) valueAt(key []byte, readVersion int64) []byte {
 	return nil
 }
 
+// rangeAtLimited is rangeAt bounded by demand: it returns at most `want` live rows taken
+// from the `reverse` end of [begin, end), always sorted ascending, together with the
+// sub-window those rows fully account for and whether the whole range was consumed.
+// want <= 0 is unbounded and reproduces rangeAt exactly.
+//
+// The sub-window is what makes a bounded read safe to merge: rows were taken from one end,
+// so [coveredBegin, coveredEnd) is precisely the span in which this result is COMPLETE, and
+// a caller may fold in mutations restricted to that span and get the same answer it would
+// have got from the whole range. Outside it nothing is known and nothing may be assumed.
+//
+// rowsTouched counts store entries examined, including tombstoned ones — the instrument for
+// "a page costs the page, not the tail".
+func (s *mvccStore) rangeAtLimited(
+	begin, end []byte, readVersion int64, want int, reverse bool,
+) (out []fdb.KeyValue, coveredBegin, coveredEnd []byte, exhausted bool, rowsTouched int) {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, begin, end, true, 0
+	}
+	if reverse {
+		hi := sort.Search(len(s.entries), func(i int) bool {
+			return bytes.Compare(s.entries[i].key, end) >= 0
+		})
+		for i := hi - 1; i >= 0; i-- {
+			e := s.entries[i]
+			if bytes.Compare(e.key, begin) < 0 {
+				break
+			}
+			rowsTouched++
+			if v := s.valueAtEntry(e, readVersion); v != nil {
+				out = append(out, fdb.KeyValue{
+					Key:   append(fdb.Key(nil), e.key...),
+					Value: append([]byte(nil), v...),
+				})
+				if want > 0 && len(out) >= want {
+					// Complete from this key up to end; below it, unknown.
+					lowest := append([]byte(nil), e.key...)
+					reverseKVs(out)
+					return out, lowest, end, false, rowsTouched
+				}
+			}
+		}
+		reverseKVs(out)
+		return out, begin, end, true, rowsTouched
+	}
+	lo, _ := s.search(begin)
+	for i := lo; i < len(s.entries); i++ {
+		e := s.entries[i]
+		if bytes.Compare(e.key, end) >= 0 {
+			break
+		}
+		rowsTouched++
+		if v := s.valueAtEntry(e, readVersion); v != nil {
+			out = append(out, fdb.KeyValue{
+				Key:   append(fdb.Key(nil), e.key...),
+				Value: append([]byte(nil), v...),
+			})
+			if want > 0 && len(out) >= want {
+				// Complete from begin through this key inclusive; above it, unknown.
+				return out, begin, append(append([]byte(nil), e.key...), 0), false, rowsTouched
+			}
+		}
+	}
+	return out, begin, end, true, rowsTouched
+}
+
 // rangeAt returns the key/value pairs in [begin, end) visible at readVersion, sorted
 // ascending by key, tombstones and absent keys skipped. Callers apply reverse/limit.
 func (s *mvccStore) rangeAt(begin, end []byte, readVersion int64) []fdb.KeyValue {

@@ -124,8 +124,10 @@ type RangeOptions struct {
 	// Mode sets the streaming mode of the range read.
 	//
 	// Honored by Iterator(): Advance() sizes each batch from Mode (Iterator
-	// doubles, Exact/WantAll fetch in one go, Small/Medium/Large/Serial use fixed
-	// sizes) — the right tool for large or unbounded result sets. Ignored ONLY by
+	// doubles and then SATURATES, so a long scan settles into equal-sized fetches
+	// rather than one that grows with the range; Exact/WantAll fetch in one go;
+	// Small/Medium/Large/Serial use fixed sizes) — the right tool for large or
+	// unbounded result sets. Ignored ONLY by
 	// GetSliceWithError, which always fetches the whole range in exact mode and
 	// materializes it into one slice regardless of Mode; for an unexpectedly large
 	// range prefer Iterator() (or set WithRangeByteCeiling as an OOM backstop).

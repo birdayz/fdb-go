@@ -8824,6 +8824,41 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       real wire-compat bug, NOT a tolerance to normalize away.
   </details>
 
+- [ ] **Port libfdb_c's BYTE-target streaming-mode model (`GetRangeLimits{rows, bytes}`).**
+  `StreamingMode` is modelled here as a per-fetch ROW budget; in libfdb_c every mode is a per-fetch
+  BYTE target. `bindings/c/fdb_c.cpp:1002` is one unified byte table — `SMALL` 256 B, `MEDIUM`
+  1000 B, `LARGE` 4096 B, `SERIAL` 80000 B, `WANT_ALL`→`SERIAL` — and `:1006` gives `ITERATOR` the
+  progression `{4096, 6144, 9216, 13824, 20736, 31104, 46656, 69984, 80000, 120000}`, clamped at
+  `:1019` (`iteration = std::min(iteration, max_iteration)`). Go models those four modes as
+  10/100/1000/500 rows and `ITERATOR` as a doubling row count.
+
+  The *saturation* half of `ITERATOR` is already ported (`pkg/fdbgo/fdb/range_result.go`,
+  `iteratorMaxIteration`): the row progression now stops growing at the same iteration index C++
+  stops at, which is what bounded per-fetch memory (it was Θ(rows) — 2M rows held 951426 entries in
+  one fetch). What remains is the **model** itself, and the residual divergence is a row-size
+  asymmetry, in BOTH directions around the ~120 B record where the two models agree:
+    - at ~20 B records, C fetches ~6000 rows/batch where Go fetches 1024 → ~6x the round trips;
+    - at 10 KB records, C fetches 12 rows/batch where Go fetches 1024 → a ~10 MB single batch.
+  So the bound Go now has is a bound on ROWS, not on BYTES; the byte dimension is covered only by
+  the opt-in `WithRangeByteCeiling` (RFC-115 §2).
+
+  **Trigger — do this on the FIRST of:**
+    (a) a measured `ITERATOR` divergence from libfdb_c at a record size away from ~120 B, or
+    (b) any work introducing a byte dimension (`target_bytes` / `limitBytes`) into the range path.
+  Not speculative-scheduled: the current model is correct-but-differently-shaped, not wrong.
+
+  **Scope when it fires** (this is why it is not a drive-by): the one-dimensional row budget runs
+  through `getRangeImpl`, the RYW merge loop, and simfdb's parallel implementation, so all three
+  must carry `GetRangeLimits{rows, bytes}` with a two-dimensional `isReached()`/`decrement()`.
+  Changing batch boundaries moves every read-conflict range and every cursor continuation, so
+  **RFC-121** (conflict extents are clamped to what a batch returned) and **RFC-098** (the
+  unreadable-`reach()` verdict is keyed on the ROW limit — a byte-triggered early stop must not
+  read as "did not reach") both need rework, and the record layer's continuation goldens re-checked.
+  Note the regression net cannot pre-cover this: while Go's budget is rows and C's is bytes,
+  per-fetch batch lengths cannot match, so a byte-identity differential on batch boundaries is not
+  expressible until this lands — which is itself an argument for landing it.
+  Client gate applies (FDB C++ dev + Torvalds); wants its own RFC.
+
 - [ ] **C2-followup. RYW key-selector + read-version correctness audit (RFC-056).** Remaining
   RYW read-resolution divergences from libfdb_c surfaced by the RFC-055 differential:
   (2) a go-vs-cgo read-version

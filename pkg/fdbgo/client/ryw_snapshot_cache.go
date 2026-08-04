@@ -17,6 +17,15 @@ import (
 // Thread safety: callers must hold rywCache.mu when accessing this struct.
 type snapshotCache struct {
 	entries []cacheEntry
+
+	// kvsTouched counts cached KeyValues examined by the range walk since the last
+	// reset. It exists to make the walk's cost observable: the walk is supposed to do
+	// work proportional to the PAGE it returns, not to the tail still cached behind it,
+	// and that is a property no assertion on the returned rows can distinguish (a walk
+	// that scans a million rows and truncates to 1024 returns exactly the same page as
+	// one that stops at 1024). Read only by tests; an int increment on the walk is not
+	// measurable against the byte comparisons it accompanies.
+	kvsTouched uint64
 }
 
 // cacheEntry represents a contiguous range of known server state.
@@ -147,9 +156,54 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 // known. Returns (kvs, true) on full cache hit, (nil, false) on any miss.
 // Returned KVs are in ascending key order.
 func (sc *snapshotCache) getRangeKVs(begin, end []byte) ([]KeyValue, bool) {
+	return sc.getRangeKVsLimited(begin, end, 0, false)
+}
+
+// getRangeKVsLimited is getRangeKVs bounded by demand: it walks the cache in the
+// direction the read asked for and stops as soon as `budget` KVs are in hand.
+// budget <= 0 means unbounded. Results are ALWAYS returned in ascending key order
+// (the callers' applyLimitAndDirection does the reversing), so for a reverse read
+// this is the HIGHEST `budget` keys in [begin, end).
+//
+// This is C++'s shape, not an optimization on top of it. The RYW range walk carries
+// GetRangeLimits into the cache traversal: ReadYourWrites.actor.cpp:785-789 counts
+// out of a contiguous cached run under `!limits.isReached()` and then appends only
+// that counted prefix —
+//
+//	int maxCount = it.kv(ryw->arena) - start + 1;
+//	int count = 0;
+//	for (; count < maxCount && !limits.isReached(); count++)
+//	        limits.decrement(start[count]);
+//	...
+//	if (count) result.append(result.arena(), start, count);
+//
+// — and :685 (`if (limits.isReached() && itemsPastEnd >= 1 - end.offset) break;`)
+// ends the traversal outright. getRangeValueBack does the same at :1091. C++ never
+// materializes the tail behind the page.
+//
+// Why the bound matters here and not just in theory: a satisfied budget makes the
+// answer FINAL, so coverage of the rest of [begin, end) is irrelevant to it. Without
+// that, a fully-cached range re-scanned page by page (GetSliceWithError, then an
+// Iterator over the same range in the same transaction) copied every remaining KV on
+// every page before truncating to the page size — N/page full-tail copies, and even
+// the first "bounded" page allocated Theta(N).
+//
+// Correctness rests on the callers being unchanged: both sites feed this straight to
+// applyLimitAndDirection(kvs, limit, reverse) and computeMore(kvs, limit), so passing
+// budget = limit+1 makes this a pure FUSION of the walk with the truncation that
+// already followed it — same page, same `more` (the +1 is exactly what computeMore's
+// `len(kvs) > limit` needs to see). It is deliberately NOT a limit applied to a merged
+// stream: the fast-path caller is only reached when no write or clear touches
+// [begin, end), and the fetchOrCached caller passes the server-side fetch limit that
+// already carries the slow path's clear-headroom, with the merge limiting itself
+// afterwards.
+func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, reverse bool) ([]KeyValue, bool) {
 	n := len(sc.entries)
-	if n == 0 {
+	if n == 0 || bytes.Compare(begin, end) >= 0 {
 		return nil, false
+	}
+	if reverse {
+		return sc.getRangeKVsBack(begin, end, budget)
 	}
 
 	// Find the first entry whose end > begin (could contain begin).
@@ -161,7 +215,7 @@ func (sc *snapshotCache) getRangeKVs(begin, end []byte) ([]KeyValue, bool) {
 		return nil, false // begin is not covered
 	}
 
-	// Walk entries, collecting KVs, checking for gaps.
+	// Walk entries ascending, collecting KVs, checking for gaps.
 	var result []KeyValue
 	cur := begin
 	for j := i; j < n; j++ {
@@ -169,10 +223,22 @@ func (sc *snapshotCache) getRangeKVs(begin, end []byte) ([]KeyValue, bool) {
 		if bytes.Compare(e.begin, cur) > 0 {
 			return nil, false // gap
 		}
-		// Collect KVs in [max(begin, e.begin), min(end, e.end))
-		for _, kv := range e.kvs {
-			if bytes.Compare(kv.Key, begin) >= 0 && bytes.Compare(kv.Key, end) < 0 {
-				result = append(result, kv)
+		// Seek to the first key at or after begin rather than scanning the whole
+		// entry: with one fragment per fetch, a linear scan per entry is what made
+		// the walk cost the tail rather than the page.
+		lo := sort.Search(len(e.kvs), func(k int) bool {
+			return bytes.Compare(e.kvs[k].Key, begin) >= 0
+		})
+		for k := lo; k < len(e.kvs); k++ {
+			kv := e.kvs[k]
+			if bytes.Compare(kv.Key, end) >= 0 {
+				break
+			}
+			sc.kvsTouched++
+			result = append(result, kv)
+			if budget > 0 && len(result) >= budget {
+				// The page is decided; whatever is cached past here cannot change it.
+				return result, true
 			}
 		}
 		cur = e.end
@@ -181,6 +247,60 @@ func (sc *snapshotCache) getRangeKVs(begin, end []byte) ([]KeyValue, bool) {
 		}
 	}
 	return nil, false // end not reached
+}
+
+// getRangeKVsBack is the reverse-direction walk: it descends from `end` so a reverse
+// read pays for its page rather than for the range below it. Returns ascending KVs.
+// C++'s counterpart is getRangeValueBack, whose cache walk bounds itself the same way
+// (ReadYourWrites.actor.cpp:1091).
+func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyValue, bool) {
+	n := len(sc.entries)
+
+	// Last entry that can hold a key below end.
+	j := sort.Search(n, func(i int) bool {
+		return bytes.Compare(sc.entries[i].begin, end) >= 0
+	}) - 1
+	if j < 0 {
+		return nil, false
+	}
+
+	var desc []KeyValue
+	cur := end // everything at or above cur is accounted for
+	for ; j >= 0; j-- {
+		e := &sc.entries[j]
+		if bytes.Compare(e.end, cur) < 0 {
+			return nil, false // gap between this entry and what we already covered
+		}
+		// Highest key strictly below end, walking down to begin.
+		hi := sort.Search(len(e.kvs), func(k int) bool {
+			return bytes.Compare(e.kvs[k].Key, end) >= 0
+		})
+		for k := hi - 1; k >= 0; k-- {
+			kv := e.kvs[k]
+			if bytes.Compare(kv.Key, begin) < 0 {
+				break
+			}
+			sc.kvsTouched++
+			desc = append(desc, kv)
+			if budget > 0 && len(desc) >= budget {
+				return reversedKVs(desc), true // top `budget` keys — page decided
+			}
+		}
+		cur = e.begin
+		if bytes.Compare(cur, begin) <= 0 {
+			return reversedKVs(desc), true // covered down to begin
+		}
+	}
+	return nil, false // begin not reached
+}
+
+// reversedKVs returns kvs in the opposite order, as a fresh slice.
+func reversedKVs(kvs []KeyValue) []KeyValue {
+	out := make([]KeyValue, len(kvs))
+	for i, kv := range kvs {
+		out[len(kvs)-1-i] = kv
+	}
+	return out
 }
 
 // getKey checks if a single key's server state is cached. Returns (value, true)

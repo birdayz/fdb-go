@@ -348,3 +348,157 @@ func TestRangeIterator_TupleRange(t *testing.T) {
 		return nil, nil
 	})
 }
+
+// TestRangeIterator_DrainsPastIteratorSaturation exercises ITERATOR paging in the region the
+// saturation clamp created, against real FDB.
+//
+// libfdb_c's ITERATOR target saturates (bindings/c/fdb_c.cpp:1006 table, :1019 clamp), and this
+// client's row progression now saturates at the same iteration index instead of doubling without
+// bound. That changes the shape of every scan longer than 2+4+...+1024 = 2046 rows: past that
+// point the client issues many EQUAL-sized fetches where it used to issue one ever-growing one.
+// No other end-to-end test reaches it — the largest ITERATOR range read in the suite is 20 rows,
+// four iterations — so the repeated-batch paging path (advance the scan boundary, re-fetch, merge
+// through RYW) had no real-FDB coverage at all.
+//
+// Two things are asserted, and the second is what keeps the first honest:
+//
+//   - Completeness and order: a paging bug at a batch boundary drops, duplicates, or reorders rows
+//     exactly there, and with a saturated budget there are many more boundaries to get wrong.
+//   - That the scan ACTUALLY REACHED saturation, via the iterator's own trace surface. Without
+//     this, the test's coverage is undurable: it exercises the saturated region only as an
+//     accident of iteratorMaxIteration being 10 and n being 5000, and if the clamp later moved
+//     past 5000 rows the test would keep passing while silently covering nothing. Pinning the
+//     observed batch shape also turns this from coverage into a genuine detector — an unclamped
+//     progression fetches 2048 here and fails outright.
+func TestRangeIterator_DrainsPastIteratorSaturation(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	pfx := "iter_saturate_"
+
+	// The saturated per-fetch row budget: 2 << (max_iteration-1), max_iteration = 10
+	// (bindings/c/fdb_c.cpp:1011). Written as a literal rather than read from the
+	// implementation so that moving the clamp fails this test instead of redefining it.
+	const wantCap = 1024
+	// The scan must contain at least this many FULLY saturated fetches, so the repeated
+	// equal-batch region is genuinely exercised and not merely touched once at the corner.
+	const wantSaturatedFetches = 2
+
+	// Comfortably past the 2046-row doubling phase, so several full saturated batches and a
+	// short final one are all exercised. Written in chunks to stay inside the 10 MB
+	// transaction limit budget and well under the 5 s transaction lifetime.
+	const n = 5000
+	const perTx = 500
+	for start := 0; start < n; start += perTx {
+		start := start
+		if _, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
+			for i := start; i < start+perTx && i < n; i++ {
+				tr.Set(gofdb.Key(fmt.Sprintf("%s%06d", pfx, i)), []byte(fmt.Sprintf("v%06d", i)))
+			}
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("setup rows [%d,%d): %v", start, start+perTx, err)
+		}
+	}
+
+	// assertSaturated checks a completed scan's observed batch shape: the per-fetch budget must
+	// peak at exactly wantCap (an unclamped progression overshoots it; a clamp set too low never
+	// reaches it), and enough fetches must have actually returned a full saturated batch.
+	assertSaturated := func(t *testing.T, arm string, requested, returned []int) {
+		t.Helper()
+		peak, saturated := 0, 0
+		for i, req := range requested {
+			if req > peak {
+				peak = req
+			}
+			if returned[i] == wantCap {
+				saturated++
+			}
+		}
+		if peak != wantCap {
+			t.Errorf("%s: peak requested batch = %d, want exactly %d — the ITERATOR budget must "+
+				"saturate at the C progression's clamp point (fdb_c.cpp:1019) and must still "+
+				"grow up to it; requested=%v", arm, peak, wantCap, requested)
+		}
+		if saturated < wantSaturatedFetches {
+			t.Errorf("%s: only %d fetch(es) returned a full %d-row batch, want >= %d — this scan "+
+				"is supposed to exercise the repeated equal-batch region; if the clamp or the "+
+				"row count moved, this test is no longer covering saturation at all. "+
+				"returned=%v", arm, saturated, wantCap, wantSaturatedFetches, returned)
+		}
+	}
+
+	// trace records the per-fetch budget and the rows it actually yielded, skipping the trailing
+	// empty fetch that ends a drained scan.
+	trace := func(it gofdb.RangeIterator) (requested, returned *[]int) {
+		req, ret := &[]int{}, &[]int{}
+		it.SetTraceLog(func(_, requested, returned int, _ bool, _ error) {
+			if returned == 0 {
+				return
+			}
+			*req = append(*req, requested)
+			*ret = append(*ret, returned)
+		})
+		return req, ret
+	}
+
+	kr := gofdb.KeyRange{Begin: gofdb.Key(pfx), End: gofdb.Key(pfx + "999999")}
+	var fwdReq, fwdRet *[]int
+	if _, err := db.ReadTransact(func(rtr gofdb.ReadTransaction) (any, error) {
+		it := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeIterator}).Iterator()
+		fwdReq, fwdRet = trace(it)
+		got := 0
+		for it.Advance() {
+			kv, err := it.Get()
+			if err != nil {
+				return nil, fmt.Errorf("row %d: %w", got, err)
+			}
+			wantKey := fmt.Sprintf("%s%06d", pfx, got)
+			if string(kv.Key) != wantKey {
+				return nil, fmt.Errorf("row %d: key = %q, want %q — a saturated ITERATOR scan "+
+					"pages through many equal-sized fetches; a dropped, duplicated or "+
+					"reordered row shows up as a mismatch at the batch boundary",
+					got, kv.Key, wantKey)
+			}
+			if want := fmt.Sprintf("v%06d", got); string(kv.Value) != want {
+				return nil, fmt.Errorf("row %d: value = %q, want %q", got, kv.Value, want)
+			}
+			got++
+		}
+		if got != n {
+			return nil, fmt.Errorf("iterated %d rows, want %d", got, n)
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	assertSaturated(t, "forward", *fwdReq, *fwdRet)
+
+	// The same range under a reverse saturated scan: reverse paging advances the scan
+	// boundary from the other end, a distinct arm of the same loop.
+	var revReq, revRet *[]int
+	if _, err := db.ReadTransact(func(rtr gofdb.ReadTransaction) (any, error) {
+		it := rtr.GetRange(kr, gofdb.RangeOptions{
+			Mode: gofdb.StreamingModeIterator, Reverse: true,
+		}).Iterator()
+		revReq, revRet = trace(it)
+		got := 0
+		for it.Advance() {
+			kv, err := it.Get()
+			if err != nil {
+				return nil, fmt.Errorf("reverse row %d: %w", got, err)
+			}
+			wantKey := fmt.Sprintf("%s%06d", pfx, n-1-got)
+			if string(kv.Key) != wantKey {
+				return nil, fmt.Errorf("reverse row %d: key = %q, want %q", got, kv.Key, wantKey)
+			}
+			got++
+		}
+		if got != n {
+			return nil, fmt.Errorf("reverse iterated %d rows, want %d", got, n)
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("reverse drain: %v", err)
+	}
+	assertSaturated(t, "reverse", *revReq, *revRet)
+}
