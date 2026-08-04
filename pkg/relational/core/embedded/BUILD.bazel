@@ -107,6 +107,7 @@ go_test(
         "float_order_by_sort_retention_test.go",
         "float_ordering_claim_plan_test.go",
         "group_count_companion_ddl_test.go",
+        "group_existence_cost_decision_test.go",
         "having_pushdown_decider_test.go",
         "in_over_intersection_relink_test.go",
         "index_asselect_aggregate_test.go",
@@ -302,6 +303,7 @@ go_test(
         "aggregate_ungrouped_candidate_declines_test.go",
         "group_count_companion_ddl_test.go",
         "index_name_guard.go",
+        "group_existence_cost_decision_test.go",
     ],
     deps = [
         "//gen",

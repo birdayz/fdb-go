@@ -2380,9 +2380,32 @@ func countClassifiedConcreteNode(
 		// merge's two legs as two accesses was measured here: it makes criterion
 		// #3 prefer a full Scan (count 1) unconditionally, so the
 		// companion-joined plan never wins on ANY grouping key, however few
-		// groups there are. That does not price the companion, it bars it. The
-		// real charge lives in the plan's HintCost, which sums every leg's work
-		// and takes cardinality from the driving leg.
+		// groups there are. That does not price the companion, it bars it.
+		//
+		// What this criterion does NOT do is hand the decision to the magnitude
+		// cost. Measured on the fixture shape (grouped SUM + HAVING + ORDER BY,
+		// with the companion present), the merge and its base-table rival
+		// StreamingAgg(InMemorySort(Scan)) tie on every rung up to and including
+		// this one — whole-plan max cardinality unknown on both sides so the
+		// cardinality gate abstains, residuals 0/0, data access 1/1 — and then
+		// THREE independent rungs each pick the merge on their own:
+		//
+		//   1. comparePrimaryScanVsIndexScan — covering index beats primary scan
+		//   2. inMemorySortCount             — merge 0, rival 1
+		//   3. the scalar EstimateCostWith fallback, which routes through
+		//      RecordQueryMultiIntersectionOnValuesPlan.HintCost's driving-leg
+		//      branch (that branch is LIVE, not dead: it executes during this
+		//      query's planning and prices the merge below the rival)
+		//
+		// The choice is therefore over-determined and STRUCTURAL: neutralizing
+		// any one of the three changes nothing, and the winner does not move
+		// when table statistics are swept across nine orders of magnitude. Rung
+		// 3's honest per-leg charge is real but never marginal in the
+		// merge-vs-scan shape — so this comment must not be read as "the
+		// magnitude cost decides, therefore count-as-1 is safe". Count-as-1 is
+		// safe because rungs 1 and 2 already encode the same preference for
+		// reasons independent of magnitude; rung 3 agrees rather than governs.
+		// TestGroupExistenceMerge_DecisionIsStructuralNotEconomic pins that.
 		counts.coveringIndexCount++
 		counts.unboundedDataAccess = true
 		validateSkippedConcreteCountSubtrees(p.GetChildren(), ctx)
