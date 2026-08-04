@@ -175,15 +175,48 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	}
 
 	begin, end := countSubspace.FDBRangeKeys()
-	kvs, err := tr.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+	total, err := sumRecordCounts(tr.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}))
 	if err != nil {
 		return 0, false, fmt.Errorf("read grouped record counts: %w", err)
 	}
+	return total, true, nil
+}
+
+// sumRecordCounts folds a range of record-count slots into their total, consuming the
+// range as a STREAM and never materializing it.
+//
+// This is Java's MoreAsyncUtil.reduce(getExecutor(), kvs.iterator(), 0L,
+// (count, kv) -> count + decodeRecordCount(kv.getValue())) over
+// tr.getRange(getSubspace().range(Tuple.from(RECORD_COUNT_KEY)))
+// (FDBRecordStore.java:2307-2310). Java carries no row limit, no continuation and no
+// ExecuteProperties into that read — it is the raw AsyncIterable over the whole count
+// subspace, at the isolation the enclosing `context.readTransaction(true)` already
+// fixed (snapshot) — so the Go range takes default options and the caller's snapshot
+// transaction, and the only thing ported here is the fold.
+//
+// Streaming is not a micro-optimization: the number of slots is the CARDINALITY of the
+// store's record-count key, so a store counting by a high-cardinality group has as many
+// slots as groups. Collecting them into a slice first makes an unbounded allocation on a
+// path that both GetRecordCount and the evolution rebuild's count selection sit on. The
+// accumulator is a single int64 and the iterator holds one batch at a time, so peak
+// memory is independent of the group count.
+func sumRecordCounts(rr fdb.RangeResult) (int64, error) {
+	iter := rr.Iterator()
 	var total int64
-	for _, kv := range kvs {
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return 0, err
+		}
 		total += decodeRecordCount(kv.Value)
 	}
-	return total, true, nil
+	// Advance() returns false on exhaustion OR error — check the stored Get() error so a
+	// transient transaction_too_old (1007) is not folded in as "no more groups", which
+	// would answer a plausible, too-small total instead of failing.
+	if _, err := iter.Get(); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // GetSnapshotRecordCount returns the count of records matching the given evaluated

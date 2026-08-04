@@ -94,6 +94,68 @@ var _ = Describe("RecordCountRollup", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// The roll-up streams the count subspace rather than collecting it (see
+	// sumRecordCounts). This spec pins the CORRECTNESS half of that at a group count
+	// large enough to span many range-read batches: a streamed fold that loses a
+	// batch boundary, double-counts one, or stops early answers a plausible number,
+	// and only an independently known total catches it. Every order_id is its own
+	// group and every group holds exactly one record, so the expected total is the
+	// number of records saved — computed here, not read back from the store.
+	//
+	// It does NOT pin memory. Both the streamed and the materializing shape answer
+	// the same number, so no assertion here can tell them apart; the memory bound
+	// lives in TestSumRecordCounts_StreamsInsteadOfMaterializing.
+	It("GetRecordCount rolls up thousands of groups exactly", func() {
+		ks := specSubspace()
+
+		builder := recordTypeKeyedMetaData()
+		builder.SetRecordCountKey(Field("order_id"))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const groups = 3000
+		const perTx = 500
+		for base := int64(0); base < groups; base += perTx {
+			from := base
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := from + 1; i <= from+perTx; i++ {
+					if _, err := store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i)),
+					}); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := store.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(groups)),
+				"the streamed roll-up must sum every group exactly once across every range-read batch")
+
+			// One group read directly, to prove the groups really are separate
+			// slots and the total above is a sum of many rather than one big one.
+			one, err := store.GetSnapshotRecordCount(tuple.Tuple{int64(1234)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(one).To(Equal(int64(1)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("GetRecordCount still reads the single slot for an ungrouped record-count key", func() {
 		ks := specSubspace()
 

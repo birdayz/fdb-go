@@ -541,6 +541,12 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 // Scoping the probe to one record type shrinks that conflict range to the type
 // actually being indexed, so an insert of an unrelated type no longer invalidates
 // the decision.
+//
+// This reasoning is specific to a decision predicated on emptiness and does NOT
+// generalize to the other reads on this path. In particular the aggregate-index scan
+// (countKVCursor.initIterator) must be snapshot when snapshot is requested, because
+// a count that adds a conflict range breaks the caller's transaction for a read that
+// promised not to. Do not "fix" either of these into the other.
 func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, error) {
 	recSub := store.subspace.Sub(RecordKey)
 	if recordType != nil {

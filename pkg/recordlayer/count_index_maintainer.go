@@ -136,7 +136,30 @@ func (c *countKVCursor) initIterator() error {
 		options.Limit = saturatingAdd(limit, 1)
 	}
 
-	c.iterator = c.tx.GetRange(rng, options).Iterator()
+	// Honor the requested isolation level, exactly as Java's KeyValueCursorBase does:
+	// transaction = context.readTransaction(scanProperties.getExecuteProperties()
+	// .getIsolationLevel().isSnapshot()) (KeyValueCursorBase.java:358), which is the
+	// transaction every aggregate-index scan reaches through
+	// AtomicMutationIndexMaintainer.evaluateAggregateFunction ->
+	// scan(BY_GROUP, ...) -> StandardIndexMaintainer.scan
+	// (AtomicMutationIndexMaintainer.java:209-217).
+	//
+	// A snapshot request that reads non-snapshot is not merely conservative: it adds a
+	// read conflict on the index range, so a transaction that counts via this path,
+	// races an index update and then writes anything at all fails with not_committed
+	// (1020) — for a read whose whole contract is that it does not conflict.
+	//
+	// This is deliberately the OPPOSITE of the store's records-emptiness probe
+	// (recordsRangeEmpty in store_builder.go), which is intentionally non-snapshot so a
+	// concurrent insert DOES invalidate its "empty, so build the index inline" decision.
+	// That probe wants the conflict; this read must not have one. Do not unify them.
+	var rangeResult fdb.RangeResult
+	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {
+		rangeResult = c.tx.Snapshot().GetRange(rng, options)
+	} else {
+		rangeResult = c.tx.GetRange(rng, options)
+	}
+	c.iterator = rangeResult.Iterator()
 	return nil
 }
 
