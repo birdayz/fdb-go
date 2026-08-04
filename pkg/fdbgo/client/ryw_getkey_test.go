@@ -384,6 +384,12 @@ func TestRYWSegCursor_EquivalentToMaterializer(t *testing.T) {
 			}
 			c.serverCache.insert(b, e, kvs)
 		}
+		// The ranges above are drawn independently from a tiny alphabet, so
+		// they overlap and share endpoints constantly — free coverage of the
+		// insert boundary cases. The cursor/oracle comparison below cannot see
+		// a corrupt cache (both sides read the same entries), so check the
+		// structure itself here.
+		assertSnapshotCacheInvariants(t, &c.serverCache, "getkey random build")
 		return c
 	}
 

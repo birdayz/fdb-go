@@ -22,6 +22,18 @@ type snapshotCache struct {
 // cacheEntry represents a contiguous range of known server state.
 // All keys in [begin, end) are accounted for: if a key exists at the server,
 // it appears in kvs. If it doesn't appear, the key doesn't exist.
+//
+// Entries are non-empty (begin < end) and pairwise NON-OVERLAPPING, in the weak
+// sense entries[i].end <= entries[i+1].begin — adjacency is allowed and, since
+// each fetch leaves its own fragment, is the normal case. Non-overlap is a
+// contract, not a coincidence: getRangeKVs walks entries in order and emits
+// every kv in [begin, end) it finds, so its no-duplicate guarantee is exactly
+// the statement that no key is covered by two entries. getKey stops at the last
+// entry whose begin <= key and would silently read past a shadowed one.
+//
+// insert is the sole writer and the sole thing keeping the invariant true; it
+// has no self-healing property (see its comment), so the invariant is pinned
+// directly by assertSnapshotCacheInvariants rather than through either reader.
 type cacheEntry struct {
 	begin []byte     // inclusive
 	end   []byte     // exclusive
@@ -34,77 +46,100 @@ func (sc *snapshotCache) reset() {
 }
 
 // insert marks [begin, end) as known with the given KVs (must be sorted
-// ascending by key). Merges with overlapping or adjacent existing entries.
+// ascending by key).
+//
+// This is C++ `SnapshotCache::insert(KeyRangeRef, VectorRef<KeyValueRef>)`
+// (fdbclient/include/fdbclient/SnapshotCache.h:345-382). The shape that matters
+// is what it does NOT do: it never coalesces an already-known neighbour into the
+// range being inserted, and it therefore never touches the values already cached.
+// It trims the incoming range against whatever is already known at each end,
+// erases only the entries STRICTLY INSIDE what remains, and inserts one new node
+// holding just this fetch's values.
+//
+// Coalescing instead — concatenating the neighbours' values with the new ones and
+// re-sorting — is what makes a sequential scan quadratic: the Nth page copies and
+// sorts all N-1 pages before it, so a scan of G rows in pages of P does Θ(G²/P)
+// work and allocates that many KeyValues, while retaining exactly the same rows.
+// A single unbounded scan of a large subspace then burns the transaction's 5s
+// budget inside the cache rather than at the server. Fragments cost O(log n) per
+// page; the lookup side already walks adjacent entries and checks for gaps, so
+// nothing downstream needs them merged.
+//
+// Retention itself is NOT the divergence: C++ keeps every row of every snapshot
+// range read for the life of the transaction too (the SnapshotCache is
+// arena-allocated and has no eviction), so bounding memory here would diverge.
+// Only the per-insert cost is being brought back in line.
 func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
 
+	newBegin := begin
+	newEnd := end
 	n := len(sc.entries)
-	if n == 0 {
-		sc.entries = []cacheEntry{{
-			begin: append([]byte(nil), begin...),
-			end:   append([]byte(nil), end...),
-			kvs:   copyKVs(kvs),
-		}}
-		return
+
+	// Trim the front past an existing entry that STRICTLY contains newBegin.
+	// C++: `begin = itb.it->endKey`, guarded by `!itb.is_unknown_range() &&
+	// itb.it->beginKey != keys.begin`. An entry starting exactly at newBegin is
+	// deliberately not trimmed past — it is superseded below instead. An entry
+	// ending exactly at newBegin does not contain it (end is exclusive), which
+	// is the adjacent-page case and must not trim either.
+	if i := sort.Search(n, func(i int) bool {
+		return bytes.Compare(sc.entries[i].end, newBegin) > 0
+	}); i < n && bytes.Compare(sc.entries[i].begin, newBegin) < 0 {
+		newBegin = sc.entries[i].end
 	}
 
-	// Find overlapping/adjacent entries. An entry e overlaps or is adjacent
-	// to [begin, end) if e.end >= begin && e.begin <= end.
-	loIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].end, begin) >= 0
-	})
-	hiIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].begin, end) > 0
-	})
-
-	// [loIdx, hiIdx) are entries that overlap or are adjacent.
-	newBegin := append([]byte(nil), begin...)
-	newEnd := append([]byte(nil), end...)
-
-	// Collect all KVs from overlapping entries + new KVs, then merge.
-	var allKVs []KeyValue
-	for i := loIdx; i < hiIdx; i++ {
-		e := &sc.entries[i]
-		if bytes.Compare(e.begin, newBegin) < 0 {
-			newBegin = e.begin // no copy needed, we're replacing
-		}
-		if bytes.Compare(e.end, newEnd) > 0 {
-			newEnd = e.end
-		}
-		allKVs = append(allKVs, e.kvs...)
-	}
-	allKVs = append(allKVs, kvs...)
-
-	// Sort and deduplicate. New KVs (from the latest fetch) win on
-	// duplicates, but at a fixed read version they should be identical.
-	sort.Slice(allKVs, func(i, j int) bool {
-		return bytes.Compare(allKVs[i].Key, allKVs[j].Key) < 0
-	})
-	if len(allKVs) > 1 {
-		j := 0
-		for i := 1; i < len(allKVs); i++ {
-			if !bytes.Equal(allKVs[i].Key, allKVs[j].Key) {
-				j++
-				allKVs[j] = allKVs[i]
-			}
-		}
-		allKVs = allKVs[:j+1]
+	// Trim the back to the start of an existing entry that STRICTLY contains
+	// newEnd. C++: `ite._prevUnknown(); end = ite.endKey()`, reached only when
+	// the segment holding keys.end is not an unknown range — an entry ending
+	// exactly at newEnd does not hold it, so it must not trim.
+	if j := sort.Search(n, func(j int) bool {
+		return bytes.Compare(sc.entries[j].begin, newEnd) >= 0
+	}); j > 0 && bytes.Compare(sc.entries[j-1].end, newEnd) > 0 {
+		newEnd = sc.entries[j-1].begin
 	}
 
-	// Replace [loIdx, hiIdx) with the merged entry.
-	merged := cacheEntry{begin: newBegin, end: newEnd, kvs: allKVs}
-	overlapCount := hiIdx - loIdx
-	if overlapCount == 0 {
+	if bytes.Compare(newBegin, newEnd) >= 0 {
+		return // fully known already — C++'s `if (begin < end)` guard
+	}
+
+	// After trimming, no surviving entry partially overlaps [newBegin, newEnd):
+	// the only entry that could straddle either end was what the trim moved that
+	// end to. So [lo, hi) is exactly the set of entries strictly inside, which
+	// this fetch supersedes wholesale (same read version, so same contents).
+	lo := sort.Search(n, func(i int) bool {
+		return bytes.Compare(sc.entries[i].begin, newBegin) >= 0
+	})
+	hi := sort.Search(n, func(i int) bool {
+		return bytes.Compare(sc.entries[i].end, newEnd) > 0
+	})
+
+	// Keep only the values that fall inside the trimmed range. kvs is sorted, so
+	// this is a slice of the caller's page, never a merge with cached values.
+	lok := sort.Search(len(kvs), func(k int) bool {
+		return bytes.Compare(kvs[k].Key, newBegin) >= 0
+	})
+	hik := sort.Search(len(kvs), func(k int) bool {
+		return bytes.Compare(kvs[k].Key, newEnd) >= 0
+	})
+
+	fresh := cacheEntry{
+		begin: append([]byte(nil), newBegin...),
+		end:   append([]byte(nil), newEnd...),
+		kvs:   copyKVs(kvs[lok:hik]),
+	}
+
+	switch hi - lo {
+	case 0:
 		sc.entries = append(sc.entries, cacheEntry{})
-		copy(sc.entries[loIdx+1:], sc.entries[loIdx:])
-		sc.entries[loIdx] = merged
-	} else if overlapCount == 1 {
-		sc.entries[loIdx] = merged
-	} else {
-		sc.entries[loIdx] = merged
-		sc.entries = append(sc.entries[:loIdx+1], sc.entries[hiIdx:]...)
+		copy(sc.entries[lo+1:], sc.entries[lo:])
+		sc.entries[lo] = fresh
+	case 1:
+		sc.entries[lo] = fresh
+	default:
+		sc.entries[lo] = fresh
+		sc.entries = append(sc.entries[:lo+1], sc.entries[hi:]...)
 	}
 }
 

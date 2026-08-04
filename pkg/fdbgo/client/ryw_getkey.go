@@ -206,13 +206,47 @@ func (cur *rywSegCursor) prev() {
 // floor (largest boundary <= p) and ceil (smallest boundary > p); prevBoundaryLocked
 // re-centers on its own argument, so the below-floor case is covered by a separate call.
 //
-// Why the windows suffice: cleared ranges and cache entries are sorted, non-overlapping
-// AND coalesced, so the only boundaries that can be floor/ceil are at lo-1 / lo / lo+1
-// (where lo = first range with end > p) — the [lo-1, lo+1] window is load-bearing and
-// exactly sufficient. For the key sources (sortedKeys, cache kvs) the floor/ceil come
-// from the keys at Search(>=p) and Search(>=p)-1 plus their keyAfter successors; the
-// extra -2 index is conservative slack (the Search-2 successor is always dominated by
-// Search-1's contributions), kept as a cheap margin. Caller holds c.mu.
+// Why the windows suffice. The merged floor is the MAX of the per-source floors and the
+// merged ceil is the MIN of the per-source ceils, so it is enough that each source
+// contributes its own floor and ceil; every source can then be argued separately.
+//
+// Range sources (cleared, unreadableRanges, cache entries) need only two properties:
+// sorted, and non-overlapping in the weak sense end_j <= begin_{j+1}. Adjacency
+// (end_j == begin_{j+1}) is allowed and is now the common case for cache entries, since
+// each fetch leaves its own fragment instead of being merged into its neighbour. Let
+// lo = first range with end > p. Then for j < lo: begin_j < end_j <= p, and for j > lo:
+// begin_j >= end_{lo} > p. So the boundary multiset splits cleanly around entry lo:
+//
+//   - Floor (largest boundary <= p): the candidates <= p are all boundaries of ranges
+//     below lo, plus begin_lo when begin_lo <= p. The sequence begin_0, end_0, begin_1,
+//     end_1, ... is non-decreasing, so the largest among the below-lo boundaries is
+//     end_{lo-1} — index lo-1 alone dominates every range beneath it. Floor is therefore
+//     max(end_{lo-1}, begin_lo), both inside the window.
+//   - Ceil (smallest boundary > p): the candidates > p are end_lo, begin_lo when
+//     begin_lo > p, and all boundaries of ranges above lo — but the smallest of those is
+//     begin_{lo+1} >= end_lo. So ceil is already in {begin_lo, end_lo}; index lo+1 is
+//     slack, not load-bearing.
+//
+// Nothing above uses coalescing. Merging adjacent ranges would only turn end_j <=
+// begin_{j+1} into a strict <, which the argument never appeals to.
+//
+// Key sources (sortedKeys, and the kvs inside cache entries) reduce to the same shape.
+// Within one entry, kvs is sorted, so with ki = first kv >= p the floor contribution is
+// kvs[ki-1] or its keyAfter and the ceil contribution is kvs[ki] or keyAfter(kvs[ki-1]);
+// the extra -2 index is conservative slack, since keyAfter(kvs[ki-2]) <= kvs[ki-1].
+// Across entries, only the windowed ones are scanned, and the rest are dominated by
+// bounds the window already contributes: a key k in entry j satisfies begin_j <= k <
+// end_j, hence keyAfter(k) <= end_j as well, so for j < lo-1 every contribution is
+// <= end_j <= begin_{lo-1} <= p, and for j > lo+1 every contribution is >= begin_j >=
+// end_lo > p. Both dominators are added unconditionally by the window.
+//
+// That domination step is what covers an entry carrying NO kvs — a zero-row fetch now
+// leaves an empty fragment of its own rather than being absorbed by a neighbour, so the
+// windowed entries can contribute no keys at all while non-empty entries sit outside the
+// window. Their keys are still dominated by the windowed entries' bounds, which are
+// contributed whether or not the fragment holds rows.
+//
+// Caller holds c.mu.
 func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]byte {
 	var cands [][]byte
 	add := func(b []byte) {
@@ -244,8 +278,8 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]b
 		// WriteMap.cpp:205-242). Without these edges the range's head [begin,
 		// entry) — which contains no write-map key — is swallowed into the
 		// unknown segment that starts BELOW the range, and a selector walk
-		// crosses it where libfdb_c throws (FDB-C++ review on RFC-098). Same
-		// sorted/coalesced lo-1..lo+1 window argument as cleared above.
+		// crosses it where libfdb_c throws (RFC-098). Same sorted +
+		// non-overlapping lo-1..lo+1 window argument as cleared above.
 		un := len(c.unreadableRanges)
 		ulo := sort.Search(un, func(i int) bool { return bytes.Compare(c.unreadableRanges[i].end, p) > 0 })
 		for j := ulo - 1; j <= ulo+1; j++ {
