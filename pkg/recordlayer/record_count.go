@@ -175,7 +175,31 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	}
 
 	begin, end := countSubspace.FDBRangeKeys()
-	total, err := sumRecordCounts(tr.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}))
+	// StreamingModeSerial is a DELIBERATE DIVERGENCE from Java's mode selection, and the
+	// reason is a defect in this repo's own client rather than in Java's choice.
+	//
+	// Java reaches this read through tr.getRange(Range) with no mode argument, which
+	// resolves to StreamingMode.ITERATOR (FDBTransaction.java:174-176, 430-432). ITERATOR
+	// is safe there: libfdb_c translates it into a per-fetch BYTE target that walks
+	// {4096, 6144, ..., 120000} and then SATURATES, because the iteration index is clamped
+	// to the length of that table (bindings/c/fdb_c.cpp:1006, 1019-1020). Java's peak
+	// per-fetch buffer is ~120 KB however many groups exist.
+	//
+	// The pure-Go client has no byte target, so it models ITERATOR as row doubling with no
+	// saturation — 2 << (iteration-1), bounded only by the row budget (fdb/range_result.go
+	// batchSize) — and the iterator retains the whole fetched batch. Over the count
+	// subspace, whose size is the CARDINALITY of the record-count key, that puts peak
+	// memory back at Θ(groups): one level below the fold, but exactly the cost streaming
+	// the fold was meant to remove. Serial is the only mode this client actually bounds,
+	// so it is what reproduces Java's real behaviour (a bounded per-fetch buffer) even
+	// though it is not Java's mode NAME. The durable fix is for this client's ITERATOR to
+	// saturate the way libfdb_c's does; until it does, an unbounded fold must not use it.
+	//
+	// The mode selects how many rows a fetch asks for. It changes nothing about what is
+	// stored, what is read, or the total — and nothing about isolation: the read stays on
+	// the snapshot transaction resolved above.
+	total, err := sumRecordCounts(tr.GetRange(fdb.KeyRange{Begin: begin, End: end},
+		fdb.RangeOptions{Mode: fdb.StreamingModeSerial}))
 	if err != nil {
 		return 0, false, fmt.Errorf("read grouped record counts: %w", err)
 	}
@@ -191,15 +215,17 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 // (FDBRecordStore.java:2307-2310). Java carries no row limit, no continuation and no
 // ExecuteProperties into that read — it is the raw AsyncIterable over the whole count
 // subspace, at the isolation the enclosing `context.readTransaction(true)` already
-// fixed (snapshot) — so the Go range takes default options and the caller's snapshot
-// transaction, and the only thing ported here is the fold.
+// fixed (snapshot) — so the Go range carries no row limit either and takes the caller's
+// snapshot transaction. The only thing ported here is the fold; the caller's choice of
+// streaming mode is explained at the call site.
 //
 // Streaming is not a micro-optimization: the number of slots is the CARDINALITY of the
 // store's record-count key, so a store counting by a high-cardinality group has as many
 // slots as groups. Collecting them into a slice first makes an unbounded allocation on a
 // path that both GetRecordCount and the evolution rebuild's count selection sit on. The
-// accumulator is a single int64 and the iterator holds one batch at a time, so peak
-// memory is independent of the group count.
+// accumulator is a single int64 and the iterator holds one batch at a time — but that
+// bounds peak memory only if the BATCH is bounded, which is a property of the streaming
+// mode the caller picks, not of this fold. See the call site.
 func sumRecordCounts(rr fdb.RangeResult) (int64, error) {
 	iter := rr.Iterator()
 	var total int64

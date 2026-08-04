@@ -289,6 +289,7 @@ go_test(
         "ranked_set_test.go",
         "rebuild_count_selection_test.go",
         "rebuild_index_test.go",
+        "record_count_batch_test.go",
         "record_count_isolation_test.go",
         "record_count_rollup_test.go",
         "record_count_streaming_test.go",
