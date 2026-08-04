@@ -175,42 +175,39 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	}
 
 	begin, end := countSubspace.FDBRangeKeys()
-	// StreamingModeSerial is a DELIBERATE DIVERGENCE from Java's mode selection, and the
-	// reason is a defect in this repo's own client rather than in Java's choice.
+	// This read takes the client's DEFAULT streaming mode, which is exactly what Java
+	// does: it reaches the same read through tr.getRange(Range) with no mode argument,
+	// resolving to StreamingMode.ITERATOR (FDBTransaction.java:174-176, 430-432).
 	//
-	// Java reaches this read through tr.getRange(Range) with no mode argument, which
-	// resolves to StreamingMode.ITERATOR (FDBTransaction.java:174-176, 430-432). ITERATOR
-	// is safe there: libfdb_c translates it into a per-fetch BYTE target that walks
-	// {4096, 6144, ..., 120000} and then SATURATES, because the iteration index is clamped
-	// to the length of that table (bindings/c/fdb_c.cpp:1006, 1019-1020). Java's peak
-	// per-fetch buffer is ~120 KB however many groups exist.
+	// That parity is recent, and it is worth recording why the default is now safe here,
+	// because for a while it was not and this call site carried an explicit
+	// StreamingModeSerial to say so. Two independent client defects made an unbounded
+	// fold unsafe under ITERATOR; both are fixed:
 	//
-	// The pure-Go client has no byte target, so it models ITERATOR as row doubling with no
-	// saturation — 2 << (iteration-1), bounded only by the row budget (fdb/range_result.go
-	// batchSize) — and the iterator retains the whole fetched batch. Over the count
-	// subspace, whose size is the CARDINALITY of the record-count key, that puts peak
-	// memory back at Θ(groups): one level below the fold, but exactly the cost streaming
-	// the fold was meant to remove. Serial is the only mode this client actually bounds,
-	// so it is what reproduces Java's real behaviour (a bounded per-fetch buffer) even
-	// though it is not Java's mode NAME. The durable fix is for this client's ITERATOR to
-	// saturate the way libfdb_c's does; until it does, an unbounded fold must not use it.
+	//  1. ITERATOR did not saturate. libfdb_c translates ITERATOR into a per-fetch BYTE
+	//     target that walks {4096, 6144, ..., 120000} and then STOPS growing, because the
+	//     iteration index is clamped to the length of that table (bindings/c/fdb_c.cpp:1006,
+	//     1019-1020) — so C's peak per-fetch buffer is ~120 KB however many groups exist.
+	//     This client models the progression in ROWS rather than bytes, and used to double
+	//     without any ceiling, so over the count subspace — whose size is the CARDINALITY of
+	//     the record-count key — the largest fetch grew with the number of groups. A
+	//     streaming fold on top of an unbounded fetch is Θ(groups) at peak anyway, one level
+	//     below the fold but exactly the cost the fold was meant to remove. The progression
+	//     now clamps at the same iteration index C++ clamps at (fdb/range_result.go
+	//     iteratorMaxIteration), so it runs 2, 4, 8, ... 1024 and then stays at 1024 rows
+	//     forever. Peak per fetch is a constant, independent of how many groups exist.
 	//
-	// INTENDED END STATE: delete the mode argument and take Java's default. The single
-	// condition is that this client's ITERATOR saturates its per-fetch target instead of
-	// doubling without bound — the clamp #613 carries. That clamp is not merged: the
-	// progression above is still 2 << (iteration-1) with no ceiling, so the condition is
-	// unmet and the mode argument stays. Serial is not a better choice than ITERATOR here
-	// — it is only the mode whose buffer this client currently bounds — so the moment the
-	// clamp lands, keeping Serial becomes a gratuitous divergence from Java on a
-	// wire-neutral knob, and this argument should go with it.
+	//  2. The RYW snapshot cache merged each fetched page into its neighbours by
+	//     concatenating and re-sorting everything cached so far, which made any sequential
+	//     scan quadratic in CPU and allocation and made the cost of caching depend on the
+	//     mode's page SIZE. It now keeps one fragment per fetch, as C++'s SnapshotCache
+	//     does. Page size no longer feeds back into caching cost at all.
 	//
-	// A second, independent client defect on this path is fixed, and the fix is on master:
-	// the RYW snapshot cache used to merge each fetched page into its neighbours by
-	// concatenating and re-sorting everything cached so far, which made any sequential scan
-	// quadratic in CPU and allocation. It now keeps one fragment per fetch, as C++'s
-	// SnapshotCache does (#614). That is why the mode's page SIZE no longer affects the
-	// cost of caching, which is what leaves the choice above turning purely on the
-	// per-fetch buffer.
+	// With both landed there is no bound Serial provides that the default does not, and
+	// its peak fetch is in fact the smaller of the two only by accident of the row tables
+	// (Serial 500 rows, saturated ITERATOR 1024) — a difference with no bearing on the
+	// asymptotics, which are O(1) in the group count either way. Keeping Serial would have
+	// been a gratuitous divergence from Java on a wire-neutral knob, so it is gone.
 	//
 	// What is NOT a defect, and must not be "fixed" here: the snapshot cache retains every
 	// row of this scan for the life of the transaction. libfdb_c does exactly the same (its
@@ -222,7 +219,7 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	// stored, what is read, or the total — and nothing about isolation: the read stays on
 	// the snapshot transaction resolved above.
 	total, err := sumRecordCounts(tr.GetRange(fdb.KeyRange{Begin: begin, End: end},
-		fdb.RangeOptions{Mode: fdb.StreamingModeSerial}))
+		fdb.RangeOptions{}))
 	if err != nil {
 		return 0, false, fmt.Errorf("read grouped record counts: %w", err)
 	}

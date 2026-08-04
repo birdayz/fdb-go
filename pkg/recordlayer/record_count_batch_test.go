@@ -18,19 +18,32 @@ import (
 //
 // The fold streams, so it retains nothing itself. But the range iterator retains
 // whatever the current fetch returned, so peak memory is the size of the largest
-// FETCH, and that is chosen by the streaming mode. The pure-Go client's ITERATOR mode
-// — which is what fdb.RangeOptions{} selects — doubles the row budget every iteration
-// with no saturation (fdb/range_result.go batchSize), so over the count subspace the
-// largest fetch is still proportional to the number of groups. A streaming fold on top
-// of an unbounded fetch is Θ(groups) at peak all the same, just one level down.
+// FETCH, and that is chosen by the streaming mode. The roll-up takes the client's
+// default mode, ITERATOR, which is the mode Java's argument-less getRange resolves to.
+// ITERATOR doubles its row budget each iteration and then SATURATES at the same
+// iteration index libfdb_c clamps at (fdb/range_result.go iteratorMaxIteration): the
+// progression runs 2, 4, 8, ... 1024 and stays at 1024 rows forever. That ceiling is
+// what makes an unbounded fold safe under the default — without it the budget keeps
+// doubling and the largest fetch grows with the number of groups, so a streaming fold
+// would still be Θ(groups) at peak, one level below the fold but exactly the cost the
+// fold was meant to remove.
 //
 // WHAT THIS PINS: the per-fetch row budget the roll-up's range read actually asks the
 // client for, observed end to end — the assertions are on numbers the client reported
 // through its own trace hook while GetSnapshotRecordCount ran, not on a mode enum read
 // back out of a struct. And it pins the property rather than the constant: the peak
-// fetch must be the SAME at two group counts an order of magnitude apart. A mode whose
-// budget grows with the range fails that without any number here having to encode which
-// mode is correct.
+// fetch must be the SAME at two group counts an order of magnitude apart. A budget that
+// keeps growing with the range fails that without any number here having to encode
+// which mode is correct or where the ceiling sits.
+//
+// WHY BOTH SIZES ARE LARGE: the ceiling is only observable above it. A subspace smaller
+// than the saturation point is bounded by the RANGE rather than by the mode — 600 groups
+// peaks at a 512-row fetch simply because it runs out of keys at iteration 9, and that
+// number moves with the cardinality even though nothing is wrong. Comparing a
+// below-saturation size against an above-saturation one therefore measures the range,
+// not the bound, and would report a growing budget on a correctly clamped client. Both
+// sizes here sit past the saturation point, where the ceiling is the only thing that can
+// decide the peak.
 //
 // WHAT THIS DOES NOT PIN: bytes, and therefore not memory. It measures the requested
 // ROW budget; a fetch of bounded row count whose VALUES were huge would still be large,
@@ -41,12 +54,14 @@ import (
 func TestRecordCountRollupFetchesInBoundedBatches(t *testing.T) {
 	t.Parallel()
 
-	// Two group counts an order of magnitude apart. Under the client's ITERATOR
-	// progression (2, 4, 8, ... rows) 600 groups peaks at a 512-row fetch and 5000
-	// groups peaks at a 4096-row fetch, so a mode that grows with the range cannot
-	// report the same peak for both.
-	const smallGroups = 600
-	const largeGroups = 5000
+	// Two group counts an order of magnitude apart, both past the point where the
+	// ITERATOR progression saturates (it reaches its ceiling after ~2046 cumulative
+	// rows). With the clamp in place both peak at the ceiling. Strip the clamp and the
+	// budget keeps doubling — 5000 groups peaks at a 4096-row fetch and 50000 at a
+	// 32768-row one — so a progression that grows with the range cannot report the same
+	// peak for both.
+	const smallGroups = 5000
+	const largeGroups = 50000
 
 	peakFor := func(t *testing.T, groups int) (peak int64, fetches int, total int64) {
 		t.Helper()
@@ -137,8 +152,10 @@ func TestRecordCountRollupFetchesInBoundedBatches(t *testing.T) {
 			"count subspace, so the range iterator retains a batch proportional to the "+
 			"cardinality of the record-count key. The streaming fold does not bound peak "+
 			"memory on its own — it bounds what the FOLD retains, and the largest fetch is "+
-			"what the ITERATOR retains. The range read must carry a streaming mode this "+
-			"client actually bounds",
+			"what the ITERATOR retains. Both sizes are past saturation, so the per-fetch "+
+			"budget is no longer clamped: either the ITERATOR progression stopped "+
+			"saturating (fdb/range_result.go iteratorMaxIteration) or this read moved to a "+
+			"mode with no ceiling",
 			smallPeak, smallGroups, largePeak, largeGroups)
 	}
 
@@ -149,6 +166,27 @@ func TestRecordCountRollupFetchesInBoundedBatches(t *testing.T) {
 		t.Fatalf("largest fetch on the record-count roll-up was %d rows for %d groups: a "+
 			"single fetch spanning the whole count subspace is the unbounded shape under "+
 			"a different name", smallPeak, smallGroups)
+	}
+
+	// A third direction: equality and an absolute cap are both satisfied by any bounded
+	// mode, so neither would notice this read quietly acquiring an explicit mode again
+	// (StreamingModeSerial bounds too, at 500 rows). What identifies the mode is the
+	// VALUE of the ceiling, and the client will say what its own ITERATOR ceiling is
+	// rather than that value being written down here — a constant would just restate
+	// fdb's row table in a second place and drift from it. The iteration number is past
+	// saturation and the remaining-row budget is effectively unlimited, so this asks for
+	// the saturated target and nothing else.
+	//
+	// This is the assertion that pins Java parity. Java reaches this read through
+	// getRange with no mode argument (FDBTransaction.java:174-176, 430-432), so the peak
+	// this roll-up produces has to be the peak of the client's DEFAULT mode.
+	ceiling := int64(fdb.BatchSize(fdb.StreamingModeIterator, 64, 1<<30))
+	if largePeak != ceiling {
+		t.Fatalf("largest fetch on the record-count roll-up was %d rows at %d groups, but "+
+			"the client's saturated ITERATOR target is %d rows: this read is no longer "+
+			"running on the client's default streaming mode. Java takes the default here, "+
+			"so an explicit mode on this range read is a divergence even when the mode it "+
+			"names is also bounded", largePeak, largeGroups, ceiling)
 	}
 }
 
