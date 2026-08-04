@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer"
 )
 
 func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
@@ -140,6 +142,111 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 		"SELECT g, MAX(v) FROM ai GROUP BY g",
 		"SELECT g, MAX(v) FROM ao GROUP BY g")
 
+	// The MULTI-AGGREGATE shape (RFC-209 §5.3, "Multi-aggregate"; §7's dimension
+	// coverage). Two aggregates in one SELECT are served by two separate
+	// aggregate indexes merged on the grouping key, and before this the merge
+	// was an INNER intersection with no companion at all — which is the same
+	// two defects in their worst form. A group vacated by UPDATE or DELETE has
+	// a zero-valued key in BOTH indexes, so an intersection keeps it as a
+	// phantom; a group whose every value is NULL has a key in NEITHER, so an
+	// intersection drops it twice over. It was also the one remaining route by
+	// which a SUM index answered a grouped query with no group-existence source
+	// whatsoever, bypassing §5.3(c) entirely.
+	//
+	// Group existence is decided ONCE, not per aggregate: the companion is a
+	// third, DRIVING stream and each aggregate independently contributes its
+	// stored value or its own identity — NULL for SUM, 0 for COUNT(col). That
+	// per-aggregate identity split is why g=5 must read [5 NULL 0] and not
+	// [5 NULL NULL]; a single shared filler would get one of the two wrong.
+	t.Run("multi-aggregate-is-companion-driven", func(t *testing.T) {
+		indexedQ := "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "GroupExistenceMerge(") || !strings.Contains(plan, "driving=0") {
+			t.Fatalf("the multi-aggregate merge is not companion-driven.\n  query: %s\n"+
+				"  plan : %s\nAn inner MultiIntersection here keeps every vacated group (a "+
+				"zero key in BOTH indexes survives the intersection) and drops every "+
+				"all-NULL group (a key in NEITHER), and reaches the aggregate indexes with "+
+				"no group-existence source at all.", indexedQ, plan)
+		}
+		if !strings.Contains(plan, "live_groups_only") {
+			t.Fatalf("the driving companion leg does not carry the vacated-group drop.\n"+
+				"  plan: %s", plan)
+		}
+		got := rowsOf(t, indexedQ)
+		oracle := rowsOf(t, "SELECT g, SUM(v), COUNT(v) FROM ao GROUP BY g")
+		if strings.Join(got, ",") != strings.Join(oracle, ",") {
+			t.Fatalf("multi-aggregate answer disagrees with the oracle\n  indexed: %v\n"+
+				"  oracle : %v", got, oracle)
+		}
+		const want = "[2 60 3],[4 0 2],[5 NULL 0]"
+		if strings.Join(got, ",") != want {
+			t.Fatalf("multi-aggregate rows wrong.\n  got : %v\n  want: %s\n"+
+				"g=1 and g=3 are vacated and must be absent; g=4 cancels to zero and is LIVE; "+
+				"g=5 is all-NULL and must read SUM NULL with COUNT(v) 0 — the two aggregates "+
+				"have DIFFERENT empty-group identities and each must supply its own.",
+				got, want)
+		}
+	})
+
+	// HAVING over the identity rows (RFC-209 §5.3, "Compensation under outer
+	// semantics"; §7). These two predicates change their answers as a DIRECT
+	// result of the merge, and they are the ones that most look like a
+	// regression in review, so they are pinned explicitly rather than left to
+	// the generic oracle comparison.
+	//
+	// A compensating filter now sees rows that did not previously exist: a group
+	// present in the companion but absent from the aggregate index arrives as
+	// SUM(v) = NULL or COUNT(v) = 0 instead of not arriving at all. g=5 has two
+	// live rows whose every v is NULL, so the SUM index and the COUNT(v) index
+	// hold NO entry for it — before the merge there was simply no row for the
+	// HAVING to test, and both queries returned nothing.
+	//
+	// That is the under-approximation repair reaching HAVING, not a filter
+	// regression: the oracle returns those groups, so a HAVING over the oracle
+	// already returned them, and the two answers converge. Both halves are
+	// asserted — equality with the oracle AND the exact expected row — because
+	// two empty results also compare equal, and an empty answer here would mean
+	// the identity row never reached the filter at all.
+	havingOverIdentity := func(name, indexedQ, oracleQ, want string) {
+		t.Run(name, func(t *testing.T) {
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+				t.Fatalf("EXPLAIN: %v", err)
+			}
+			if !strings.Contains(plan, "GroupExistenceMerge(") {
+				t.Fatalf("HAVING over identity rows must sit above the companion-joined merge, "+
+					"or this test is not exercising compensation under outer semantics at all.\n"+
+					"  query: %s\n  plan : %s", indexedQ, plan)
+			}
+			got := rowsOf(t, indexedQ)
+			oracle := rowsOf(t, oracleQ)
+			if strings.Join(got, ",") != strings.Join(oracle, ",") {
+				t.Fatalf("index-backed HAVING disagrees with the oracle\n  query: %s\n"+
+					"  indexed: %v\n  oracle : %v", indexedQ, got, oracle)
+			}
+			if strings.Join(got, ",") != want {
+				t.Fatalf("HAVING did not return the all-NULL group.\n  query: %s\n"+
+					"  got : %v\n  want: %s\n"+
+					"g=5 has two live rows whose every v is NULL, so neither the SUM index nor "+
+					"the COUNT(v) index holds an entry for it. It can only reach this filter as "+
+					"the merge's empty-group identity; an empty answer means the identity row "+
+					"was never produced and the under-approximation is back.",
+					indexedQ, got, want)
+			}
+		})
+	}
+	havingOverIdentity("having-sum-is-null-returns-the-all-null-group",
+		"SELECT g, SUM(v) FROM ai GROUP BY g HAVING SUM(v) IS NULL",
+		"SELECT g, SUM(v) FROM ao GROUP BY g HAVING SUM(v) IS NULL",
+		"[5 NULL]")
+	havingOverIdentity("having-count-col-zero-returns-the-all-null-group",
+		"SELECT g, COUNT(v) FROM ai GROUP BY g HAVING COUNT(v) = 0",
+		"SELECT g, COUNT(v) FROM ao GROUP BY g HAVING COUNT(v) = 0",
+		"[5 0]")
+
 	// A guard for whatever fix lands, not a detector of today's bug: the
 	// ungrouped COUNT(*) spelling must keep answering 0 for an emptied table.
 	// Any fix that makes a vacated group disappear has to leave this alone,
@@ -181,60 +288,49 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 	})
 }
 
-// TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins pins a LIVE divergence.
-// Read it as a problem statement, not as a bug under test: it asserts what the
-// engine does TODAY and goes RED the moment that changes, in either direction.
+// TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle asserts that an
+// index-backed grouped SUM and COUNT(col) return exactly what the same query
+// returns with no aggregate index at all — the streaming-aggregation oracle.
 //
-// THE SHAPE. A SUM index and a COUNT(col) index derive the set of groups from
-// their own key set, and that key set is not the set of groups:
+// THE SHAPE THAT WAS WRONG. A SUM index and a COUNT(col) index derive the set
+// of groups from their own key set, and that key set is not the set of groups:
 //
-//   - it OVER-approximates: an atomic ADD that decrements a group to zero leaves
-//     the key behind, so a group vacated by DELETE or by an UPDATE that moves its
-//     last row elsewhere still answers, with 0.
+//   - it OVER-approximates: an atomic ADD that decrements a group to zero
+//     leaves the key behind, so a group vacated by DELETE or by an UPDATE that
+//     moves its last row elsewhere still answers, with 0.
 //   - it UNDER-approximates: no entry is ever written for a NULL value
 //     (AtomicMutation.Standard.getMutationParam returns null,
 //     fdb-record-layer-core/.../indexes/AtomicMutation.java:181-189), so a group
 //     whose every value is NULL has no key at all and vanishes.
 //
-// Both directions are visible in the assertions below: group 1 and group 3 are
-// vacated yet answer 0, and group 5 is all-NULL yet is missing.
+// Group existence is not derivable from a SUM or COUNT(col) accumulator at all:
+// the stored bytes for "vacated" and for "cancels to zero" are identical, so no
+// read-side filter over that one stream and no maintainer tweak can tell them
+// apart. It comes instead from a companion COUNT(*) index on the same grouping
+// key, whose non-zero keys ARE the live groups because it never looks at the
+// aggregated value. RFC-209 §5.3(b) drives an outer merge from it:
+// present-in-companion but absent-from-SUM yields NULL (0 for COUNT(col)),
+// which repairs the all-NULL group, and present-in-SUM but absent-from-companion
+// is dropped, which repairs the phantom.
 //
-// WHY IT IS NOT FIXED HERE. Two candidate fixes were built and measured, and
-// both are blocked for reasons worth recording so they are not re-attempted
-// blind.
+// TWO FIXES THAT DO NOT WORK, recorded so they are not re-attempted blind.
 //
-// 1. clearWhenZero on the index, set by the DDL generator. For COUNT(*) this is
-// semantically exact -- an existing group's COUNT(*) is never zero -- and it
-// does make count-star agree with the oracle. It is still not shippable: the
-// index options live in the stored metadata, and
+// 1. clearWhenZero on the index. For COUNT(*) it is semantically exact — a live
+// group's COUNT(*) is never zero — and it was built and measured green. It is
+// still not shippable: index options live in the STORED metadata, and
 // conformance/index_ddl_metadata_conformance_test.go compares those bytes
 // against the real Java engine for the same DDL. Java's relational DDL never
 // sets the option (MaterializedViewIndexGenerator.java:235-243), so setting it
-// fails that test with "I_CNT options diverge (UNIQUE lives here -- a dropped
-// option is a wire divergence)". Wire compatibility outranks the wrong rows, so
-// the option cannot be the fix and the conformance golden must not be edited to
-// admit it.
+// fails with "I_CNT options diverge (UNIQUE lives here -- a dropped option is a
+// wire divergence)". Wire compatibility outranks the wrong rows.
 //
 // For SUM the same option is additionally wrong on its own terms:
 // IndexOptions.CLEAR_WHEN_ZERO documents that "a SUM index will not have
 // entries for groups all of whose indexed values are zero". Groups 4 (+5 and
 // -5) and 6 (two rows of 0) below are exactly those groups, both with live
-// rows, and both must keep answering 0.
-//
-// 2. A read-side filter, which is the design this should get: an entry whose
-// COUNT(*) is zero denotes a group that does not exist, so dropping it at scan
-// time is exact, changes nothing on the wire, and leaves the ungrouped
-// spelling correct because an empty scan already coalesces to 0. It is a
-// Cascades planner/executor change and therefore needs an RFC and a
-// query-engine review lap before implementation, so it is owner-gated rather
-// than folded in here. SUM and COUNT(col) need the same read side driven by a
-// companion COUNT(*) group set, since their own key set can neither prove nor
-// disprove that a group exists.
-//
-// The SUM hazard is not theoretical -- it was measured. Forcing clearWhenZero
-// on for SUM and re-running this test yields exactly "[2 60]": the phantoms go,
-// and groups 4 and 6 go with them, which is the wrong answer in the other
-// direction.
+// rows, and both must keep answering 0. Forcing the option on for SUM and
+// re-running this test yielded exactly "[2 60]": the phantoms went, and groups
+// 4 and 6 went with them — a wrong answer in the other direction.
 //
 // That measurement was masked at first by a second, unrelated defect, and the
 // masking is worth stating because the evidence it produced looked
@@ -253,32 +349,24 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 // Hence "the adding path clears in one test and not in the other" was never
 // about the planner or about which index was chosen; it was about which of the
 // three maintenance routes each case took. The fast paths now go through
-// atomicMutationIndexMaintainer.clearIfZero, and with that fixed the
-// CLEAR_WHEN_ZERO contract reproduces exactly as documented.
+// atomicMutationIndexMaintainer.clearIfZero.
 //
-// This is not a Go slip. Java's SQL layer has the identical defect: relational
-// DDL never sets clearWhenZero (MaterializedViewIndexGenerator.java:235-243) and
-// nothing filters on the read side (AggregateIndexMatchCandidate.java:414-430,
-// RecordQueryAggregateIndexPlan.java:135-143). Java's own yaml-tests file
+// 2. A read-side filter on the aggregate's own stream. Exact for COUNT(*),
+// where the index being scanned IS the existence oracle (§5.3(a), asserted
+// below). Impossible for SUM and COUNT(col) for the reason above.
+//
+// This was never a Go slip. Java's SQL layer has the identical defect and its
+// own corpus records it as a bug rather than as behaviour: relational DDL never
+// sets clearWhenZero (MaterializedViewIndexGenerator.java:235-243) and nothing
+// filters on the read side (AggregateIndexMatchCandidate.java:414-430,
+// RecordQueryAggregateIndexPlan.java:135-143), while yaml-tests'
 // aggregate-empty-table.yamsql has the exposing queries COMMENTED OUT with TODO
 // bug references ("count index returns 0 instead of nothing when running on a
 // table that was cleared"; "enhance SUM aggregate index to disambiguate null
-// results and 0 results"), while its unindexed control table asserts the correct
-// empty answer. So Java knows and has not fixed it.
-//
-// WHAT THE FIX HAS TO BE. Group existence is not derivable from a SUM or a
-// COUNT(col) accumulator -- the stored bytes for "vacated" and for "cancels to
-// zero" are identical, so no read-side filter and no maintainer tweak can tell
-// them apart. It has to come from a companion COUNT(*) index on the same
-// grouping key (which this change already makes exact), with the aggregate scan
-// driven by the companion's group set: present-in-companion but absent-from-SUM
-// then correctly yields NULL, which also repairs the all-NULL group. That is the
-// standard materialized-view rule -- SQL Server requires COUNT_BIG(*) in any
-// indexed view carrying an aggregate for precisely this reason. It needs a
-// planner and executor change (a second BY_GROUP scan merged on the grouping
-// key) and therefore an RFC and a query-engine review lap, so it is owner-gated
-// rather than folded in here.
-func TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins(t *testing.T) {
+// results and 0 results") and its unindexed control table asserts the correct
+// answer. Answering correctly here is a sanctioned read-side extension, not a
+// divergence on semantics Java stands behind.
+func TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -313,8 +401,29 @@ func TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "UPDATE ai SET g = 2 WHERE g = 1")
 	mwjoMustExec(t, db, ctx, "DELETE FROM ai WHERE g = 3")
 
-	pin := func(name, q, current, correct string) {
+	// The oracle assertion, with the plan pinned alongside it. Both halves are
+	// load-bearing: the rows prove the answer is right, and the EXPLAIN proves
+	// it is right BECAUSE the companion-joined plan ran — not because the
+	// planner quietly stopped using the aggregate index and a streaming
+	// aggregation got it right instead. A "fix" that silently drops the index
+	// acceleration must fail here.
+	oracle := func(name, q, want string) {
 		t.Run(name, func(t *testing.T) {
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+				t.Fatalf("EXPLAIN: %v", err)
+			}
+			if !strings.Contains(plan, "GroupExistenceMerge(") {
+				t.Fatalf("the query is no longer answered by the companion-joined plan, so "+
+					"this test no longer covers the group-existence dimension — re-arm it, "+
+					"do not relax it.\n  query: %s\n  plan : %s", q, plan)
+			}
+			if !strings.Contains(plan, "live_groups_only") {
+				t.Fatalf("the companion COUNT(*) leg does not carry the vacated-group drop.\n"+
+					"  query: %s\n  plan : %s\nThe companion is itself subject to the "+
+					"over-approximation defect: without the drop its own zero-valued keys "+
+					"put every vacated group straight back into the merged group set.", q, plan)
+			}
 			rows, err := db.QueryContext(ctx, q)
 			if err != nil {
 				t.Fatalf("query: %v", err)
@@ -337,35 +446,80 @@ func TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins(t *testing.T) {
 				t.Fatalf("rows.Err: %v", err)
 			}
 			sort.Strings(out)
-			got := strings.Join(out, " ")
-			if got != current {
-				t.Fatalf("the pinned divergence moved.\n  query  : %s\n  was    : %s\n"+
-					"  now    : %s\n  correct: %s\n"+
-					"If it now matches the correct answer, the companion-COUNT(*) fix landed: "+
-					"delete this pin and assert oracle equality in "+
-					"TestFDB_AggregateIndexVacatedGroup instead. If it moved anywhere else, "+
-					"something regressed.", q, current, got, correct)
+			if got := strings.Join(out, " "); got != want {
+				t.Fatalf("index-backed answer diverges from the oracle.\n  query: %s\n"+
+					"  got : %s\n  want: %s\n"+
+					"g=1 (vacated by UPDATE) and g=3 (vacated by DELETE) must not appear. "+
+					"g=5 (two live rows, every v NULL) must, with SUM NULL and COUNT(v) 0 — "+
+					"the aggregate index holds no entry for it at all, so it can only come "+
+					"from the companion. g=4 (+5 and -5) and g=6 (two zeros) are LIVE groups "+
+					"answering 0 and must survive: a fix that drops them passes every other "+
+					"test in this suite.", q, got, want)
 			}
 		})
 	}
 
-	// g=1 and g=3 are vacated yet answer 0; g=5 is all-NULL yet is absent.
-	// g=4 answers 0 correctly and must keep doing so under any fix.
-	pin("sum-keeps-vacated-groups-and-drops-the-all-null-group",
+	// These two asserted the WRONG answers until RFC-209 §5.3(b) landed:
+	// "[1 0] [2 60] [3 0] [4 0] [6 0]" for SUM and "[1 0] [2 3] [3 0] [4 2] [6 2]"
+	// for COUNT(v) — both phantoms present, the all-NULL group missing.
+	oracle("sum-agrees-with-the-oracle",
 		"SELECT g, SUM(v) FROM ai GROUP BY g",
-		"[1 0] [2 60] [3 0] [4 0] [6 0]",
 		"[2 60] [4 0] [5 NULL] [6 0]")
-	// COUNT(*) is the shape a read-side filter fixes exactly and alone: the
-	// only wrong rows here are the two zero-valued phantoms, and no live group
-	// can ever answer 0.
-	pin("count-star-keeps-vacated-groups",
-		"SELECT g, COUNT(*) FROM ai GROUP BY g",
-		"[1 0] [2 3] [3 0] [4 2] [5 2] [6 2]",
-		"[2 3] [4 2] [5 2] [6 2]")
-	pin("count-col-keeps-vacated-groups-and-drops-the-all-null-group",
+	oracle("count-col-agrees-with-the-oracle",
 		"SELECT g, COUNT(v) FROM ai GROUP BY g",
-		"[1 0] [2 3] [3 0] [4 2] [6 2]",
 		"[2 3] [4 2] [5 0] [6 2]")
+
+	// COUNT(*) is no longer a pin: RFC-209 §5.3(a) repairs it, exactly and
+	// alone, because the index being scanned IS the group-existence oracle. The
+	// stored value is the group's row count, so a zero can only be residue and
+	// the scan drops it. Both phantoms go; g=5 (all-NULL values, two live rows)
+	// stays, because COUNT(*) never looks at the value.
+	//
+	// The EXPLAIN assertion is what makes this a proof rather than a
+	// coincidence: the answer must be right BECAUSE the aggregate index was
+	// scanned with the drop in force, not because the planner quietly stopped
+	// using the index and a streaming aggregation got it right instead.
+	t.Run("count-star-drops-vacated-groups", func(t *testing.T) {
+		const q = "SELECT g, COUNT(*) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "AggregateIndex(") {
+			t.Fatalf("grouped COUNT(*) is no longer index-backed, so this test no "+
+				"longer covers the vacated-group dimension -- re-arm it, do not relax it.\n  plan: %s", plan)
+		}
+		if !strings.Contains(plan, "live_groups_only") {
+			t.Fatalf("the grouped COUNT(*) aggregate scan does not carry the "+
+				"vacated-group drop (RFC-209 5.3(a)).\n  plan: %s\n"+
+				"Correct rows without it would mean something else is filtering, and the "+
+				"drop would be dead code the moment that something else changed.", plan)
+		}
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var g, n int64
+			if err := rows.Scan(&g, &n); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, fmt.Sprintf("[%d %d]", g, n))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		sort.Strings(out)
+		const want = "[2 3] [4 2] [5 2] [6 2]"
+		if got := strings.Join(out, " "); got != want {
+			t.Fatalf("grouped COUNT(*) over vacated groups\n  got : %s\n  want: %s\n"+
+				"g=1 (vacated by UPDATE) and g=3 (vacated by DELETE) must not appear; "+
+				"g=5 (two live rows, every v NULL) must, because COUNT(*) never reads the value.",
+				got, want)
+		}
+	})
 }
 
 // TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable pins a NEGATIVE
@@ -511,6 +665,236 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 			t.Fatalf("cancels-to-zero-live-rows: SUM(v) = %s, want 0. Two live rows sum to "+
 				"zero, so 0 is correct here and NULL would be the opposite wrong answer.",
 				show(iv))
+		}
+	})
+}
+
+// TestFDB_AggregateIndexGroupExistence_FailsClosedWithoutCompanion pins
+// RFC-209 §5.3(c) as a PROPERTY rather than an assertion.
+//
+// A grouped SUM or COUNT(col) index whose group existence cannot be decided
+// must not be used at all: the answers must still equal the oracle, and the
+// plan must NOT contain the aggregate index. Correct rows via a slower
+// streaming aggregation is the only acceptable outcome, because the
+// alternative is the index-backed plan that is fast and wrong.
+//
+// HOW THE COMPANION IS TAKEN AWAY, and why it is not simply left undeclared.
+// This binary's DDL emits a create-if-absent companion for every grouped SUM
+// and COUNT(col), so a SQL-created schema ALWAYS has one and there is no DROP
+// INDEX to remove it. A fixture that just omits the COUNT(*) omits the SUM
+// index too and asserts "no aggregate index in the plan" about a query that
+// never had one available — vacuous, and it passes with fail-closed deleted.
+// So the companion is declared and then WITHDRAWN by moving it to WRITE_ONLY,
+// which is what the planner's readable-index filter acts on. From the rule's
+// side that is indistinguishable from absent: findGroupCountCompanion searches
+// the candidate list, and a non-readable index never becomes a candidate.
+//
+// That also makes this RFC-209 §6's "a companion that is not readable must not
+// be used" — the stronger of the two cases, because such an index has a
+// PARTIAL key set and driving the merge from it would drop LIVE groups, a
+// brand-new wrong answer strictly worse than today's phantom.
+//
+// The first subtest asserts the companion-joined plan WITH the companion
+// readable. It is not decoration: it is what proves the fixture really does
+// have an index-backed path to lose, and therefore what stops the fail-closed
+// assertions below from going vacuous again.
+func TestFDB_AggregateIndexGroupExistence_FailsClosedWithoutCompanion(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_aggnocomp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggnocomp")
+	// ai_cnt_g is declared FIRST so create-if-absent finds it already
+	// qualifying and emits no reserved-suffix companion of its own: the
+	// group-existence source for both ai_sum_g and ai_cntv_g is then this one
+	// named index, which is what makes withdrawing it withdraw the companion.
+	// ai_cnt_h is grouped on a DIFFERENT column and stays readable throughout,
+	// so fail-closed can be shown to be scoped rather than a blanket ban.
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE aggnocomp "+
+			"CREATE TABLE ai (pk BIGINT, g BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE TABLE ao (pk BIGINT, g BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
+			"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g "+
+			"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g "+
+			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
+			"CREATE INDEX ai_cnt_h AS SELECT COUNT(*) FROM ai GROUP BY h")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggnocomp/s WITH TEMPLATE aggnocomp")
+	dsn := fmt.Sprintf("fdbsql:///testdb_aggnocomp?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, tbl := range []string{"ai", "ao"} {
+		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,h,v) VALUES "+
+			"(1,1,1,10),(2,1,1,20),"+ // g=1 vacated by UPDATE
+			"(3,2,1,30),"+
+			"(4,3,1,40),(5,3,1,50),"+ // g=3 vacated by DELETE
+			"(6,4,1,5),(7,4,1,-5),"+ // g=4 cancels to zero, LIVE
+			"(8,5,1,NULL),(9,5,1,NULL)") // g=5 all-NULL, LIVE
+		mwjoMustExec(t, db, ctx, "UPDATE "+tbl+" SET g = 2 WHERE g = 1")
+		mwjoMustExec(t, db, ctx, "DELETE FROM "+tbl+" WHERE g = 3")
+	}
+
+	rowsOf := func(t *testing.T, q string) []string {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var g int64
+			var a sql.NullInt64
+			if err := rows.Scan(&g, &a); err != nil {
+				t.Fatalf("scan %q: %v", q, err)
+			}
+			if a.Valid {
+				out = append(out, fmt.Sprintf("[%d %d]", g, a.Int64))
+			} else {
+				out = append(out, fmt.Sprintf("[%d NULL]", g))
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err %q: %v", q, err)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	// ARM 1 — companion READABLE. Both shapes must be companion-joined. This is
+	// the assertion that gives the fail-closed arm below its teeth: it proves
+	// the schema really does offer an index-backed path for exactly these two
+	// queries, so "no AggregateIndex in the plan" afterwards means the planner
+	// DECLINED one rather than never having had one.
+	for _, tc := range []struct{ name, agg string }{
+		{"sum", "SUM(v)"},
+		{"count-col", "COUNT(v)"},
+	} {
+		tc := tc
+		t.Run("companion-readable-joins/"+tc.name, func(t *testing.T) {
+			q := "SELECT g, " + tc.agg + " FROM ai GROUP BY g"
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+				t.Fatalf("EXPLAIN: %v", err)
+			}
+			if !strings.Contains(plan, "GroupExistenceMerge(") {
+				t.Fatalf("with a readable companion this query must be companion-joined, "+
+					"or the fail-closed arm below is asserting the absence of something that "+
+					"was never available and would pass with fail-closed deleted.\n"+
+					"  query: %s\n  plan : %s", q, plan)
+			}
+			if !strings.Contains(plan, "AI_CNT_G") {
+				t.Fatalf("the group-existence source is not the declared COUNT(*) index.\n"+
+					"  query: %s\n  plan : %s\nai_cnt_g is declared before the SUM and "+
+					"COUNT(col) indexes precisely so create-if-absent finds it qualifying and "+
+					"emits no reserved-suffix companion; if a __GROUP_COUNT index appears here "+
+					"instead, withdrawing AI_CNT_G no longer withdraws the companion and the "+
+					"fail-closed arm goes vacuous.", q, plan)
+			}
+		})
+	}
+
+	// Withdraw the companion. WRITE_ONLY is what the planner's readable-index
+	// filter acts on, and a non-readable index never becomes a match candidate
+	// — so from findGroupCountCompanion's side this is exactly "absent".
+	setIndexStateRaw(t, "/testdb_aggnocomp", "s", "AI_CNT_G", recordlayer.IndexStateWriteOnly)
+	t.Cleanup(func() {
+		setIndexStateRaw(t, "/testdb_aggnocomp", "s", "AI_CNT_G", recordlayer.IndexStateReadable)
+	})
+
+	// ARM 2 — companion withdrawn. Fail closed: no aggregate index, oracle rows.
+	for _, tc := range []struct{ name, agg string }{
+		{"sum", "SUM(v)"},
+		{"count-col", "COUNT(v)"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			indexedQ := "SELECT g, " + tc.agg + " FROM ai GROUP BY g"
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+				t.Fatalf("EXPLAIN: %v", err)
+			}
+			if strings.Contains(plan, "AggregateIndex(") {
+				t.Fatalf("the aggregate index was used with NO group-existence companion.\n"+
+					"  query: %s\n  plan : %s\n"+
+					"Its key set can neither prove nor disprove that a group exists: a stored "+
+					"zero is byte-identical whether the group cancelled to zero or was vacated, "+
+					"and an all-NULL group has no entry at all. Using it here returns phantom "+
+					"groups and drops live ones. RFC-209 §5.3(c) requires declining the "+
+					"candidate so planning falls back to streaming aggregation.", indexedQ, plan)
+			}
+			got := rowsOf(t, indexedQ)
+			want := rowsOf(t, "SELECT g, "+tc.agg+" FROM ao GROUP BY g")
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("fallback answer disagrees with the oracle\n  query: %s\n"+
+					"  got   : %v\n  oracle: %v", indexedQ, got, want)
+			}
+		})
+	}
+
+	// The MULTI-AGGREGATE route must fail closed too. It reaches the aggregate
+	// indexes through a different rule path than the single-aggregate one, so a
+	// fail-closed check on that path alone leaves this one open — and it is the
+	// worse leak, because an inner intersection of a SUM and a COUNT(col) index
+	// answers from two indexes that can neither of them decide group existence.
+	t.Run("multi-aggregate-fails-closed-too", func(t *testing.T) {
+		indexedQ := "SELECT g, SUM(v), COUNT(v) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+indexedQ).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if strings.Contains(plan, "AggregateIndex(") {
+			t.Fatalf("the multi-aggregate path used aggregate indexes with NO readable "+
+				"group-existence companion.\n  query: %s\n  plan : %s\n"+
+				"RFC-209 §5.3(c) is a property of every route to an aggregate index, not of "+
+				"the single-aggregate route only.", indexedQ, plan)
+		}
+		rows, err := db.QueryContext(ctx, indexedQ)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var g int64
+			var s, c sql.NullInt64
+			if err := rows.Scan(&g, &s, &c); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			sv := "NULL"
+			if s.Valid {
+				sv = fmt.Sprintf("%d", s.Int64)
+			}
+			out = append(out, fmt.Sprintf("[%d %s %d]", g, sv, c.Int64))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		sort.Strings(out)
+		const want = "[2 60 3],[4 0 2],[5 NULL 0]"
+		if strings.Join(out, ",") != want {
+			t.Fatalf("streaming-aggregation fallback rows wrong.\n  got : %v\n  want: %s",
+				out, want)
+		}
+	})
+
+	// The COUNT(*) index that exists is grouped on h, and a query grouped on h
+	// is still index-backed: fail-closed must be scoped to the shape that cannot
+	// be decided, not applied to every aggregate index in the schema.
+	t.Run("count-star-on-its-own-grouping-still-uses-the-index", func(t *testing.T) {
+		var plan string
+		if err := db.QueryRowContext(ctx,
+			"EXPLAIN SELECT h, COUNT(*) FROM ai GROUP BY h").Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "AggregateIndex(") {
+			t.Fatalf("a COUNT(*) index over its OWN grouping key lost its acceleration.\n"+
+				"  plan: %s\nIt is its own group-existence oracle and needs no companion; "+
+				"declining it would make fail-closed a blanket ban rather than a scoped one.", plan)
 		}
 	})
 }

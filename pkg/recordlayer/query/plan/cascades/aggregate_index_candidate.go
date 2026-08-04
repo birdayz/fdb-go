@@ -49,6 +49,45 @@ type AggregateIndexMatchCandidate struct {
 	// back to the fail-open direction the predicate documents.
 	baseRowType values.Type
 
+	// countsRows records that this index's stored value is the number of ROWS in
+	// the group — i.e. it is a COUNT(*) index (record-layer type `count`), not a
+	// COUNT(col) one (`count_not_null`). Both surface as AggCount with the same
+	// grouping, so the aggregate function alone cannot tell them apart, and the
+	// difference is decisive twice over (RFC-209):
+	//
+	//   - only a row count makes a stored zero mean "vacated group", because a
+	//     live group always has at least one row (§5.3(a)); and
+	//   - only a row count can serve as another index's group-existence
+	//     companion, because it never looks at the aggregated value and so never
+	//     drops a live group whose values are all NULL (§5.1).
+	//
+	// COUNT(col) is neither: an all-NULL live group legitimately answers 0.
+	countsRows bool
+
+	// groupingSignature is the normalized proto encoding of the index's GROUPING
+	// key expression — the leading, non-aggregated half of its root. Two
+	// aggregate indexes group identically iff their signatures are equal, which
+	// is how a group-existence companion is discovered STRUCTURALLY rather than
+	// through a stored reference (RFC-209 §5.2). nil when the signature could
+	// not be derived, which declines every companion match rather than guessing.
+	groupingSignature []byte
+
+	// predicateSignature is the normalized proto encoding of the index's SPARSE
+	// (WHERE) predicate, nil for a dense index. A companion must count exactly
+	// the rows the owner aggregated: a dense COUNT(*) over a sparse SUM lists
+	// groups holding no qualifying row, so driving the merge from it invents
+	// groups — the very over-approximation the companion exists to remove.
+	predicateSignature []byte
+
+	// needsGroupExistenceCompanion records that this index's own key set can
+	// neither prove nor disprove that a group exists, so a grouped query over it
+	// MUST be companion-joined or must not use the index at all (RFC-209
+	// §5.3(b)/(c)). True for a grouped SUM or COUNT(col); false for a COUNT(*)
+	// (its own oracle), for MIN/MAX (a real per-record entry the record's
+	// deletion removes), and for every ungrouped spelling (one group, which
+	// exists regardless).
+	needsGroupExistenceCompanion bool
+
 	traversalOnce sync.Once
 	traversal     *Traversal
 }
@@ -126,6 +165,46 @@ func (c *AggregateIndexMatchCandidate) GetKeyComponentTypes() []values.Type {
 func (c *AggregateIndexMatchCandidate) GetPhysicalGroupingPrefixCount() int {
 	return c.physicalGroupingPrefixCount
 }
+
+// WithGroupExistence records the two structural facts RFC-209 needs about the
+// underlying index: whether its stored value counts ROWS (a COUNT(*) index),
+// and the normalized encoding of its grouping key expression. Both come from
+// the record-layer Index and are supplied by the candidate builder; see the
+// field docs for what each decides.
+func (c *AggregateIndexMatchCandidate) WithGroupExistence(countsRows bool, groupingSignature []byte) *AggregateIndexMatchCandidate {
+	c.countsRows = countsRows
+	c.groupingSignature = groupingSignature
+	return c
+}
+
+// WithGroupExistenceCompanionNeed records the remaining two facts: the index's
+// sparse-predicate signature (which a companion must match, or it counts a
+// different row population) and whether a grouped query over this index needs a
+// companion at all.
+func (c *AggregateIndexMatchCandidate) WithGroupExistenceCompanionNeed(
+	predicateSignature []byte, needsCompanion bool,
+) *AggregateIndexMatchCandidate {
+	c.predicateSignature = predicateSignature
+	c.needsGroupExistenceCompanion = needsCompanion
+	return c
+}
+
+// PredicateSignature returns the normalized encoding of the index's sparse
+// predicate, nil for a dense index.
+func (c *AggregateIndexMatchCandidate) PredicateSignature() []byte { return c.predicateSignature }
+
+// NeedsGroupExistenceCompanion reports whether a GROUPED query over this index
+// must be companion-joined to answer correctly.
+func (c *AggregateIndexMatchCandidate) NeedsGroupExistenceCompanion() bool {
+	return c.needsGroupExistenceCompanion && len(c.groupCols) > 0
+}
+
+// CountsRows reports whether the index's stored value is the group's row count.
+func (c *AggregateIndexMatchCandidate) CountsRows() bool { return c.countsRows }
+
+// GroupingSignature returns the normalized encoding of the grouping key
+// expression, or nil when it could not be derived.
+func (c *AggregateIndexMatchCandidate) GroupingSignature() []byte { return c.groupingSignature }
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 

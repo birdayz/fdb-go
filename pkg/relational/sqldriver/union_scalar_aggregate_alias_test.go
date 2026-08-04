@@ -124,8 +124,14 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	miQuery := "WITH u AS (SELECT g, COUNT(*), SUM(v) FROM ga WHERE g = 100 GROUP BY g " +
 		"UNION ALL SELECT h, COUNT(*), SUM(v) FROM gb WHERE h = 100 GROUP BY h) " +
 		"SELECT c.w FROM u, c WHERE u.g = c.id"
-	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection") {
-		t.Fatalf("filtered grouped multi-aggregate branch must plan as MultiIntersection (exercises the MI arm), got: %s", plan)
+	// Both spellings of the same operator are accepted: the SUM leg cannot
+	// decide group existence, so RFC-209 §5.3 gives the merge a driving
+	// companion and it EXPLAINs as GroupExistenceMerge rather than
+	// MultiIntersection. It is still a
+	// RecordQueryMultiIntersectionOnValuesPlan, which is the arm this exercises.
+	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection(") &&
+		!strings.Contains(plan, "GroupExistenceMerge(") {
+		t.Fatalf("filtered grouped multi-aggregate branch must plan as the multi-aggregate merge (exercises the MI arm), got: %s", plan)
 	}
 	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})
 }

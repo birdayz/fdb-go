@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -23,11 +24,12 @@ func newRecordCountCmd() *cobra.Command {
   frl record count --type Order
   frl record count -o json | jq '.count'`,
 		Long: "Returns the total record count (or per-type count with " +
-			"--type). Both forms require the store's metadata to have a " +
-			"record_count_key — without one, the record layer has no " +
-			"atomic count index to read and this command errors out. " +
-			"If you need per-type counts, the metadata's count key must " +
-			"be a RecordTypeKeyExpression.\n\n" +
+			"--type). The store-wide count reads the metadata's " +
+			"record_count_key when there is one, and otherwise falls back " +
+			"to a universal COUNT index; without either, the record layer " +
+			"has nothing to read and this command errors out. Per-type " +
+			"counts require the metadata's count key to be a " +
+			"RecordTypeKeyExpression.\n\n" +
 			"--output / -o: 'text' (default, bare integer) or 'json' " +
 			"({count, record_type}). record_type is empty for store-wide counts.",
 		Args: cobra.NoArgs,
@@ -56,9 +58,16 @@ func newRecordCountCmd() *cobra.Command {
 					return store.GetRecordCount()
 				})
 			if err != nil {
-				// The record layer's internal wording ("recordCountKey is
-				// nil") tells an operator nothing actionable — say what to
-				// add and where.
+				// Neither source of a count is available. A store-wide count
+				// falls back to a universal COUNT index when there is no
+				// record_count_key, so "no count key" alone is not the
+				// diagnosis — the actionable message names both sources.
+				// Matched on the error TYPE, not its wording.
+				if errors.As(err, new(*recordlayer.AggregateFunctionNotSupportedError)) {
+					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) or a universal COUNT index, and redeploy; per-type counts additionally need a RecordTypeKeyExpression count key")
+				}
+				// The per-type path still rejects a missing count key up front,
+				// and its internal wording tells an operator nothing actionable.
 				if strings.Contains(err.Error(), "recordCountKey is nil") {
 					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) and redeploy; per-type counts additionally need a RecordTypeKeyExpression count key")
 				}

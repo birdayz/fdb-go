@@ -15,8 +15,14 @@ import (
 // once into the two things the Cascades planner consumes: a disabled rule-name
 // set and a PlannerConfiguration.
 //
-// Java's relational `PlannerConfiguration.of(readableIndexes, options)` reads
-// FOUR option names. Three are handled here — DISABLED_PLANNER_RULES,
+// Java's relational `PlannerConfiguration.of(readableIndexes, options)` takes a
+// readable-index view alongside the options. That view is now carried too — see
+// cascadesGenerator.fetchReadableIndexes, which ports
+// PlanContext.Builder.getReadableIndexes — and it is resolved by the generator
+// rather than here, because it comes from the STORE rather than from the
+// connection's options.
+//
+// Of the FOUR option names, three are handled here — DISABLED_PLANNER_RULES,
 // DISABLE_PLANNER_REWRITING and PLAN_RIGHT_DEEP. The fourth,
 // INDEX_FETCH_METHOD (via OptionsUtils.getIndexFetchMethod), selects FDB's
 // remote-fetch index scan, which Go has no implementation of at any layer:
@@ -127,7 +133,8 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // as "emit no component at all" — so a caller who sets no options gets exactly
 // the scope it got before planner options were keyed.
 func (p plannerOptions) cacheKeyPart() string {
-	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep {
+	readable := p.config.ReadableIndexes
+	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep && !readable.IsRestricted() {
 		return ""
 	}
 	names := make([]string, 0, len(p.disabledRules))
@@ -143,6 +150,27 @@ func (p plannerOptions) cacheKeyPart() string {
 		b.WriteString(strconv.Itoa(len(n)))
 		b.WriteByte(':')
 		b.WriteString(n)
+	}
+	// The readable-index allow-list, when one is present, is part of the key:
+	// which indexes may back a plan decides the plan. Java carries the whole
+	// PlannerConfiguration — readableIndexes included — in QueryCacheKey
+	// (QueryCacheKey.java:127,142) for exactly this reason.
+	//
+	// The rendering has to stay injective against the disabled-rule names
+	// above, which are user-controlled and length-prefixed for that reason.
+	// A distinct 'i' prefix opens the section, and each index name is
+	// length-prefixed by the same scheme, so no index name can be mistaken for
+	// a rule name, a boundary, or the section marker. The RESTRICTED case is
+	// what emits the section; an unrestricted view emits nothing and therefore
+	// keys exactly as it did before this existed, which is what keeps a healthy
+	// store's cache behaviour unchanged.
+	if readable.IsRestricted() {
+		b.WriteString("i")
+		for _, n := range readable.SortedNames() {
+			b.WriteString(strconv.Itoa(len(n)))
+			b.WriteByte(':')
+			b.WriteString(n)
+		}
 	}
 	return b.String()
 }
@@ -196,16 +224,18 @@ func optBool(opts *api.Options, name api.OptionName, fallback bool) bool {
 //   - blank names, which can never match a rule; and
 //   - names containing planCacheScopeDelim. A Go rule's simple type name is a
 //     Go identifier and can hold no control character, so such a name never
-//     matches a rule either — but these names ARE user-controlled and they flow
-//     into the plan-cache scope through cacheKeyPart. Letting one through would
-//     make the scope non-injective: a delimiter inside the options component is
-//     indistinguishable from the component boundary, so
-//     (schema "S", DISABLED_PLANNER_RULES ["\x010"]) and
-//     (schema "S\x010\x01,", no options) render the same scope and collide in
-//     the plan cache. The pre-option scope was unconditionally injective —
-//     the version is always digits, so a parse from the right always resolves —
-//     and this user-controlled component is what introduced the corner, so it
-//     is closed here rather than documented.
+//     matches a rule either, and dropping it therefore cannot change how any
+//     query plans.
+//
+// The second drop is NOT what keeps the plan-cache scope injective, and must
+// not be relied on for that. It once was, and that was the wrong place for the
+// property: a filter has to be proved complete against every component that
+// ever reaches the scope, and the readable-index component defeated it — index
+// names are quotable SQL identifiers, arrive from the STORE rather than from
+// options, and never pass through here. planCacheScope now length-prefixes each
+// component, which is unambiguous for arbitrary bytes and cannot be defeated by
+// a cleverer name. This drop remains only because a delimiter-bearing rule name
+// is meaningless to begin with.
 func optStringSet(opts *api.Options, name api.OptionName) map[string]struct{} {
 	out := map[string]struct{}{}
 	names, ok := opts.Get(name).([]string)

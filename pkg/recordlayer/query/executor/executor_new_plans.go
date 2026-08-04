@@ -191,6 +191,8 @@ func executeAggregateIndexScan(
 		// drift (RFC-081).
 		canonicalName: canonicalName,
 		posType:       posType,
+		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
+		liveGroupsOnly: p.IsLiveGroupsOnly(),
 	}
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -348,19 +350,43 @@ type aggregateIndexCursor struct {
 	groupCols     []string
 	canonicalName string
 	posType       *values.RecordType
-	closed        bool
+	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
+	// a grouped COUNT(*) scan, where the stored value is the group's row count
+	// and a zero can therefore only be the residue of a vacated group (the
+	// atomic ADD that emptied it left the key behind). See
+	// plans.RecordQueryAggregateIndexPlan.liveGroupsOnly — the plan carries the
+	// property, EXPLAIN renders it, and this cursor merely obeys it. Deciding
+	// existence here rather than at plan time would make the plan a lie.
+	liveGroupsOnly bool
+	closed         bool
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	// A vacated group's entry is dropped before it becomes a row, and the scan
+	// keeps advancing rather than returning a "no value" result: a dropped entry
+	// is not an end-of-stream condition, the next live group may be one key
+	// away. The loop (rather than a recursive re-entry) matters because the run
+	// of consecutive vacated groups is unbounded — a table emptied wholesale
+	// leaves one zero entry per group that ever existed. The emitted row carries
+	// the continuation of the entry it came from, so a resume never re-reads a
+	// group already returned and the zero entries in between are simply
+	// re-skipped.
+	var result recordlayer.RecordCursorResult[*recordlayer.IndexEntry]
+	var entry *recordlayer.IndexEntry
+	for {
+		var err error
+		result, err = c.inner.OnNext(ctx)
+		if err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+		if !result.HasNext() {
+			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		}
+		entry = result.GetValue()
+		if !c.liveGroupsOnly || !isVacatedGroupEntry(entry) {
+			break
+		}
 	}
-	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
-	}
-
-	entry := result.GetValue()
 
 	// Emit the authoritative ordinal row (real slots read
 	// from the index entry). Slot order matches c.posType: group cols then the
@@ -387,6 +413,29 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+}
+
+// isVacatedGroupEntry reports whether a COUNT(*) index entry denotes a group
+// that no longer has any rows. The maintainer decrements the accumulator with
+// an atomic ADD and never removes the key, so an emptied group leaves an entry
+// holding zero. Because the stored value counts ROWS, and a live group has at
+// least one, zero is decidable: it can only be residue.
+//
+// Anything that is not an explicit integer zero keeps the row. Dropping a live
+// group is a brand-new wrong answer and strictly worse than the phantom this
+// filter removes, so an unrecognised value shape errs toward emitting.
+func isVacatedGroupEntry(entry *recordlayer.IndexEntry) bool {
+	if entry == nil || len(entry.Value) == 0 {
+		return false
+	}
+	switch v := entry.Value[0].(type) {
+	case int64:
+		return v == 0
+	case int:
+		return v == 0
+	default:
+		return false
+	}
 }
 
 func (c *aggregateIndexCursor) Close() error {
@@ -422,17 +471,83 @@ func executeMultiIntersection(
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
 
-	// IntersectionMulti returns, per matching comparison key, the list of
-	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
-	// the regular intersection keeps only the first child, which would drop
-	// every aggregate but the first.
-	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
+	var innerCursor recordlayer.RecordCursor[[]QueryResult]
+	if p.HasDrivingAlias() {
+		// RFC-209 §5.3(b): the group-existence merge. Its correctness rests
+		// entirely on the driving stream being the one the planner designated, so
+		// a designation that no longer resolves must fail the query rather than
+		// quietly run as an intersection — an intersection here silently drops
+		// every all-NULL group, which is one of the two defects this plan exists
+		// to fix.
+		driving := p.DrivingStreamIndex()
+		if driving < 0 {
+			return nil, fmt.Errorf("group-existence merge: driving stream %q resolves to "+
+				"no child; the plan's quantifiers were relinked without carrying the "+
+				"designation", p.GetDrivingAlias().Name())
+		}
+		if len(keyVals) == 0 {
+			return nil, fmt.Errorf("group-existence merge: no comparison key; the merge " +
+				"has no grouping key to align the streams on")
+		}
+		// Every child of this plan is an aggregate-index scan whose row is
+		// [groupCols..., aggregate], so a child spans len(keyVals)+1 slots. An
+		// absent child must occupy exactly that many, or the result value's baked
+		// ordinals address the wrong slots in every later child.
+		width := len(keyVals) + 1
+		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, false, resume,
+			driving, func(int) QueryResult { return absentAggregateRow(width) })
+	} else {
+		// IntersectionMulti returns, per matching comparison key, the list of
+		// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
+		// the regular intersection keeps only the first child, which would drop
+		// every aggregate but the first.
+		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
+	}
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
+		// The same len(keyVals)+1 the absent-child filler is sized to, carried to
+		// the concatenation so the PRESENT children are held to it as well. The
+		// filler being right is worth nothing if a real child disagrees.
+		childWidth: len(keyVals) + 1,
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// absentAggregateRow is the row a non-driving aggregate-index stream
+// contributes for a group it holds no entry for (RFC-209 §5.3(b)).
+//
+// All slots are NULL, including the grouping columns: the merged row takes its
+// grouping values from the DRIVING stream, so the absent child's copies are
+// never read. What matters is the WIDTH — the result value's field ordinals are
+// baked at plan time against the flat concatenation of the child rows, so a
+// short row would shift every later child's aggregate by however many slots
+// were missing and hand each group another group's value.
+//
+// NULL, not the aggregate's identity: the identity is the result value's job.
+// SUM's empty group is NULL and COUNT(col)'s is 0, and only the plan knows
+// which aggregate a stream carries. Keeping the cursor's filler uniform is the
+// same split Java uses for the ungrouped case, where the plan supplies NULL on
+// an empty stream and a coalesce above it turns that into 0 for COUNT.
+// The field types are UnknownType, and here that is not discarded knowledge:
+// there is no type to state. This row stands in for a group the child index
+// holds NO entry for, so no stored value exists whose type could be read, and
+// the child plan it substitutes for carries UnknownType as its own result type
+// — deriving from it would launder Unknown through one more hop rather than
+// answer. Nothing downstream reads these types either: the merged row takes its
+// grouping values from the driving stream and its aggregate through the plan's
+// result value, so only the WIDTH is load-bearing.
+func absentAggregateRow(width int) QueryResult {
+	fields := make([]values.Field, width)
+	slots := make([]any, width)
+	for i := range fields {
+		fields[i] = values.Field{Ordinal: i, FieldType: values.UnknownType}
+	}
+	return QueryResult{Positional: &PositionalRow{
+		Type:  &values.RecordType{Fields: fields},
+		Slots: slots,
+	}}
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
@@ -490,7 +605,12 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
-	closed      bool
+	// childWidth is the per-child span the resultValue's ordinals were baked
+	// against. It has NO usable zero value: leaving it unset is an error at
+	// evaluation time, not a silently disabled check. Set
+	// mergeChildWidthUnchecked to opt out deliberately. See mergeChildEvalArg.
+	childWidth int
+	closed     bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java's cached no-next result on the map/merge stage) — never re-pulls
 	// the inner intersection.
@@ -518,7 +638,10 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	// child; the grouping columns are identical across children and the aggregate
 	// columns are distinct, so a plan-time bake against the flat concatenation
 	// resolves each resultValue column to the correct slot.
-	evalArg := mergeChildEvalArg(childResults)
+	evalArg, err := mergeChildEvalArg(childResults, c.childWidth)
+	if err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, err
+	}
 
 	qr := QueryResult{}
 	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
@@ -552,6 +675,13 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
+// mergeChildWidthUnchecked is the explicit opt-out from the per-child width
+// assertion, for callers that genuinely cannot state a width. It is a NEGATIVE
+// sentinel rather than zero so that forgetting to set the width can never be
+// mistaken for choosing to skip the check, and it is matched by EQUALITY so a
+// computed negative cannot opt out by accident.
+const mergeChildWidthUnchecked = -1
+
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
 // evaluated against: the CONCATENATED PositionalRow of the matched child rows
 // (a bare OrdinalRow whose plan-produced concatenated type the baked
@@ -559,14 +689,54 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 // columns repeat across children with the same value, so a first-match bind is
 // order-safe. Returns nil if any child lacks a Positional (should not happen — the
 // aggregate-index producer builds one per child).
-func mergeChildEvalArg(childResults []QueryResult) any {
+// expectedWidth is the per-child span the result value's ordinals were BAKED
+// against at plan time (len(groupCols)+1). It is verified here rather than
+// assumed because the assumption is derived independently in three places — the
+// planning rule that bakes the ordinals, the cursor that sizes the absent-child
+// filler, and this concatenation — and nothing made the three agree. A child
+// arriving at a different width does not fail: it shifts every LATER child's
+// aggregate by the difference and hands each group another group's value, with
+// every row well-formed and the row count unchanged. That is the silent
+// wrong-rows class, so it is an error, not a best-effort nil.
+//
+// The contract is INVERTED from the obvious one, deliberately: any width that
+// is not a real width fails CLOSED. An unset (or otherwise nonsensical) width
+// is an error, and opting out takes the exact mergeChildWidthUnchecked
+// sentinel -- not merely "some negative number". A -2 arriving from arithmetic
+// on an empty grouping key is a bug and must be loud; only the constant means
+// "I have considered this and there is no width to state".
+//
+// The obvious spelling — "0 disables the check" — made the assertion fail OPEN,
+// and it did so invisibly. Deleting the caller's `childWidth:` line left the
+// struct field at its zero value, the check silently disabled, and the entire
+// gate green: the tests below call this function with an explicit width, so
+// they prove the function CHECKS but never that the caller ASKS. An assertion
+// whose disarmed state is also its default is not an assertion; it is a
+// suggestion that happens to be followed.
+func mergeChildEvalArg(childResults []QueryResult, expectedWidth int) (any, error) {
+	if expectedWidth != mergeChildWidthUnchecked && expectedWidth <= 0 {
+		return nil, fmt.Errorf(
+			"group-existence merge: no per-child width was stated, so the plan's baked " +
+				"result-value ordinals cannot be validated against the rows actually " +
+				"flowed. This is a wiring bug in the cursor's construction, not a " +
+				"property of the data: set childWidth from the plan, or " +
+				"mergeChildWidthUnchecked to opt out on purpose")
+	}
 	var fields []values.Field
 	var slots []any
 	ord := 0
-	for _, cr := range childResults {
+	for ci, cr := range childResults {
 		p := cr.Positional
 		if p == nil || p.Type == nil {
-			return nil
+			return nil, nil
+		}
+		if expectedWidth != mergeChildWidthUnchecked && len(p.Type.Fields) != expectedWidth {
+			return nil, fmt.Errorf(
+				"group-existence merge: child %d flowed %d columns, but the plan's result "+
+					"value was baked against %d per child; every later child's aggregate "+
+					"would be read from the wrong slot and each group would report another "+
+					"group's value",
+				ci, len(p.Type.Fields), expectedWidth)
 		}
 		for i, f := range p.Type.Fields {
 			nf := f
@@ -581,9 +751,9 @@ func mergeChildEvalArg(childResults []QueryResult) any {
 		}
 	}
 	if len(fields) == 0 {
-		return nil
+		return nil, nil
 	}
-	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}, nil
 }
 
 func (c *multiIntersectionMergeCursor) Close() error {

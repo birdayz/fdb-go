@@ -113,9 +113,17 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 	// Reopening with the UNIQUE index declared builds it inline; the violation
 	// on C1 = 7 sends it to READABLE_UNIQUE_PENDING rather than READABLE
 	// (store_builder.go step 4 / MarkIndexReadableOrUniquePending).
+	//
+	// The inline build is requested EXPLICITLY. The default policy would leave
+	// the index for a background build, because with no record-count key the
+	// count fallback reports an unbounded store for any non-empty one (Java's
+	// getRecordCountForRebuildIndexes, FDBRecordStore.java:4862-4884) — and a
+	// DISABLED index never reaches READABLE_UNIQUE_PENDING, which is the only
+	// state this test is about.
 	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
-			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).
+			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
 		if sErr != nil {
 			return nil, sErr
 		}

@@ -10,12 +10,15 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 var _ = Describe("FDBMetaDataStore Conformance", func() {
@@ -1065,6 +1068,430 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Found).To(BeTrue())
 			Expect(result.Version).To(Equal(1))
+		})
+	})
+
+	// RFC-209 §4.1 — the four interop caveats of the auto-emitted
+	// group-existence companion, EXECUTED against the live Java engine rather
+	// than argued from the stored bytes.
+	//
+	// The structural check (index_ddl_metadata_conformance_test.go) compares
+	// metadata Java built for itself against metadata Go built for itself. Java
+	// never opens Go's, so it never runs a line of Java against the companion.
+	// Here the ONLY metadata in play is the one Go persisted: Java loads it
+	// through the FDBMetaDataStore path, opens a store on it, scans the
+	// companion, and then WRITES and DELETES through it.
+	//
+	// The write/delete half is the load-bearing part. A Java engine that
+	// happily opened a store carrying an index it never declared but did not
+	// MAINTAIN it would pass every read-only assertion while leaving a Go
+	// reader merging against a group set frozen at whatever Go last wrote —
+	// exactly the silent wrong-answer this companion exists to prevent.
+	Describe("RFC-209 group-existence companion cross-language", func() {
+		It("Java loads Go's stored metadata, scans the companion, and maintains it", func() {
+			// A grouped SUM with no user-declared COUNT(*) over the same
+			// grouping key: create-if-absent therefore MUST emit a companion,
+			// and it lands in the persisted bytes.
+			body := `CREATE TABLE T (id BIGINT, g STRING, v BIGINT, PRIMARY KEY(id)) ` +
+				`CREATE INDEX i_sum AS SELECT SUM(v) FROM T GROUP BY g`
+			tmpl, buildErr := embedded.BuildSchemaTemplateFromDDL(body)
+			Expect(buildErr).NotTo(HaveOccurred())
+			mdProto, protoErr := tmpl.Underlying().ToProto()
+			Expect(protoErr).NotTo(HaveOccurred())
+
+			const ownerName = "I_SUM"
+			companionName := recordlayer.GroupCountCompanionName(ownerName)
+			storedNames := make([]string, 0, len(mdProto.GetIndexes()))
+			for _, idx := range mdProto.GetIndexes() {
+				storedNames = append(storedNames, idx.GetName())
+			}
+			Expect(storedNames).To(ContainElement(companionName),
+				"the companion must be in the PERSISTED metadata — Java can only see it "+
+					"by loading the stored template, so an unpersisted companion makes this "+
+					"whole interop claim vacuous (stored: %v)", storedNames)
+
+			// Go's own store is opened from the SAME proto it persists, so
+			// nothing in this test reads a companion that only exists in
+			// memory.
+			md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+			Expect(fromProtoErr).NotTo(HaveOccurred())
+			desc := md.GetRecordType("T").Descriptor
+			rec := func(id int64, g string, v int64) proto.Message {
+				m := dynamicpb.NewMessage(desc)
+				m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+				m.Set(desc.Fields().ByName("G"), protoreflect.ValueOfString(g))
+				m.Set(desc.Fields().ByName("V"), protoreflect.ValueOfInt64(v))
+				return m
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				// Group "a" has two rows, group "b" exactly one — "b" is the
+				// group Java will vacate.
+				for _, r := range []proto.Message{
+					rec(1, "a", 10), rec(2, "a", 20), rec(3, "b", 7),
+				} {
+					if _, saveErr := store.SaveRecord(r); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// goGroups reads a grouped atomic-mutation index — one long per
+			// group, which is what Java's step reads BY_GROUP. Go reaches those
+			// entries through the maintainer's plain scan: ScanIndexByType with
+			// IndexScanByGroup is reserved for PERMUTED_MIN_MAX and
+			// BITMAP_VALUE, and rejects a "count" index outright
+			// (index_scan.go:346-357), so the equivalent Go call is ScanIndex.
+			// The two sides' numbers are comparable without either side
+			// interpreting the other's.
+			goGroups := func(indexName string) map[string]int64 {
+				out := map[string]int64{}
+				_, scanErr := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, openErr := recordlayer.NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).Open()
+					if openErr != nil {
+						return nil, openErr
+					}
+					idx := md.GetIndex(indexName)
+					if idx == nil {
+						return nil, fmt.Errorf("index %s not in metadata", indexName)
+					}
+					entries, listErr := recordlayer.AsList(ctx, store.ScanIndex(
+						idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan()))
+					if listErr != nil {
+						return nil, listErr
+					}
+					for _, e := range entries {
+						g, ok := e.Key[0].(string)
+						if !ok {
+							return nil, fmt.Errorf("group key %v is %T, want string", e.Key[0], e.Key[0])
+						}
+						v, ok := e.Value[0].(int64)
+						if !ok {
+							return nil, fmt.Errorf("group value %v is %T, want int64", e.Value[0], e.Value[0])
+						}
+						out[g] = v
+					}
+					return nil, nil
+				})
+				Expect(scanErr).NotTo(HaveOccurred())
+				return out
+			}
+
+			// Java goes FIRST, deliberately. Every caveat in §4.1 is a claim
+			// about what the JAVA engine does with metadata it did not write, so
+			// a companion Go emitted wrong must be reported as Java refusing it,
+			// not as Go's own scan coming back odd — otherwise the failure names
+			// the wrong engine and the caveat it fired is guesswork.
+			//
+			// Caveats 1-3, executed: Java loads the STORED metadata (not a
+			// locally compiled RecordMetaData), which forces every index in the
+			// proto through RecordMetaData.build — the version fields must
+			// satisfy 0 < added <= lastModified <= metadata.version, and the
+			// companion, being a grouped COUNT, must carry groupedCount == 0 or
+			// AtomicMutationIndexMaintainerFactory refuses to build a
+			// maintainer for it and the store never opens.
+			scanParams := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"indexName":     companionName,
+			}
+			var scanResult struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				Rows            []struct {
+					Key   []any `json:"key"`
+					Count int64 `json:"count"`
+				} `json:"rows"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanCountIndexJava", scanParams, &scanResult)
+			Expect(err).NotTo(HaveOccurred(),
+				"Java must OPEN a store on Go's stored metadata and scan the auto-emitted "+
+					"companion; a failure here is one of RFC-209 §4.1's caveats 1-3 firing")
+			Expect(scanResult.Found).To(BeTrue())
+			Expect(scanResult.MetadataVersion).To(Equal(int(mdProto.GetVersion())))
+			javaBefore := map[string]int64{}
+			for _, r := range scanResult.Rows {
+				javaBefore[fmt.Sprint(r.Key[0])] = r.Count
+			}
+			Expect(javaBefore).To(Equal(map[string]int64{"a": 2, "b": 1}),
+				"Java's reading of the companion must equal Go's")
+			Expect(goGroups(companionName)).To(Equal(javaBefore),
+				"Go must read the same companion entries Java just read")
+			Expect(goGroups(ownerName)).To(Equal(map[string]int64{"a": 30, "b": 7}))
+
+			// The maintenance half. Java inserts into an EXISTING group (a:
+			// 2→3), inserts into a group that does not exist yet (c: absent→1),
+			// and deletes the only row of group b (1→0, vacating it).
+			mutateParams := map[string]any{
+				"clusterFile":    clusterFile,
+				"mdSubspace":     BytesToIntArray(ss.Bytes()),
+				"storeSubspace":  BytesToIntArray(storeSS.Bytes()),
+				"recordTypeName": "T",
+				"countIndexName": companionName,
+				"sumIndexName":   ownerName,
+				"pkFieldName":    "ID",
+				"insertsJson":    `[{"ID":10,"G":"a","V":5},{"ID":11,"G":"c","V":7}]`,
+				"deletePkJson":   `[3]`,
+			}
+			var mutateResult struct {
+				Found     bool `json:"found"`
+				Inserted  int  `json:"inserted"`
+				Deleted   int  `json:"deleted"`
+				CountRows []struct {
+					Key   []any `json:"key"`
+					Value int64 `json:"value"`
+				} `json:"countRows"`
+				SumRows []struct {
+					Key   []any `json:"key"`
+					Value int64 `json:"value"`
+				} `json:"sumRows"`
+			}
+			err = java.InvokeAs(ctx, "mutateAndScanGroupCountIndexJava", mutateParams, &mutateResult)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mutateResult.Found).To(BeTrue())
+			Expect(mutateResult.Inserted).To(Equal(2))
+			Expect(mutateResult.Deleted).To(Equal(1),
+				"Java must actually have deleted the row — a no-op delete would make the "+
+					"vacated-group assertion below pass for the wrong reason")
+
+			javaCounts := map[string]int64{}
+			for _, r := range mutateResult.CountRows {
+				javaCounts[fmt.Sprint(r.Key[0])] = r.Value
+			}
+			javaSums := map[string]int64{}
+			for _, r := range mutateResult.SumRows {
+				javaSums[fmt.Sprint(r.Key[0])] = r.Value
+			}
+
+			// Caveat 4, measured rather than assumed: neither side sets
+			// clearWhenZero, so Java's atomic-mutation maintainer decrements
+			// group b's counter to 0 and LEAVES THE KEY. The zero entry is
+			// therefore what both engines see at the index, and dropping it is
+			// the READ side's job — Go's aggregate-index cursor does it via
+			// liveGroupsOnly, so Go's write path never depends on Java clearing
+			// anything. If Java ever started clearing zeroed groups, this
+			// expectation is where it surfaces.
+			Expect(javaCounts).To(Equal(map[string]int64{"a": 3, "b": 0, "c": 1}),
+				"Java did not MAINTAIN the companion across its own write/delete: "+
+					"a must have been incremented, c must have appeared, b must have been "+
+					"decremented to a vacated 0")
+			Expect(javaSums).To(Equal(map[string]int64{"a": 35, "b": 0, "c": 7}),
+				"Java did not maintain the OWNING SUM index the same way")
+
+			// The round trip: Go re-reads the very entries Java's maintainer
+			// wrote. Agreement here is what makes this an interop test rather
+			// than a Java smoke test — Java's numbers could be self-consistent
+			// and still encoded so Go cannot read them.
+			Expect(goGroups(companionName)).To(Equal(javaCounts),
+				"Go and Java disagree about the companion's contents after Java's mutations")
+			Expect(goGroups(ownerName)).To(Equal(javaSums),
+				"Go and Java disagree about the owning SUM index after Java's mutations")
+		})
+
+		// The spec above proves Java can READ and MAINTAIN a store whose
+		// metadata carries the companion. It says nothing about a Java
+		// application EVOLVING that schema, and evolution is a different code
+		// path: FDBMetaDataStore's read entry points build with validate=false
+		// (FDBMetaDataStore.java:252, :279, :366), while every mutating entry
+		// point funnels into saveAndSetCurrent, which builds the new proto with
+		// validate=true (FDBMetaDataStore.java:376) AND re-builds the OLD,
+		// Go-written proto with validate=true before running the evolution
+		// validator (FDBMetaDataStore.java:394-396).
+		//
+		// If the companion did not survive that, a Go-written schema would be
+		// a poison pill: readable by a Java app forever, evolvable never. So it
+		// gets executed, not argued.
+		It("Java evolves Go's stored metadata through the validating FDBMetaDataStore path", func() {
+			body := `CREATE TABLE T (id BIGINT, g STRING, v BIGINT, PRIMARY KEY(id)) ` +
+				`CREATE INDEX i_sum AS SELECT SUM(v) FROM T GROUP BY g`
+			tmpl, buildErr := embedded.BuildSchemaTemplateFromDDL(body)
+			Expect(buildErr).NotTo(HaveOccurred())
+			mdProto, protoErr := tmpl.Underlying().ToProto()
+			Expect(protoErr).NotTo(HaveOccurred())
+
+			const ownerName = "I_SUM"
+			companionName := recordlayer.GroupCountCompanionName(ownerName)
+			md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+			Expect(fromProtoErr).NotTo(HaveOccurred())
+			desc := md.GetRecordType("T").Descriptor
+			rec := func(id int64, g string, v int64) proto.Message {
+				m := dynamicpb.NewMessage(desc)
+				m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+				m.Set(desc.Fields().ByName("G"), protoreflect.ValueOfString(g))
+				m.Set(desc.Fields().ByName("V"), protoreflect.ValueOfInt64(v))
+				return m
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, r := range []proto.Message{rec(1, "a", 10), rec(2, "a", 20), rec(3, "b", 7)} {
+					if _, saveErr := store.SaveRecord(r); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			type evolveOutcome struct {
+				Ok           bool     `json:"ok"`
+				Version      int      `json:"version"`
+				IndexNames   []string `json:"indexNames"`
+				ErrorClass   string   `json:"errorClass"`
+				ErrorMessage string   `json:"errorMessage"`
+				ErrorChain   string   `json:"errorChain"`
+			}
+			evolve := func(mdSS subspace.Subspace, newIndexName string) evolveOutcome {
+				var out evolveOutcome
+				invokeErr := java.InvokeAs(ctx, "evolveMetaDataViaFDBMetaDataStoreJava", map[string]any{
+					"clusterFile":       clusterFile,
+					"mdSubspace":        BytesToIntArray(mdSS.Bytes()),
+					"recordTypeName":    "T",
+					"newIndexName":      newIndexName,
+					"newIndexFieldName": "V",
+				}, &out)
+				Expect(invokeErr).NotTo(HaveOccurred())
+				return out
+			}
+
+			// A routine schema evolution: add an unrelated VALUE index. Nothing
+			// about the companion is touched, so a refusal here can only come
+			// from validation of what Go already wrote.
+			evolved := evolve(ss, "J_V_IDX")
+			Expect(evolved.Ok).To(BeTrue(),
+				"Java refused to EVOLVE metadata it can read: %s", evolved.ErrorChain)
+			Expect(evolved.IndexNames).To(ContainElement(companionName),
+				"Java's evolution dropped the companion")
+			Expect(evolved.IndexNames).To(ContainElement("J_V_IDX"))
+			Expect(evolved.Version).To(BeNumerically(">", int(mdProto.GetVersion())),
+				"saveAndSetCurrent demands a strictly increasing version")
+
+			// Go re-opens what Java wrote. Java's evolution being self-consistent
+			// is not enough — the point of the companion is that Go's read path
+			// merges against it, so Go has to still find and scan it.
+			var reloaded *gen.MetaData
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				var loadErr error
+				reloaded, loadErr = recordlayer.NewFDBMetaDataStore(ss).
+					LoadRecordMetaDataProto(rtx.Transaction())
+				return nil, loadErr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded).NotTo(BeNil())
+			reloadedNames := make([]string, 0, len(reloaded.GetIndexes()))
+			for _, idx := range reloaded.GetIndexes() {
+				reloadedNames = append(reloadedNames, idx.GetName())
+			}
+			Expect(reloadedNames).To(ContainElement(companionName),
+				"the companion is gone from the metadata Java evolved and stored (have: %v)",
+				reloadedNames)
+			Expect(reloadedNames).To(ContainElement("J_V_IDX"))
+
+			evolvedMD, evolvedErr := recordlayer.RecordMetaDataFromProto(reloaded)
+			Expect(evolvedErr).NotTo(HaveOccurred())
+			groups := map[string]int64{}
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(evolvedMD).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				entries, listErr := recordlayer.AsList(ctx, store.ScanIndex(
+					evolvedMD.GetIndex(companionName), recordlayer.TupleRangeAll, nil,
+					recordlayer.ForwardScan()))
+				if listErr != nil {
+					return nil, listErr
+				}
+				for _, e := range entries {
+					groups[e.Key[0].(string)] = e.Value[0].(int64)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(groups).To(Equal(map[string]int64{"a": 2, "b": 1}),
+				"the companion no longer scans after Java's evolution")
+
+			// The control. The validating path DOES reject atomic-mutation
+			// indexes whose type and grouping disagree, and the two ways it can
+			// disagree produce two DIFFERENT messages — so a bare recollection
+			// of "Java refused companion-shaped metadata" is not evidence about
+			// the companion unless the corrupted shapes are reproduced and read
+			// side by side with the clean run above.
+			//
+			// The corrupted copies are written with SplitHelper directly, so
+			// neither engine validates them on the way in; only the evolution
+			// path Java runs afterwards does.
+			corrupt := func(child string, indexName, newType string) subspace.Subspace {
+				dst := ss.Sub(child)
+				var copied struct {
+					Found bool `json:"found"`
+				}
+				copyErr := java.InvokeAs(ctx, "copyMetaDataWithIndexTypeJava", map[string]any{
+					"clusterFile":  clusterFile,
+					"srcSubspace":  BytesToIntArray(ss.Bytes()),
+					"dstSubspace":  BytesToIntArray(dst.Bytes()),
+					"indexName":    indexName,
+					"newIndexType": newType,
+				}, &copied)
+				Expect(copyErr).NotTo(HaveOccurred())
+				Expect(copied.Found).To(BeTrue())
+				return dst
+			}
+
+			// The companion's own expression retyped as SUM. Java rejects it,
+			// but NOT for the reason the type/grouping mismatch suggests: the
+			// per-record-type hook runs first (IndexValidator.java:51-52 calls
+			// metaDataValidator.validateIndexForRecordTypes before any grouping
+			// check), and SUM demands a long-valued last column
+			// (AtomicMutationIndexMaintainerFactory.java:131-150). The
+			// companion's only column is the STRING grouping column G, so the
+			// integer check fires before validateGrouping(1) ever sees the zero
+			// grouped fields. Pinned as the engine actually words it — a
+			// guessed message here would defeat the point of the control.
+			sumOverGroupAll := evolve(corrupt("corruptCompanionSum", companionName, "sum"), "J_V_IDX_A")
+			Expect(sumOverGroupAll.Ok).To(BeFalse(),
+				"a SUM over the companion's expression must not validate")
+			Expect(sumOverGroupAll.ErrorClass).
+				To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
+			Expect(sumOverGroupAll.ErrorMessage).To(Equal("index type only supports integer field"))
+			Expect(sumOverGroupAll.ErrorMessage).NotTo(ContainSubstring("non-group fields"),
+				"this corruption is NOT the origin of the non-group-fields exception")
+
+			// The owning SUM's expression retyped as COUNT. COUNT stores no
+			// value, so validateGrouping(0) passes and the ONE grouped column
+			// trips the other throw —
+			// AtomicMutationIndexMaintainerFactory.java:99-104. This is the
+			// shape that produces "does not support non-group fields", and it is
+			// reachable only by a type that disagrees with its expression, never
+			// by the companion as emitted.
+			countOverGrouped := evolve(corrupt("corruptOwnerCount", ownerName, "count"), "J_V_IDX_B")
+			Expect(countOverGrouped.Ok).To(BeFalse(),
+				"a COUNT over an expression with grouped fields must not validate")
+			Expect(countOverGrouped.ErrorClass).
+				To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
+			Expect(countOverGrouped.ErrorMessage).
+				To(Equal("index type does not support non-group fields; use COUNT_NOT_NULL"))
 		})
 	})
 })

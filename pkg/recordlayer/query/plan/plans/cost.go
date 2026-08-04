@@ -507,6 +507,40 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintCost(child []properties.C
 			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
 		}
 	}
+	if driving := p.DrivingStreamIndex(); driving >= 0 && driving < len(child) {
+		// RFC-209 §5.3.1: the group-existence merge is NOT a cheaper spelling of
+		// the aggregate-index plan — it is a SECOND index scan, and pricing the
+		// companion at zero is the specific way this design regresses.
+		//
+		// Cardinality is the DRIVING leg's, not the min of the legs: an outer
+		// merge emits one row per driving-stream group whether or not the other
+		// legs have an entry, so IntersectionCost's min-of-legs would understate
+		// it by exactly the groups the merge exists to add back.
+		//
+		// Work is the SUM over every leg, because every leg is genuinely scanned
+		// — the companion is a real BY_GROUP scan over an index with one entry
+		// per group that ever existed, not a constant.
+		//
+		// This formula does NOT hand the decision to streaming aggregation as
+		// the grouping key approaches uniqueness; the claim that it did was
+		// struck from §5.3.1 after measurement. The merge is faster at every
+		// measured regime including the unique limit, and this rung is not what
+		// decides the comparison anyway — two structural rungs settle it first
+		// (§5.3.2, and the concreteCountMultiIntersection arm in
+		// planning_cost_model.go).
+		//
+		// Deleting this branch does NOT neutralize that third rung. It falls
+		// back to IntersectionCost, whose min-of-legs cardinality understates
+		// the merge and whose CPU stops charging the companion leg — the merge
+		// comes out CHEAPER, not unpriced. Anyone reproducing §5.3.2 by removing
+		// this code gets the wrong answer for that reason.
+		cost := properties.Cost{Cardinality: child[driving].Cardinality}
+		for _, c := range child {
+			cost.CPU += c.CPU
+		}
+		cost.CPU += cost.Cardinality * properties.IntersectionCPU * float64(len(child))
+		return cost
+	}
 	return properties.IntersectionCost(child)
 }
 

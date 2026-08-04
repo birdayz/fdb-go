@@ -665,6 +665,227 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 	}
 }
 
+// --- OuterMergeMulti (RFC-209 §5.3(b)) ---
+
+// outerMergeMultiCursor merges ordered cursors like intersectionMultiCursor,
+// but DRIVEN by one designated stream instead of by the intersection of all.
+//
+// The designated stream decides which rows exist. For each of its comparison
+// keys the cursor emits exactly one result: every other stream contributes its
+// row if it carries the same key, and an absent-filler row if it does not.
+// Rows in a non-driving stream whose key the driving stream never produces are
+// discarded.
+//
+// That is a left-outer merge join, and it is what an aggregate index needs to
+// answer a grouped query correctly. The aggregate index's own key set is not
+// the set of groups: it keeps a zero-valued key for a group emptied by DELETE
+// or by an UPDATE that moved the last row away, and it holds NO key at all for
+// a group whose every value is NULL, because the maintainer writes no entry for
+// a null mutation param. A COUNT(*) over the same grouping key has neither
+// problem — it never reads the aggregated value — so driving from it drops the
+// first kind and supplies an identity for the second.
+//
+// Java has no equivalent: IntersectionCursorBase stops the whole merge the
+// moment any child lacks a next row, and neither UnionCursor nor
+// ComparatorCursor substitutes anything for a missing side. This is a
+// sanctioned read-side extension, not a port.
+type outerMergeMultiCursor[T any] struct {
+	children []*mergeChildState[T]
+	driving  int
+	// absent supplies the value a non-driving stream contributes for a group it
+	// has no row for. It is the cursor's only knowledge of T's shape, which
+	// keeps the merge itself type-agnostic: the caller decides what an empty
+	// group looks like.
+	absent     func(childIndex int) T
+	reverse    bool
+	closed     bool
+	lastNoNext *RecordCursorResult[[]T]
+}
+
+// OuterMergeMultiResume creates the driven outer merge. driving indexes the
+// stream that decides the group set; absent supplies a filler value for a
+// non-driving stream that has no row for the current key.
+//
+// Every cursor must be ordered by the same comparison key, ascending unless
+// reverse. resume carries per-child positions exactly as IntersectionMultiResume
+// does.
+func OuterMergeMultiResume[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	resume []IntersectionChildResume,
+	driving int,
+	absent func(childIndex int) T,
+) RecordCursor[[]T] {
+	if len(cursors) == 0 || driving < 0 || driving >= len(cursors) || absent == nil {
+		return Empty[[]T]()
+	}
+	return &outerMergeMultiCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, resume),
+		driving:  driving,
+		absent:   absent,
+		reverse:  reverse,
+	}
+}
+
+func (c *outerMergeMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[[]T], error) {
+	if c.closed {
+		return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[[]T]{}, err
+		}
+
+		// Lazy read-ahead, identical to the intersection cursors: a child whose
+		// value was consumed is refreshed at the top of the NEXT loop pass, never
+		// bundled with the row that consumed it, so a read-ahead error cannot
+		// discard an already-decided result.
+		for _, child := range c.children {
+			if child.needsAdvance {
+				if err := child.advance(ctx); err != nil {
+					return RecordCursorResult[[]T]{}, err
+				}
+			}
+		}
+
+		driving := c.children[c.driving]
+		if !driving.hasResult {
+			// Only the DRIVING stream's end ends the merge — that is the whole
+			// point of the operator. A non-driving stream that ran out simply
+			// contributes absent rows from here on.
+			return c.terminal(driving.result.GetNoNextReason())
+		}
+
+		// A non-driving stream that stopped for an out-of-band limit is NOT
+		// absent: its row for this group may exist and merely be unread. Treating
+		// it as absent would emit an identity in place of a real stored value —
+		// a wrong answer manufactured by a paging boundary. Checkpoint instead
+		// and let the caller resume.
+		for i, child := range c.children {
+			if i == c.driving || child.hasResult {
+				continue
+			}
+			if !child.result.GetNoNextReason().IsSourceExhausted() {
+				return c.terminal(child.result.GetNoNextReason())
+			}
+		}
+
+		drivingKey := driving.comparisonKey
+
+		// Discard every non-driving row that sorts BEFORE the driving key: its
+		// group is not in the group set, so it is a phantom the aggregate index
+		// kept after the group was vacated. consume() advances the child's cached
+		// continuation past it, so a stop mid-catch-up resumes from the last
+		// discard rather than re-scanning the gap.
+		discarded := false
+		for i, child := range c.children {
+			if i == c.driving || !child.hasResult {
+				continue
+			}
+			cmp, cmpErr := compareKeys(child.comparisonKey, drivingKey)
+			if cmpErr != nil {
+				return RecordCursorResult[[]T]{}, cmpErr
+			}
+			if c.reverse {
+				cmp = -cmp
+			}
+			if cmp < 0 {
+				child.consume()
+				discarded = true
+			}
+		}
+		if discarded {
+			continue
+		}
+
+		results := make([]T, len(c.children))
+		for i, child := range c.children {
+			if i == c.driving {
+				results[i] = child.result.GetValue()
+				continue
+			}
+			matched := false
+			if child.hasResult {
+				cmp, cmpErr := compareKeys(child.comparisonKey, drivingKey)
+				if cmpErr != nil {
+					return RecordCursorResult[[]T]{}, cmpErr
+				}
+				matched = cmp == 0
+			}
+			if matched {
+				results[i] = child.result.GetValue()
+			} else {
+				// Either the stream is past this key or exhausted. Both mean the
+				// group has no entry in it, which for a SUM or COUNT(col) index is
+				// the all-NULL group that was never written.
+				results[i] = c.absent(i)
+			}
+		}
+		// Consume the driving row and every matched row; a non-matching stream
+		// keeps its held row, which belongs to a later group.
+		for i, child := range c.children {
+			if !child.hasResult {
+				continue
+			}
+			if i == c.driving {
+				child.consume()
+				continue
+			}
+			cmp, cmpErr := compareKeys(child.comparisonKey, drivingKey)
+			if cmpErr != nil {
+				return RecordCursorResult[[]T]{}, cmpErr
+			}
+			if cmp == 0 {
+				child.consume()
+			}
+		}
+		cont, contErr := buildIntersectionContinuation(c.children)
+		if contErr != nil {
+			return RecordCursorResult[[]T]{}, contErr
+		}
+		return NewResultWithValue[[]T](results, cont), nil
+	}
+}
+
+// terminal ends the merge, distinguishing true exhaustion (END) from an
+// out-of-band limit (checkpoint the per-child positions and propagate the
+// reason, so the caller can resume without losing the groups not yet emitted).
+func (c *outerMergeMultiCursor[T]) terminal(reason NoNextReason) (RecordCursorResult[[]T], error) {
+	if reason.IsSourceExhausted() {
+		res := NewResultNoNext[[]T](SourceExhausted, &EndContinuation{})
+		c.lastNoNext = &res
+		return res, nil
+	}
+	cont, contErr := buildIntersectionContinuation(c.children)
+	if contErr != nil {
+		return RecordCursorResult[[]T]{}, contErr
+	}
+	res := NewResultNoNext[[]T](reason, cont)
+	c.lastNoNext = &res
+	return res, nil
+}
+
+func (c *outerMergeMultiCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	var firstErr error
+	for _, child := range c.children {
+		if err := child.cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *outerMergeMultiCursor[T]) IsClosed() bool { return c.closed }
+
 func (c *intersectionMultiCursor[T]) Close() error {
 	if c.closed {
 		return nil

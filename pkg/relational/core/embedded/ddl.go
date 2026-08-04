@@ -344,6 +344,9 @@ func rejectIndexOrderClause(specs []antlrgen.IIndexColumnSpecContext, kind, inde
 // indexed column's VECTOR type (in metadata.Builder.AddVectorIndex).
 func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *metadata.Builder) error {
 	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	if err := rejectReservedIndexName(indexName); err != nil {
+		return err
+	}
 	// Match the sibling IndexOnSourceDefinition path, which registers and
 	// looks up the table by the raw (unnormalized) source text.
 	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
@@ -495,6 +498,9 @@ func vectorMetricName(m antlrgen.IHnswMetricContext) (string, error) {
 // at MaterializedViewIndexGenerator.java:187).
 func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, b *metadata.Builder) error {
 	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	if err := rejectReservedIndexName(indexName); err != nil {
+		return err
+	}
 	qt := def.QueryTerm()
 	if qt == nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

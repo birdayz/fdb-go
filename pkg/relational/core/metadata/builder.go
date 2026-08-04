@@ -526,7 +526,17 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 		// applied by both of its index generators). Applied uniformly to
 		// every index root right before registration.
 		rtDesc := mdBuilder.GetRecordTypes()[storageName].Descriptor
+		// Declared indexes are collected UNWRAPPED and registered after the loop,
+		// so the RFC-209 group-existence companions can be derived from the same
+		// pre-wrap expressions the declared indexes were built from. Deriving a
+		// companion from an already-wrapped owner and then wrapping it again
+		// would double the nullable-array `values` hop.
+		var tableIndexes []*recordlayer.Index
 		addIndex := func(rl *recordlayer.Index) error {
+			tableIndexes = append(tableIndexes, rl)
+			return nil
+		}
+		registerIndex := func(rl *recordlayer.Index) error {
 			if containsNullableArray {
 				wrapped, werr := recordlayer.KeyExpressionFromProto(
 					wrapArrayInternal(rl.RootExpression.ToKeyExpression(), rtDesc))
@@ -630,6 +640,56 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				return nil, aerr
 			}
 		}
+
+		// RFC-209 §5.2: every GROUPED SUM / COUNT(col) aggregate index gets a
+		// companion COUNT(*) over the same grouping key, create-if-absent. The
+		// companion is the only thing that can decide whether a group exists —
+		// the owner's own key set can neither prove it (a stored zero may be a
+		// vacated group) nor disprove it (an all-NULL group has no entry).
+		//
+		// Computed LOCALLY and never appended to b.tables. Build() is re-run once
+		// per AS-SELECT index by parseAsSelectIndexDefinition, so mutating the
+		// declared index list here would accumulate a fresh duplicate companion
+		// on every re-run.
+		//
+		// Create-if-absent is structural, matching the read side exactly: a
+		// user-declared COUNT(*) over the same grouping key and the same
+		// predicate already serves, and the user must not pay for a duplicate.
+		var companions []*recordlayer.Index
+		for _, owner := range tableIndexes {
+			companion, ok := recordlayer.NewGroupCountCompanion(owner)
+			if !ok {
+				continue
+			}
+			wantGrouping := recordlayer.GroupingSignature(
+				companion.RootExpression.(*recordlayer.GroupingKeyExpression))
+			wantPredicate := recordlayer.PredicateSignature(companion)
+			if len(wantGrouping) == 0 {
+				continue
+			}
+			exists := false
+			for _, existing := range tableIndexes {
+				if groupCountCompanionMatches(existing, wantGrouping, wantPredicate) {
+					exists = true
+					break
+				}
+			}
+			for _, existing := range companions {
+				if exists {
+					break
+				}
+				// Two SUM indexes sharing a grouping key share one companion.
+				exists = groupCountCompanionMatches(existing, wantGrouping, wantPredicate)
+			}
+			if !exists {
+				companions = append(companions, companion)
+			}
+		}
+		for _, rl := range append(tableIndexes, companions...) {
+			if rerr := registerIndex(rl); rerr != nil {
+				return nil, rerr
+			}
+		}
 	}
 
 	md, err := mdBuilder.Build()
@@ -638,6 +698,30 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	}
 
 	return NewRecordLayerSchemaTemplateWithVersion(b.name, md, b.version)
+}
+
+// groupCountCompanionMatches reports whether an already-declared index on the
+// same table already IS the group-existence companion described by the given
+// grouping and predicate signatures (RFC-209 §5.2, create-if-absent).
+//
+// The record-type check the read-side matcher performs is implicit here: every
+// index in the slice belongs to the table being built.
+func groupCountCompanionMatches(idx *recordlayer.Index, groupingSignature, predicateSignature []byte) bool {
+	if idx == nil || idx.Type != recordlayer.IndexTypeCount {
+		return false
+	}
+	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
+	if !ok {
+		return false
+	}
+	sig := recordlayer.GroupingSignature(gke)
+	if len(sig) == 0 || string(sig) != string(groupingSignature) {
+		return false
+	}
+	// A dense COUNT(*) cannot serve a sparse owner and vice versa: the two count
+	// different row populations, so the group set would be wrong in one
+	// direction or the other.
+	return recordlayer.SamePredicateSignature(recordlayer.PredicateSignature(idx), predicateSignature)
 }
 
 // uuidProtoTypeName is the RELATIVE fully-qualified proto message name for

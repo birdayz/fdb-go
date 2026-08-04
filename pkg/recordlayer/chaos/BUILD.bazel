@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "concurrent.go",
         "fault.go",
+        "fault_read.go",
         "model.go",
         "random.go",
         "scenario.go",
@@ -45,6 +46,7 @@ go_test(
         "chaos_bitmap_test.go",
         "chaos_covering_test.go",
         "chaos_fanout_test.go",
+        "chaos_index_build_state_test.go",
         "chaos_leaderboard_test.go",
         "chaos_max_ever_version_test.go",
         "chaos_minmax_test.go",

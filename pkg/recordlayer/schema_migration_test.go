@@ -25,12 +25,25 @@ var _ = Describe("Schema Migration", func() {
 	// buildMD builds metadata, calling configure (which may AddIndex/RemoveIndex)
 	// then setting the final version. Matches the evolution validator test pattern:
 	// SetVersion(N-1) before AddIndex so index.LastModifiedVersion > old version.
+	//
+	// The version is RAISED to `version` and never lowered. Lowering it produces
+	// metadata whose declared version is BEHIND one of its own indexes, which
+	// Java rejects outright (MetaDataValidator.java:129-132: "lastModifiedVersion
+	// ... which is greater than the meta-data version"). It is not a cosmetic
+	// inconsistency: an index modified after the version the store header will
+	// record is permanently "new since the header version", so every later
+	// version bump re-runs the rebuild decision on it and can clear an index a
+	// background build already populated. RemoveIndex bumps the builder version,
+	// so the AddIndex after it lands one version higher than the caller passes
+	// here — which is exactly how this arose.
 	buildMD := func(version int, configure func(b *RecordMetaDataBuilder)) *RecordMetaData {
 		b := baseBuilder()
 		if configure != nil {
 			configure(b)
 		}
-		b.SetVersion(version)
+		if version > b.GetVersion() {
+			b.SetVersion(version)
+		}
 		md, err := b.Build()
 		Expect(err).NotTo(HaveOccurred())
 		return md
@@ -289,8 +302,10 @@ var _ = Describe("Schema Migration", func() {
 				qIdx.AddedVersion = oldQtyIdx.AddedVersion
 				qIdx.LastModifiedVersion = oldQtyIdx.LastModifiedVersion
 				b.AddIndex("Order", qIdx)
-				// Add composite at version > v2.
-				b.SetVersion(2)
+				// Add composite at version > v2. AddIndex bumps the builder
+				// version itself, so the composite lands one above the replayed
+				// quantity index; setting the version DOWN here first would put
+				// the metadata behind its own indexes again (see buildMD).
 				b.AddIndex("Order", compositeIdx)
 			})
 

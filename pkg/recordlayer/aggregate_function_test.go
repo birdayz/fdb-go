@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -477,7 +478,8 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 					&IndexAggregateFunction{Name: FunctionNameSum, Operand: Ungrouped(Field("price"))},
 					TupleRangeAll, IsolationLevelSerializable)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("no index found"))
+				Expect(errors.As(err, new(*AggregateFunctionNotSupportedError))).To(BeTrue(),
+					"index selection failing must be Java's AggregateFunctionNotSupportedException: %v", err)
 
 				return nil, nil
 			})

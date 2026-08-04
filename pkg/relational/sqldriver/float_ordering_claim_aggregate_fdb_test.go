@@ -269,8 +269,26 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		{
 			name:  "aggregate_index",
 			table: "ag",
-			// The producer under test: an aggregate index read directly.
-			wantPlan: "AGGREGATEINDEX",
+			// This case USED to read the aggregate index directly
+			// (wantPlan: "AGGREGATEINDEX"). It no longer can, and the reason is
+			// worth stating rather than relaxing away.
+			//
+			// A grouped SUM index cannot decide group existence on its own, so
+			// RFC-209 §5.3 either companion-joins it or declines it. The
+			// companion join is a MERGE, and a merge needs both streams to be
+			// physically ordered congruently with the comparison. An UNBOUND raw
+			// DOUBLE grouping coordinate is exactly the case where that fails:
+			// its FDB tuple key order is not its value order, because a
+			// negative-NaN payload packs before -Inf. So the merge declines and
+			// planning falls back to streaming aggregation over base rows.
+			//
+			// The rows below are still asserted against the oracle, so this case
+			// keeps testing what it always tested — that a DOUBLE grouping
+			// column's KEY order is never advertised as its VALUE order. What it
+			// no longer covers is the aggregate-index PRODUCER for this shape.
+			// Re-arming that requires the group-existence merge to become safe on
+			// a raw DOUBLE coordinate, not weakening this expectation.
+			wantPlan: "STREAMINGAGG",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

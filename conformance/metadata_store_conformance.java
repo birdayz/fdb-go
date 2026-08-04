@@ -10,6 +10,7 @@ import com.apple.foundationdb.record.ScanProperties;
 import com.apple.foundationdb.record.TupleRange;
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.provider.foundationdb.FDBMetaDataStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
@@ -20,6 +21,8 @@ import com.apple.foundationdb.record.RecordCursor;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Message;
@@ -741,5 +744,304 @@ class MetaDataStoreSteps extends ConformanceBase {
             }
             return result;
         });
+    }
+
+    /**
+     * RFC-209 interop: load the STORED metadata, MUTATE records through it,
+     * and report the group-existence companion's per-group counts (and the
+     * owning aggregate index's per-group sums) afterwards.
+     *
+     * Scanning the companion only proves Java can OPEN a store whose stored
+     * metadata carries an auto-emitted grouped COUNT index it never declared.
+     * The interop claim is stronger than that: a Java app writing through that
+     * metadata must MAINTAIN the companion, or a Go reader merging against it
+     * sees a group set frozen at whatever Go last wrote. So this step writes
+     * and deletes, and the counts it returns are the post-mutation ones.
+     *
+     * Records are DynamicMessages built against the loaded (dynamic)
+     * descriptor — the same reason loadMetaDataAndScanOrdersJava re-parses
+     * through raw bytes: a store opened on cross-language metadata does not
+     * share descriptors with any statically compiled class.
+     *
+     * insertsJson is a JSON array of objects whose KEYS ARE FIELD NAMES, e.g.
+     * [{"ID":10,"G":"a","V":5}]. deletePkJson is a JSON array of primary-key
+     * values matched against pkFieldName. Deletion goes through the record's
+     * OWN evaluated primary key rather than a reconstructed tuple, so a
+     * record-type-key prefix in the primary key expression cannot silently
+     * turn a delete into a no-op.
+     */
+    @ConformanceStep("mutateAndScanGroupCountIndexJava")
+    public Map<String, Object> mutateAndScanGroupCountIndexJava(String clusterFile,
+                                                                byte[] mdSubspace,
+                                                                byte[] storeSubspace,
+                                                                String recordTypeName,
+                                                                String countIndexName,
+                                                                String sumIndexName,
+                                                                String pkFieldName,
+                                                                String insertsJson,
+                                                                String deletePkJson) {
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
+            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
+            .create();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inserts = gson.fromJson(insertsJson, List.class);
+        @SuppressWarnings("unchecked")
+        List<Object> deletePks = gson.fromJson(deletePkJson, List.class);
+
+        return runInContext(clusterFile, null, context -> {
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Descriptors.Descriptor recordDesc =
+                metaData.getRecordType(recordTypeName).getDescriptor();
+
+            int inserted = 0;
+            if (inserts != null) {
+                for (Map<String, Object> fields : inserts) {
+                    DynamicMessage.Builder b = DynamicMessage.newBuilder(recordDesc);
+                    for (Map.Entry<String, Object> e : fields.entrySet()) {
+                        Descriptors.FieldDescriptor fd = recordDesc.findFieldByName(e.getKey());
+                        if (fd == null) {
+                            throw new RuntimeException("no field " + e.getKey()
+                                + " on record type " + recordTypeName);
+                        }
+                        b.setField(fd, coerceToFieldType(fd, e.getValue()));
+                    }
+                    store.saveRecord(b.build());
+                    inserted++;
+                }
+            }
+
+            int deleted = 0;
+            if (deletePks != null && !deletePks.isEmpty()) {
+                Descriptors.FieldDescriptor pkField = recordDesc.findFieldByName(pkFieldName);
+                if (pkField == null) {
+                    throw new RuntimeException("no primary-key field " + pkFieldName
+                        + " on record type " + recordTypeName);
+                }
+                List<Object> wanted = new ArrayList<>();
+                for (Object pk : deletePks) {
+                    wanted.add(coerceToFieldType(pkField, pk));
+                }
+                List<FDBStoredRecord<Message>> all = store.scanRecords(
+                    TupleRange.ALL, null, ScanProperties.FORWARD_SCAN).asList().join();
+                for (FDBStoredRecord<Message> rec : all) {
+                    if (!rec.getRecordType().getName().equals(recordTypeName)) {
+                        continue;
+                    }
+                    Object have = rec.getRecord().getField(
+                        rec.getRecord().getDescriptorForType().findFieldByName(pkFieldName));
+                    if (wanted.contains(have)) {
+                        // The record's OWN primary key, as the store evaluated
+                        // it — never a tuple reassembled from the pk column.
+                        if (store.deleteRecord(rec.getPrimaryKey())) {
+                            deleted++;
+                        }
+                    }
+                }
+            }
+
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("inserted", inserted);
+            result.put("deleted", deleted);
+            result.put("countRows", scanGroupedLongIndex(store, metaData, countIndexName));
+            if (sumIndexName != null && !sumIndexName.isEmpty()) {
+                result.put("sumRows", scanGroupedLongIndex(store, metaData, sumIndexName));
+            }
+            return result;
+        });
+    }
+
+    /**
+     * RFC-209 interop: EVOLVE the stored metadata through Java's mutating
+     * FDBMetaDataStore API — the VALIDATING path, which is a different
+     * code path from the load used by every other step here.
+     *
+     * loadAndSetCurrent / loadVersion build with validate=false
+     * (FDBMetaDataStore.java:252, :279, :366), so a store that only ever
+     * READS Go's metadata never runs MetaDataValidator over it. Every
+     * mutating API — addIndex among them — funnels into saveAndSetCurrent,
+     * which builds the NEW proto with validate=true
+     * (FDBMetaDataStore.java:376) and, when metadata is already stored,
+     * re-builds the OLD proto with validate=true as well before running the
+     * evolution validator (FDBMetaDataStore.java:394-396). That old-side
+     * rebuild is the interesting one: it drags the Go-written companion
+     * through RecordMetaDataBuilder.build(true) →
+     * MetaDataValidator.validate() (RecordMetaDataBuilder.java:1493-1496),
+     * hence through AtomicMutationIndexMaintainerFactory's IndexValidator.
+     *
+     * addIndex of an unrelated VALUE index is the smallest idiomatic
+     * evolution: FDBMetaDataStore.addIndex(String, Index) →
+     * addIndexAsync → saveAndSetCurrent (FDBMetaDataStore.java:633,
+     * :670-674).
+     *
+     * Validation failures are RETURNED, not thrown, so the Go side owns the
+     * assertion and can quote the engine's own wording either way — a step
+     * that threw would surface as harness plumbing rather than as a verdict
+     * about the companion.
+     */
+    @ConformanceStep("evolveMetaDataViaFDBMetaDataStoreJava")
+    public Map<String, Object> evolveMetaDataViaFDBMetaDataStoreJava(String clusterFile,
+                                                                     byte[] mdSubspace,
+                                                                     String recordTypeName,
+                                                                     String newIndexName,
+                                                                     String newIndexFieldName) {
+        return runInContext(clusterFile, null, context -> {
+            Map<String, Object> result = new HashMap<>();
+            FDBMetaDataStore mdStore = new FDBMetaDataStore(context, new Subspace(mdSubspace), null);
+            mdStore.setExtensionRegistry(EXTENSION_REGISTRY);
+            try {
+                mdStore.addIndex(recordTypeName,
+                    new Index(newIndexName, Key.Expressions.field(newIndexFieldName)));
+            } catch (RuntimeException e) {
+                result.put("ok", false);
+                Throwable root = e;
+                StringBuilder chain = new StringBuilder();
+                while (true) {
+                    if (chain.length() > 0) {
+                        chain.append(" <- ");
+                    }
+                    chain.append(root.getClass().getName()).append(": ").append(root.getMessage());
+                    if (root.getCause() == null || root.getCause() == root) {
+                        break;
+                    }
+                    root = root.getCause();
+                }
+                result.put("errorClass", root.getClass().getName());
+                result.put("errorMessage", String.valueOf(root.getMessage()));
+                result.put("errorChain", chain.toString());
+                return result;
+            }
+            RecordMetaData evolved = mdStore.getRecordMetaData();
+            List<String> indexNames = new ArrayList<>();
+            for (Index index : evolved.getAllIndexes()) {
+                indexNames.add(index.getName());
+            }
+            result.put("ok", true);
+            result.put("version", evolved.getVersion());
+            result.put("indexNames", indexNames);
+            return result;
+        });
+    }
+
+    /**
+     * Copy the stored metadata from one subspace to another with a single
+     * index's TYPE rewritten, writing the result with SplitHelper directly so
+     * that NEITHER engine validates it on the way in.
+     *
+     * This exists to hold a corrupted control case next to the real companion.
+     * "Java refused this metadata" is only evidence about the companion if the
+     * companion is the ONLY thing that differs, so the corrupted shape has to
+     * be produced deliberately and its exception quoted, rather than recalled.
+     */
+    @ConformanceStep("copyMetaDataWithIndexTypeJava")
+    public Map<String, Object> copyMetaDataWithIndexTypeJava(String clusterFile,
+                                                              byte[] srcSubspace,
+                                                              byte[] dstSubspace,
+                                                              String indexName,
+                                                              String newIndexType) {
+        return runInContext(clusterFile, null, context -> {
+            Map<String, Object> result = new HashMap<>();
+            Subspace srcSS = new Subspace(srcSubspace);
+            byte[] data = context.ensureActive().get(srcSS.pack(Tuple.from((Object) null, 0L))).join();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaDataProto.MetaData.Builder b = proto.toBuilder();
+            boolean rewrote = false;
+            for (int i = 0; i < b.getIndexesCount(); i++) {
+                if (b.getIndexes(i).getName().equals(indexName)) {
+                    b.getIndexesBuilder(i).setType(newIndexType);
+                    rewrote = true;
+                }
+            }
+            if (!rewrote) {
+                throw new RuntimeException("no index named " + indexName + " in stored metadata");
+            }
+            SplitHelper.saveWithSplit(context, new Subspace(dstSubspace),
+                Tuple.from((Object) null), b.build().toByteArray(), null);
+            result.put("found", true);
+            return result;
+        });
+    }
+
+    /**
+     * Scan a grouped atomic-mutation index BY_GROUP and render each entry as
+     * {key: [groupKeyParts], value: <long>}. Shared by the RFC-209 companion
+     * step for both the COUNT companion and its owning SUM index — both store
+     * a single long per group.
+     */
+    private static List<Map<String, Object>> scanGroupedLongIndex(FDBRecordStore store,
+                                                                  RecordMetaData metaData,
+                                                                  String indexName) {
+        Index index = metaData.getIndex(indexName);
+        List<IndexEntry> entries = store.scanIndex(
+            index, IndexScanType.BY_GROUP, TupleRange.ALL, null,
+            ScanProperties.FORWARD_SCAN
+        ).asList().join();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (IndexEntry e : entries) {
+            Map<String, Object> row = new HashMap<>();
+            List<Object> keyValues = new ArrayList<>();
+            for (Object o : e.getKey()) {
+                keyValues.add(o);
+            }
+            row.put("key", keyValues);
+            row.put("value", e.getValue().getLong(0));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * Coerce a gson-decoded JSON scalar to the Java type a protobuf field
+     * setter demands. gson hands back Long/Double/String/Boolean; setField
+     * throws on a Long where the field is an int32.
+     */
+    private static Object coerceToFieldType(Descriptors.FieldDescriptor fd, Object value) {
+        switch (fd.getJavaType()) {
+            case LONG:
+                return ((Number) value).longValue();
+            case INT:
+                return ((Number) value).intValue();
+            case DOUBLE:
+                return ((Number) value).doubleValue();
+            case FLOAT:
+                return ((Number) value).floatValue();
+            case BOOLEAN:
+                return (Boolean) value;
+            case STRING:
+                return String.valueOf(value);
+            default:
+                throw new RuntimeException("unsupported field type " + fd.getJavaType()
+                    + " for field " + fd.getName());
+        }
     }
 }

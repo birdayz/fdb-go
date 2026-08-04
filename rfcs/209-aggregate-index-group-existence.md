@@ -20,11 +20,18 @@ that assumption with an explicit group-existence source — a `COUNT(*)` over th
 same grouping key, discovered structurally — consulted by a plan-visible
 operator. One mechanism repairs both symptoms.
 
-Nothing in this design changes a byte that is written to FDB.
+This design **does** write to FDB, and an earlier draft's claim that it changes
+no byte was false. The companion is a stored `Index` in the persisted
+`RecordMetaData`, and it maintains an index entry on every insert, update and
+delete. What it does not do is introduce a new index type, a new index option, or
+a new on-disk format: the companion is a plain grouped `COUNT` index of exactly
+the kind Java already writes, already maintains, and already reads back out of
+stored metadata without being told about it. §4.1 states the interop facts and
+their caveats.
 
 ## 2. The defect, as measured
 
-Real FDB, via `TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins` and
+Real FDB, via `TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle` and
 `TestFDB_AggregateIndexVacatedGroup` in
 `pkg/relational/sqldriver/aggregate_index_vacated_group_fdb_test.go` (PR #604).
 Each query runs twice: once against a table carrying the aggregate indexes, once
@@ -154,7 +161,123 @@ Java's relational layer never sets the option anywhere — `grep -rn
 "CLEAR_WHEN_ZERO\|clearWhenZero" fdb-relational-core/src/main/java/` returns
 **zero hits tree-wide**, which is the claim a line-range citation cannot make.
 Wire compatibility is the hard line and is not traded for a correctness fix that
-can be had wire-neutrally. The change was reverted; the golden was not edited.
+can be had with an index kind Java already understands. The change was reverted;
+the golden was not edited.
+
+### 4.1 The wire footprint this design does have
+
+§1 states it and §6 depends on it, so it is stated once here in full. The
+companion adds a stored `Index` to the persisted `RecordMetaData` and an index
+entry maintained on every write. The claim that matters is not that nothing is
+written — it is that **a Java app opening the same store maintains the companion
+correctly without having created it, and without knowing what it is for.** That
+is a property of how Java loads metadata, and it is data-driven end to end
+(citations against `fdb-record-layer/`, tag 4.12.11.0):
+
+- Stored metadata is loaded wholesale, with no whitelist:
+  `FDBMetaDataStore.loadAndSetCurrent` calls `buildMetaData(proto, validate=false)`
+  (`FDBMetaDataStore.java:279`), and `RecordMetaDataBuilder.loadProtoExceptRecords`
+  constructs `new Index(indexProto)` for every index in the proto
+  (`RecordMetaDataBuilder.java:183,211`).
+- Maintainer selection is a pure map lookup on the type string
+  (`IndexMaintainerFactoryRegistryImpl.java:79`). `"count"` resolves to
+  `AtomicMutationIndexMaintainer`, registered via `ServiceLoader` and always
+  present in core.
+- An index name Java has never seen defaults to `READABLE`
+  (`RecordStoreState.java:219-221`).
+- Grouped `COUNT` is handled generically off the `GroupingKeyExpression`
+  (`AtomicMutationIndexMaintainer.java:129-157`).
+
+So the companion is maintained by Java as a plain count index. Four caveats,
+each of which Go satisfies:
+
+1. The Java app must open against the **stored** metadata (`FDBMetaDataStore`),
+   not a locally compiled `RecordMetaData`. A locally compiled one simply does
+   not contain the companion, and the store is then written with an index it does
+   not maintain.
+2. Version fields must satisfy `0 < addedVersion <= lastModifiedVersion <=
+   metaData.version`, or any validating path throws
+   (`IndexValidator.java:53-56`, `MetaDataValidator.java:124-133`). Go's
+   `addIndexCommon` (`pkg/recordlayer/metadata.go:404-412`) supplies them;
+   measured on the fixture: added 3, lastModified 3, metadata version 3.
+3. A grouped `COUNT` must carry `groupedCount == 0` or
+   `AtomicMutationIndexMaintainerFactory.java:99-104` throws. Go's `GroupAll`
+   sets it (`pkg/recordlayer/key_expression.go:1194-1199`).
+4. `clearWhenZero` must match on both sides. Neither side sets any option, so it
+   is absent/false on both — and the read path does not depend on the maintainer
+   clearing zeroes in any case: it drops zero-valued entries at **read** time via
+   `liveGroupsOnly`
+   (`pkg/recordlayer/query/executor/executor_new_plans.go:353-372`).
+
+The companion's type is `IndexTypeCount = "count"`
+(`pkg/recordlayer/aggregate_group_existence.go`, `pkg/recordlayer/index.go:16`).
+All four caveats are **executed against a live JVM**, not asserted in this
+prose, by the spec `RFC-209 group-existence companion cross-language` in
+`conformance/metadata_store_conformance_test.go`: Go persists the metadata and
+writes records; **Java** loads that stored metadata, scans the companion
+`BY_GROUP` (caveats 1-3), then inserts into an existing group, inserts into a
+new group, and deletes a group's last row through the same metadata; Go re-reads
+and must agree exactly. The write/delete step is the load-bearing half — a Java
+engine that loaded the companion but did not maintain it passes a scan and fails
+here.
+
+An earlier draft credited `conformance/index_ddl_metadata_conformance_test.go`
+with this. That was wrong: there Java builds its *own* template, so no Java code
+ever touches the auto-emitted companion. That test's real job is narrower and
+still worth having — it bounds Go's stored index set to Java's plus exactly the
+allowlisted companions.
+
+Caveat 4 is a measurement rather than a hope. Neither side sets `clearWhenZero`,
+and Java's maintainer decrements a vacated group to `0` and **leaves the key**.
+Dropping that zero is the read side's job, which Go does via `liveGroupsOnly`, so
+Go's correctness never depends on Java clearing anything. If Java ever begins
+clearing zeroed groups, that expectation is where it surfaces.
+
+Caveat 1 says "open through `FDBMetaDataStore`", and that leaves one question the
+read path cannot answer: **evolution**. Every read entry point builds with
+`validate=false` (`FDBMetaDataStore.java:252,279,366`), but every *mutating* entry
+point — `addIndex`, `dropIndex`, `updateRecords`, `mutateMetaData` — funnels into
+`saveAndSetCurrent`, which builds the new proto with `validate=true`
+(`FDBMetaDataStore.java:376`) **and re-builds the old, Go-written proto with
+`validate=true`** before running the evolution validator
+(`FDBMetaDataStore.java:394-396`). That old-side rebuild drags the companion
+through `RecordMetaDataBuilder.build(true)` → `MetaDataValidator.validate()`
+(`RecordMetaDataBuilder.java:1493-1496`) and hence through
+`AtomicMutationIndexMaintainerFactory`'s `IndexValidator`. Had the companion
+failed there, a Go-written schema would be a poison pill: readable by a Java app
+forever, evolvable never.
+
+MEASURED — it does not fail, so there is no caveat 5. The same conformance file
+runs `FDBMetaDataStore.addIndex("T", …)` (`FDBMetaDataStore.java:633,670-674`) of
+an unrelated `VALUE` index against Go's stored template; Java returns
+`{Ok:true Version:4 IndexNames:[I_SUM I_SUM__GROUP_COUNT J_V_IDX]}`, and Go then
+re-loads the evolved metadata, still finds `I_SUM__GROUP_COUNT`, and re-scans it
+to `{a:2 b:1}`. (The read-side spec was already stronger than caveat 2 needed:
+its `RecordMetaData.build(proto)` resolves to `build(true)`
+(`RecordMetaData.java:578-580`, `RecordMetaDataBuilder.java:1431-1445`), so
+`MetaDataValidator` has always run over the companion there. What the evolution
+step adds is the old→new `MetaDataEvolutionValidator` leg and the real mutating
+API.)
+
+That measurement also settles an `InvalidExpressionException: index type does not
+support non-group fields` observed during an earlier mutation experiment on this
+branch. It is not about the companion. The throw is at
+`AtomicMutationIndexMaintainerFactory.java:99-104` and is reachable only when an
+index's *type* disagrees with its *expression* — a value-less type (`count`) over
+an expression that has grouped columns. Both directions are reproduced
+deliberately in the spec, by rewriting one index's type in the stored bytes
+(neither engine validates on that path) and re-running the same evolution:
+
+- companion (`GroupAll`, zero grouped columns) retyped `sum` → `index type only
+  supports integer field`, thrown at
+  `AtomicMutationIndexMaintainerFactory.java:131-150`. Not the observed message:
+  the per-record-type hook runs before any grouping check
+  (`IndexValidator.java:51-52`), and the companion's only column is the `STRING`
+  grouping column, so the integer check fires first and `validateGrouping(1)` is
+  never reached.
+- owner `I_SUM` (one grouped column) retyped `count` → `index type does not
+  support non-group fields; use COUNT_NOT_NULL`. This is the observed message,
+  and it comes from the corrupted type, never from the companion as Go emits it.
 
 ## 5. Design
 
@@ -185,6 +308,12 @@ class of object as `clearWhenZero` and fails the identical assertion at
 `conformance/index_ddl_metadata_conformance_test.go:260`. An RFC cannot argue §4
 and then leave a metadata reference on the table.
 
+The distinction against §4.1 is exact and worth stating, since this design *does*
+write metadata: a companion is a **separate index of a type Java already has a
+maintainer for**, which Java loads and maintains generically. A pointer property
+is an **unknown field on an index Java does share**, which nothing in Java reads
+and which changes what that index's stored options must equal.
+
 Matching and creation are two different questions and get two different answers:
 
 - **Matching accepts any structurally-qualifying `COUNT(*)`** — user-declared or
@@ -199,7 +328,7 @@ Matching and creation are two different questions and get two different answers:
 
 This also settles "companion dropped, SUM remains" without machinery: discovery
 re-runs against current metadata at plan time, finds nothing, the match declines,
-and planning falls back to streaming aggregation (5.3(c)). An explicit reference
+and planning falls back to the base-table plan (5.3(c)). An explicit reference
 would instead leave a dangling pointer every plan must handle, and would force
 `DROP INDEX` to either block or cascade — both metadata-visible, both strictly
 worse.
@@ -238,8 +367,8 @@ parallel pipeline, which this repo does not permit.
 
 It is a **binary (or n-ary) operator yielded by `AggregateDataAccessRule`, with
 the companion scan as a real child.** The rule either yields the companion-joined
-plan or yields nothing, and streaming aggregation wins on cost — one query path,
-visible to the cost model.
+plan or yields nothing; when it yields nothing, what remains is the base-table
+plan of 5.3(c). One query path, visible to the cost model.
 
 Three cases:
 
@@ -310,11 +439,16 @@ semantics and its existing decline. Recorded explicitly so the implementer does
 not stall deciding whether outer semantics relax it: they do not.
 
 **(c) No readable companion.** The match candidate does not match, and planning
-falls back to a streaming aggregation over base rows — correct, slower, and the
-status quo for any store whose schema predates this change or was created by
-Java.
+falls back to the base-table plan. That plan must be named for what it is rather
+than as "streaming aggregation", which makes it sound cheap. MEASURED, the
+planner builds `StreamingAgg(keys=[CUSTOMER_ID], InMemorySort([CUSTOMER_ID ASC],
+Scan(ORDERS)))`: a full base-table scan **plus a full materializing in-memory
+sort of every row**, because nothing supplies the grouping order. On a large
+table — the exact case a mid-backfill companion leaves behind — that sort is
+plausibly not plannable in memory at all. This is a correct answer bought at a
+price that may not be payable, not a graceful degradation.
 
-### 5.3.1 Cost: this is a cost-model change
+### 5.3.1 Cost: the companion scan is priced as a real child
 
 The operator is visible to the cost model (§5.3), which is only worth anything if
 it is **priced**. The companion-joined plan is not a cheaper spelling of the
@@ -326,41 +460,69 @@ I/O is roughly **twice** the single-aggregate-index plan's, plus the merge. The
 cost model must charge the companion scan as a real scan child, not fold it in as
 a constant.
 
-**The near-unique grouping key is the case that decides correctness of the
-choice.** As the grouping key approaches uniqueness, the number of groups
-approaches base-table cardinality, so the companion scan approaches a full scan
-of one entry per row — and the aggregate index scan does too. The companion-joined
-plan then reads about twice the base-table cardinality in index entries to
-produce about that many rows, while streaming aggregation reads the base table
-once. **The companion-joined plan can therefore be slower than the plan it is
-supposed to beat, and a cost model that prices the companion scan at zero would
-pick it anyway.** That is the concrete regression this subsection exists to
-prevent.
+**An earlier draft required the planner to flip to the base table as the group
+count approaches base-table cardinality. That proposal is struck.** It was
+grounded in the reasoning that a near-unique grouping key makes the companion
+scan approach one entry per row, so the merge reads about twice the base-table
+cardinality to produce about that many rows while the base-table plan reads the
+table once. The reasoning is arithmetically fine and the conclusion is wrong.
+Four grounds, in order of force.
 
-**When streaming aggregation should win.** Once the estimated group count
-approaches base-table cardinality, the aggregate-index path loses its entire
-premise — that there are far fewer groups than rows — and streaming aggregation
-should win on cost. This is not a new special case: it is the existing
-aggregate-index-vs-streaming trade-off with the companion's scan added to the
-correct side of the comparison. The change is that the companion's cardinality
-must enter the estimate, and the group-count estimate that drives it comes from
-the same cardinality machinery the aggregate-index path already relies on
-(`pkg/recordlayer/query/plan/cascades/properties/cardinality.go`,
-`cardinality_bounds.go`).
+**(a) It prescribes a plan Java refuses to build.** Java's Cascades has no sort
+operator and no hash aggregation: `ImplementStreamingAggregationRule` yields
+nothing unless a satisfying order already exists, and `RecordQuerySortPlan` is
+constructed only by the legacy `RecordQueryPlanner`, never by Cascades. So
+"streaming aggregation over the base table" in the shape the flip wanted is not a
+Java plan at all, and the flip would have made the cost model prefer it.
 
-**The estimate this rests on is currently a constant, and that is a live
-dependency.** `TODO.md:13800-13820` records, MEASURED, that RFC-204 P1 removed the
-record count key from relational templates, leaving `fetchTableStatistics`
-(`cascades_generator.go`) dead on every SQL-created schema — "the cost model now
-plans on its 1e6 default for every table". The cardinality *bounds* machinery
-above exists and is used; the per-table row count feeding it does not, on exactly
-the schemas this RFC targets. So the discrimination §5.3.1 depends on — group
-count versus base-table cardinality — cannot currently be made by the cost model
-at all, and the near-unique regression would ship undetected by it, caught only
-by §7's stress comparison. That is a dependency to state, not a reason to defer:
-until it is closed, §7's stress comparison is the *only* thing standing between
-this design and the regression, which is why §7 makes plan choice on the
-near-unique key a failure in its own right.
+**(b) The rival the planner actually builds is a sort, not a stream.** MEASURED
+on the fixture query, the base-table candidate is
+`StreamingAgg(keys=[CUSTOMER_ID], InMemorySort([CUSTOMER_ID ASC], Scan(ORDERS)))`
+— it sorts the whole table. `RecordQueryInMemorySortPlan` is Go's sanctioned
+read-side fallback, not a plan Java would recognise. The flip's premise, "the
+base-table plan reads the table once", omits the sort.
+
+**(c) The economics never invert.** MEASURED, rows held constant at 100000, four
+group-count regimes, best-of-2, companion-joined merge versus the base-table
+plan:
+
+| groups | merge | base table | ratio |
+|---|---|---|---|
+| = rows (unique) | 465.54 ms | 861.03 ms | 1.85x |
+| rows / 1.25 | 367.72 ms | 858.61 ms | 2.33x |
+| rows / 10 | 50.91 ms | 776.77 ms | 15.26x |
+| 10 | 5.39 ms | 542.98 ms | 100.76x |
+
+A confirmation run agreed: 1.87x / 2.23x / 15.08x / 99.05x. The merge's advantage
+decays monotonically toward the unique limit and **never inverts**. The flip
+would therefore have chosen the slower plan at every measured point, including
+the one it was designed for.
+
+**(d) The narrower version — a scan-order gate — is rejected as a bolted-on
+special case.** It would exist to make the base-table candidate available in the
+near-unique regime. It already is: MEASURED, inverting the cost comparator below
+the physical gate flips the winner to the base-table plan, so that candidate is
+in the memo and competing in exactly that regime. Nothing needs to be bolted on
+to offer it. It simply loses. Design principle 10 applies — match the
+architectural property, do not add an `if` that reproduces a downstream
+observable.
+
+**One honest gap in the measurement.** The base-table rival above leaves a sort
+on the table: an ordered index scan on `customer_id` exists and could have
+supplied the grouping order, which would remove the `InMemorySort`. So the 1.85x
+margin at the unique limit is measured against a sort-then-aggregate competitor,
+and it could narrow if that sort were eliminated. That is an **open measurement
+question**, recorded so nobody re-derives it — it is not a reason to keep the
+flip, because a flip is unwarranted until a measurement shows an inversion and
+none does.
+
+**The 1e6 default cardinality is not a dependency of this design.**
+`TODO.md:13800-13820` records, MEASURED, that RFC-204 P1 left `fetchTableStatistics`
+(`cascades_generator.go`) dead on every SQL-created schema, so the cost model
+plans on its 1e6 default. With the flip struck, nothing here needs the per-table
+row count: §5.3.2 shows the merge-vs-base choice is structural and does not move
+when the statistic sweeps nine orders of magnitude. The item is still worth
+closing; this RFC does not wait on it.
 
 There is a useful symmetry worth recording. The remedy that TODO item names
 first is "(a) read per-type row counts from COUNT-type aggregate indexes when the
@@ -369,17 +531,59 @@ RFC's create-if-absent companion puts a `COUNT` index on precisely those schemas
 RFC-209 therefore supplies the input that item needs, rather than competing with
 it.
 
-**Consequence to state plainly:** on a near-unique grouping key this design can
-*lose* the index acceleration that today's (wrong) plan enjoys. That is the
-correct outcome — today's plan is fast and wrong — but it is a performance change
-on real queries and must be reviewed as a cost-model change, not smuggled in as a
-correctness fix. Acceptance requires a stress comparison on both a low-cardinality
-and a near-unique grouping key (§7).
+**Consequence to state plainly:** the plan this design gives up is not the
+base-table plan, it is the pre-RFC aggregate-index-only plan — one scan instead
+of two merged scans. That plan is faster and *wrong*: it reports phantom groups.
+So the performance question this RFC must answer is not "does the merge beat the
+base table" (measured: yes, everywhere) but "how much does correctness cost
+against the incorrect plan it replaces". §7 sets that as a bounded multiple.
 
 **Fail-closed by construction.** 5.3(c) is not a check that can be forgotten:
 the resolved, readable companion is a **constructor precondition** of the
 companion-joined plan, so that plan is unconstructible without one. There is no
 code path that builds the fast plan and then validates it.
+
+### 5.3.2 What actually decides the merge, and it is not the magnitude cost
+
+§5.3.1 reads as though the scalar cost estimate governs the choice. It does not,
+and the RFC would mislead an implementer by implying it. MEASURED, by
+rung-by-rung instrumentation of `planningCostModelCompareWith` on the fixture
+pair:
+
+- The two candidates **tie** through the data-access rung. The whole-plan
+  max-cardinality gate abstains — neither side has a proven bound. Residuals are
+  0 / 0. Data access is 1 / 1.
+- Then **three independent rungs each pick the merge unaided**:
+  `comparePrimaryScanVsIndexScan` (covering index over primary scan);
+  `inMemorySortCount` (0 versus 1); and last the scalar `EstimateCostWith`
+  fallback, routing through `RecordQueryMultiIntersectionOnValuesPlan.HintCost`'s
+  driving-leg branch.
+- Neutralizing any **one** of the three changes nothing. The winner flips only
+  when all three go at once.
+
+Three consequences, each worth stating because each is a trap:
+
+1. **The choice is structural, not economic.** It does not move when table
+   statistics sweep nine orders of magnitude (1 to 1e9). This is why §5.3.1 can
+   say the dead `fetchTableStatistics` is not a dependency.
+2. **Counting the merge's legs honestly changes the outcome.** The merge reads
+   two streams; the data-access rung counts it as 1. Counting 2 makes that rung
+   fire *ahead* of all three deciding rungs and bars the merge at every
+   cardinality. Whoever corrects that count is changing this design's plan
+   choice, not tidying an estimate.
+3. **The driving-leg `HintCost` branch is live, and inert only as a decider.** It
+   executes during ordinary planning; it is merely never the rung that settles
+   this pair. Deleting it as dead code is a mistake — and note that deleting it
+   is *not* how one neutralizes rung 3 to reproduce the finding above. Without
+   that branch `HintCost` falls back to `IntersectionCost`, whose min-of-legs
+   cardinality understates the merge and whose CPU stops charging the companion
+   leg, so rung 3 then prefers the merge *more* strongly. Reproducing this
+   section means bypassing the comparison, not removing the formula; a literal
+   delete-the-branch reproduction gets the wrong answer.
+
+Both facts are pinned:
+`TestGroupExistenceMerge_DecisionIsStructuralNotEconomic` and
+`TestMultiIntersectionHintCost_DrivingBranchIsLive`.
 
 ### 5.4 Ungrouped aggregates are out of scope, and the reason is not the one it looks like
 
@@ -439,10 +643,13 @@ precondition in §5.3, not a separate check.
 
 **Existing stores lose acceleration until the index is recreated.** Schemas
 created before this change, and all Java-created schemas, have no companion and
-take 5.3(c): correct answers via streaming aggregation, no index acceleration.
-This is the main cost of the design and the price of not touching the wire. A
-Go-created schema read by Java plans as Java does today (Java ignores the
-companion), i.e. Java keeps its own wrong answer; we do not fix Java from here.
+take 5.3(c): correct answers at the price 5.3(c) names — a base-table scan plus a
+full materializing sort, which on a large table may not be plannable at all. This
+is the main cost of the design, and it is the price of not forcing an on-disk
+migration, *not* the price of not touching the wire: §4.1 records that the
+companion is written. A Go-created schema read by Java plans as Java does today
+(Java ignores the companion while still maintaining it, §4.1), i.e. Java keeps
+its own wrong answer; we do not fix Java from here.
 
 **Precedent and expiry.** Documenting rather than forcing an on-disk migration
 follows CQ-90 (`TODO.md:13822`), the on-disk migration decision for CQ-89's
@@ -475,7 +682,7 @@ about the plan.
 **Companion present.** Every shape in §2's table equals the oracle, *and*
 `EXPLAIN` shows the companion-joined plan — so a "fix" that silently stops using
 the index fails. The existing pins
-(`TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins`) assert today's wrong
+(`TestFDB_AggregateIndexVacatedGroup_SumAndCountColOracle`) assert today's wrong
 answers and are written to go RED when this lands; they get deleted and folded
 into oracle assertions.
 
@@ -493,14 +700,116 @@ the oracle. These are the predicates whose answers change because compensation
 now sees identity rows, so they are the tests that distinguish "the
 under-approximation repair reached `HAVING`" from "a filter regressed".
 
-**Cost (§5.3.1).** A stress comparison on **two** grouping keys, before and
-after: one low-cardinality (few groups, many rows) where the companion-joined
-plan must win, and one **near-unique** (groups ≈ rows) where streaming
-aggregation must win. A run where the planner picks the companion-joined plan on
-the near-unique key is a failure of this RFC even if every row is correct —
-that is the specific regression §5.3.1 exists to prevent. Both must live on the
-same filesystem with headroom, per the repo's stress-comparison rule; a run taken
-above ~95% disk utilisation measures the disk, not the plan.
+**Cost (§5.3.1) — a bounded multiple of the incorrect plan.** An earlier draft
+required streaming aggregation to win on a near-unique grouping key and failed
+the RFC if the planner picked the companion-joined merge there. That criterion is
+refuted by §5.3.1(c): the merge is faster than the base-table plan at every
+measured regime, so the old criterion demanded the slower plan.
+
+The replacement measures against the right baseline. The merge replaces the
+pre-RFC aggregate-index-only plan — one scan, faster, and **wrong**, because it
+reports phantom groups.
+
+**That plan is unconstructible by design, so the criterion is timed against a
+stand-in.** Once a SUM owner exists the companion is emitted create-if-absent
+(§5.2) and the planner always builds the merge; there is no switch that produces
+the one-scan-and-wrong plan and therefore nothing to start a stopwatch on. A
+criterion phrased against it would be a number nobody could ever obtain.
+
+The stand-in is a **grouped `COUNT(*)` at matched group cardinality**. By §5.3(a)
+a grouped `COUNT(*)` is its own group-existence oracle, so it takes no companion
+and plans as a bare single `BY_GROUP` aggregate-index scan — the exact physical
+shape the pre-RFC plan had: one scan of one entry per group, one aggregate value
+per group, an ordering the scan already satisfies, a `HAVING` over the aggregate.
+It is constructible, so it is timed. The stress test asserts that shape rather
+than assuming it: the reference `EXPLAIN` must contain exactly one
+`AggregateIndex` scan and must not contain `GroupExistenceMerge`. If companion
+discovery ever attaches a companion to a grouped `COUNT(*)`, the reference stops
+being the pre-RFC shape and the test fails rather than quietly measuring
+something else.
+
+MEASURED, rows held at 100000, same store, back-to-back, best-of-2, the same four
+regimes as §5.3.1(c):
+
+| regime | groups | merge | reference (single scan) | merge / reference |
+|---|---|---|---|---|
+| unique | 100000 | 457.41 ms | 194.13 ms | 2.36x |
+| near-unique | 80000 | 378.10 ms | 131.21 ms | 2.88x |
+| moderate | 10000 | 53.84 ms | 21.77 ms | 2.47x |
+| low | 10 | 5.33 ms | 5.28 ms | 1.01x |
+
+**The criterion is that the merge stays within 3.5x of the single-scan reference
+at every regime whose reference actually measures scan work.**
+
+Single-pair ratios proved too unstable to set a bound from: successive runs put
+the worst regime (near-unique) at 2.86x, 3.08x, then 3.24x with no code change
+between them. Each ratio is therefore the MEDIAN of 5 back-to-back
+merge/reference pairs — pairing puts any slow moment on both sides so it divides
+out of that pair's ratio, and the median discards the pair that got unlucky
+anyway. Median-of-5 over three consecutive runs:
+
+| regime | median-of-5 ratios | headroom to 3.5x |
+| --- | --- | --- |
+| unique | 2.46 / 2.52 / 2.49 | ~28-30% |
+| near-unique | 3.08 / 2.86 / 2.98 | ~12-18% |
+| moderate | 2.08 / 2.08 / 1.97 | ~41-44% |
+| low | 1.05 / 1.08 / 1.07 | excluded, see below |
+
+The median is load-bearing, not cosmetic: in the first of those runs an
+individual near-unique pair measured 3.63x — above the bound. A single-pair
+criterion would have failed a clean run.
+
+Worst observed median headroom is about 12%, against a median that still drifts
+~7% run to run. That is tight on purpose, and the consequence is stated rather
+than hidden: an occasional flake is possible on a loaded or nearly-full disk. The
+remedy is more pairs (9 or 11, costing seconds), never a looser bound —
+loosening would buy back precisely the regression headroom the number exists to
+deny. The earlier 3x is superseded twice over: it was not chosen from data, and
+it sits below medians already observed at 3.08x.
+
+The bound is applied only where the reference measures scan work. Below 1000
+groups the reference reads too few index entries for its runtime to be anything
+but fixed per-query cost, so the ratio would measure harness overhead. That
+exclusion is load-bearing rather than convenient, and it is probed: driving the
+bound down to 0.5x reds every regime above the threshold and still leaves `low`
+passing, which shows the skip is doing the work rather than `low` happening to
+sit under whatever number is written here.
+
+Two readings the table demands, both about output cardinality rather than
+scanning. The reference's `HAVING` cannot be tuned to the merge's selectivity:
+the fixture's grouping key is an exact partition, so group sizes take at most two
+values and `COUNT(*) > T` is all-or-nothing in three of the four regimes. The
+test picks the closest-to-50% non-degenerate threshold where one exists and falls
+back to selecting every group where none does, logging which (`refUniform`). So
+the reference returned *twice* the merge's rows at unique, moderate, and low —
+deflating those ratios — and *half* at near-unique, inflating it. The worst point
+is therefore the inflated one, which is the conservative direction for a bound.
+And at `low` the ratio collapses to 1.01x: at ten groups both plans are fixed
+cost, and the second scan is free.
+
+**What re-opens this criterion:** any regime exceeding 3.5x, or the reference
+ceasing to plan as a single bare aggregate-index scan — the second is a change to
+§5.3(a), not to cost, and the test fails on it directly.
+
+**What re-opens the struck flip:** the merge becoming *slower* than the
+base-table alternative at any regime. That is the inversion §5.3.1(c) measured
+and did not find; if it ever appears, the flip becomes worth building.
+
+The stress test no longer asserts "merge wins". It records all four regimes,
+logging `GEMERGE_REGIME` for merge-versus-base-table and `GEMERGE_REFERENCE` for
+merge-versus-single-scan and `GEMERGE_RATIO` for the median statistic and its
+spread, and checks all three plans' row counts against ground truth computed in
+Go. The bound above **is asserted automatically**: the median ratio is compared
+against 3.5x in every regime at or above 1000 groups, and exceeding it fails the
+run. Which plan is *faster* remains unasserted — that is the question the axis
+exists to answer — but the cost criterion itself is enforced, not read off by a
+reviewer. Runs must live on the same
+filesystem with headroom, per the repo's stress-comparison rule; a run taken
+above ~95% disk utilisation measures the disk, not the plan. The run recorded
+above was taken at 97%, which is why the bound is read from the *ratio* of two
+plans measured back-to-back against one store — a uniformly slow disk largely
+divides out — and why the absolute milliseconds above should not be compared
+against §5.3.1(c)'s earlier run.
 
 Dimension coverage, chosen from what actually let this survive: the cancelling
 group and the all-zero group (a fix that drops them passes every other test in
@@ -518,6 +827,19 @@ before PR #604.
   invisible to the cost model.
 - **Reusing the intersection operator unchanged** — §5.3; inner semantics drop
   the outer row that *is* the all-NULL fix.
+- **`FlatMap(companion, DefaultOnEmpty(NULL, aggregate probe))`** — the
+  Java-precedented shape, and the one alternative here that Java actually builds:
+  `RewriteOuterJoinRule.java:45-112` produces it and
+  `RecordQueryDefaultOnEmptyPlan.java:112-120` executes it. It gives the same
+  outer semantics §5.3(b) needs — drive from the companion, substitute the
+  identity when the aggregate side is empty. It loses on shape: it is **N
+  correlated probes**, one aggregate-index probe per companion group, against
+  **one ordered merge** of two streams already co-grouped on the same key. Java
+  tolerates the correlated form only because it has no merge operator with which
+  to express the alternative — Java's outer join *is* the correlated `FlatMap`
+  re-scan. Go has a materialized merge, so it is not forced into the re-scan. This
+  is the same asymmetry recorded elsewhere in the port, where
+  `RecordQueryNestedLoopJoinPlan` is a read-side extension Java lacks.
 - **Packing a count into the aggregate's value.** FDB's `ADD` carries across the
   whole value width, so two counters cannot share one atomic add without
   contaminating each other, and the value is wire-visible to Java regardless.

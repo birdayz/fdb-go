@@ -1,0 +1,365 @@
+package recordlayer
+
+import (
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+)
+
+// Group existence for aggregate indexes (RFC-209).
+//
+// An aggregate index's key set is not the set of groups. It over-approximates
+// (an atomic ADD decrements an accumulator to zero and leaves the key behind,
+// so a group emptied by DELETE or by an UPDATE that moved its last row away
+// keeps an entry) and, for SUM and COUNT(col), it under-approximates (no entry
+// is written for a NULL value, so a group whose every value is NULL has no key
+// at all).
+//
+// The repair is a group-existence source: a COUNT(*) index over the SAME
+// grouping key, whose non-zero keys are exactly the live groups. This file
+// holds the two metadata-level facts the read side derives that source from —
+// which grouping key an index groups by, and what a companion is named.
+//
+// Nothing here writes anything to FDB.
+
+// GroupCountCompanionSuffix is reserved on user-supplied index names. The DDL
+// derives a companion COUNT(*) index's name by appending it to the owning
+// index's name, so the name is deterministic: two stores built from the same
+// DDL must contain the same stored bytes, which a randomized or counter-based
+// name would break.
+//
+// Reserving it narrows the DDL surface relative to Java, which accepts any
+// name. That is deliberate and is the lesser of two evils: without reservation,
+// create-if-absent could collide with a pre-existing user index that carries
+// the derived name but a different structure, and the user would see a
+// duplicate-name error at schema-creation time rather than at the point they
+// chose the name.
+//
+// The reservation applies at CREATE ONLY, never at load. A schema that already
+// contains an index whose name ends with the suffix — written by Java, or by an
+// older Go binary — must open and read normally. Companion matching is
+// structural and the name carries no semantic weight, so such a name is inert
+// at read time and there is nothing to reject; rejecting at load would let this
+// design render an existing Java-written schema unreadable.
+const GroupCountCompanionSuffix = "__GROUP_COUNT"
+
+// GroupCountCompanionName derives the companion COUNT(*) index's name from the
+// name of the aggregate index it serves.
+func GroupCountCompanionName(ownerIndexName string) string {
+	return ownerIndexName + GroupCountCompanionSuffix
+}
+
+// GroupingKeyExpressionOf returns the GROUPING half of a grouping key
+// expression: the leading columns the index groups by, with the trailing
+// aggregated columns removed. For a COUNT(*) index (no aggregated columns) that
+// is the whole key.
+//
+// Returns false when the split cannot be made exactly — no grouping columns at
+// all (an ungrouped aggregate), or a child expression that straddles the
+// grouping/grouped boundary. Declining is the only safe answer: a companion
+// matched on a mis-split key would drive the merge from the wrong group set.
+func GroupingKeyExpressionOf(g *GroupingKeyExpression) (KeyExpression, bool) {
+	if g == nil {
+		return nil, false
+	}
+	groupingCount := g.GetGroupingCount()
+	if groupingCount <= 0 {
+		return nil, false
+	}
+	if g.GetGroupedCount() == 0 {
+		return g.wholeKey, true
+	}
+	composite, ok := g.wholeKey.(*CompositeKeyExpression)
+	if !ok {
+		// A non-composite whole key producing more columns than it groups by
+		// cannot be split structurally.
+		return nil, false
+	}
+	var grouping []KeyExpression
+	columns := 0
+	for _, child := range composite.SubKeyExpressions() {
+		if columns >= groupingCount {
+			break
+		}
+		size := child.ColumnSize()
+		if columns+size > groupingCount {
+			return nil, false // child straddles the boundary
+		}
+		grouping = append(grouping, child)
+		columns += size
+	}
+	if columns != groupingCount || len(grouping) == 0 {
+		return nil, false
+	}
+	if len(grouping) == 1 {
+		return grouping[0], true
+	}
+	return Concat(grouping...), true
+}
+
+// GroupingSignature returns a normalized, deterministic encoding of an index's
+// grouping key expression. Two aggregate indexes group identically iff their
+// signatures are byte-equal, which is what makes companion discovery structural
+// (RFC-209 §5.2) rather than a stored reference.
+//
+// The encoding is the grouping key expression's proto with proto2 defaults
+// cleared, marshalled deterministically — the same normalization the wire
+// conformance test applies before comparing Go's index metadata against Java's.
+// Clearing defaults matters because Java materializes fields Go leaves unset,
+// so a Java-written index and a Go-written one can describe the same grouping
+// with different bytes.
+//
+// Returns nil when no signature can be derived; callers must treat nil as "no
+// companion match", never as "matches everything".
+func GroupingSignature(g *GroupingKeyExpression) []byte {
+	groupingKey, ok := GroupingKeyExpressionOf(g)
+	if !ok || groupingKey == nil {
+		return nil
+	}
+	keyProto := groupingKey.ToKeyExpression()
+	if keyProto == nil {
+		return nil
+	}
+	normalized := proto.Clone(keyProto)
+	clearProto2Defaults(normalized.ProtoReflect())
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(normalized)
+	if err != nil {
+		return nil
+	}
+	// A zero-length encoding is a real possibility for an all-defaults message,
+	// and it must not be confused with "no signature". Prefix a marker byte so
+	// every derived signature is non-empty.
+	return append([]byte{'g'}, encoded...)
+}
+
+// PredicateSignature returns a normalized, deterministic encoding of an index's
+// sparse (WHERE) predicate, or nil for a dense index.
+//
+// A companion must count exactly the rows the owning aggregate index summed.
+// A dense COUNT(*) over a SPARSE SUM lists groups the owner never saw, so
+// driving the merge from it invents groups; a sparse COUNT(*) whose predicate
+// differs from the owner's does the same for a different set. Comparing the
+// serialized predicate is the only structural way to tell those apart, since
+// the predicate is exactly what changes which rows the maintainer wrote.
+//
+// RFC-209 §5.2 defines the structural match on the grouping key alone. That is
+// incomplete for sparse indexes; this file therefore matches on grouping key
+// AND predicate. The RFC's rationale (matching is structural, never a stored
+// reference) is untouched — the predicate is itself stored structure.
+//
+// Programmatic Go predicates have no proto and therefore no signature; they
+// return a distinct opaque marker so they can never compare equal to a dense
+// index nor to any serialized predicate.
+func PredicateSignature(idx *Index) []byte {
+	if idx == nil {
+		return nil
+	}
+	p := idx.GetPredicateProto()
+	if p == nil {
+		if idx.Predicate != nil {
+			// Unserializable, so unmatchable. A non-nil, never-equal marker keeps
+			// this out of the dense bucket.
+			return []byte(cascades.OpaquePredicateSignatureMarker)
+		}
+		return nil
+	}
+	clearProto2Defaults(p.ProtoReflect())
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(p)
+	if err != nil {
+		return []byte(cascades.OpaquePredicateSignatureMarker)
+	}
+	return append([]byte{'p'}, encoded...)
+}
+
+// SamePredicateSignature reports whether two predicate signatures denote the
+// same row population. Two opaque markers are NOT equal: an unserializable
+// predicate is unmatchable in principle, so it must decline against everything
+// including another one.
+func SamePredicateSignature(a, b []byte) bool {
+	if string(a) == cascades.OpaquePredicateSignatureMarker || string(b) == cascades.OpaquePredicateSignatureMarker {
+		return false
+	}
+	return string(a) == string(b)
+}
+
+// IsGroupCountCompanionFor reports whether idx is a COUNT(*) index that can act
+// as the group-existence companion of an index with the given grouping
+// signature and predicate signature, over the given record types.
+//
+// Structural only: the name is never consulted, so a companion created by an
+// older binary under a different name, or declared by the user, matches just as
+// well as one this binary would emit.
+func IsGroupCountCompanionFor(idx *Index, groupingSignature, predicateSignature []byte, recordTypeNames []string, md *RecordMetaData) bool {
+	if idx == nil || len(groupingSignature) == 0 || md == nil {
+		return false
+	}
+	if idx.Type != IndexTypeCount {
+		return false
+	}
+	gke, ok := idx.RootExpression.(*GroupingKeyExpression)
+	if !ok {
+		return false
+	}
+	candidateSignature := GroupingSignature(gke)
+	if len(candidateSignature) == 0 || string(candidateSignature) != string(groupingSignature) {
+		return false
+	}
+	if !SamePredicateSignature(PredicateSignature(idx), predicateSignature) {
+		return false
+	}
+	return sameRecordTypeSet(md.RecordTypesForIndex(idx), recordTypeNames)
+}
+
+// NeedsGroupCountCompanion reports whether idx is a GROUPED aggregate index
+// whose own key set can neither prove nor disprove that a group exists, so it
+// needs a companion COUNT(*) to answer correctly (RFC-209 §5.2).
+//
+// SUM and COUNT(col) qualify: a stored zero is indistinguishable from a vacated
+// group, and an all-NULL group has no entry at all. A COUNT(*) index does not —
+// it is its own oracle (§5.3(a)). MIN/MAX do not — they keep a real per-record
+// entry that the record's deletion removes. The UNGROUPED spelling does not —
+// its single group exists whether or not the table has rows (§5.4).
+func NeedsGroupCountCompanion(idx *Index) bool {
+	if idx == nil {
+		return false
+	}
+	if idx.Type != IndexTypeSum && idx.Type != IndexTypeCountNotNull {
+		return false
+	}
+	gke, ok := idx.RootExpression.(*GroupingKeyExpression)
+	if !ok {
+		return false
+	}
+	// GroupingKeyExpressionOf already declines the ungrouped case and any key it
+	// cannot split exactly, which is the same fail-closed answer wanted here.
+	_, ok = GroupingKeyExpressionOf(gke)
+	return ok
+}
+
+// NewGroupCountCompanion builds the companion COUNT(*) index for a grouped SUM
+// or COUNT(col) index: same record type, same grouping key, same predicate,
+// GroupAll (zero grouped columns) so its stored value is the group's row count.
+//
+// Carrying the owner's predicate is a divergence from the RFC text, which
+// defines the companion by grouping key alone. Without it, a sparse owner's
+// companion counts rows the owner never indexed, and the merge would report
+// groups that hold no qualifying row — an invented group, which is the very
+// defect the companion exists to remove.
+//
+// Returns false when idx needs no companion or its grouping key cannot be split.
+func NewGroupCountCompanion(idx *Index) (*Index, bool) {
+	if !NeedsGroupCountCompanion(idx) {
+		return nil, false
+	}
+	gke := idx.RootExpression.(*GroupingKeyExpression)
+	groupingKey, ok := GroupingKeyExpressionOf(gke)
+	if !ok || groupingKey == nil {
+		return nil, false
+	}
+	// A FILTERING owner gets no companion at all, and this is the whole gate.
+	//
+	// The companion is write cost — an index entry maintained on every insert,
+	// update and delete — bought in exchange for one thing: letting the planner
+	// serve a grouped aggregate from indexes without inventing groups. If the
+	// planner cannot build an aggregate candidate for the owner in the first
+	// place, that exchange has no second half. It cannot: buildMatchCandidates
+	// declines to build aggregate candidates for any index carrying a filtering
+	// predicate, so a filtered owner and its equally-filtered companion are both
+	// invisible to the read path. Emitting one would be dead metadata maintained
+	// forever on the write path, which is precisely the standard
+	// TestGroupCountCompanion_NotEmittedWhereItCannotHelp exists to hold.
+	//
+	// Declining is also the only SAFE answer while the two sides disagree. A
+	// companion is not interchangeable with its owner: it must count exactly the
+	// rows the owner indexed, so a dense companion paired with a filtered owner
+	// over-reports groups and a filtered companion paired with a dense owner
+	// under-reports them. Both are wrong sums, not slow ones.
+	//
+	// The tautology case is deliberately NOT special-cased into an exemption: a
+	// predicate that provably rejects nothing is not filtering, HasFilteringPredicate
+	// says so, and such an owner is candidate-buildable and does get a companion.
+	//
+	// When sparse aggregate candidates land, this gate is what has to be lifted,
+	// together with the predicate transfer below — not before.
+	if idx.HasFilteringPredicate() {
+		return nil, false
+	}
+	companion := NewIndex(GroupCountCompanionName(idx.Name), GroupAll(groupingKey))
+	companion.Type = IndexTypeCount
+	if p := idx.GetPredicateProto(); p != nil {
+		// Reached only for a non-filtering (tautology) predicate. Carried anyway
+		// so the companion's predicate signature keeps matching its owner's —
+		// the create-if-absent lookup is by signature, and a companion that
+		// dropped a tautology would not be recognised as already existing.
+		if err := companion.SetPredicateProto(p); err != nil {
+			return nil, false
+		}
+	}
+	return companion, true
+}
+
+// sameRecordTypeSet reports whether the record types an index covers are
+// exactly the named set. A companion over a different (or wider) set of record
+// types counts different rows, so equality — not overlap — is required.
+func sameRecordTypeSet(types []*RecordType, names []string) bool {
+	if len(types) != len(names) {
+		return false
+	}
+	want := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		want[n] = struct{}{}
+	}
+	for _, t := range types {
+		if t == nil {
+			return false
+		}
+		if _, ok := want[t.Name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// clearProto2Defaults recursively clears optional proto2 fields that hold their
+// declared default. Java's serializer materializes such fields; Go leaves them
+// unset. Comparing without this would report two identical groupings as
+// different purely by authorship.
+func clearProto2Defaults(m protoreflect.Message) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		switch {
+		case fd.IsList() && fd.Kind() == protoreflect.MessageKind:
+			list := v.List()
+			for i := 0; i < list.Len(); i++ {
+				clearProto2Defaults(list.Get(i).Message())
+			}
+		case fd.IsMap() && fd.MapValue().Kind() == protoreflect.MessageKind:
+			v.Map().Range(func(_ protoreflect.MapKey, mv protoreflect.Value) bool {
+				clearProto2Defaults(mv.Message())
+				return true
+			})
+		case fd.IsList(), fd.IsMap():
+			// non-message collections carry no defaults to clear
+		case fd.Kind() == protoreflect.MessageKind:
+			clearProto2Defaults(v.Message())
+		case fd.HasPresence() && fd.Cardinality() != protoreflect.Required:
+			// Required fields must stay set even at their default.
+			def := fd.Default()
+			switch fd.Kind() {
+			case protoreflect.EnumKind:
+				if v.Enum() == def.Enum() {
+					m.Clear(fd)
+				}
+			case protoreflect.BytesKind:
+				if string(v.Bytes()) == string(def.Bytes()) {
+					m.Clear(fd)
+				}
+			default:
+				if v.Interface() == def.Interface() {
+					m.Clear(fd)
+				}
+			}
+		}
+		return true
+	})
+}

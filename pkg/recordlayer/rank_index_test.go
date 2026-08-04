@@ -741,10 +741,16 @@ var _ = Describe("RankIndex", func() {
 		md2, err := builder2.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		// Open with new metadata → auto-rebuild
+		// Open with new metadata → auto-rebuild. The policy is explicit because
+		// the default one leaves an evolution-added index for a background
+		// build on any non-empty store (Java's getRecordCountForRebuildIndexes
+		// reports an unbounded count without a record-count key,
+		// FDBRecordStore.java:4862-4884); this spec is about the rank index's
+		// rebuild, not about that policy.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
-				SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+				SetIndexRebuildPolicy(AlwaysRebuildPolicy).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify B-tree entries exist

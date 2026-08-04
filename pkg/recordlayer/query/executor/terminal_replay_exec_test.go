@@ -104,7 +104,13 @@ func TestTerminalReplay_ExecutorCursors(t *testing.T) {
 
 	t.Run("multi_intersection_merge", func(t *testing.T) {
 		t.Parallel()
-		c := &multiIntersectionMergeCursor{inner: &pauseThenExhaustCursor[[]QueryResult]{}}
+		// Terminal-replay is a cursor-protocol property, independent of the
+		// per-child width assertion; opt out explicitly rather than relying on a
+		// zero value, which now fails closed.
+		c := &multiIntersectionMergeCursor{
+			inner:      &pauseThenExhaustCursor[[]QueryResult]{},
+			childWidth: mergeChildWidthUnchecked,
+		}
 		defer c.Close()
 		requireTerminalReplay(t, c)
 	})

@@ -76,6 +76,7 @@ go_test(
         "equality_prefix_test.go",
         "explode_test.go",
         "f21_comparand_identity_test.go",
+        "group_existence_merge_cost_test.go",
         "in_join_test.go",
         "in_union_cost_test.go",
         "index_scan_ordering_test.go",
@@ -195,6 +196,7 @@ go_test(
         "cardinality_bounds.go",
         "physical_key_component_types_test.go",
         "signed_zero_directional_ordering_test.go",
+        "group_existence_merge_cost_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

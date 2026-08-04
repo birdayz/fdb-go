@@ -4,6 +4,7 @@ go_test(
     name = "stress_test",
     timeout = "eternal",
     srcs = [
+        "group_existence_plan_cost_test.go",
         "raw_fdb_bench_test.go",
         "recordlayer_bench_test.go",
         "stress_test.go",

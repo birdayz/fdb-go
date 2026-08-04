@@ -92,6 +92,51 @@ func (e *MetaDataError) Error() string {
 	return e.Message
 }
 
+// IndexVersionKind names which of an index's two version stamps a
+// IndexVersionTooNewError refers to.
+type IndexVersionKind string
+
+const (
+	// IndexVersionAdded is the version at which the index was introduced.
+	IndexVersionAdded IndexVersionKind = "added"
+	// IndexVersionLastModified is the version at which the index definition last changed.
+	IndexVersionLastModified IndexVersionKind = "last modified"
+)
+
+// IndexVersionTooNewError is returned when an index declares a version that is
+// newer than the metadata version carrying it.
+//
+// Such metadata is not merely untidy: an index whose lastModifiedVersion exceeds
+// the metadata version is permanently "new since" every store header version, so
+// every subsequent version bump re-runs the rebuild decision for it and can clear
+// an index a background build already populated.
+//
+// Matches Java's MetaDataValidator.validateIndex(), which throws MetaDataException
+// for both the added-version and last-modified-version cases
+// (MetaDataValidator.java:124-133).
+type IndexVersionTooNewError struct {
+	IndexName           string
+	Kind                IndexVersionKind
+	AddedVersion        int
+	LastModifiedVersion int
+	MetaDataVersion     int
+}
+
+func (e *IndexVersionTooNewError) Error() string {
+	offending := e.AddedVersion
+	if e.Kind == IndexVersionLastModified {
+		offending = e.LastModifiedVersion
+	}
+	return fmt.Sprintf("index %q has %s version %d which is greater than the meta-data version %d",
+		e.IndexName, e.Kind, offending, e.MetaDataVersion)
+}
+
+// Unwrap reports this as a metadata validation failure so that callers matching
+// on *MetaDataError keep working, mirroring Java where this is a MetaDataException.
+func (e *IndexVersionTooNewError) Unwrap() error {
+	return &MetaDataError{Message: e.Error()}
+}
+
 // UnsupportedFormatVersionError is returned when a store header contains a format
 // version higher than the maximum version this code supports.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.UnsupportedFormatVersionException.

@@ -83,7 +83,7 @@ func (store *FDBRecordStore) EvaluateAggregateFunction(
 	scanRange TupleRange,
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
-	index, err := store.findIndexForAggregateFunction(fn, recordTypeNames)
+	index, err := store.findIndexForAggregateFunction(fn, recordTypeNames, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -95,64 +95,160 @@ func (store *FDBRecordStore) EvaluateAggregateFunction(
 	return evaluateAggregate(ctx, fn, maintainer, scanRange, isolationLevel)
 }
 
+// AggregateFunctionNotSupportedError is Java's AggregateFunctionNotSupportedException
+// (thrown by FDBRecordStore.evaluateAggregateFunction, FDBRecordStore.java:2409-2412)
+// — no readable, queryable index over the requested record types can evaluate the
+// function.
+//
+// It is a distinct type because callers branch on it: Java's
+// IndexBuildState.loadIndexBuildStateAsync catches exactly this exception to report
+// "total unknown" and lets every other failure propagate
+// (IndexBuildState.java:76-82).
+type AggregateFunctionNotSupportedError struct {
+	Function string
+	Operand  string
+}
+
+func (e *AggregateFunctionNotSupportedError) Error() string {
+	return fmt.Sprintf("Aggregate function requires appropriate index: function=%s, operand=%s", e.Function, e.Operand)
+}
+
+// indexesForRecordTypes returns the indexes that apply to EXACTLY the given record
+// types, no more, no less. Port of Java's IndexFunctionHelper.indexesForRecordTypes
+// (IndexFunctionHelper.java:178-189):
+//
+//	if (recordTypeNames.isEmpty()) {
+//	    return metaData.getUniversalIndexes().stream();
+//	} else if (recordTypeNames.size() == 1) {
+//	    return metaData.getIndexableRecordType(...).getIndexes().stream();
+//	} else {
+//	    final Set<RecordType> asSet = ...;
+//	    return asSet.iterator().next().getMultiTypeIndexes().stream()
+//	            .filter(i -> asSet.equals(new HashSet<>(metaData.recordTypesForIndex(i))));
+//	}
+//
+// "Exactly" is the whole point and each branch enforces it in its own way:
+//
+//   - No record types named means the caller is asking about the WHOLE store, so
+//     only a universal index can answer. An index scoped to one record type holds
+//     entries for that type alone and would answer a store-wide count with that
+//     type's count.
+//   - One record type uses RecordType.getIndexes() — the type's OWN single-type
+//     indexes. Multi-type indexes are deliberately excluded: by definition they also
+//     cover other types, so they cannot answer about this type alone. (A universal
+//     index is likewise excluded here, which is why callers that want the universal
+//     roll-up ask for it separately with an empty list.)
+//   - More than one record type takes the multi-type indexes of an arbitrary member
+//     and keeps only those whose covered-type set equals the requested set. An index
+//     over a superset would over-count; one over a subset would under-count.
+//
+// The size test is on the LIST, as in Java, not on the de-duplicated set: a list
+// naming the same type twice takes the multi-type branch and, since no multi-type
+// index covers exactly one type, finds nothing. That is Java's answer too.
+//
+// An unknown record type is Java's RecordMetaData.getIndexableRecordType throw
+// (RecordMetaData.java:277-279), not an empty candidate list — silently returning no
+// candidates would turn a typo into "no appropriate index".
+func indexesForRecordTypes(metaData *RecordMetaData, recordTypeNames []string) ([]*Index, error) {
+	if len(recordTypeNames) == 0 {
+		return metaData.GetUniversalIndexes(), nil
+	}
+	if len(recordTypeNames) == 1 {
+		rt := metaData.GetRecordType(recordTypeNames[0])
+		if rt == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", recordTypeNames[0])}
+		}
+		return rt.GetIndexes(), nil
+	}
+
+	asSet := make(map[string]bool, len(recordTypeNames))
+	var first *RecordType
+	for _, name := range recordTypeNames {
+		rt := metaData.GetRecordType(name)
+		if rt == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", name)}
+		}
+		if first == nil {
+			first = rt
+		}
+		asSet[rt.Name] = true
+	}
+
+	var result []*Index
+	for _, index := range first.GetMultiTypeIndexes() {
+		covered := metaData.RecordTypesForIndex(index)
+		if len(covered) != len(asSet) {
+			continue
+		}
+		exact := true
+		for _, rt := range covered {
+			if !asSet[rt.Name] {
+				exact = false
+				break
+			}
+		}
+		if exact {
+			result = append(result, index)
+		}
+	}
+	return result, nil
+}
+
 // findIndexForAggregateFunction locates the best index that can evaluate the given
-// aggregate function. If fn.Index is set, uses that index directly. Otherwise,
-// searches all READABLE indexes for the given record types.
-// Matches Java's IndexFunctionHelper.indexMaintainerForAggregateFunction().
+// aggregate function. Port of
+// IndexFunctionHelper.indexMaintainerForAggregateFunction
+// (IndexFunctionHelper.java:105-122).
+//
+// queryable is Java's IndexQueryabilityFilter; a nil filter is
+// IndexQueryabilityFilter.TRUE, which is what every public entry point passes.
 func (store *FDBRecordStore) findIndexForAggregateFunction(
 	fn *IndexAggregateFunction,
 	recordTypeNames []string,
+	queryable func(*Index) bool,
 ) (*Index, error) {
-	// Explicit index specified
+	// An explicitly named index is used only when it is READABLE. Java does NOT
+	// fail when it is not — it falls through to the general search
+	// (IndexFunctionHelper.java:110-115: the `if` returns only on the readable
+	// path), so a WRITE_ONLY named index degrades to "pick another index that can
+	// answer this" rather than to an error.
 	if fn.Index != "" {
 		idx := store.metaData.GetIndex(fn.Index)
 		if idx == nil {
 			return nil, fmt.Errorf("aggregate function %q: %w", fn.Name, &IndexNotFoundError{IndexName: fn.Index})
 		}
-		if !store.IsIndexReadable(idx.Name) {
-			return nil, fmt.Errorf("aggregate function %q: %w", fn.Name, &IndexNotReadableError{IndexName: idx.Name, CurrentState: store.GetIndexState(idx.Name)})
-		}
-		return idx, nil
-	}
-
-	// Auto-select: find all indexes for the given record types and pick the first
-	// that can evaluate this function (smallest column size = least work).
-	var candidates []*Index
-	if len(recordTypeNames) == 0 {
-		// All indexes
-		for _, idx := range store.metaData.GetAllIndexes() {
-			candidates = append(candidates, idx)
-		}
-	} else {
-		seen := make(map[string]bool)
-		for _, rtName := range recordTypeNames {
-			for _, idx := range store.metaData.GetIndexesForRecordType(rtName) {
-				if !seen[idx.Name] {
-					seen[idx.Name] = true
-					candidates = append(candidates, idx)
-				}
-			}
+		if store.IsIndexReadable(idx.Name) {
+			return idx, nil
 		}
 	}
 
+	candidates, err := indexesForRecordTypes(store.metaData, recordTypeNames)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer the index that does it in the fewest columns, because that means less
+	// rolling-up. Ties keep the first candidate, as Java's Stream.min does.
 	var best *Index
-	bestColSize := int(^uint(0) >> 1) // MaxInt
-
 	for _, idx := range candidates {
 		if !store.IsIndexReadable(idx.Name) {
 			continue
 		}
-		if canEvaluateAggregate(fn, idx) {
-			colSize := idx.RootExpression.ColumnSize()
-			if colSize < bestColSize {
-				best = idx
-				bestColSize = colSize
-			}
+		if queryable != nil && !queryable(idx) {
+			continue
+		}
+		if !canEvaluateAggregate(fn, idx) {
+			continue
+		}
+		if best == nil || idx.RootExpression.ColumnSize() < best.RootExpression.ColumnSize() {
+			best = idx
 		}
 	}
 
 	if best == nil {
-		return nil, fmt.Errorf("no index found for aggregate function %q with operand %T", fn.Name, fn.Operand)
+		return nil, &AggregateFunctionNotSupportedError{
+			Function: fn.Name,
+			Operand:  fmt.Sprintf("%T", fn.Operand),
+		}
 	}
 	return best, nil
 }

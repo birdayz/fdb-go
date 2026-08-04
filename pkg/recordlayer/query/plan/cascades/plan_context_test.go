@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -28,8 +29,22 @@ func TestDefaultPlannerConfiguration_JavaDefaults(t *testing.T) {
 	cfg := DefaultPlannerConfiguration()
 	// Java defaults deferCrossProducts ON (RecordQueryPlannerConfiguration:
 	// DONT_DEFER_CROSS_PRODUCTS unset); every other flag is zero-valued.
-	if cfg != (PlannerConfiguration{ShouldDeferCrossProducts: true}) {
+	// reflect.DeepEqual, not ==: the config carries the readable-index view,
+	// which holds a set. The default must be the UNRESTRICTED view — Java's
+	// Optional.empty() — because planning also happens from unit tests, offline
+	// harnesses and the DDL front end, none of which can know index states, and
+	// defaulting them to "nothing is readable" would delete every index plan
+	// they have.
+	if !reflect.DeepEqual(cfg, PlannerConfiguration{ShouldDeferCrossProducts: true}) {
 		t.Fatalf("DefaultPlannerConfiguration diverges from the Java defaults: %+v", cfg)
+	}
+	if cfg.ReadableIndexes.IsRestricted() {
+		t.Fatal("the default readable-index view is RESTRICTED; it must be Java's " +
+			"Optional.empty() (all indexes readable), or every planning site that " +
+			"never learned about index states silently loses all of them")
+	}
+	if !cfg.ReadableIndexes.Allows("ANY_INDEX_NAME") {
+		t.Fatal("the default readable-index view rejects an index name")
 	}
 }
 

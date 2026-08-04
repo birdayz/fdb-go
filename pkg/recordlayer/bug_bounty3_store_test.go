@@ -379,25 +379,22 @@ var _ = Describe("BugBounty3Store", func() {
 			Expect(typeCount).To(Equal(int64(2)),
 				"per-type count for Order should be 2 after DeleteAllRecords + 2 saves")
 
-			// The ungrouped key should NOT have a phantom 0 entry.
-			// GetRecordCount reads at tuple.Tuple{} (ungrouped key).
-			// For per-type counting, this key has no meaning.
-			// The phantom 0 written by DeleteAllRecords means GetRecordCount
-			// returns 0 instead of being empty/unset.
+			// An empty count key against a GROUPED record-count key is Java's
+			// key.isPrefixKey(recordCountKey) branch (FDBRecordStore.java:2306-2311):
+			// it rolls up EVERY group, so it is the store's true total — 2 — not a
+			// read of the ungrouped slot. The phantom zero DeleteAllRecords leaves at
+			// the count subspace prefix is outside the summed range and contributes
+			// nothing.
+			//
+			// The phantom entry is still a divergence from Java's deleteAllRecords
+			// (which only range-clears) and that is what this test is about, but it
+			// does not make the total meaningless: asserting the total here is what
+			// keeps the roll-up from silently regressing to a single get of the slot
+			// no grouped store ever writes.
 			ungroupedCount, err := store.GetSnapshotRecordCount(tuple.Tuple{})
 			Expect(err).NotTo(HaveOccurred())
-
-			// BUG: ungroupedCount is 0 (from the phantom Set), but it should
-			// also be 0 in this case (no adds to ungrouped key). The phantom
-			// entry is benign for ungrouped reads but is technically incorrect:
-			// it creates a count entry that doesn't correspond to any group.
-			// The real impact is that the ungrouped key exists as FDB data
-			// when it shouldn't for per-type counting.
-			//
-			// This test documents the behavior — the phantom entry exists.
-			// For per-type counting, GetRecordCount() was never meaningful
-			// anyway (it reads the wrong key).
-			_ = ungroupedCount
+			Expect(ungroupedCount).To(Equal(int64(2)),
+				"an empty count key must roll up every group of a grouped record-count key, not read the ungrouped slot")
 
 			return nil, nil
 		})

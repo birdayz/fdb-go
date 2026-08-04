@@ -647,6 +647,42 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Validate index versions do not exceed the metadata version.
+	// Matches Java's MetaDataValidator.validateIndex() (MetaDataValidator.java:124-133).
+	// An index whose lastModifiedVersion is ahead of the metadata version reads as
+	// "added since" every store header version forever, so each later version bump
+	// re-decides its rebuild policy and can clear an already-built index.
+	for _, idx := range indexes {
+		if idx.AddedVersion > b.version {
+			return nil, &IndexVersionTooNewError{
+				IndexName:           idx.Name,
+				Kind:                IndexVersionAdded,
+				AddedVersion:        idx.AddedVersion,
+				LastModifiedVersion: idx.LastModifiedVersion,
+				MetaDataVersion:     b.version,
+			}
+		}
+		if idx.LastModifiedVersion > b.version {
+			return nil, &IndexVersionTooNewError{
+				IndexName:           idx.Name,
+				Kind:                IndexVersionLastModified,
+				AddedVersion:        idx.AddedVersion,
+				LastModifiedVersion: idx.LastModifiedVersion,
+				MetaDataVersion:     b.version,
+			}
+		}
+	}
+
+	// Validate record type since-versions do not exceed the metadata version.
+	// Matches Java's MetaDataValidator.validateRecordType() (MetaDataValidator.java:88-92).
+	for name, rt := range b.recordTypes {
+		if rt.SinceVersion > b.version {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"record type %q has since version %d which is greater than the meta-data version %d",
+				name, rt.SinceVersion, b.version)}
+		}
+	}
+
 	// Validate atomic index types require GroupingKeyExpression as root.
 	// Matches Java's AtomicMutationIndexMaintainerFactory.getIndexValidator() which calls
 	// validateGrouping(), and IndexValidator.validateGrouping() which throws if the root

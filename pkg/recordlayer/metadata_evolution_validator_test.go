@@ -167,11 +167,15 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("allows same since version on existing type", func() {
+			// A record type's since version may not exceed the metadata version
+			// carrying it (Java MetaDataValidator.validateRecordType(),
+			// MetaDataValidator.java:88-92), so the shared since version has to sit
+			// at or below the older of the two metadata versions.
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				b.GetRecordType("Order").recordType.SinceVersion = 3
+				b.GetRecordType("Order").recordType.SinceVersion = 1
 			})
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				b.GetRecordType("Order").recordType.SinceVersion = 3
+				b.GetRecordType("Order").recordType.SinceVersion = 1
 			})
 
 			err := ValidateEvolution(old, new)
@@ -1128,12 +1132,23 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			// Need to pass the > version check too: RemovedVersion=4 but old.Version()=5
 			// This will fail the RemovedVersion <= old.Version() check first.
 			// Use old version=3 instead.
+			//
+			// For well-formed metadata this branch is unreachable: an index's
+			// lastModifiedVersion may not exceed its metadata version (Java
+			// MetaDataValidator.validateIndex(), MetaDataValidator.java:129-133),
+			// and the preceding check already requires removedVersion to exceed the
+			// old metadata version — so removedVersion always exceeds
+			// lastModifiedVersion. The check is defence in depth against metadata
+			// that reached the validator by some other route (a hand-assembled or
+			// corrupted proto), so the corrupt lastModifiedVersion is injected after
+			// Build() rather than smuggled through it.
 			old2 := buildMetaData(3, func(b *RecordMetaDataBuilder) {
 				i := NewIndex("price_idx", Field("price"))
 				i.AddedVersion = 1
-				i.LastModifiedVersion = 4
+				i.LastModifiedVersion = 1
 				b.AddIndex("Order", i)
 			})
+			old2.GetIndex("price_idx").LastModifiedVersion = 4
 
 			new2 := buildMetaData(7, nil)
 			new2.formerIndexes = append(new2.formerIndexes, &FormerIndex{
@@ -2146,14 +2161,19 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("allows replacedBy prefix changes", func() {
-			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+			// Each AddIndex bumps the builder version, so two indexes leave the
+			// second at lastModifiedVersion 2. The metadata version must be raised
+			// to cover it: an index version ahead of the metadata version is
+			// rejected (Java MetaDataValidator.validateIndex(),
+			// MetaDataValidator.java:129-133).
+			old := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_price", Field("price"))
 				b.AddIndex("Order", idx)
 				// Add the replacement index so metadata validation passes.
 				b.AddIndex("Order", NewIndex("idx_price_v2", Field("price")))
 			})
 
-			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+			new := buildMetaData(3, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_price", Field("price"))
 				idx.Options = map[string]string{"replacedByNewIndex": "idx_price_v2"}
 				b.AddIndex("Order", idx)

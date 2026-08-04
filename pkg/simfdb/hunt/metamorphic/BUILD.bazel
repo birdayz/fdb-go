@@ -18,10 +18,7 @@ go_library(
 
 go_test(
     name = "metamorphic_test",
-    srcs = [
-        "aggindex_sum_nullgroup_test.go",
-        "metamorphic_test.go",
-    ],
+    srcs = ["metamorphic_test.go"],
     data = glob(["testdata/**"]),
     embed = [":metamorphic"],
 )

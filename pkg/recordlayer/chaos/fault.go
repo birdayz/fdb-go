@@ -32,7 +32,26 @@ const (
 	// FaultTransactionTooOld simulates FDB error 1007 (transaction_too_old).
 	// Same implementation as FaultConflict — see comment above.
 	FaultTransactionTooOld
+
+	// FaultReadError simulates FDB error 1510 (io_error) surfacing from a READ
+	// inside the transaction, rather than from the commit at its boundary. The
+	// other fault types all commit and re-execute, so none of them can reach a
+	// caller that only reads — and read paths are exactly where "an error means
+	// the data is absent" is an easy and silent mistake to make.
+	//
+	// Scoped to a key prefix (see InjectReadErrorOnce) so a test can fail the one
+	// read it is reasoning about and leave the surrounding open/scan reads alone;
+	// a blanket failure would be satisfied by whichever read happens to come
+	// first, which is not a property worth pinning.
+	//
+	// 1510 is deliberately NOT retryable (fdb.IsRetryable), so the fault surfaces
+	// to the caller instead of spinning the transactor's retry loop against a
+	// wrapper that would re-arm on every attempt.
+	FaultReadError
 )
+
+// injectedReadError is the error FaultReadError surfaces from a failed read.
+var injectedReadError = fdb.Error{Code: 1510}
 
 // FaultConfig controls fault injection rates.
 type FaultConfig struct {
@@ -81,6 +100,10 @@ type ChaosTransactor struct {
 	// pendingFault is set by InjectOnce — fires on the next Transact, then clears.
 	pendingFault *FaultType
 
+	// readErrorPrefix scopes FaultReadError to keys under this prefix. Nil means
+	// every read fails.
+	readErrorPrefix []byte
+
 	// opIndex tracks the transaction sequence number for logging.
 	opIndex int
 
@@ -105,6 +128,17 @@ func (c *ChaosTransactor) InjectOnce(fault FaultType) {
 	c.pendingFault = &fault
 }
 
+// InjectReadErrorOnce schedules FaultReadError for the next Transact call: every
+// read of a key starting with keyPrefix fails with a non-retryable FDB error. A nil
+// prefix fails every read. The fault fires exactly once and then clears.
+func (c *ChaosTransactor) InjectReadErrorOnce(keyPrefix []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fault := FaultReadError
+	c.pendingFault = &fault
+	c.readErrorPrefix = keyPrefix
+}
+
 // Transact implements fdb.Transactor. Wraps the inner Transact with fault injection.
 func (c *ChaosTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	return c.TransactCtx(context.Background(), fn)
@@ -113,16 +147,24 @@ func (c *ChaosTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)
 // TransactCtx implements fdb.CtxTransactor — same fault injection, threading ctx to the
 // inner transactor's ctx-aware path when present (RFC-090).
 func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	runInner := func() (any, error) {
-		if ct, ok := c.inner.(fdb.CtxTransactor); ok {
-			return ct.TransactCtx(ctx, fn)
+	runInner := func(wrap func(fdb.WritableTransaction) fdb.WritableTransaction) (any, error) {
+		call := fn
+		if wrap != nil {
+			call = func(tr fdb.WritableTransaction) (any, error) { return fn(wrap(tr)) }
 		}
-		return c.inner.Transact(fn)
+		if ct, ok := c.inner.(fdb.CtxTransactor); ok {
+			return ct.TransactCtx(ctx, call)
+		}
+		return c.inner.Transact(call)
 	}
 	c.mu.Lock()
 	pending := c.pendingFault
+	readErrorPrefix := c.readErrorPrefix
 	if pending != nil {
+		// The scope belongs to the scheduled fault, so it clears with it — a stale
+		// prefix would silently narrow a later randomly-injected read failure.
 		c.pendingFault = nil
+		c.readErrorPrefix = nil
 	}
 	opIdx := c.opIndex
 	c.opIndex++
@@ -133,7 +175,7 @@ func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableT
 	if pending != nil {
 		injectFault = pending
 	} else {
-		for _, ft := range []FaultType{FaultCommitUnknown, FaultConflict, FaultTransactionTooOld} {
+		for _, ft := range []FaultType{FaultCommitUnknown, FaultConflict, FaultTransactionTooOld, FaultReadError} {
 			if c.shouldInject(ft) {
 				f := ft
 				injectFault = &f
@@ -142,18 +184,28 @@ func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableT
 		}
 	}
 
+	// FaultReadError is the one fault that fires DURING the transaction rather than
+	// at its boundary: the transaction handed to fn fails the reads it issues, so
+	// there is nothing to commit and nothing to re-execute.
+	if injectFault != nil && *injectFault == FaultReadError {
+		c.logFault(opIdx, FaultReadError)
+		return runInner(func(tr fdb.WritableTransaction) fdb.WritableTransaction {
+			return &readErrorTransaction{WritableTransaction: tr, prefix: readErrorPrefix}
+		})
+	}
+
 	// Execute the real transaction.
-	result, err := runInner()
+	result, err := runInner(nil)
 	if err != nil {
 		return result, err
 	}
 
-	// All fault types: commit succeeded, then re-execute fn in a new
+	// Remaining fault types: commit succeeded, then re-execute fn in a new
 	// transaction. The second execution sees effects of the first.
 	// This tests idempotency — the hardest property to get right.
 	if injectFault != nil {
 		c.logFault(opIdx, *injectFault)
-		return runInner()
+		return runInner(nil)
 	}
 
 	return result, nil
