@@ -195,6 +195,25 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	// though it is not Java's mode NAME. The durable fix is for this client's ITERATOR to
 	// saturate the way libfdb_c's does; until it does, an unbounded fold must not use it.
 	//
+	// INTENDED END STATE: delete the mode argument and take Java's default. The single
+	// condition is that this client's ITERATOR saturates its per-fetch target instead of
+	// doubling without bound. Serial is not a better choice than ITERATOR here — it is
+	// only the mode whose buffer this client currently bounds — so once that holds, keeping
+	// Serial would be a gratuitous divergence from Java on a wire-neutral knob.
+	//
+	// A second, independent client defect on this path is already fixed: the RYW snapshot
+	// cache used to merge each fetched page into its neighbours by concatenating and
+	// re-sorting everything cached so far, which made any sequential scan quadratic in CPU
+	// and allocation. It now fragments per fetch, as C++'s SnapshotCache does. That fix
+	// changes nothing here — it is why the mode's page SIZE no longer affects the cost of
+	// caching, so the choice above turns purely on the per-fetch buffer.
+	//
+	// What is NOT a defect, and must not be "fixed" here: the snapshot cache retains every
+	// row of this scan for the life of the transaction. libfdb_c does exactly the same (its
+	// SnapshotCache is arena-allocated with no eviction, and snapshot RYW is on by default),
+	// so Java's roll-up retains Θ(groups) too. Disabling snapshot RYW at this call site to
+	// shed that memory would diverge from Java rather than match it.
+	//
 	// The mode selects how many rows a fetch asks for. It changes nothing about what is
 	// stored, what is read, or the total — and nothing about isolation: the read stays on
 	// the snapshot transaction resolved above.
