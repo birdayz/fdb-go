@@ -252,3 +252,90 @@ func TestRangeOptionValidationPerSurface(t *testing.T) {
 		})
 	}
 }
+
+// TestCursorBatchSizesSaturate pins the SATURATION half of the ITERATOR progression, which
+// TestCursorBatchSizesFollowTheStreamingMode cannot reach: with 16 rows the scan ends at
+// iteration 4, long before the clamp bites, so that test is green whether or not the
+// progression is bounded.
+//
+// libfdb_c gives ITERATOR a byte target from a fixed table and clamps the index into it
+// (bindings/c/fdb_c.cpp:1006 table, :1019 `iteration = std::min(iteration, max_iteration)`),
+// so its per-fetch target stops growing. This client's budget is a row count that used to
+// double without a clamp, which made one fetch eventually cover the whole remaining range.
+// Because batch boundaries are where a continuation lands and where each conflict range
+// ends, the sim has to saturate at exactly the point the client does — so this pins it on
+// the sim's own iterator, through the client's trace surface, the same way the batching
+// rule itself is pinned.
+func TestCursorBatchSizesSaturate(t *testing.T) {
+	t.Parallel()
+
+	// Enough rows to run well past the saturation point: the doubling phase consumes
+	// 2+4+...+1024 = 2046 rows, so 6000 leaves several fully-saturated batches behind it.
+	const nRows = 6000
+	var kvs []string
+	for i := 0; i < nRows; i++ {
+		kvs = append(kvs, fmt.Sprintf("k%06d", i), "v")
+	}
+	db := New(nil)
+	seed(db, kvs...)
+
+	// The expected progression, written out independently of fdb.BatchSize rather than
+	// derived from it — a test that asked the implementation what it does would agree with
+	// any implementation, including the unbounded one.
+	const cap = 1024
+	var want []int
+	remaining := nRows
+	for size := 2; remaining > 0; size *= 2 {
+		if size > cap {
+			size = cap
+		}
+		if size > remaining {
+			size = remaining
+		}
+		want = append(want, size)
+		remaining -= size
+	}
+
+	tx := db.newTxn()
+	it := tx.GetRange(fdb.KeyRange{Begin: k("k"), End: k("l")},
+		fdb.RangeOptions{Mode: fdb.StreamingModeIterator}).Iterator()
+	var got []int
+	it.SetTraceLog(func(_, _, returned int, _ bool, _ error) {
+		if returned == 0 {
+			return // the trailing empty fetch returns no rows
+		}
+		got = append(got, returned)
+	})
+	rows := 0
+	for it.Advance() {
+		rows++
+	}
+	if rows != nRows {
+		t.Fatalf("iterated %d rows, want %d", rows, nRows)
+	}
+
+	peak := 0
+	for _, n := range got {
+		if n > peak {
+			peak = n
+		}
+	}
+	if peak > cap {
+		t.Fatalf("peak batch = %d, want <= %d — the ITERATOR progression must SATURATE, "+
+			"not keep doubling; batches were %v", peak, cap, got)
+	}
+	if peak != cap {
+		t.Fatalf("peak batch = %d, want exactly %d — the progression must still grow up to "+
+			"the saturation point; batches were %v", peak, cap, got)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("batches = %v (%d fetches), want %v (%d fetches)",
+			got, len(got), want, len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("batch %d = %d, want %d (full sequence %v, want %v)",
+				i+1, got[i], want[i], got, want)
+		}
+	}
+}
