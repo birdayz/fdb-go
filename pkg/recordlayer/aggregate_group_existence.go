@@ -131,14 +131,64 @@ func GroupingSignature(g *GroupingKeyExpression) []byte {
 	return append([]byte{'g'}, encoded...)
 }
 
+// PredicateSignature returns a normalized, deterministic encoding of an index's
+// sparse (WHERE) predicate, or nil for a dense index.
+//
+// A companion must count exactly the rows the owning aggregate index summed.
+// A dense COUNT(*) over a SPARSE SUM lists groups the owner never saw, so
+// driving the merge from it invents groups; a sparse COUNT(*) whose predicate
+// differs from the owner's does the same for a different set. Comparing the
+// serialized predicate is the only structural way to tell those apart, since
+// the predicate is exactly what changes which rows the maintainer wrote.
+//
+// RFC-209 §5.2 defines the structural match on the grouping key alone. That is
+// incomplete for sparse indexes; this file therefore matches on grouping key
+// AND predicate. The RFC's rationale (matching is structural, never a stored
+// reference) is untouched — the predicate is itself stored structure.
+//
+// Programmatic Go predicates have no proto and therefore no signature; they
+// return a distinct opaque marker so they can never compare equal to a dense
+// index nor to any serialized predicate.
+func PredicateSignature(idx *Index) []byte {
+	if idx == nil {
+		return nil
+	}
+	p := idx.GetPredicateProto()
+	if p == nil {
+		if idx.Predicate != nil {
+			// Unserializable, so unmatchable. A non-nil, never-equal marker keeps
+			// this out of the dense bucket.
+			return []byte("p!opaque")
+		}
+		return nil
+	}
+	clearProto2Defaults(p.ProtoReflect())
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(p)
+	if err != nil {
+		return []byte("p!opaque")
+	}
+	return append([]byte{'p'}, encoded...)
+}
+
+// SamePredicateSignature reports whether two predicate signatures denote the
+// same row population. Two opaque markers are NOT equal: an unserializable
+// predicate is unmatchable in principle, so it must decline against everything
+// including another one.
+func SamePredicateSignature(a, b []byte) bool {
+	if string(a) == "p!opaque" || string(b) == "p!opaque" {
+		return false
+	}
+	return string(a) == string(b)
+}
+
 // IsGroupCountCompanionFor reports whether idx is a COUNT(*) index that can act
 // as the group-existence companion of an index with the given grouping
-// signature over the given record types.
+// signature and predicate signature, over the given record types.
 //
 // Structural only: the name is never consulted, so a companion created by an
 // older binary under a different name, or declared by the user, matches just as
 // well as one this binary would emit.
-func IsGroupCountCompanionFor(idx *Index, groupingSignature []byte, recordTypeNames []string, md *RecordMetaData) bool {
+func IsGroupCountCompanionFor(idx *Index, groupingSignature, predicateSignature []byte, recordTypeNames []string, md *RecordMetaData) bool {
 	if idx == nil || len(groupingSignature) == 0 || md == nil {
 		return false
 	}
@@ -153,7 +203,70 @@ func IsGroupCountCompanionFor(idx *Index, groupingSignature []byte, recordTypeNa
 	if len(candidateSignature) == 0 || string(candidateSignature) != string(groupingSignature) {
 		return false
 	}
+	if !SamePredicateSignature(PredicateSignature(idx), predicateSignature) {
+		return false
+	}
 	return sameRecordTypeSet(md.RecordTypesForIndex(idx), recordTypeNames)
+}
+
+// NeedsGroupCountCompanion reports whether idx is a GROUPED aggregate index
+// whose own key set can neither prove nor disprove that a group exists, so it
+// needs a companion COUNT(*) to answer correctly (RFC-209 §5.2).
+//
+// SUM and COUNT(col) qualify: a stored zero is indistinguishable from a vacated
+// group, and an all-NULL group has no entry at all. A COUNT(*) index does not —
+// it is its own oracle (§5.3(a)). MIN/MAX do not — they keep a real per-record
+// entry that the record's deletion removes. The UNGROUPED spelling does not —
+// its single group exists whether or not the table has rows (§5.4).
+func NeedsGroupCountCompanion(idx *Index) bool {
+	if idx == nil {
+		return false
+	}
+	if idx.Type != IndexTypeSum && idx.Type != IndexTypeCountNotNull {
+		return false
+	}
+	gke, ok := idx.RootExpression.(*GroupingKeyExpression)
+	if !ok {
+		return false
+	}
+	// GroupingKeyExpressionOf already declines the ungrouped case and any key it
+	// cannot split exactly, which is the same fail-closed answer wanted here.
+	_, ok = GroupingKeyExpressionOf(gke)
+	return ok
+}
+
+// NewGroupCountCompanion builds the companion COUNT(*) index for a grouped SUM
+// or COUNT(col) index: same record type, same grouping key, same predicate,
+// GroupAll (zero grouped columns) so its stored value is the group's row count.
+//
+// Carrying the owner's predicate is a divergence from the RFC text, which
+// defines the companion by grouping key alone. Without it, a sparse owner's
+// companion counts rows the owner never indexed, and the merge would report
+// groups that hold no qualifying row — an invented group, which is the very
+// defect the companion exists to remove.
+//
+// Returns false when idx needs no companion or its grouping key cannot be split.
+func NewGroupCountCompanion(idx *Index) (*Index, bool) {
+	if !NeedsGroupCountCompanion(idx) {
+		return nil, false
+	}
+	gke := idx.RootExpression.(*GroupingKeyExpression)
+	groupingKey, ok := GroupingKeyExpressionOf(gke)
+	if !ok || groupingKey == nil {
+		return nil, false
+	}
+	companion := NewIndex(GroupCountCompanionName(idx.Name), GroupAll(groupingKey))
+	companion.Type = IndexTypeCount
+	if p := idx.GetPredicateProto(); p != nil {
+		if err := companion.SetPredicateProto(p); err != nil {
+			return nil, false
+		}
+	} else if idx.Predicate != nil {
+		// A programmatic predicate cannot be transferred (it does not serialize),
+		// and a companion without it would count the wrong rows. Decline.
+		return nil, false
+	}
+	return companion, true
 }
 
 // sameRecordTypeSet reports whether the record types an index covers are

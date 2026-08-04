@@ -77,6 +77,9 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 // run the OnSourceIndexGenerator port below.
 func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, b *metadata.Builder) error {
 	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	if err := rejectReservedIndexName(indexName); err != nil {
+		return err
+	}
 	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
 	unique := def.UNIQUE() != nil
 	// OPTIONS(LEGACY_EXTREMUM_EVER) — Java reads it as a presence flag
