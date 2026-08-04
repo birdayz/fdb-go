@@ -40,6 +40,14 @@ import (
 // cross-fetch coalescing — work done inside a single fragment would leave the
 // counts intact.
 //
+// It is also blind on the CORRECTNESS axis, which the move to fragments made
+// load-bearing. A sequential scan only ever appends past what it already has,
+// so it never puts insert's trim or erase bounds on a boundary; two entries
+// could overlap without changing either the fragment count or the row total,
+// and both getRangeKVs and getKey read the same structure so neither would
+// notice. That axis is pinned separately, by assertSnapshotCacheInvariants and
+// its call sites (see ryw_snapshot_cache_invariant_test.go).
+//
 // Retention is deliberately NOT asserted here. C++ keeps every row of every
 // snapshot range read for the life of the transaction as well (the SnapshotCache
 // is arena-allocated with no eviction), so bounding it would be a divergence.

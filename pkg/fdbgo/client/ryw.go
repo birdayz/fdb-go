@@ -819,6 +819,22 @@ func (c *rywCache) fetchOrCached(
 }
 
 // cacheServerResult inserts a server getRange result into the snapshot cache.
+//
+// serverMore with ZERO rows would over-claim: the narrowing below is what keeps
+// a truncated fetch from asserting knowledge past its last returned key, and
+// with no rows there is nothing to narrow to, so [fetchBegin, fetchEnd) would be
+// marked entirely known-empty. insert then erases every fragment strictly inside
+// it and real cached rows are lost — silently, since the invariant still holds
+// and later reads just see a known-empty range.
+//
+// The read path cannot produce that pair. Its only two more=true returns
+// (readpath.go:761 and :819) both take more from `remaining <= 0`, and remaining
+// starts at the caller's positive limit and only ever decreases by rows
+// appended — so more=true implies rows were returned. The zero-row break at
+// readpath.go:778 is a different guard: it stops a misbehaving storage server
+// that reports more=true with an empty batch from reaching the narrowing at
+// :787, which would index kvs[len(kvs)-1] on an empty slice. It bounds the
+// inner re-query loop; it is not what establishes the invariant relied on here.
 func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []KeyValue, serverMore bool, reverse bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

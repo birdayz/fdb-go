@@ -36,6 +36,13 @@ func FuzzRYWCache(f *testing.F) {
 	f.Add([]byte{7, 2, 0, 8, 2, 1})                   // AtomicMax then AtomicMin
 	f.Add([]byte{9, 0, 1, 10, 0, 2})                  // ByteMax then ByteMin
 	f.Add([]byte{11, 4, 0, 11, 4, 1, 11, 4, 2})       // AppendIfFits chain
+	// Bounded range reads (opType 15): two fetches landing on a shared
+	// boundary is the shape that exercises snapshotCache.insert's trim and
+	// erase edges. A single unbounded read cannot reach any of them.
+	f.Add([]byte{15, 2, 0, 111, 0, 2})          // [k02,k03) then reverse [k00,k03): SHARED END
+	f.Add([]byte{15, 0, 3, 15, 2, 0})           // wide read, then a narrow one inside it
+	f.Add([]byte{31, 0, 0, 31, 2, 0, 31, 4, 0}) // three abutting limited reads
+	f.Add([]byte{15, 3, 2, 0, 3, 1, 15, 3, 2})  // read, write over it, read again
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 3 {
@@ -105,6 +112,8 @@ func FuzzRYWCache(f *testing.F) {
 			MutAppendIfFits, MutCompareAndClear,
 		}
 
+		ctx := context.Background()
+
 		// Parse and apply operations.
 		pos := 0
 		for pos+2 < len(data) {
@@ -137,6 +146,39 @@ func FuzzRYWCache(f *testing.F) {
 					delete(model, ck)
 				}
 
+			case opType == 15: // Bounded range read — populates the snapshot cache
+				// Without this, the whole fuzz issues exactly ONE snapshot
+				// range read per iteration (unbounded, over the entire span),
+				// so snapshotCache.insert is called once and its boundary
+				// handling is never exercised: nothing overlaps, nothing abuts,
+				// nothing gets trimmed or erased. Bounded reads at varying
+				// begins, ends, limits and directions are what a real iterator
+				// issues, and they are what put two fetches on a shared
+				// boundary. The model is untouched — serverData is immutable,
+				// so a read at any point in the sequence is a no-op for the
+				// expected values, and the final comparison still holds.
+				//
+				// Limit and direction come from the opType byte's UNUSED high
+				// nibble, not from valIdx, so they vary independently of where
+				// the range ends. Coupling them to valIdx would make the end
+				// key a function of the limit, and the two reads that share an
+				// end while differing in begin — the shape that puts insert's
+				// erase bound exactly on the boundary — would be unreachable.
+				flags := data[pos-3] / 16
+				endIdx := keyIdx + 1 + valIdx
+				if endIdx >= len(keys) {
+					endIdx = len(keys) - 1
+				}
+				readEnd := keys[endIdx]
+				if flags&8 != 0 {
+					readEnd += "\x00" // land the end BETWEEN keys as well as ON one
+				}
+				if _, _, err := cache.getRange(ctx, []byte(keys[keyIdx]), []byte(readEnd),
+					int(flags&3), flags&4 != 0, serverGetRange); err != nil {
+					t.Fatalf("range read [%s,%s): %v", keys[keyIdx], readEnd, err)
+				}
+				assertSnapshotCacheInvariants(t, &cache.serverCache, "after bounded range read")
+
 			default: // Atomic mutation (opType 3..14 → atomicTypes[0..11])
 				atomicIdx := int(opType-3) % len(atomicTypes)
 				mutType := atomicTypes[atomicIdx]
@@ -153,8 +195,6 @@ func FuzzRYWCache(f *testing.F) {
 				}
 			}
 		}
-
-		ctx := context.Background()
 
 		// Verify Get for all keys.
 		for _, k := range keys {
@@ -193,6 +233,11 @@ func FuzzRYWCache(f *testing.F) {
 			}
 		}
 
+		// The model comparison above and the one below both read through the
+		// same snapshot cache, so neither can see an overlapping entry. Check
+		// the structure the reads binary-search on directly.
+		assertSnapshotCacheInvariants(t, &cache.serverCache, "after forward getRange")
+
 		// Verify reverse GetRange.
 		gotRev, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, true, serverGetRange)
 		if err != nil {
@@ -211,5 +256,7 @@ func FuzzRYWCache(f *testing.F) {
 					i, gotRev[i].Key, gotRev[i].Value, wantKVs[i].Key, wantKVs[i].Value)
 			}
 		}
+
+		assertSnapshotCacheInvariants(t, &cache.serverCache, "after reverse getRange")
 	})
 }

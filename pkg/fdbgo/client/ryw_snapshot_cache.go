@@ -22,6 +22,18 @@ type snapshotCache struct {
 // cacheEntry represents a contiguous range of known server state.
 // All keys in [begin, end) are accounted for: if a key exists at the server,
 // it appears in kvs. If it doesn't appear, the key doesn't exist.
+//
+// Entries are non-empty (begin < end) and pairwise NON-OVERLAPPING, in the weak
+// sense entries[i].end <= entries[i+1].begin — adjacency is allowed and, since
+// each fetch leaves its own fragment, is the normal case. Non-overlap is a
+// contract, not a coincidence: getRangeKVs walks entries in order and emits
+// every kv in [begin, end) it finds, so its no-duplicate guarantee is exactly
+// the statement that no key is covered by two entries. getKey stops at the last
+// entry whose begin <= key and would silently read past a shadowed one.
+//
+// insert is the sole writer and the sole thing keeping the invariant true; it
+// has no self-healing property (see its comment), so the invariant is pinned
+// directly by assertSnapshotCacheInvariants rather than through either reader.
 type cacheEntry struct {
 	begin []byte     // inclusive
 	end   []byte     // exclusive
