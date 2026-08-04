@@ -106,7 +106,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		aggPlan := plans.NewRecordQueryAggregateIndexPlan(
 			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
 		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
-			WithGroupColumnLayout(aggCand.GetBaseRowType())
+			WithGroupColumnLayout(aggCand.GetBaseRowType()).
+			WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
 
 		// The aggregate-index plan is its own cascades expression now (RFC-184 W2).
 		call.Yield(aggPlan)
@@ -119,6 +120,23 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	// Path 2: multi-aggregate intersection — multiple candidates, each
 	// covering one of the GroupBy's aggregates with identical grouping.
 	tryMultiAggregateIntersection(call, gb, candidates, scanTypes, innerFilterPreds)
+}
+
+// dropsVacatedGroups reports whether a scan of this candidate may drop entries
+// whose stored value is zero (RFC-209 §5.3(a)).
+//
+// It holds for a GROUPED COUNT(*) index and nothing else. There, the index
+// being scanned is already the group-existence oracle: the stored value is the
+// group's row count, a live group's row count is never zero, so a zero can only
+// be the residue an atomic ADD left behind when the group was emptied. The drop
+// is exact and needs no second stream.
+//
+// It does NOT hold for SUM or COUNT(col), where a live group legitimately
+// answers zero (values cancelling out, or every value NULL) — those need a
+// companion COUNT(*) to decide existence. Nor for the ungrouped spelling, whose
+// single group exists whether or not the table has rows.
+func dropsVacatedGroups(cand *AggregateIndexMatchCandidate) bool {
+	return cand.countsRows && len(cand.groupCols) > 0
 }
 
 // aggInnerFilterFullyConsumable reports whether EVERY predicate on the
@@ -420,7 +438,8 @@ func tryMultiAggregateIntersection(
 		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
 			idxPlan, recordTypeName, values.UnknownType, mc.aggFunction.String(),
 		).WithGroupColumns(mc.groupCols, mc.aggColumn).
-			WithGroupColumnLayout(mc.GetBaseRowType())
+			WithGroupColumnLayout(mc.GetBaseRowType()).
+			WithLiveGroupsOnly(dropsVacatedGroups(mc))
 	}
 
 	// Comparison key = grouping column FieldValues. The aggregate-index

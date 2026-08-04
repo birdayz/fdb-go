@@ -49,6 +49,29 @@ type AggregateIndexMatchCandidate struct {
 	// back to the fail-open direction the predicate documents.
 	baseRowType values.Type
 
+	// countsRows records that this index's stored value is the number of ROWS in
+	// the group — i.e. it is a COUNT(*) index (record-layer type `count`), not a
+	// COUNT(col) one (`count_not_null`). Both surface as AggCount with the same
+	// grouping, so the aggregate function alone cannot tell them apart, and the
+	// difference is decisive twice over (RFC-209):
+	//
+	//   - only a row count makes a stored zero mean "vacated group", because a
+	//     live group always has at least one row (§5.3(a)); and
+	//   - only a row count can serve as another index's group-existence
+	//     companion, because it never looks at the aggregated value and so never
+	//     drops a live group whose values are all NULL (§5.1).
+	//
+	// COUNT(col) is neither: an all-NULL live group legitimately answers 0.
+	countsRows bool
+
+	// groupingSignature is the normalized proto encoding of the index's GROUPING
+	// key expression — the leading, non-aggregated half of its root. Two
+	// aggregate indexes group identically iff their signatures are equal, which
+	// is how a group-existence companion is discovered STRUCTURALLY rather than
+	// through a stored reference (RFC-209 §5.2). nil when the signature could
+	// not be derived, which declines every companion match rather than guessing.
+	groupingSignature []byte
+
 	traversalOnce sync.Once
 	traversal     *Traversal
 }
@@ -126,6 +149,24 @@ func (c *AggregateIndexMatchCandidate) GetKeyComponentTypes() []values.Type {
 func (c *AggregateIndexMatchCandidate) GetPhysicalGroupingPrefixCount() int {
 	return c.physicalGroupingPrefixCount
 }
+
+// WithGroupExistence records the two structural facts RFC-209 needs about the
+// underlying index: whether its stored value counts ROWS (a COUNT(*) index),
+// and the normalized encoding of its grouping key expression. Both come from
+// the record-layer Index and are supplied by the candidate builder; see the
+// field docs for what each decides.
+func (c *AggregateIndexMatchCandidate) WithGroupExistence(countsRows bool, groupingSignature []byte) *AggregateIndexMatchCandidate {
+	c.countsRows = countsRows
+	c.groupingSignature = groupingSignature
+	return c
+}
+
+// CountsRows reports whether the index's stored value is the group's row count.
+func (c *AggregateIndexMatchCandidate) CountsRows() bool { return c.countsRows }
+
+// GroupingSignature returns the normalized encoding of the grouping key
+// expression, or nil when it could not be derived.
+func (c *AggregateIndexMatchCandidate) GroupingSignature() []byte { return c.groupingSignature }
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 

@@ -355,17 +355,62 @@ func TestFDB_AggregateIndexVacatedGroup_SumAndCountColPins(t *testing.T) {
 		"SELECT g, SUM(v) FROM ai GROUP BY g",
 		"[1 0] [2 60] [3 0] [4 0] [6 0]",
 		"[2 60] [4 0] [5 NULL] [6 0]")
-	// COUNT(*) is the shape a read-side filter fixes exactly and alone: the
-	// only wrong rows here are the two zero-valued phantoms, and no live group
-	// can ever answer 0.
-	pin("count-star-keeps-vacated-groups",
-		"SELECT g, COUNT(*) FROM ai GROUP BY g",
-		"[1 0] [2 3] [3 0] [4 2] [5 2] [6 2]",
-		"[2 3] [4 2] [5 2] [6 2]")
 	pin("count-col-keeps-vacated-groups-and-drops-the-all-null-group",
 		"SELECT g, COUNT(v) FROM ai GROUP BY g",
 		"[1 0] [2 3] [3 0] [4 2] [6 2]",
 		"[2 3] [4 2] [5 0] [6 2]")
+
+	// COUNT(*) is no longer a pin: RFC-209 §5.3(a) repairs it, exactly and
+	// alone, because the index being scanned IS the group-existence oracle. The
+	// stored value is the group's row count, so a zero can only be residue and
+	// the scan drops it. Both phantoms go; g=5 (all-NULL values, two live rows)
+	// stays, because COUNT(*) never looks at the value.
+	//
+	// The EXPLAIN assertion is what makes this a proof rather than a
+	// coincidence: the answer must be right BECAUSE the aggregate index was
+	// scanned with the drop in force, not because the planner quietly stopped
+	// using the index and a streaming aggregation got it right instead.
+	t.Run("count-star-drops-vacated-groups", func(t *testing.T) {
+		const q = "SELECT g, COUNT(*) FROM ai GROUP BY g"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "AggregateIndex(") {
+			t.Fatalf("grouped COUNT(*) is no longer index-backed, so this test no "+
+				"longer covers the vacated-group dimension -- re-arm it, do not relax it.\n  plan: %s", plan)
+		}
+		if !strings.Contains(plan, "live_groups_only") {
+			t.Fatalf("the grouped COUNT(*) aggregate scan does not carry the "+
+				"vacated-group drop (RFC-209 5.3(a)).\n  plan: %s\n"+
+				"Correct rows without it would mean something else is filtering, and the "+
+				"drop would be dead code the moment that something else changed.", plan)
+		}
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var g, n int64
+			if err := rows.Scan(&g, &n); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, fmt.Sprintf("[%d %d]", g, n))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		sort.Strings(out)
+		const want = "[2 3] [4 2] [5 2] [6 2]"
+		if got := strings.Join(out, " "); got != want {
+			t.Fatalf("grouped COUNT(*) over vacated groups\n  got : %s\n  want: %s\n"+
+				"g=1 (vacated by UPDATE) and g=3 (vacated by DELETE) must not appear; "+
+				"g=5 (two live rows, every v NULL) must, because COUNT(*) never reads the value.",
+				got, want)
+		}
+	})
 }
 
 // TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable pins a NEGATIVE

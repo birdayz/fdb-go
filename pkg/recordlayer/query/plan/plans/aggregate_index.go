@@ -55,6 +55,23 @@ type RecordQueryAggregateIndexPlan struct {
 	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor —
 	// GetResultValue falls back to PlanExprBase's fresh QOV there.
 	resultValue values.Value
+
+	// liveGroupsOnly makes the scan drop entries whose stored aggregate is zero
+	// (RFC-209 §5.3(a)). It is set ONLY for a GROUPED COUNT(*) index, where the
+	// stored value is the group's row count and a zero can therefore only be the
+	// residue of a group emptied by DELETE or by an UPDATE that moved its last
+	// row away: an atomic ADD decrements the accumulator to zero and never
+	// removes the key. A live group's COUNT(*) is never zero, so the drop is
+	// exact rather than a heuristic.
+	//
+	// It must NOT be set for SUM or COUNT(col), where zero is a legitimate
+	// answer for a live group (values cancelling, or every value NULL), nor for
+	// the ungrouped spelling, whose single group exists whether or not the table
+	// has rows and whose empty scan legitimately coalesces to 0.
+	//
+	// The flag is rendered by Explain because it changes which rows the scan
+	// emits: a plan property that alters the answer must be visible in the plan.
+	liveGroupsOnly bool
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -119,6 +136,16 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type
 // GetGroupColumnLayout returns the declared layout the grouping-column names
 // resolve against, or nil when none was carried.
 func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { return p.groupColLayout }
+
+// WithLiveGroupsOnly marks this scan as dropping zero-valued entries — see the
+// liveGroupsOnly field. Only a grouped COUNT(*) index may carry it.
+func (p *RecordQueryAggregateIndexPlan) WithLiveGroupsOnly(v bool) *RecordQueryAggregateIndexPlan {
+	p.liveGroupsOnly = v
+	return p
+}
+
+// IsLiveGroupsOnly reports whether the scan drops zero-valued entries.
+func (p *RecordQueryAggregateIndexPlan) IsLiveGroupsOnly() bool { return p.liveGroupsOnly }
 
 // GetGroupCols returns the grouping column names.
 func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string {
@@ -206,10 +233,16 @@ func (p *RecordQueryAggregateIndexPlan) GetChildren() []RecordQueryPlan { return
 // full nested index key (the hand-rolled hash folded only the index NAME),
 // strengthening it while preserving equal⟹same-hash.
 func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
+	// liveGroupsOnly is folded in because it changes which rows the scan emits
+	// (RFC-209 §5.3(a)). Two otherwise-identical scans that differ in it are
+	// different plans; leaving it out would let the memo intern the filtering
+	// scan and the unfiltered one into a single expression and serve whichever
+	// arrived first.
 	return newStructuralKey().
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
 		Int(p.GetPhysicalGroupingPrefixCount()).
+		Bool(p.liveGroupsOnly).
 		Sub(p.indexPlan.structuralKey())
 }
 
@@ -226,14 +259,21 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	return p.structuralKey().Hash("aggregateindexplan|")
 }
 
-// Explain renders AggregateIndex(function, indexName, [groupCols], recordType).
+// Explain renders AggregateIndex(function, indexName, [groupCols], recordType),
+// with a trailing ", live_groups_only" when the scan drops zero-valued entries
+// (RFC-209 §5.3(a)) — a property that changes the answer, so it is not allowed
+// to be invisible in the plan.
 func (p *RecordQueryAggregateIndexPlan) Explain() string {
-	if len(p.groupCols) > 0 {
-		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s)",
-			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName)
+	suffix := ""
+	if p.liveGroupsOnly {
+		suffix = ", live_groups_only"
 	}
-	return fmt.Sprintf("AggregateIndex(%s, %s, %s)",
-		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName)
+	if len(p.groupCols) > 0 {
+		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s%s)",
+			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName, suffix)
+	}
+	return fmt.Sprintf("AggregateIndex(%s, %s, %s%s)",
+		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName, suffix)
 }
 
 var (

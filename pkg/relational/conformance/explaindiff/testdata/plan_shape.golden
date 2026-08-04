@@ -548,7 +548,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_count_star.yaml#0
 sql:   SELECT level, COUNT(*) FROM logs GROUP BY level ORDER BY level
-plan:  Project([LEVEL#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_LEVEL, [LEVEL], LOGS))
+plan:  Project([LEVEL#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_LEVEL, [LEVEL], LOGS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_count_star.yaml#1
@@ -559,7 +559,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_index_ddl.yaml#0
 sql:   SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status
-plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS))
+plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_ddl.yaml#1
@@ -569,7 +569,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#0
 sql:   SELECT category, COUNT(*) FROM items GROUP BY category ORDER BY category
-plan:  Project([CATEGORY#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS))
+plan:  Project([CATEGORY#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#1
@@ -584,7 +584,7 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === aggregate_index_delete.yaml#3
 sql:   SELECT category, COUNT(*) FROM items GROUP BY category ORDER BY category
-plan:  Project([CATEGORY#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS))
+plan:  Project([CATEGORY#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_CAT, [CATEGORY], ITEMS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_delete.yaml#4
@@ -605,7 +605,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_multi_group.yaml#0
 sql:   SELECT category, severity, COUNT(*) FROM events GROUP BY category, severity ORDER BY category, severity
-plan:  Project([CATEGORY#0, SEVERITY#1, COUNT(*)#2], AggregateIndex(COUNT, COUNT_BY_CAT_SEV, [CATEGORY SEVERITY], EVENTS))
+plan:  Project([CATEGORY#0, SEVERITY#1, COUNT(*)#2], AggregateIndex(COUNT, COUNT_BY_CAT_SEV, [CATEGORY SEVERITY], EVENTS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_sum.yaml#0
@@ -620,7 +620,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#0
 sql:   SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status
-plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS))
+plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#1
@@ -640,7 +640,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === aggregate_index_update.yaml#4
 sql:   SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status
-plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS))
+plan:  Project([STATUS#0, COUNT(*)#1], AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], TASKS, live_groups_only))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryAggregateIndexPlan
 === aggregate_index_update.yaml#5

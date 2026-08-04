@@ -221,6 +221,7 @@ go_test(
     srcs = [
         "abstract_data_access_rule_test.go",
         "aggregate_column_identity_test.go",
+        "aggregate_group_existence_test.go",
         "aggregate_index_shortcut_gate_test.go",
         "aggregate_index_unknown_key_type_test.go",
         "alias_aware_interning_shadow_delta_test.go",
@@ -1028,6 +1029,7 @@ go_test(
         "aggregate_index_unknown_key_type_test.go",
         "index_predicate_normalize.go",
         "index_predicate_normalize_test.go",
+        "aggregate_group_existence_test.go",
     ],
     deps = [
         "//gen",

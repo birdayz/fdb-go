@@ -3036,6 +3036,11 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	allTypes := physicalKeyComponentTypes(gke, rts)
 	groupTypes := alignPhysicalTypes(allTypes, groupingCount)
 
+	// RFC-209: carry the two structural facts the group-existence machinery
+	// needs. countsRows distinguishes a COUNT(*) index (record-layer type
+	// `count`, whose stored value is the group's row count) from a COUNT(col)
+	// one (`count_not_null`) — both arrive here as AggCount with the same
+	// grouping, and only the former makes a stored zero mean "vacated group".
 	return cascades.NewAggregateIndexMatchCandidate(
 		idx.Name,
 		rtNames,
@@ -3048,7 +3053,7 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		singleRecordTypeRowType(md, idx),
 		groupTypes,
 		groupingCount,
-	)
+	).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke))
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector

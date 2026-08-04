@@ -191,6 +191,8 @@ func executeAggregateIndexScan(
 		// drift (RFC-081).
 		canonicalName: canonicalName,
 		posType:       posType,
+		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
+		liveGroupsOnly: p.IsLiveGroupsOnly(),
 	}
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -348,19 +350,43 @@ type aggregateIndexCursor struct {
 	groupCols     []string
 	canonicalName string
 	posType       *values.RecordType
-	closed        bool
+	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
+	// a grouped COUNT(*) scan, where the stored value is the group's row count
+	// and a zero can therefore only be the residue of a vacated group (the
+	// atomic ADD that emptied it left the key behind). See
+	// plans.RecordQueryAggregateIndexPlan.liveGroupsOnly — the plan carries the
+	// property, EXPLAIN renders it, and this cursor merely obeys it. Deciding
+	// existence here rather than at plan time would make the plan a lie.
+	liveGroupsOnly bool
+	closed         bool
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	// A vacated group's entry is dropped before it becomes a row, and the scan
+	// keeps advancing rather than returning a "no value" result: a dropped entry
+	// is not an end-of-stream condition, the next live group may be one key
+	// away. The loop (rather than a recursive re-entry) matters because the run
+	// of consecutive vacated groups is unbounded — a table emptied wholesale
+	// leaves one zero entry per group that ever existed. The emitted row carries
+	// the continuation of the entry it came from, so a resume never re-reads a
+	// group already returned and the zero entries in between are simply
+	// re-skipped.
+	var result recordlayer.RecordCursorResult[*recordlayer.IndexEntry]
+	var entry *recordlayer.IndexEntry
+	for {
+		var err error
+		result, err = c.inner.OnNext(ctx)
+		if err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+		if !result.HasNext() {
+			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		}
+		entry = result.GetValue()
+		if !c.liveGroupsOnly || !isVacatedGroupEntry(entry) {
+			break
+		}
 	}
-	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
-	}
-
-	entry := result.GetValue()
 
 	// Emit the authoritative ordinal row (real slots read
 	// from the index entry). Slot order matches c.posType: group cols then the
@@ -387,6 +413,29 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+}
+
+// isVacatedGroupEntry reports whether a COUNT(*) index entry denotes a group
+// that no longer has any rows. The maintainer decrements the accumulator with
+// an atomic ADD and never removes the key, so an emptied group leaves an entry
+// holding zero. Because the stored value counts ROWS, and a live group has at
+// least one, zero is decidable: it can only be residue.
+//
+// Anything that is not an explicit integer zero keeps the row. Dropping a live
+// group is a brand-new wrong answer and strictly worse than the phantom this
+// filter removes, so an unrecognised value shape errs toward emitting.
+func isVacatedGroupEntry(entry *recordlayer.IndexEntry) bool {
+	if entry == nil || len(entry.Value) == 0 {
+		return false
+	}
+	switch v := entry.Value[0].(type) {
+	case int64:
+		return v == 0
+	case int:
+		return v == 0
+	default:
+		return false
+	}
 }
 
 func (c *aggregateIndexCursor) Close() error {

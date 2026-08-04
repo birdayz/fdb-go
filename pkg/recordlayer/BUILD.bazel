@@ -4,6 +4,7 @@ go_library(
     name = "recordlayer",
     srcs = [
         "aggregate_function.go",
+        "aggregate_group_existence.go",
         "atomic_index_helpers.go",
         "atomic_mutation.go",
         "atomic_mutation_index_maintainer.go",
@@ -159,6 +160,7 @@ go_test(
     srcs = [
         "aggregate_function_test.go",
         "aggregate_function_unit_test.go",
+        "aggregate_group_existence_test.go",
         "api_coverage2_test.go",
         "api_coverage_test.go",
         "benchmark_test.go",
