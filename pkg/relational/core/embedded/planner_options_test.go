@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strconv"
 	"testing"
@@ -306,7 +307,12 @@ func TestPlannerOptions_Defaults(t *testing.T) {
 		if len(po.disabledRules) != 0 {
 			t.Errorf("%s: disabled rules = %v, want none", name, po.disabledRules)
 		}
-		if po.config != cascades.DefaultPlannerConfiguration() {
+		// reflect.DeepEqual, not ==: PlannerConfiguration carries the
+		// readable-index view, which holds a set and so makes the struct
+		// non-comparable. That is deliberate — a set is the right shape for an
+		// allow-list — and a stray `==` on the config now fails to compile
+		// rather than comparing a pointer-ish field by accident.
+		if !reflect.DeepEqual(po.config, cascades.DefaultPlannerConfiguration()) {
 			t.Errorf("%s: config = %+v, want the Cascades default", name, po.config)
 		}
 		if po.config.ShouldJoinRightDeep {

@@ -82,6 +82,7 @@ go_test(
         "aggregate_group_key_reachability_test.go",
         "aggregate_output_slot_domain_test.go",
         "aggregate_output_slot_recorded_test.go",
+        "aggregate_ungrouped_candidate_declines_test.go",
         "ast_util_test.go",
         "bench_test.go",
         "bug_hunt_cascades_test.go",
@@ -296,6 +297,7 @@ go_test(
         "tx_catalog_binding_test.go",
         "tx_store_cache_test.go",
         "tx_exec_error_fdb_tail_test.go",
+        "aggregate_ungrouped_candidate_declines_test.go",
     ],
     deps = [
         "//gen",

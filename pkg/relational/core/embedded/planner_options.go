@@ -15,8 +15,14 @@ import (
 // once into the two things the Cascades planner consumes: a disabled rule-name
 // set and a PlannerConfiguration.
 //
-// Java's relational `PlannerConfiguration.of(readableIndexes, options)` reads
-// FOUR option names. Three are handled here — DISABLED_PLANNER_RULES,
+// Java's relational `PlannerConfiguration.of(readableIndexes, options)` takes a
+// readable-index view alongside the options. That view is now carried too — see
+// cascadesGenerator.fetchReadableIndexes, which ports
+// PlanContext.Builder.getReadableIndexes — and it is resolved by the generator
+// rather than here, because it comes from the STORE rather than from the
+// connection's options.
+//
+// Of the FOUR option names, three are handled here — DISABLED_PLANNER_RULES,
 // DISABLE_PLANNER_REWRITING and PLAN_RIGHT_DEEP. The fourth,
 // INDEX_FETCH_METHOD (via OptionsUtils.getIndexFetchMethod), selects FDB's
 // remote-fetch index scan, which Go has no implementation of at any layer:
@@ -127,7 +133,8 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // as "emit no component at all" — so a caller who sets no options gets exactly
 // the scope it got before planner options were keyed.
 func (p plannerOptions) cacheKeyPart() string {
-	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep {
+	readable := p.config.ReadableIndexes
+	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep && !readable.IsRestricted() {
 		return ""
 	}
 	names := make([]string, 0, len(p.disabledRules))
@@ -143,6 +150,27 @@ func (p plannerOptions) cacheKeyPart() string {
 		b.WriteString(strconv.Itoa(len(n)))
 		b.WriteByte(':')
 		b.WriteString(n)
+	}
+	// The readable-index allow-list, when one is present, is part of the key:
+	// which indexes may back a plan decides the plan. Java carries the whole
+	// PlannerConfiguration — readableIndexes included — in QueryCacheKey
+	// (QueryCacheKey.java:127,142) for exactly this reason.
+	//
+	// The rendering has to stay injective against the disabled-rule names
+	// above, which are user-controlled and length-prefixed for that reason.
+	// A distinct 'i' prefix opens the section, and each index name is
+	// length-prefixed by the same scheme, so no index name can be mistaken for
+	// a rule name, a boundary, or the section marker. The RESTRICTED case is
+	// what emits the section; an unrestricted view emits nothing and therefore
+	// keys exactly as it did before this existed, which is what keeps a healthy
+	// store's cache behaviour unchanged.
+	if readable.IsRestricted() {
+		b.WriteString("i")
+		for _, n := range readable.SortedNames() {
+			b.WriteString(strconv.Itoa(len(n)))
+			b.WriteByte(':')
+			b.WriteString(n)
+		}
 	}
 	return b.String()
 }

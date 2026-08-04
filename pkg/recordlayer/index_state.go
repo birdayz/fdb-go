@@ -299,6 +299,21 @@ func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
 // This is a standalone function that does not mutate any store fields.
 // Matches Java's FDBRecordStore.loadIndexStatesAsync().
 func readIndexStates(tx fdb.WritableTransaction, ss subspace.Subspace) (map[string]IndexState, error) {
+	return LoadIndexStates(tx, ss)
+}
+
+// LoadIndexStates reads a record store's index-state map from a READ
+// transaction, without opening the store. Only states that differ from the
+// default are stored, so an absent index is READABLE — the same contract
+// FDBRecordStore.GetIndexState applies (and Java's RecordStoreState).
+//
+// It exists because the QUERY PLANNER needs index states before any store is
+// open: Java assembles its planner's readable-index view from the store state
+// it already holds (PlanContext.java:236-247), while Go plans from metadata
+// alone and reaches FDB only at execution. Opening a full store just to read
+// four bytes per exceptional index would pull in the header, the metadata
+// version check and the store lock; this reads the one range it needs.
+func LoadIndexStates(tx fdb.ReadTransaction, ss subspace.Subspace) (map[string]IndexState, error) {
 	isSubspace := ss.Sub(IndexStateSpaceKey)
 	begin, end := isSubspace.FDBRangeKeys()
 

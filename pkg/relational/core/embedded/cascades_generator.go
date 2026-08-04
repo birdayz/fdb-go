@@ -301,6 +301,21 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
 	// query text (see planCacheScope / PlanCache.Get).
 	popts := plannerOptionsFrom(g.c.Options())
+	// The readable-index view is resolved BEFORE the cache key and is PART of
+	// it, because it decides which indexes may back a plan. Java keys its plan
+	// cache the same way — PlannerConfiguration carries readableIndexes and
+	// QueryCacheKey carries the whole configuration
+	// (QueryCacheKey.java:127,142). Without it, a plan built while an index was
+	// readable would keep being served after the index went WRITE_ONLY, and the
+	// gate below would be defeated for exactly the queries that run often
+	// enough to be cached.
+	//
+	// Java gets the store state for free: its store is already open when
+	// planning starts. Go plans before opening one, so this is a real read on
+	// the planning path. It is a single snapshot range read over the
+	// index-state subspace, which holds only the indexes whose state differs
+	// from READABLE — empty on a healthy store.
+	popts.config.ReadableIndexes = g.fetchReadableIndexes(ctx, md)
 	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
 	var ls *planLogScope
@@ -1014,6 +1029,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	dmlStats := g.fetchTableStatistics(ctx, md)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	popts := plannerOptionsFrom(g.c.Options())
+	// DML reads through the same match candidates a SELECT does (the WHERE of an
+	// UPDATE/DELETE is planned identically), so it needs the same readable-index
+	// view. Java applies the filter in MetaDataPlanContext, below both.
+	popts.config.ReadableIndexes = g.fetchReadableIndexes(ctx, md)
 	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
@@ -2161,6 +2180,85 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	return properties.MapStatistics{PerType: counts}
 }
 
+// fetchReadableIndexes reads the store's index states and returns the planner's
+// allow-list of scannable index names. Port of Java's
+// PlanContext.Builder.getReadableIndexes (PlanContext.java:236-247):
+//
+//	if (storeState.allIndexesReadable()) return Optional.empty();
+//	else return Optional.of(metaData.getAllIndexes().stream()
+//	        .filter(storeState::isReadable)
+//	        .filter(index -> !universalIndexes.contains(index))
+//	        .map(Index::getName).collect(...));
+//
+// Two properties are load-bearing and both are Java's:
+//
+//   - The common case is UNRESTRICTED. When every index is readable the answer
+//     is "no allow-list", not "an allow-list naming everything", so a healthy
+//     store plans through exactly the code path it always did and the plan
+//     cache is not keyed on a set that never varies.
+//   - READABLE is strict. Java filters on `isReadable()`, not `isScannable()`,
+//     so READABLE_UNIQUE_PENDING is excluded even though it can be scanned:
+//     the planner may assume uniqueness from a unique index, and a
+//     unique-pending one has not yet proven it.
+//
+// A store that cannot be opened or read yields the unrestricted answer, which
+// is the pre-existing behaviour: this function is best-effort exactly like
+// fetchTableStatistics, and a query against a store this broken fails at
+// execution with its own diagnostic rather than being silently re-planned into
+// a full scan here.
+func (g *cascadesGenerator) fetchReadableIndexes(ctx context.Context, md *recordlayer.RecordMetaData) cascades.ReadableIndexes {
+	c := g.c
+	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
+		return cascades.AllIndexesReadable()
+	}
+	allIndexes := md.GetAllIndexes()
+	if len(allIndexes) == 0 {
+		return cascades.AllIndexesReadable()
+	}
+	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return cascades.AllIndexesReadable()
+	}
+
+	result, runErr := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+		states, stateErr := recordlayer.LoadIndexStates(rtx, ss)
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		return states, nil
+	})
+	if runErr != nil || result == nil {
+		return cascades.AllIndexesReadable()
+	}
+	states, ok := result.(map[string]recordlayer.IndexState)
+	if !ok {
+		return cascades.AllIndexesReadable()
+	}
+	// An index with no stored state is READABLE — Java's RecordStoreState
+	// default, and the state store only ever holds the exceptions.
+	if len(states) == 0 {
+		return cascades.AllIndexesReadable()
+	}
+	allReadable := true
+	for name := range allIndexes {
+		if st, stored := states[name]; stored && st != recordlayer.IndexStateReadable {
+			allReadable = false
+			break
+		}
+	}
+	if allReadable {
+		return cascades.AllIndexesReadable()
+	}
+	readable := make(map[string]struct{}, len(allIndexes))
+	for name := range allIndexes {
+		if st, stored := states[name]; stored && st != recordlayer.IndexStateReadable {
+			continue
+		}
+		readable[name] = struct{}{}
+	}
+	return cascades.OnlyReadableIndexes(readable)
+}
+
 // buildCascadesPlanContext builds the plan context for one planning run. cfg
 // carries the option-driven PlannerConfiguration (see plannerOptions); pass
 // cascades.DefaultPlannerConfiguration() where no options apply. It is a
@@ -2180,9 +2278,11 @@ func buildCascadesPlanContext(
 type metadataPlanContext struct {
 	md  *recordlayer.RecordMetaData
 	cfg cascades.PlannerConfiguration
-	// nil is reserved for offline/unit planning and preserves the historical
-	// all-readable assumption. Live SQL planning always supplies the complete
-	// store snapshot; a missing entry there fails closed.
+	// The readable-index view lives on cfg (cascades.PlannerConfiguration).
+	// Its zero value is UNRESTRICTED, which is what offline and unit planning
+	// get; live SQL planning resolves it from the store's index states before
+	// the plan-cache key is built, so a non-readable index never reaches
+	// buildMatchCandidates.
 	candidatesOnce sync.Once
 	candidates     []cascades.MatchCandidate
 }
@@ -2281,6 +2381,21 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	for _, name := range indexNames {
 		idx := allIndexes[name]
 		if idx.RootExpression == nil {
+			continue
+		}
+		// An index the store cannot READ must not become a match candidate.
+		// This is Java's MetaDataPlanContext.forRootReference filter
+		// (MetaDataPlanContext.java:194-199,
+		// `indexList.removeIf(index -> !allowedIndexes.contains(index.getName()))`),
+		// applied at the same place: on the index list, BEFORE any candidate is
+		// created, so no downstream rule has to remember to ask.
+		//
+		// Without it a WRITE_ONLY or DISABLED index is planned into a scan that
+		// then fails at execution with IndexNotReadableError — a query that
+		// errors where a correct, slower plan was available. Java has never had
+		// that hole; Go's PlannerConfiguration simply carried no readable-index
+		// view until now (planner_options.go recorded the gap).
+		if !c.cfg.ReadableIndexes.Allows(idx.Name) {
 			continue
 		}
 		// Sparseness is asked here too, ahead of the candidate boundary, and it

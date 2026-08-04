@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sort"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -72,6 +74,83 @@ type PlannerConfiguration struct {
 	// non-default today (same as the sibling knobs), so this changes no reachable
 	// plan — it models the mechanism for parity.
 	IndexScanPreference IndexScanPreference
+
+	// ReadableIndexes is the planner's view of which indexes may be scanned,
+	// the port of Java's `PlannerConfiguration.readableIndexes`
+	// (fdb-relational-core .../query/PlannerConfiguration.java:54-70, an
+	// `Optional<Set<String>>`).
+	//
+	// Java derives it in PlanContext.Builder.getReadableIndexes
+	// (PlanContext.java:236-247): when the store state reports every index
+	// readable it is absent, and otherwise it is the set of readable,
+	// non-universal index names. It reaches the core planner through
+	// CascadesPlanner.planGraph and is applied in
+	// MetaDataPlanContext.forRootReference (MetaDataPlanContext.java:194-199)
+	// as `indexList.removeIf(index -> !allowedIndexes.contains(index.getName()))`
+	// — a filter on the INDEX LIST, before any match candidate is created.
+	//
+	// The zero value permits every index, so a construction site that never
+	// learned about index states plans exactly as it did before.
+	ReadableIndexes ReadableIndexes
+}
+
+// ReadableIndexes is the planner's allow-list of index names, modelling Java's
+// `Optional<Set<String>>`: absent means "every index is readable", present
+// means "only these are". The distinction matters and a nil Go map cannot
+// carry it — an empty allow-list ("nothing is readable", a store mid-rebuild)
+// and an absent one ("everything is") are opposite instructions that a nil map
+// would render identically.
+//
+// The zero value is the ABSENT case on purpose. Planning happens from unit
+// tests, offline harnesses and the DDL front end as well as from a live
+// session, and only a live session can know index states; defaulting those
+// other callers to "nothing is readable" would silently delete every index
+// plan they have.
+type ReadableIndexes struct {
+	restricted bool
+	names      map[string]struct{}
+}
+
+// AllIndexesReadable is Java's `Optional.empty()` — no restriction. It is also
+// the zero value, stated explicitly so a caller can say what it means.
+func AllIndexesReadable() ReadableIndexes { return ReadableIndexes{} }
+
+// OnlyReadableIndexes restricts planning to the named indexes, Java's
+// `Optional.of(set)`. A nil or empty set is a real restriction meaning "no
+// index may be scanned", not an absent one.
+func OnlyReadableIndexes(names map[string]struct{}) ReadableIndexes {
+	copied := make(map[string]struct{}, len(names))
+	for n := range names {
+		copied[n] = struct{}{}
+	}
+	return ReadableIndexes{restricted: true, names: copied}
+}
+
+// Allows reports whether an index of this name may back a match candidate.
+func (r ReadableIndexes) Allows(indexName string) bool {
+	if !r.restricted {
+		return true
+	}
+	_, ok := r.names[indexName]
+	return ok
+}
+
+// IsRestricted reports whether an allow-list is present at all.
+func (r ReadableIndexes) IsRestricted() bool { return r.restricted }
+
+// SortedNames returns the allow-listed names in a deterministic order, or nil
+// when unrestricted. Used to key the plan cache: two planning runs that differ
+// in which indexes were readable must not share a cached plan.
+func (r ReadableIndexes) SortedNames() []string {
+	if !r.restricted {
+		return nil
+	}
+	out := make([]string, 0, len(r.names))
+	for n := range r.names {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // IndexScanPreference selects the default direction of the cost model's
