@@ -507,6 +507,10 @@ func executeMultiIntersection(
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
+		// The same len(keyVals)+1 the absent-child filler is sized to, carried to
+		// the concatenation so the PRESENT children are held to it as well. The
+		// filler being right is worth nothing if a real child disagrees.
+		childWidth: len(keyVals) + 1,
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -601,7 +605,10 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
-	closed      bool
+	// childWidth is the per-child span the resultValue's ordinals were baked
+	// against; 0 disables the check. See mergeChildEvalArg.
+	childWidth int
+	closed     bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java's cached no-next result on the map/merge stage) — never re-pulls
 	// the inner intersection.
@@ -629,7 +636,10 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	// child; the grouping columns are identical across children and the aggregate
 	// columns are distinct, so a plan-time bake against the flat concatenation
 	// resolves each resultValue column to the correct slot.
-	evalArg := mergeChildEvalArg(childResults)
+	evalArg, err := mergeChildEvalArg(childResults, c.childWidth)
+	if err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, err
+	}
 
 	qr := QueryResult{}
 	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
@@ -670,14 +680,33 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 // columns repeat across children with the same value, so a first-match bind is
 // order-safe. Returns nil if any child lacks a Positional (should not happen — the
 // aggregate-index producer builds one per child).
-func mergeChildEvalArg(childResults []QueryResult) any {
+// expectedWidth is the per-child span the result value's ordinals were BAKED
+// against at plan time (len(groupCols)+1). It is verified here rather than
+// assumed because the assumption is derived independently in three places — the
+// planning rule that bakes the ordinals, the cursor that sizes the absent-child
+// filler, and this concatenation — and nothing made the three agree. A child
+// arriving at a different width does not fail: it shifts every LATER child's
+// aggregate by the difference and hands each group another group's value, with
+// every row well-formed and the row count unchanged. That is the silent
+// wrong-rows class, so it is an error, not a best-effort nil.
+//
+// expectedWidth <= 0 disables the check for callers that cannot state a width.
+func mergeChildEvalArg(childResults []QueryResult, expectedWidth int) (any, error) {
 	var fields []values.Field
 	var slots []any
 	ord := 0
-	for _, cr := range childResults {
+	for ci, cr := range childResults {
 		p := cr.Positional
 		if p == nil || p.Type == nil {
-			return nil
+			return nil, nil
+		}
+		if expectedWidth > 0 && len(p.Type.Fields) != expectedWidth {
+			return nil, fmt.Errorf(
+				"group-existence merge: child %d flowed %d columns, but the plan's result "+
+					"value was baked against %d per child; every later child's aggregate "+
+					"would be read from the wrong slot and each group would report another "+
+					"group's value",
+				ci, len(p.Type.Fields), expectedWidth)
 		}
 		for i, f := range p.Type.Fields {
 			nf := f
@@ -692,9 +721,9 @@ func mergeChildEvalArg(childResults []QueryResult) any {
 		}
 	}
 	if len(fields) == 0 {
-		return nil
+		return nil, nil
 	}
-	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}, nil
 }
 
 func (c *multiIntersectionMergeCursor) Close() error {

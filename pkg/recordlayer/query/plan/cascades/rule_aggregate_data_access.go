@@ -752,15 +752,29 @@ func tryMultiAggregateIntersection(
 	// the same keys regardless of which plan won.
 	// The merge cursor evaluates the result value against the CONCATENATION
 	// of the matched child rows, each child spanning len(groupCols)+1 slots
-	// ([groupCols..., FUNC(col)]). A grouping column reads child 0's slot i
-	// (identical across children); child i's aggregate sits at its span's
-	// last slot. Baked, both read positionally.
+	// ([groupCols..., FUNC(col)]). Child i's aggregate sits at its span's last
+	// slot. Baked, both read positionally.
+	//
+	// The grouping columns must be read from the DRIVING leg's span, not from
+	// leg 0's. The two coincide only when the companion was prepended as a new
+	// leg 0; when the query already selects the companion's own COUNT(*) that
+	// leg is designated in place and sits at drivingLeg > 0. Reading ordinal i
+	// then takes the grouping key from a NON-driving aggregate leg, and for
+	// every group that leg has no entry for the absent filler is all-NULL — so
+	// the group's key is destroyed, not merely its aggregate. `SELECT g, SUM(v),
+	// COUNT(*)` over all-NULL v returned [NULL NULL 1] per group instead of
+	// [g NULL 1]; the driving leg is by construction the one with an entry for
+	// every live group, which is the whole reason it drives.
 	childWidth := len(groupCols) + 1
+	groupingBase := 0
+	if needsCompanion && drivingLeg > 0 {
+		groupingBase = drivingLeg * childWidth
+	}
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+len(aggs))
 	for i, col := range groupCols {
 		fields = append(fields, values.RecordConstructorField{
 			Name:  col,
-			Value: values.NewFieldValueWithResolvedOrdinal(col, i, values.UnknownType),
+			Value: values.NewFieldValueWithResolvedOrdinal(col, groupingBase+i, values.UnknownType),
 		})
 	}
 	for i := range aggs {
