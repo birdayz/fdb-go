@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -1089,10 +1090,14 @@ var _ = Describe("RebuildIndex", func() {
 				if err != nil {
 					return nil, err
 				}
-				// Counting no longer configured — should error.
+				// Counting no longer configured. Java does not fail on that — it
+				// falls through to the index path (FDBRecordStore.java:2320-2322) —
+				// and this store has no universal COUNT index to answer from, so
+				// the failure that surfaces is index selection's.
 				_, err = store.GetRecordCount()
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("recordCountKey is nil"))
+				Expect(errors.As(err, new(*AggregateFunctionNotSupportedError))).To(BeTrue(),
+					"a removed record-count key must fall through to the index path: %v", err)
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

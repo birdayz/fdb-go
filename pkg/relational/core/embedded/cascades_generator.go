@@ -2214,7 +2214,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 //
 // WHERE THE STATE COMES FROM, and why it must be an OPENED store. Java reads
 // the state off a store that is already open: PlanContext.Builder.fromRecordStore
-// (PlanContext.java:250-252) passes recordStore.getRecordStoreState(), and the
+// (PlanContext.java:249-251) passes recordStore.getRecordStoreState(), and the
 // store reached that call through checkVersion, which has already reconciled
 // every index added since the header's recorded metadata version
 // (FDBRecordStore.checkRebuildIndexes, FDBRecordStore.java:4743-4767). So in

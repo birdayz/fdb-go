@@ -179,12 +179,20 @@ func LoadIndexBuildState(store *FDBRecordStore, index *Index) (*IndexBuildState,
 		RecordsScanned: &scanned,
 	}
 
-	// Try to get total record count (requires a COUNT index).
+	// Total record count, from the maintained counters or from a universal COUNT
+	// index. Java catches exactly AggregateFunctionNotSupportedException here —
+	// "very likely it is because there is no suitable COUNT type index defined" —
+	// and reports an unknown total (IndexBuildState.java:76-82). Every other failure
+	// propagates: a read error is not "no COUNT index".
 	total, err := store.GetRecordCount()
-	if err == nil {
+	switch {
+	case err == nil:
 		result.RecordsInTotal = &total
+	case errors.As(err, new(*AggregateFunctionNotSupportedError)):
+		// RecordsInTotal stays nil.
+	default:
+		return nil, fmt.Errorf("load build state: %w", err)
 	}
-	// If no COUNT index, RecordsInTotal stays nil (matching Java).
 
 	return result, nil
 }

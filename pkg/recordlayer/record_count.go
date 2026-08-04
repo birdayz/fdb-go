@@ -88,43 +88,122 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 	return nil
 }
 
-// GetSnapshotRecordCount returns the count of records matching the given key.
-// Uses snapshot reads (non-conflicting) matching Java's getSnapshotRecordCount().
-// Only allowed when RecordCountState is READABLE.
+// snapshotRecordCountFromCountKey reads the store's MAINTAINED record counts — the
+// atomic counters under the RecordCountKey subspace — for the given evaluated value
+// of the store's record-count key. ok=false means the counters are not a usable
+// source (no record-count key configured, or its state is not READABLE), which is
+// Java's "skip the whole `if` block and fall through to the index path".
 //
-// For ungrouped counting (EmptyKeyExpression), pass an empty tuple.
-// For per-type counting, pass a tuple with the record type name/index.
+// Port of the header branch of Java's getSnapshotRecordCount(key, value, filter)
+// (FDBRecordStore.java:2286-2317). Java's `key` argument is implicit in this
+// signature: countKey is Key.Evaluated, and the KeyExpression it was evaluated
+// against is the store's own record-count key — or EmptyKeyExpression.EMPTY when
+// countKey is empty, which is the only shape a caller asking for a store-wide total
+// can mean.
 //
-// Returns 0 if no count exists (null in FDB means 0, matching Java).
-func (store *FDBRecordStore) GetSnapshotRecordCount(countKey tuple.Tuple) (int64, error) {
-	if store.metaData.GetRecordCountKey() == nil {
-		return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil)")
-	}
-	store.stateMu.RLock()
-	countDisabled := store.storeHeader != nil && store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_READABLE
-	var countState gen.DataStoreInfo_RecordCountState
-	if store.storeHeader != nil {
-		countState = store.storeHeader.GetRecordCountState()
-	}
-	store.stateMu.RUnlock()
-	if countDisabled {
-		return 0, fmt.Errorf("record count is not readable (state: %s)", countState)
+// That gives Java's two branches exactly:
+//
+//   - A non-empty countKey, or an empty one against an EmptyKeyExpression count key,
+//     is `recordMetaData.getRecordCountKey().equals(key)` — one get of one slot.
+//   - An empty countKey against a NON-empty (grouped) count key is
+//     `key.isPrefixKey(recordMetaData.getRecordCountKey())`, which is always true
+//     because EmptyKeyExpression is a prefix of everything
+//     (BaseKeyExpression.java:73-75), and Java answers it by summing EVERY group in
+//     the count subspace. There is no Java call shape where that combination reads
+//     the ungrouped slot instead: `equals` has already failed, so a store counting
+//     by record type would report the ungrouped slot's 0 as its total.
+//
+// The range excludes the count subspace prefix itself, as Java's
+// `getSubspace().range(Tuple.from(RECORD_COUNT_KEY))` does. Only the phantom zero
+// that DeleteAllRecords writes lives exactly there, and it contributes nothing.
+func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tuple) (int64, bool, error) {
+	recordCountKey := store.metaData.GetRecordCountKey()
+	if recordCountKey == nil || !store.recordCountStateIsReadable() {
+		return 0, false, nil
 	}
 
 	countSubspace := store.subspace.Sub(RecordCountKey)
-	fdbKey := countSubspace.Pack(countKey)
+	// Snapshot read (non-conflicting), matching Java's context.readTransaction(true).
+	tr := store.context.Transaction().Snapshot()
 
-	// Use snapshot read (non-conflicting), matching Java
-	value, err := store.context.Transaction().Snapshot().Get(fdbKey).Get()
-	if err != nil {
-		return 0, fmt.Errorf("failed to read record count: %w", err)
+	_, ungroupedCountKey := recordCountKey.(*EmptyKeyExpression)
+	if len(countKey) > 0 || ungroupedCountKey {
+		value, err := tr.Get(countSubspace.Pack(countKey)).Get()
+		if err != nil {
+			return 0, false, fmt.Errorf("failed to read record count: %w", err)
+		}
+		return decodeRecordCount(value), true, nil
 	}
-	return decodeRecordCount(value), nil
+
+	begin, end := countSubspace.FDBRangeKeys()
+	kvs, err := tr.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+	if err != nil {
+		return 0, false, fmt.Errorf("read grouped record counts: %w", err)
+	}
+	var total int64
+	for _, kv := range kvs {
+		total += decodeRecordCount(kv.Value)
+	}
+	return total, true, nil
 }
 
-// GetRecordCount returns the total count across all groups by reading
-// the count for the evaluated count key of the given record.
-// For ungrouped counting, this returns the total count.
+// GetSnapshotRecordCount returns the count of records matching the given evaluated
+// value of the store's record-count key. Uses snapshot (non-conflicting) reads.
+//
+// For ungrouped counting (EmptyKeyExpression), pass an empty tuple.
+// For per-type counting, pass a tuple with the record type key.
+//
+// Port of Java's getSnapshotRecordCount(key, value, filter)
+// (FDBRecordStore.java:2283-2323). The maintained counters answer when they can (see
+// snapshotRecordCountFromCountKey); otherwise Java does NOT fail — it falls through
+// to evaluateAggregateFunction(emptyList(), count(key), allOf(value), SNAPSHOT,
+// filter) (FDBRecordStore.java:2320-2322), so a store with no record-count key at
+// all, or whose counters are WRITE_ONLY/DISABLED, is still counted from a universal
+// COUNT index. The empty record-type list is what restricts that to universal
+// indexes (IndexFunctionHelper.java:180-181).
+//
+// Returns 0 if no count exists (null in FDB means 0, matching Java).
+func (store *FDBRecordStore) GetSnapshotRecordCount(countKey tuple.Tuple) (int64, error) {
+	count, fromCountKey, err := store.snapshotRecordCountFromCountKey(countKey)
+	if err != nil || fromCountKey {
+		return count, err
+	}
+
+	// Java's `key`. An empty evaluated value came from EmptyKeyExpression.EMPTY; a
+	// non-empty one can only have come from the store's own record-count key, so
+	// without one there is no expression to count by and no Java call shape to port.
+	countKeyExpr := EmptyKey()
+	scanRange := TupleRangeAll
+	if len(countKey) > 0 {
+		recordCountKey := store.metaData.GetRecordCountKey()
+		if recordCountKey == nil {
+			return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil), so the count key %v cannot be interpreted", countKey)
+		}
+		countKeyExpr = recordCountKey
+		scanRange = TupleRangeAllOf(countKey)
+	}
+
+	fn := NewCountAggregateFunction(GroupAll(countKeyExpr))
+	result, err := store.EvaluateAggregateFunction(store.context.ctx, nil, fn, scanRange, IsolationLevelSnapshot)
+	if err != nil {
+		return 0, err
+	}
+	if len(result) == 0 {
+		return 0, fmt.Errorf("count aggregate returned an empty tuple")
+	}
+	total, isInt := result[0].(int64)
+	if !isInt {
+		return 0, fmt.Errorf("count aggregate returned %T, want int64", result[0])
+	}
+	return total, nil
+}
+
+// GetRecordCount returns the total number of records in the store.
+//
+// This is Java's getSnapshotRecordCount() (FDBRecordStore.java:2283, called with
+// EmptyKeyExpression.EMPTY / Key.Evaluated.EMPTY), and it is a TOTAL under every
+// record-count key: a GROUPED count key is rolled up by summing every group, not
+// read out of the ungrouped slot that no grouped store ever writes to.
 func (store *FDBRecordStore) GetRecordCount() (int64, error) {
 	return store.GetSnapshotRecordCount(tuple.Tuple{})
 }

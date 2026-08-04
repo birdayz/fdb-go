@@ -415,10 +415,14 @@ var _ = Describe("RecordCounting", func() {
 			_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 
-			// GetRecordCount should fail (state is DISABLED, not READABLE)
+			// A DISABLED count state does not fail the read: Java falls through to
+			// the index path (FDBRecordStore.java:2320-2322). This store has no
+			// universal COUNT index, so the failure that surfaces is index
+			// selection's, not the count state's.
 			_, err = store.GetRecordCount()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("not readable"))
+			Expect(errors.As(err, new(*AggregateFunctionNotSupportedError))).To(BeTrue(),
+				"a non-READABLE count state must fall through to the index path, not fail on the state: %v", err)
 
 			return nil, nil
 		})
@@ -493,10 +497,13 @@ var _ = Describe("RecordCounting", func() {
 			_, err = store.SaveRecord(order3)
 			Expect(err).NotTo(HaveOccurred())
 
-			// But querying should be blocked
+			// WRITE_ONLY counters are not read, but Java does not fail on that —
+			// it falls through to the index path (FDBRecordStore.java:2320-2322),
+			// and this store has no universal COUNT index to answer from.
 			_, err = store.GetRecordCount()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("not readable"))
+			Expect(errors.As(err, new(*AggregateFunctionNotSupportedError))).To(BeTrue(),
+				"a WRITE_ONLY count state must fall through to the index path, not fail on the state: %v", err)
 
 			// Transition back to READABLE
 			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
