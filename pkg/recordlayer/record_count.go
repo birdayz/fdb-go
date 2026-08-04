@@ -11,6 +11,26 @@ import (
 	"fdb.dev/gen"
 )
 
+// RecordCountKeySizeMismatchError is Java's
+// recordCoreException("key and value are not the same size") thrown by
+// getSnapshotRecordCount (FDBRecordStore.java:2295-2297) when the evaluated value
+// has a different number of columns than the key expression it is supposed to be a
+// value of.
+//
+// It is a typed error rather than a plain message because the two sizes are the
+// whole diagnosis: the caller either passed a value for a different count key or
+// truncated one, and the alternative to failing is answering from a slot nothing
+// ever writes — a confident, wrong 0.
+type RecordCountKeySizeMismatchError struct {
+	KeyColumnSize int
+	ValueSize     int
+}
+
+func (e *RecordCountKeySizeMismatchError) Error() string {
+	return fmt.Sprintf("key and value are not the same size: keyColumnSize=%d, valueSize=%d",
+		e.KeyColumnSize, e.ValueSize)
+}
+
 // Little-endian int64 constants for atomic ADD mutations.
 // Must match Java's FDBRecordStore constants exactly.
 var (
@@ -101,10 +121,18 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 // countKey is empty, which is the only shape a caller asking for a store-wide total
 // can mean.
 //
-// That gives Java's two branches exactly:
+// That gives Java's three arms exactly:
+//
+//   - A countKey whose length disagrees with the column size of the expression it
+//     was evaluated against is Java's `key.getColumnSize() != value.size()` throw
+//     (FDBRecordStore.java:2295-2297), raised BEFORE either read and only once the
+//     counters are READABLE — a caller error, never a count. Without it the
+//     packed slot for a wrong-width value simply does not exist and the store
+//     answers a confident 0.
 //
 //   - A non-empty countKey, or an empty one against an EmptyKeyExpression count key,
 //     is `recordMetaData.getRecordCountKey().equals(key)` — one get of one slot.
+//
 //   - An empty countKey against a NON-empty (grouped) count key is
 //     `key.isPrefixKey(recordMetaData.getRecordCountKey())`, which is always true
 //     because EmptyKeyExpression is a prefix of everything
@@ -120,6 +148,17 @@ func (store *FDBRecordStore) snapshotRecordCountFromCountKey(countKey tuple.Tupl
 	recordCountKey := store.metaData.GetRecordCountKey()
 	if recordCountKey == nil || !store.recordCountStateIsReadable() {
 		return 0, false, nil
+	}
+
+	// Java's `key` is implicit in this signature (see above): an empty countKey came
+	// from EmptyKeyExpression.EMPTY, whose column size is 0 and therefore always
+	// agrees; a non-empty one can only have been evaluated against the store's own
+	// record-count key, so that expression's column size is what it must match.
+	if len(countKey) > 0 && recordCountKey.ColumnSize() != len(countKey) {
+		return 0, false, &RecordCountKeySizeMismatchError{
+			KeyColumnSize: recordCountKey.ColumnSize(),
+			ValueSize:     len(countKey),
+		}
 	}
 
 	countSubspace := store.subspace.Sub(RecordCountKey)

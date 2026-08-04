@@ -350,4 +350,51 @@ var _ = Describe("RecordCountRollup", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// ── Item 4: a value of the wrong width is an error, not a count ──────────
+	//
+	// Java: getSnapshotRecordCount throws recordCoreException("key and value are
+	// not the same size") when key.getColumnSize() != value.size()
+	// (FDBRecordStore.java:2295-2297) — before either read, and only once the
+	// counters are READABLE.
+	//
+	// A two-column count key writes its counters at (RECORD_COUNT_KEY, typeKey,
+	// orderId). Asking for the count of just (typeKey) packs a slot nothing ever
+	// writes, so without the guard the store decodes a missing value as 0 and
+	// answers a confident, wrong number for a store that holds records.
+	It("rejects a count value whose width disagrees with the record-count key", func() {
+		ks := specSubspace()
+
+		builder := recordTypeKeyedMetaData()
+		builder.SetRecordCountKey(Concat(RecordTypeKey(), Field("order_id")))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md.GetRecordCountKey().ColumnSize()).To(Equal(2))
+
+		orderTypeKey := md.GetRecordType("Order").GetRecordTypeKey()
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			saveOrders(store, 5)
+
+			_, err = store.GetSnapshotRecordCount(tuple.Tuple{orderTypeKey})
+			var mismatch *RecordCountKeySizeMismatchError
+			Expect(errors.As(err, &mismatch)).To(BeTrue(),
+				"a 1-column value against a 2-column record-count key must fail, not read an unwritten slot: %v", err)
+			Expect(mismatch.KeyColumnSize).To(Equal(2))
+			Expect(mismatch.ValueSize).To(Equal(1))
+
+			// The other direction: the empty value is EmptyKeyExpression.EMPTY,
+			// column size 0 against column size 0, so it must still roll up.
+			total, err := store.GetSnapshotRecordCount(tuple.Tuple{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(Equal(int64(5)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
