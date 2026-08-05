@@ -62,6 +62,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -125,6 +127,12 @@ type retryOnceBackend struct {
 	// commit-time not_committed, subject to its read-only commit fast path, so
 	// a page that carries no writes still correctly sees nothing.
 	simInjectAt atomic.Int64
+	// everyOnce makes EVERY transaction fail exactly once, so a multi-page
+	// statement re-executes every one of its pages. That is what turns a
+	// per-page double-count into an effect big enough to cross a cap.
+	everyOnce atomic.Bool
+	mu        sync.Mutex
+	failedOrd map[int64]bool
 }
 
 func newRetryOnceBackend(sim *simfdb.SimDB) *retryOnceBackend {
@@ -167,6 +175,31 @@ func (b *retryOnceBackend) disarm() {
 	b.failAt.Store(-1)
 	b.permanent.Store(false)
 	b.simInjectAt.Store(-1)
+	b.everyOnce.Store(false)
+}
+
+// armEveryOnce makes every transaction from now on fail retryably exactly once.
+func (b *retryOnceBackend) armEveryOnce() {
+	b.seen.Store(0)
+	b.fired.Store(false)
+	b.mu.Lock()
+	b.failedOrd = map[int64]bool{}
+	b.mu.Unlock()
+	b.everyOnce.Store(true)
+}
+
+// takeEveryOnce reports whether this ordinal still owes its one failure.
+func (b *retryOnceBackend) takeEveryOnce(ordinal int64) bool {
+	if !b.everyOnce.Load() {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failedOrd[ordinal] {
+		return false
+	}
+	b.failedOrd[ordinal] = true
+	return true
 }
 
 func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
@@ -180,6 +213,10 @@ func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error
 		result, err := fn(tx)
 		if err != nil {
 			return result, err
+		}
+		if b.takeEveryOnce(ordinal) {
+			b.fired.Store(true)
+			return nil, fdb.Error{Code: 1020} // not_committed
 		}
 		if target := b.failAt.Load(); target >= 0 && target == ordinal {
 			b.fired.Store(true)
@@ -884,5 +921,220 @@ func TestPageRetry_TerminalPageFailureLeavesNothingBehind(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// recursiveChainLevels is the length of the stored chain the recursive CTE
+// walks, and therefore the number of recursion levels one clean execution
+// counts. It is chosen so that ONE count sits comfortably below the
+// maxStreamingRecursionDepth cap of 1000 and a per-page DOUBLE count sits
+// comfortably above it — the whole point being that neither verdict is a near
+// miss that could flip on an off-by-one in how levels straddle pages.
+const recursiveChainLevels = 600
+
+// recursiveScanLimit is this test's per-page scan budget. It is far larger than
+// pageRetryScanLimit because the effect under test does not depend on page SIZE:
+// retrying every page double-counts every level regardless of how the levels are
+// distributed across pages. A tiny budget only multiplies the number of
+// transactions (and the runtime) for no extra signal, so this takes the largest
+// budget that still breaks the walk into many pages.
+const recursiveScanLimit = 40
+
+// seedRecursiveChain builds a 1→2→…→N parent chain in one statement and
+// returns a connection with a small per-page scan budget, so the recursive CTE
+// really does break across fetchPage boundaries.
+//
+// The chain has to be STORED and the recursive leg has to join against it: the
+// scanned-rows limiter counts store reads only (key_value_cursor.go), so a pure
+// counter CTE — whose recursive leg reads only the temp table — never consumes
+// the budget, never paginates, and would resume from a nil continuation every
+// time. A nil continuation is exactly the case newRecursiveUnionCursor DOES
+// reset, which would make this test measure nothing.
+func seedRecursiveChain(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn {
+	t.Helper()
+	var vals strings.Builder
+	for i := 1; i <= recursiveChainLevels; i++ {
+		if i > 1 {
+			vals.WriteString(",")
+		}
+		fmt.Fprintf(&vals, "(%d,%d)", i, i-1)
+	}
+	mustExecSQL(t, db, ctx, "INSERT INTO edges VALUES "+vals.String())
+	return pinSimConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, recursiveScanLimit).
+			Build())
+	})
+}
+
+// recursiveChainQuery walks the stored chain one level at a time. TRAVERSAL
+// ORDER level_order pins the STREAMING level-union plan, whose cursor
+// (recursiveUnionCursor) is the only caller of checkDepth — the eager and DFS
+// arms have their own separate caps and would not exercise this at all.
+const recursiveChainQuery = "WITH RECURSIVE r(n) AS (" +
+	"SELECT id FROM edges WHERE parent = 0 " +
+	"UNION ALL " +
+	"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
+	") TRAVERSAL ORDER level_order SELECT n FROM r"
+
+// TestPageRetry_RecursionLevelIsPagePositional pins the last member of the
+// class this file is about: state a retried page advances that is neither on
+// paginatingRows nor staged as a page outcome.
+//
+// The recursive-CTE level count lives on the statement-wide ExecuteState and is
+// bumped deep inside the executor. A resumed cursor deliberately does not reset
+// it, so an attempt that walks k levels and then fails leaves those k counted
+// and the retry walks them again. Retry every page of a 600-level CTE and the
+// count reaches ~1200 against a cap of 1000: the statement fails 54F01 claiming
+// a recursion depth it never reached, on a query that is not even close to the
+// limit.
+//
+// This is the same rule as the continuation, applied to position that could not
+// be staged: it is rolled back at the top of every attempt instead.
+func TestPageRetry_RecursionLevelIsPagePositional(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, backend := openRetryOnceSchema(t, 9800,
+		"CREATE TABLE edges (id BIGINT, parent BIGINT, PRIMARY KEY (id))")
+	conn := seedRecursiveChain(t, ctx, db)
+
+	// Baseline: the query is well under the cap when nothing is retried, so a
+	// depth error below can only have come from double counting.
+	clean := countRecursiveRows(t, ctx, conn)
+	if clean != recursiveChainLevels {
+		t.Fatalf("unfaulted recursive CTE returned %d rows, want %d: the query does not walk the "+
+			"chain one level per row, so the level count this test reasons about is not the "+
+			"chain length", clean, recursiveChainLevels)
+	}
+
+	backend.armEveryOnce()
+	defer backend.disarm()
+
+	rows, err := conn.QueryContext(ctx, recursiveChainQuery)
+	if err == nil {
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		err = rows.Err()
+		rows.Close()
+		if err == nil && n != recursiveChainLevels {
+			t.Fatalf("recursive CTE returned %d rows under per-page retries, want %d",
+				n, recursiveChainLevels)
+		}
+	}
+	if !backend.fired.Load() {
+		t.Fatalf("no page was retried: this test exercised nothing")
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "recursive CTE exceeded maximum depth") {
+			t.Fatalf("a %d-level recursive CTE failed the 1000-level depth cap because its pages "+
+				"were retried: %v.\n\nEvery retried page re-counted the levels it had already "+
+				"counted before its transaction failed, because the recursion level is page "+
+				"POSITION on the statement-wide ExecuteState and a resumed cursor deliberately "+
+				"does not reset it. The query never reached that depth; the counter did.",
+				recursiveChainLevels, err)
+		}
+		t.Fatalf("recursive CTE under per-page retries: %v", err)
+	}
+}
+
+// countRecursiveRows runs the chain query and returns the row count.
+func countRecursiveRows(t *testing.T, ctx context.Context, conn *sql.Conn) int {
+	t.Helper()
+	rows, err := conn.QueryContext(ctx, recursiveChainQuery)
+	if err != nil {
+		t.Fatalf("recursive CTE: %v", err)
+	}
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("recursive CTE rows: %v", err)
+	}
+	rows.Close()
+	return n
+}
+
+// TestPageRetry_MemoryBudgetIsStatementCumulative is the other half of the
+// split, and it is a MEASUREMENT rather than a restatement: the memory budget
+// is deliberately NOT rolled back per attempt, and this checks that choice is
+// actually right instead of merely asserted.
+//
+// The budget gauges LIVE bytes, with every charge released on teardown and the
+// page closure closing its result set on the way out of a failed attempt too.
+// So a retried page must return the gauge to where it started on its own. If it
+// did not — if charges leaked on the error path — a retried multi-page query
+// under a budget would drift upward and eventually trip a limit it never
+// legitimately reached, and the correct fix would be to roll this back with the
+// recursion level rather than to leave it alone.
+//
+// Rolling it back is what would be WRONG if this passes: it would double-release
+// what teardown already released, and discard charges for buffers that outlive
+// the page.
+func TestPageRetry_MemoryBudgetIsStatementCumulative(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, backend := openRetryOnceSchema(t, 9900,
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+
+	for i := 0; i < pageRetryRows; i++ {
+		mustExecSQL(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, a) VALUES (%d, %d)", i, i))
+	}
+	// A budget large enough that one honest execution never approaches it, but
+	// small enough that unreleased per-page drift across a dozen retried pages
+	// would cross it.
+	conn := pinSimConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
+			Set(api.OptMaxStatementMemoryBytes, int64(64*1024)).
+			Build())
+	})
+
+	// An ORDER BY forces a buffering operator, so there are real charges to
+	// leak; a pure streaming scan would charge nothing and prove nothing.
+	const q = "SELECT id FROM t ORDER BY a"
+
+	rows, err := conn.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("baseline buffered query: %v", err)
+	}
+	base := 0
+	for rows.Next() {
+		base++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("baseline rows: %v", err)
+	}
+	rows.Close()
+	if base != pageRetryRows {
+		t.Fatalf("baseline returned %d rows, want %d", base, pageRetryRows)
+	}
+
+	backend.armEveryOnce()
+	defer backend.disarm()
+
+	rows, err = conn.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("buffered query with every page retried failed: %v.\n\nIf this is a memory "+
+			"budget error, charges are NOT being released when a failed attempt tears down, "+
+			"the gauge drifts up once per retried page, and the memory budget belongs on the "+
+			"page-positional side of the split with the recursion level — not on the "+
+			"statement-cumulative side where it is documented", err)
+	}
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows under per-page retries: %v", err)
+	}
+	rows.Close()
+	if !backend.fired.Load() {
+		t.Fatalf("no page was retried: this test exercised nothing")
+	}
+	if n != pageRetryRows {
+		t.Fatalf("buffered query returned %d rows under per-page retries, want %d", n, pageRetryRows)
 	}
 }

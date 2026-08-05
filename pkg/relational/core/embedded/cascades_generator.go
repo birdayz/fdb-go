@@ -1925,6 +1925,27 @@ func (r *paginatingRows) fetchPage() error {
 	var pageExhausted bool
 	var pageCont []byte
 
+	// The statement-wide ExecuteState carries one more piece of PAGE POSITION,
+	// and it lives too deep in the executor to stage as an outcome: the
+	// recursive-CTE level count. A resumed recursive cursor deliberately does not
+	// reset it (newRecursiveUnionCursor resets only on a nil continuation, or a
+	// cyclic CTE that pages mid-recursion would never trip its cap), so an
+	// attempt that walks k levels and then fails leaves those k counted and the
+	// re-execution walks the same k again. A finite CTE near the 1000-level cap
+	// then fails 54F01 with a depth it never actually reached.
+	//
+	// So it is snapshotted here and rolled back at the top of every attempt —
+	// the same treatment r.buf gets, and for the same reason. The rollback must
+	// be INSIDE the closure: the retry loop re-enters the closure without ever
+	// returning here, so an error-path rollback would never run.
+	//
+	// The state's other member, the memory budget, is deliberately NOT rolled
+	// back: it gauges LIVE bytes with paired release on teardown, so a failed
+	// attempt returns it to its entry value on its own. See
+	// ExecuteState.SnapshotRecursionLevels for the full statement-cumulative vs
+	// page-positional split and where a future member belongs.
+	recursionAtPageStart := r.execState.SnapshotRecursionLevels()
+
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
@@ -1940,6 +1961,7 @@ func (r *paginatingRows) fetchPage() error {
 		}
 		r.buf = r.buf[:0]
 		r.bufPos = 0
+		r.execState.RestoreRecursionLevels(recursionAtPageStart)
 
 		// One store per subspace per transaction, reused by every page
 		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
