@@ -16,9 +16,9 @@ const planCacheScopeDelim = "\x01"
 
 // planCacheScope builds the VERBATIM (un-normalized) plan-cache scope — the
 // database path + schema identity + metadata version + planner options — that
-// PlanCache prepends to the
-// normalized query text. A SET SCHEMA switch (connection.go SetSchema mutates
-// only the session schema, never the cache) or a metadata-version bump then
+// PlanCache prepends to the normalized query text. A SET SCHEMA switch
+// (connection.go SetSchema mutates only the session schema, never the cache)
+// or a metadata-version bump then
 // keys differently, so the same SQL against a different schema/table set can
 // no longer return a stale plan. Java's QueryCacheKey carries the schema
 // template version for the same reason (RFC-024).
@@ -65,7 +65,7 @@ const planCacheScopeDelim = "\x01"
 // readable-index section, and an index name is a quotable SQL identifier rather
 // than a restricted character class. Under a delimiter join,
 //
-//	planCacheScope("S", 0, "i2:\x010") == planCacheScope("S\x010\x01i2:", 0, "")
+//	planCacheScope("", "S", 0, "i2:\x010") == planCacheScope("", "S\x010\x01i2:", 0, "")
 //
 // — one schema/readable-index-set's compiled plan served for a DIFFERENT one.
 // The readable-index view is in this key precisely so a plan built while an

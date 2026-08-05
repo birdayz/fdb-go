@@ -286,6 +286,33 @@ var _ = Describe("KeyExpression unit tests", func() {
 				"the pre-bind type NAME was memoized permanently — Java-incompatible index bytes")
 		})
 
+		// The spec above cannot fail on the memo-store guard ALONE: swapping the
+		// binding generation already discards whatever the unbound evaluation
+		// memoized, so removing the guard leaves that spec green. The guard is
+		// the second, independent half of the invariant — an unbound expression
+		// deposits NOTHING — and it needs its own pin, or it is free to rot
+		// until some later change to bindTypeKeys makes the generation swap
+		// non-total and re-arms the string-in-index-key bug for real.
+		//
+		// The observable is the binding itself: before any bind there is no
+		// generation, and evaluating must not manufacture one to memoize into.
+		It("evaluating before any bind memoizes nothing at all", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			Expect(expr.binding.Load()).To(BeNil())
+
+			for i := 0; i < 3; i++ {
+				unbound, err := expr.Evaluate(asStored(order), order)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(unbound).To(Equal([][]any{{"Order"}}))
+			}
+
+			Expect(expr.binding.Load()).To(BeNil(),
+				"an unbound evaluation created a binding generation to memoize the type NAME into; "+
+					"that memo survives any bindTypeKeys that stops swapping the generation wholesale")
+		})
+
 		// Rebinding must reach every evaluation entry point, not just the
 		// memoized one: index maintenance goes through Evaluate, primary-key
 		// packing through PackDirect, and the scalar/flat fast paths are used
