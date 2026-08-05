@@ -1978,6 +1978,12 @@ func (r *paginatingRows) fetchPage() error {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 		r.execState.RestoreRecursionLevels(recursionAtPageStart)
+		// Fresh per-page scratch bookkeeping, for the same reason the recursion
+		// levels are restored above: this closure is the FDB retry loop's body
+		// and runs again from the UNCHANGED r.continuation after a retryable
+		// error, so a failed attempt's adoptions must not survive into its
+		// retry.
+		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
 		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
@@ -2069,6 +2075,11 @@ func (r *paginatingRows) fetchPage() error {
 		if classifyErr != nil {
 			return nil, classifyErr
 		}
+		// Retire the scratch entries this page has made unreachable. Placed
+		// AFTER the page's continuation is settled and only on success: a page
+		// that failed is retried from r.continuation, and retiring on a failed
+		// attempt would delete what that retry resumes from.
+		r.scratch.SweepAfterPage(exhausted)
 		// LIVENESS tripwire: a page that produced ZERO rows and did not
 		// advance its continuation would repeat forever — the per-page
 		// resume cost exceeded the page's own resource budget (e.g. a

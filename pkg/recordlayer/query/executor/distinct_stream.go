@@ -193,9 +193,6 @@ type distinctHashCursor struct {
 	// continuation it mints (each carrying its own prefix length).
 	entry      *distinctResumeState
 	entryToken int64
-	// reachedEnd records that the source exhausted, which is the proof Close
-	// needs to reclaim this cursor.s scratch entry.
-	reachedEnd bool
 	// resumeBytes/resumeInner are the continuation this cursor was resumed
 	// from. A page that consumed no row AND left the inner at the byte-identical
 	// position it started at re-emits resumeBytes verbatim instead of minting:
@@ -281,9 +278,6 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 // cursor advances afterward (no aliasing of the live set).
 func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
 	if inner == nil || inner.IsEnd() {
-		// The source is exhausted. Record it: from here on no continuation can
-		// name this cursor's entry, which is what lets Close reclaim it.
-		c.reachedEnd = true
 		return &recordlayer.EndContinuation{}, nil
 	}
 	innerBytes, err := inner.ToBytes()
@@ -318,8 +312,13 @@ func (c *distinctHashCursor) parkSeen() int64 {
 	}
 	if c.entry == nil {
 		c.entry = &distinctResumeState{base: c.base, prev: c.adoptedToken}
-		c.entryToken = c.scratch.parkDistinct(c.entry)
+		c.entryToken = c.scratch.parkDistinct(c.entry, c.seen.st)
 	}
+	// Hand this page's delta charge to the entry. The entry outlives the cursor,
+	// so the bytes must stay charged until the entry retires — otherwise an
+	// accumulating shape is invisible to the budget, which is what let a
+	// per-outer-row leak grow silently.
+	c.entry.charged = c.seen.Charged()
 	// Re-publish the live slice: append REALLOCATES, so the entry would
 	// otherwise keep pointing at a stale array and a later continuation's
 	// prefix would name keys the entry cannot see. Copying nothing here is the
@@ -328,34 +327,15 @@ func (c *distinctHashCursor) parkSeen() int64 {
 	return c.entryToken
 }
 
-// Close reclaims this cursor's scratch entry when the cursor ran to EXHAUSTION,
-// and only then.
-//
-// The proof obligation is "no continuation the statement still holds can name
-// this entry", and exhaustion discharges it: once the source ends, every
-// continuation this cursor produces is an EndContinuation, and an enclosing
-// operator that saw the end stops carrying the inner position — FlatMap's
-// exhausted-inner branch advances the outer and writes NO inner continuation
-// (flat_map_cursor.go:875-883). So any continuation naming this entry is
-// strictly older than the page's final one, and only the final one survives.
-//
-// This is what makes a correlated inner bounded. FlatMap builds a fresh inner
-// cursor per outer row (:384) and closes it the moment the inner exhausts
-// (:289), while an operator above serializes each emitted row's continuation —
-// so without reclaiming here, one seen-set per OUTER ROW lives for the whole
-// statement, uncharged. Measured before this: 12 outer rows, 12 live states.
-//
-// A cursor closed WITHOUT reaching the end keeps its entry: the page may have
-// stopped mid-stream and handed back a continuation that names it, and the next
-// page must be able to adopt it. That asymmetry is the whole rule — reclaiming
-// unconditionally would drop live state, which is how the deleted page sweep
-// silently lost rows.
+// Close does NOT retire this cursor's scratch entry, and must not: closing is a
+// CURSOR lifecycle event, and retirement follows NAMEABILITY. Even exhaustion
+// does not imply un-nameability — aggregateCursor.emitFinal emits its final row
+// carrying a RETAINED earlier inner continuation (streaming_cursors.go:393-401),
+// so a token minted before this cursor exhausted is still named after it, and
+// reclaiming here made that valid continuation fail to resume. Retirement is
+// ExecutionScratch.SweepAfterPage's job.
 func (c *distinctHashCursor) Close() error {
 	c.closed = true
-	if c.reachedEnd && c.entryToken != 0 {
-		c.scratch.discardDistinct(c.entryToken)
-		c.entryToken = 0
-	}
 	if c.inner != nil {
 		return c.inner.Close()
 	}

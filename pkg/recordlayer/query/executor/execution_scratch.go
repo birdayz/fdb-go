@@ -68,40 +68,47 @@ import (
 //     page into a hard "seen-set not held" failure.) Evicting on adopt keeps
 //     the bound at a couple of live entries per operator all the same.
 //
-// NO COLLECTOR, and none is needed: residency is bounded by three local rules,
-// none of which inspects a byte or needs page bookkeeping.
+// RETIREMENT FOLLOWS NAMEABILITY. An entry must live exactly as long as some
+// continuation the statement still holds can name its token — no longer, and
+// not one moment less. Three earlier designs keyed retirement on a CURSOR
+// LIFECYCLE EVENT instead, and each was wrong for its own reason. They are
+// recorded because the wrong answer is the intuitive one:
+//
+//   - on PARK: a retry resumes the predecessor the failed attempt was minted
+//     from, so minting cannot retire it.
+//   - on a page-local MARK of the surviving continuation: enclosing
+//     continuation objects cache their own bytes, so the final ToBytes need
+//     never call down and the mark is missed. It silently dropped rows.
+//   - on EXHAUSTION: an enclosing operator can retain a child continuation
+//     OBJECT past the child's end and serialize it later —
+//     aggregateCursor.emitFinal emits its final row carrying a retained earlier
+//     inner position (streaming_cursors.go:393-401). A token minted before the
+//     inner ended is still named after it.
+//
+// Object-graph reachability from the surviving continuation is what this
+// WANTED to be, and the code forbids it: sixteen sites wrap a child by
+// serializing it eagerly into a plain BytesContinuation (limitEnvelopeCursor,
+// executor.go:2009, is the one that matters here), so the child object is
+// dropped and no walk — however careful about byte caching — can see through
+// it. Bytes are the only medium that survives, so ADOPTION is the only ground
+// truth available: a page adopts exactly the entries its own continuation
+// named. SweepAfterPage is built on that, at the cost of one page of lag, plus
+// the exact case that needs no lag (an exhausted page names nothing at all).
+//
+// Residency is then bounded by that sweep plus two structural rules:
 //
 //  1. An entry belongs to a CURSOR, not to a continuation (the prefix length
 //     rides the continuation instead), so an operator that serializes a child
-//     continuation on EVERY emitted row — limitEnvelopeCursor does exactly that
-//     — adds one entry, not one per row.
+//     continuation on EVERY emitted row adds one entry, not one per row.
 //  2. Adoption evicts the predecessor and any sibling a failed attempt
 //     published from it, so a paging chain keeps two.
-//  3. A cursor that runs to EXHAUSTION reclaims its own entry when it closes
-//     (see distinctHashCursor.Close). This is what bounds a correlated inner:
-//     FlatMap builds a fresh inner cursor per outer row and closes it on
-//     exhaustion, and without rule 3 each one leaves an entry nothing ever
-//     adopts — one uncharged seen-set per outer row, for the statement.
-//     Measured: 12 outer rows, 12 live states.
 //
-// Rule 3 replaced a page-boundary SWEEP, which is worth recording so it is not
-// rebuilt. The sweep was removed because no shape needed it and its own test
-// could not detect its absence, and its first design silently dropped rows by
-// over-collecting. The leak it was speculatively guarding against turned out to
-// be real but LOCAL — it belongs to a cursor's own lifetime, which the cursor
-// can settle itself, deterministically, at the exact moment reachability ends.
-// A statement-wide collector was the wrong altitude for it.
-//
-// The residency assertions are the standing sentinel: if some future operator
-// parks what nothing adopts and never exhausts, they go red first.
-//
-// MEMORY. A committed layer is charged ONCE, permanently, against the
-// statement's ExecuteState when its keys are folded in — it really is held for
-// the statement's lifetime, so releasing it at page teardown would tell the
-// budget that a live set is free. Only the page's own delta is charged and
-// released per page. Between pages the by-value encoding was equally
-// uncharged, so this is not a regression in either direction; it is simply the
-// accurate account.
+// MEMORY. A parked entry holds its byte weight against the statement budget for
+// exactly as long as it lives: the producing cursor hands its page charge over
+// at park time instead of releasing it at close, and retirement releases it.
+// That is what makes an accumulating shape LOUD — the earlier design released
+// at cursor close, so leaked entries were invisible to the budget and grew in
+// silence.
 //
 // Concurrency: the executor is single-threaded per statement (zero goroutine
 // launches in this package, pinned by package_invariant_test.go), so the maps
@@ -109,6 +116,79 @@ import (
 type ExecutionScratch struct {
 	nextToken int64
 	distinct  map[int64]*distinctResumeState
+	// pageStart is the token high-water mark when the current page began, and
+	// adopted is what the page resumed from. See SweepAfterPage.
+	pageStart int64
+	adopted   map[int64]struct{}
+	// state is the statement's memory budget, so a parked entry's bytes stay
+	// charged for exactly as long as the entry lives. Set on first park.
+	state *recordlayer.ExecuteState
+}
+
+// BeginPage tells the scratch a page's execution is starting: it snapshots the
+// token high-water mark and clears the adoption record. Safe on a nil scratch.
+func (s *ExecutionScratch) BeginPage() {
+	if s == nil {
+		return
+	}
+	s.pageStart = s.nextToken
+	s.adopted = nil
+}
+
+// SweepAfterPage retires the entries the completed page has made unreachable.
+//
+// RETIREMENT FOLLOWS NAMEABILITY, and the only thing that can name a token is a
+// byte string the statement still holds. The statement holds exactly one — the
+// page's surviving continuation — so:
+//
+//   - exhausted: nothing is resumable at all, so NOTHING is nameable. Every
+//     entry retires. This is what bounds a single-page statement, including one
+//     whose correlated inner ran thousands of times.
+//   - otherwise: an entry parked BEFORE this page began and not adopted DURING
+//     it is unreachable, because a page adopts exactly the entries its own
+//     continuation named. Entries parked by this page are kept: which of them
+//     the surviving continuation names is not knowable yet, and the next page's
+//     adoptions are what settle it.
+//
+// Deliberately NOT object-graph reachability from the surviving continuation,
+// which is the shape this wanted to be: enclosing operators serialize their
+// child eagerly and hand back a plain BytesContinuation (limitEnvelopeCursor,
+// executor.go:2009, plus fifteen other sites), so the child object is dropped
+// and no walk can see through it. Adoption is the only ground truth that
+// survives that, at the cost of one page of lag.
+//
+// Retiring on a CURSOR lifecycle event instead — park, close, exhaustion — is
+// the mistake this replaced three times over. Exhaustion in particular does not
+// imply un-nameability: aggregateCursor.emitFinal emits its final row carrying
+// a RETAINED earlier inner continuation (streaming_cursors.go:393-401), so a
+// token minted before the inner exhausted is still named after it.
+//
+// Safe on a nil scratch.
+func (s *ExecutionScratch) SweepAfterPage(exhausted bool) {
+	if s == nil || s.distinct == nil {
+		return
+	}
+	for token, st := range s.distinct {
+		if !exhausted {
+			if token > s.pageStart {
+				continue
+			}
+			if _, keep := s.adopted[token]; keep {
+				continue
+			}
+		}
+		s.releaseEntry(st)
+		delete(s.distinct, token)
+	}
+	s.adopted = nil
+}
+
+// releaseEntry returns a retired entry's bytes to the statement budget.
+func (s *ExecutionScratch) releaseEntry(st *distinctResumeState) {
+	if st.charged > 0 {
+		s.state.ReleaseMemory(st.charged)
+		st.charged = 0
+	}
 }
 
 // NewExecutionScratch mints a scratch for one statement. A nil *ExecutionScratch
@@ -187,12 +267,19 @@ type distinctResumeState struct {
 	// prev is the token this state's cursor adopted, dropped when a SUCCESSOR
 	// is adopted (never when one is minted — see rule 2 above).
 	prev int64
+	// charged is the entry's byte weight, held against the statement budget
+	// for exactly as long as the entry lives. The producing cursor hands its
+	// page charge over at park time rather than releasing it at close, so an
+	// entry that outlives its cursor is VISIBLE to the budget: an accumulating
+	// shape fails loudly on the budget instead of growing silently.
+	charged int64
 }
 
 // parkDistinct publishes a cursor's state and returns the token naming it. It
 // evicts NOTHING: the attempt that mints a token may still fail, and its retry
 // resumes from the predecessor.
-func (s *ExecutionScratch) parkDistinct(st *distinctResumeState) int64 {
+func (s *ExecutionScratch) parkDistinct(st *distinctResumeState, state *recordlayer.ExecuteState) int64 {
+	s.state = state
 	if s.distinct == nil {
 		s.distinct = make(map[int64]*distinctResumeState, 4)
 	}
@@ -207,6 +294,9 @@ func (s *ExecutionScratch) parkDistinct(st *distinctResumeState) int64 {
 func (s *ExecutionScratch) discardDistinct(token int64) {
 	if s == nil || s.distinct == nil {
 		return
+	}
+	if st, ok := s.distinct[token]; ok {
+		s.releaseEntry(st)
 	}
 	delete(s.distinct, token)
 }
@@ -270,20 +360,23 @@ func (s *ExecutionScratch) adoptDistinct(
 		)
 	}
 	if n > st.foldedN {
-		// Fold this continuation's keys into the committed layer, ONCE. Their
-		// bytes become a permanent statement charge (see MEMORY above).
-		var folded int64
+		// Fold this continuation's keys into the committed layer, ONCE. No
+		// charge here: these bytes were charged when the producing cursor
+		// parked them, and the entry has held that charge ever since. Charging
+		// again would double-count every key on every page.
 		for _, key := range st.order[st.foldedN:n] {
 			if _, dup := st.base.m[key]; dup {
 				continue
 			}
 			st.base.m[key] = struct{}{}
-			folded += int64(len(key))
-		}
-		if err := state.ChargeMemory(folded); err != nil {
-			return nil, err
 		}
 		st.foldedN = n
 	}
+	// Record the adoption: this is the ground truth SweepAfterPage retires on —
+	// a page adopts exactly the entries its own continuation named.
+	if s.adopted == nil {
+		s.adopted = make(map[int64]struct{}, 2)
+	}
+	s.adopted[token] = struct{}{}
 	return st.base, nil
 }

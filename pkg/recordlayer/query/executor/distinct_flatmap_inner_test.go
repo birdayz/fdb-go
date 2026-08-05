@@ -54,10 +54,11 @@ func flatMapOverDistinct(t *testing.T, outerRows, innerRows int) (*EvaluationCon
 // live states. It is uncharged because a page releases its memory charges at
 // teardown, so the budget cannot see it either.
 //
-// The reclaim is keyed on EXHAUSTION, which is what discharges the proof
-// obligation: once the inner ends, FlatMap's exhausted-inner branch advances
-// the outer and writes NO inner continuation (flat_map_cursor.go:875-883), so
-// nothing the statement still holds can name that entry.
+// Retirement happens at the PAGE boundary, not on any cursor lifecycle event:
+// when the page ends exhausted, nothing is resumable at all, so nothing is
+// nameable and every entry retires. Keying it on the inner cursor's own
+// exhaustion looked equivalent and is not — see
+// TestDistinctAggregateFinalRowStaysResumable.
 func TestDistinctAsFlatMapInnerDoesNotAccumulate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -66,6 +67,7 @@ func TestDistinctAsFlatMapInnerDoesNotAccumulate(t *testing.T) {
 	scratch := NewExecutionScratch()
 	evalCtx = evalCtx.WithExecutionScratch(scratch)
 
+	scratch.BeginPage()
 	props := recordlayer.DefaultExecuteProperties()
 	props.State = recordlayer.NewExecuteState(1 << 30)
 	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props)
@@ -90,6 +92,8 @@ func TestDistinctAsFlatMapInnerDoesNotAccumulate(t *testing.T) {
 		}
 	}
 	_ = cursor.Close()
+	// The page ended exhausted, exactly as the statement's paging loop reports it.
+	scratch.SweepAfterPage(true)
 
 	if rows != outerRows*innerRows {
 		t.Fatalf("FlatMap emitted %d rows, want %d", rows, outerRows*innerRows)
@@ -104,9 +108,8 @@ func TestDistinctAsFlatMapInnerDoesNotAccumulate(t *testing.T) {
 	if live := scratch.LiveDistinctSets(); live != 0 {
 		t.Fatalf(
 			"%d live scratch states after %d outer rows (want 0): each correlated inner "+
-				"cursor parked an entry that nothing adopts, and they must be reclaimed when "+
-				"the exhausted cursor closes or they accumulate per outer row for the whole "+
-				"statement, invisible to the memory budget",
+				"cursor parked an entry that nothing ever adopts, and an exhausted page must "+
+				"retire them or they accumulate per outer row for the whole statement",
 			live, outerRows,
 		)
 	}

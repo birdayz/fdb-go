@@ -2364,7 +2364,16 @@ func executeHashDistinct(
 	}
 	return newCloseHookCursor(
 		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),
-		func() { props.State.ReleaseMemory(seen.Charged()) },
+		func() {
+			// A cursor that PARKED handed its delta charge to the scratch entry,
+			// which outlives it — releasing here would tell the budget that a
+			// live set is free, and an accumulating shape would grow invisibly.
+			// The entry's own retirement releases it (SweepAfterPage).
+			if cursor.entryToken != 0 {
+				return
+			}
+			props.State.ReleaseMemory(seen.Charged())
+		},
 	), nil
 }
 
