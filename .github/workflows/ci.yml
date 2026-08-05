@@ -96,6 +96,18 @@ jobs:
         id: test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
+      # tools/bazelscaleset is a standalone Go module (its own go.mod, absent from
+      # go.work) so the runner supervisor's GitHub-API dependencies never enter the
+      # record-layer dependency graph. That separation also put its 53 tests outside
+      # `bazelisk test //...` — they ran NOWHERE, in CI or locally, while looking
+      # entirely normal in review. This step is the lane; //pkg/docscheck's
+      # TestOutOfBazelLanesAreReal fails if it is renamed or removed, so the
+      # exemption cannot rot back into silence.
+      - name: Test the standalone runner-supervisor module
+        if: ${{ !cancelled() }}
+        run: GOWORK=off go test ./... -count=1
+        working-directory: tools/bazelscaleset
+
       - name: Timeout budgets
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         # Same gate as the race lane's, over the main suite — see the long comment

@@ -389,7 +389,7 @@ func TestRemoteKillSignalsSessionGroup(t *testing.T) {
 	// And the kill went over ssh as a process-group kill.
 	found := false
 	for _, l := range argvLines(t, argvLog) {
-		if strings.Contains(l, "runner@10.0.0.2") && strings.Contains(l, `kill -9 -- "-$pid"`) {
+		if strings.Contains(l, "runner@10.0.0.2") && strings.Contains(l, `kill -9 "-$pid"`) {
 			found = true
 		}
 	}
@@ -429,10 +429,10 @@ wait`)
 	}
 	var sawTerm, sawKill bool
 	for _, l := range argvLines(t, argvLog) {
-		if strings.Contains(l, `kill -15 -- "-$pid"`) {
+		if strings.Contains(l, `kill -15 "-$pid"`) {
 			sawTerm = true
 		}
-		if strings.Contains(l, `kill -9 -- "-$pid"`) {
+		if strings.Contains(l, `kill -9 "-$pid"`) {
 			sawKill = true
 		}
 	}
@@ -619,5 +619,128 @@ func TestAdoptRemoteSparesNonRunnerPID(t *testing.T) {
 	}
 	if s.count() != 0 {
 		t.Fatalf("running = %d, want 0 (a reused non-runner pid must not be adopted)", s.count())
+	}
+}
+
+// posixShells returns every POSIX shell on this machine that the remote kill
+// script could plausibly be interpreted by. The remote host's /bin/sh is
+// whatever that box ships: dash on Debian/Ubuntu (the runner pool), bash on
+// most developer machines. Both must work, so both get exercised wherever they
+// exist rather than trusting the one this machine happens to have.
+func posixShells(t *testing.T) map[string]string {
+	t.Helper()
+	found := map[string]string{}
+	for _, name := range []string{"sh", "dash", "bash", "ash"} {
+		if p, err := exec.LookPath(name); err == nil {
+			found[name] = p
+		}
+	}
+	if bb, err := exec.LookPath("busybox"); err == nil {
+		found["busybox sh"] = bb
+	}
+	if len(found) == 0 {
+		t.Fatal("no POSIX shell found on this machine — the remote kill script is interpreted by " +
+			"the remote host's /bin/sh, so a run that can execute none of them proves nothing about it")
+	}
+	return found
+}
+
+// TestRemoteKillScriptKillsTheGroupUnderEveryShell pins the remote kill path
+// against the shell incompatibility that made it a silent no-op in production.
+//
+// `kill -9 -- "-$pid"` looks correct and IS correct under bash, whose builtin
+// accepts the `--` end-of-options separator. dash's builtin does not: it aborts
+// with `kill: Illegal number: -` and signals nothing at all. The runner pool is
+// Debian/Ubuntu, where /bin/sh IS dash — so every remote kill silently did
+// nothing on exactly the hosts it was written for, while passing on any
+// developer box where /bin/sh is bash. The script's `2>/dev/null || true`
+// (correct on its own terms: a session that already exited must not fail the
+// reconcile) swallowed the only evidence.
+//
+// So the assertion is behavioural — run the real generated script under each
+// shell present and require the process GROUP to actually die — rather than a
+// string comparison, which is what let the defect read as covered.
+func TestRemoteKillScriptKillsTheGroupUnderEveryShell(t *testing.T) {
+	t.Parallel()
+
+	for name, shell := range posixShells(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// A leader plus a child, so a kill that reached only the named pid
+			// rather than the group is still caught.
+			leader := exec.Command("/bin/sh", "-c", "sleep 60 & sleep 60")
+			leader.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := leader.Start(); err != nil {
+				t.Fatalf("start leader: %v", err)
+			}
+			pid := leader.Process.Pid
+			t.Cleanup(func() {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				_, _ = leader.Process.Wait()
+			})
+
+			rwork := t.TempDir()
+			pool := remotePool(t, "runner@10.0.0.2", filepath.Join(rwork, "runner"), rwork)
+			sl := takeSlot(t, pool, 1)
+			pidfile := remotePIDFilePath(sl)
+			if err := os.MkdirAll(filepath.Dir(pidfile), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pidfile, []byte(strconv.Itoa(pid)+"\nrunner-1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"-c", remoteKillScript(sl, syscall.SIGKILL)}
+			if name == "busybox sh" {
+				args = append([]string{"sh"}, args...)
+			}
+			out, err := exec.Command(shell, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s: kill script failed: %v (%s)", name, err, out)
+			}
+
+			died := make(chan struct{})
+			go func() { _, _ = leader.Process.Wait(); close(died) }()
+			select {
+			case <-died:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s: the runner session's process group SURVIVED the kill script. "+
+					"Under this shell the script signalled nothing — the exact production silent no-op: "+
+					"runners are never killed and their slots are never reclaimed. "+
+					"If a `--` separator was reintroduced before the negative pid, that is the cause: "+
+					"dash's kill builtin rejects it with `Illegal number: -`.", name)
+			}
+		})
+	}
+}
+
+// TestRemoteKillScriptAvoidsTheDashHostileSeparator keeps the fix armed on
+// machines that have no dash to prove it on.
+//
+// The behavioural test above can only exercise the shells this machine has, and
+// a developer box with bash-as-/bin/sh and no dash passes it with the defect
+// fully reintroduced — the same blind spot that let the bug ship. This one fires
+// anywhere, and names the reason so the expectation cannot be "corrected" by
+// anyone who has not read why it exists.
+func TestRemoteKillScriptAvoidsTheDashHostileSeparator(t *testing.T) {
+	t.Parallel()
+
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		pool := remotePool(t, "runner@10.0.0.2", "/home/runner/actions-runner", t.TempDir())
+		sl := takeSlot(t, pool, 1)
+		script := remoteKillScript(sl, sig)
+		if strings.Contains(script, "-- \"-$pid\"") || strings.Contains(script, "-- -$pid") {
+			t.Errorf("remote kill script (sig %d) puts a `--` separator before the negative pid:\n%s\n"+
+				"dash — /bin/sh on every Debian/Ubuntu runner host — rejects it with `Illegal number: -` "+
+				"and signals NOTHING, so the whole remote kill path becomes a silent no-op there. "+
+				"bash accepts it, which is why this reads as working on a developer box. "+
+				"Use `kill -SIG \"-$pid\"`: the signal is already consumed, so the separator buys nothing.", int(sig), script)
+		}
+		if !strings.Contains(script, "\"-$pid\"") {
+			t.Errorf("remote kill script (sig %d) no longer signals the process GROUP (negative pid):\n%s\n"+
+				"Killing only the recorded pid leaves run.sh's children — Runner.Listener, Runner.Worker "+
+				"and the job's own processes — alive and holding the slot.", int(sig), script)
+		}
 	}
 }
