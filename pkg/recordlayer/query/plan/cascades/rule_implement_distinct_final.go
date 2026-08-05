@@ -149,6 +149,14 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 // fail a statement that would have been correct regardless — the over-scoping
 // this design rejects, arrived at from the other direction.
 //
+// Of the two, only PropDistinctRecords can COINCIDE with a firing secondary
+// proof, and that is what makes the order load-bearing rather than tidy: the
+// caller computes the proof only when the PK license is absent, so those two are
+// mutually exclusive and their relative order is unobservable. The property
+// license is computed per expression inside the partition loop, independently of
+// the PK license, so it is the arm that can hold while a proof is also in hand —
+// and reordering the two arms then stamps a plan that did not need it.
+//
 // So a stamp is written only when the secondary-UNIQUE proof is the SOLE
 // license. When the yielded plan cannot carry a stamp, the elision is DECLINED
 // and the physical distinct is kept: a proof whose dependency cannot be recorded
