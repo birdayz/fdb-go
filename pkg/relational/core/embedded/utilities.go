@@ -80,7 +80,22 @@ var renderableNaNs = func() map[uint64]string {
 		text    string
 	}{
 		{bitSize: 64, text: "CAST('NaN' AS DOUBLE)"},
-		{bitSize: 32, text: "CAST('NaN' AS FLOAT)"},
+		// The OUTER DOUBLE cast is not decoration. A bound float64 must
+		// advertise DOUBLE, and the inner FLOAT cast is what produces the bits
+		// — left bare it also changes the expression's STATIC type, which is
+		// observable in two ways that have nothing to do with the value:
+		// `SELECT ?` reported FLOAT column metadata where every other float64
+		// parameter reports DOUBLE, and `CAST(? AS FLOAT)` collapsed into an
+		// identity cast that SUCCEEDED, where a genuine DOUBLE→FLOAT cast of a
+		// NaN must fail 22F3H (cast.go's float64 arm, matching
+		// CastValue.java:168-170). Both MEASURED before this wrapper existed.
+		//
+		// The outer cast restores the type without touching the bits: the
+		// DOUBLE arm is `case float64: return n, nil`, a plain identity for a
+		// value that is already float64. Also measured end to end —
+		// CAST(CAST('NaN' AS FLOAT) AS DOUBLE) evaluates to
+		// 0x7ff8000000000000.
+		{bitSize: 32, text: "CAST(CAST('NaN' AS FLOAT) AS DOUBLE)"},
 	} {
 		parsed, err := strconv.ParseFloat("NaN", form.bitSize)
 		if err != nil {

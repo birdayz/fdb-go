@@ -233,3 +233,121 @@ func TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused(t *testing.T) {
 		}
 	})
 }
+
+// A bound parameter's STATIC TYPE must not depend on its value.
+//
+// The renderings that carry a NaN through the text parameter path are CAST
+// expressions, and a CAST states a type as well as a value. The pattern
+// 0x7ff8000000000000 is produced by CAST('NaN' AS FLOAT) — so left bare, that
+// rendering silently retyped the parameter, and the leak was observable in two
+// ways that have nothing to do with the bits:
+//
+//   - `SELECT ?` reported FLOAT column metadata, where every other bound
+//     float64 (including the OTHER NaN pattern, and every finite value) reports
+//     DOUBLE. A client reading result metadata would see the declared type of a
+//     column change based on which NaN payload happened to be bound.
+//   - `CAST(? AS FLOAT)` collapsed into an identity cast and SUCCEEDED, while a
+//     genuine DOUBLE→FLOAT cast of a NaN must fail 22F3H. Go rejects it at
+//     functions/cast.go's float64 arm, matching CastValue.java:168-170
+//     ("Cannot cast NaN or Infinite to FLOAT") — so the leak did not merely
+//     mislabel a type, it skipped a Java-parity rejection.
+//
+// Both were MEASURED on the bare rendering before the outer DOUBLE cast was
+// added, which is why this test asserts the type surface rather than trusting
+// that a value-preserving rendering is value-preserving in every dimension.
+func TestFDB_FloatSpecialParam_BoundNaNKeepsDoubleStaticType(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_fnantype")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fnantype")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE fnantype CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fnantype/s WITH TEMPLATE fnantype")
+	dsn := fmt.Sprintf("fdbsql:///testdb_fnantype?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// A projection of a bound parameter still needs a row to project over.
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 1.0)")
+
+	cases := []struct {
+		name string
+		val  float64
+		nan  bool
+	}{
+		{name: "java_canonical_nan", val: float64(float32(math.NaN())), nan: true},
+		{name: "go_default_nan", val: math.NaN(), nan: true},
+		// The control. A finite double has never gone through a CAST rendering,
+		// so it fixes what "correct" looks like independently of the NaN arms —
+		// without it, a change that retyped EVERY parameter would still pass.
+		{name: "finite_control", val: 1.5},
+	}
+
+	t.Run("select_param_advertises_DOUBLE", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rows, qErr := db.QueryContext(ctx, "SELECT ? FROM t", tc.val)
+				if qErr != nil {
+					t.Fatalf("SELECT ?: %v", qErr)
+				}
+				defer rows.Close()
+				colTypes, ctErr := rows.ColumnTypes()
+				if ctErr != nil {
+					t.Fatalf("ColumnTypes: %v", ctErr)
+				}
+				if len(colTypes) != 1 {
+					t.Fatalf("got %d columns, want 1", len(colTypes))
+				}
+				if got := colTypes[0].DatabaseTypeName(); got != "DOUBLE" {
+					t.Errorf("a bound float64 %s advertises %s, want DOUBLE — the parameter's "+
+						"static type must not depend on its VALUE", tc.name, got)
+				}
+				// And the value still survives, so a fix that corrected the type
+				// by rendering different bits cannot pass this.
+				if !rows.Next() {
+					t.Fatal("no row")
+				}
+				var got float64
+				if sErr := rows.Scan(&got); sErr != nil {
+					t.Fatalf("scan: %v", sErr)
+				}
+				if math.Float64bits(got) != math.Float64bits(tc.val) {
+					t.Errorf("%s projected as %#016x, want %#016x",
+						tc.name, math.Float64bits(got), math.Float64bits(tc.val))
+				}
+			})
+		}
+	})
+
+	// With the static type correct, an explicit DOUBLE→FLOAT cast of a bound NaN
+	// reaches the real cast and is refused, exactly as the same cast of a NaN
+	// from any other source is. This is the Java-parity behaviour the type leak
+	// was skipping, so it is asserted for BOTH patterns.
+	t.Run("cast_param_to_FLOAT_rejects_NaN_like_java", func(t *testing.T) {
+		for _, tc := range cases {
+			if !tc.nan {
+				continue
+			}
+			t.Run(tc.name, func(t *testing.T) {
+				var out sql.NullFloat64
+				cErr := db.QueryRowContext(ctx, "SELECT CAST(? AS FLOAT) FROM t", tc.val).Scan(&out)
+				if cErr == nil {
+					t.Fatalf("CAST(? AS FLOAT) of %s SUCCEEDED (returned %v). A DOUBLE→FLOAT "+
+						"cast of a NaN must be refused — Java fails it at CastValue.java:168-170, "+
+						"and success here means the parameter was typed FLOAT and the cast "+
+						"collapsed into an identity", tc.name, out)
+				}
+				var apiErr *api.Error
+				if !errors.As(cErr, &apiErr) || apiErr.Code != api.ErrCodeInvalidCast {
+					t.Errorf("CAST(? AS FLOAT) of %s failed with %v, want %s (InvalidCast)",
+						tc.name, cErr, api.ErrCodeInvalidCast)
+				}
+			})
+		}
+	})
+}
