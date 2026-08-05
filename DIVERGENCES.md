@@ -11,6 +11,66 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
+### Default format version for a NEW store: Go writes 14, Java writes 7 (OPEN, mechanically unblocked)
+
+Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
+(`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
+(`FDBRecordStore.java:5437`). Go's default is `formatVersionCurrent = 14`, which is
+`FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
+`MAX_SUPPORTED_VERSION` (`:182`, `getMaximumSupportedVersion()` at `:203`). So a new store
+created by Go declares a **newer on-disk format than a new store created by Java**, and Go
+also upgrades any store it opens to that version.
+
+This is deliberate for the moment, not an oversight, and it is **not** a wire-compat
+break in the read/write sense: format versions 8–14 gate store-header features
+(user fields, `READABLE_UNIQUE_PENDING`, record-count state, store locks, incarnation),
+not record or index key encoding. The risk it carries is narrower and specific: a Java
+instance pinned at its default 7 opening a Go-created store sees a format it did not
+expect, and `validateFormatVersion` (`FormatVersion.java:225`) is the gate that decides
+what happens. Java notes it has **no policy for advancing this default**
+(`FormatVersion.java:210-213`, issue #709), which is exactly why aligning it is a
+judgement call rather than a typo fix.
+
+**Why it is not changed here.** Changing the default alters what *every* new Go store
+writes to disk, and every existing Go store was created under the current default — so
+it needs its own reviewed change with its own compatibility argument, not a drive-by
+edit inside a cardinality-migration PR.
+
+**What changed: alignment is now mechanically possible.** Until CQ-90, Go had no way to
+express "open at a version other than the newest this binary knows" —
+`maybeUpgradeFormatVersion` raised every store to `formatVersionCurrent` on every open,
+so even writing an older version into the header was undone by the next open. Java takes
+the target from the builder (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`,
+`:2245`/`:2266`) precisely so a rolling upgrade can pin every instance to the OLD format
+and stop any one of them writing a layout the others cannot read. Go now has
+`StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder` twin); the upgrade
+targets it rather than a constant, new stores are born at it, and it is a ceiling that
+never downgrades. The remaining work is a decision about the DEFAULT, not a missing
+capability.
+
+### Version-gated header features: WRITES gated like Java, READS still lenient (OPEN, narrow)
+
+Java guards every version-gated store-header feature at its site with
+`if (!getFormatVersionEnum().isAtLeast(V)) throw` — header user fields
+(`FDBRecordStore.java:3222`), record-count state (`:3443`), store lock state
+(`:3478`/`:3494`), incarnation (`:3503`/`:3517`) — and gates the record-count key/state
+written at store creation independently (`:5950-5957`).
+
+Go now ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
+`UnsupportedFeatureForFormatVersionError`), because those are the wire-compat hazard: a
+v12 store lock written into a header that still declares 11 is a lock a correctly-behaved
+older reader does not understand and therefore silently ignores. Pinned by a table-driven
+spec per feature plus a contrast case at the current version.
+
+**Still divergent, deliberately and narrowly: the READ side.** Java also throws from
+`getIncarnation()` (`:3503`) and `validateCanAccessHeaderUserFields()` (`:3222`) when the
+format is too old; Go's `GetIncarnation()` returns 0 and `GetHeaderUserField()` returns
+nil. Those read paths write nothing, so no bytes diverge and no older instance is misled —
+the gap is strictness (catching programmer error early) rather than compatibility. Closing
+it changes two public signatures from value-returning to `(value, error)`, which is an API
+break worth its own change rather than a rider on a migration PR. Recorded here so it is a
+known gap and not an oversight.
+
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
 **Java:** `createIntersectionAndCompensation` reapplies ANY compensation
@@ -1690,3 +1750,45 @@ have to be re-derived by whoever files it.
 > layer. The Go port declines the claim for nullable keys and re-admits it only
 > when the scan range excludes NULL; that divergence is what surfaced the
 > question.
+## Non-integer explicit record type keys now reach the key bytes (RESOLVED — read the migration note)
+
+`RecordType.getRecordTypeKey()` is written verbatim into primary keys and index
+entries whenever a primary key starts with `RecordTypeKey()`. Java normalizes it
+once through `TupleTypeUtil.toTupleEquivalentValue` (`RecordType.java:73` for the
+explicit key, `:174` for the derived one) — narrower integers widen to `Long`,
+`byte[]` becomes a `ByteString`, and strings and everything else pass through
+untouched — and then encodes whatever that produced.
+
+Go used to resolve the key from a `map[string]int64` built at metadata-build time
+and bound onto the shared `RecordTypeKeyExpression`. Only integers fit in that
+map, so a **string or bytes** explicit key was silently absent from it and the
+evaluation fell back to the proto message's **type NAME**. Setting
+`SetRecordTypeKey("k")` therefore wrote `"Order"` into the key while
+`GetRecordTypeKey()` reported `"k"` — bytes Java reads as an entirely different
+key, and bytes that disagreed with Go's own metadata. The key is now resolved
+from the record's own resolved `RecordType`, so the explicit key reaches the
+bytes exactly as Java writes them.
+
+Go's normalization additionally widens `uint8`/`uint16`/`uint32`, which Java has
+no equivalent of. This is not an extension: Java widens *its* narrower integer
+types, and Go's set is larger. Without it those values reach the tuple encoder
+raw, which handles only `int`/`int64`/`uint`/`uint64` and **panics** on the save
+path for a key the builder accepted. `uint`/`uint64` are deliberately left
+alone — they can exceed `MaxInt64`, the encoder handles them natively, and for
+in-range values the bytes are identical.
+
+**Migration.** Nothing this repository writes is affected: the SQL catalog's
+record type keys are `int64` (`catalog/system_tables.go`), and the one
+non-integer key in the tree sits on a record type whose primary key has no
+`RecordTypeKey()` prefix, so it never reached key bytes. The hazard is for a
+**Go-only** deployment that used a string or bytes explicit record type key
+*together with* a record-type-prefixed primary key: its existing records live
+under the old message-type-name prefix and the new code will not find them.
+Those records were already unreadable to Java — the old bytes were Java-invalid
+in the first place — so this converts a silent cross-engine divergence into a
+one-time re-key, not a regression against any previously correct state.
+
+Pinned by `metadata_builder_test.go` "record type key packs to Java's bytes":
+byte-level assertions that every narrower integer width collapses to one key,
+that a string key reaches the bytes rather than the type name, and that a bytes
+key keeps tuple type code `0x01` rather than being folded into a string.

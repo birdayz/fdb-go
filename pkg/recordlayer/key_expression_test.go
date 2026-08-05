@@ -32,8 +32,29 @@ func newOrderWithFlower(id int64, flowerType string, color gen.Color) *gen.Order
 }
 
 // asStored wraps a proto.Message into a minimal FDBStoredRecord for evaluation.
+// The record type is deliberately absent — expressions that need one (only
+// RecordTypeKeyExpression does) must say so rather than guess.
 func asStored(msg proto.Message) *FDBStoredRecord[proto.Message] {
 	return &FDBStoredRecord[proto.Message]{Record: msg}
+}
+
+// storedAs wraps a message together with its RESOLVED record type, built from
+// real metadata with the given explicit record type keys. This is the shape
+// every production evaluation sees, and the one a record type key needs: the
+// key is a property of the record's type, not of the expression.
+func storedAs(msg proto.Message, typeName string, keys map[string]any) *FDBStoredRecord[proto.Message] {
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	for name, key := range keys {
+		b.GetRecordType(name).SetRecordTypeKey(key)
+	}
+	md, err := b.Build()
+	Expect(err).NotTo(HaveOccurred())
+	rt := md.GetRecordType(typeName)
+	Expect(rt).NotTo(BeNil())
+	return &FDBStoredRecord[proto.Message]{RecordType: rt, Record: msg}
 }
 
 var _ = Describe("KeyExpression unit tests", func() {
@@ -211,30 +232,139 @@ var _ = Describe("KeyExpression unit tests", func() {
 	// ---------------------------------------------------------------------------
 
 	Describe("RecordTypeKeyExpression", func() {
-		It("unbound returns type name string when typeKeys not set", func() {
+		It("returns the record type's key", func() {
 			expr := RecordTypeKey()
 			order := newOrder(1, 10)
-			result, err := expr.Evaluate(asStored(order), order)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal([][]any{{"Order"}}))
-		})
-
-		It("bound returns int64 type key when typeKeys populated", func() {
-			expr := RecordTypeKey()
-			expr.bindTypeKeys(map[string]int64{"Order": 5})
-			order := newOrder(1, 10)
-			result, err := expr.Evaluate(asStored(order), order)
+			result, err := expr.Evaluate(storedAs(order, "Order", map[string]any{"Order": 5}), order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(5)}}))
 		})
 
-		It("bound falls back to name when record type not in map", func() {
+		// Java's evaluateMessage has no fallback: the key is whatever the
+		// record's type says it is, so a record whose type was never resolved
+		// has no key to give. Returning the message type NAME instead would put
+		// a string where the integer key belongs — bytes Java reads as a
+		// different key entirely — and would do it silently.
+		It("errors rather than substituting the message type name", func() {
 			expr := RecordTypeKey()
-			expr.bindTypeKeys(map[string]int64{"Customer": 3})
 			order := newOrder(1, 10)
-			result, err := expr.Evaluate(asStored(order), order)
+			_, err := expr.Evaluate(asStored(order), order)
+			var unresolved *RecordTypeKeyUnresolvedError
+			Expect(errors.As(err, &unresolved)).To(BeTrue(),
+				"a record with no resolved type produced a key instead of an error: %v", err)
+			Expect(unresolved.MessageType).To(Equal("Order"))
+		})
+
+		// Java: record == null ? Key.Evaluated.NULL.
+		It("evaluates to NULL when there is no record at all", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal([][]any{{"Order"}}))
+			Expect(result).To(Equal(nilKeyResult))
+		})
+
+		// The key follows the RECORD, so one expression serves every type.
+		It("gives each record type its own key from one expression object", func() {
+			expr := RecordTypeKey()
+			keys := map[string]any{"Order": 5, "Customer": 6}
+
+			order := newOrder(1, 10)
+			result, err := expr.Evaluate(storedAs(order, "Order", keys), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([][]any{{int64(5)}}))
+
+			customer := &gen.Customer{CustomerId: proto.Int64(1)}
+			result, err = expr.Evaluate(storedAs(customer, "Customer", keys), customer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([][]any{{int64(6)}}))
+		})
+
+		// Two LIVE metadata built from ONE expression graph. The order matters:
+		// both builds complete BEFORE either is evaluated. Any per-expression
+		// binding — however carefully invalidated — has a single slot here, so
+		// the second build overwrites the first and mdFirst's records get
+		// indexed under mdSecond's record type key. Evaluating each build right
+		// after constructing it cannot see that: the first evaluation happens
+		// while the first binding is still the current one.
+		It("two live metadata sharing one expression graph keep their own type keys", func() {
+			shared := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			build := func(orderTypeKey int64) *RecordMetaData {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				b.GetRecordType("Order").SetRecordTypeKey(orderTypeKey)
+				b.AddIndex("Order", NewIndex("by_type", shared))
+				md, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return md
+			}
+
+			mdFirst := build(5)
+			mdSecond := build(9)
+
+			evalUnder := func(md *RecordMetaData) [][]any {
+				stored := &FDBStoredRecord[proto.Message]{
+					RecordType: md.GetRecordType("Order"),
+					Record:     order,
+				}
+				result, err := md.GetIndex("by_type").RootExpression.Evaluate(stored, order)
+				Expect(err).NotTo(HaveOccurred())
+				return result
+			}
+
+			// The FIRST metadata, evaluated AFTER the second one was built.
+			Expect(evalUnder(mdFirst)).To(Equal([][]any{{int64(5)}}),
+				"the second metadata build changed the first metadata's record type key — "+
+					"the first store's index entries and primary keys are written under the wrong key")
+			Expect(evalUnder(mdSecond)).To(Equal([][]any{{int64(9)}}))
+
+			// And back again: neither build can be made to win by evaluation order.
+			Expect(evalUnder(mdFirst)).To(Equal([][]any{{int64(5)}}))
+		})
+
+		// Every entry point resolves from the same place, so none of them can
+		// drift from Evaluate: index maintenance goes through Evaluate,
+		// primary-key packing through PackDirect, and the compiled key path
+		// through the scalar/flat variants.
+		It("resolves the same key on every evaluation entry point", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+			stored := storedAs(order, "Order", map[string]any{"Order": 9})
+
+			scalar, err := expr.EvaluateScalar(stored, order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(scalar).To(Equal(int64(9)))
+
+			flat, err := expr.EvaluateFlat(stored, order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(flat).To(Equal([]any{int64(9)}))
+
+			pk := tuple.GetPacker()
+			defer tuple.PutPacker(pk)
+			Expect(expr.PackDirect(pk, stored, order)).To(BeTrue())
+			var packed []byte
+			Expect(pk.AppendInto(&packed, nil)).To(Equal(tuple.Tuple{int64(9)}.Pack()))
+		})
+
+		// PackDirect cannot return an error, so it must REFUSE an unresolvable
+		// record rather than pack a guess: false routes the caller to the
+		// erroring Evaluate path. Packing the type name here would put a string
+		// into a primary key while Evaluate refused the same record.
+		It("refuses to pack directly when the record type is unresolved", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			pk := tuple.GetPacker()
+			defer tuple.PutPacker(pk)
+			Expect(expr.PackDirect(pk, asStored(order), order)).To(BeFalse())
+
+			var packed []byte
+			Expect(pk.AppendInto(&packed, nil)).To(BeEmpty(),
+				"PackDirect wrote key bytes for a record whose type could not be resolved")
 		})
 
 		It("nil message returns [[nil]]", func() {
@@ -246,9 +376,8 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 		It("with nested expression prepends type key to nested values", func() {
 			expr := RecordTypeKey().Nest(Field("order_id"))
-			expr.(*RecordTypeKeyExpression).bindTypeKeys(map[string]int64{"Order": 7})
 			order := newOrder(99, 10)
-			result, err := expr.Evaluate(asStored(order), order)
+			result, err := expr.Evaluate(storedAs(order, "Order", map[string]any{"Order": 7}), order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(7), int64(99)}}))
 		})

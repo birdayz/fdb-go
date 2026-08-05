@@ -95,8 +95,9 @@ func TestComputeRecordsRange(t *testing.T) {
 	t.Run("int32 record-type key is normalized to int64 (no panic, matches placement)", func(t *testing.T) {
 		t.Parallel()
 		// SetRecordTypeKey(int32(...)) is valid; the tuple encoder panics on a raw int32, and
-		// bindTypeKeys stores int64, so the preset must normalize to int64 — matching where
-		// records are actually stored.
+		// GetRecordTypeKey widens every narrower integer to int64 (as Java's
+		// TupleTypeUtil.toTupleEquivalentValue does), so the preset must see int64 —
+		// matching where records are actually stored.
 		md := mdTyped()
 		md.recordTypes["A"].explicitRecordTypeKey = int32(1)
 		md.recordTypes["B"].explicitRecordTypeKey = int32(2)

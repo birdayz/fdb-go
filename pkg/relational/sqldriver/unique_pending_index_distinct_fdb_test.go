@@ -110,20 +110,37 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 		t.Fatalf("seed duplicate C1 rows: %v", err)
 	}
 
-	// Reopening with the UNIQUE index declared builds it inline; the violation
-	// on C1 = 7 sends it to READABLE_UNIQUE_PENDING rather than READABLE
-	// (store_builder.go step 4 / MarkIndexReadableOrUniquePending).
+	// Getting the index into READABLE_UNIQUE_PENDING takes the ONLY route Java
+	// offers, and it is deliberately not the inline one. An inline rebuild marks
+	// readable with allowUniquePending=FALSE (FDBRecordStore.java:4602 →
+	// :3767-3768) and THROWS on the C1 = 7 duplicate; READABLE_UNIQUE_PENDING is
+	// reachable only through IndexingBase.java:324, gated on
+	// IndexingPolicy.shouldAllowUniquePendingState (OnlineIndexer.java:1117),
+	// which defaults FALSE (:1220).
 	//
-	// The inline build is requested EXPLICITLY. The default policy would leave
-	// the index for a background build, because with no record-count key the
-	// count fallback reports an unbounded store for any non-empty one (Java's
-	// getRecordCountForRebuildIndexes, FDBRecordStore.java:4862-4884) — and a
-	// DISABLED index never reaches READABLE_UNIQUE_PENDING, which is the only
-	// state this test is about.
+	// So: let reconciliation leave the index DISABLED — with no record-count key
+	// the count fallback reports an unbounded store for any non-empty one (Java's
+	// getRecordCountForRebuildIndexes, FDBRecordStore.java:4862-4884) — then run
+	// an OnlineIndexer that opts in.
+	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		_, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		return nil, sErr
+	}); err != nil {
+		t.Fatalf("reconcile metadata with the UNIQUE index declared: %v", err)
+	}
+	indexer, iErr := recordlayer.NewOnlineIndexerBuilder().
+		SetDatabase(db).SetMetaData(md).SetIndex(md.GetIndex("T_C1_UNIQ")).
+		SetSubspace(ks).SetAllowUniquePendingState(true).Build()
+	if iErr != nil {
+		t.Fatalf("build online indexer: %v", iErr)
+	}
+	if _, bErr := indexer.BuildIndex(ctx); bErr != nil {
+		t.Fatalf("build unique index over violating data: %v", bErr)
+	}
 	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
-			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).
-			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 		if sErr != nil {
 			return nil, sErr
 		}
@@ -134,7 +151,7 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 		}
 		return nil, nil
 	}); err != nil {
-		t.Fatalf("build unique index over violating data: %v", err)
+		t.Fatalf("inspect index state: %v", err)
 	}
 
 	// The predicate on OTHER cannot be served by an index on C1 alone, so the

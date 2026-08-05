@@ -418,16 +418,24 @@ func (f *FieldKeyExpression) ColumnSize() int {
 // RecordTypeKeyExpression represents the special record type key prefix.
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
+// It carries NO state. Java's RecordTypeKeyExpression is a singleton with no
+// fields whose evaluateMessage reads the key off the record being evaluated:
+//
+//	record != null ? Key.Evaluated.scalar(record.getRecordType().getRecordTypeKey())
+//	               : Key.Evaluated.NULL
+//
+// Go previously bound a metadata-derived map onto the expression instead. That
+// made the expression object metadata-scoped state while the object itself is
+// shared: RecordMetaDataBuilder does not copy key expressions, so two builds
+// from one expression graph both wrote into the same slot, and whichever bound
+// LAST decided the record type key for BOTH — the first metadata's stores then
+// wrote index entries and primary keys under the second metadata's key. No
+// amount of invalidation fixes that, because the two bindings are both live at
+// once; the state has to go. Resolving from the record makes the key a
+// function of the record's own resolved type, which is what it always meant.
 type RecordTypeKeyExpression struct {
-	// cachedResults caches the Evaluate return for each type name.
-	// RecordTypeKey is deterministic per record type, so cache is safe.
-	// Uses sync.Map for concurrent access safety.
-	cachedResults sync.Map // string → [][]any
 	// nested is the optional nested key expression
 	nested KeyExpression
-	// typeKeys maps proto message full name → record type key (int64).
-	// Populated by metadata builder. Matches Java's record.getRecordType().getRecordTypeKey().
-	typeKeys map[string]int64
 }
 
 // RecordTypeKey creates a key expression that prefixes with the record type
@@ -435,15 +443,46 @@ func RecordTypeKey() *RecordTypeKeyExpression {
 	return &RecordTypeKeyExpression{}
 }
 
+// RecordTypeKeyUnresolvedError reports an evaluation of a record type key
+// against a record whose type was never resolved. Java cannot reach this: its
+// FDBRecord always carries a RecordType, and the save path evaluates the
+// primary key against an FDBStoredRecordBuilder that has been given the type
+// before any key is computed (FDBRecordStore.saveTypedRecord). Go's callers
+// must do the same. It is an ERROR rather than a fallback to the message's
+// type NAME because that fallback wrote a string where the integer type key
+// belongs — bytes Java reads as a different key entirely — and did it
+// silently.
+type RecordTypeKeyUnresolvedError struct {
+	// MessageType is the proto message name that was being evaluated, empty
+	// when there was no message either.
+	MessageType string
+}
+
+func (e *RecordTypeKeyUnresolvedError) Error() string {
+	return fmt.Sprintf("record type key evaluated without a resolved record type (message type %q): "+
+		"the caller must supply the FDBStoredRecord's RecordType", e.MessageType)
+}
+
+// recordTypeKeyOf resolves the record type key exactly as Java does: off the
+// record's own resolved type. A nil record is Java's NULL case.
+func recordTypeKeyOf(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, bool, error) {
+	if record == nil {
+		return nil, false, nil // Java: Key.Evaluated.NULL
+	}
+	if record.RecordType == nil {
+		var name string
+		if msg != nil {
+			name = string(msg.ProtoReflect().Descriptor().Name())
+		}
+		return nil, false, &RecordTypeKeyUnresolvedError{MessageType: name}
+	}
+	return record.RecordType.GetRecordTypeKey(), true, nil
+}
+
 // Nest adds a nested key expression after the record type prefix
 func (r *RecordTypeKeyExpression) Nest(expr KeyExpression) KeyExpression {
 	r.nested = expr
 	return r
-}
-
-// bindTypeKeys populates the type key lookup map. Called by metadata builder.
-func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
-	r.typeKeys = typeKeys
 }
 
 // Evaluate returns the record type key (integer), optionally followed by nested values.
@@ -453,35 +492,18 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 	if msg == nil {
 		return nilKeyResult, nil
 	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-
-	// Check cache — RecordTypeKey is deterministic per type name
-	if r.nested == nil {
-		if cached, ok := r.cachedResults.Load(typeName); ok {
-			return cached.([][]any), nil
-		}
+	typeKey, ok, err := recordTypeKeyOf(record, msg)
+	if err != nil {
+		return nil, err
 	}
-
-	// Look up the integer record type key (proto field number from union descriptor).
-	var typeKey any
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			typeKey = k
-		} else {
-			typeKey = typeName
-		}
-	} else {
-		typeKey = typeName
+	if !ok {
+		// Java's record == null arm: Key.Evaluated.NULL.
+		return nilKeyResult, nil
 	}
 
 	if r.nested == nil {
-		result := [][]any{{typeKey}}
-		r.cachedResults.Store(typeName, result)
-		return result, nil
+		return [][]any{{typeKey}}, nil
 	}
-
-	// EvaluateFlat for non-nested case — returns single-element []any
-	// (implementing FlatEvaluator interface)
 
 	nestedTuples, err := r.nested.Evaluate(record, msg)
 	if err != nil {
@@ -503,13 +525,11 @@ func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.M
 	if msg == nil {
 		return nil, nil
 	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			return k, nil
-		}
+	typeKey, ok, err := recordTypeKeyOf(record, msg)
+	if err != nil || !ok {
+		return nil, err
 	}
-	return typeName, nil
+	return typeKey, nil
 }
 
 // EvaluateFlat returns the type key as a single-element []any.
@@ -517,33 +537,28 @@ func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mes
 	if msg == nil {
 		return []any{nil}, nil
 	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	var typeKey any
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			typeKey = k
-		} else {
-			typeKey = typeName
-		}
-	} else {
-		typeKey = typeName
+	typeKey, ok, err := recordTypeKeyOf(record, msg)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return []any{nil}, nil
 	}
 	return []any{typeKey}, nil
 }
 
-// PackDirect encodes the record type key directly into a Packer.
+// PackDirect encodes the record type key directly into a Packer. Reports false
+// when the type cannot be resolved from the record, which routes the caller to
+// the erroring Evaluate path rather than packing a guess.
 func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
 	if msg == nil {
 		return false
 	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			pk.EncodeElement(k)
-			return true
-		}
+	typeKey, ok, err := recordTypeKeyOf(record, msg)
+	if err != nil || !ok {
+		return false
 	}
-	pk.EncodeElement(typeName)
+	pk.EncodeElement(typeKey)
 	return true
 }
 

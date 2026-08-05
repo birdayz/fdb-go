@@ -72,20 +72,70 @@ func TestPlanCacheKey_SchemaScoped(t *testing.T) {
 
 	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
 
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 0, ""), sql, planCacheScope("SCHEMA_B", 0, ""), sql) {
+	if planCacheHitsSame(t, planCacheScope("", "SCHEMA_A", 0, ""), sql, planCacheScope("", "SCHEMA_B", 0, ""), sql) {
 		t.Fatal("same SQL under different schemas shares a cache entry — SET SCHEMA staleness")
 	}
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 1, ""), sql, planCacheScope("SCHEMA_A", 2, ""), sql) {
+	if planCacheHitsSame(t, planCacheScope("", "SCHEMA_A", 1, ""), sql, planCacheScope("", "SCHEMA_A", 2, ""), sql) {
 		t.Fatal("same SQL under different metadata versions shares a cache entry")
 	}
 	// case-distinct schemas are DISTINCT (the scope is not folded).
-	if planCacheHitsSame(t, planCacheScope("s", 0, ""), sql, planCacheScope("S", 0, ""), sql) {
+	if planCacheHitsSame(t, planCacheScope("", "s", 0, ""), sql, planCacheScope("", "S", 0, ""), sql) {
 		t.Fatal("case-distinct schemas `s` and `S` collided — scope was normalized (wrong-schema plan)")
 	}
 	// Scope must not bleed into query text: schema "A" + query B... must not
 	// equal schema "" + query AB...
-	if planCacheHitsSame(t, planCacheScope("A", 0, ""), sql, planCacheScope("", 0, ""), "A"+sql) {
+	if planCacheHitsSame(t, planCacheScope("", "A", 0, ""), sql, planCacheScope("", "", 0, ""), "A"+sql) {
 		t.Fatal("schema scope bled into query text")
+	}
+}
+
+// TestPlanCacheKey_DBPathScoped pins that the plan-cache scope separates two
+// DATABASES, not just two schemas within one. A schema name is unique only
+// within its database, and the multi-tenant shape is exactly two databases
+// each holding a schema of the same name — different table sets, different
+// subspaces, different plans. With the database path outside the scope, the
+// two tenants' identical SQL lands on one cache entry, and whichever tenant
+// planned first has its compiled plan served to the other.
+//
+// This is the same wrong-plan family as TestPlanCacheKey_SchemaScoped above,
+// one level up. It is unreachable today only because DBPath is written once
+// per connection (connection.go New/Reset) and USE DATABASE is unimplemented,
+// so a single cache never sees two paths — an accident of two other files,
+// not a property of this key. Making the path a scope component is what stops
+// implementing USE DATABASE, or sharing a cache across connections, from
+// silently arming it.
+func TestPlanCacheKey_DBPathScoped(t *testing.T) {
+	t.Parallel()
+
+	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+
+	if planCacheHitsSame(t,
+		planCacheScope("/tenant_a", "MAIN", 0, ""), sql,
+		planCacheScope("/tenant_b", "MAIN", 0, ""), sql) {
+		t.Fatal("same SQL, same schema NAME, different databases share a cache entry — " +
+			"one tenant's compiled plan is served for another tenant's query")
+	}
+	// Database paths are case-sensitive for the same reason schema names are:
+	// the scope is verbatim and must never be folded.
+	if planCacheHitsSame(t,
+		planCacheScope("/db", "MAIN", 0, ""), sql,
+		planCacheScope("/DB", "MAIN", 0, ""), sql) {
+		t.Fatal("case-distinct database paths `/db` and `/DB` collided — scope was normalized")
+	}
+	// Equal in every component still SHARES: the added component must not
+	// over-partition the cache into a permanent 100% miss rate.
+	if !planCacheHitsSame(t,
+		planCacheScope("/tenant_a", "MAIN", 0, ""), sql,
+		planCacheScope("/tenant_a", "MAIN", 0, ""), sql) {
+		t.Fatal("identical (dbPath, schema, version, opts) did not share an entry — cache never hits")
+	}
+	// The path must not bleed into the neighbouring component: a path ending
+	// in the delimiter must not be able to spell a different (path, schema)
+	// split. This is the length-prefixing property, now over four components.
+	if planCacheHitsSame(t,
+		planCacheScope("/db"+planCacheScopeDelim+"4", "MAIN", 0, ""), sql,
+		planCacheScope("/db", planCacheScopeDelim+"4MAIN", 0, ""), sql) {
+		t.Fatal("database path bled into the schema component")
 	}
 }
 
@@ -109,8 +159,8 @@ func TestPlanCacheKey_PlannerOptionsScoped_Injective(t *testing.T) {
 	oneInertCommaName := plannerOptionsFrom(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule,SelectMergeRule"}).Build())
 
-	scopeA := planCacheScope("S", 0, twoRealRules.cacheKeyPart())
-	scopeB := planCacheScope("S", 0, oneInertCommaName.cacheKeyPart())
+	scopeA := planCacheScope("", "S", 0, twoRealRules.cacheKeyPart())
+	scopeB := planCacheScope("", "S", 0, oneInertCommaName.cacheKeyPart())
 
 	if scopeA == scopeB {
 		t.Fatalf("plan-cache scope collides two different DISABLED_PLANNER_RULES option sets: %q", scopeA)
@@ -141,8 +191,8 @@ func TestPlanCacheKey_PlannerOptionsScoped_Injective_Colon(t *testing.T) {
 	oneInertColonName := plannerOptionsFrom(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"A:B"}).Build())
 
-	scopeA := planCacheScope("S", 0, twoRealRules.cacheKeyPart())
-	scopeB := planCacheScope("S", 0, oneInertColonName.cacheKeyPart())
+	scopeA := planCacheScope("", "S", 0, twoRealRules.cacheKeyPart())
+	scopeB := planCacheScope("", "S", 0, oneInertColonName.cacheKeyPart())
 
 	if scopeA == scopeB {
 		t.Fatalf("plan-cache scope collides two different DISABLED_PLANNER_RULES option sets: %q", scopeA)

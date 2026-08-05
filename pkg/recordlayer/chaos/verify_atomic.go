@@ -49,7 +49,7 @@ func verifyCountIndex(ctx context.Context, store *recordlayer.FDBRecordStore, mo
 		if !model.indexAppliesToType(idx, rec.TypeName) {
 			continue
 		}
-		tuples, err := gke.Evaluate(nil, rec.Message)
+		tuples, err := gke.Evaluate(storedFor(model.metadata, rec.Message), rec.Message)
 		if err != nil {
 			continue
 		}
@@ -79,7 +79,7 @@ func verifySumIndex(ctx context.Context, store *recordlayer.FDBRecordStore, mode
 		if !model.indexAppliesToType(idx, rec.TypeName) {
 			continue
 		}
-		tuples, err := gke.Evaluate(nil, rec.Message)
+		tuples, err := gke.Evaluate(storedFor(model.metadata, rec.Message), rec.Message)
 		if err != nil {
 			continue
 		}

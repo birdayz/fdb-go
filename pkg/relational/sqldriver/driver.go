@@ -104,12 +104,35 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 // OpenConnector parses the DSN and returns a lazy Connector.
 // Parsing errors are reported here so misconfigured DSNs surface at
 // sql.Open time, not at first query.
+//
+// Connection options are decoded here too, and the decoded value is kept on the
+// Connector. Deferring the decode to Connect would break the contract this
+// doc-comment states: Connect opens FDB before it would ever look at the
+// options, so a misspelled option value would surface as a cluster-connection
+// failure instead of the DSN error it is — misleading exactly when the operator
+// needs a clear message, and a security-relevant option that never took effect.
+//
+// The DSN is FROZEN here: the Connector keeps a private deep clone, and every
+// later read — Path, Schema, Mode, cluster_file, and the decoded options — comes
+// from that one snapshot. Freezing only the decoded options while the rest of
+// the struct stayed live would be a split brain, and the security-relevant
+// direction is the bad one: a caller holding the *DSN could flip
+// restrict_ddl_to_session_database after OpenConnector, have Connect honour the
+// stale decode (restriction silently not what the DSN now says), and slip a
+// newly-malformed value past validation entirely.
 func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
-	dsn, err := ParseDSN(name)
+	parsed, err := ParseDSN(name)
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{driver: d, dsn: dsn}, nil
+	// Clone before anything reads it, so the decode below and every read in
+	// Connect / initialize observe the same immutable value.
+	dsn := parsed.Clone()
+	connOpts, err := dsn.ConnectionOptions()
+	if err != nil {
+		return nil, err
+	}
+	return &Connector{driver: d, dsn: dsn, connOpts: connOpts}, nil
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
@@ -119,6 +142,10 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 type Connector struct {
 	driver *Driver
 	dsn    *DSN
+	// connOpts are the DSN's connection options, decoded and validated in
+	// OpenConnector so a malformed value is a DSN error rather than a
+	// connect-time failure. Never nil.
+	connOpts *api.Options
 
 	once    sync.Once
 	fdbDB   *recordlayer.FDBDatabase
@@ -143,6 +170,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, c.initErr
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
+	conn.SetOptions(c.connOpts)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}
@@ -213,8 +241,14 @@ func (c *Connector) initialize(_ context.Context) error {
 // Driver returns the driver that created this Connector.
 func (c *Connector) Driver() driver.Driver { return c.driver }
 
-// DSN returns the parsed DSN. Exposed for diagnostics.
-func (c *Connector) DSN() *DSN { return c.dsn }
+// DSN returns a COPY of the parsed DSN. Exposed for diagnostics.
+//
+// The copy is the point: the Connector's DSN is an immutable snapshot taken at
+// OpenConnector, and handing out the internal pointer would make it mutable
+// again through this accessor — the only route by which anything outside this
+// package can reach it. Mutating the returned value affects nothing; to change
+// a connection's configuration, open a new Connector with a new DSN string.
+func (c *Connector) DSN() *DSN { return c.dsn.Clone() }
 
 // Static interface checks.
 var (

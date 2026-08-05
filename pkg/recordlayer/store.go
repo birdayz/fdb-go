@@ -27,6 +27,15 @@ const (
 	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
 	// earlier format version is upgraded). Below this version, unsplit records are stored at
 	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
+	// formatVersionRecordCountAdded (2, RECORD_COUNT_ADDED) is the version at which
+	// record counts exist on disk at all. An existing store below it has no counts
+	// worth trusting, so reconciliation rebuilds them unconditionally — Java's first
+	// rebuildRecordCounts arm (FDBRecordStore.java:5116, via
+	// RECORD_COUNT_ADDED_FORMAT_VERSION at :208).
+	formatVersionRecordCountAdded = 2
+	// formatVersionRecordCountKeyAdded (3, RECORD_COUNT_KEY_ADDED) is the version at
+	// which the store header can carry a record-count key at all.
+	formatVersionRecordCountKeyAdded   = 3
 	formatVersionSaveUnsplitWithSuffix = 5
 	// formatVersionSaveVersionWithRecord (6, SAVE_VERSION_WITH_RECORD) is the version at which
 	// record versions are stored inline adjacent to the record (recordsSubspace.pack(pk, -1))
@@ -102,16 +111,28 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
-	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
-	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
-	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
-	stateMu            sync.RWMutex             // protects storeHeader + indexStates
-	stateLoadOnce      sync.Once                // ensures lazy store state load happens exactly once (Build() path)
-	stateLoadErr       error                    // error from lazy load (nil if loaded successfully or not yet attempted)
-	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
-	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
+	recordsSubspace    subspace.Subspace     // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
+	// targetFormatVersion is the format version this store opens AT — the
+	// ceiling maybeUpgradeFormatVersion upgrades toward, not necessarily the
+	// newest the binary knows. 0 means formatVersionCurrent.
+	//
+	// Java's equivalent is a builder property, not a constant
+	// (FDBRecordStoreBase.BaseBuilder.setFormatVersion, :2245/:2266), and its
+	// javadoc spells out the reason it must be settable: during a rolling
+	// upgrade you arrange "for setFormatVersion to be called with the OLD format
+	// version" everywhere, so that no instance starts writing a format the
+	// not-yet-upgraded instances cannot read. A store that always jumped to the
+	// newest version its binary knew would make that impossible.
+	targetFormatVersion int32
+	storeStateCache     FDBRecordStoreStateCache // Cache for store state across transactions
+	stateMu             sync.RWMutex             // protects storeHeader + indexStates
+	stateLoadOnce       sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr        error                    // error from lazy load (nil if loaded successfully or not yet attempted)
+	versionChanged      bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache     sync.Map                 // string → IndexMaintainer, cached per-transaction
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from
@@ -415,7 +436,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 	// Decrement record count
 	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
-		if err := store.addRecordCount(oldMsg, littleEndianInt64MinusOne); err != nil {
+		if err := store.addRecordCount(oldRecordType, oldMsg, littleEndianInt64MinusOne); err != nil {
 			return false, fmt.Errorf("failed to decrement record count: %w", err)
 		}
 	}
@@ -510,7 +531,15 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
-	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+	// The record type is supplied to the evaluation because a record-type-prefixed
+	// primary key reads its leading component off the record's own type. Java has
+	// the same ordering constraint and solves it the same way: saveTypedRecord
+	// builds FDBStoredRecord.newBuilder(rec).setRecordType(recordType) FIRST, then
+	// evaluates the primary key against that builder (FDBRecordStore.java).
+	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
+		RecordType: recordType,
+		Record:     record,
+	}, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
@@ -654,7 +683,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 
 	// Only increment record count for new inserts (not updates).
 	if !oldRecordExists {
-		if err := store.addRecordCount(record, littleEndianInt64One); err != nil {
+		if err := store.addRecordCount(recordType, record, littleEndianInt64One); err != nil {
 			return nil, fmt.Errorf("failed to increment record count: %w", err)
 		}
 	}
@@ -1467,6 +1496,31 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 	return 0
 }
 
+// requireFormatVersion is Java's per-feature
+// `if (!getFormatVersionEnum().isAtLeast(V)) throw` guard, applied at the WRITE
+// site of every version-gated store-header feature.
+//
+// It reads the ACTUAL header version, not the version this process would like to
+// open at, because the header is what an older instance opening the same store
+// will see. Writing a v12 store lock into a header that still says 11 produces a
+// lock a correctly-behaved older reader ignores — the feature silently does
+// nothing, which is worse than refusing to set it.
+//
+// Java sites ported: FDBRecordStore.java:3222 (header user fields), :3443
+// (record count state), :3478/:3494 (store lock state), :3503/:3517
+// (incarnation).
+//
+// Callers must hold stateMu (or be inside a path that does); this only reads
+// storeHeader.
+func (store *FDBRecordStore) requireFormatVersion(feature string, required int32) error {
+	if got := store.storeHeader.GetFormatVersion(); got < required {
+		return &UnsupportedFeatureForFormatVersionError{
+			Feature: feature, Version: got, RequiredVersion: required,
+		}
+	}
+	return nil
+}
+
 // GetIncarnation returns the incarnation counter from the store header.
 // Used for cross-cluster data migration versioning.
 // Goroutine-safe via stateMu (read lock).
@@ -1493,6 +1547,9 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("incarnation", formatVersionIncarnation); err != nil {
+		return err
 	}
 	current := store.storeHeader.GetIncarnation()
 	newVal := updater(current)
@@ -1533,6 +1590,9 @@ func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error 
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
+	if err := store.requireFormatVersion("header user fields", formatVersionHeaderUserFields); err != nil {
+		return err
+	}
 	// Update existing entry or append new one
 	for _, entry := range store.storeHeader.UserField {
 		if entry.GetKey() == key {
@@ -1555,6 +1615,9 @@ func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("header user fields", formatVersionHeaderUserFields); err != nil {
+		return err
 	}
 	fields := store.storeHeader.UserField
 	for i, entry := range fields {
@@ -1599,6 +1662,9 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
+	if err := store.requireFormatVersion("store lock state", formatVersionStoreLockState); err != nil {
+		return err
+	}
 	ts := store.context.Env().Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
 		LockState: &state,
@@ -1616,6 +1682,9 @@ func (store *FDBRecordStore) ClearStoreLockState() error {
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("store lock state", formatVersionStoreLockState); err != nil {
+		return err
 	}
 	store.storeHeader.StoreLockState = nil
 	return store.writeStoreHeader(store.storeHeader)

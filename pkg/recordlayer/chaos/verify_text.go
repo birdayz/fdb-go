@@ -61,7 +61,7 @@ func verifyOneTextIndex(
 		}
 
 		// Extract the text field value by evaluating the index expression.
-		textValue := extractTextField(idx, rec.Message)
+		textValue := extractTextField(model.metadata, idx, rec.Message)
 		if textValue == "" {
 			continue
 		}
@@ -168,8 +168,8 @@ func verifyOneTextIndex(
 // extractTextField extracts the text field value from a proto message using
 // the index's root expression. Evaluates the expression and picks the element
 // at the text field position. Returns "" if the field is unset or empty.
-func extractTextField(idx *recordlayer.Index, msg proto.Message) string {
-	tuples, err := idx.RootExpression.Evaluate(nil, msg)
+func extractTextField(md *recordlayer.RecordMetaData, idx *recordlayer.Index, msg proto.Message) string {
+	tuples, err := idx.RootExpression.Evaluate(storedFor(md, msg), msg)
 	if err != nil || len(tuples) == 0 || len(tuples[0]) == 0 {
 		return ""
 	}

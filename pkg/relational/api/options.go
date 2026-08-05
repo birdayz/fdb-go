@@ -123,6 +123,29 @@ const (
 	OptEncryptionKeyEntryList       OptionName = "ENCRYPTION_KEY_ENTRY_LIST"
 	OptEncryptionKeyPassword        OptionName = "ENCRYPTION_KEY_PASSWORD"
 	OptCompressWhenSerializing      OptionName = "COMPRESS_WHEN_SERIALIZING"
+	// OptRestrictDDLToSessionDatabase confines every DDL statement on a
+	// connection to that connection's own database path. When set, CREATE /
+	// DROP DATABASE and CREATE / DROP SCHEMA whose resolved database path is
+	// not the session's are rejected with 42501 (insufficient privilege).
+	//
+	// Boolean, default FALSE — and the default is the Java-parity contract, not
+	// an oversight. Java's SemanticAnalyzer.parseSchemaURI splits "/db/SCHEMA"
+	// purely lexically and never compares the result to the connection's
+	// database, so `DROP SCHEMA /other/S` and `DROP DATABASE /other` are
+	// accepted from any connection; Java assumes an authorization layer outside
+	// the SQL engine. Turning this on by default would diverge from Java on the
+	// shared surface, so it stays opt-in.
+	//
+	// It exists for the deployment Java's assumption does not cover: a
+	// multi-tenant service where one database path IS one tenant and the SQL
+	// connection is the trust boundary. There the lexical split alone lets
+	// tenant A drop tenant B's data. Such a service sets this per connection.
+	//
+	// Go-only, so it is deliberately absent from defaultOptionValues (that map
+	// is wire-visible — it feeds plan cache keys and Java round-trip tests).
+	// An unset option reads back as false through optBool, keeping the default
+	// option set byte-identical to Java's.
+	OptRestrictDDLToSessionDatabase OptionName = "RESTRICT_DDL_TO_SESSION_DATABASE"
 )
 
 // IndexFetchMethod mirrors Java's Options.IndexFetchMethod enum.

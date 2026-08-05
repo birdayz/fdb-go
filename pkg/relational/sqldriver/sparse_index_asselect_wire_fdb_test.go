@@ -168,7 +168,7 @@ func TestFDB_AsSelectSparseIndex_WireEntries(t *testing.T) {
 		// DELETE a matching record: its entry must go. The primary key tuple
 		// is evaluated through the metadata's own primary key expression (it
 		// may carry a record-type prefix).
-		stored := &recordlayer.FDBStoredRecord[proto.Message]{Record: rec(2, 200)}
+		stored := &recordlayer.FDBStoredRecord[proto.Message]{RecordType: md.GetRecordType("T"), Record: rec(2, 200)}
 		pkVals, pkErr := md.GetRecordType("T").PrimaryKey.Evaluate(stored, stored.Record)
 		if pkErr != nil || len(pkVals) != 1 {
 			return nil, fmt.Errorf("pk eval: %v (%d tuples)", pkErr, len(pkVals))

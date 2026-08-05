@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -81,10 +82,48 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 		}
 	}
 
-	// Step 4: Mark index READABLE (or READABLE_UNIQUE_PENDING if violations exist).
-	// Matches Java: uses markIndexReadable which checks violations for unique indexes.
-	if _, err := store.MarkIndexReadableOrUniquePending(index.Name); err != nil {
-		return fmt.Errorf("rebuild index %q: mark readable: %w", index.Name, err)
+	// Step 4: Try to mark the index READABLE. Failure LEAVES IT WRITE_ONLY and is
+	// reported to the log, NOT to the caller.
+	//
+	// Two Java facts compose here, and using only the first one gets this wrong.
+	//
+	//  1. The mark itself is strict. Java's inline rebuild calls the ONE-ARGUMENT
+	//     markIndexReadable(index) (FDBRecordStore.java:4602), which is
+	//     markIndexReadable(index, allowUniquePending=FALSE) (:3767-3768); with a
+	//     violation present checkAndUpdateBuiltIndexState (:3821) throws
+	//     RecordIndexUniquenessViolation (:3856-3861). It does NOT settle on
+	//     READABLE_UNIQUE_PENDING — that state is reachable in Java core only via
+	//     IndexingBase.java:324 under IndexingPolicy.shouldAllowUniquePendingState
+	//     (OnlineIndexer.java:1117), which defaults FALSE (:1220).
+	//
+	//  2. The REBUILD SWALLOWS that throw. rebuildIndex wraps the whole
+	//     build-then-mark chain in `.handle((b, t) -> { if (t != null)
+	//     logExceptionAsWarn(...); indexBuilder.close(); return null; })`
+	//     (FDBRecordStore.java:4602-4615). A CompletableFuture handle that returns
+	//     normally COMPLETES NORMALLY, so the failure never reaches checkVersion
+	//     and the store open commits.
+	//
+	// The net Java behaviour is pinned by its own test,
+	// FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627 — open
+	// the store with a unique index over violating data and it asserts
+	// REBUILD_INDEX ran, the index is WRITE_ONLY (or READABLE_UNIQUE_PENDING),
+	// scanUniquenessViolations holds every conflicting primary key, and
+	// commit(context) SUCCEEDS.
+	//
+	// That combination is the safe one, and propagating instead would be strictly
+	// worse: a WRITE_ONLY index is not scannable, so queries fall back to base
+	// scans and no read is wrong, whereas a propagated error turns any metadata
+	// evolution that meets bad data into a STORE-OPEN OUTAGE — every transaction
+	// against the store fails, not just the index. The loud signal is the index
+	// being unusable plus the durable violations, not a failed open.
+	if _, err := store.MarkIndexReadable(index.Name); err != nil {
+		// Java: logExceptionAsWarn("rebuilding index failed", ...) and continue.
+		// The index stays WRITE_ONLY, awaiting an explicit OnlineIndexer run.
+		slog.Default().Warn("rebuilding index failed",
+			"index_name", index.Name,
+			"index_version", index.LastModifiedVersion,
+			"subspace_key", fmt.Sprintf("%v", index.SubspaceTupleKey()),
+			"error", err)
 	}
 
 	return nil
@@ -149,9 +188,23 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 	return nil
 }
 
+// effectiveFormatVersion is the format version this store opens at. The builder
+// resolves it once (StoreBuilder.effectiveFormatVersion) so a zero here can only
+// mean a store constructed outside the builder; those fall back to the newest
+// version this binary knows, which is the pre-pinning behaviour.
+func (store *FDBRecordStore) effectiveFormatVersion() int32 {
+	if store.targetFormatVersion > 0 {
+		return store.targetFormatVersion
+	}
+	return int32(formatVersionCurrent)
+}
+
 // maybeUpgradeFormatVersion upgrades the persisted format version in the store header
-// to the current version, performing the same on-disk layout migrations Java performs
-// in checkRebuild() before reading any data. Returns true if the header was modified.
+// to this store's TARGET version — effectiveFormatVersion(), i.e. whatever the builder
+// pinned, and only otherwise the newest this binary knows — performing the same on-disk
+// layout migrations Java performs in checkRebuild() before reading any data. A header
+// already at or past the target is left alone; this never downgrades. Returns true if
+// the header was modified.
 //
 // The order matters and mirrors Java exactly: the format version is bumped FIRST so that
 // useOldVersionFormat()/omitUnsplitRecordSuffix() reflect the new version, then:
@@ -166,11 +219,18 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 // updates what useOldVersionFormat() derives.
 func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo) (bool, error) {
 	oldFormat := storeHeader.GetFormatVersion()
-	if oldFormat == int32(formatVersionCurrent) {
+	// The target is the version this store was OPENED at, which is the newest the
+	// binary knows only when the caller did not pin one. Java takes the same value
+	// off the builder rather than a constant (FDBRecordStoreBase:2245).
+	target := store.effectiveFormatVersion()
+	// Never DOWNGRADE a store: a header already past the target was written by an
+	// instance opening at a higher version, and rewriting it backwards would claim
+	// a layout the existing data may not match.
+	if oldFormat >= target {
 		return false, nil
 	}
 
-	newFormat := int32(formatVersionCurrent)
+	newFormat := target
 	storeHeader.FormatVersion = &newFormat
 
 	if oldFormat >= formatVersionMinimum &&
@@ -254,6 +314,14 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 	}
 
+	// Captured BEFORE the upgrade below overwrites it. Java keeps the same value
+	// under the same name (checkPossiblyRebuild's `oldFormatVersion`,
+	// FDBRecordStore.java:5155) and hands it to checkPossiblyRebuildRecordCounts,
+	// which needs to know what the store looked like on disk rather than what it is
+	// about to become. Zero means the header had no format version at all, i.e. a
+	// brand-new store — Java's `newStore = oldFormatVersion == 0`.
+	oldFormatVersion := storeHeader.GetFormatVersion()
+
 	// Upgrade the persisted format version (and migrate the on-disk layout if needed)
 	// BEFORE reading/rebuilding anything, matching Java's checkRebuild() which sets the
 	// format version and converts record versions at the very start. This runs whether
@@ -263,18 +331,43 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return err
 	}
 
-	// Check record counts BEFORE the version gate — this compares the stored
-	// RecordCountKey proto against the current one, independent of version.
-	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
-	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
+	// THE TRANSITION GATE. Everything below runs only when something actually
+	// changed — Java returns early otherwise (FDBRecordStore.java:4646-4648):
+	//
+	//	if (!formatVersionChanged && !metaDataVersionChanged) {
+	//	    return AsyncUtil.DONE;
+	//	}
+	//
+	// checkRebuild — and with it checkPossiblyRebuildRecordCounts (:4728) — is
+	// reachable ONLY through that transition. Running the record-count check on
+	// every open instead is not a harmless eagerness: the pre-RECORD_COUNT_ADDED
+	// arm tests `oldFormatVersion < 2`, which for a store PINNED at format 1 is
+	// true on every open, forever. That is a perpetual clear-and-rescan of every
+	// record inside the store-open transaction — a large pinned store would stop
+	// being openable at all — and even with no count key declared it repeats the
+	// range clear and header rewrite on every open. The other arms converge after
+	// one pass because they compare against a header they then update; this one
+	// never can, because the store's format version is exactly what is pinned.
+	//
+	// Gating loses no detection. A change to the metadata's record-count key bumps
+	// the metadata version (RecordMetaDataBuilder.SetRecordCountKey, metadata.go:
+	// "bumps version when value changes", mirroring Java), so any real count-key
+	// change arrives here with metaDataVersionChanged already true.
+	metaDataVersionChanged := newMetaDataVersion != oldMetaDataVersion
+	if !formatUpgraded && !metaDataVersionChanged {
+		return nil
+	}
+
+	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader, oldFormatVersion)
 	if err != nil {
 		return fmt.Errorf("rebuild record counts: %w", err)
 	}
 	needHeaderWrite := formatUpgraded || rebuildRecordCounts
 
-	if newMetaDataVersion == oldMetaDataVersion {
-		// Even when versions match, the record count check may have modified
-		// the header (updated RecordCountKey). Persist if needed.
+	if !metaDataVersionChanged {
+		// Format changed but metadata did not: persist whatever the format upgrade
+		// and the record-count check left on the header, then stop — there are no
+		// indexes to reconcile.
 		if needHeaderWrite {
 			if err := store.writeStoreHeader(storeHeader); err != nil {
 				return fmt.Errorf("update store header after record count rebuild: %w", err)
@@ -361,8 +454,12 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Matches Java's checkRebuild() which sets info.setFormatVersion(formatVersion).
 	newVersion := int32(newMetaDataVersion)
 	storeHeader.MetaDataversion = &newVersion
-	fmtVersion := int32(formatVersionCurrent)
-	storeHeader.FormatVersion = &fmtVersion
+	// The format version this store OPENED at, not the newest the binary knows —
+	// otherwise a reconciliation would silently undo a deliberately pinned format
+	// (see maybeUpgradeFormatVersion). Never downgrade a header already past it.
+	if fmtVersion := store.effectiveFormatVersion(); storeHeader.GetFormatVersion() < fmtVersion {
+		storeHeader.FormatVersion = &fmtVersion
+	}
 	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	storeHeader.LastUpdateTime = &lastUpdateTime
 	if err := store.writeStoreHeader(storeHeader); err != nil {
@@ -418,19 +515,59 @@ func (store *FDBRecordStore) areAllRecordTypesSince(index *Index, oldMetaDataVer
 //   - Current metadata has no count key but the store header still has one
 //
 // Matches Java's FDBRecordStore.checkPossiblyRebuildRecordCounts().
-func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo) (bool, error) {
+func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo, oldFormatVersion int32) (bool, error) {
 	currentKey := store.metaData.GetRecordCountKey()
 
-	var needRebuild bool
-	if currentKey != nil {
+	// The header's format version, already reconciled by maybeUpgradeFormatVersion
+	// above — the analog of Java's `formatVersion` field, which checkPossiblyRebuild
+	// sets to max(oldFormatVersion, requested) before reaching here.
+	headerFormatVersion := storeHeader.GetFormatVersion()
+
+	// Java's FIRST rebuildRecordCounts arm (FDBRecordStore.java:5116):
+	//
+	//	(existingStore && oldFormatVersion < RECORD_COUNT_ADDED_FORMAT_VERSION)
+	//
+	// An EXISTING store below RECORD_COUNT_ADDED(2) predates record counts on disk
+	// entirely, so whatever is in the count subspace cannot be trusted and is
+	// rebuilt unconditionally — regardless of whether the count KEY changed, and
+	// regardless of the key gate below. `existingStore` is Java's
+	// `oldFormatVersion > 0`: a header with no format version at all is a store
+	// being created right now, which has nothing to re-derive.
+	//
+	// This arm was unreachable until stores could be opened below the newest
+	// format version; SetFormatVersion makes a format-1 store constructible, so it
+	// is live now.
+	existingStore := oldFormatVersion > 0
+	needRebuild := existingStore && oldFormatVersion < formatVersionRecordCountAdded
+
+	if needRebuild {
+		// Already decided; the arms below only ADD reasons, never remove one.
+	} else if currentKey != nil {
 		// Current metadata has a count key — check if header matches.
-		currentKeyProto := currentKey.ToKeyExpression()
-		storedKeyProto := storeHeader.GetRecordCountKey()
-		if storedKeyProto == nil || !proto.Equal(currentKeyProto, storedKeyProto) {
-			needRebuild = true
+		//
+		// GATED, and the gate is load-bearing rather than defensive. Below
+		// RECORD_COUNT_KEY_ADDED(3) the header CANNOT carry a count key (nothing is
+		// allowed to write one — see createStoreHeaderAtFormat and the assignment
+		// below), so an ungated comparison reads that permanent, correct absence as
+		// "the metadata's count key changed" on EVERY open. The consequences
+		// compound: it clears the counters, then scans every record in the store
+		// inline inside the store-open transaction — unbounded work that a large
+		// store cannot reopen past FDB's 5s/10MB limits — and then writes the
+		// v3-only key into a v2 header anyway, undoing the creation gate.
+		//
+		// Java puts the same isAtLeast INSIDE this OR-arm
+		// (FDBRecordStore.java:5117-5118).
+		if headerFormatVersion >= formatVersionRecordCountKeyAdded {
+			currentKeyProto := currentKey.ToKeyExpression()
+			storedKeyProto := storeHeader.GetRecordCountKey()
+			if storedKeyProto == nil || !proto.Equal(currentKeyProto, storedKeyProto) {
+				needRebuild = true
+			}
 		}
 	} else if storeHeader.GetRecordCountKey() != nil {
-		// Current metadata removed count key — clear stale data.
+		// Current metadata removed count key — clear stale data. Deliberately NOT
+		// gated, matching Java's third arm (:5119): a header that HAS a key is by
+		// construction at >= 3 already, and clearing stale counts is always safe.
 		needRebuild = true
 	}
 
@@ -447,11 +584,27 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 		store.context.Transaction().ClearRange(countSub)
 	}
 
-	// Update header with the new (or cleared) count key.
-	if currentKey != nil {
-		storeHeader.RecordCountKey = currentKey.ToKeyExpression()
-	} else {
-		storeHeader.RecordCountKey = nil
+	// Update header with the new (or cleared) count key — but only at a format
+	// version that HAS the field. Java wraps both the set and the clear in the same
+	// isAtLeast (FDBRecordStore.java:5130-5136); writing it below 3 would put a
+	// field in the header that an instance honouring that version does not expect,
+	// which is the same wire hazard createStoreHeaderAtFormat guards at birth.
+	//
+	// UNREACHABLE-BY-CONSTRUCTION while the comparison gate above holds, and kept
+	// anyway — do not delete it as dead code. Below version 3 neither arm can set
+	// needRebuild: the first is gated, and the second requires a header that
+	// already HAS a count key, which nothing below 3 is allowed to write. So this
+	// branch only becomes reachable if the gate above is weakened, and then it is
+	// the last thing standing between that weakening and a v3-only field in a v2
+	// header. Mutating the two gates separately shows exactly that split: dropping
+	// the comparison gate alone reds the rescan assertion, dropping both reds the
+	// header assertion that this line is responsible for.
+	if headerFormatVersion >= formatVersionRecordCountKeyAdded {
+		if currentKey != nil {
+			storeHeader.RecordCountKey = currentKey.ToKeyExpression()
+		} else {
+			storeHeader.RecordCountKey = nil
+		}
 	}
 
 	// Rebuild counts by scanning all records (only if key is set and not disabled).
@@ -570,14 +723,16 @@ func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, er
 // actually writes into primary keys, and ok=false when the type key is not an
 // integer.
 //
-// Java encodes every record-type-key flavour, but Go's RecordTypeKeyExpression
-// only binds INTEGER type keys (metadata.go bindTypeKeys builds map[string]int64)
-// and falls back to the message type NAME for any other explicit key at save time
-// (key_expression.go RecordTypeKeyExpression.Evaluate). Bounds derived from a
-// non-integer key would therefore not match where the records are, so every caller
-// treats "not an integer" as "this type's records are not addressable as a range"
-// and falls back to the unscoped behaviour. Same restriction, same reason, as
-// OnlineIndexer.computeRecordsRange.
+// A non-integer key is not a wrongness, just a shape this bound cannot express:
+// the callers compare and order these as int64 to derive a contiguous range, so
+// every caller treats "not an integer" as "this type's records are not
+// addressable as a range" and falls back to the unscoped behaviour. That is
+// conservative in the safe direction — a wider scan, never a narrower one.
+// Same restriction, same reason, as OnlineIndexer.computeRecordsRange.
+//
+// String and bytes keys DO reach the key bytes (GetRecordTypeKey passes them
+// through, as Java's TupleTypeUtil does), so records under such a key really do
+// occupy a contiguous range; this simply declines to compute it.
 func recordTypeKeyInt64(recordType *RecordType) (int64, bool) {
 	switch k := recordType.GetRecordTypeKey().(type) {
 	case int:
@@ -847,7 +1002,15 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 // Includes RecordCountKey from metadata if present, matching Java's
 // checkPossiblyRebuildRecordCounts which sets it during store creation.
 func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env) *gen.DataStoreInfo {
-	formatVersion := int32(formatVersionCurrent)
+	return createStoreHeaderAtFormat(metaDataVersion, metaData, env, int32(formatVersionCurrent))
+}
+
+// createStoreHeaderAtFormat is createStoreHeader with the format version the
+// builder pinned. A store created by an instance opening at an older format must
+// be BORN at that format, not created new and immediately upgraded past it --
+// Java threads the builder's formatVersion into store creation the same way.
+func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env, formatVersionIn int32) *gen.DataStoreInfo {
+	formatVersion := formatVersionIn
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(env.Now().UnixMilli())
 
@@ -859,11 +1022,20 @@ func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst
 	}
 
 	// Persist RecordCountKey so checkPossiblyRebuildRecordCounts doesn't trigger
-	// an unnecessary full rebuild on the first reopen.
+	// an unnecessary full rebuild on the first reopen — but only fields the
+	// declared format version actually has. Java gates each independently
+	// (FDBRecordStore.java:5950-5957): the key needs RECORD_COUNT_KEY_ADDED(3),
+	// the state enum needs RECORD_COUNT_STATE(11). Writing either into a header
+	// that declares an older version puts bytes there that an instance honouring
+	// that version does not expect.
 	if metaData != nil && metaData.GetRecordCountKey() != nil {
-		header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
-		readable := gen.DataStoreInfo_READABLE
-		header.RecordCountState = &readable
+		if formatVersion >= formatVersionRecordCountKeyAdded {
+			header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
+		}
+		if formatVersion >= formatVersionRecordCountState {
+			readable := gen.DataStoreInfo_READABLE
+			header.RecordCountState = &readable
+		}
 	}
 
 	return header
@@ -993,6 +1165,7 @@ type StoreBuilder struct {
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
+	formatVersion             *int32                   // nil = not pinned; see SetFormatVersion
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1015,6 +1188,36 @@ func (b *StoreBuilder) SetMetaDataProvider(metaData *RecordMetaData) *StoreBuild
 // SetSubspace sets the subspace for this store
 func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 	b.subspace = subspace
+	return b
+}
+
+// effectiveFormatVersion is the builder-side twin of the store accessor: the
+// pinned format version, or the newest this binary knows.
+func (b *StoreBuilder) effectiveFormatVersion() int32 {
+	if b.formatVersion != nil {
+		return *b.formatVersion
+	}
+	return int32(formatVersionCurrent)
+}
+
+// SetFormatVersion pins the format version this store opens at, instead of
+// defaulting to the newest version this binary knows. An explicit 0 is an ERROR,
+// not a request for the default -- see validateBuilder.
+//
+// Port of Java's FDBRecordStoreBase.BaseBuilder.setFormatVersion
+// (FDBRecordStoreBase.java:2245, :2266). Its javadoc gives the reason the value
+// has to be a builder property rather than a constant: during a rolling upgrade
+// you arrange "for setFormatVersion to be called with the OLD format version"
+// on every instance, so no upgraded instance starts writing a layout the
+// not-yet-upgraded ones cannot read. A store that always jumped to its binary's
+// newest version would make a staged rollout impossible.
+//
+// The version is a CEILING, never a downgrade: a store whose header is already
+// past it keeps what it has, because the data on disk may already be in that
+// layout. Values outside [formatVersionMinimum, formatVersionCurrent] are
+// rejected when the store is opened.
+func (b *StoreBuilder) SetFormatVersion(version int32) *StoreBuilder {
+	b.formatVersion = &version
 	return b
 }
 
@@ -1105,6 +1308,8 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		recordsSubspace:    recSS,
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
+
+		targetFormatVersion: b.effectiveFormatVersion(),
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)
@@ -1122,6 +1327,16 @@ func (b *StoreBuilder) validateBuilder() error {
 	}
 	if b.subspace == nil || b.subspace.Bytes() == nil {
 		return fmt.Errorf("subspace is required")
+	}
+	// An EXPLICIT SetFormatVersion(0) is rejected, not silently read as "unset".
+	// Java validates the value it was handed (FormatVersion.validateFormatVersion,
+	// FormatVersion.java:225-229) and 0 is below the minimum, so it throws there
+	// too. Treating it as unset would quietly open at 14 -- the opposite of what a
+	// caller asking for 0 could possibly want, and unnoticeable until it had
+	// already written a newer format than intended.
+	if b.formatVersion != nil &&
+		(*b.formatVersion < formatVersionMinimum || *b.formatVersion > int32(formatVersionCurrent)) {
+		return &UnsupportedFormatVersionError{Version: *b.formatVersion, MaxVersion: int32(formatVersionCurrent)}
 	}
 	return nil
 }
@@ -1145,7 +1360,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	}
 
 	// Create and write store header
-	storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
+	storeHeader := createStoreHeaderAtFormat(int32(b.metaData.Version()), b.metaData, b.context.Env(), b.effectiveFormatVersion())
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return nil, err
 	}
@@ -1217,7 +1432,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
+		storeHeader := createStoreHeaderAtFormat(int32(b.metaData.Version()), b.metaData, b.context.Env(), b.effectiveFormatVersion())
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}

@@ -214,33 +214,27 @@ func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []strin
 	return names
 }
 
-// recordTypeKeyEquals compares a prefix value against a record type key,
-// handling Go's int type normalization. FDB tuple decoding produces int64,
-// but RecordType.GetRecordTypeKey() may return int (from RecordTypeIndex).
+// recordTypeKeyEquals reports whether a caller-supplied prefix value selects
+// the given record type key. It compares the values by the BYTES they encode
+// to, which is the same question the stored keys answer: the prefix is going
+// to be packed into a key range, and it matches this type exactly when their
+// encodings agree. That also makes an int prefix match an int64 type key
+// without a special case, since their encodings are identical.
+//
+// Comparing the interfaces directly is not an option: `prefixVal == typeKey`
+// PANICS ("comparing uncomparable type []uint8") the moment either side is a
+// []byte, which an explicit bytes record type key makes reachable from an
+// ordinary DeleteRecordsWhere.
 func recordTypeKeyEquals(prefixVal, typeKey any) bool {
-	if prefixVal == typeKey {
-		return true
+	prefixID, ok := recordTypeKeyIdentity(prefixVal)
+	if !ok {
+		return false
 	}
-	// Normalize both to int64 for comparison.
-	pInt, pOk := toInt64Value(prefixVal)
-	tInt, tOk := toInt64Value(typeKey)
-	if pOk && tOk {
-		return pInt == tInt
+	typeID, ok := recordTypeKeyIdentity(typeKey)
+	if !ok {
+		return false
 	}
-	return false
-}
-
-func toInt64Value(v any) (int64, bool) {
-	switch x := v.(type) {
-	case int64:
-		return x, true
-	case int:
-		return int64(x), true
-	case int32:
-		return int64(x), true
-	default:
-		return 0, false
-	}
+	return prefixID == typeID
 }
 
 // hasRecordTypeKeyPrefix returns true if the expression starts with

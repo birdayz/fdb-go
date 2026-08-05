@@ -324,7 +324,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 		// metadata's own primary key expression — the entry key carries the
 		// trimmed PK after the index columns.
 		nnPK := func(id int32) tuple.Tuple {
-			stored := &recordlayer.FDBStoredRecord[proto.Message]{Record: arrRec(nnDesc, id, nil, true)}
+			stored := &recordlayer.FDBStoredRecord[proto.Message]{RecordType: md.GetRecordType("TAB_IDX_NN"), Record: arrRec(nnDesc, id, nil, true)}
 			pkVals, evalErr := md.GetRecordType("TAB_IDX_NN").PrimaryKey.Evaluate(stored, stored.Record)
 			if evalErr != nil {
 				t.Fatalf("pk eval for id %d: %v", id, evalErr)

@@ -49,6 +49,69 @@ type DSN struct {
 	Options map[string]string
 }
 
+// Clone returns a deep copy of d, including its Options map. Callers may
+// mutate the result without affecting the original.
+//
+// This is what makes a Connector's DSN a snapshot rather than a shared handle.
+// Every field a Connector reads after construction — Path, Schema, Mode, Host
+// and the Options map that carries cluster_file — must come from the same
+// frozen value as the connection options decoded at OpenConnector time.
+// Anything else is a split brain: the security option validated and frozen up
+// front while the fields around it stay live and mutable, so a mutation between
+// OpenConnector and the first Connect would be honoured by some reads and
+// ignored by others.
+func (d *DSN) Clone() *DSN {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Options = make(map[string]string, len(d.Options))
+	for k, v := range d.Options {
+		out.Options[k] = v
+	}
+	return &out
+}
+
+// RestrictDDLToSessionDatabaseParam is the DSN query parameter that sets
+// api.OptRestrictDDLToSessionDatabase on every connection the DSN opens. It is
+// spelled as the lower-cased option name so the DSN parameter and the option
+// stay obviously the same knob.
+const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
+
+// ConnectionOptions converts the DSN's recognised query parameters into the
+// api.Options installed on each connection.
+//
+// Only options that must be decided before the first statement belong here.
+// Unrecognised parameters stay in the raw Options map and are ignored, matching
+// how cluster_file and schema are handled.
+func (d *DSN) ConnectionOptions() (*api.Options, error) {
+	opts := api.NoOptions()
+	if raw, present := d.Options[RestrictDDLToSessionDatabaseParam]; present {
+		v, err := parseDSNBool(RestrictDDLToSessionDatabaseParam, raw)
+		if err != nil {
+			return nil, err
+		}
+		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
+	}
+	return opts, nil
+}
+
+// parseDSNBool reads a boolean DSN parameter. A bare `?name` (empty value)
+// means true, the usual URL-flag convention; anything not recognisable as a
+// boolean is an error rather than a silent false, because silently reading a
+// misspelled security flag as "off" is the failure mode that matters.
+func parseDSNBool(name, raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "1", "t", "true", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "no", "off":
+		return false, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"DSN option %q must be a boolean, got %q", name, raw)
+	}
+}
+
 // ParseDSN parses a DSN string into a DSN.
 //
 // Returns a relational Error with code InvalidPath if the DSN is

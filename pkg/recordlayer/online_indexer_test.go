@@ -2665,8 +2665,13 @@ var _ = Describe("OnlineIndexer", func() {
 			mdWithIndex, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
+			// READABLE_UNIQUE_PENDING is an OPT-IN outcome, not the default. Java gates
+			// it on IndexingPolicy.shouldAllowUniquePendingState (OnlineIndexer.java:1117),
+			// whose builder field defaults FALSE (:1220). This spec is ABOUT what the
+			// erase does in the pending state, so it must opt in to reach it.
 			indexer, err := NewOnlineIndexerBuilder().
-				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(uniqueIndex).SetSubspace(ks).Build()
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(uniqueIndex).SetSubspace(ks).
+				SetAllowUniquePendingState(true).Build()
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = indexer.BuildIndex(ctx)

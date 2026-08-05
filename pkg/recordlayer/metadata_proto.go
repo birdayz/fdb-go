@@ -204,7 +204,17 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			rt.SinceVersion = int(rtProto.GetSinceVersion())
 		}
 		if rtProto.ExplicitKey != nil {
-			rt.explicitRecordTypeKey = valueFromProto(rtProto.ExplicitKey)
+			// Canonicalized on the way in, exactly as SetRecordTypeKey does:
+			// deserialization is the OTHER door into this field, and a key
+			// that arrives through it must land in the same representation.
+			// The proto carries an int32 for a key written as one, so without
+			// this a round-tripped metadata would compare unequal to the
+			// metadata it came from while encoding to identical bytes.
+			canonical, keyErr := canonicalRecordTypeKey(valueFromProto(rtProto.ExplicitKey))
+			if keyErr != nil {
+				return nil, fmt.Errorf("record type %q: %w", rt.Name, keyErr)
+			}
+			rt.explicitRecordTypeKey = canonical
 		}
 	}
 
