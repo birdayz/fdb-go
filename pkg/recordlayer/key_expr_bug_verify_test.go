@@ -105,14 +105,23 @@ var _ = Describe("KeyExprBugVerify", func() {
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
 
-		It("works on non-nil message", func() {
+		// A message with NO record is Java's record == null arm, which is NULL —
+		// not the message's type name. The key belongs to the record's resolved
+		// type, and there is no record here to have one.
+		It("evaluates to NULL when a message is supplied without a record", func() {
 			order := &gen.Order{OrderId: proto.Int64(1)}
 			expr := RecordTypeKey()
 			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(HaveLen(1))
-			Expect(result[0]).To(HaveLen(1))
-			Expect(result[0][0]).To(Equal("Order"))
+			Expect(result).To(Equal([][]any{{nil}}))
+		})
+
+		It("works on a record whose type is resolved", func() {
+			order := &gen.Order{OrderId: proto.Int64(1)}
+			expr := RecordTypeKey()
+			result, err := expr.Evaluate(storedAs(order, "Order", map[string]any{"Order": 101}), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([][]any{{int64(101)}}))
 		})
 	})
 })

@@ -723,14 +723,16 @@ func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, er
 // actually writes into primary keys, and ok=false when the type key is not an
 // integer.
 //
-// Java encodes every record-type-key flavour, but Go's RecordTypeKeyExpression
-// only binds INTEGER type keys (metadata.go bindTypeKeys builds map[string]int64)
-// and falls back to the message type NAME for any other explicit key at save time
-// (key_expression.go RecordTypeKeyExpression.Evaluate). Bounds derived from a
-// non-integer key would therefore not match where the records are, so every caller
-// treats "not an integer" as "this type's records are not addressable as a range"
-// and falls back to the unscoped behaviour. Same restriction, same reason, as
-// OnlineIndexer.computeRecordsRange.
+// A non-integer key is not a wrongness, just a shape this bound cannot express:
+// the callers compare and order these as int64 to derive a contiguous range, so
+// every caller treats "not an integer" as "this type's records are not
+// addressable as a range" and falls back to the unscoped behaviour. That is
+// conservative in the safe direction — a wider scan, never a narrower one.
+// Same restriction, same reason, as OnlineIndexer.computeRecordsRange.
+//
+// String and bytes keys DO reach the key bytes (GetRecordTypeKey passes them
+// through, as Java's TupleTypeUtil does), so records under such a key really do
+// occupy a contiguous range; this simply declines to compute it.
 func recordTypeKeyInt64(recordType *RecordType) (int64, bool) {
 	switch k := recordType.GetRecordTypeKey().(type) {
 	case int:

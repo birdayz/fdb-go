@@ -196,11 +196,16 @@ func (v *MetaDataEvolutionValidator) getTypeRenames(old, new *RecordMetaData) (m
 			renames[oldName] = oldName
 			continue
 		}
-		// Find new type with same type key.
-		oldKey := normalizeSubspaceKey(oldRT.GetRecordTypeKey())
+		// Find new type with same type key. Identity, not the general
+		// subspace-key normalizer: a rename is inferred purely from the keys
+		// matching, so folding a []byte key into the string of the same bytes
+		// would pair an old type with a NEW type that occupies a different key
+		// space, and carry every index and record of the old type over to it.
+		oldKey, oldOK := recordTypeKeyIdentity(oldRT.GetRecordTypeKey())
 		found := false
 		for newName, newRT := range new.RecordTypes() {
-			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == oldKey {
+			newKey, newOK := recordTypeKeyIdentity(newRT.GetRecordTypeKey())
+			if oldOK && newOK && newKey == oldKey {
 				// A type with a different name but the same key exists — this is a rename.
 				if v.disallowTypeRenames {
 					return nil, &MetaDataEvolutionError{
@@ -337,8 +342,13 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 			return err
 		}
 
-		// Record type key must not change
-		if normalizeSubspaceKey(oldRT.GetRecordTypeKey()) != normalizeSubspaceKey(newRT.GetRecordTypeKey()) {
+		// Record type key must not change. Compared by key identity: a change
+		// from []byte("k") to "k" moves every record of the type to a
+		// different key space, so it is exactly the kind of change this
+		// check exists to refuse, and a folding comparison called it equal.
+		oldKeyID, oldKeyOK := recordTypeKeyIdentity(oldRT.GetRecordTypeKey())
+		newKeyID, newKeyOK := recordTypeKeyIdentity(newRT.GetRecordTypeKey())
+		if !oldKeyOK || !newKeyOK || oldKeyID != newKeyID {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("record type key changed for %q (old=%v, new=%v)",
 					name, oldRT.GetRecordTypeKey(), newRT.GetRecordTypeKey()),

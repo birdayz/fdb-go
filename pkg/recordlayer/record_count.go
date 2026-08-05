@@ -75,7 +75,10 @@ func (store *FDBRecordStore) isRecordCountDisabled() bool {
 // Matches Java's FDBRecordStore.addRecordCount().
 //
 // Key format: subspace[RecordCountKey] + evaluated_count_key_tuple
-func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []byte) error {
+// The record type is a parameter, not re-derived here: the count key is very
+// often RecordTypeKey() (per-type counting), which resolves its value from the
+// record's own type, and every caller already holds the resolved type.
+func (store *FDBRecordStore) addRecordCount(recordType *RecordType, record proto.Message, increment []byte) error {
 	countKey := store.metaData.GetRecordCountKey()
 	if countKey == nil {
 		return nil // Counting not configured
@@ -86,7 +89,10 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 
 	// Evaluate the count key expression against the record.
 	// Count keys should produce exactly one tuple.
-	subkeys, err := countKey.Evaluate(nil, record)
+	subkeys, err := countKey.Evaluate(&FDBStoredRecord[proto.Message]{
+		RecordType: recordType,
+		Record:     record,
+	}, record)
 	if err != nil {
 		return fmt.Errorf("record count key evaluation failed: %w", err)
 	}

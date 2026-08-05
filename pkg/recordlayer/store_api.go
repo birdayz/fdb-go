@@ -264,7 +264,13 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 
-	pkTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+	// Record type supplied so a record-type-prefixed primary key resolves its
+	// leading component, matching the real save path (and Java's dry run,
+	// which shares saveTypedRecord's record builder).
+	pkTuples, err := recordType.PrimaryKey.Evaluate(&FDBStoredRecord[proto.Message]{
+		RecordType: recordType,
+		Record:     record,
+	}, record)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate primary key: %w", err)
 	}

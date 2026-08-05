@@ -1637,3 +1637,46 @@ permanently, not provisionally, and the zero is evidence about the corpus's
 reach rather than about the producers' soundness.
 
 Scenarios are re-blessed through the factory, never edited in place.
+
+## Non-integer explicit record type keys now reach the key bytes (RESOLVED — read the migration note)
+
+`RecordType.getRecordTypeKey()` is written verbatim into primary keys and index
+entries whenever a primary key starts with `RecordTypeKey()`. Java normalizes it
+once through `TupleTypeUtil.toTupleEquivalentValue` (`RecordType.java:73` for the
+explicit key, `:174` for the derived one) — narrower integers widen to `Long`,
+`byte[]` becomes a `ByteString`, and strings and everything else pass through
+untouched — and then encodes whatever that produced.
+
+Go used to resolve the key from a `map[string]int64` built at metadata-build time
+and bound onto the shared `RecordTypeKeyExpression`. Only integers fit in that
+map, so a **string or bytes** explicit key was silently absent from it and the
+evaluation fell back to the proto message's **type NAME**. Setting
+`SetRecordTypeKey("k")` therefore wrote `"Order"` into the key while
+`GetRecordTypeKey()` reported `"k"` — bytes Java reads as an entirely different
+key, and bytes that disagreed with Go's own metadata. The key is now resolved
+from the record's own resolved `RecordType`, so the explicit key reaches the
+bytes exactly as Java writes them.
+
+Go's normalization additionally widens `uint8`/`uint16`/`uint32`, which Java has
+no equivalent of. This is not an extension: Java widens *its* narrower integer
+types, and Go's set is larger. Without it those values reach the tuple encoder
+raw, which handles only `int`/`int64`/`uint`/`uint64` and **panics** on the save
+path for a key the builder accepted. `uint`/`uint64` are deliberately left
+alone — they can exceed `MaxInt64`, the encoder handles them natively, and for
+in-range values the bytes are identical.
+
+**Migration.** Nothing this repository writes is affected: the SQL catalog's
+record type keys are `int64` (`catalog/system_tables.go`), and the one
+non-integer key in the tree sits on a record type whose primary key has no
+`RecordTypeKey()` prefix, so it never reached key bytes. The hazard is for a
+**Go-only** deployment that used a string or bytes explicit record type key
+*together with* a record-type-prefixed primary key: its existing records live
+under the old message-type-name prefix and the new code will not find them.
+Those records were already unreadable to Java — the old bytes were Java-invalid
+in the first place — so this converts a silent cross-engine divergence into a
+one-time re-key, not a regression against any previously correct state.
+
+Pinned by `metadata_builder_test.go` "record type key packs to Java's bytes":
+byte-level assertions that every narrower integer width collapses to one key,
+that a string key reaches the bytes rather than the type name, and that a bytes
+key keeps tuple type code `0x01` rather than being folded into a string.

@@ -80,7 +80,12 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
 
-		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+		// Record type supplied so a record-type-prefixed primary key can read
+		// its leading component off the type, as Java's saveTypedRecord does.
+		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
+			RecordType: recordType,
+			Record:     record,
+		}, record)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
 		}
@@ -235,7 +240,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				insertCount++
 			} else if countKey != nil {
 				// Grouped count or non-empty key: per-record ADD
-				if err := store.addRecordCount(p.record, littleEndianInt64One); err != nil {
+				if err := store.addRecordCount(p.recordType, p.record, littleEndianInt64One); err != nil {
 					return nil, fmt.Errorf("record %d: record count: %w", i, err)
 				}
 			}

@@ -330,7 +330,8 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 			orderType := md.GetRecordType("Order")
 			Expect(orderType.HasExplicitRecordTypeKey()).To(BeFalse())
-			Expect(orderType.GetRecordTypeKey()).To(Equal(orderType.RecordTypeIndex))
+			Expect(orderType.GetRecordTypeKey()).To(Equal(int64(orderType.RecordTypeIndex)),
+				"the derived key must be tuple-normalized to int64, as Java normalizes it via TupleTypeUtil.toTupleEquivalentValue")
 			Expect(orderType.GetIndexes()).To(BeEmpty())
 			Expect(orderType.GetMultiTypeIndexes()).To(BeEmpty())
 		})

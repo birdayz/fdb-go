@@ -83,7 +83,7 @@ func TestFDB_AsSelectValueIndex_WireEntries(t *testing.T) {
 	// id) — evaluated through the metadata's own primary key expression, an
 	// independently-tested production path.
 	pkTuple := func(id int64, a int64, b string, c int64) tuple.Tuple {
-		stored := &recordlayer.FDBStoredRecord[proto.Message]{Record: rec(id, a, b, c)}
+		stored := &recordlayer.FDBStoredRecord[proto.Message]{RecordType: md.GetRecordType("T"), Record: rec(id, a, b, c)}
 		pkVals, evalErr := md.GetRecordType("T").PrimaryKey.Evaluate(stored, stored.Record)
 		if evalErr != nil {
 			t.Fatalf("pk eval: %v", evalErr)

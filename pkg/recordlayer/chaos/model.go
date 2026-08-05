@@ -61,6 +61,21 @@ func NewStoreModel(metadata *recordlayer.RecordMetaData) *StoreModel {
 	}
 }
 
+// storedFor wraps a bare message in the minimal stored record a key
+// expression needs: the resolved record type. A record type key reads its
+// value from that type (as it does in the store the model shadows), so
+// evaluating the model's side without it would compare a store that knows the
+// type against a model that does not.
+func storedFor(md *recordlayer.RecordMetaData, msg proto.Message) *recordlayer.FDBStoredRecord[proto.Message] {
+	if msg == nil {
+		return nil
+	}
+	return &recordlayer.FDBStoredRecord[proto.Message]{
+		RecordType: md.GetRecordType(string(msg.ProtoReflect().Descriptor().Name())),
+		Record:     msg,
+	}
+}
+
 // Save adds or overwrites a record in the model.
 // Extracts the record type name and primary key from the proto message
 // using the metadata's record type definitions.
@@ -71,7 +86,10 @@ func (m *StoreModel) Save(msg proto.Message) {
 		panic("chaos: unknown record type: " + typeName)
 	}
 
-	pkValues, err := rt.PrimaryKey.Evaluate(nil, msg)
+	pkValues, err := rt.PrimaryKey.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{
+		RecordType: rt,
+		Record:     msg,
+	}, msg)
 	if err != nil {
 		panic("chaos: pk evaluation failed: " + err.Error())
 	}
@@ -178,7 +196,7 @@ func (m *StoreModel) evaluateMinMaxEntries(idx *recordlayer.Index, msg proto.Mes
 		return nil
 	}
 	groupingCount := gke.GetGroupingCount()
-	tuples, err := gke.Evaluate(nil, msg)
+	tuples, err := gke.Evaluate(storedFor(m.metadata, msg), msg)
 	if err != nil {
 		return nil
 	}
@@ -231,7 +249,7 @@ func (m *StoreModel) evaluateGroupingKeys(idx *recordlayer.Index, msg proto.Mess
 		return []string{string(tuple.Tuple{}.Pack())}
 	}
 	// Evaluate the whole key, then take the first groupingCount columns.
-	tuples, err := gke.Evaluate(nil, msg)
+	tuples, err := gke.Evaluate(storedFor(m.metadata, msg), msg)
 	if err != nil {
 		return nil
 	}

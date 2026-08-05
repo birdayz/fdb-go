@@ -353,7 +353,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// text. NOT q.GetText() — that concatenated tokens with no separator,
 	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
 	// query text (see planCacheScope / PlanCache.Get).
-	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
+	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
 
 	if g.cache != nil {

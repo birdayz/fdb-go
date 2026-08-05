@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1535,6 +1536,159 @@ var _ = Describe("Store State Cache", func() {
 			Expect(cache.entries).To(HaveKey("b"))
 			Expect(cache.entries).To(HaveKey("c"))
 			cache.mu.Unlock()
+		})
+	})
+
+	// The derived-subspace-keys cache is process-global and keyed by store
+	// subspace, so a process serving many tenant stores adds one entry per
+	// store and released nothing before it was bounded. Java bounds the
+	// analogous per-store cache (ReadVersionRecordStoreStateCache is an
+	// AsyncLoadingCache with maximumSize) for the same reason.
+	Describe("derived subspace keys cache bound", func() {
+		// The policy knobs and the shared map are process-global. Ginkgo runs
+		// specs one at a time within a process, so driving them down here and
+		// restoring afterwards is safe; the restore also puts back whatever
+		// entries the rest of the suite had cached, since eviction only ever
+		// costs a recompute.
+		withTightBoundStride := func(maxEntries int, ttlMs int64, stride int64) {
+			origMax, origTTL, origStride := subspaceKeysMaxEntries, subspaceKeysIdleTTLMs, subspaceKeysSweepEveryN
+			subspaceKeysCacheMu.Lock()
+			origEntries := subspaceKeysCacheM
+			subspaceKeysCacheM = make(map[string]*storeSubspaceKeys)
+			subspaceKeysCacheMu.Unlock()
+
+			subspaceKeysMaxEntries = maxEntries
+			subspaceKeysIdleTTLMs = ttlMs
+			subspaceKeysSweepEveryN = stride
+
+			DeferCleanup(func() {
+				subspaceKeysMaxEntries, subspaceKeysIdleTTLMs, subspaceKeysSweepEveryN = origMax, origTTL, origStride
+				subspaceKeysCacheMu.Lock()
+				subspaceKeysCacheM = origEntries
+				subspaceKeysCacheMu.Unlock()
+			})
+		}
+
+		// Most specs want a sweep on every lookup so the bound is observable
+		// without driving the real stride.
+		withTightBound := func(maxEntries int, ttlMs int64) {
+			withTightBoundStride(maxEntries, ttlMs, 1)
+		}
+
+		// ageAllEntries rewinds every cached entry's idle clock, which makes
+		// "these entries have gone idle" a deterministic fact rather than a
+		// sleep the test has to wait out.
+		ageAllEntries := func(byMs int64) {
+			subspaceKeysCacheMu.Lock()
+			defer subspaceKeysCacheMu.Unlock()
+			for _, ks := range subspaceKeysCacheM {
+				ks.lastUseMs.Store(ks.lastUseMs.Load() - byMs)
+			}
+		}
+
+		tenantSubspace := func(i int) subspace.Subspace {
+			return subspace.FromBytes([]byte(fmt.Sprintf("tenant-bound-%04d", i)))
+		}
+
+		cacheSize := func() int {
+			subspaceKeysCacheMu.RLock()
+			defer subspaceKeysCacheMu.RUnlock()
+			return len(subspaceKeysCacheM)
+		}
+
+		It("holds the entry cap while many tenant stores are opened", func() {
+			const capEntries, tenants = 8, 200
+			withTightBound(capEntries, 15*60*1000)
+
+			for i := 0; i < tenants; i++ {
+				Expect(getCachedSubspaceKeys(tenantSubspace(i))).NotTo(BeNil())
+			}
+
+			// Unbounded, this would be `tenants`. The sweep drops to 90% of
+			// the cap, so the steady state sits at or below the cap itself.
+			Expect(cacheSize()).To(BeNumerically("<=", capEntries),
+				"derived-subspace-keys cache grew past its cap — a long-lived process serving many tenants leaks one entry per store")
+			Expect(cacheSize()).To(BeNumerically(">", 0),
+				"the cache evicted everything — every store open would recompute")
+		})
+
+		It("recomputes an evicted entry identically", func() {
+			const capEntries = 4
+			withTightBound(capEntries, 15*60*1000)
+
+			victim := tenantSubspace(0)
+			first := getCachedSubspaceKeys(victim)
+
+			// Push the victim out with unrelated tenants.
+			for i := 1; i <= 100; i++ {
+				getCachedSubspaceKeys(tenantSubspace(i))
+			}
+			subspaceKeysCacheMu.RLock()
+			_, stillCached := subspaceKeysCacheM[string(victim.Bytes())]
+			subspaceKeysCacheMu.RUnlock()
+			Expect(stillCached).To(BeFalse(), "the cap never evicted the oldest tenant")
+
+			// The value is a pure function of the key, so the recompute must
+			// be indistinguishable from the entry that was dropped — this is
+			// what makes eviction safe at all.
+			again := getCachedSubspaceKeys(victim)
+			Expect(again).NotTo(BeIdenticalTo(first), "entry was never evicted, so this proves nothing")
+			Expect(again.indexStateBegin).To(Equal(first.indexStateBegin))
+			Expect(again.indexStateEnd).To(Equal(first.indexStateEnd))
+			Expect(again.indexStatePrefixLen).To(Equal(first.indexStatePrefixLen))
+			Expect(again.expectedInfoKey).To(Equal(first.expectedInfoKey))
+			Expect(again.recordsSubspace.Bytes()).To(Equal(first.recordsSubspace.Bytes()))
+		})
+
+		It("reclaims idle entries even when the cap is never reached", func() {
+			// A tenant fleet well under the cap still leaks if departed
+			// tenants are never released; the idle horizon is what reclaims
+			// them. TTL of -1 makes every entry idle immediately.
+			withTightBound(4096, -1)
+
+			for i := 0; i < 20; i++ {
+				getCachedSubspaceKeys(tenantSubspace(i))
+			}
+			getCachedSubspaceKeys(tenantSubspace(0))
+			Expect(cacheSize()).To(BeNumerically("<=", 1),
+				"idle entries were never reclaimed — a departed tenant's keys stay resident forever")
+		})
+
+		// The workload that needs the idle horizon most never hits the cache
+		// at all: a long-lived process opening stores for ever-new subspaces
+		// misses every time and, staying below the cap, never trips the
+		// over-cap branch either. If the sweep is driven only by HITS, nothing
+		// ever reclaims — the cache grows to the hard cap and holds departed
+		// tenants indefinitely. The reclaiming lookup here is a MISS on a
+		// subspace never seen before, with no hit anywhere in the workload.
+		It("reclaims idle entries on a miss-only workload", func() {
+			const ttlMs = 60 * 1000
+			// A stride far larger than the fill keeps the fill itself
+			// sweep-free, so the entries are genuinely resident and idle
+			// before the one lookup under test.
+			withTightBoundStride(4096, ttlMs, 1_000_000)
+
+			const idle = 20
+			for i := 0; i < idle; i++ {
+				getCachedSubspaceKeys(tenantSubspace(i))
+			}
+			Expect(cacheSize()).To(Equal(idle),
+				"precondition: the idle entries must actually be resident")
+
+			// Those tenants stop being served: their idle clocks age past the
+			// horizon. Deterministic, no sleeping.
+			ageAllEntries(10 * ttlMs)
+			subspaceKeysSweepEveryN = 1
+
+			// A brand-new subspace: a MISS, not a touch of anything cached,
+			// and the cache is nowhere near the cap so the over-cap branch
+			// cannot fire either.
+			fresh := subspace.FromBytes([]byte("tenant-bound-miss-only-fresh"))
+			Expect(getCachedSubspaceKeys(fresh)).NotTo(BeNil())
+
+			Expect(cacheSize()).To(Equal(1),
+				"a miss-only workload never reclaimed idle entries — the sweep was reachable only from cache HITS, "+
+					"so ever-new store subspaces below the cap accumulate to the hard cap regardless of the idle horizon")
 		})
 	})
 })
