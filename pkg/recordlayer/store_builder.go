@@ -314,6 +314,14 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 	}
 
+	// Captured BEFORE the upgrade below overwrites it. Java keeps the same value
+	// under the same name (checkPossiblyRebuild's `oldFormatVersion`,
+	// FDBRecordStore.java:5155) and hands it to checkPossiblyRebuildRecordCounts,
+	// which needs to know what the store looked like on disk rather than what it is
+	// about to become. Zero means the header had no format version at all, i.e. a
+	// brand-new store — Java's `newStore = oldFormatVersion == 0`.
+	oldFormatVersion := storeHeader.GetFormatVersion()
+
 	// Upgrade the persisted format version (and migrate the on-disk layout if needed)
 	// BEFORE reading/rebuilding anything, matching Java's checkRebuild() which sets the
 	// format version and converts record versions at the very start. This runs whether
@@ -326,7 +334,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Check record counts BEFORE the version gate — this compares the stored
 	// RecordCountKey proto against the current one, independent of version.
 	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
-	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
+	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader, oldFormatVersion)
 	if err != nil {
 		return fmt.Errorf("rebuild record counts: %w", err)
 	}
@@ -482,7 +490,7 @@ func (store *FDBRecordStore) areAllRecordTypesSince(index *Index, oldMetaDataVer
 //   - Current metadata has no count key but the store header still has one
 //
 // Matches Java's FDBRecordStore.checkPossiblyRebuildRecordCounts().
-func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo) (bool, error) {
+func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo, oldFormatVersion int32) (bool, error) {
 	currentKey := store.metaData.GetRecordCountKey()
 
 	// The header's format version, already reconciled by maybeUpgradeFormatVersion
@@ -490,8 +498,26 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 	// sets to max(oldFormatVersion, requested) before reaching here.
 	headerFormatVersion := storeHeader.GetFormatVersion()
 
-	var needRebuild bool
-	if currentKey != nil {
+	// Java's FIRST rebuildRecordCounts arm (FDBRecordStore.java:5116):
+	//
+	//	(existingStore && oldFormatVersion < RECORD_COUNT_ADDED_FORMAT_VERSION)
+	//
+	// An EXISTING store below RECORD_COUNT_ADDED(2) predates record counts on disk
+	// entirely, so whatever is in the count subspace cannot be trusted and is
+	// rebuilt unconditionally — regardless of whether the count KEY changed, and
+	// regardless of the key gate below. `existingStore` is Java's
+	// `oldFormatVersion > 0`: a header with no format version at all is a store
+	// being created right now, which has nothing to re-derive.
+	//
+	// This arm was unreachable until stores could be opened below the newest
+	// format version; SetFormatVersion makes a format-1 store constructible, so it
+	// is live now.
+	existingStore := oldFormatVersion > 0
+	needRebuild := existingStore && oldFormatVersion < formatVersionRecordCountAdded
+
+	if needRebuild {
+		// Already decided; the arms below only ADD reasons, never remove one.
+	} else if currentKey != nil {
 		// Current metadata has a count key — check if header matches.
 		//
 		// GATED, and the gate is load-bearing rather than defensive. Below
@@ -515,7 +541,7 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 		}
 	} else if storeHeader.GetRecordCountKey() != nil {
 		// Current metadata removed count key — clear stale data. Deliberately NOT
-		// gated, matching Java's third arm (:5120): a header that HAS a key is by
+		// gated, matching Java's third arm (:5119): a header that HAS a key is by
 		// construction at >= 3 already, and clearing stale counts is always safe.
 		needRebuild = true
 	}

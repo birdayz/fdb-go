@@ -27,6 +27,12 @@ const (
 	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
 	// earlier format version is upgraded). Below this version, unsplit records are stored at
 	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
+	// formatVersionRecordCountAdded (2, RECORD_COUNT_ADDED) is the version at which
+	// record counts exist on disk at all. An existing store below it has no counts
+	// worth trusting, so reconciliation rebuilds them unconditionally — Java's first
+	// rebuildRecordCounts arm (FDBRecordStore.java:5116, via
+	// RECORD_COUNT_ADDED_FORMAT_VERSION at :208).
+	formatVersionRecordCountAdded = 2
 	// formatVersionRecordCountKeyAdded (3, RECORD_COUNT_KEY_ADDED) is the version at
 	// which the store header can carry a record-count key at all.
 	formatVersionRecordCountKeyAdded   = 3

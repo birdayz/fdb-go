@@ -225,15 +225,26 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 	// either way; but a rebuild CLEARS that subspace before re-deriving it, so a
 	// planted key surviving the reopen proves no clear-and-rescan happened.
 	DescribeTable("does not reconcile a record-count key the birth format version cannot hold",
-		func(pinned int32, wantKeyAfterReopen bool, wantSentinelSurvives bool) {
+		func(pinned int32, createWithKey bool, wantKeyAfterReopen bool, wantSentinelSurvives bool) {
 			ks := specSubspace()
-			cntBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			cntBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-			cntBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-			cntBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
-			cntBuilder.SetRecordCountKey(EmptyKey())
-			cntMetaData, bErr := cntBuilder.Build()
-			Expect(bErr).NotTo(HaveOccurred())
+			// Two metadatas differing ONLY in whether the count key is declared. The
+			// reopen always declares it; `createWithKey` decides whether that is a
+			// genuine change or a no-op, which is what separates "must rebuild" from
+			// "must not".
+			buildMD := func(withKey bool) *RecordMetaData {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				if withKey {
+					b.SetRecordCountKey(EmptyKey())
+				}
+				md, bErr := b.Build()
+				Expect(bErr).NotTo(HaveOccurred())
+				return md
+			}
+			createMetaData := buildMD(createWithKey)
+			cntMetaData := buildMD(true)
 
 			sentinel := func(store *FDBRecordStore) fdb.Key {
 				return fdb.Key(store.subspace.Sub(RecordCountKey).Pack(tuple.Tuple{"zzz_sentinel"}))
@@ -241,7 +252,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 
 			// Create, save records, and plant the sentinel.
 			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
-				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(cntMetaData).
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(createMetaData).
 					SetSubspace(ks).SetFormatVersion(pinned).CreateOrOpen()
 				if oErr != nil {
 					return nil, oErr
@@ -301,13 +312,93 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			Expect(err).NotTo(HaveOccurred())
 		},
 		// Below the gate: nothing written, nothing rescanned, ever.
-		Entry("born at 2: no key written, no rescan", int32(2), false, true),
-		// At/above the gate: unchanged pre-existing behaviour. The header is written
-		// at creation, so the reopen finds it already correct and still does not
-		// rebuild; the key must be present either way.
-		Entry("born at 3: key present", int32(formatVersionRecordCountKeyAdded), true, true),
-		Entry("born at the current version: key present", int32(formatVersionCurrent), true, true),
+		Entry("born at 2: no key written, no rescan",
+			int32(formatVersionRecordCountAdded), true, false, true),
+		// At/above the gate, key unchanged: the header was written at creation, so
+		// the reopen finds it already correct and still must not rebuild.
+		Entry("born at 3, key unchanged: key present, no rescan",
+			int32(formatVersionRecordCountKeyAdded), true, true, true),
+		Entry("born at the current version, key unchanged: key present, no rescan",
+			int32(formatVersionCurrent), true, true, true),
+
+		// THE POSITIVE DIRECTION, and without it the false branch above is dead code
+		// and the gate's boundary is untested. Born at 3 with NO count key declared,
+		// reopened with one: that is a genuine change, so reconciliation MUST clear
+		// and rebuild. Format 3 is deliberately the exact boundary — a `>` in place
+		// of `>=` skips the arm here and the rebuild silently stops happening, which
+		// no "must not rebuild" entry can catch.
+		Entry("born at 3 with no count key, reopened with one: rebuilds",
+			int32(formatVersionRecordCountKeyAdded), false, true, false),
+		Entry("born at the current version with no count key, reopened with one: rebuilds",
+			int32(formatVersionCurrent), false, true, false),
 	)
+
+	// Java's FIRST rebuildRecordCounts arm (FDBRecordStore.java:5116):
+	//
+	//	(existingStore && oldFormatVersion < RECORD_COUNT_ADDED_FORMAT_VERSION)
+	//
+	// An EXISTING store below RECORD_COUNT_ADDED(2) predates record counts on disk,
+	// so whatever sits in the count subspace cannot be trusted and is rebuilt
+	// unconditionally — independent of whether the count KEY changed and
+	// independent of the RECORD_COUNT_KEY_ADDED(3) gate. This arm had no Go
+	// equivalent at all; it was unreachable while every store opened at the newest
+	// format version, and SetFormatVersion makes a format-1 store constructible.
+	//
+	// The store is born at 1 and REOPENED at 2, so oldFormatVersion is 1 (< 2) and
+	// existingStore is true. Without the arm nothing rebuilds: the count key is
+	// still gated off at 2 (< 3), so the sentinel would survive.
+	It("rebuilds record counts for an existing store below RECORD_COUNT_ADDED", func() {
+		ks := specSubspace()
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		b.SetRecordCountKey(EmptyKey())
+		md, bErr := b.Build()
+		Expect(bErr).NotTo(HaveOccurred())
+
+		sentinel := func(store *FDBRecordStore) fdb.Key {
+			return fdb.Key(store.subspace.Sub(RecordCountKey).Pack(tuple.Tuple{"zzz_sentinel"}))
+		}
+
+		// Born at format 1 — below RECORD_COUNT_ADDED(2).
+		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+				SetSubspace(ks).SetFormatVersion(int32(formatVersionInfoAdded)).CreateOrOpen()
+			if oErr != nil {
+				return nil, oErr
+			}
+			Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionInfoAdded)))
+			if _, sErr := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(10),
+			}); sErr != nil {
+				return nil, sErr
+			}
+			rtx.Transaction().Set(sentinel(store), []byte("planted"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reopen at 2: oldFormatVersion(1) < RECORD_COUNT_ADDED(2) on an existing
+		// store, so the counts must be rebuilt from scratch.
+		_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+				SetSubspace(ks).SetFormatVersion(int32(formatVersionRecordCountAdded)).Open()
+			if oErr != nil {
+				return nil, oErr
+			}
+			planted, gErr := rtx.Transaction().Get(sentinel(store)).Get()
+			Expect(gErr).NotTo(HaveOccurred())
+			Expect(planted).To(BeEmpty(),
+				"the sentinel survived, so reopening a store born below RECORD_COUNT_ADDED(%d) did not "+
+					"rebuild its record counts. Counts written before that format version cannot be "+
+					"trusted, and no other arm covers this: the count KEY is unchanged, and it is still "+
+					"gated off at format %d anyway", formatVersionRecordCountAdded,
+				formatVersionRecordCountAdded)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 
 	// The contrast half: at a sufficient version each feature must actually work,
 	// or the gates above would be satisfied by a store that simply rejects
