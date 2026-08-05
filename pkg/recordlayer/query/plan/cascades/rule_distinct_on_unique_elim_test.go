@@ -52,7 +52,7 @@ var distinctScanLayouts = map[string][]string{
 	"USERS":       {"ID", "NAME"},
 	"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID", "QTY"},
 	"ITEMS":       {"ID", "NAME"},
-	"T":           {"TAGS", "SCORE", "CITY", "EMAIL"},
+	"T":           {"TAGS", "SCORE", "CITY", "EMAIL", "SPARSE_EMAIL", "NULLABLE_EMAIL", "DBL", "A", "B", "SHARED"},
 	"FLOAT_PK":    {"ID", "PAD"},
 	"DOUBLE_PK":   {"ID", "PAD"},
 }
@@ -431,35 +431,42 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	}
 }
 
-// TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof pins that NO
-// secondary index's `unique` flag makes a DISTINCT redundant — not a fan-out
-// one, and not a perfectly ordinary scalar one either.
+// TestDistinctFinal_SecondaryUniqueIndexAdmissionPredicate pins WHICH secondary
+// UNIQUE indexes prove a DISTINCT redundant and which do not. Each arm is a
+// dimension on which a wrong admission predicate silently emits duplicate rows,
+// and each is refused by a different clause — a predicate built from any single
+// clause reds this test on its first day.
 //
-// The fan-out cases (TAGS, SCORE, CITY) fail for a second, independent reason:
-// UNIQUE on a fan-out index constrains index ENTRIES, and records with an empty
-// repeated field produce no entry at all, so the key says nothing about base-row
-// distinctness. They are kept because that reason must survive on its own.
+//	TAGS  — clause 3. UNIQUE on a fan-out index constrains index ENTRIES, and a
+//	        record whose repeated field is empty produces no entry at all, so the
+//	        key says nothing about base-row distinctness. (The fixture's
+//	        createsDuplicates is TRUE here.)
+//	SCORE — clause 5, not clause 3: its createsDuplicates is false, and it is the
+//	        CARDINALITY() function-keying that refuses it. A unique index over
+//	        f(col) says nothing about col.
+//	CITY  — clause 3, via the cardinality gate's traversal check. The fixture
+//	        hand-supplies createsDuplicates = false, so this arm pins the rule's
+//	        USE of the signal rather than the signal's derivation from the
+//	        nested-repeated root key expression.
+//	EMAIL — ADMITTED. A plain, scalar, NOT NULL, non-fan-out, non-sparse unique
+//	        index whose single key column is the projected column. This arm
+//	        INVERTED when the decline was lifted, and the plan it yields carries
+//	        the proving index's name as a stamp so an index-state transition
+//	        invalidates the statement instead of returning duplicates.
 //
-// EMAIL — a plain, scalar, non-fan-out unique index — is the case this test
-// exists for. It USED to be elided, and that elision returned duplicate rows
-// against a real store: a unique index whose build completes over violating data
-// lands in READABLE_UNIQUE_PENDING, keeping its `unique` flag while the data
-// contradicts it. Go's match candidates are built from metadata alone and carry
-// no index state, so the planner cannot tell the two apart; Java can only trust
-// the flag because MetaDataPlanContext filters candidates through
-// RecordStoreState::isReadable first (MetaDataPlanContext.java:96-103,
-// RecordStoreState.java:172-174), which excludes that state from planning.
+// The elision rests on MUTABLE STORE STATE, which is why the context here must
+// assert index-state evidence for the EMAIL arm to fire at all. The companion
+// TestDistinctFinal_SecondaryUniqueProofNeedsIndexStateEvidence pins the other
+// side: the same fixture with the evidence withheld elides nothing.
 //
-// The elision cannot be resurrected by state-filtering the candidate set alone:
-// see TestFDB_UniquePendingIndexDoesNotEliminateDistinct for the end-to-end
-// witness, and note it fires on a plan that never reads the pending index, so
-// no executor leaf check can substitute.
-//
-// The PK case is the positive control. Without it this test would still pass
-// with the whole rule inert, since "no elision" is what a dead rule produces.
-func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.T) {
-	t.Parallel()
-
+// The PK case is the positive control on the three refusals. Without it they
+// would still pass with the whole rule inert, since "no elision" is what a dead
+// rule produces.
+// secondaryUniqueTestCandidates is the shared fixture for the admission
+// predicate's arms and for its fail-closed companion. One candidate set, two
+// index-state views: the only difference between the two tests is the evidence,
+// which is the point of the second one.
+func secondaryUniqueTestCandidates() []MatchCandidate {
 	fanOut := true
 	scalar := false
 	scalarFanType := gen.Field_SCALAR
@@ -476,7 +483,7 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 			createsDuplicates,
 		).WithKeyComponentTypes([]values.Type{values.NotNullString})
 	}
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+	return []MatchCandidate{
 		newUniqueCandidate("T$tags_unique_fanout", "TAGS", &fanOut),
 		NewValueIndexScanMatchCandidateWithFunctions(
 			"T$cardinality_score_unique",
@@ -508,18 +515,96 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 				Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
 			}}),
 		newUniqueCandidate("T$email_unique", "EMAIL", &scalar),
-	}}
+		// Clauses 3 and 4 — and the ONLY arm that witnesses them. A SPARSE
+		// (WHERE-filtered) index omits every record its stored predicate rejects,
+		// so its UNIQUE declaration constrains only the rows the predicate
+		// ADMITS and says nothing whatever about the excluded rows, which may
+		// hold arbitrarily many duplicates of an admitted value. Eliding on that
+		// proof emits them.
+		//
+		// The other clause-3 shapes (TAGS, CITY) are refused EARLIER, by clause
+		// 5's canProduceScanPlan gate — a fan-out candidate with no traversal is
+		// not a plain-field candidate either. Sparseness is the one failure
+		// clause 5 does not subsume, and it is also the one whose cause is
+		// invisible in the index's key definition.
+		newUniqueCandidate("T$sparse_email_unique", "SPARSE_EMAIL", &scalar).
+			WithPredicateProto(&gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+				Value: gen.ConstantPredicate_FALSE.Enum(),
+			}}),
+		// Clause 8, NULL direction. Under NULLS DISTINCT the uniqueness check is
+		// SKIPPED when the component is NULL, so this index legitimately holds
+		// (NULL), (NULL), (NULL) — distinguished only by their appended primary
+		// keys — while SELECT DISTINCT must return ONE row.
+		newUniqueCandidate("T$nullable_email_unique", "NULLABLE_EMAIL", &scalar).
+			WithKeyComponentTypes([]values.Type{values.NullableString}),
+		// Clause 8, FLOAT direction. FDB preserves distinct raw NaN sign and
+		// payload encodings, so two tuple keys this index happily holds are ONE
+		// logical value to values.CompareFloat64. Storage identity FINER than
+		// logical equality means eliding emits two rows where DISTINCT emits one.
+		newUniqueCandidate("T$dbl_unique", "DBL", &scalar).
+			WithKeyComponentTypes([]values.Type{values.NotNullDouble}),
+		// Clause 6. A composite UNIQUE (A, B) says nothing about A alone.
+		NewValueIndexScanMatchCandidateWithFunctions(
+			"T$ab_unique",
+			[]string{"T"},
+			[]string{"A", "B"},
+			nil,
+			[]values.CorrelationIdentifier{
+				values.UniqueCorrelationIdentifier(),
+				values.UniqueCorrelationIdentifier(),
+			},
+			values.UnknownType,
+			true,
+			nil,
+			&scalar,
+		).WithKeyComponentTypes([]values.Type{values.NotNullString, values.NotNullString}),
+		// Clause 7, candidate side. A key unique across a multi-type candidate is
+		// unique only WITHIN a type; two types' keys collide once a shared
+		// visible coordinate is projected.
+		NewValueIndexScanMatchCandidateWithFunctions(
+			"T$multitype_unique",
+			[]string{"T", "OTHER"},
+			[]string{"SHARED"},
+			nil,
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			values.UnknownType,
+			true,
+			nil,
+			&scalar,
+		).WithKeyComponentTypes([]values.Type{values.NotNullString}),
+	}
+}
+
+// fireDistinctOverT fires the rule for `SELECT DISTINCT <projected> FROM T`
+// against the given plan context.
+func fireDistinctOverT(
+	t *testing.T, planCtx PlanContext, projected string,
+) []expressions.RelationalExpression {
+	t.Helper()
+	return FireImplementationRuleWithContext(
+		NewImplementDistinctFinalRule(),
+		buildDistinctOverProjection("T", []values.Value{
+			distinctRead("T", projected),
+		}),
+		planCtx,
+		nil,
+	)
+}
+
+func TestDistinctFinal_SecondaryUniqueIndexAdmissionPredicate(t *testing.T) {
+	t.Parallel()
+
+	ctx := &indexTestPlanContext{
+		candidates: secondaryUniqueTestCandidates(),
+		// This planning run consulted a store and every index came back strictly
+		// READABLE. Without that evidence the secondary-UNIQUE arm declines
+		// everything and the EMAIL assertion below would be vacuous.
+		readableIndexes: AllIndexesReadable(),
+	}
 
 	fire := func(planCtx PlanContext, projected string) []expressions.RelationalExpression {
 		t.Helper()
-		return FireImplementationRuleWithContext(
-			NewImplementDistinctFinalRule(),
-			buildDistinctOverProjection("T", []values.Value{
-				distinctRead("T", projected),
-			}),
-			planCtx,
-			nil,
-		)
+		return fireDistinctOverT(t, planCtx, projected)
 	}
 	assertWrapped := func(projected, why string) {
 		t.Helper()
@@ -537,15 +622,57 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 		"value, not the projected column")
 	assertWrapped("CITY", "a unique index nested under a repeated parent is "+
 		"fan-out, whatever the leaf's fan type says")
-	assertWrapped("EMAIL", "a secondary index's `unique` flag is a metadata "+
-		"INTENT, not a statement about the stored rows — a READABLE_UNIQUE_PENDING "+
-		"index carries that flag over data that violates it")
+	assertWrapped("SPARSE_EMAIL", "a WHERE-filtered UNIQUE index constrains only "+
+		"the rows its stored predicate ADMITS — the excluded rows may hold "+
+		"arbitrarily many duplicates of an admitted value")
+	assertWrapped("NULLABLE_EMAIL", "under NULLS DISTINCT the uniqueness check is "+
+		"skipped when the component is NULL, so the index holds (NULL),(NULL),(NULL) "+
+		"and DISTINCT must collapse them to one row")
+	assertWrapped("DBL", "FDB preserves distinct raw NaN encodings the index happily "+
+		"holds as two keys, while the comparator canonicalizes them to one logical "+
+		"value — storage identity finer than logical equality")
+	assertWrapped("A", "a composite UNIQUE (A, B) constrains the PAIR; A alone may "+
+		"repeat across rows with different B")
+	assertWrapped("SHARED", "a key unique across two record types is unique only "+
+		"WITHIN a type — the two types' keys collide once the shared coordinate "+
+		"is the only thing projected")
+
+	// EMAIL — the arm that inverted. A plain scalar NOT NULL unique index over
+	// exactly the projected column proves the DISTINCT removes nothing, and the
+	// yielded plan must NAME the proving index: the elision's evidence is
+	// otherwise the ABSENCE of an operator, which a rule that silently died also
+	// produces.
+	emailResults := fire(ctx, "EMAIL")
+	if len(emailResults) == 0 {
+		t.Fatal("DISTINCT(EMAIL) over a scalar unique index: rule did not fire at all")
+	}
+	stampedBy := ""
+	for _, result := range emailResults {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			t.Fatal("DISTINCT(EMAIL) was retained over T$email_unique — a scalar, " +
+				"NOT NULL, non-fan-out, non-sparse UNIQUE index whose only key column " +
+				"IS the projected column proves the operator removes nothing")
+		}
+		if stamped, ok := result.(plans.DistinctProofStamped); ok {
+			if name := stamped.GetDistinctProofIndexName(); name != "" {
+				stampedBy = name
+			}
+		}
+	}
+	if stampedBy != "T$email_unique" {
+		t.Fatalf("the elided plan records its proving index as %q, want "+
+			"\"T$email_unique\" — an unstamped elision is an elision whose index "+
+			"can leave READABLE mid-statement with nothing to invalidate the plan",
+			stampedBy)
+	}
 
 	// Positive control: the SAME projection over the SAME layout IS elided when
 	// EMAIL is the primary key rather than a unique index. Primary-key
 	// uniqueness is a storage invariant with no pending state to diverge into.
-	// This is also what keeps the four assertions above honest — an inert rule
-	// would satisfy every one of them.
+	// This is also what keeps the three refusals above honest — an inert rule
+	// would satisfy every one of them. It must also NOT stamp: a primary key has
+	// no index state to move, so recording a dependency on it would fail
+	// statements that were correct regardless.
 	pkCtx := &pkPlanContext{pk: map[string][]string{"T": {"EMAIL"}}}
 	pkResults := fire(pkCtx, "EMAIL")
 	if len(pkResults) == 0 {
@@ -555,9 +682,58 @@ func TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof(t *testing.
 		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("DISTINCT(EMAIL) was retained even though EMAIL is the PRIMARY KEY — " +
 				"primary-key coverage is still a valid elimination proof, and if it " +
-				"stopped being one the four assertions above would prove nothing")
+				"stopped being one the three refusals above would prove nothing")
+		}
+		if stamped, ok := result.(plans.DistinctProofStamped); ok {
+			if name := stamped.GetDistinctProofIndexName(); name != "" {
+				t.Fatalf("a PRIMARY-KEY elision recorded a dependency on index %q. "+
+					"A primary key is a storage invariant with no state to move, so "+
+					"the dependency can only turn an unrelated index build into a "+
+					"40001 on a statement that was correct regardless", name)
+			}
 		}
 	}
+}
+
+// TestDistinctFinal_SecondaryUniqueProofNeedsIndexStateEvidence is the
+// fail-closed pin, and it is the reason the admission predicate demands
+// AFFIRMATIVE evidence rather than the absence of contrary evidence.
+//
+// "It is a match candidate, therefore the store called it READABLE" is FALSE on
+// every planning path that never consulted a store — the metadata-only harness,
+// offline tools, and this rule unit test. Those paths leave the configuration at
+// its zero value, which permits every index to back a scan and asserts nothing
+// about any index's state. Implemented without this clause, the arm returned
+// duplicate rows against a real store over a READABLE_UNIQUE_PENDING index.
+//
+// The fixture is byte-identical to the admission-predicate test's; the ONLY
+// difference is the withheld evidence. So a regression that re-collapses the
+// unknown and all-readable states cannot hide behind a differently-shaped
+// candidate.
+func TestDistinctFinal_SecondaryUniqueProofNeedsIndexStateEvidence(t *testing.T) {
+	t.Parallel()
+
+	// Zero-value readableIndexes: nobody consulted a store.
+	ctx := &indexTestPlanContext{candidates: secondaryUniqueTestCandidates()}
+	if ctx.GetPlannerConfiguration().ReadableIndexes.IndexStatesEstablished() {
+		t.Fatal("the fixture claims to have established index state, so it cannot " +
+			"pin what happens when nobody asked")
+	}
+
+	results := fireDistinctOverT(t, ctx, "EMAIL")
+	if len(results) == 0 {
+		t.Fatal("rule did not fire at all")
+	}
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			return
+		}
+	}
+	t.Fatal("DISTINCT(EMAIL) was elided on a planning run that never established " +
+		"index state. A run that did not ask may still SCAN an index; it may not " +
+		"PROVE anything from the index's declared uniqueness, because the index " +
+		"may be READABLE_UNIQUE_PENDING — fully populated and carrying a `unique` " +
+		"flag the data contradicts")
 }
 
 func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) {
@@ -784,4 +960,141 @@ func TestDistinctFinal_PartitionDistinctnessNeedsLogicalEquality(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate is clause 7's
+// STREAM-side witness, and it is a different failure from the candidate-side one
+// the SHARED arm pins.
+//
+// A candidate can name exactly one record type and still be offered to a stream
+// carrying two. Physical keys include a record-type discriminator, so A/"x" and
+// B/"x" are distinct index entries — but the moment the shared visible
+// coordinate is the only thing projected they are the same SQL row, and a
+// UNIQUE declaration made about A's entries says nothing about B's.
+//
+// Without this the predicate could take recordTypes[0] and ignore the rest,
+// which reds nothing else in the suite.
+func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing.T) {
+	t.Parallel()
+
+	layout := values.NewRecordType("AB", false, []values.Field{
+		{Name: "CODE", FieldType: values.NotNullString, Ordinal: 0},
+	})
+	domain := values.OrdinalDomainOfType(layout)
+	code := values.NewFieldValueWithResolvedOrdinalInDomain(
+		"CODE", 0, values.NotNullString, domain,
+	)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"A", "B"}, layout)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projection := expressions.NewLogicalProjectionExpression([]values.Value{code}, scanQ)
+	projectionRef := expressions.InitialOf(projection)
+	projectionRef.Insert(plans.NewRecordQueryScanPlan([]string{"A", "B"}, layout, false))
+	distinct := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(projectionRef),
+	)
+
+	scalar := false
+	ctx := &indexTestPlanContext{
+		readableIndexes: AllIndexesReadable(),
+		candidates: []MatchCandidate{
+			NewValueIndexScanMatchCandidateWithFunctions(
+				"A$code_unique",
+				[]string{"A"},
+				[]string{"CODE"},
+				nil,
+				[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+				values.UnknownType,
+				true,
+				nil,
+				&scalar,
+			).WithKeyComponentTypes([]values.Type{values.NotNullString}),
+		},
+	}
+
+	results := FireImplementationRuleWithContext(
+		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil,
+	)
+	if len(results) == 0 {
+		t.Fatal("rule did not fire at all")
+	}
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			return
+		}
+	}
+	t.Fatal("DISTINCT(CODE) was elided over a TWO-record-type stream on a UNIQUE " +
+		"index declared over ONE of them. A$code_unique constrains A's entries; " +
+		"B may hold the same CODE, and after projecting only CODE the two rows " +
+		"are indistinguishable")
+}
+
+// TestDistinctFinal_BothLicensesHoldYieldsUnstampedPlan pins the rule's LICENSE
+// ORDER, and it is the criterion that fails the conservative-looking
+// implementation — stamp whenever a qualifying unique index exists — which every
+// other test here passes.
+//
+// A primary key is a storage invariant with no state to move; a unique index's
+// READABLE-ness can move under a live statement. When BOTH license the same
+// elision, the plan's correctness rests on the primary key alone, so recording a
+// dependency on the index can only turn an unrelated index build into a 40001 on
+// a statement that would have been correct regardless. That is the same
+// over-scoping this design rejects for a planner-global accumulator, arrived at
+// from the other direction.
+//
+// The fixture is the one place both licenses are stated at once: EMAIL is the
+// primary key AND T$email_unique covers it.
+func TestDistinctFinal_BothLicensesHoldYieldsUnstampedPlan(t *testing.T) {
+	t.Parallel()
+
+	ctx := &indexTestPlanContext{
+		candidates:      secondaryUniqueTestCandidates(),
+		readableIndexes: AllIndexesReadable(),
+		pk:              map[string][]string{"T": {"EMAIL"}},
+	}
+
+	// The fixture is only meaningful if the secondary proof WOULD have fired on
+	// its own — otherwise "unstamped" is trivially satisfied.
+	soleLicenseCtx := &indexTestPlanContext{
+		candidates:      secondaryUniqueTestCandidates(),
+		readableIndexes: AllIndexesReadable(),
+	}
+	if name, ok := secondaryUniqueEliminationProof(
+		soleUniqueProjectionFor(t, "EMAIL"), soleLicenseCtx,
+	); !ok || name != "T$email_unique" {
+		t.Fatalf("the secondary-UNIQUE proof does not fire on this projection on its "+
+			"own (%q, %v), so asserting it does not STAMP proves nothing", name, ok)
+	}
+
+	results := fireDistinctOverT(t, ctx, "EMAIL")
+	if len(results) == 0 {
+		t.Fatal("rule did not fire at all")
+	}
+	elided := false
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			t.Fatal("DISTINCT(EMAIL) was retained even though EMAIL is the PRIMARY KEY")
+		}
+		elided = true
+		if stamped, ok := result.(plans.DistinctProofStamped); ok {
+			if name := stamped.GetDistinctProofIndexName(); name != "" {
+				t.Fatalf("the elision was licensed by PRIMARY-KEY coverage and still "+
+					"recorded a dependency on index %q. Transitioning that index would "+
+					"then 40001 a statement whose correctness never rested on it", name)
+			}
+		}
+	}
+	if !elided {
+		t.Fatal("no plan was yielded, so nothing was observed")
+	}
+}
+
+// soleUniqueProjectionFor rebuilds the logical projection the rule inspects, so
+// the admission predicate can be asked directly.
+func soleUniqueProjectionFor(t *testing.T, column string) expressions.RelationalExpression {
+	t.Helper()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, distinctScanType("T"))
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	return expressions.NewLogicalProjectionExpression(
+		[]values.Value{distinctRead("T", column)}, scanQ,
+	)
 }

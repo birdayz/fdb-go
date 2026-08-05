@@ -10,6 +10,7 @@ go_library(
         "default_on_empty.go",
         "delete.go",
         "distinct.go",
+        "distinct_proof_stamp.go",
         "explode.go",
         "fetch_from_partial_record.go",
         "filter.go",
@@ -197,6 +198,7 @@ go_test(
         "physical_key_component_types_test.go",
         "signed_zero_directional_ordering_test.go",
         "group_existence_merge_cost_test.go",
+        "distinct_proof_stamp.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

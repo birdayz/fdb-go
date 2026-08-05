@@ -45,6 +45,9 @@ type RecordQueryScanPlan struct {
 	// plans that bypass the constructor — GetResultValue falls back to
 	// PlanExprBase's fresh-QOV there.
 	resultValue values.Value
+	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
+	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
+	distinctProofIndexName string
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -153,7 +156,8 @@ func (p *RecordQueryScanPlan) structuralKey() *structuralKey {
 		ScanComps(p.scanComparisons).
 		Types(p.keyComponentTypes).
 		Bool(p.reverse).
-		Type(p.flowedType)
+		Type(p.flowedType).
+		Str(p.distinctProofIndexName)
 }
 
 func normalizeKeyComponentTypes(types []values.Type, size int) []values.Type {
@@ -232,6 +236,7 @@ func (p *RecordQueryScanPlan) Explain() string {
 	} else {
 		b.WriteString(")")
 	}
+	b.WriteString(explainDistinctProofSuffix(p.distinctProofIndexName))
 	return b.String()
 }
 
@@ -305,3 +310,21 @@ func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.Correl
 // embeds it, so a base implementation could only ever return nil or itself —
 // never the outer plan. Go has no `self` type; each type must name itself.
 func (p *RecordQueryScanPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// GetDistinctProofIndexName implements DistinctProofStamped. A base-record scan
+// is the shape the secondary-UNIQUE DISTINCT elision actually produces on the
+// unordered `SELECT DISTINCT <unique column>` regime the optimization is for, so
+// it must be able to carry the proof directly — the elided plan is sometimes a
+// bare scan with no projection above it (`SELECT DISTINCT *`).
+func (p *RecordQueryScanPlan) GetDistinctProofIndexName() string {
+	return p.distinctProofIndexName
+}
+
+// WithDistinctProofIndexName implements DistinctProofStampable.
+func (p *RecordQueryScanPlan) WithDistinctProofIndexName(indexName string) RecordQueryPlan {
+	cp := *p
+	cp.distinctProofIndexName = indexName
+	return &cp
+}
+
+var _ DistinctProofStampable = (*RecordQueryScanPlan)(nil)

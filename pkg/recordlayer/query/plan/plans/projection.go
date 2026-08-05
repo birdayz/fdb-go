@@ -31,6 +31,24 @@ type RecordQueryProjectionPlan struct {
 	// member.
 	aliasMinted []bool
 	innerQ      expressions.Quantifier
+	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
+	// licensed eliding a DISTINCT above this projection. See
+	// distinct_proof_stamp.go — unlike aliasMinted beside it, this IS folded
+	// into structuralKey, because it records a proved fact the plan's
+	// correctness rests on rather than who named a slot.
+	distinctProofIndexName string
+}
+
+// GetDistinctProofIndexName implements DistinctProofStamped.
+func (p *RecordQueryProjectionPlan) GetDistinctProofIndexName() string {
+	return p.distinctProofIndexName
+}
+
+// WithDistinctProofIndexName implements DistinctProofStampable.
+func (p *RecordQueryProjectionPlan) WithDistinctProofIndexName(indexName string) RecordQueryPlan {
+	cp := *p
+	cp.distinctProofIndexName = indexName
+	return &cp
 }
 
 func NewRecordQueryProjectionPlan(projections []values.Value, inner RecordQueryPlan) *RecordQueryProjectionPlan {
@@ -160,7 +178,8 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 func (p *RecordQueryProjectionPlan) structuralKey() *structuralKey {
 	return newStructuralKey().
 		Values(p.projections).
-		Strs(projectionOutputIdentityKeys(p.projections, p.aliases))
+		Strs(projectionOutputIdentityKeys(p.projections, p.aliases)).
+		Str(p.distinctProofIndexName)
 }
 
 // TieBreakHashCodeWithoutChildren returns the projection's schema-neutral
@@ -210,10 +229,12 @@ func (p *RecordQueryProjectionPlan) Explain() string {
 		b.WriteString("<nil>")
 	}
 	b.WriteByte(')')
+	b.WriteString(explainDistinctProofSuffix(p.distinctProofIndexName))
 	return b.String()
 }
 
 var (
+	_ DistinctProofStampable           = (*RecordQueryProjectionPlan)(nil)
 	_ RecordQueryPlan                  = (*RecordQueryProjectionPlan)(nil)
 	_ expressions.RelationalExpression = (*RecordQueryProjectionPlan)(nil)
 )

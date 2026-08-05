@@ -371,7 +371,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				// cache entry. A cached plan gets the same guarantee as a freshly
 				// planned one, which is what the cache exists to be transparent
 				// about.
-				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs, nil),
+				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs),
 			}, nil
 		}
 	}
@@ -532,7 +532,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		// than notional: whoever lifts that decline records the proving index
 		// here, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
 		// is what fails if they lift it without doing so.
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs, nil),
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs),
 	}, nil
 }
 
@@ -1133,7 +1133,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: dmlScalarSubs,
 
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs, nil),
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
 		dryRun:            dryRun,
 	}, nil
 }

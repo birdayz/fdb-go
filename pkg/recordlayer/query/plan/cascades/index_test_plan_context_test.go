@@ -12,18 +12,34 @@ import (
 // depend on it keep compiling.
 type indexTestPlanContext struct {
 	candidates []MatchCandidate
+	// readableIndexes is the run's index-state evidence. The zero value is
+	// UNKNOWN — nobody consulted a store — which is what a rule unit test
+	// truthfully is, and which is why a metadata-property proof over an index's
+	// mutable state must not fire here. A test that wants such a proof to fire
+	// has to say so, exactly as the production SELECT path does.
+	readableIndexes ReadableIndexes
+	pk              map[string][]string
 }
 
 func (c *indexTestPlanContext) GetPlannerConfiguration() PlannerConfiguration {
-	return DefaultPlannerConfiguration()
+	cfg := DefaultPlannerConfiguration()
+	cfg.ReadableIndexes = c.readableIndexes
+	return cfg
 }
 
 func (c *indexTestPlanContext) GetMatchCandidates() []MatchCandidate {
 	return c.candidates
 }
 
-func (c *indexTestPlanContext) GetPrimaryKeyColumns(string) []string {
-	return nil
+// pk lets one context state BOTH licenses at once — a primary key covering the
+// projection AND a qualifying unique index over it. That combination is the only
+// way to observe that the stamp is written when the secondary-UNIQUE proof is the
+// SOLE license and not merely whenever a unique index happens to qualify.
+func (c *indexTestPlanContext) GetPrimaryKeyColumns(recordType string) []string {
+	if c.pk == nil {
+		return nil
+	}
+	return c.pk[recordType]
 }
 
 // testRecordRowType builds the descriptor-shaped row layout a candidate flows,

@@ -74,12 +74,21 @@ import (
 // a SURVIVING leg incorrect, and the survivor's own indexes are collected from
 // the plan that survives.
 //
-// So the proof-only set is empty today. That is measured rather than assumed,
-// and it is kept true by a test rather than by this comment: the one genuinely
-// proof-only shape, a secondary UNIQUE index licensing a DISTINCT elision, is
-// declined outright, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
-// is what fails if that decline is lifted without the dependency being recorded
-// here. See planIndexDependencies.
+// The one genuinely proof-only shape is a secondary UNIQUE index licensing a
+// DISTINCT elision, and it is now admitted. Its dependency reaches this set
+// through the PLAN — the eliding rule stamps the proving index's name onto the
+// yielded plan node — rather than through a side channel threaded out of the
+// planner.
+//
+// That is not a stylistic choice. Dependencies are a function of the PLAN, which
+// is what lets a plan-cache HIT derive them from the cached plan alone and gives
+// a cached plan the same guarantee as a freshly planned one. A proof-only
+// dependency carried beside the plan would be dropped on every cache hit — the
+// first execution guarded and every later one unguarded, which is the worst
+// possible shape because it passes the obvious test. It would also be absent on
+// the metadata-only planning harness, which bypasses the cache entirely and is
+// where the unit-level pins are written. Putting the dependency IN the plan keeps
+// the invariant true for proof-only dependencies, unqualified.
 
 // planIndexDependencies is a plan's complete index dependency set. The element
 // type is predicates.UsedIndex — the SAME type the ported
@@ -96,9 +105,9 @@ import (
 // Sorted and deduplicated, so the set is a value with a stable identity.
 type planIndexDependencies = []predicates.UsedIndex
 
-// collectPlanIndexDependencies gathers the scanned indexes from a plan tree, the
-// scanned indexes of every scalar subquery planned alongside it, and any
-// proof-only dependencies the planner recorded.
+// collectPlanIndexDependencies gathers, from a plan tree and from every scalar
+// subquery planned alongside it, both the indexes the plan SCANS and the indexes
+// whose metadata property PROVED something the plan's shape rests on.
 //
 // Scalar subqueries are collected explicitly because Go executes them as
 // SEPARATE plans hanging off the same statement rather than as children of the
@@ -106,24 +115,24 @@ type planIndexDependencies = []predicates.UsedIndex
 // indexes exactly as the main plan's do, and an unguarded subquery dependency
 // would be a hole in precisely the place a walk-based implementation looks
 // complete.
+//
+// This used to take a fourth `proofOnly []string` parameter, anticipating a
+// side-channel producer. With the proof stamped on the plan there is no such
+// producer at any call site, and a seam with no producer is dead weight that
+// reads as coverage — so the parameter is gone and its test arm is now a test of
+// the stamp walk.
 func collectPlanIndexDependencies(
 	md *recordlayer.RecordMetaData,
 	plan plans.RecordQueryPlan,
 	subqueries []PlannedScalarSubquery,
-	proofOnly []string,
 ) planIndexDependencies {
 	if md == nil {
 		return nil
 	}
 	names := make(map[string]struct{})
-	collectScannedIndexNames(plan, names)
+	collectDependedOnIndexNames(plan, names)
 	for _, sub := range subqueries {
-		collectScannedIndexNames(sub.Plan, names)
-	}
-	for _, name := range proofOnly {
-		if name != "" {
-			names[name] = struct{}{}
-		}
+		collectDependedOnIndexNames(sub.Plan, names)
 	}
 	if len(names) == 0 {
 		return nil
@@ -165,10 +174,26 @@ type indexNamedPlan interface {
 	GetIndexName() string
 }
 
-func collectScannedIndexNames(plan plans.RecordQueryPlan, into map[string]struct{}) {
+// collectDependedOnIndexNames walks the plan for BOTH kinds of dependency, and
+// they are genuinely different questions of the same node. GetIndexName answers
+// "which index does this node READ" — Java's getUsedIndexes. The stamp answers
+// "which index's declared uniqueness licensed removing an operator above this
+// node", and the defining property of that dependency is that the plan reads the
+// index NOWHERE: a scan-only set would miss precisely the dependency that can
+// produce WRONG ROWS rather than an error.
+//
+// Both are asked as CAPABILITIES rather than as a type switch, so a new plan
+// type that reads an index, or that can carry a proof, is collected without this
+// function being revisited.
+func collectDependedOnIndexNames(plan plans.RecordQueryPlan, into map[string]struct{}) {
 	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
 		if named, ok := node.(indexNamedPlan); ok {
 			if name := named.GetIndexName(); name != "" {
+				into[name] = struct{}{}
+			}
+		}
+		if stamped, ok := node.(plans.DistinctProofStamped); ok {
+			if name := stamped.GetDistinctProofIndexName(); name != "" {
 				into[name] = struct{}{}
 			}
 		}

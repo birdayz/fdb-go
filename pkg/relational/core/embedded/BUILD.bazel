@@ -158,6 +158,7 @@ go_test(
         "rfc152_outer_join_materialization_test.go",
         "rfc153_joined_preserved_plan_test.go",
         "scope_ambiguous_test.go",
+        "secondary_unique_proof_reachability_test.go",
         "select_helpers_test.go",
         "sort_projection_layering_test.go",
         "sort_pullup_test.go",
@@ -314,6 +315,7 @@ go_test(
         "index_state_planning.go",
         "index_state_planning_test.go",
         "ddl_quoted_case_wire_test.go",
+        "secondary_unique_proof_reachability_test.go",
     ],
     deps = [
         "//gen",
