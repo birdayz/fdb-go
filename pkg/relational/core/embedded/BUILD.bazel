@@ -102,6 +102,7 @@ go_test(
         "ddl_quoted_case_wire_test.go",
         "ddl_quoted_dot_pk_test.go",
         "derived_unnest_test.go",
+        "distinct_scratch_wiring_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
         "exists_in_on_plan_test.go",
@@ -314,6 +315,7 @@ go_test(
         "index_state_planning.go",
         "index_state_planning_test.go",
         "ddl_quoted_case_wire_test.go",
+        "distinct_scratch_wiring_test.go",
     ],
     deps = [
         "//gen",

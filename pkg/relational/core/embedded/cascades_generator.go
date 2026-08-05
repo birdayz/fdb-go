@@ -2075,11 +2075,6 @@ func (r *paginatingRows) fetchPage() error {
 		if classifyErr != nil {
 			return nil, classifyErr
 		}
-		// Retire the scratch entries this page has made unreachable. Placed
-		// AFTER the page's continuation is settled and only on success: a page
-		// that failed is retried from r.continuation, and retiring on a failed
-		// attempt would delete what that retry resumes from.
-		r.scratch.SweepAfterPage(exhausted)
 		// LIVENESS tripwire: a page that produced ZERO rows and did not
 		// advance its continuation would repeat forever — the per-page
 		// resume cost exceeded the page's own resource budget (e.g. a
@@ -2119,6 +2114,14 @@ func (r *paginatingRows) fetchPage() error {
 	// move — this is the assignment that must not happen anywhere else.
 	r.exhausted = pageExhausted
 	r.continuation = pageCont
+	// Retiring scratch entries is statement-scoped state moving, so it belongs
+	// HERE with the position and nowhere earlier. Inside the closure it would
+	// run on an attempt whose transaction can still fail: the retry re-executes
+	// from the UNCHANGED r.continuation, and entries this attempt judged
+	// unreachable are exactly the ones that continuation may name. What makes
+	// the judgement sound is that r.continuation has now advanced, so the
+	// entries only the PREVIOUS one could name are genuinely unreachable.
+	r.scratch.SweepAfterPage(pageExhausted)
 	return nil
 }
 
