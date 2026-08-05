@@ -230,15 +230,18 @@ What it covers, and both halves matter:
   TEMPLATE` on a template another tenant's schemas were created from leaves those schemas
   unloadable.
 
-Both are pinned end-to-end by `pkg/relational/sqldriver/mt_ddl_scope_fdb_test.go:39` and `:68`.
+Both are pinned end-to-end by `TestFDB_RestrictDDLToSessionDatabase`
+(`pkg/relational/sqldriver/mt_ddl_scope_fdb_test.go:99`); the DSN-freeze paragraph below is pinned at
+`:234` and the `/__SYS` refusal at `:294`.
 
 Two details worth knowing before you deploy it:
 
 - **A malformed boolean is an error, not "off".** `restrict_ddl_to_session_database=ture` fails at
   `sql.Open`/`OpenConnector` with SQLSTATE **22023** (`pkg/relational/sqldriver/dsn.go:103-113`),
   before FDB is touched (decode at `pkg/relational/sqldriver/driver.go:123-136`). A security flag
-  that degrades silently on a typo is worse than none. Accepted true spellings: bare flag, `1`,
-  `t`, `true`, `yes`, `on`.
+  that degrades silently on a typo is worse than none. The value is lower-cased and
+  whitespace-trimmed first (`dsn.go:104`), so accepted true spellings are the bare flag, `1`, `t`,
+  `true`, `yes`, `on` in any case; false is `0`, `f`, `false`, `no`, `off`; anything else is 22023.
 - **The Connector's DSN is frozen.** `OpenConnector` deep-clones the parsed DSN before anything
   reads it (`driver.go:130`) and `DSN()` hands out a defensive copy (`driver.go:251`), so nothing
   outside the package can flip the restriction — or the `cluster_file` — between `OpenConnector` and
@@ -463,20 +466,20 @@ rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
 ```
 
 `fdbmetrics.Handler` (`pkg/fdbgo/fdbmetrics/fdbmetrics.go:36`) accepts any
-`MetricsSource` (`fdbmetrics.go:30`) and pulls in no dependencies — it is deliberately not a
-`prometheus.Collector` (`fdbmetrics.go:8-14`).
+`MetricsSource` (`fdbmetrics.go:29`) and pulls in no dependencies — it is deliberately not a
+`prometheus.Collector` (`fdbmetrics.go:9-16`).
 
 **The catch for a SQL-only deployment: a tenant service that uses only `database/sql` cannot get
 client metrics at all.** The driver opens the handle itself
 (`pkg/relational/sqldriver/driver.go:211`, `:215`) and stashes it in a package-private cache
 (`driver.go:73`) with no getter. The one inversion is `sqldriver.RegisterBackend`
-(`pkg/relational/sqldriver/driver.go:85`): build the `*client.Database` yourself, register the
+(`pkg/relational/sqldriver/driver.go:84`): build the `*client.Database` yourself, register the
 wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_file=<key>`. Note its
 doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
 it off-label.
 
 The same applies to record-layer counters. `StoreTimer` exists and mirrors Java's `FDBStoreTimer`
-event set (`pkg/recordlayer/store_timer.go:11`, `:17-53`, `Snapshot()` at `:199`), but **nothing
+event set (`pkg/recordlayer/store_timer.go:99`, event set `:17-53`, `Snapshot()` at `:199`), but **nothing
 exports it** — no production code calls `SetTimer` (`pkg/recordlayer/database.go:1023`), there is no
 `fdbmetrics` equivalent for it, and the SQL path never surfaces an `FDBRecordContext` to install one
 on. `fdbmetrics` covers client-level transaction counters only. Record-layer counters on the SQL
@@ -632,7 +635,7 @@ layer either — see [`operations.md` §7](operations.md#7-backup--restore) for 
 `fdbrestore` commands. The pure-Go client has no `fdbbackup` protocol support: the backup error
 codes exist as a string table (`pkg/fdbgo/fdb/error.go:344`) and nothing else; there is no backup
 agent, no task bucket, no log-ranges handling. `frl` has no `export`, `import`, `backup` or
-`restore` subcommand (`cmd/frl/internal/cmd/root.go:25`).
+`restore` subcommand (the complete set is registered at `cmd/frl/internal/cmd/root.go:51-61`).
 
 So a restore is a **whole-cluster** operation. Restoring one tenant to a point in time by restoring
 the cluster means restoring every other tenant to that point in time too.
@@ -656,7 +659,7 @@ Three things make the naive version wrong, and they are the actual content of th
   (`pkg/recordlayer/store.go:503`); there is no API to write a record's stored version. A
   reload mints new versions, which breaks VERSION-keyed indexes and version continuations.
 - **The CLI is not a capture format.** `frl store dump` prints value *lengths*, not bytes
-  (`cmd/frl/internal/cmd/store_dump.go:171`), and `frl record scan` emits three fields —
+  (`cmd/frl/internal/cmd/store_dump.go:188`), and `frl record scan` emits three fields —
   `primary_key`, `record_type`, `record` (`cmd/frl/internal/cmd/record.go:186`) — with no record
   version, no index state and no store header. A scan/put round trip is lossy.
 
@@ -686,7 +689,7 @@ Go driver you write. If you write one, note the CLI does not expose everything t
 `SetTargetIndexes` (`pkg/recordlayer/online_indexer.go:414`), `SetSourceIndex` (`:444`) and
 `SetMutualIndexing` / `SetMutualIndexingBoundaries` (`:496`, `:505`, the closest thing to a
 multi-worker distributed build) are Go-API only. Knobs that *are* exposed:
-`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:78-82`); the semantics are in
+`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:79-82`); the semantics are in
 [`operations.md` §4](operations.md#4-online-index-lifecycle), including the trap that
 `SetRecordsPerSecond` only takes effect when `maxRetries > 0`.
 
@@ -712,14 +715,18 @@ index, two ways:
 
 - explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
   (`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
-  `pkg/relational/core/metadata/builder.go:1176`), pinned e2e by
+  `pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
   `pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`;
 - implicitly — any grouped aggregate index drags in an auto-emitted `__GROUP_COUNT` companion
   (`builder.go:660`).
 
-Relational primary keys are record-type-prefixed (`builder.go:1232`, `:1239-1240`), which satisfies
+Relational primary keys are record-type-prefixed unless the template declares `INTERMINGLE TABLES`
+(`builder.go:1232`, conditional at `:1239-1240`, mode threaded from `:128` into `buildPrimaryKeyExpression` at `:552`), which satisfies
 `singleRecordTypeWithPrefixKey` (`pkg/recordlayer/store_builder.go:779`), and a *grouped* COUNT
-index still qualifies as a count source (`store_builder.go:900`). So a tenant whose schema happens
+index still qualifies as a count source — the rule is stated for the universal path at
+`store_builder.go:900-903` and reached here through `snapshotRecordCountForRecordType` (`:913`), whose
+`count(EMPTY)` operand is a grouping prefix of any grouped COUNT index
+(`isGroupPrefix`, `pkg/recordlayer/aggregate_function.go:422`, tested for `COUNT` at `:261`). So a tenant whose schema happens
 to carry a COUNT index can flip back to the inline arm — **and that is not automatically the better
 outcome**: the inline rebuild runs inside the store-open transaction, against the 5 s / 10 MB
 limits. Know which arm each tenant's schema takes; do not assume it is uniform across the fleet.
@@ -740,7 +747,7 @@ Schema templates are immutable in practice: `CREATE SCHEMA TEMPLATE` of an exist
 SQLSTATE **42F59** ("new version must be greater than current version",
 `pkg/relational/core/ddl/save_schema_template.go:26-44`,
 `pkg/relational/api/errcode.go:123`), and since the DDL visitor never sets a version and the builder
-hardcodes 1 (`pkg/relational/core/metadata/builder.go:109`), a second CREATE always fails. There is
+hardcodes 1 (`pkg/relational/core/metadata/builder.go:112`), a second CREATE always fails. There is
 no `CREATE OR REPLACE` for templates — that exists only for temp functions
 (`RelationalParser.g4:238`). Pinned by `pkg/relational/sqldriver/ddl_errors_probe_test.go:80`.
 
@@ -748,8 +755,8 @@ no `CREATE OR REPLACE` for templates — that exists only for temp functions
 `pkg/relational/core/catalog/fdb_store_catalog.go:472`: load the schema, load its template's latest
 version, save the regenerated schema. It is a **Go catalog API, not SQL**; no grammar rule reaches
 it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`). And it has **zero
-non-test call sites** — no loop iterates `ListDatabases`/`ListSchemas` calling it. The fan-out is
-proposed only (`docs/rfc-schema-migration.md:309`).
+non-test call sites** — no loop iterates `ListDatabases`/`ListSchemas` calling it. No fan-out ships; the
+per-tenant Go-API loop is described as the status quo at `docs/rfc-schema-migration.md:306-311`.
 
 So the fleet-migration story today is: bump the template version → call `RepairSchema` per tenant
 through the Go API, in a loop you write → run `frl index build` per tenant per index, in a shell
@@ -761,8 +768,8 @@ Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMiss
 (Java source at tag 4.12.11.0,
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
-at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)") and
-`pkg/recordlayer/index_scan.go:803`. There is no `frl index scrub`.
+at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").
+There is no `frl index scrub` (`grep scrub cmd/frl/` is empty) and no repair entry point anywhere.
 
 What Go *does* have is a **detection-only** API: `FDBRecordStore.ValidateIndex`
 (`pkg/recordlayer/index_validation.go:39`, Java's `StandardIndexMaintainer.validateEntries()`),
@@ -771,10 +778,11 @@ it:
 
 - It **repairs nothing** — the file's entire exported surface is `ValidateIndex` and
   `IndexValidationResult.IsValid` (`:25`, `:39`). There is no repair entry point.
-- It scans **all** records and **all** index entries into memory
-  (`scanAllRecords`, `:138`; the expected-entry map at `:42`), with no continuation and no scan
-  limit. It is not bounded by FDB's 5 s / 10 MB transaction limits by construction — it will fail
-  on a store that does not fit.
+- It scans **all** records and **all** index entries into memory: the expected-entry map grows once
+  per record (`:42-43`), and phase 2 materialises the entire index subspace in a single
+  `GetRange(...).GetSliceWithError()` (`:82`) with no continuation and no scan limit. It is not
+  bounded by FDB's 5 s / 10 MB transaction limits by construction — it will fail on a store that
+  does not fit.
 - It has **zero non-test call sites**, and no CLI exposes it.
 
 Operator consequence: for a store of any real size there is **no usable way to detect, and no way at
@@ -788,7 +796,7 @@ index is wrong, the remedy is a full rebuild.
 a **ceiling, never a downgrade**, and it exists for exactly the rolling-upgrade case: pin every
 instance to the OLD version so no upgraded instance starts writing a layout the not-yet-upgraded
 ones cannot read (`store_builder.go:1209-1218`). An explicit `0` is an error, not "give me the
-default" (`:1221`).
+default" (rationale `:1204-1205`, enforced in `validateBuilder` at `:1337-1339`).
 
 The defaults differ, and in a mixed Go/Java fleet that matters: **an unpinned Go store opens at
 format version 14** (`store_builder.go:1196` → `formatVersionCurrent`,
@@ -942,9 +950,20 @@ It is a read-side extension with zero wire impact, so it is safe. But a tenant q
 **The nullable-array wire divergence is fixed.** Watch-list entry 14 described Go writing a plain
 repeated field where Java wraps nullable arrays, with `[]` and NULL collapsing — and called it "the
 one OPEN wire-compat divergence on the hard line". All of that is false on master. The wrapper is
-emitted (`pkg/relational/core/metadata/builder.go:929-937`, `wrapperFor` at `:1069-1090`, contract at
-`:760-762`), `[]` and NULL are distinct on read-back
-(`pkg/relational/sqldriver/array_literal_insert_fdb_test.go:143-156`, `:200-207`), and the wire bytes
-are pinned byte-equal to the protobuf-built message (`:217`, `:277-282`). The one residual is the
-wrapper's *type name* — Go derives it deterministically where Java mints a UUID — which is wire-valid
-because every Java reader checks the descriptor's shape, never its name (`builder.go:1058-1067`).
+emitted (`pkg/relational/core/metadata/builder.go:930-937`, `wrapperFor` at `:1070-1090`, contract at
+`:760-762`) and `[]` and NULL are distinct on read-back
+(`pkg/relational/sqldriver/array_literal_insert_fdb_test.go:143-156`, `:200-207`).
+
+The proof that closes the *hard line* is the cross-engine one: `conformance/rfc204_template_golden_test.go`
+asserts `live Java catalog bytes == committed golden bytes == Go catalog bytes` on the stored
+schema-template, with `nullable_scalar_array` (`:88`) and `nullable_array_of_struct` (`:98`) among the
+templates and Java-blessed goldens committed at `conformance/testdata/rfc204/`. That is what would go
+red if Go's wrapper shape drifted from Java's. (The Go-internal byte-equal pin at
+`array_literal_insert_fdb_test.go:217`, `:277-282` is a *different* guarantee — it holds the writer to
+the descriptor's declared shape. Its golden is built from the same descriptor, so it cannot by
+construction detect a Go-vs-Java shape divergence; `:200-207` is the pin that fails if the wrapper
+stops being emitted.)
+
+The one residual is the wrapper's *type name* — Go derives it deterministically where Java mints a
+UUID — which is wire-valid because every Java reader checks the descriptor's shape, never its name
+(`builder.go:1058-1067`), and the goldens normalize that one token on both sides (`:25-33`).
