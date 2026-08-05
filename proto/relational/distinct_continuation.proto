@@ -39,4 +39,10 @@ message DistinctHashContinuation {
     // Non-zero means the set is carried by reference; a resume that cannot
     // find the token FAILS LOUDLY rather than deduping against an empty set.
     optional int64 stateToken = 3;
+    // stateDeltaN is how much of the named entry's insertion-ordered delta this
+    // continuation was minted at. The entry belongs to a whole cursor rather
+    // than to one continuation, so several continuations of the same page share
+    // a token and are told apart by this prefix length — which is what keeps
+    // the scratch at one entry per cursor instead of one per serialized row.
+    optional int32 stateDeltaN = 4;
 }

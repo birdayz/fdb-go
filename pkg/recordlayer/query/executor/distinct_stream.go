@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -188,6 +189,22 @@ type distinctHashCursor struct {
 	// minted it can still fail and its retry needs this very entry.
 	scratch      *ExecutionScratch
 	adoptedToken int64
+	// entry/entryToken are this cursor's SINGLE scratch entry, shared by every
+	// continuation it mints (each carrying its own prefix length).
+	entry      *distinctResumeState
+	entryToken int64
+	// resumeBytes/resumeInner are the continuation this cursor was resumed
+	// from. A page that consumed no row AND left the inner at the byte-identical
+	// position it started at re-emits resumeBytes verbatim instead of minting:
+	// identical logical state must serialize to identical bytes, or the paging
+	// loop's stall detector (bytes.Equal against the previous continuation,
+	// cascades_generator.go:2025) can never fire and the statement spins
+	// fetching empty pages forever. Inner cursors really do report an unchanged
+	// non-end position (positionReplayCursor re-emits its incoming token on a
+	// truncated replay, and emits StartContinuation before its first row), so
+	// this is a live shape, not a hypothetical.
+	resumeBytes []byte
+	resumeInner []byte
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
@@ -275,28 +292,34 @@ func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorCont
 	}, nil
 }
 
-// parkSeen publishes this page's delta over the committed base under a fresh
-// token, for the continuation identified by the insertion-order prefix length
-// n. Returns 0 when the execution carries no scratch, which routes the
-// continuation to the self-contained (quadratic) encoding.
+// parkSeen publishes THIS CURSOR's delta over the committed base and returns
+// the token naming it. Returns 0 when the execution carries no scratch, which
+// routes the continuation to the self-contained (quadratic) encoding.
 //
-// n is passed rather than read from the cursor because the continuation was
-// snapshotted at a specific prefix; a cursor that advanced afterward must not
-// silently widen what its earlier continuation claimed to have emitted.
+// Publishing happens at most ONCE per cursor. Every continuation this cursor
+// produces is a prefix of the same order slice, so they all name this one entry
+// and carry their own prefix length; an enclosing operator that serializes a
+// child continuation on every emitted row (limitEnvelopeCursor) therefore adds
+// one scratch entry, not one per row, while each of those continuations stays
+// independently resumable.
 //
 // Nothing is evicted here. The attempt doing the publishing may still fail, and
 // its retry resumes from c.adoptedToken — so that entry has to survive until a
 // SUCCESSOR is adopted (ExecutionScratch rule 2).
-func (c *distinctHashCursor) parkSeen(n int) int64 {
+func (c *distinctHashCursor) parkSeen() int64 {
 	if c.scratch == nil {
 		return 0
 	}
-	return c.scratch.parkDistinct(&distinctResumeState{
-		base:       c.base,
-		deltaOrder: c.order,
-		deltaN:     n,
-		prev:       c.adoptedToken,
-	})
+	if c.entry == nil {
+		c.entry = &distinctResumeState{base: c.base, prev: c.adoptedToken}
+		c.entryToken = c.scratch.parkDistinct(c.entry)
+	}
+	// Re-publish the live slice: append REALLOCATES, so the entry would
+	// otherwise keep pointing at a stale array and a later continuation's
+	// prefix would name keys the entry cannot see. Copying nothing here is the
+	// point — only the slice header is refreshed.
+	c.entry.order = c.order
+	return c.entryToken
 }
 
 func (c *distinctHashCursor) Close() error {
@@ -328,14 +351,27 @@ type distinctHashContinuation struct {
 }
 
 func (d *distinctHashContinuation) ToBytes() ([]byte, error) {
+	if c := d.cursor; c != nil && c.scratch != nil && d.n == 0 &&
+		c.resumeBytes != nil && bytes.Equal(d.inner, c.resumeInner) {
+		// NO PROGRESS: not one key sighted, and the inner is at the byte-
+		// identical position this cursor resumed from. The logical state is the
+		// one the incoming continuation already describes, so hand back exactly
+		// those bytes. Minting a fresh token here would make two identical
+		// states serialize differently and blind the paging loop's stall
+		// detector, which compares bytes — the statement would fetch empty
+		// pages forever instead of reporting the resource limit.
+		return c.resumeBytes, nil
+	}
 	if d.token == 0 && d.cursor != nil {
-		d.token = d.cursor.parkSeen(d.n)
+		d.token = d.cursor.parkSeen()
 	}
 	if d.token != 0 {
 		token := d.token
+		n := int32(d.n)
 		cont := &gen.DistinctHashContinuation{
 			InnerContinuation: d.inner,
 			StateToken:        &token,
+			StateDeltaN:       &n,
 		}
 		return cont.MarshalVT()
 	}

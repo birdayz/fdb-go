@@ -2286,6 +2286,8 @@ func executeHashDistinct(
 	// execution always has one — empty on the first page — so every page after
 	// it publishes a delta OVER something rather than replacing it.
 	var base *seenLayer
+	// resumeBytes/resumeInner arm the no-progress re-emit (see distinctHashCursor).
+	var resumeBytes, resumeInner []byte
 	if evalCtx.Scratch() != nil {
 		base = newSeenLayer()
 	}
@@ -2307,12 +2309,19 @@ func executeHashDistinct(
 			// into its own fresh delta (seen/order, still zero here) so that a
 			// retryable failure mid-page leaves the committed set exactly as
 			// the retry's re-adoption of this same token expects to find it.
-			adopted, aerr := evalCtx.Scratch().adoptDistinct(token, props.State)
+			adopted, aerr := evalCtx.Scratch().adoptDistinct(
+				token, int(dc.GetStateDeltaN()), props.State,
+			)
 			if aerr != nil {
 				return nil, aerr
 			}
 			adoptedToken = token
 			base = adopted
+			// Kept so a page that consumes NOTHING and leaves the inner where
+			// it found it can hand these exact bytes back rather than mint a
+			// token — see distinctHashContinuation.ToBytes.
+			resumeBytes = continuation
+			resumeInner = innerCont
 		} else {
 			for _, key := range dc.GetSeenKeys() {
 				packedKey := string(key)
@@ -2350,6 +2359,8 @@ func executeHashDistinct(
 		keyer:        keyer,
 		scratch:      evalCtx.Scratch(),
 		adoptedToken: adoptedToken,
+		resumeBytes:  resumeBytes,
+		resumeInner:  resumeInner,
 	}
 	return newCloseHookCursor(
 		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),

@@ -57,7 +57,13 @@ type DistinctHashContinuation struct {
 	// stateToken names the live seen-set parked in the execution scratch.
 	// Non-zero means the set is carried by reference; a resume that cannot
 	// find the token FAILS LOUDLY rather than deduping against an empty set.
-	StateToken    *int64 `protobuf:"varint,3,opt,name=stateToken" json:"stateToken,omitempty"`
+	StateToken *int64 `protobuf:"varint,3,opt,name=stateToken" json:"stateToken,omitempty"`
+	// stateDeltaN is how much of the named entry's insertion-ordered delta this
+	// continuation was minted at. The entry belongs to a whole cursor rather
+	// than to one continuation, so several continuations of the same page share
+	// a token and are told apart by this prefix length — which is what keeps
+	// the scratch at one entry per cursor instead of one per serialized row.
+	StateDeltaN   *int32 `protobuf:"varint,4,opt,name=stateDeltaN" json:"stateDeltaN,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,17 +119,25 @@ func (x *DistinctHashContinuation) GetStateToken() int64 {
 	return 0
 }
 
+func (x *DistinctHashContinuation) GetStateDeltaN() int32 {
+	if x != nil && x.StateDeltaN != nil {
+		return *x.StateDeltaN
+	}
+	return 0
+}
+
 var File_distinct_continuation_proto protoreflect.FileDescriptor
 
 const file_distinct_continuation_proto_rawDesc = "" +
 	"\n" +
-	"\x1bdistinct_continuation.proto\x12)com.apple.foundationdb.relational.cursors\"\x84\x01\n" +
+	"\x1bdistinct_continuation.proto\x12)com.apple.foundationdb.relational.cursors\"\xa6\x01\n" +
 	"\x18DistinctHashContinuation\x12,\n" +
 	"\x11innerContinuation\x18\x01 \x01(\fR\x11innerContinuation\x12\x1a\n" +
 	"\bseenKeys\x18\x02 \x03(\fR\bseenKeys\x12\x1e\n" +
 	"\n" +
 	"stateToken\x18\x03 \x01(\x03R\n" +
-	"stateTokenB\xa1\x02\n" +
+	"stateToken\x12 \n" +
+	"\vstateDeltaN\x18\x04 \x01(\x05R\vstateDeltaNB\xa1\x02\n" +
 	"-com.com.apple.foundationdb.relational.cursorsB\x19DistinctContinuationProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRC\xaa\x02)Com.Apple.Foundationdb.Relational.Cursors\xca\x02)Com\\Apple\\Foundationdb\\Relational\\Cursors\xe2\x025Com\\Apple\\Foundationdb\\Relational\\Cursors\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Relational::Cursors"
 
 var (

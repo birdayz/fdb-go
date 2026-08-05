@@ -48,6 +48,11 @@ func (m *DistinctHashContinuation) MarshalToSizedBufferVT(dAtA []byte) (int, err
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.StateDeltaN != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.StateDeltaN))
+		i--
+		dAtA[i] = 0x20
+	}
 	if m.StateToken != nil {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.StateToken))
 		i--
@@ -115,6 +120,9 @@ func (m *DistinctHashContinuation) SizeVT() (n int) {
 	}
 	if m.StateToken != nil {
 		n += 1 + protohelpers.SizeOfVarint(uint64(*m.StateToken))
+	}
+	if m.StateDeltaN != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.StateDeltaN))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -235,6 +243,26 @@ func (m *DistinctHashContinuation) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.StateToken = &v
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field StateDeltaN", wireType)
+			}
+			var v int32
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.StateDeltaN = &v
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
