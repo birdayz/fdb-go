@@ -99,6 +99,7 @@ go_test(
         "cost_selectivity_test.go",
         "ddl_fail_closed_test.go",
         "ddl_name_collision_test.go",
+        "ddl_quoted_case_wire_test.go",
         "ddl_quoted_dot_pk_test.go",
         "derived_unnest_test.go",
         "duplicate_from_alias_binding_test.go",
@@ -312,6 +313,7 @@ go_test(
         "plan_cache_scope_encoding_test.go",
         "index_state_planning.go",
         "index_state_planning_test.go",
+        "ddl_quoted_case_wire_test.go",
     ],
     deps = [
         "//gen",

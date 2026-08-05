@@ -218,8 +218,11 @@ are a bare untyped QOV where Java types unconditionally. It carries a REOPEN TRI
 The section contract is that **every entry is a committed test asserting CURRENT behavior; red means
 fixed.** Verifying that contract for this revision found four entries that did not meet it. They
 were marked, not removed — an unpinned divergence is more dangerous than a pinned one, and hiding it
-would make the list read cleaner than the code is. Entries 2 and 4 have since been closed (entry 2
-refuted by measurement, entry 4 fixed and pinned — see the entries); 8 and 12 remain marked.
+would make the list read cleaner than the code is. **All four are now closed**: entry 2 refuted by
+measurement, entry 4 fixed and pinned, entry 8 given the cross-engine pin its Java half was missing,
+and entry 12 REFUTED and rewritten to the divergence measurement actually found — which runs in the
+opposite direction to the one the entry claimed. Two of the four were inverted by measuring them,
+which is the argument for the contract rather than an embarrassment to it.
 
 Wrong rows / wrong data:
 1. **RETIRED 2026-08-04: no read-your-writes in `BeginTx` (= B2) — FIXED by #607 (`d6f635073`).**
@@ -270,9 +273,18 @@ Wrong rows / wrong data:
    Pinned — `plandiff/corpus.go:4741`. **Do not read this as "Go is exact everywhere"**: a DOUBLE
    *column* against an integer constant is lossy in Go too, which is correct SQL and is separately
    pinned (`numeric_precision_boundary_test.go:104`).
-8. `UNION ALL` + trailing `ORDER BY` — Java orders only the right leg; Go implements the standard.
-   **⚠ HALF-PINNED**: Go's side is pinned (`yamsql/testdata/union_columns.yaml:35`), the Java side
-   rests on a prose record of a live probe (`DIVERGENCES.md:978`), not a committed cross-engine pin.
+8. `UNION ALL` + trailing `ORDER BY` — Java orders only the right leg; Go implements the standard
+   combined-result semantics. **NOW FULLY PINNED** (was half-pinned: Go's side had
+   `conformance/yamsql/testdata/union_columns.yaml`, the Java side rested on the prose record of a
+   live probe in `DIVERGENCES.md`, not a committed test). Both sides are now measured on every run
+   by `conformance/union_trailing_orderby_java_probe_test.go`, which asserts Go's full combined-sort
+   sequence, Java's per-leg orders, and — directly — that Java's answer is NOT the combined sort, so
+   a Java that started sorting the set operation reds the pin instead of quietly satisfying it.
+   *Measured while pinning:* Java's `UNION ALL` does not concatenate its legs in a fixed order (the
+   same unordered union returned `[1 6 2 5]` and `[2 1 6 5]` on different runs, the second
+   interleaving the legs), so the divergence is asserted per-leg — each leg is a PK scan and its own
+   relative order is stable. A pin naming a whole expected Java sequence would have been a flake,
+   and the eventual "fix" for that flake would have been to loosen the assertion carrying the claim.
 
 Different answer / different error:
 9. **CLOSED.** `SUM(int_col)` now raises 22003 "integer overflow" identically with and without a
@@ -295,12 +307,25 @@ Different answer / different error:
 11. `DROP SCHEMA IF EXISTS` ignores IF EXISTS (deliberate Java-bug replication). Pinned —
     `drop_schema_ifexists_conformance_probe_test.go:29`, with three sibling controls proving
     `DROP SCHEMA TEMPLATE` / `DROP DATABASE` DO honor it.
-12. A quoted DDL column is created but unreferenceable by name. **⚠ NOT PINNED, and partly
-    REFUTED.** `yamsql/testdata/quoted_identifier_pins.yaml:19` pins that a quoted column *does*
-    resolve in projection, predicate and ORDER BY; `TODO.md:4880` records the quoted-lowercase
-    42703 as fixed. The surviving residue is **mixed-case** quoted (`"KeepCase"`), which is
-    unmeasured since 2026-06-28 and mentioned only in a comment that says it is "not exercised
-    here". The entry is narrowed to that residue and booked.
+12. **REFUTED and INVERTED — the divergence runs the other way.** The claim was "a quoted DDL column
+    is created but unreferenceable by name", narrowed to the mixed-case residue (`"KeepCase"`) that
+    had been unmeasured since 2026-06-28 and survived only in a Go test comment saying it was "not
+    exercised here". Measured on both engines: `SELECT "KeepCase"` returns the value on Go exactly
+    as on Java, in projection and in a predicate. The column is referenceable. What measurement
+    found instead is that **Go over-resolves where Java rejects**: Go reaches the column through
+    `KeepCase`, `"KEEPCASE"` and `"keepcase"` alike, while Java treats quoting as case-preserving
+    and raises 42703 for every spelling but the exact one; Go also reports the column folded
+    (`KEEPCASE` vs Java's `KeepCase`). The permissive step is the case-insensitive fallback in
+    `rlcatalog.recordTypeTable.LookupColumn`, whose comment scopes it to raw-proto metadata but
+    which also swallows the quoted-case distinction. Now pinned both ways:
+    `conformance/quoted_identifier_case_java_probe_test.go` (cross-engine, incl. unquoted-DDL
+    controls in both case directions) and
+    `pkg/relational/core/embedded/ddl_quoted_case_wire_test.go`.
+    **Wire compat is intact, and that is measured, not assumed** — the stored descriptor keeps
+    `KeepCase` verbatim off the real `CREATE TABLE` path, so a Go-created and a Java-created table
+    carry the same field name and each engine still reads the other's records. The divergence is
+    read-side name resolution only. It is **query-engine subject matter (the RFC-181 WS-N name
+    model, whose Phase D is the case-preserving row layout)** and is surfaced, not fixed here.
 
 Cleanly rejected (0AF00/0A000) where Java answers: derived tables with JOIN bodies; EXISTS inside
 OR; correlated scalar subquery inside EXISTS; projected EXISTS; scalar subquery over FROM-less
@@ -509,12 +534,13 @@ stop. Three green runs are on record and they do not settle it.
 
 Booked by THIS revision, from defects the verification pass found:
 
-- **CQ-80** — watch-list entries that do not meet the contract this section states. Entries 2 and 4
-  are DONE: entry 2's un-red-able test was replaced by the Java-parity pins (and the divergence
-  itself REFUTED — see the entry), entry 4's drift was fixed and pinned red→green. Remaining: entry
-  8 pins only the Go half; entry 12 has no test and its lowercase half was fixed without the entry
-  being narrowed. This is a code/test lap, deliberately not done in a docs-only pass, and booked so
-  the next fixer does not re-derive which and why.
+- **CQ-80 — DONE.** All four watch-list entries that did not meet the contract now do. Entry 2's
+  un-red-able test was replaced by the Java-parity pins (the divergence itself REFUTED), entry 4's
+  drift was fixed and pinned red→green, entry 8 gained the cross-engine pin its Java half lacked,
+  and entry 12 was REFUTED and rewritten — the real divergence is Go over-resolving folded
+  spellings Java rejects, with wire compat measured intact. This was a code/test lap, deliberately
+  not done in the docs-only pass that found it; each entry now cites its pin so the next fixer does
+  not re-derive which and why.
 - **CQ-79** — CQ-53's surviving producer mint (`cascades_translator.go:3598`) is owned by no open
   item: CQ-53 is marked `[x]` as carrying no remainder while the ratchet pins the mint as "CQ-53's
   surviving producer". Checked and NOT owned by CQ-68, which is a different axis (untyped QOV, not a
@@ -530,8 +556,9 @@ Booked by THIS revision, from defects the verification pass found:
    Tier 1 is confirmed. Residuals CQ-46/CQ-47 stay booked below, not tier-gating.
 2. **~~B2 explicit-tx isolation.~~ DONE 2026-08-04** — #607 merged (`d6f635073`); Tier 2 is
    confirmed. Booked follow-up: RFC-209 implementation was held behind #607 and is now unblocked.
-3. **CQ-80** — pin the watch-list entries that claim a test they do not have (entries 2 and 4 done;
-   8 and 12 remain). Small, and it is what makes the list handable to an adopter.
+3. **~~CQ-80~~ DONE** — every watch-list entry now carries the committed test the section contract
+   claims for it (entries 2, 4, 8 and 12 closed; 2 and 12 REFUTED by the measurement). The list is
+   handable to an adopter.
 4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
    then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
