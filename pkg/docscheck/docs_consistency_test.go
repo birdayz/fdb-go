@@ -80,9 +80,14 @@ func javaTarget(t *testing.T, root string) string {
 }
 
 // livingDocs are the docs that must always reflect current truth.
+//
+// docs/mt-saas.md is on the list for the same reason the authority page is: it is an
+// operator-facing guide whose whole value proposition is that every sentence is checkable,
+// and it cites the Java target and the two backends by name. An ungated operator doc drifts
+// exactly like an ungated status page, and it drifts where a reader is least able to notice.
 var livingDocs = []string{
 	"README.md", "PRODUCTION_READINESS.md", "TODO.md", "DIVERGENCES.md",
-	"CHANGELOG.md", "RELEASE.md", productionStatusAuthority,
+	"CHANGELOG.md", "RELEASE.md", "docs/mt-saas.md", productionStatusAuthority,
 }
 
 // productionStatusAuthority is the ONE page that answers "what stands between this codebase and

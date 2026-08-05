@@ -1,2 +1,6 @@
 # keep: staged into pkg/docscheck panic-boundary doc-sync guard (RFC-134).
-exports_files(["panic-audit.md"])
+# keep: mt-saas.md is a livingDoc — the version drift guards read it from runfiles.
+exports_files([
+    "mt-saas.md",
+    "panic-audit.md",
+])

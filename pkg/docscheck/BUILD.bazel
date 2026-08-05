@@ -50,6 +50,7 @@ go_test(
         "//reports",
         # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles
         # (the fuzz _test.go files AND their BUILD.bazel — the guard checks go_test wiring).
+        "//docs:mt-saas.md",
         "//docs:panic-audit.md",
         # keep: the API_PARITY honest-options gate parses options.go and
         # cross-checks its classification against API_PARITY.md.
