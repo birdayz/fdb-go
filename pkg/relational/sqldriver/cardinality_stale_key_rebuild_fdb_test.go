@@ -564,6 +564,20 @@ func TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer(t *testing.T) {
 			"MAX_RECORDS_FOR_REBUILD threshold DefaultIndexRebuildPolicy must NOT rebuild inside the "+
 			"store-open transaction", total, stateAfter)
 	}
+	// WHERE THE STALE ENTRIES ACTUALLY DIE, which is not where it looks. Going
+	// DISABLED is not a bookkeeping flag flip: MarkIndexDisabled calls
+	// clearIndexData (Java's markIndexDisabled does the same), so the stale
+	// NULL-keyed entries are gone the moment the bump is reconciled — BEFORE
+	// the OnlineIndexer has run at all. Asserting their absence only at the end
+	// would credit the OnlineIndexer with a clear it never had to perform, and
+	// would stay green if that clear were removed. Pin it here, where it
+	// happens.
+	if suffixes := cq90IndexKeySuffixes(t, db, md2, ks, "T_STALE_CARD"); len(suffixes) != 0 {
+		t.Fatalf("after the bump marked the index DISABLED, %d entries remain in its subspace (%x), want 0 — "+
+			"MarkIndexDisabled must clear the index data, otherwise the stale pre-CQ-89 entries survive the "+
+			"whole migration window and the OnlineIndexer rebuilds on top of them", len(suffixes), suffixes)
+	}
+
 	// A DISABLED index is not scannable, so nothing can read stale answers out
 	// of it in the window before the OnlineIndexer runs. That is the property
 	// that makes leaving it DISABLED safe rather than merely cheap.
@@ -614,8 +628,9 @@ func TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer(t *testing.T) {
 	}
 	suffixes := cq90IndexKeySuffixes(t, db, md2, ks, "T_STALE_CARD")
 	if n := cq90CountStaleNullEntries(suffixes); n != 0 {
-		t.Fatalf("after the online rebuild %d NULL-keyed entries remain — the OnlineIndexer must clear "+
-			"the index range before rebuilding, or stale entries outlive the migration", n)
+		t.Fatalf("after the online rebuild %d NULL-keyed entries remain — the rebuild reintroduced a NULL "+
+			"key, which only the pre-CQ-89 derivation can produce (the DISABLED transition above already "+
+			"proved the subspace was empty when the build started)", n)
 	}
 	if len(suffixes) != total {
 		t.Fatalf("after the online rebuild the index holds %d entries, want %d", len(suffixes), total)

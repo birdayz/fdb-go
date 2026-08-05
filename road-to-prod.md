@@ -390,7 +390,12 @@ its census tests, not the generator, so nothing was retired.
     line terminator): `WHERE name LIKE 'abc'` matches `"abc\n"`. Deliberate Java-parity
     (verified against a live JDK over 1.2M cases), pinned in the LIKE test tables — listed here
     because it will read as a bug to anyone who hasn't seen the derivation.
-18. ON-DISK MIGRATION (CQ-89 → CQ-90): stale `CARDINALITY()` index entries written by pre-fix Go.
+18. *(retired — see "RESOLVED: the CQ-89 cardinality migration" below. Kept as a numbered slot so
+    the surrounding numbering stays stable.)*
+
+<details><summary>Entry 18 as it stood while the ruling was DOCUMENT, DO NOT FORCE</summary>
+
+    ON-DISK MIGRATION (CQ-89 → CQ-90): stale `CARDINALITY()` index entries written by pre-fix Go.
     CQ-89 changed the index key for an EMPTY non-nullable (flat repeated) array from a NULL key to
     the integer key `0` — measured, the entry key moved from `indexSubspace ‖ 0x00 ‖ pk` to
     `indexSubspace ‖ 0x14 ‖ pk`. Java always keyed `0`
@@ -412,6 +417,50 @@ its census tests, not the generator, so nothing was retired.
     Owner ruling (CQ-90): DOCUMENT, DO NOT FORCE — no `LastModifiedVersion` bump, because
     pre-production means every affected store is dev/test. That premise expires on first
     production deployment, which is the booked trigger to revisit.
+
+</details>
+
+**RESOLVED: the CQ-89 cardinality migration (CQ-90).** The trigger the DOCUMENT-DO-NOT-FORCE ruling
+booked has fired — production deployment is imminent, so the premise it rested on ("every affected
+store is dev/test") no longer holds. The migration is now forced and PROVEN, while rebuilds are
+still free, rather than left to a watch-list note that would come due when they are not. Pinned —
+`sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which reconstructs the pre-fix on-disk state
+byte-for-byte (rewriting each cardinality-0 entry to the `0x00` key, which is the *only* thing
+CQ-89 changed on the write path), reproduces the defect, runs the migration, and asserts both the
+corrected answers and the absence of any surviving NULL-keyed entry.
+
+*No automatic engine-side bump, and that is a decision.* Java has NO mechanism that force-rebuilds
+an index because the library's own key derivation changed between releases: the trigger is purely
+meta-data-driven (`checkVersion` → `getIndexesToBuildSince(oldMetaDataVersion)` → each index's
+`lastModifiedVersion`), and `FormatVersion.java:65-66` says so in as many words while contrasting
+the record-count key, which IS store-header-detected. The documented contract
+(`Index.java:614-619`) is aimed at schema authors: "Any record store older than this will need to
+have the index rebuilt." A Go-only auto-bump would make Go emit metadata bytes Java's builder never
+produces — a wire divergence in the exact direction CQ-89 set out to remove.
+
+**THE RECIPE.** Raise the CARDINALITY index's `LastModifiedVersion` past the stored metadata
+version and raise the metadata version to match; leave `AddedVersion` alone (`MetaDataEvolution
+Validator` requires it unchanged, and only `LastModifiedVersion` drives the rebuild). Bump **only**
+the affected index — every index named in `indexesToBuild` is excluded from the record-count
+sources that pick the rebuild policy, so bumping the whole schema drags any COUNT index along, the
+count degrades to `MaxInt64`, and every index lands DISABLED regardless of store size. On the next
+store open `checkVersion` reconciles: at or below `MAX_RECORDS_FOR_REBUILD` (200) it rebuilds
+inline inside the open transaction; above it the index is left DISABLED — not scannable, so nothing
+can read stale answers from it — and an explicit `OnlineIndexer` run completes the migration and
+returns it to READABLE. **A real record count requires a COUNT index in the metadata**: without one
+`getRecordCountForRebuildPolicy` falls through to an emptiness probe and reports `MaxInt64` for any
+non-empty store, so the DISABLED + `OnlineIndexer` arm is the path every relational SQL schema takes
+today.
+
+*The uniqueness sub-hazard resolves LOUDLY, and "loud" does not mean "throws."* A rebuild runs with
+the index WRITE_ONLY, where `checkUniqueness` records a violation instead of throwing (Java's
+`standardIndexMaintainer.checkUniqueness` calls `addUniquenessViolation` for both conflicting
+primary keys), and `markIndexReadableOrUniquePending` (`FDBRecordStore.java:3751`) then refuses a
+plain READABLE while violations exist. So a pre-fix pair of empty NOT NULL arrays — which the old
+NULL key let bypass the check entirely — surfaces as READABLE_UNIQUE_PENDING plus a durable
+violation on key `0` naming both records, with **both** index entries retained. That is the correct
+outcome: the invariant was silently false before, and the rebuild is what makes it audible. The
+failure this excludes is the quiet one — a rebuild that "succeeded" by discarding an entry.
 
 Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
 `NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
