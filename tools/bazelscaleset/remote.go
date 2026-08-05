@@ -177,10 +177,24 @@ exit 0
 }
 
 // remoteKillScript signals the runner session's whole process group.
+//
+// The negative pid carries NO `--` separator, and that is load-bearing rather
+// than a style choice. This script runs under the remote host's /bin/sh, which
+// on every Debian/Ubuntu box — what the runner pool is built from — is dash, and
+// dash's `kill` builtin does not accept `--`: it aborts with
+// `kill: Illegal number: -` and signals NOTHING. Paired with the `2>/dev/null ||
+// true` below (which is right on its own terms, since a session that already
+// exited must not fail the reconcile) that made the entire remote kill path a
+// silent no-op on exactly the hosts it runs on — runners were never killed,
+// slots never reclaimed. It read as correct because bash's builtin DOES take
+// `--`, so it worked on any developer box where /bin/sh is bash.
+//
+// `kill -SIG -pid` is unambiguous without the separator (the signal is already
+// consumed) and is what both dash and bash do the right thing with.
 func remoteKillScript(sl *slot, sig syscall.Signal) string {
 	pidfile := shQuote(remotePIDFilePath(sl))
 	return `pid=$(head -n 1 ` + pidfile + ` 2>/dev/null); [ -n "$pid" ] || exit 0
-kill -` + fmt.Sprint(int(sig)) + ` -- "-$pid" 2>/dev/null || true
+kill -` + fmt.Sprint(int(sig)) + ` "-$pid" 2>/dev/null || true
 `
 }
 
