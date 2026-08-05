@@ -48,6 +48,29 @@ targets it rather than a constant, new stores are born at it, and it is a ceilin
 never downgrades. The remaining work is a decision about the DEFAULT, not a missing
 capability.
 
+### Version-gated header features: WRITES gated like Java, READS still lenient (OPEN, narrow)
+
+Java guards every version-gated store-header feature at its site with
+`if (!getFormatVersionEnum().isAtLeast(V)) throw` — header user fields
+(`FDBRecordStore.java:3222`), record-count state (`:3443`), store lock state
+(`:3478`/`:3494`), incarnation (`:3503`/`:3517`) — and gates the record-count key/state
+written at store creation independently (`:5950-5957`).
+
+Go now ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
+`UnsupportedFeatureForFormatVersionError`), because those are the wire-compat hazard: a
+v12 store lock written into a header that still declares 11 is a lock a correctly-behaved
+older reader does not understand and therefore silently ignores. Pinned by a table-driven
+spec per feature plus a contrast case at the current version.
+
+**Still divergent, deliberately and narrowly: the READ side.** Java also throws from
+`getIncarnation()` (`:3503`) and `validateCanAccessHeaderUserFields()` (`:3222`) when the
+format is too old; Go's `GetIncarnation()` returns 0 and `GetHeaderUserField()` returns
+nil. Those read paths write nothing, so no bytes diverge and no older instance is misled —
+the gap is strictness (catching programmer error early) rather than compatibility. Closing
+it changes two public signatures from value-returning to `(value, error)`, which is an API
+break worth its own change rather than a rider on a migration PR. Recorded here so it is a
+known gap and not an oversight.
+
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
 **Java:** `createIntersectionAndCompensation` reapplies ANY compensation

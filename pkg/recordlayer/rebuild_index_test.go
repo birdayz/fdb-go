@@ -256,7 +256,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("fails the inline rebuild of a unique index whose data holds duplicates", func() {
+	It("leaves a unique index WRITE_ONLY when the inline rebuild finds duplicates", func() {
 		ks := specSubspace()
 
 		// Phase 1: Insert records WITHOUT the unique index.
@@ -280,20 +280,29 @@ var _ = Describe("RebuildIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Phase 2: Add the unique index and rebuild. The build is two-stage, and only
-		// the SECOND stage decides the outcome. While the index is WRITE_ONLY,
-		// checkUniqueness RECORDS violations rather than throwing (Java's
-		// standardIndexMaintainer.checkUniqueness → addUniquenessViolation), which is
-		// why the scan completes. Then the inline rebuild calls the ONE-ARGUMENT
-		// markIndexReadable(index) (FDBRecordStore.java:4602 → :3767-3768, i.e.
-		// allowUniquePending=FALSE), and checkAndUpdateBuiltIndexState (:3821) THROWS
-		// RecordIndexUniquenessViolation (:3856-3861).
+		// Phase 2: Add the unique index and rebuild. Three Java facts compose, and the
+		// outcome is none of the obvious two.
 		//
-		// READABLE_UNIQUE_PENDING is NOT what a store-open rebuild produces. Java core
-		// reaches that state from one caller only, IndexingBase.java:324, gated on a
-		// policy that defaults FALSE (OnlineIndexer.java:1220) and also requires format
-		// version >= READABLE_UNIQUE_PENDING. See the OnlineIndexer specs for both
-		// sides of that policy.
+		// While the index is WRITE_ONLY, checkUniqueness RECORDS violations rather
+		// than throwing (Java's standardIndexMaintainer.checkUniqueness →
+		// addUniquenessViolation), so the scan completes. The inline rebuild then
+		// calls the ONE-ARGUMENT markIndexReadable(index) (FDBRecordStore.java:4602 →
+		// :3767-3768, allowUniquePending=FALSE), and checkAndUpdateBuiltIndexState
+		// (:3821) throws RecordIndexUniquenessViolation (:3856-3861) — so the index is
+		// NOT made readable, and NOT parked in READABLE_UNIQUE_PENDING either (that
+		// state needs IndexingBase.java:324 under a policy defaulting FALSE,
+		// OnlineIndexer.java:1220).
+		//
+		// But rebuildIndex SWALLOWS that throw: the whole chain is wrapped in
+		// `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...); ...; return
+		// null; })` (:4602-4615), and a handle returning normally completes the future
+		// normally. So the rebuild reports SUCCESS and the index simply stays
+		// WRITE_ONLY, with its violations on disk.
+		//
+		// Java pins exactly this in FDBRecordStoreUniqueIndexTest.
+		// addUniqueIndexViaCheckVersion:615-627 — REBUILD_INDEX ran, the index is
+		// WRITE_ONLY, scanUniquenessViolations holds every conflicting primary key,
+		// and the transaction COMMITS.
 		nameIndex := NewIndex("Customer$name", Field("name"))
 		nameIndex.SetUnique()
 		builder2 := baseMetaData()
@@ -309,23 +318,25 @@ var _ = Describe("RebuildIndex", func() {
 			}
 
 			rebuildErr := store.RebuildIndex(nameIndex)
-			Expect(rebuildErr).To(HaveOccurred(), "an inline rebuild that finds duplicates on a UNIQUE "+
-				"index must fail, not settle into READABLE_UNIQUE_PENDING behind the operator's back")
-			var uv *RecordIndexUniquenessViolationError
-			Expect(errors.As(rebuildErr, &uv)).To(BeTrue(),
-				"rebuild failed with %v, want a RecordIndexUniquenessViolationError", rebuildErr)
-			Expect(uv.IndexName).To(Equal("Customer$name"))
+			Expect(rebuildErr).NotTo(HaveOccurred(), "the inline rebuild must not propagate the "+
+				"mark-readable failure: Java's .handle logs and swallows it (FDBRecordStore.java:4602-4615), "+
+				"so a metadata evolution that meets bad data leaves ONE index unusable instead of failing "+
+				"the whole store open")
 
-			// The violations were recorded during the WRITE_ONLY scan — that is why
-			// the build reached the mark-readable step at all instead of aborting on
-			// the first duplicate.
+			// WRITE_ONLY, not readable and not pending: the mark was attempted and
+			// refused, and nothing downgraded it to a pending state nobody asked for.
+			Expect(store.GetIndexState(nameIndex.Name)).To(Equal(IndexStateWriteOnly))
+
+			// The violations were recorded during the WRITE_ONLY scan, and they are
+			// what makes the failure actionable — the index is unusable until an
+			// operator resolves the pair and runs an explicit build.
 			violations, vErr := store.ScanUniquenessViolations(nameIndex)
 			Expect(vErr).NotTo(HaveOccurred())
 			Expect(len(violations)).To(BeNumerically(">=", 2))
 
-			// And the index was left in neither readable state.
-			Expect(store.GetIndexState(nameIndex.Name)).NotTo(Equal(IndexStateReadable))
-			Expect(store.GetIndexState(nameIndex.Name)).NotTo(Equal(IndexStateReadableUniquePending))
+			// Not scannable, so no query can read a half-built index. This is why
+			// swallowing is safe rather than merely convenient.
+			Expect(store.IsIndexScannable(nameIndex.Name)).To(BeFalse())
 
 			return nil, nil
 		})

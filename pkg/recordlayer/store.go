@@ -27,6 +27,9 @@ const (
 	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
 	// earlier format version is upgraded). Below this version, unsplit records are stored at
 	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
+	// formatVersionRecordCountKeyAdded (3, RECORD_COUNT_KEY_ADDED) is the version at
+	// which the store header can carry a record-count key at all.
+	formatVersionRecordCountKeyAdded   = 3
 	formatVersionSaveUnsplitWithSuffix = 5
 	// formatVersionSaveVersionWithRecord (6, SAVE_VERSION_WITH_RECORD) is the version at which
 	// record versions are stored inline adjacent to the record (recordsSubspace.pack(pk, -1))
@@ -1479,6 +1482,31 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 	return 0
 }
 
+// requireFormatVersion is Java's per-feature
+// `if (!getFormatVersionEnum().isAtLeast(V)) throw` guard, applied at the WRITE
+// site of every version-gated store-header feature.
+//
+// It reads the ACTUAL header version, not the version this process would like to
+// open at, because the header is what an older instance opening the same store
+// will see. Writing a v12 store lock into a header that still says 11 produces a
+// lock a correctly-behaved older reader ignores — the feature silently does
+// nothing, which is worse than refusing to set it.
+//
+// Java sites ported: FDBRecordStore.java:3222 (header user fields), :3443
+// (record count state), :3478/:3494 (store lock state), :3503/:3517
+// (incarnation).
+//
+// Callers must hold stateMu (or be inside a path that does); this only reads
+// storeHeader.
+func (store *FDBRecordStore) requireFormatVersion(feature string, required int32) error {
+	if got := store.storeHeader.GetFormatVersion(); got < required {
+		return &UnsupportedFeatureForFormatVersionError{
+			Feature: feature, Version: got, RequiredVersion: required,
+		}
+	}
+	return nil
+}
+
 // GetIncarnation returns the incarnation counter from the store header.
 // Used for cross-cluster data migration versioning.
 // Goroutine-safe via stateMu (read lock).
@@ -1505,6 +1533,9 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("incarnation", formatVersionIncarnation); err != nil {
+		return err
 	}
 	current := store.storeHeader.GetIncarnation()
 	newVal := updater(current)
@@ -1545,6 +1576,9 @@ func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error 
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
+	if err := store.requireFormatVersion("header user fields", formatVersionHeaderUserFields); err != nil {
+		return err
+	}
 	// Update existing entry or append new one
 	for _, entry := range store.storeHeader.UserField {
 		if entry.GetKey() == key {
@@ -1567,6 +1601,9 @@ func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("header user fields", formatVersionHeaderUserFields); err != nil {
+		return err
 	}
 	fields := store.storeHeader.UserField
 	for i, entry := range fields {
@@ -1611,6 +1648,9 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
+	if err := store.requireFormatVersion("store lock state", formatVersionStoreLockState); err != nil {
+		return err
+	}
 	ts := store.context.Env().Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
 		LockState: &state,
@@ -1628,6 +1668,9 @@ func (store *FDBRecordStore) ClearStoreLockState() error {
 	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
+	}
+	if err := store.requireFormatVersion("store lock state", formatVersionStoreLockState); err != nil {
+		return err
 	}
 	store.storeHeader.StoreLockState = nil
 	return store.writeStoreHeader(store.storeHeader)

@@ -452,17 +452,30 @@ returns it to READABLE. **A real record count requires a COUNT index in the meta
 non-empty store, so the DISABLED + `OnlineIndexer` arm is the path every relational SQL schema takes
 today.
 
-*The uniqueness sub-hazard resolves LOUDLY: the migration THROWS.* The build is two-stage and only
-the second stage decides. While the index is WRITE_ONLY, `checkUniqueness` records a violation
-rather than throwing (Java's `standardIndexMaintainer.checkUniqueness` calls
-`addUniquenessViolation` for both conflicting primary keys), which is why the scan completes. Then
-the inline rebuild calls the one-argument `markIndexReadable(index)` (`FDBRecordStore.java:4602` →
-`:3767-3768`, i.e. `allowUniquePending=FALSE`), and `checkAndUpdateBuiltIndexState` (`:3821`)
-**throws** `RecordIndexUniquenessViolation` ("Uniqueness violation when making index readable",
-`:3856-3861`). What an operator sees on a pre-fix pair of empty NOT NULL arrays — which the old NULL
-key let bypass the check entirely — is a **failed store open** naming the index and the colliding
-key `0`, and the failure is atomic: the whole store-open transaction rolls back, so nothing is left
-half-migrated and a retry is a clean re-attempt.
+*The uniqueness sub-hazard surfaces as an UNUSABLE INDEX, not a failed open — and the distinction is
+the whole safety argument.* The build is three-staged, and stopping at stage two gets it wrong.
+While the index is WRITE_ONLY, `checkUniqueness` records a violation rather than throwing (Java's
+`standardIndexMaintainer.checkUniqueness` calls `addUniquenessViolation` once per conflicting
+primary key, `StandardIndexMaintainer.java:497-498`), so the scan completes. The inline rebuild then
+calls the one-argument `markIndexReadable(index)` (`FDBRecordStore.java:4602` → `:3767-3768`,
+`allowUniquePending=FALSE`) and `checkAndUpdateBuiltIndexState` (`:3821`) throws
+`RecordIndexUniquenessViolation` (`:3856-3861`) — so the index is **not** made readable, and not
+parked in `READABLE_UNIQUE_PENDING` either. But `rebuildIndex` **swallows** that throw: the chain
+ends in `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...); …; return null; })`
+(`:4602-4615`), and a handle returning normally completes the future normally.
+
+So what an operator actually sees on a pre-fix pair of empty NOT NULL arrays — which the old NULL key
+let bypass the check entirely — is: **the store opens and commits normally**, the migration itself
+ran (stale `0x00` entries gone, both records keyed `0`), the index is left **WRITE_ONLY** and
+therefore *not scannable*, and the violations sit in the violations subspace naming both records.
+Java pins exactly this in its own test,
+`FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627`.
+
+That is the safe outcome, and propagating would be strictly worse: a non-scannable index means
+queries fall back to base scans and **no read is wrong**, whereas a propagated error would turn any
+metadata evolution that meets bad data into a **store-open outage** — every transaction against the
+store fails, not just the one index. The loud signal is the index being unusable plus the durable,
+enumerable violations; it is not a failed open.
 
 `READABLE_UNIQUE_PENDING` is **not** the default landing spot. Java core reaches it from one caller
 only, `IndexingBase.java:324`, gated on `IndexingPolicy.shouldAllowUniquePendingState`

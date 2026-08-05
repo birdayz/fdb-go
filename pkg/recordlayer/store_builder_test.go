@@ -12,6 +12,152 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Format-version pinning: the builder property that lets a rolling upgrade hold
+// every instance at the OLD format (Java FDBRecordStoreBase.BaseBuilder.
+// setFormatVersion, :2245/:2266). The zero value is the interesting case, and it
+// is why the field is a pointer rather than a bare int32.
+var _ = Describe("StoreBuilder_FormatVersion", func() {
+	fvBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	fvBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	fvBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	fvBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	fvMetaData, _ := fvBuilder.Build()
+
+	It("defaults to the newest format version when SetFormatVersion is never called", func() {
+		b := NewStoreBuilder().SetMetaDataProvider(fvMetaData).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_unset"}.Pack()))
+		Expect(b.effectiveFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+	})
+
+	It("honours an explicitly pinned older format version", func() {
+		b := NewStoreBuilder().SetMetaDataProvider(fvMetaData).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_pinned"}.Pack())).
+			SetFormatVersion(int32(formatVersionCacheableState))
+		Expect(b.effectiveFormatVersion()).To(Equal(int32(formatVersionCacheableState)))
+	})
+
+	// An EXPLICIT zero must NOT be read as "unset". Java validates whatever value
+	// it was handed (FormatVersion.validateFormatVersion, :225-229) and 0 is below
+	// the minimum, so it rejects too. Silently substituting the newest version
+	// would open at 14 for a caller who asked for 0 — the opposite of any
+	// plausible intent, and invisible until it had already written a newer format.
+	It("REJECTS an explicit SetFormatVersion(0) instead of treating it as unset", func() {
+		_, err := NewStoreBuilder().
+			SetContext(&FDBRecordContext{}).
+			SetMetaDataProvider(fvMetaData).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_zero"}.Pack())).
+			SetFormatVersion(0).
+			Build()
+		Expect(err).To(HaveOccurred())
+		var fmtErr *UnsupportedFormatVersionError
+		Expect(errors.As(err, &fmtErr)).To(BeTrue(),
+			"SetFormatVersion(0) failed with %v, want UnsupportedFormatVersionError", err)
+		Expect(fmtErr.Version).To(Equal(int32(0)))
+	})
+
+	It("rejects a format version newer than this binary supports", func() {
+		_, err := NewStoreBuilder().
+			SetContext(&FDBRecordContext{}).
+			SetMetaDataProvider(fvMetaData).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_high"}.Pack())).
+			SetFormatVersion(int32(formatVersionCurrent) + 1).
+			Build()
+		Expect(err).To(HaveOccurred())
+		var fmtErr *UnsupportedFormatVersionError
+		Expect(errors.As(err, &fmtErr)).To(BeTrue())
+	})
+
+	// Every version-gated store-header FEATURE must refuse to write when the
+	// store's actual header version predates it. Pinning the format version is
+	// what makes the hazard reachable: without these gates a store pinned at 11
+	// happily writes a v12 store lock into an 11 header, and an older instance —
+	// exactly the instance the pin exists to protect — opens that store, does not
+	// understand the field, and ignores a lock it should have honoured.
+	//
+	// Java gates each of these at its write site (FDBRecordStore.java:3222, :3443,
+	// :3478, :3494, :3503, :3517).
+	DescribeTable("refuses a version-gated header feature below its format version",
+		func(pinned int32, attempt func(store *FDBRecordStore) error, feature string, required int32) {
+			ks := specSubspace()
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(fvMetaData).
+					SetSubspace(ks).SetFormatVersion(pinned).CreateOrOpen()
+				if oErr != nil {
+					return nil, oErr
+				}
+				Expect(store.GetFormatVersion()).To(Equal(pinned),
+					"the store did not open at the pinned version, so this case proves nothing")
+
+				aErr := attempt(store)
+				Expect(aErr).To(HaveOccurred(),
+					"%s was written into a header at format version %d, which predates it (>= %d). "+
+						"An older instance opening this store cannot interpret the field and will "+
+						"silently ignore it", feature, pinned, required)
+				var fErr *UnsupportedFeatureForFormatVersionError
+				Expect(errors.As(aErr, &fErr)).To(BeTrue(),
+					"%s failed with %v, want UnsupportedFeatureForFormatVersionError", feature, aErr)
+				Expect(fErr.Version).To(Equal(pinned))
+				Expect(fErr.RequiredVersion).To(Equal(required))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("store lock state below 12",
+			int32(formatVersionRecordCountState),
+			func(s *FDBRecordStore) error {
+				return s.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")
+			},
+			"store lock state", int32(formatVersionStoreLockState)),
+		Entry("clear store lock state below 12",
+			int32(formatVersionRecordCountState),
+			func(s *FDBRecordStore) error { return s.ClearStoreLockState() },
+			"store lock state", int32(formatVersionStoreLockState)),
+		Entry("header user fields below 8",
+			int32(formatVersionCacheableState),
+			func(s *FDBRecordStore) error { return s.SetHeaderUserField("k", []byte("v")) },
+			"header user fields", int32(formatVersionHeaderUserFields)),
+		Entry("clear header user field below 8",
+			int32(formatVersionCacheableState),
+			func(s *FDBRecordStore) error { return s.ClearHeaderUserField("k") },
+			"header user fields", int32(formatVersionHeaderUserFields)),
+		Entry("record count state below 11",
+			int32(formatVersionCheckIndexBuildType),
+			func(s *FDBRecordStore) error {
+				return s.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)
+			},
+			"updating record count state", int32(formatVersionRecordCountState)),
+		Entry("incarnation below 13",
+			int32(formatVersionStoreLockState),
+			func(s *FDBRecordStore) error {
+				return s.UpdateIncarnation(func(cur int32) int32 { return cur + 1 })
+			},
+			"incarnation", int32(formatVersionIncarnation)),
+	)
+
+	// The contrast half: at a sufficient version each feature must actually work,
+	// or the gates above would be satisfied by a store that simply rejects
+	// everything.
+	It("allows the same features at the current format version", func() {
+		ks := specSubspace()
+		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(fvMetaData).
+				SetSubspace(ks).CreateOrOpen()
+			if oErr != nil {
+				return nil, oErr
+			}
+			Expect(store.SetStoreLockState(
+				gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "why")).To(Succeed())
+			Expect(store.ClearStoreLockState()).To(Succeed())
+			Expect(store.SetHeaderUserField("k", []byte("v"))).To(Succeed())
+			Expect(store.ClearHeaderUserField("k")).To(Succeed())
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+			Expect(store.UpdateIncarnation(func(cur int32) int32 { return cur + 1 })).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 var _ = Describe("StoreBuilder_Validation", func() {
 	validBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	validBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))

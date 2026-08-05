@@ -13981,18 +13981,39 @@ None is speculative: each was re-verified against the tree before booking.
     COUNT index today, which makes DISABLED + `OnlineIndexer` the path they
     all take. The test declares one deliberately to reach the inline arm.
 
-  **The uniqueness sub-hazard resolves LOUDLY: the migration THROWS — and
-  fixing that exposed a REAL Go divergence this item had first blessed.**
-  The build is two-stage. While the index is WRITE_ONLY `checkUniqueness`
-  RECORDS a violation rather than throwing (`index_maintainer.go:493-504`;
-  Java's `standardIndexMaintainer.checkUniqueness` calls
-  `addUniquenessViolation` for both conflicting PKs), which is why the scan
-  completes. The reckoning is at the end: Java's inline rebuild calls the
-  ONE-ARGUMENT `markIndexReadable(index)` (`FDBRecordStore.java:4602` →
-  `:3767-3768`, `allowUniquePending=FALSE`) and
-  `checkAndUpdateBuiltIndexState` (`:3821`) THROWS
-  `RecordIndexUniquenessViolation` (`:3856-3861`). The failure is atomic — the
-  store-open transaction rolls back, so nothing is half-migrated.
+  **The uniqueness sub-hazard leaves the index UNUSABLE, not the store — and
+  getting there took two wrong answers, both recorded here so neither is tried
+  again.** The build is THREE-staged. While the index is WRITE_ONLY
+  `checkUniqueness` RECORDS a violation rather than throwing
+  (`index_maintainer.go:493-504`; Java's
+  `standardIndexMaintainer.checkUniqueness` calls `addUniquenessViolation` once
+  per conflicting PK, `StandardIndexMaintainer.java:497-498`), so the scan
+  completes. Java's inline rebuild then calls the ONE-ARGUMENT
+  `markIndexReadable(index)` (`FDBRecordStore.java:4602` → `:3767-3768`,
+  `allowUniquePending=FALSE`) and `checkAndUpdateBuiltIndexState` (`:3821`)
+  throws `RecordIndexUniquenessViolation` (`:3856-3861`) — so the index is NOT
+  made readable and NOT parked in `READABLE_UNIQUE_PENDING`. **But
+  `rebuildIndex` SWALLOWS that throw**: the chain ends in
+  `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...); …; return null; })`
+  (`:4602-4615`), and a `CompletableFuture` handle returning normally completes
+  normally. Java pins the net effect in its own test,
+  `FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627`: the
+  index is WRITE_ONLY, `scanUniquenessViolations` holds every conflicting PK,
+  and the transaction COMMITS.
+  So the operator-visible outcome is: store opens fine, migration ran (stale
+  `0x00` entries gone), index left WRITE_ONLY hence NOT scannable, violations
+  durable and naming both records. That is safe precisely because a
+  non-scannable index means queries fall back to base scans and no read is
+  wrong; propagating instead would turn any metadata evolution meeting bad data
+  into a STORE-OPEN OUTAGE.
+  **Two wrong answers were shipped in this item before that one.** First, Go
+  called `MarkIndexReadableOrUniquePending` unconditionally on both the inline
+  and online paths — no policy, no format gate — silently downgrading a
+  violation into a pending state nobody opted into. Fixing that, the second
+  attempt made the inline path PROPAGATE the throw, which is the outage
+  described above; it was reached by reading `markIndexReadable` and stopping
+  before the `.handle` that consumes it. Both are now pinned against, and the
+  swallow is cited at the call site so the next reader does not re-litigate it.
   `READABLE_UNIQUE_PENDING` is reachable in Java core from ONE caller,
   `IndexingBase.java:324`, gated on
   `IndexingPolicy.shouldAllowUniquePendingState` (`OnlineIndexer.java:1117`):

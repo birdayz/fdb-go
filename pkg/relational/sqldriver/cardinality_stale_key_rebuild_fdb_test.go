@@ -939,94 +939,110 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 		t.Fatal("T_STALE_CARD is not unique after SetUnique — the rest of this test would assert nothing")
 	}
 
-	// ARM 1 — THE DEFAULT. The inline rebuild at store open must FAIL, and fail
-	// with the structured error that names the index.
-	rebuildErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
-		return nil
-	})
-	if rebuildErr == nil {
-		t.Fatal("the store opened cleanly on a store holding TWO records with an empty NOT NULL array on a " +
-			"UNIQUE cardinality index. Both key the integer 0, so exactly one entry can exist. Java's inline " +
-			"rebuild marks readable with allowUniquePending=FALSE (FDBRecordStore.java:4602 → :3767-3768) and " +
-			"THROWS RecordIndexUniquenessViolation (:3856-3861); a silent success means Go downgraded to " +
-			"READABLE_UNIQUE_PENDING behind the operator's back, or dropped an entry")
-	}
-	var uv *recordlayer.RecordIndexUniquenessViolationError
-	if !errors.As(rebuildErr, &uv) {
-		t.Fatalf("the rebuild failed with %v, want a RecordIndexUniquenessViolationError — the migration has "+
-			"to NAME the invariant it found broken, not merely refuse", rebuildErr)
-	}
-	if uv.IndexName != "T_STALE_CARD" {
-		t.Fatalf("uniqueness violation names index %q, want T_STALE_CARD", uv.IndexName)
-	}
-	if len(uv.IndexKey) != 1 || uv.IndexKey[0] != int64(0) {
-		t.Fatalf("uniqueness violation is on key %v, want the single column [0] — that is the key the two "+
-			"empty NOT NULL arrays now share, and the whole point of the migration", uv.IndexKey)
-	}
-	// The error must NAME a colliding record, not just the key. WHICH one it names
-	// comes from checkAndUpdateBuiltIndexState's limit-1 scan,
-	// scanUniquenessViolations(index, 1).first() (FDBRecordStore.java:3832): the
-	// winner is simply the first entry in violations-subspace order, so it is
-	// deterministic and both engines name the same record.
+	// ARM 1 — THE DEFAULT. The store open SUCCEEDS and the index is left
+	// WRITE_ONLY. That is Java's behaviour, and it is not the obvious answer.
 	//
-	// The assertion is still ONE OF the two on purpose. Pinning the exact primary
-	// key here would harden violations-subspace key ordering into a contract this
-	// test does not exist to defend, and the property that actually matters —
-	// that BOTH records are recorded and reachable — is pinned where the
-	// violations survive, in the opt-in test below.
+	// The mark itself is strict (allowUniquePending=FALSE, FDBRecordStore.java:4602
+	// → :3767-3768, throwing at :3856-3861), but rebuildIndex SWALLOWS the throw:
+	// the chain ends in `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...);
+	// ...; return null; })` (:4602-4615), and a handle that returns normally
+	// completes the future normally. Java pins the net effect in
+	// FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627 — the
+	// index is WRITE_ONLY, scanUniquenessViolations holds every conflicting primary
+	// key, and commit(context) SUCCEEDS.
+	//
+	// Propagating instead would be strictly worse, which is why this arm asserts a
+	// clean open rather than an error: a WRITE_ONLY index is not scannable, so
+	// queries fall back to base scans and no read is wrong, whereas a propagated
+	// error turns a metadata evolution that meets bad data into a STORE-OPEN
+	// OUTAGE — every transaction against the store fails, not just the index.
+	if rebuildErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		return nil
+	}); rebuildErr != nil {
+		t.Fatalf("opening the store failed with %v. Java does NOT propagate a rebuild uniqueness failure out "+
+			"of checkVersion — rebuildIndex logs and swallows it (FDBRecordStore.java:4602-4615) and the "+
+			"commit succeeds. Failing the open turns one unusable index into a whole-store outage", rebuildErr)
+	}
+
+	// WRITE_ONLY: the mark was attempted and refused, and nothing quietly
+	// downgraded it to READABLE_UNIQUE_PENDING (which needs the opt-in policy,
+	// pinned in TestFDB_CardinalityUniquePendingPolicyBothSides).
+	var stateAfter recordlayer.IndexState
+	var scannable bool
+	var violations []recordlayer.UniquenessViolation
+	if rErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		stateAfter = store.GetIndexState("T_STALE_CARD")
+		scannable = store.IsIndexScannable("T_STALE_CARD")
+		vs, vErr := store.ScanUniquenessViolations(md2.GetIndex("T_STALE_CARD"))
+		violations = vs
+		return vErr
+	}); rErr != nil {
+		t.Fatalf("reopen to inspect state: %v", rErr)
+	}
+	if stateAfter == recordlayer.IndexStateReadable {
+		t.Fatal("the index is READABLE on a store holding TWO records with an empty NOT NULL array on a " +
+			"UNIQUE cardinality index. Both key the integer 0, so exactly one entry can exist — a readable " +
+			"index here means the conflict was absorbed and the index silently disagrees with the base table")
+	}
+	if stateAfter != recordlayer.IndexStateWriteOnly {
+		t.Fatalf("after the rebuild the index is %v, want WRITE_ONLY — that is what Java leaves behind when "+
+			"markIndexReadable refuses and rebuildIndex swallows the refusal", stateAfter)
+	}
+	if scannable {
+		t.Fatal("the index is SCANNABLE while holding a known duplicate — not being scannable is what makes " +
+			"swallowing the failure safe, so losing it turns a tolerated failure into wrong reads")
+	}
+
+	// The violations are what make a silent-looking outcome actionable, and BOTH
+	// records must be named: Java calls addUniquenessViolation once per conflicting
+	// primary key (StandardIndexMaintainer.java:497-498), so a lookup keyed on
+	// either record finds the other.
+	if len(violations) == 0 {
+		t.Fatal("the rebuild left the index WRITE_ONLY but recorded NO uniqueness violation — the open " +
+			"succeeded and nothing was raised, so the violations subspace is the ONLY signal an operator has")
+	}
+	for _, v := range violations {
+		if len(v.IndexKey) != 1 || v.IndexKey[0] != int64(0) {
+			t.Fatalf("recorded violation is on key %v, want the single column [0] — that is the key the two "+
+				"empty NOT NULL arrays now share, and the whole point of the migration", v.IndexKey)
+		}
+	}
 	// A relational primary key carries the record-type key ahead of the declared
 	// columns, so ID is the LAST element.
-	if len(uv.PrimaryKey) == 0 {
-		t.Fatalf("uniqueness violation carries an empty primary key (%+v) — an operator cannot act on a "+
-			"violation that names no record", uv)
+	named := map[int64]bool{}
+	for _, v := range violations {
+		if len(v.PrimaryKey) == 0 {
+			t.Fatalf("recorded violation has an empty primary key: %+v", v)
+		}
+		id, ok := v.PrimaryKey[len(v.PrimaryKey)-1].(int64)
+		if !ok {
+			t.Fatalf("recorded violation primary key %v does not end in an integer ID", v.PrimaryKey)
+		}
+		named[id] = true
 	}
-	namedID, ok := uv.PrimaryKey[len(uv.PrimaryKey)-1].(int64)
-	if !ok || (namedID != 1 && namedID != 2) {
-		t.Fatalf("uniqueness violation names primary key %v, want one ending in 1 or 2 — the two records "+
-			"whose empty NOT NULL arrays collide on key 0", uv.PrimaryKey)
-	}
-
-	// ATOMICITY, the header half stated outright rather than inferred from a later
-	// error: the store header must still carry the OLD metadata version, so the
-	// migration is a clean re-attempt rather than a resume of something partial.
-	var headerVersion int32
-	if rErr := cq90Run(t, db, md, ks, false, func(store *recordlayer.FDBRecordStore) error {
-		headerVersion = store.GetMetaDataVersion()
-		return nil
-	}); rErr != nil {
-		t.Fatalf("reopen at the OLD metadata version to inspect the header: %v", rErr)
-	}
-	if headerVersion != int32(md.Version()) {
-		t.Fatalf("after the FAILED rebuild the store header carries metadata version %d, want the ORIGINAL "+
-			"%d — checkVersion advances the header in the same transaction as the rebuild, so a header that "+
-			"moved means the throw did not roll everything back and the migration is half-applied",
-			headerVersion, md.Version())
+	if !named[1] || !named[2] {
+		t.Fatalf("the recorded violations name primary keys %v, want BOTH 1 and 2 — Java calls "+
+			"addUniquenessViolation once per conflicting primary key "+
+			"(StandardIndexMaintainer.java:497-498), so a lookup keyed on either record finds the other",
+			named)
 	}
 
-	// THE FAILED MIGRATION IS ATOMIC, which is the half a bare "it threw"
-	// assertion misses. checkVersion runs inside the store-open transaction, so
-	// the throw rolls the whole thing back: no index state is written, no
-	// violation records survive, the store header keeps the OLD metadata version,
-	// and the stale NULL-keyed entries are still exactly where they were. The
-	// operator is left with a store that is unchanged and a retry that is a clean
-	// re-attempt rather than a resume of something half-applied.
-	//
-	// Reopening at the OLD metadata does not itself trigger a rebuild, so this
-	// observes the store rather than disturbing it.
-	suffixesAfterFail := cq90IndexKeySuffixes(t, db, md, ks, "T_STALE_CARD")
-	if n := cq90CountStaleNullEntries(suffixesAfterFail); n != 2 {
-		t.Fatalf("after the FAILED rebuild the index holds %d NULL-keyed entries (%x), want the original 2 — "+
-			"the throw must roll the store-open transaction back untouched, leaving nothing half-migrated",
-			n, suffixesAfterFail)
+	// THE MIGRATION STILL RAN. The rebuild cleared and rewrote the index before the
+	// mark was refused, so the stale NULL-keyed entries are GONE and both records
+	// are keyed 0 — the index is merely not readable yet.
+	suffixesAfter := cq90IndexKeySuffixes(t, db, md2, ks, "T_STALE_CARD")
+	if n := cq90CountStaleNullEntries(suffixesAfter); n != 0 {
+		t.Fatalf("after the rebuild %d NULL-keyed entries remain (%x) — a refused MARK must not undo the "+
+			"rebuild itself; the entries were rewritten before uniqueness was ever checked", n, suffixesAfter)
 	}
-	if len(suffixesAfterFail) != 2 {
-		t.Fatalf("after the FAILED rebuild the index holds %d entries (%x), want 2", len(suffixesAfterFail),
-			suffixesAfterFail)
+	if len(suffixesAfter) != 2 {
+		t.Fatalf("after the rebuild the index holds %d entries (%x), want 2 — a uniqueness conflict must be "+
+			"REPORTED, never resolved by discarding an entry", len(suffixesAfter), suffixesAfter)
 	}
 
 	// Nothing was dropped: both records are still reachable by a full scan. The
 	// conflict is REPORTED, never resolved by discarding an entry.
-	if got := cq90ScannedIDs(t, db, md, ks, 0); !cq90IDsEqual(got, 1, 2) {
+	if got := cq90ScannedIDs(t, db, md2, ks, 0); !cq90IDsEqual(got, 1, 2) {
 		t.Fatalf("full scan for an empty array returned %v, want [1 2] — a uniqueness conflict must never "+
 			"cost a RECORD", got)
 	}
@@ -1034,7 +1050,8 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 	// The OPT-IN side of the policy — the only route to READABLE_UNIQUE_PENDING —
 	// lives in TestFDB_CardinalityUniquePendingPolicyBothSides. It cannot be
 	// exercised here: on a store small enough for the inline arm, store open
-	// rebuilds and throws before an OnlineIndexer could ever be reached.
+	// rebuilds and settles the index WRITE_ONLY before an OnlineIndexer could ever
+	// be reached.
 }
 
 // TestFDB_CardinalityUniquePendingPolicyBothSides pins BOTH positions of Java's

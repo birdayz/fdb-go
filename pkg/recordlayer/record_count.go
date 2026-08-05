@@ -357,6 +357,10 @@ func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_R
 		return &RecordStoreStateNotLoadedError{}
 	}
 
+	if err := store.requireFormatVersion("updating record count state", formatVersionRecordCountState); err != nil {
+		return err
+	}
+
 	existing := store.storeHeader.GetRecordCountState()
 	if existing == newState {
 		return nil // No-op

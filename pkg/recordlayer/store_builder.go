@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -81,27 +82,48 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 		}
 	}
 
-	// Step 4: Mark the index READABLE. A uniqueness violation FAILS the rebuild.
+	// Step 4: Try to mark the index READABLE. Failure LEAVES IT WRITE_ONLY and is
+	// reported to the log, NOT to the caller.
 	//
-	// Java's inline rebuild calls the ONE-ARGUMENT markIndexReadable(index)
-	// (FDBRecordStore.java:4602), which is markIndexReadable(index,
-	// allowUniquePending=FALSE) (:3767-3768). With a violation present,
-	// checkAndUpdateBuiltIndexState (:3821) throws RecordIndexUniquenessViolation
-	// ("Uniqueness violation when making index readable", :3856-3861) instead of
-	// settling on READABLE_UNIQUE_PENDING.
+	// Two Java facts compose here, and using only the first one gets this wrong.
 	//
-	// READABLE_UNIQUE_PENDING is reachable in Java core through exactly ONE caller,
-	// IndexingBase.java:324, and only when
-	// OnlineIndexer.IndexingPolicy.shouldAllowUniquePendingState (OnlineIndexer.java:1117)
-	// says so — an explicit opt-in defaulting FALSE (:1220, javadoc: "allow=false
-	// (default, backward compatible): throw an exception") that additionally requires
-	// format version >= READABLE_UNIQUE_PENDING (FormatVersion.java:145).
+	//  1. The mark itself is strict. Java's inline rebuild calls the ONE-ARGUMENT
+	//     markIndexReadable(index) (FDBRecordStore.java:4602), which is
+	//     markIndexReadable(index, allowUniquePending=FALSE) (:3767-3768); with a
+	//     violation present checkAndUpdateBuiltIndexState (:3821) throws
+	//     RecordIndexUniquenessViolation (:3856-3861). It does NOT settle on
+	//     READABLE_UNIQUE_PENDING — that state is reachable in Java core only via
+	//     IndexingBase.java:324 under IndexingPolicy.shouldAllowUniquePendingState
+	//     (OnlineIndexer.java:1117), which defaults FALSE (:1220).
 	//
-	// So a store-open rebuild must NOT quietly downgrade to a pending state. Doing
-	// that would leave a store whose index the operator believes is fine, carrying a
-	// violation nobody was told about; the throw is what surfaces it.
+	//  2. The REBUILD SWALLOWS that throw. rebuildIndex wraps the whole
+	//     build-then-mark chain in `.handle((b, t) -> { if (t != null)
+	//     logExceptionAsWarn(...); indexBuilder.close(); return null; })`
+	//     (FDBRecordStore.java:4602-4615). A CompletableFuture handle that returns
+	//     normally COMPLETES NORMALLY, so the failure never reaches checkVersion
+	//     and the store open commits.
+	//
+	// The net Java behaviour is pinned by its own test,
+	// FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627 — open
+	// the store with a unique index over violating data and it asserts
+	// REBUILD_INDEX ran, the index is WRITE_ONLY (or READABLE_UNIQUE_PENDING),
+	// scanUniquenessViolations holds every conflicting primary key, and
+	// commit(context) SUCCEEDS.
+	//
+	// That combination is the safe one, and propagating instead would be strictly
+	// worse: a WRITE_ONLY index is not scannable, so queries fall back to base
+	// scans and no read is wrong, whereas a propagated error turns any metadata
+	// evolution that meets bad data into a STORE-OPEN OUTAGE — every transaction
+	// against the store fails, not just the index. The loud signal is the index
+	// being unusable plus the durable violations, not a failed open.
 	if _, err := store.MarkIndexReadable(index.Name); err != nil {
-		return fmt.Errorf("rebuild index %q: mark readable: %w", index.Name, err)
+		// Java: logExceptionAsWarn("rebuilding index failed", ...) and continue.
+		// The index stays WRITE_ONLY, awaiting an explicit OnlineIndexer run.
+		slog.Default().Warn("rebuilding index failed",
+			"index_name", index.Name,
+			"index_version", index.LastModifiedVersion,
+			"subspace_key", fmt.Sprintf("%v", index.SubspaceTupleKey()),
+			"error", err)
 	}
 
 	return nil
@@ -166,8 +188,10 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 	return nil
 }
 
-// effectiveFormatVersion is the format version this store opens at: the pinned
-// target when the builder set one, else the newest this binary knows.
+// effectiveFormatVersion is the format version this store opens at. The builder
+// resolves it once (StoreBuilder.effectiveFormatVersion) so a zero here can only
+// mean a store constructed outside the builder; those fall back to the newest
+// version this binary knows, which is the pre-pinning behaviour.
 func (store *FDBRecordStore) effectiveFormatVersion() int32 {
 	if store.targetFormatVersion > 0 {
 		return store.targetFormatVersion
@@ -907,11 +931,20 @@ func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, 
 	}
 
 	// Persist RecordCountKey so checkPossiblyRebuildRecordCounts doesn't trigger
-	// an unnecessary full rebuild on the first reopen.
+	// an unnecessary full rebuild on the first reopen — but only fields the
+	// declared format version actually has. Java gates each independently
+	// (FDBRecordStore.java:5950-5957): the key needs RECORD_COUNT_KEY_ADDED(3),
+	// the state enum needs RECORD_COUNT_STATE(11). Writing either into a header
+	// that declares an older version puts bytes there that an instance honouring
+	// that version does not expect.
 	if metaData != nil && metaData.GetRecordCountKey() != nil {
-		header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
-		readable := gen.DataStoreInfo_READABLE
-		header.RecordCountState = &readable
+		if formatVersion >= formatVersionRecordCountKeyAdded {
+			header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
+		}
+		if formatVersion >= formatVersionRecordCountState {
+			readable := gen.DataStoreInfo_READABLE
+			header.RecordCountState = &readable
+		}
 	}
 
 	return header
@@ -1041,7 +1074,7 @@ type StoreBuilder struct {
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
-	formatVersion             int32                    // 0 = formatVersionCurrent; see SetFormatVersion
+	formatVersion             *int32                   // nil = not pinned; see SetFormatVersion
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1070,14 +1103,15 @@ func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 // effectiveFormatVersion is the builder-side twin of the store accessor: the
 // pinned format version, or the newest this binary knows.
 func (b *StoreBuilder) effectiveFormatVersion() int32 {
-	if b.formatVersion > 0 {
-		return b.formatVersion
+	if b.formatVersion != nil {
+		return *b.formatVersion
 	}
 	return int32(formatVersionCurrent)
 }
 
 // SetFormatVersion pins the format version this store opens at, instead of
-// defaulting to the newest version this binary knows.
+// defaulting to the newest version this binary knows. An explicit 0 is an ERROR,
+// not a request for the default -- see validateBuilder.
 //
 // Port of Java's FDBRecordStoreBase.BaseBuilder.setFormatVersion
 // (FDBRecordStoreBase.java:2245, :2266). Its javadoc gives the reason the value
@@ -1092,7 +1126,7 @@ func (b *StoreBuilder) effectiveFormatVersion() int32 {
 // layout. Values outside [formatVersionMinimum, formatVersionCurrent] are
 // rejected when the store is opened.
 func (b *StoreBuilder) SetFormatVersion(version int32) *StoreBuilder {
-	b.formatVersion = version
+	b.formatVersion = &version
 	return b
 }
 
@@ -1184,7 +1218,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 
-		targetFormatVersion: b.formatVersion,
+		targetFormatVersion: b.effectiveFormatVersion(),
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)
@@ -1203,9 +1237,15 @@ func (b *StoreBuilder) validateBuilder() error {
 	if b.subspace == nil || b.subspace.Bytes() == nil {
 		return fmt.Errorf("subspace is required")
 	}
-	if b.formatVersion != 0 &&
-		(b.formatVersion < formatVersionMinimum || b.formatVersion > int32(formatVersionCurrent)) {
-		return &UnsupportedFormatVersionError{Version: b.formatVersion, MaxVersion: int32(formatVersionCurrent)}
+	// An EXPLICIT SetFormatVersion(0) is rejected, not silently read as "unset".
+	// Java validates the value it was handed (FormatVersion.validateFormatVersion,
+	// FormatVersion.java:225-229) and 0 is below the minimum, so it throws there
+	// too. Treating it as unset would quietly open at 14 -- the opposite of what a
+	// caller asking for 0 could possibly want, and unnoticeable until it had
+	// already written a newer format than intended.
+	if b.formatVersion != nil &&
+		(*b.formatVersion < formatVersionMinimum || *b.formatVersion > int32(formatVersionCurrent)) {
+		return &UnsupportedFormatVersionError{Version: *b.formatVersion, MaxVersion: int32(formatVersionCurrent)}
 	}
 	return nil
 }
