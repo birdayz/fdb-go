@@ -418,6 +418,13 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 				return nil, err
 			}
 		}
+		if prefix == "" {
+			// Same fail-closed rule as listSessionSchemas: with no database to
+			// scope to, the only alternative is the cluster-wide listing, which
+			// is the disclosure this scoping exists to prevent.
+			return nil, api.NewError(api.ErrCodeInvalidPath,
+				"connection has no database path; SHOW DATABASES cannot be scoped")
+		}
 		return c.execShowDatabases(ctx, prefix)
 	case *antlrgen.ShowSchemaTemplatesStatementContext:
 		return c.execShowSchemaTemplates(ctx)
@@ -428,7 +435,16 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 
 // databaseInPrefix reports whether dbID lies at or under prefix, compared at
 // path-segment granularity so /tenant-a does not match /tenant-abc.
+//
+// An empty prefix matches NOTHING. Without that arm the trailing-slash trim
+// would leave "/", and every database path starts with "/" — so an absent
+// session database would widen the scope to the whole cluster instead of
+// narrowing it. Every caller rejects an empty scope before reaching here; this
+// is the second layer, so a future caller that forgets fails closed.
 func databaseInPrefix(dbID, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
 	return dbID == prefix || strings.HasPrefix(dbID, strings.TrimSuffix(prefix, "/")+"/")
 }
 

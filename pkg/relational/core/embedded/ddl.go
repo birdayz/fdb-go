@@ -900,9 +900,10 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // without any string matching on SQL.
 //
 // Java has no equivalent: SemanticAnalyzer.parseSchemaURI splits the identifier
-// and returns it without ever comparing against the connection, and
-// CreateDatabaseConstantAction / DropDatabaseConstantAction guard only /__SYS.
-// Java assumes authorization happens above the SQL engine. This option is for
+// and returns it without ever comparing against the connection. The only
+// reserved-path guard on the Java side is DropDatabaseConstantAction's exact
+// "/__SYS" check; CreateDatabaseConstantAction has no such guard at all. Java
+// assumes authorization happens above the SQL engine. This option is for
 // deployments where the connection itself is the trust boundary, which is why
 // it is opt-in rather than the default.
 //
