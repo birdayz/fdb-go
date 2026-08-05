@@ -1,9 +1,12 @@
 # RFC-210 — A secondary UNIQUE index may prove DISTINCT elision
 
-- **Status:** DRAFT — Graefe ACK **with conditions** (C1-C7, folded). Torvalds
+- **Status:** DRAFT — Graefe ACK **with conditions** (C1-C7, folded), then a
+  second **binding ruling** on the reachability refutation (§10). Torvalds
   **NAK → resolved in text**: his blocker invalidated §5.1 clause 1 and produced
-  §5.1.1. Awaiting his delta-read; the implementation lap is a separate Graefe
-  gate after that.
+  §5.1.1. A second refutation showed the resulting arm could not fire on any SQL
+  query at all; the ruling reformulated clause 8 as the **exempt-set proof** with
+  three routes (§5.1.2 R1/R2/R3) and folded #617's dead strict-ordering half into
+  this RFC (§5.7). One Graefe lap at completion of the whole arm.
 - **Branch:** `rfc/secondary-unique-distinct-lift`
 - **Area:** Cascades planner (`ImplementDistinctFinalRule`), index-state planning,
   plan cache
@@ -16,10 +19,14 @@
 
 A secondary `UNIQUE` index becomes an admissible proof that a `DISTINCT` is
 redundant — under an admission predicate that is a conjunction of facts the
-planner can already state — and the index it rests on is recorded as a
-**plan-carried dependency**, so that an index whose state moves out from under a
-live statement invalidates the plan with `40001` instead of silently returning
-duplicate rows.
+planner can already state, whose last clause is a proof that the index's
+**exempt set** (entries where `UNIQUE` constrains nothing, or constrains
+something finer than logical row equality) is empty on this stream, discharged by
+metadata (**R1**), by a NULL-rejecting predicate (**R2**), or — where neither
+proves it — by *narrowing the operator to the exempt subset* rather than removing
+it (**R3**) — and the index every route rests on is recorded as a **plan-carried
+dependency**, so that an index whose state moves out from under a live statement
+invalidates the plan with `40001` instead of silently returning duplicate rows.
 
 Two things this RFC deliberately does *not* do. It does not widen the candidate
 set: the proof is admissible **only** for an index that is already a match
@@ -30,10 +37,15 @@ this storage key's uniqueness survive logical equality" — it makes the existin
 two into one carried property (§5.5).
 
 The measured benefit is narrower than the phrase "use the unique index" suggests,
-and §2.1 leads with the refutation: the elision removes an operator, it does not
-change the access path. Its value is concentrated in one regime — a paged,
-unordered `SELECT DISTINCT <unique column>`, where the redundant dedup is ~68-72% of
-the query's runtime.
+and §2.1 leads with **two** refutations. The first: the elision removes an
+operator, it does not change the access path. The second, which forced the
+reformulation above: the fixture's own DDL put every measured query outside the
+original metadata-only clause 8, so every figure in §2.1's first table measures
+the *cost of the operator* rather than this RFC's benefit. §2.1's second table is
+the delivered delta, and the acceptance criteria are written against it. The
+value is concentrated in one regime — a paged, unordered
+`SELECT DISTINCT <unique column>`, where the redundant dedup is ~68-72% of the
+query's runtime.
 
 ## 2. What is declined today, and what it costs
 
@@ -48,7 +60,28 @@ both preconditions which originally forced the decline have closed:
 
 This RFC is that review.
 
-### 2.1 The measurement, and what it refutes
+### 2.1 The measurements, and the two things they refute
+
+**The second refutation comes first, because it is what forced this RFC's
+reformulation and because everything in the first table has to be read through
+it.**
+
+The fixture below declares `email STRING` — and the SQL DDL cannot declare a
+`NOT NULL` scalar column at all. So the fixture's own DDL puts every row of the
+first table on the far side of R1's admission predicate: the metadata arm
+(§5.1.2 R1) was **inapplicable to the very query being measured**, and no
+arrangement of the fixture could have made it applicable while staying in SQL.
+The consequence is exact and it is not a caveat, it is a reclassification:
+
+> **Every figure in the first table measures the COST OF THE OPERATOR. None of
+> them measures this RFC's benefit**, because under the RFC as originally drafted
+> the optimization could not fire on any of these queries.
+
+That is the second refutation this section leads with (the first, below, is the
+access-path one). It is what turned clause 8 from a metadata check into the
+exempt-set proof of §5.1.2, and it is why there are now two tables: one for what
+the operator costs, and one — new, and the one the acceptance criteria are
+written against — for what this RFC actually delivers.
 
 Real FDB via `TestFDB_DistinctUniqueElisionCostProbe`
 (`pkg/relational/sqldriver/distinct_unique_elision_cost_probe_test.go`).
@@ -86,7 +119,9 @@ gap is a real and separate finding about the index access path; it is not this
 RFC's subject and no claim here rests on it.)
 
 **What the decline actually costs**, then, is one redundant operator — and the
-operator is more expensive than its CPU suggests:
+operator is more expensive than its CPU suggests. **This is the cost-of-the-
+operator table**, in the sense established above: an upper bound on what any
+route could recover, not a measurement of what any route does recover.
 
 | shape | rows | with `DISTINCT` | without | delta |
 |---|---|---|---|---|
@@ -138,15 +173,96 @@ the number of distinct values.** That regime is the ordinary one for a
 result-set-paginating client over a unique column, which is exactly the query a
 `UNIQUE` index invites.
 
-## 3. Java, read first — Java derives the fact and never lets it decide
+**And that regime is an upper bound on the recoverable cost, not the delivered
+one.** What is delivered depends on which route of §5.1.2 fires, which depends on
+the query. Hence the second table.
 
-The Java Cascades planner never uses a secondary `UNIQUE` index to eliminate a
-`DISTINCT`. It does, however, *derive* uniqueness-based distinctness and carry it
-in the ordering property — so the accurate finding is not "Java lacks the
-concept" but "Java computes the concept and no path connects it to this
-decision". The distinction is drawn precisely below, because it changes what this
-RFC is: not parity work, but a read-side extension that connects two things Java
-keeps apart.
+#### The delivered delta — what each route actually recovers
+
+Three runs on the §2.1 fixture, same store, back-to-back, median of 5 pairs, in
+the paged unordered regime the criteria are written for (100k rows,
+`EXECUTION_SCANNED_ROWS_LIMIT=10000`):
+
+| # | query | route | operator after | measured |
+|---|---|---|---|---|
+| A | `SELECT email FROM users` | — (baseline, no `DISTINCT` written) | none | ⟨M-A⟩ |
+| B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | narrowed distinct | ⟨M-B⟩ |
+| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision | none | ⟨M-C⟩ |
+| D | `SELECT DISTINCT email FROM users` on today's `master` | — | full distinct | ⟨M-D⟩ |
+
+The comparisons that matter, and what each would mean:
+
+- **B vs D** is R3's delivered benefit on the bare query — the shape a user
+  writes without thinking about NULLs, and the shape that could not be helped at
+  all under the RFC as originally drafted.
+- **C vs A** is R2's delivered benefit: it should be *indistinguishable*, because
+  under R2 the plans are the same plan modulo the filter.
+- **B vs A** is the residual R3 leaves on the table, and is the honest measure of
+  how much R2's reachability matters.
+
+> **MEASUREMENT PLACEHOLDER.** ⟨M-A⟩…⟨M-D⟩ and the sweep below are filled by the
+> §7.5 probe rewrite against the delivered implementation, on the same box, in
+> one run. They are deliberately **not** carried over from the cost-of-the-
+> operator table: that table's numbers are a bound on B–D, not a substitute for
+> it. This RFC is not complete while these read ⟨M-x⟩.
+
+#### The NULL-density sweep — R3's dominance as a measurement
+
+R3's claim is that the narrowed seen-set is a subset of the full one on **every**
+input, degenerating to empty on an ordinary table. That is an argument in §5.1.2;
+this is the measurement that makes it a fact. Same fixture, same paged unordered
+shape, varying only the fraction of rows whose `email` is NULL:
+
+| NULL density | rows retained by full distinct | retained by R3 | runtime (full) | runtime (R3) | churn (full) | churn (R3) |
+|---|---|---|---|---|---|---|
+| 0% | 100 000 | 0 | ⟨S-0⟩ | ⟨S-0'⟩ | ⟨S-0c⟩ | ⟨S-0c'⟩ |
+| 1% | 100 000 | 1 000 | ⟨S-1⟩ | ⟨S-1'⟩ | ⟨S-1c⟩ | ⟨S-1c'⟩ |
+| 50% | 100 000 | 50 000 | ⟨S-50⟩ | ⟨S-50'⟩ | ⟨S-50c⟩ | ⟨S-50c'⟩ |
+
+The retained-row columns are the structural claim and are asserted exactly (they
+are counts, not timings, so no band is needed). The 50% row is the near-worst
+case and its acceptance criterion is **"no worse than full"**, not "faster" —
+which is the whole content of *strictly dominates*: R3 may not be allowed to be
+slower anywhere, and it is not required to be faster everywhere.
+
+Note the sweep also has to hold the **row results** constant across the three
+densities: `SELECT DISTINCT email` over 50% NULLs must return one NULL row
+however the operator was narrowed. That is the correctness half and it is asserted
+alongside the counts.
+
+## 3. Java, read first — Java never reaches the decision at all
+
+**Java's Cascades planner cannot plan `SELECT DISTINCT`.** That is the first
+fact and it governs everything else in this section, because it settles what
+category of change this RFC is before any of the finer reading matters. Every
+`DISTINCT` entry in the cross-engine corpus is marked
+`DivergenceJavaErrorsGoCorrect` — Java throws `UnableToPlanException`, Go
+answers — and the corpus says so in the section header
+(`pkg/relational/conformance/plandiff/corpus.go:15548-15549`: *"Java's Cascades
+planner can't plan DISTINCT (TODO #42)"*), with the same finding recorded at
+`:289-292` where the shape was first deferred out of the shared corpus.
+
+So this RFC is **not** parity work and cannot be. There is no Java behaviour to
+match on this query shape: the operator Java would have to elide is one Java
+never builds, because it never plans the query that would contain it. The whole
+of RFC-210 lives in the **sanctioned read-side-extension lane** — the
+"query reach is not the hard line" half of the project's two axes. Wire compat is
+untouched (§6), and the extension only lets Go *express and optimize* a query
+Java declines. The conformance principle *doesn't work in Java → doesn't work in
+Go* governs the **shared** surface, and `SELECT DISTINCT` is not on it.
+
+The rest of this section is therefore about a mechanism Java *has* rather than a
+decision Java *makes*, and it is retained for one reason: the fact this RFC
+proves is one Java also derives, and the hazards Java hit deriving it (§5.5's
+prefixing warning) are inherited whether or not Java ever consults it.
+
+Within `fdb-record-layer-core`, whose `ImplementDistinctRule` does run on plans
+built by the core planner's own API, Java never uses a secondary `UNIQUE` index
+to eliminate a `DISTINCT`. It does, however, *derive* uniqueness-based
+distinctness and carry it in the ordering property — so the accurate finding
+about the core layer is not "Java lacks the concept" but "Java computes the
+concept and no path connects it to this decision". The distinction is drawn
+precisely below.
 
 **What licenses eliminating a distinct in Java.** `ImplementDistinctRule` reads
 exactly one thing, `DistinctRecordsProperty`:
@@ -239,19 +355,23 @@ fix it names — a mechanism that makes the plan carry the property it was elide
 under — is structurally what §5.2's plan-carried stamp does for the index-state
 dimension.
 
-**Conformance position.** The principle is *doesn't work in Java → doesn't work
-in Go*, and it governs the **shared query surface** — the answers, not the plans.
-`SELECT DISTINCT email FROM users` works in Java and in Go and returns the same
-rows; this RFC changes only which physical plan Go picks to produce them. It
-adds no expressible query, no syntax, no operator semantics. It is therefore not
-a divergence on shared semantics at all — it is a plan choice, the same category
-as choosing an index scan over a full scan. The rows a Java application reads
-back are byte-identical (§6).
+**Conformance position — restated now the finer reading is in.** An earlier draft
+argued this RFC was conformant because `SELECT DISTINCT email FROM users` "works
+in Java and in Go and returns the same rows". That sentence is **false**, and its
+falsity strengthens rather than weakens the position. Java's Cascades planner
+errors on the query; there is no Java answer to agree with. The conformance
+principle governs the shared query surface, and this shape is not on it, so the
+principle does not reach this RFC in either direction.
 
-It is worth being explicit that Go's **existing** primary-key arm is already
-outside Java's mechanism for the same reason: Java has no projected-column
-distinctness proof of any kind. The secondary-`UNIQUE` arm is not a new class of
-extension; it is a second arm on one Go already ships and tests.
+What remains true, and is what actually matters, is the wire axis: the rows a
+Java application reads back out of the store are byte-identical before and after
+(§6), because nothing here touches what is written. This RFC adds no syntax and
+no operator semantics; it changes which physical plan Go picks for a query only
+Go can plan.
+
+It is worth being explicit that Go's **existing** primary-key arm sits in exactly
+the same lane for exactly the same reason, and has since it shipped. This is a
+second arm on an extension Go already ships and tests, not a new class of one.
 
 ## 4. Why the decline is no longer forced
 
@@ -412,9 +532,10 @@ a conjunction, and every clause fails closed.
    unique keys colliding once a shared visible coordinate is projected — the
    same restriction #617 put on the primary-key arm.
 
-8. **`SecondaryUniqueKeyGloballyEnforced` over `I`'s authoritative physical key
-   component types** (§5.4): every key component `NOT NULL` and none
-   `FLOAT`/`DOUBLE`/unknown.
+8. **`I`'s EXEMPT SET is empty on this stream** — or, under R3, is dedup'd
+   rather than proved away. This clause is not a metadata question and the
+   original draft's version of it was a category error; §5.1.2 is the clause,
+   and it is long enough to be its own subsection.
 
 Clauses 3 and 5-7 are already implemented and pinned — they are what
 `TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof`'s `TAGS`,
@@ -514,6 +635,197 @@ this design it passes because the harness path is `unknown` and never elides —
 so it is the pin on the fail-closed default itself. The SQL-path witness is
 added because a metadata-only harness cannot exercise the mechanism the
 production path actually relies on. See §7.3.
+
+### 5.1.2 Clause 8 is a fact about the STREAM, not about the catalog — the exempt set
+
+**The category error, stated first because it is what the refutation exposed.**
+Clause 8 as originally drafted asked `SecondaryUniqueKeyGloballyEnforced` over
+the index's declared key component types: *is every component `NOT NULL`, and is
+none of them `FLOAT`/`DOUBLE`?* That is a question about the **catalog**. The
+question the rule actually has to answer is about the **stream**: *are the rows
+arriving at this `DISTINCT` already duplicate-free?* The two coincide only in the
+degenerate case, and the divergence is not a nicety — it is the entire reason the
+arm was unreachable. The SQL layer cannot express a `NOT NULL` scalar column
+(deliberately, for Java parity; `NOT NULL` is accepted only on `ARRAY` types), so
+**every SQL-expressible secondary unique index has a nullable key** and the
+catalog question is false for all of them, forever. A predicate that can only
+ever return false on the surface it was written for is not conservative; it is
+inert.
+
+**The exempt set.** A `UNIQUE` index constrains its entries — but not uniformly.
+There is a set of index entries on which the declaration constrains *nothing*, or
+constrains something *finer* than logical row equality. Call it the **exempt
+set**:
+
+- **NULL key components.** Under `NULLS DISTINCT` the uniqueness check is
+  **skipped** when an indexed component is NULL. One NULL prefix legitimately
+  holds arbitrarily many entries, distinguished only by their appended primary
+  key. `UNIQUE` says nothing at all about these rows.
+- **NaN key components.** FDB preserves distinct raw NaN sign and payload
+  encodings, so `0xfff8000000000001` and `0x7ff8000000000001` are two tuple keys
+  the index happily holds — while the dedup key canonicalizes every NaN to one
+  value (`values.CompareFloat64`, faithful to `java.lang.Double.compare`).
+  `UNIQUE` constrains these rows, but at a **finer** grain than the equality
+  `DISTINCT` uses, so its guarantee does not transfer.
+
+Everything outside the exempt set is genuinely one-row-per-value. The proof
+obligation is therefore exactly:
+
+> **The exempt set is empty on this stream.**
+
+Three routes discharge it, in strength order. They are not alternatives to choose
+between — R1 and R2 both prove the obligation and yield full elision; R3 declines
+to prove it and instead makes the residual cheap. All three are implemented.
+
+#### R1 — metadata (today's clause 8, unchanged)
+
+`SecondaryUniqueKeyGloballyEnforced` over the authoritative physical key
+component types (§5.4). Every component `NOT NULL` and none `FLOAT`/`DOUBLE`/
+unknown ⟹ the exempt set is empty **for every possible stream** over this index,
+which is the strongest form of the fact and the cheapest to check.
+
+**R1 stays, unrelaxed, and stays vacuous on SQL.** It is kept because it is
+correct and free: the record-layer API can build a `NOT NULL` scalar key that SQL
+cannot, so R1 is the arm that fires for a direct-API caller. Its vacuity on the
+SQL surface is a *measured property of the SQL DDL*, not a defect in the
+predicate — which is why the refutation test is rewritten to pin exactly that
+(condition 6, §7.6) rather than deleted. An implementation that finds itself
+relaxing `SecondaryUniqueKeyGloballyEnforced` to make an arm fire has the wrong
+arm, not a too-strict predicate; R2 and R3 exist precisely so that relaxing it is
+never the move.
+
+#### R2 — predicate: every key column carries a NULL-rejecting conjunct
+
+If a filter strictly between the scan and the `DISTINCT` rejects NULL on **every**
+key column of `I`, then no row reaching the `DISTINCT` can have a NULL key
+component — the exempt set is empty **on this stream** even though it is
+non-empty in general. Full elision, exactly as under R1.
+
+**This is built on the range-enclosure encoding, and that is a citation rather
+than an invention.** Java already encodes "rejects NULL" as a range that excludes
+the NULL boundary: `RangeConstraints.java:650-653` compiles
+`Comparisons.Type.NOT_NULL` — and `GREATER_THAN`, in the same `case`
+fall-through — to `Range.greaterThan(boundary)` over the NULL boundary. NULL
+sorts below every value in the tuple encoding, so *any* comparison whose compiled
+range is strictly above the NULL boundary rejects NULL, and Java's own switch is
+the enumeration of which comparison kinds those are. Go ports the same closed
+enumeration at `predicates/range_constraints.go:161-173`
+(`canBeUsedInScanPrefix`). **R2 introduces no new nullability lattice**; it reads
+the encoding both engines already have.
+
+**The allow-list, failing closed.** A comparison kind admits a column only if it
+appears here:
+
+| admitted | why it rejects NULL |
+|---|---|
+| `IsNotNull` | the direct form; Java's `NOT_NULL` → `Range.greaterThan(NULL)` |
+| `Equals` | `Range.singleton(v)`, `v` non-NULL; NULL `=` anything is UNKNOWN |
+| `LessThan`, `LessThanOrEq`, `GreaterThan`, `GreaterThanOrEq` | NULL compares UNKNOWN against every operand |
+| `StartsWith` | a prefix predicate over a non-NULL operand |
+| `In` | UNKNOWN for a NULL probe against any list |
+| `Like` | UNKNOWN for a NULL subject |
+| `NotEquals` | UNKNOWN for a NULL subject — `NULL <> x` is not TRUE |
+
+Everything else is **refused**, and three refusals are load-bearing:
+
+- **`IsNull`** — admits only NULL. The exact inverse.
+- **`NotDistinctFrom` — refused, and this is the trap.** It reads like an
+  equality and is not one: `NotDistinctFrom` is *NULL-safe* equality, so
+  `x IS NOT DISTINCT FROM NULL` is TRUE for a NULL `x`. It admits NULL rows.
+  Go's `canBeUsedInScanPrefix` lists it beside `ComparisonEquals`
+  (`range_constraints.go:166`) because for the *scan-prefix* question the two
+  behave alike; for the *NULL-rejection* question they are opposites. An
+  implementation that reuses `canBeUsedInScanPrefix` as R2's allow-list is
+  therefore wrong in exactly one entry, silently, on the shape most likely to be
+  written by a user who knows SQL's three-valued semantics. **R2's allow-list is
+  its own closed enumeration, not a call into the scan-prefix one**, and a test
+  pins the refusal by name.
+- **Anything under `OR` or `NOT`** — a disjunct that rejects NULL in one branch
+  proves nothing about the other, and a negation inverts the admission. Only
+  **top-level conjuncts** count, and only conjuncts sitting **strictly between
+  the scan and the `DISTINCT`** — a filter above the `DISTINCT` cannot license
+  eliding it, because the duplicates would have already been emitted.
+
+**Each key column needs its own conjunct.** A composite `UNIQUE (a, b)` with only
+`a` constrained still admits `(1, NULL), (1, NULL)`. Coverage is per-column and
+the conjunction is over the key, not over the filter.
+
+**R2's soundness rests entirely on three-valued semantics, and a test must pin
+that at the call site.** The whole argument is that a row whose key column is
+NULL evaluates the conjunct to UNKNOWN and is therefore **dropped** by the filter
+executor — not passed through, not treated as TRUE. That is a property of the
+executor, it is asserted nowhere today, and if it ever changed R2 would emit
+duplicate rows with every one of R2's own tests still green. The pin belongs on
+the filter executor's UNKNOWN handling, named as R2's ground.
+
+**R2 is what makes the arm reachable from SQL at all.**
+`SELECT DISTINCT email FROM users WHERE email IS NOT NULL` is an ordinary query,
+it is the query a user writes when they know the column is nullable, and under R2
+it fully elides. R1 could never fire on it.
+
+#### R3 — residual: dedup the exempt subset instead of proving it empty
+
+R3 gives up on the proof and attacks the operator instead. If the exempt set is
+non-empty (or unprovable), the `DISTINCT` is **not** elided — but it is
+**narrowed**: only rows whose key components are exempt (NULL or NaN) enter the
+seen-set; every other row passes through in O(1) with nothing retained.
+
+The soundness argument is one line: the index's uniqueness already guarantees at
+most one row per non-exempt key value, so a non-exempt row can never duplicate
+anything — not another non-exempt row (uniqueness), and not an exempt row (an
+exempt row's key differs from a non-exempt row's by construction, since
+exemptness is a property of the key value itself).
+
+**R3 strictly dominates today's operator, which is why it needs no cost-model
+trade-off.** The narrowed seen-set is a **subset** of the full one on every
+input: worst case (every row exempt) it is identical; typical case (a nullable
+column with no NULLs, which is the ordinary state of an ordinary table) it is
+**empty**, and the operator degenerates to an O(1) pass-through holding nothing.
+There is no input on which R3 is worse. A change that is never worse does not
+need to be costed against the alternative, and no cost formula moves.
+
+**The executor change is small and local**: a predicate on the keyer in
+`executeHashDistinct` — is any component of this row's dedup key exempt? — and
+the existing seen-set machinery unchanged behind it. It is tens of lines, not a
+new operator.
+
+**§9(g)'s rejection of a plan-visible node does not transfer to R3**, and the
+distinction is the one §9(g) itself draws. That proposal added a node carrying
+*provenance* and no execution behaviour, so every consumer of the plan tree would
+have had to learn to see through a node that did nothing. R3's narrowing **is**
+execution behaviour — it changes which rows the operator retains — so it belongs
+in the plan, visibly.
+
+**Three binding properties, each of which is a wrong-rows condition if missed:**
+
+1. **The narrowing flag is part of plan identity.** It enters
+   `RecordQueryDistinctPlan.structuralKey`. A re-plan that flipped
+   narrowed↔full while resuming a `DistinctHashContinuation` would rebuild a
+   seen-set from a serialization written under the other discipline and **return
+   wrong rows** — a narrowed continuation holds only exempt keys, and a full
+   operator resuming from it believes it has already seen every key that was
+   omitted. This is the same argument §7.4 makes for the §5.2 stamp, on a flag
+   whose content is stronger.
+2. **R3 renders distinctly in `EXPLAIN`.** The optimization's evidence must be
+   assertable positively; a narrowed distinct that silently degraded to a full
+   one is otherwise invisible. §7.1 asserts on the rendering.
+3. **R3 still records the index dependency.** This is the property most likely to
+   be dropped, because R3 "doesn't elide anything" and so reads as unconditional.
+   It is not: R3's soundness rests on *the index's uniqueness* exactly as R1's
+   and R2's do — remove the uniqueness guarantee and a non-exempt row can
+   duplicate another non-exempt row, which is precisely what the narrowed
+   seen-set no longer catches. So §5.2's stamp, §5.3's transition table and
+   §5.2's `40001` path apply to R3 **unchanged**, and the stamp rides on the
+   narrowed distinct plan rather than on an elided inner.
+
+#### How the three compose
+
+The rule evaluates in strength order and takes the first that discharges the
+obligation: **R1 → R2 → full elision; otherwise R3 → narrowed distinct**. R3 is
+the floor, not a fallback that can fail: when neither R1 nor R2 proves the exempt
+set empty, R3 always applies as long as clauses 1-7 hold, because it needs no
+fact about the stream at all. When *none* of clauses 1-7 hold there is no
+qualifying index and the operator is the unmodified full distinct, as today.
 
 ### 5.2 The dependency is carried by the plan, not by a side channel
 
@@ -730,10 +1042,13 @@ window into a retry rather than eliminating it. What it cannot do is protect a
 statement that never re-enters the store — there is none: every execution opens
 the store, and the predicate is evaluated there.
 
-### 5.4 Float and NULL safety (#617's gates, reused verbatim)
+### 5.4 Float and NULL safety — R1's implementation (#617's gates, reused verbatim)
 
-Both hazards make a *unique storage key* fail to be a *unique logical row*, in
-opposite directions, and #617 already built the predicate for both.
+This subsection is **R1** (§5.1.2) in detail: the metadata route, and the exact
+statement of the two hazards that define the exempt set. Both make a *unique
+storage key* fail to be a *unique logical row*, in opposite directions, and #617
+already built the predicate for both. R2 and R3 discharge the same obligation by
+other means; nothing here is relaxed to accommodate them.
 
 **NULL — the direction most likely to be got wrong.** Under SQL's default
 `NULLS DISTINCT` semantics the uniqueness check is skipped when an indexed
@@ -765,13 +1080,18 @@ substitute for missing metadata.
 **Worth saying out loud: this predicate was written for this caller and has never
 had one.** `SecondaryUniqueKeyGloballyEnforced`'s own doc
 (`physical_equality_shape.go:124-131`) states its purpose as *"used for DISTINCT
-elimination and strict-ordering claims"* — and today only the strict-ordering
-half exists (`indexHasGloballyEnforcedUniqueKey`, `rule_implement_sort.go:317`).
-The DISTINCT half of that sentence has been aspirational since #617 landed it.
-This RFC makes it true, which is a reason to expect the predicate to fit rather
-than to need widening: an implementation that finds itself relaxing
-`SecondaryUniqueKeyGloballyEnforced` to make the arm fire should treat that as
-evidence the arm is wrong, not the predicate.
+elimination and strict-ordering claims"* — and before this RFC only the
+strict-ordering half had a caller (`indexHasGloballyEnforcedUniqueKey`,
+`rule_implement_sort.go:317`). The DISTINCT half of that sentence had been
+aspirational since #617 landed it. R1 makes it true.
+
+**And R1 alone leaves it true-but-unreachable on SQL, which is the finding that
+produced R2 and R3.** The predicate fits; it is the *surface* that cannot feed
+it, because SQL has no `NOT NULL` scalar column. That is a fact about the DDL,
+not about this predicate, and the correct response is a second and third route to
+the same obligation — never a relaxation of this one. An implementation that
+finds itself widening `SecondaryUniqueKeyGloballyEnforced` to make an arm fire
+should treat that as evidence it is on the wrong arm.
 
 ### 5.5 One property, not two cross-checked
 
@@ -890,6 +1210,84 @@ Whichever lands second must not weaken the other, and the §7.2 negative table i
 what enforces it: those shapes must keep a distinct operator regardless of which
 executor it picks.
 
+### 5.7 #617's other half — the strict-ordering claim, fixed here rather than filed
+
+`SecondaryUniqueKeyGloballyEnforced` has **two** consumers, and §5.4 quotes its
+doc naming both: *"used for DISTINCT elimination and strict-ordering claims"*.
+The strict-ordering consumer is `indexHasGloballyEnforcedUniqueKey`
+(`rule_implement_sort.go:317`), and it is dead on the SQL surface for **exactly
+the reason R1 is** — the same nullability clause, the same inexpressible `NOT
+NULL` scalar, the same inert predicate. It is not a separate defect; it is the
+same defect with a second consumer, and the refutation test already asserts both
+halves in one function (its arm (c)).
+
+**So it is fixed here, and gets no separate item.** Filing it would split one
+finding across two changes, and the second half would inherit none of the context
+that makes the first correct.
+
+**R2 applies verbatim.** `SELECT email FROM users ORDER BY email WHERE email IS
+NOT NULL` — a filter rejecting NULL on every key column, strictly between the
+scan and the ordering consumer — leaves a stream on which the index's key is
+genuinely unique, so the scan is genuinely **strictly sorted**: no two rows share
+a key, so there are no ties for the claim to be wrong about. The same allow-list,
+the same top-level-conjunct restriction, the same coverage-per-key-column rule.
+R2's analysis is written once and consumed twice.
+
+**R1 stays**, unchanged, for the direct-API caller exactly as in §5.1.2.
+
+**There is NO R3 analogue, and inventing one would be a soundness bug.** This is
+the part most likely to be got wrong by symmetry, so it is stated as a
+prohibition rather than an omission. R3 works for `DISTINCT` because a `DISTINCT`
+has a *residual*: the operator can still run, narrowed, and catch what the proof
+did not cover. A **sort claim has no residual**. `strictlySorted` is a
+proposition the plan asserts to its consumers — it licenses *them* to skip work —
+and there is no narrowed version of an assertion. A "mostly strictly sorted" scan
+is a scan whose claim is false, and the consumer that trusted it has already
+skipped the dedup or the merge that would have caught it. **A residual cannot
+compensate a sort claim.** Where R1 and R2 both decline, the claim is simply not
+made, which is today's behaviour and is correct.
+
+#### Java is unsound here, and this is an upstream bug rather than a parity target
+
+`RemoveSortRule.strictlyOrderedIfUnique` (`RemoveSortRule.java:144-156`) decides
+the whole question at `:153`:
+
+```java
+return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+```
+
+**There is no nullability term.** No branch of that method, and nothing on the
+path into it from `:132`, consults the key columns' types or their nullability.
+So over a `UNIQUE` index on a **nullable** column, Java claims `strictlySorted`
+on a scan that has **genuine ties** — under `NULLS DISTINCT` the index legitimately
+holds `(NULL, pk=1), (NULL, pk=2), (NULL, pk=3)`, three entries whose *claimed*
+sort key is identical. A consumer that trusts `strictlySorted` to mean "no two
+rows compare equal on the sort key" is being told something false by construction,
+not by an edge case.
+
+This mirrors the NaN half exactly: the same rule, the same absent type
+consultation, the same "storage distinguishes what the claim says is
+indistinguishable" shape — and DIVERGENCES.md already carries that half as an
+upstream bug. The NULL half is its sibling and belongs beside it.
+
+**Disposition, and it is deliberate:**
+
+- **Go does not port the bug.** `indexHasGloballyEnforcedUniqueKey` keeps its
+  nullability clause; R2 is wired into it so the claim becomes *reachable* on the
+  streams where it is *true*, which is the opposite of relaxing it.
+- **The divergence is documented at the call site**, `rule_implement_sort.go:317`
+  — the site that would otherwise read as an unexplained extra check someone
+  could "simplify" back into Java's shape.
+- **A DIVERGENCES.md entry goes beside the NaN/ordering one**, in the *Java
+  Upstream Bugs* framing that entry already uses, citing `RemoveSortRule.java:153`
+  verbatim and naming the concrete three-NULL-entry witness.
+- **It is reported upstream**, and the entry says so, so the next reader knows
+  whether the divergence is expected to persist.
+
+This is the "fix it at the boundary, document the divergence at the call site,
+report it upstream" disposition — not a deferral, and not a reason to weaken Go's
+predicate to match a claim Java cannot support.
+
 ## 6. Wire compatibility
 
 **Nothing this RFC changes is written to FDB.**
@@ -941,6 +1339,26 @@ satisfiable by deleting the `DISTINCT` operator outright.
 `SELECT DISTINCT email FROM users ORDER BY email` must likewise lose its
 `Distinct(` while keeping `IndexScan(BY_EMAIL, [*])` — the elision must not
 disturb an ordering the query asked for.
+
+**Both of the above are R1 shapes and are therefore stated over a fixture built
+through the record-layer API**, whose key can be `NOT NULL`. On the SQL surface
+R1 cannot fire, which is the whole content of the second refutation, so the two
+criteria below are the ones that carry §7.1 for SQL — and both are now
+**REACHABLE**, which is the difference this ruling made.
+
+- **R2, full elision, end-to-end from SQL.**
+  `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` must plan with **no
+  `Distinct(`** and must name `BY_EMAIL` in the stamp, over an ordinary
+  SQL-declared nullable `email STRING`. The same three assertions as above apply,
+  plus a fourth that is specific to R2: the plan **retains the filter**. An
+  implementation that proved the exempt set empty and then dropped the predicate
+  that made it empty would return the NULL rows it just licensed itself to ignore.
+- **R3, narrowed distinct, end-to-end from SQL.**
+  `SELECT DISTINCT email FROM users` (no filter) must plan with a `Distinct(`
+  that renders as **narrowed** and names `BY_EMAIL`, and must return the correct
+  rows at every NULL density in §2.1's sweep. The negative half is as important:
+  a query with no qualifying unique index must render an **un-narrowed**
+  `Distinct(`, or the rendering asserts nothing.
 
 ### 7.2 It does not fire where it must not
 
@@ -1104,19 +1522,41 @@ section is a specification for that rewrite rather than a description of it. An
 implementation that lands the elision and leaves the probe logging has not met
 §7.5.
 
-The criteria, on the regime the change is actually for and deliberately not on
-the regimes §2.1 could not resolve:
+**And the criteria are written against §2.1's DELIVERED-DELTA table, not against
+its cost-of-the-operator table.** That is the substantive change the second
+refutation forced here: a criterion of the form "the `DISTINCT` query approaches
+the no-`DISTINCT` query" was written when the elision was believed to fire on the
+bare SQL query. It does not — the bare query gets **R3**, which narrows the
+operator rather than removing it — so the criterion has to name its route.
 
-- **Paged, unordered, 100k rows, all-distinct.** `SELECT DISTINCT email FROM
-  users` must come within **1.15x** of `SELECT email FROM users` — today it is
-  **1.68x-1.88x** across boxes. Both sides run back-to-back on the same store so
-  a slow moment lands on both, and the ratio is a median of 5 pairs, for the
-  reason RFC-209 §7 sets out: single pairs on this harness drift enough to fail a
-  clean run.
-- **Allocation churn** on the same shape must come within **1.15x** of the
-  no-`DISTINCT` run, today ~2.7x. This is the criterion that would catch an
-  implementation that elides the operator in `EXPLAIN` while some other path
-  reintroduces per-page key retention.
+The criteria, on the regime the change is actually for and deliberately not on
+the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta rows:
+
+- **R2, full elision (C vs A).** Paged, unordered, 100k rows, all-distinct:
+  `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` must come within
+  **1.15x** of `SELECT email FROM users`. This is the criterion the old text
+  wanted; it is only now attached to a query on which the elision can actually
+  fire. Both sides run back-to-back on the same store so a slow moment lands on
+  both, and the ratio is a median of 5 pairs, for the reason RFC-209 §7 sets out:
+  single pairs on this harness drift enough to fail a clean run.
+- **R3, narrowed distinct (B vs D).** The bare `SELECT DISTINCT email FROM users`
+  must be **strictly faster than today's full distinct** on the same shape — the
+  0%-NULL case, where R3's seen-set is empty. The bound is expressed against **D**
+  (today's operator) rather than against A, because R3 does not remove the
+  operator and a bound against A would be a criterion on an outcome R3 does not
+  claim. The exempt test must be evaluated on the row's raw slots **before** the
+  dedup key is packed, so a non-exempt row costs a nil/NaN check and nothing
+  else; an implementation that packs first and tests after will fail this row
+  while passing every correctness test.
+- **Allocation churn**, R2 shape within **1.15x** of the no-`DISTINCT` run (today
+  ~2.7x), and R3 shape **at or below** today's. This is the criterion that would
+  catch an implementation that elides the operator in `EXPLAIN` while some other
+  path reintroduces per-page key retention — and, for R3, one that narrows the
+  *seen-set* without narrowing what gets serialized into the continuation.
+- **The NULL-density sweep's retained-row counts are asserted exactly** (§2.1).
+  They are counts, not timings, so they carry no band and no noise argument, and
+  they are what turns "R3 strictly dominates" from an argument into a test. The
+  50% row's timing criterion is **"no worse than full"**, never "faster".
 - **No criterion on the ordered or `LIMIT` shapes**, because §2.1 could not
   resolve a delta there — the ordered spreads overlap heavily. A bound on an
   unresolvable delta measures the harness, not the change. They are still
@@ -1127,6 +1567,41 @@ The bound is 1.15x rather than 1.0x because the elision removes an operator, not
 a scan: the two plans do the same I/O, and the residual is per-query fixed cost.
 A criterion of "strictly no slower" would fail on noise while proving nothing
 more.
+
+### 7.6 The refutation test is rewritten, never deleted
+
+`secondary_unique_proof_reachability_test.go` is the probe that produced the
+second refutation. It is the reason this RFC has R2 and R3 at all, and the
+instinct once the arm goes live will be to delete it as obsolete. It is not
+obsolete; three of its four claims survive, one inverts, and two are added. The
+rewrite:
+
+- **(a) The DDL-rejection arm stays, unchanged.** `CREATE TABLE` still rejects a
+  `NOT NULL` scalar column, and that fact is now *more* load-bearing rather than
+  less: it is the reason R1 is vacuous on SQL, which is the reason R2 and R3
+  exist. If it ever changes, R1 becomes live on the SQL surface for the first
+  time and needs the end-to-end coverage it does not have. The failure message
+  says exactly that.
+- **(b) The metadata arm's claim is NARROWED, not dropped.** It asserted "the
+  proof does not fire on any SQL query". That is now false — R2 and R3 fire. The
+  surviving claim is the precise one: **`SecondaryUniqueKeyGloballyEnforced` is
+  false for every SQL-expressible unique index**, i.e. *R1* never fires from SQL.
+  Same loop, same fixtures, a claim about R1 rather than about the arm.
+- **(c) The reachability arm INVERTS.** It asserted that a SQL-planned unique
+  index scan is *not* `strictlySorted`. Under §5.7 that is exactly what R2 makes
+  false on a NULL-rejecting stream: `SELECT n FROM t WHERE n IS NOT NULL ORDER BY
+  n` **must** now plan a strictly-sorted scan. The arm keeps its negative twin —
+  the unfiltered `ORDER BY n` must still *not* claim strict sorting, because R2
+  did not fire and R1 cannot — so the test pins the boundary rather than one side
+  of it.
+- **(d) NEW: R2 end-to-end.** The DISTINCT consumer of the same gate, on the same
+  filtered shape, asserting full elision and correct rows.
+- **(e) NEW: R3 end-to-end.** The unfiltered shape, asserting a narrowed distinct
+  and correct rows.
+
+The test is renamed to say what it now pins: the *boundary* between what R1
+cannot reach and what R2/R3 do, rather than the blanket unreachability it was
+written to record.
 
 ## 8. Must not regress
 
@@ -1241,6 +1716,19 @@ is recorded here rather than left in a measurement transcript: **the hash-distin
 continuation's cost grows quadratically in page count**
 (`executor.go:2261-2315`, `distinct_stream.go:259-271`).
 
+**R3 shrinks that quadratic term without removing the need for the general fix,
+and the distinction is worth stating precisely so neither is mistaken for the
+other.** The O(P²) cost is O(P²) *in the number of retained keys*: the seen-set is
+serialized into every page and rebuilt on resume. R3 narrows the retained set to
+the exempt subset, so on a unique-column `DISTINCT` over an ordinary table the
+constant in front of the P² collapses toward zero and the term stops mattering —
+which the NULL-density sweep in §2.1 measures directly (the 0% row's churn
+column). What R3 does **not** do is change the algorithm: at 100% NULL density
+the term is back in full, and every `DISTINCT` that is not over a unique column
+is untouched. R3 is a narrowing of one input to the problem; §9(h)'s work is the
+fix to the problem. Neither substitutes for the other, and R3 landing must not be
+read as retiring the item.
+
 **That work is in flight now**, on branch `fix/distinct-continuation-growth` (PR
 number to follow). It is tracked there rather than here, and the two are
 independent in both directions: RFC-210 does not wait on it, and it does not wait
@@ -1304,5 +1792,29 @@ healthy — the gate would fire only while some unrelated index was mid-build.
 | citations: `OrderingProperty.java:596-604`, `:52-57`, `:185-192` + 4th sentence, `:272`, #635/#653 | §3, §5.5 |
 | §7.2 fixture reality (NaN spelling, fan-out unit-level, `AS SELECT` forms, sparse smoke check) | §7.2 |
 
+**Second refutation → binding ruling: the arm as specified could not fire on any
+SQL query.** A reachability probe (`secondary_unique_proof_reachability_test.go`)
+established that the SQL DDL rejects a `NOT NULL` scalar column, so every
+SQL-expressible secondary unique index has a nullable key and clause 8 was false
+for all of them — the arm was correct and inert, and *both* consumers of the
+shared gate were dead on the SQL surface, not just this one.
+
+The ruling declined a three-way fork and unified two of its branches: the
+metadata route and the residual route are two halves of one design, and deferring
+either was deferral with a scoping story. Where each condition landed:
+
+| # | condition | folded into |
+|---|---|---|
+| R-1 | clause 8 rewritten as the exempt-set proof; `SecondaryUniqueKeyGloballyEnforced` becomes R1's implementation, never relaxed | §5.1 clause 8, §5.1.2, §5.4 |
+| R-2 | R2's allow-list, fail-closed, `NotDistinctFrom` refused; per-key-column top-level conjuncts strictly between scan and `DISTINCT`; the UNKNOWN-rows-dropped pin | §5.1.2 R2, §7.6 |
+| R-3 | R3's narrowing flag is part of plan identity | §5.1.2 R3(1), §7.4 |
+| R-4 | R3 renders distinctly in `EXPLAIN` | §5.1.2 R3(2), §7.1 |
+| R-5 | §5.2's dependency + `40001` path apply unchanged to all three routes | §5.1.2 R3(3), §5.3 |
+| R-6 | the refutation test is REWRITTEN, never deleted | §7.6 |
+| R-7 | #617's dead strict-ordering half is fixed here, no separate item; no R3 analogue; Java's `RemoveSortRule.java:153` recorded as an upstream soundness bug | §5.7 |
+| R-8 | §2.1 restructured and re-measured — cost-of-operator vs delivered-delta, NULL-density sweep | §2.1, §7.5 |
+| R-9 | §3 must say FIRST that Java cannot plan `DISTINCT` at all | §3 |
+
 Remaining gates: **Torvalds delta-read** on §5.1.1; **Graefe** on the
-implementation lap; codex + `@claude` at implementation completion.
+implementation lap, one lap at completion of the whole arm; codex + `@claude` at
+implementation completion.
