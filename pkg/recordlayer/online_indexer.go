@@ -246,6 +246,16 @@ type OnlineIndexer struct {
 	// (e.g. to inspect or resume the build).
 	markReadableEnabled bool
 
+	// allowUniquePendingState opts in to leaving a unique index in
+	// READABLE_UNIQUE_PENDING when the build finds duplicates, instead of failing
+	// the build. Java OnlineIndexer.IndexingPolicy.Builder.allowUniquePendingState,
+	// whose field defaults FALSE (OnlineIndexer.java:1220) and whose javadoc states
+	// the contract exactly: "allow=false (default, backward compatible): throw an
+	// exception."
+	//
+	// It is deliberately NOT enough on its own — see shouldAllowUniquePendingState.
+	allowUniquePendingState bool
+
 	// progressLogIntervalMillis throttles the per-range "Indexer: Built Range"
 	// progress log (see maybeLogBuildProgress). Matches Java
 	// OnlineIndexOperationConfig.progressLogIntervalMillis:
@@ -262,6 +272,24 @@ type OnlineIndexer struct {
 	// zero-config app keeps the standard slog integration and tests never mutate
 	// process globals.
 	logger *slog.Logger
+}
+
+// shouldAllowUniquePendingState reports whether a finished build may leave a
+// unique index in READABLE_UNIQUE_PENDING rather than failing on duplicates.
+//
+// Port of Java's OnlineIndexer.IndexingPolicy.shouldAllowUniquePendingState
+// (OnlineIndexer.java:1117-1120), which is an AND of two independent conditions:
+//
+//	return allowUniquePendingState
+//	        && store.getFormatVersionEnum().isAtLeast(FormatVersion.READABLE_UNIQUE_PENDING);
+//
+// The format-version half is not redundant belt-and-braces. READABLE_UNIQUE_PENDING
+// is format version 9 (FormatVersion.java:145); writing that state into a store an
+// older binary can still open would hand it an index state it cannot interpret. The
+// opt-in alone must therefore never be sufficient.
+func (oi *OnlineIndexer) shouldAllowUniquePendingState(store *FDBRecordStore) bool {
+	return oi.allowUniquePendingState &&
+		store.GetFormatVersion() >= int32(formatVersionReadableUniquePending)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -292,6 +320,23 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 			progressLogIntervalMillis: -1,
 		},
 	}
+}
+
+// SetAllowUniquePendingState opts in to leaving a unique index in
+// READABLE_UNIQUE_PENDING when the build finds duplicates, instead of failing the
+// build with a RecordIndexUniquenessViolationError.
+//
+// Java OnlineIndexer.IndexingPolicy.Builder.allowUniquePendingState(boolean)
+// (OnlineIndexer.java:1354). Defaults FALSE here as it does there, and even when
+// set it is honoured only on a store at format version >=
+// READABLE_UNIQUE_PENDING — see OnlineIndexer.shouldAllowUniquePendingState.
+//
+// Java's javadoc carries the warning this option deserves: "This state might not be
+// compatible with older code. Please verify that all instances are up-to-date before
+// allowing it."
+func (b *OnlineIndexerBuilder) SetAllowUniquePendingState(allow bool) *OnlineIndexerBuilder {
+	b.indexer.allowUniquePendingState = allow
+	return b
 }
 
 // SetDatabase sets the FDB database.
@@ -1202,7 +1247,18 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+			// Java IndexingBase.markIndexReadableForIndex (IndexingBase.java:322-326)
+			// picks between the two marks on the policy, NOT unconditionally:
+			//   policy.shouldAllowUniquePendingState(store)
+			//       ? store.markIndexReadableOrUniquePending(index)
+			//       : store.markIndexReadable(index);
+			// The default policy answers false, so the default outcome of a build that
+			// found duplicates is a failed build, not a quietly pending index.
+			if oi.shouldAllowUniquePendingState(store) {
+				if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+					return nil, err
+				}
+			} else if _, err = store.MarkIndexReadable(idx.Name); err != nil {
 				return nil, err
 			}
 			// Once the index is readable there is no need for the per-build bookkeeping.

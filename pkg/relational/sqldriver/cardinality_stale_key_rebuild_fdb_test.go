@@ -100,9 +100,11 @@ func cq90MetaData(t *testing.T, name string, withCountIndex bool) *recordlayer.R
 //
 //   - AddedVersion is left ALONE. MetaDataEvolutionValidator requires it to be
 //     unchanged (metadata_evolution_validator.go:482-487; Java
-//     MetaDataEvolutionValidator.java:543-546), and only LastModifiedVersion
-//     drives the rebuild. Bumping both would make the evolution illegal for no
-//     gain.
+//     MetaDataEvolutionValidator.java:633-637, the `oldIndex.getAddedVersion()
+//     != newIndex.getAddedVersion()` check in validateIndex — NOT :543-546,
+//     which is the separate new-index "version not newer than the old meta-data
+//     version" branch), and only LastModifiedVersion drives the rebuild.
+//     Bumping both would make the evolution illegal for no gain.
 //   - Exactly ONE index is bumped. Every index named in indexesToBuild is
 //     EXCLUDED from the record-count sources that decide the rebuild policy
 //     (store_builder.go's `excluded` map; Java's IndexQueryabilityFilter at
@@ -490,6 +492,104 @@ func TestFDB_CardinalityStaleNullKeyRebuiltInline(t *testing.T) {
 	}
 }
 
+// cq90BumpEveryIndexVersion is the WRONG way to author the migration, kept
+// executable so the recipe's central warning is a measurement rather than a
+// claim. It raises every index's LastModifiedVersion, as re-saving a whole
+// relational schema template at a higher version does.
+func cq90BumpEveryIndexVersion(t *testing.T, md *recordlayer.RecordMetaData) *recordlayer.RecordMetaData {
+	t.Helper()
+	p, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("metadata to proto: %v", err)
+	}
+	next := int32(md.Version() + 1)
+	for _, idx := range p.GetIndexes() {
+		idx.LastModifiedVersion = proto.Int32(next)
+	}
+	p.Version = proto.Int32(next)
+	out, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("metadata from proto: %v", err)
+	}
+	return out
+}
+
+// TestFDB_CardinalityWholeSchemaBumpDisablesEvenTinyStore pins the sharpest
+// warning in the CQ-90 recipe, which would otherwise be prose nobody had run.
+//
+// Bumping ONLY the affected index leaves the COUNT index readable and usable, so
+// a three-record store reports a real count of 3 and rebuilds inline
+// (TestFDB_CardinalityStaleNullKeyRebuiltInline). Bump the WHOLE schema — which
+// is what re-saving a relational template at a higher version does, since
+// addIndexCommon re-derives every index's version from the builder counter — and
+// the COUNT index joins indexesToBuild. Every index being built is excluded from
+// the record-count sources (Java's IndexQueryabilityFilter,
+// FDBRecordStore.java:4841), because an index holding no entries yet would report
+// 0 for a full store. With its only count source excluded,
+// getRecordCountForRebuildPolicy falls through to the emptiness probe and reports
+// MaxInt64.
+//
+// The consequence is counter-intuitive enough to deserve a test: a THREE-record
+// store lands DISABLED, needing an OnlineIndexer run, purely because the operator
+// bumped more than they had to.
+func TestFDB_CardinalityWholeSchemaBumpDisablesEvenTinyStore(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	md := cq90MetaData(t, "cq90wholebump", true)
+	desc := md.GetRecordType("T_STALE").Descriptor
+	if rErr := cq90Run(t, db, md, ks, true, func(store *recordlayer.FDBRecordStore) error {
+		for _, r := range []struct {
+			id  int32
+			arr []int32
+		}{{1, nil}, {2, []int32{7}}, {3, []int32{7, 8}}} {
+			if _, sErr := store.SaveRecord(cq90Rec(desc, r.id, r.arr)); sErr != nil {
+				return sErr
+			}
+		}
+		return nil
+	}); rErr != nil {
+		t.Fatalf("seed records: %v", rErr)
+	}
+
+	// Both indexes bumped — the operator error the recipe warns against.
+	mdAll := cq90BumpEveryIndexVersion(t, md)
+	built := mdAll.GetIndexesToBuildSince(md.Version())
+	if len(built) != 2 {
+		names := make([]string, len(built))
+		for i, b := range built {
+			names[i] = b.Name
+		}
+		t.Fatalf("GetIndexesToBuildSince(%d) selected %v, want BOTH indexes — this test is about what "+
+			"happens when the COUNT index is dragged along, so it must actually be dragged along",
+			md.Version(), names)
+	}
+
+	var cardState recordlayer.IndexState
+	if rErr := cq90Run(t, db, mdAll, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		cardState = store.GetIndexState("T_STALE_CARD")
+		return nil
+	}); rErr != nil {
+		t.Fatalf("reopen with whole-schema bump: %v", rErr)
+	}
+	if cardState != recordlayer.IndexStateDisabled {
+		t.Fatalf("after a WHOLE-SCHEMA bump on a 3-record store the cardinality index is %v, want DISABLED. "+
+			"Three records is far below MAX_RECORDS_FOR_REBUILD (200), so this can only be DISABLED because "+
+			"the COUNT index was excluded as a count source while it too was being rebuilt, degrading the "+
+			"count to MaxInt64. If this now reports READABLE, the recipe's 'bump only the affected index' "+
+			"warning is obsolete and must be rewritten, not quietly left in place", cardState)
+	}
+}
+
 // TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer is the same
 // migration on a store ABOVE MAX_RECORDS_FOR_REBUILD — the production shape.
 // checkVersion must refuse to rebuild inline (a full index build inside the
@@ -650,21 +750,29 @@ func TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer(t *testing.T) {
 // rejected going FORWARD; this pins what happens to the pair that already got
 // in.
 //
-// LOUD DOES NOT MEAN "THROWS", and getting that backwards is the trap here.
-// A rebuild runs with the index WRITE_ONLY, and checkUniqueness records a
-// violation rather than throwing while the index is in that state
-// (index_maintainer.go:493-504; Java's standardIndexMaintainer.checkUniqueness
-// calls addUniquenessViolation for both conflicting primary keys). The rebuild
-// then ends at markIndexReadableOrUniquePending (Java
-// FDBRecordStore.java:3751), which refuses to hand back a plain READABLE index
-// while violations exist and settles on READABLE_UNIQUE_PENDING instead.
+// THE LOUD OUTCOME IS A THROW, and the two-stage mechanism behind it is worth
+// stating because the halves pull in opposite directions.
 //
-// So the required outcome is threefold, and all three matter: the index does
-// NOT reach READABLE, the violation is recorded durably against key 0 naming
-// both records, and BOTH index entries survive. A rebuild that kept the last
-// writer and dropped the other entry would convert a detectable inconsistency
-// into a silent one — that is the failure this test exists to exclude, and it
-// would sail past an "expect an error" assertion just as easily.
+// During the build the index is WRITE_ONLY, and there checkUniqueness RECORDS a
+// violation rather than throwing (index_maintainer.go:493-504; Java's
+// standardIndexMaintainer.checkUniqueness calls addUniquenessViolation for both
+// conflicting primary keys). That is why the duplicates do not abort mid-scan.
+// The reckoning comes at the end: Java's inline rebuild calls the one-argument
+// markIndexReadable(index) (FDBRecordStore.java:4602 → :3767-3768,
+// allowUniquePending=FALSE), and checkAndUpdateBuiltIndexState (:3821) then
+// THROWS RecordIndexUniquenessViolation ("Uniqueness violation when making index
+// readable", :3856-3861).
+//
+// READABLE_UNIQUE_PENDING is NOT the default landing spot. Java core reaches it
+// from exactly one caller, IndexingBase.java:324, gated on
+// IndexingPolicy.shouldAllowUniquePendingState (OnlineIndexer.java:1117) — an
+// opt-in defaulting FALSE (:1220) that also demands format version >=
+// READABLE_UNIQUE_PENDING (FormatVersion.java:145). Both arms are pinned below,
+// because a policy flag that is never tested in its OFF position is not a policy.
+//
+// The failure this excludes is the quiet one: a rebuild that "succeeds" by
+// discarding one of the two entries would convert a detectable inconsistency
+// into a silent one, and would sail past an assertion that only checked rows.
 func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -707,76 +815,193 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 		t.Fatal("T_STALE_CARD is not unique after SetUnique — the rest of this test would assert nothing")
 	}
 
-	// The inline rebuild runs at store open and must surface the violation.
-	var stateAfter recordlayer.IndexState
-	var violations []recordlayer.UniquenessViolation
+	// ARM 1 — THE DEFAULT. The inline rebuild at store open must FAIL, and fail
+	// with the structured error that names the index.
+	rebuildErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		return nil
+	})
+	if rebuildErr == nil {
+		t.Fatal("the store opened cleanly on a store holding TWO records with an empty NOT NULL array on a " +
+			"UNIQUE cardinality index. Both key the integer 0, so exactly one entry can exist. Java's inline " +
+			"rebuild marks readable with allowUniquePending=FALSE (FDBRecordStore.java:4602 → :3767-3768) and " +
+			"THROWS RecordIndexUniquenessViolation (:3856-3861); a silent success means Go downgraded to " +
+			"READABLE_UNIQUE_PENDING behind the operator's back, or dropped an entry")
+	}
+	var uv *recordlayer.RecordIndexUniquenessViolationError
+	if !errors.As(rebuildErr, &uv) {
+		t.Fatalf("the rebuild failed with %v, want a RecordIndexUniquenessViolationError — the migration has "+
+			"to NAME the invariant it found broken, not merely refuse", rebuildErr)
+	}
+	if uv.IndexName != "T_STALE_CARD" {
+		t.Fatalf("uniqueness violation names index %q, want T_STALE_CARD", uv.IndexName)
+	}
+	if len(uv.IndexKey) != 1 || uv.IndexKey[0] != int64(0) {
+		t.Fatalf("uniqueness violation is on key %v, want the single column [0] — that is the key the two "+
+			"empty NOT NULL arrays now share, and the whole point of the migration", uv.IndexKey)
+	}
+
+	// THE FAILED MIGRATION IS ATOMIC, which is the half a bare "it threw"
+	// assertion misses. checkVersion runs inside the store-open transaction, so
+	// the throw rolls the whole thing back: no index state is written, no
+	// violation records survive, the store header keeps the OLD metadata version,
+	// and the stale NULL-keyed entries are still exactly where they were. The
+	// operator is left with a store that is unchanged and a retry that is a clean
+	// re-attempt rather than a resume of something half-applied.
+	//
+	// Reopening at the OLD metadata does not itself trigger a rebuild, so this
+	// observes the store rather than disturbing it.
+	suffixesAfterFail := cq90IndexKeySuffixes(t, db, md, ks, "T_STALE_CARD")
+	if n := cq90CountStaleNullEntries(suffixesAfterFail); n != 2 {
+		t.Fatalf("after the FAILED rebuild the index holds %d NULL-keyed entries (%x), want the original 2 — "+
+			"the throw must roll the store-open transaction back untouched, leaving nothing half-migrated",
+			n, suffixesAfterFail)
+	}
+	if len(suffixesAfterFail) != 2 {
+		t.Fatalf("after the FAILED rebuild the index holds %d entries (%x), want 2", len(suffixesAfterFail),
+			suffixesAfterFail)
+	}
+
+	// Nothing was dropped: both records are still reachable by a full scan. The
+	// conflict is REPORTED, never resolved by discarding an entry.
+	if got := cq90ScannedIDs(t, db, md, ks, 0); !cq90IDsEqual(got, 1, 2) {
+		t.Fatalf("full scan for an empty array returned %v, want [1 2] — a uniqueness conflict must never "+
+			"cost a RECORD", got)
+	}
+
+	// The OPT-IN side of the policy — the only route to READABLE_UNIQUE_PENDING —
+	// lives in TestFDB_CardinalityUniquePendingPolicyBothSides. It cannot be
+	// exercised here: on a store small enough for the inline arm, store open
+	// rebuilds and throws before an OnlineIndexer could ever be reached.
+}
+
+// TestFDB_CardinalityUniquePendingPolicyBothSides pins BOTH positions of Java's
+// allowUniquePendingState policy on the CQ-90 duplicate pair. A policy flag
+// tested only in its ON position is not a policy — it is a feature that happens
+// to work, with nothing pinning the default that almost every operator gets.
+//
+// The store deliberately declares NO COUNT index. That is what makes this
+// reachable at all: without a count source the rebuild policy sees MaxInt64 and
+// leaves the index DISABLED instead of rebuilding inline, so the OnlineIndexer —
+// which is where Java consults the policy (IndexingBase.java:324) — actually gets
+// to run. With a COUNT index the store-open rebuild would throw first and the
+// OnlineIndexer would never be reached.
+func TestFDB_CardinalityUniquePendingPolicyBothSides(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	md := cq90MetaData(t, "cq90pending", false) // no COUNT index — see above
+	desc := md.GetRecordType("T_STALE").Descriptor
+	if rErr := cq90Run(t, db, md, ks, true, func(store *recordlayer.FDBRecordStore) error {
+		for _, id := range []int32{1, 2} {
+			if _, sErr := store.SaveRecord(cq90Rec(desc, id, nil)); sErr != nil {
+				return sErr
+			}
+		}
+		return nil
+	}); rErr != nil {
+		t.Fatalf("seed the colliding pair: %v", rErr)
+	}
+	if n := cq90Staleize(t, db, md, ks, "T_STALE_CARD"); n != 2 {
+		t.Fatalf("staleized %d entries, want 2", n)
+	}
+
+	md2 := cq90BumpIndexVersion(t, md, "T_STALE_CARD")
+	uniq := md2.GetIndex("T_STALE_CARD")
+	uniq.SetUnique()
+	if !uniq.IsUnique() {
+		t.Fatal("T_STALE_CARD is not unique after SetUnique — the rest of this test would assert nothing")
+	}
+
+	// Reconciliation leaves it DISABLED (no count source), so no inline rebuild
+	// throws and the OnlineIndexer is reachable.
+	var st recordlayer.IndexState
+	var formatVersion int32
 	if rErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
-		stateAfter = store.GetIndexState("T_STALE_CARD")
-		vs, vErr := store.ScanUniquenessViolations(md2.GetIndex("T_STALE_CARD"))
-		violations = vs
-		return vErr
+		st = store.GetIndexState("T_STALE_CARD")
+		formatVersion = store.GetFormatVersion()
+		return nil
 	}); rErr != nil {
 		t.Fatalf("reopen with bumped metadata: %v", rErr)
 	}
-
-	if stateAfter == recordlayer.IndexStateReadable {
-		t.Fatal("after the rebuild the UNIQUE cardinality index is plain READABLE on a store holding TWO " +
-			"records with an empty NOT NULL array. Both key the integer 0, so exactly one entry can exist — " +
-			"a clean READABLE means the conflict was absorbed and the index now silently disagrees with the " +
-			"base table, which is the one outcome this migration must never produce")
+	if st != recordlayer.IndexStateDisabled {
+		t.Fatalf("after the bump the index is %v, want DISABLED — without a COUNT index the count degrades "+
+			"to MaxInt64 and reconciliation must defer to a background build", st)
 	}
-	if stateAfter != recordlayer.IndexStateReadableUniquePending {
-		t.Fatalf("after the rebuild the index is %v, want READABLE_UNIQUE_PENDING — markIndexReadableOrUnique"+
-			"Pending (Java FDBRecordStore.java:3751) must refuse a plain READABLE while violations exist",
-			stateAfter)
-	}
-	if len(violations) == 0 {
-		t.Fatal("the rebuild left the index READABLE_UNIQUE_PENDING but recorded NO uniqueness violation — " +
-			"the state would then be unexplainable and unresolvable, since the violations subspace is the " +
-			"only durable record of which records collided")
-	}
-	for _, v := range violations {
-		if len(v.IndexKey) != 1 || v.IndexKey[0] != int64(0) {
-			t.Fatalf("uniqueness violation is on key %v, want the single column [0] — that is the key the "+
-				"two empty NOT NULL arrays now share, and the whole point of the migration", v.IndexKey)
-		}
-	}
-	// Both records must be named. A violation naming only one of them would not
-	// tell an operator which pair to reconcile.
-	// A relational primary key carries the record-type key ahead of the declared
-	// columns, so ID is the LAST element rather than the only one.
-	named := map[int64]bool{}
-	for _, v := range violations {
-		if len(v.PrimaryKey) == 0 {
-			t.Fatalf("uniqueness violation has an empty primary key: %+v", v)
-		}
-		id, ok := v.PrimaryKey[len(v.PrimaryKey)-1].(int64)
-		if !ok {
-			t.Fatalf("uniqueness violation primary key %v does not end in an integer ID", v.PrimaryKey)
-		}
-		named[id] = true
-	}
-	if !named[1] || !named[2] {
-		t.Fatalf("the recorded violations name primary keys %v, want both 1 and 2 — Java records a violation "+
-			"for BOTH conflicting primary keys (addUniquenessViolation is called twice)", named)
+	if formatVersion < int32(9) {
+		t.Fatalf("store format version is %d, below READABLE_UNIQUE_PENDING (9) — the ON arm below would be "+
+			"gated off by the FORMAT VERSION rather than by the policy, proving nothing about the opt-in",
+			formatVersion)
 	}
 
-	// Nothing was dropped: both entries are still on disk under key 0, and both
-	// records are still reachable through the index.
+	newIndexer := func(allow bool) *recordlayer.OnlineIndexer {
+		t.Helper()
+		b := recordlayer.NewOnlineIndexerBuilder().
+			SetDatabase(db).SetMetaData(md2).SetIndex(md2.GetIndex("T_STALE_CARD")).
+			SetSubspace(ks).SetLimit(50)
+		if allow {
+			b = b.SetAllowUniquePendingState(true)
+		}
+		oi, bErr := b.Build()
+		if bErr != nil {
+			t.Fatalf("build online indexer (allow=%v): %v", allow, bErr)
+		}
+		return oi
+	}
+
+	// SIDE 1 — THE DEFAULT (allowUniquePendingState unset). Java's builder field
+	// defaults false (OnlineIndexer.java:1220) and its javadoc spells out the
+	// consequence: "allow=false (default, backward compatible): throw an
+	// exception." The build must FAIL.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, defaultErr := newIndexer(false).BuildIndex(ctx)
+	if defaultErr == nil {
+		t.Fatal("an OnlineIndexer build with the DEFAULT policy completed on an index holding duplicates. " +
+			"Java defaults allowUniquePendingState to FALSE and throws; a Go default that silently lands in " +
+			"READABLE_UNIQUE_PENDING hands operators a state older binaries cannot interpret, without asking")
+	}
+	var uvErr *recordlayer.RecordIndexUniquenessViolationError
+	if !errors.As(defaultErr, &uvErr) {
+		t.Fatalf("default-policy build failed with %v, want a RecordIndexUniquenessViolationError", defaultErr)
+	}
+
+	// SIDE 2 — THE OPT-IN. Same store, same duplicates, policy explicitly on.
+	if _, iErr := newIndexer(true).BuildIndex(ctx); iErr != nil {
+		t.Fatalf("online build with allowUniquePendingState=true failed with %v — the opt-in exists precisely "+
+			"so this build completes instead of throwing", iErr)
+	}
+	var pendingState recordlayer.IndexState
+	if rErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		pendingState = store.GetIndexState("T_STALE_CARD")
+		return nil
+	}); rErr != nil {
+		t.Fatal(rErr)
+	}
+	if pendingState != recordlayer.IndexStateReadableUniquePending {
+		t.Fatalf("with allowUniquePendingState=true the index is %v, want READABLE_UNIQUE_PENDING — the "+
+			"policy opt-in is not reaching MarkIndexReadableOrUniquePending", pendingState)
+	}
+
+	// The pending index is scannable (Java IndexState.java:95) and agrees with the
+	// base table: both entries survived, keyed 0, with no stale NULL key left.
+	if got := cq90IndexedIDs(t, db, md2, ks, "T_STALE_CARD", 0); !cq90IDsEqual(got, 1, 2) {
+		t.Fatalf("after the pending-state build, index-backed CARDINALITY = 0 returned %v, want [1 2]", got)
+	}
 	suffixes := cq90IndexKeySuffixes(t, db, md2, ks, "T_STALE_CARD")
 	if n := cq90CountStaleNullEntries(suffixes); n != 0 {
-		t.Fatalf("after the rebuild %d NULL-keyed entries remain — the migration did not run", n)
+		t.Fatalf("after the pending-state build %d NULL-keyed entries remain — the migration did not run", n)
 	}
 	if len(suffixes) != 2 {
-		t.Fatalf("after the rebuild the index holds %d entries (%x), want 2 — a uniqueness conflict must be "+
-			"REPORTED, never resolved by discarding an entry", len(suffixes), suffixes)
-	}
-	if got := cq90IndexedIDs(t, db, md2, ks, "T_STALE_CARD", 0); !cq90IDsEqual(got, 1, 2) {
-		t.Fatalf("after the rebuild, index-backed CARDINALITY = 0 returned %v, want [1 2] — "+
-			"READABLE_UNIQUE_PENDING is scannable in Java too (IndexState.java:95), and it must return the "+
-			"same rows a full scan does", got)
-	}
-	if got := cq90ScannedIDs(t, db, md2, ks, 0); !cq90IDsEqual(got, 1, 2) {
-		t.Fatalf("full scan for an empty array returned %v, want [1 2]", got)
+		t.Fatalf("after the pending-state build the index holds %d entries (%x), want 2 — a uniqueness "+
+			"conflict must be REPORTED, never resolved by discarding an entry", len(suffixes), suffixes)
 	}
 }

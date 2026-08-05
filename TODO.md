@@ -13921,13 +13921,20 @@ None is speculative: each was re-verified against the tree before booking.
   the joins golden decision is re-derived from real counts.
 
 - [x] **CQ-90 (on-disk migration for the CQ-89 cardinality key change) —
-  RESOLVED: the booked trigger fired, the rebuild is forced and proven.**
+  the booked trigger fired; MECHANISM PROVEN + RECIPE DOCUMENTED.**
   The DOCUMENT-DO-NOT-FORCE ruling rested entirely on "every affected store is
   dev/test", and its own text named the expiry: first production deployment.
   Production deployment is now imminent, so the conditional go/no-go below
-  resolves to GO. Forcing it now is the cheap moment — rebuilds on today's
+  resolves to GO. Doing it now is the cheap moment — rebuilds on today's
   dev/test stores are free or trivially small; the same rebuilds after a
-  production cluster fills up are a multi-week operation. Pinned end-to-end by
+  production cluster fills up are a multi-week operation.
+  **Scope, stated precisely so the checkbox is not read as more than it is:**
+  NO `LastModifiedVersion` bump has been applied to any schema, and none can be
+  from here — an index's version is per-schema metadata authored by its owner.
+  What landed is the mechanism, proven end-to-end for exactly this migration,
+  plus the recipe operators run per schema at deployment.
+  `road-to-prod.md` entry 18 therefore STAYS on the watch list until the
+  affected schemas have actually been rebuilt. Pinned end-to-end by
   `pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`.
 
   **NO automatic engine-side bump — decided by reading Java, not by punting.**
@@ -13950,8 +13957,11 @@ None is speculative: each was re-verified against the tree before booking.
   stored metadata version and raise the metadata version to match. Leave
   `AddedVersion` ALONE — `MetaDataEvolutionValidator` requires it unchanged
   (`metadata_evolution_validator.go:482-487`; Java
-  `MetaDataEvolutionValidator.java:543-546`) and only `LastModifiedVersion`
-  drives the rebuild. Bump ONLY the affected index: every index in
+  `MetaDataEvolutionValidator.java:633-637`, the
+  `oldIndex.getAddedVersion() != newIndex.getAddedVersion()` check in
+  `validateIndex`; NOT `:543-546`, which is the separate new-index branch) and
+  only `LastModifiedVersion` drives the rebuild. Bump ONLY the affected index:
+  every index in
   `indexesToBuild` is excluded from the record-count sources that pick the
   policy (Java's `IndexQueryabilityFilter`, `FDBRecordStore.java:4841`), so
   bumping the whole schema drags any COUNT index along with it, the count
@@ -13971,19 +13981,34 @@ None is speculative: each was re-verified against the tree before booking.
     COUNT index today, which makes DISABLED + `OnlineIndexer` the path they
     all take. The test declares one deliberately to reach the inline arm.
 
-  **The uniqueness sub-hazard resolves LOUDLY — and "loud" is not "throws".**
-  Getting that backwards was the one wrong turn taken here: an "expect an
-  error" assertion FAILED, and the code was right. A rebuild runs WRITE_ONLY,
-  where `checkUniqueness` records a violation instead of throwing
-  (`index_maintainer.go:493-504`; Java's
-  `standardIndexMaintainer.checkUniqueness` calls `addUniquenessViolation` for
-  both conflicting PKs), and `MarkIndexReadableOrUniquePending` (Java
-  `FDBRecordStore.java:3751`) then refuses a plain READABLE while violations
-  exist. A pre-fix pair of empty NOT NULL arrays therefore surfaces as
-  READABLE_UNIQUE_PENDING + a durable violation on key `0` naming BOTH records,
-  with both index entries retained. The failure that matters is the quiet one —
-  a rebuild that "succeeds" by discarding an entry — and an error-expecting
-  test would have sailed straight past it.
+  **The uniqueness sub-hazard resolves LOUDLY: the migration THROWS — and
+  fixing that exposed a REAL Go divergence this item had first blessed.**
+  The build is two-stage. While the index is WRITE_ONLY `checkUniqueness`
+  RECORDS a violation rather than throwing (`index_maintainer.go:493-504`;
+  Java's `standardIndexMaintainer.checkUniqueness` calls
+  `addUniquenessViolation` for both conflicting PKs), which is why the scan
+  completes. The reckoning is at the end: Java's inline rebuild calls the
+  ONE-ARGUMENT `markIndexReadable(index)` (`FDBRecordStore.java:4602` →
+  `:3767-3768`, `allowUniquePending=FALSE`) and
+  `checkAndUpdateBuiltIndexState` (`:3821`) THROWS
+  `RecordIndexUniquenessViolation` (`:3856-3861`). The failure is atomic — the
+  store-open transaction rolls back, so nothing is half-migrated.
+  `READABLE_UNIQUE_PENDING` is reachable in Java core from ONE caller,
+  `IndexingBase.java:324`, gated on
+  `IndexingPolicy.shouldAllowUniquePendingState` (`OnlineIndexer.java:1117`):
+  an opt-in defaulting FALSE (`:1220`, javadoc "allow=false (default, backward
+  compatible): throw an exception") that ALSO requires format version >=
+  `READABLE_UNIQUE_PENDING` (`FormatVersion.java:145`).
+  **Go diverged**: it called `MarkIndexReadableOrUniquePending`
+  unconditionally on both the inline path (`store_builder.go`) and the online
+  path (`online_indexer.go`), with no policy and no format gate, under a
+  comment claiming it matched Java. So a uniqueness violation was silently
+  downgraded to a pending state nobody opted into. Fixed here: the inline path
+  now throws, and `OnlineIndexerBuilder.SetAllowUniquePendingState` ports the
+  policy with Java's default and format-version gate. Both SIDES of the policy
+  are pinned, since a flag tested only in its ON position is not a policy.
+  Three pre-existing specs that had encoded the divergence were corrected in
+  the same change rather than left to rot.
 
   Original booking, kept for the reasoning it records:
 
@@ -14043,7 +14068,9 @@ None is speculative: each was re-verified against the tree before booking.
   `allowIndexRebuilds` contract, so the mechanism exists — only the decision
   to use it is pending).
   → Resolved via branch (b): the deployment was scheduled while stale entries
-  could still exist, so the bump landed with the tests described above.
+  could still exist. The MECHANISM and its proof landed (tests above); the bump
+  itself is per-schema and is applied at deployment, so `road-to-prod.md` entry
+  18 stays open until the affected schemas are rebuilt.
 
 - [ ] **CQ-91 (query-engine — needs its own RFC + Graefe ACK): Go has THREE
   independent implementations of Java's ONE field-read helper; consolidate

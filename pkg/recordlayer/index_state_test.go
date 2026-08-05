@@ -739,6 +739,12 @@ var _ = Describe("IndexState", func() {
 				SetIndex(uniqueIdx).
 				SetSubspace(ss).
 				SetLimit(10).
+				// READABLE_UNIQUE_PENDING is an OPT-IN outcome, not the default. Java
+				// gates it on IndexingPolicy.shouldAllowUniquePendingState
+				// (OnlineIndexer.java:1117), whose builder field defaults FALSE (:1220,
+				// javadoc: "allow=false (default, backward compatible): throw an
+				// exception"). Without this the build correctly FAILS instead.
+				SetAllowUniquePendingState(true).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 

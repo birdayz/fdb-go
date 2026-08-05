@@ -81,9 +81,26 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 		}
 	}
 
-	// Step 4: Mark index READABLE (or READABLE_UNIQUE_PENDING if violations exist).
-	// Matches Java: uses markIndexReadable which checks violations for unique indexes.
-	if _, err := store.MarkIndexReadableOrUniquePending(index.Name); err != nil {
+	// Step 4: Mark the index READABLE. A uniqueness violation FAILS the rebuild.
+	//
+	// Java's inline rebuild calls the ONE-ARGUMENT markIndexReadable(index)
+	// (FDBRecordStore.java:4602), which is markIndexReadable(index,
+	// allowUniquePending=FALSE) (:3767-3768). With a violation present,
+	// checkAndUpdateBuiltIndexState (:3821) throws RecordIndexUniquenessViolation
+	// ("Uniqueness violation when making index readable", :3856-3861) instead of
+	// settling on READABLE_UNIQUE_PENDING.
+	//
+	// READABLE_UNIQUE_PENDING is reachable in Java core through exactly ONE caller,
+	// IndexingBase.java:324, and only when
+	// OnlineIndexer.IndexingPolicy.shouldAllowUniquePendingState (OnlineIndexer.java:1117)
+	// says so — an explicit opt-in defaulting FALSE (:1220, javadoc: "allow=false
+	// (default, backward compatible): throw an exception") that additionally requires
+	// format version >= READABLE_UNIQUE_PENDING (FormatVersion.java:145).
+	//
+	// So a store-open rebuild must NOT quietly downgrade to a pending state. Doing
+	// that would leave a store whose index the operator believes is fine, carrying a
+	// violation nobody was told about; the throw is what surfaces it.
+	if _, err := store.MarkIndexReadable(index.Name); err != nil {
 		return fmt.Errorf("rebuild index %q: mark readable: %w", index.Name, err)
 	}
 
