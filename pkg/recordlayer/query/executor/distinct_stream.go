@@ -193,6 +193,9 @@ type distinctHashCursor struct {
 	// continuation it mints (each carrying its own prefix length).
 	entry      *distinctResumeState
 	entryToken int64
+	// reachedEnd records that the source exhausted, which is the proof Close
+	// needs to reclaim this cursor.s scratch entry.
+	reachedEnd bool
 	// resumeBytes/resumeInner are the continuation this cursor was resumed
 	// from. A page that consumed no row AND left the inner at the byte-identical
 	// position it started at re-emits resumeBytes verbatim instead of minting:
@@ -278,6 +281,9 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 // cursor advances afterward (no aliasing of the live set).
 func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
 	if inner == nil || inner.IsEnd() {
+		// The source is exhausted. Record it: from here on no continuation can
+		// name this cursor's entry, which is what lets Close reclaim it.
+		c.reachedEnd = true
 		return &recordlayer.EndContinuation{}, nil
 	}
 	innerBytes, err := inner.ToBytes()
@@ -322,8 +328,34 @@ func (c *distinctHashCursor) parkSeen() int64 {
 	return c.entryToken
 }
 
+// Close reclaims this cursor's scratch entry when the cursor ran to EXHAUSTION,
+// and only then.
+//
+// The proof obligation is "no continuation the statement still holds can name
+// this entry", and exhaustion discharges it: once the source ends, every
+// continuation this cursor produces is an EndContinuation, and an enclosing
+// operator that saw the end stops carrying the inner position — FlatMap's
+// exhausted-inner branch advances the outer and writes NO inner continuation
+// (flat_map_cursor.go:875-883). So any continuation naming this entry is
+// strictly older than the page's final one, and only the final one survives.
+//
+// This is what makes a correlated inner bounded. FlatMap builds a fresh inner
+// cursor per outer row (:384) and closes it the moment the inner exhausts
+// (:289), while an operator above serializes each emitted row's continuation —
+// so without reclaiming here, one seen-set per OUTER ROW lives for the whole
+// statement, uncharged. Measured before this: 12 outer rows, 12 live states.
+//
+// A cursor closed WITHOUT reaching the end keeps its entry: the page may have
+// stopped mid-stream and handed back a continuation that names it, and the next
+// page must be able to adopt it. That asymmetry is the whole rule — reclaiming
+// unconditionally would drop live state, which is how the deleted page sweep
+// silently lost rows.
 func (c *distinctHashCursor) Close() error {
 	c.closed = true
+	if c.reachedEnd && c.entryToken != 0 {
+		c.scratch.discardDistinct(c.entryToken)
+		c.entryToken = 0
+	}
 	if c.inner != nil {
 		return c.inner.Close()
 	}

@@ -68,19 +68,32 @@ import (
 //     page into a hard "seen-set not held" failure.) Evicting on adopt keeps
 //     the bound at a couple of live entries per operator all the same.
 //
-// NO COLLECTOR, and none is needed: residency is bounded by construction, not
-// by sweeping. An entry belongs to a CURSOR rather than to a continuation (the
-// prefix length rides the continuation instead), so serializing a child
-// continuation on every emitted row — limitEnvelopeCursor does exactly that —
-// adds one entry, not one per row. Adoption evicts the predecessor and any
-// sibling a failed attempt published from it, so a paging chain keeps two. And
-// a completed inner invocation parks nothing at all: its continuation is an
-// EndContinuation, which never reaches the encoder. A page-boundary sweep was
-// built for this and removed: twelve shapes measured identical residency with
-// and without it, its own test passed with it deleted, and its first design
-// silently dropped rows. The residency assertions are the standing sentinel —
-// if some future operator does park what nothing adopts, they go red first and
-// a collector becomes a response to a measured leak.
+// NO COLLECTOR, and none is needed: residency is bounded by three local rules,
+// none of which inspects a byte or needs page bookkeeping.
+//
+//  1. An entry belongs to a CURSOR, not to a continuation (the prefix length
+//     rides the continuation instead), so an operator that serializes a child
+//     continuation on EVERY emitted row — limitEnvelopeCursor does exactly that
+//     — adds one entry, not one per row.
+//  2. Adoption evicts the predecessor and any sibling a failed attempt
+//     published from it, so a paging chain keeps two.
+//  3. A cursor that runs to EXHAUSTION reclaims its own entry when it closes
+//     (see distinctHashCursor.Close). This is what bounds a correlated inner:
+//     FlatMap builds a fresh inner cursor per outer row and closes it on
+//     exhaustion, and without rule 3 each one leaves an entry nothing ever
+//     adopts — one uncharged seen-set per outer row, for the statement.
+//     Measured: 12 outer rows, 12 live states.
+//
+// Rule 3 replaced a page-boundary SWEEP, which is worth recording so it is not
+// rebuilt. The sweep was removed because no shape needed it and its own test
+// could not detect its absence, and its first design silently dropped rows by
+// over-collecting. The leak it was speculatively guarding against turned out to
+// be real but LOCAL — it belongs to a cursor's own lifetime, which the cursor
+// can settle itself, deterministically, at the exact moment reachability ends.
+// A statement-wide collector was the wrong altitude for it.
+//
+// The residency assertions are the standing sentinel: if some future operator
+// parks what nothing adopts and never exhausts, they go red first.
 //
 // MEMORY. A committed layer is charged ONCE, permanently, against the
 // statement's ExecuteState when its keys are folded in — it really is held for
@@ -187,6 +200,15 @@ func (s *ExecutionScratch) parkDistinct(st *distinctResumeState) int64 {
 	token := s.nextToken
 	s.distinct[token] = st
 	return token
+}
+
+// discardDistinct drops an entry whose owning cursor has proved it unreachable.
+// See distinctHashCursor.Close for the proof obligation the caller carries.
+func (s *ExecutionScratch) discardDistinct(token int64) {
+	if s == nil || s.distinct == nil {
+		return
+	}
+	delete(s.distinct, token)
 }
 
 // adoptDistinct returns the committed set named by token, extended with the

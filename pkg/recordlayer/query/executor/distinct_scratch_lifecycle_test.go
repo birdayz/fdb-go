@@ -229,13 +229,20 @@ func TestDistinctEarlyContinuationResumesFromItsOwnPrefix(t *testing.T) {
 		t.Fatalf("ExecutePlan: %v", err)
 	}
 
-	// Drain the WHOLE cursor, serializing on every row. Keep the continuation
-	// minted after the FIRST row — by the time the drain ends, the cursor's
-	// entry holds all n keys while that continuation still names just one.
+	// Drain MOST of the cursor, serializing on every row, and stop BEFORE the
+	// source exhausts — the shape of a page that ends mid-stream. Keep the
+	// continuation minted after the FIRST row: by the time the drain stops, the
+	// cursor's entry holds many keys while that continuation still names one.
+	//
+	// Stopping short is deliberate. A cursor that runs to EXHAUSTION reclaims
+	// its entry on Close (nothing can name it any more), and resuming an early
+	// continuation after that is unreachable anyway: the paging loop keeps only
+	// a page's FINAL continuation, and an exhausted cursor's final continuation
+	// is an EndContinuation.
 	var afterFirst []byte
 	var first any
 	rows := 0
-	for {
+	for rows < n-2 {
 		res, nerr := cursor.OnNext(ctx)
 		if nerr != nil {
 			t.Fatalf("OnNext: %v", nerr)
@@ -254,8 +261,8 @@ func TestDistinctEarlyContinuationResumesFromItsOwnPrefix(t *testing.T) {
 		}
 	}
 	_ = cursor.Close()
-	if rows != n {
-		t.Fatalf("drain emitted %d rows, want %d", rows, n)
+	if rows != n-2 {
+		t.Fatalf("drain emitted %d rows, want %d", rows, n-2)
 	}
 	if afterFirst == nil {
 		t.Fatal("no continuation after the first row")
