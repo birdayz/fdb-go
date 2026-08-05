@@ -130,14 +130,46 @@ func ValueIdentityMatchesLogicalEquality(typ values.Type) bool {
 // which can still prove individual supported probes on a nullable/floating
 // unique index.
 func SecondaryUniqueKeyGloballyEnforced(physicalTypes []values.Type, keyColumnCount int) bool {
+	return SecondaryUniqueKeyEnforcedOnStream(physicalTypes, keyColumnCount, nil)
+}
+
+// SecondaryUniqueKeyEnforcedOnStream is the same proof restricted to ONE STREAM
+// rather than to every possible one, and it is the difference between a fact
+// about the catalog and a fact about the rows actually arriving.
+//
+// The exempt set of a UNIQUE index is the entries on which the declaration
+// constrains nothing, or constrains something finer than logical row equality:
+// NULL components (under NULLS DISTINCT the uniqueness check is SKIPPED, so one
+// NULL prefix legitimately holds arbitrarily many entries) and raw-NaN
+// components (distinct tuple encodings that the dedup key canonicalizes to one
+// value). The proof a consumer needs is that the exempt set is EMPTY here.
+//
+// nullRejectedByStream[i] asserts that no row reaching the consumer can carry a
+// NULL in key component i — established upstream by a NULL-rejecting predicate,
+// never by this function. Where it is true, the component's declared nullability
+// is no longer the deciding fact and the metadata clause is satisfied on this
+// stream. A nil or short slice asserts nothing, which is what makes the
+// zero-argument form above the strictly stronger catalog-wide question.
+//
+// The FLOAT/DOUBLE half is deliberately NOT overridable. A predicate that
+// rejects NULL says nothing about NaN — `d IS NOT NULL` admits every NaN
+// encoding — so the raw-NaN half of the exempt set survives any NULL rejection
+// and TupleKeyUniquenessMatchesLogicalEquality stays absolute.
+func SecondaryUniqueKeyEnforcedOnStream(
+	physicalTypes []values.Type, keyColumnCount int, nullRejectedByStream []bool,
+) bool {
 	if !TupleKeyUniquenessMatchesLogicalEquality(physicalTypes, keyColumnCount) {
 		return false
 	}
 	for i := 0; i < keyColumnCount; i++ {
 		physicalType := physicalEqualityTypeAt(physicalTypes, i)
-		if physicalType.IsNullable() {
-			return false
+		if !physicalType.IsNullable() {
+			continue
 		}
+		if i < len(nullRejectedByStream) && nullRejectedByStream[i] {
+			continue
+		}
+		return false
 	}
 	return true
 }

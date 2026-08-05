@@ -315,6 +315,12 @@ func secondaryUniqueEliminationProof(
 	}
 	recordType := recordTypes[0]
 
+	// R2's evidence, gathered once for all candidates: the scan-row ordinals on
+	// which a NULL-rejecting conjunct sits strictly between the scan and this
+	// DISTINCT. Empty on an unfiltered query, which leaves clause 8 exactly as
+	// strict as R1 alone.
+	nullRejected := nullRejectedOrdinals(innerExpr, layout)
+
 	for _, candidate := range ctx.GetMatchCandidates() {
 		// Clause 1, second half.
 		if candidate == nil {
@@ -384,21 +390,73 @@ func secondaryUniqueEliminationProof(
 		//   identity finer than logical equality means eliding emits two rows
 		//   where DISTINCT emits one.
 		//
-		// SecondaryUniqueKeyGloballyEnforced answers both, over the
-		// AUTHORITATIVE physical key component types — an Unknown type fails
-		// closed, because a visible literal cannot substitute for missing
-		// metadata. This predicate's own doc has named DISTINCT elimination as a
-		// purpose since it was written; this is the caller that makes the
-		// sentence true, so an arm that only fires once the predicate is relaxed
-		// is a wrong arm, not a too-strict predicate.
-		if !properties.SecondaryUniqueKeyGloballyEnforced(
+		// Together those two are the index's EXEMPT SET, and the proof this
+		// clause needs is that the exempt set is EMPTY ON THIS STREAM. That is a
+		// fact about the ROWS ARRIVING, not about the catalog, and reading it as
+		// a catalog question is what made this arm inert: the SQL DDL rejects a
+		// NOT NULL scalar column, so every SQL-expressible secondary unique index
+		// has a nullable key and the catalog-wide form is false for all of them.
+		//
+		// Two routes discharge it here, in strength order.
+		//
+		// R1, the catalog route: every key component declared NOT NULL and none
+		// FLOAT/DOUBLE, over the AUTHORITATIVE physical key component types — an
+		// Unknown type fails closed, because a visible literal cannot substitute
+		// for missing metadata. Strongest and cheapest, and it stays unrelaxed:
+		// it is what fires for a record-layer API caller whose key CAN be NOT
+		// NULL. An arm that only fires once this predicate is widened is a wrong
+		// arm, not a too-strict predicate.
+		//
+		// R2, the predicate route: a NULL-rejecting conjunct on every key column,
+		// strictly between the scan and this DISTINCT, empties the NULL half of
+		// the exempt set on this stream even though the catalog permits NULLs.
+		// The FLOAT/DOUBLE half is NOT overridable and is not overridden — a
+		// predicate that rejects NULL admits every NaN encoding.
+		//
+		// R2's soundness rests entirely on three-valued semantics: the row whose
+		// key column is NULL evaluates the conjunct to UNKNOWN and is DROPPED by
+		// the filter executor, not passed through as TRUE.
+		if !properties.SecondaryUniqueKeyEnforcedOnStream(
 			keyComponentTypesOf(candidate), len(keyColumns),
+			nullRejectionPerKeyColumn(keyColumns, layoutType, nullRejected),
 		) {
 			continue
 		}
 		return candidate.CandidateName(), true
 	}
 	return "", false
+}
+
+// nullRejectionPerKeyColumn projects a set of NULL-rejected scan-row ordinals
+// onto an index's KEY COLUMN ORDER, which is the order the physical key
+// component types arrive in and therefore the only order the gate can consume.
+//
+// Each key column needs its OWN conjunct — the result is positional and the
+// gate's loop is a conjunction over it. A composite UNIQUE (a, b) with only `a`
+// constrained still admits (1, NULL), (1, NULL), so partial coverage must leave
+// the uncovered position false rather than being rounded up to "the filter
+// rejects NULL".
+//
+// A key column the layout cannot resolve yields false for that position, which
+// declines the proof. That is the fail-closed direction: the alternative would
+// be crediting a name the layout never declared.
+func nullRejectionPerKeyColumn(
+	keyColumns []string, layout values.Type, nullRejectedOrds map[int]struct{},
+) []bool {
+	if len(nullRejectedOrds) == 0 {
+		return nil
+	}
+	rejected := make([]bool, len(keyColumns))
+	for i, col := range keyColumns {
+		id, resolved := values.OrdinalOfNameIn(layout, col)
+		if !resolved {
+			continue
+		}
+		if _, ok := nullRejectedOrds[id.Ordinal]; ok {
+			rejected[i] = true
+		}
+	}
+	return rejected
 }
 
 // keyComponentTypesOf reads a candidate's authoritative physical key component
