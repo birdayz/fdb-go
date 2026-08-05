@@ -1333,6 +1333,16 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		execState: recordlayer.NewExecuteState(
 			optInt64(c.Options(), api.OptMaxStatementMemoryBytes, 0),
 		),
+		// The statement-scoped scratch, minted ONCE for the same reason
+		// execState is: each page rebuilds the cursor hierarchy, and an
+		// operator whose resume state is O(rows already emitted) — the
+		// unordered hash DISTINCT's seen-set — must hand that state to the next
+		// page instead of serializing it into every page's continuation, which
+		// costs O(pages^2) to write and re-parse. These continuations never
+		// leave the statement (statement continuations are rejected outright,
+		// see cascadesPlan's continuation check), so the scratch has exactly
+		// their lifetime.
+		scratch: executor.NewExecutionScratch(),
 	}
 
 	// Eagerly fetch the first page so execution errors (type mismatches,
@@ -1434,6 +1444,12 @@ type paginatingRows struct {
 	// pointer into the page's ExecuteProperties.State, so the in-memory
 	// buffering budget accumulates across the whole statement. Never nil.
 	execState *recordlayer.ExecuteState
+
+	// scratch is the statement-wide home for operator resume state too large
+	// to ride every page's continuation (executor.ExecutionScratch). Minted
+	// ONCE in Execute and stamped onto every page's EvaluationContext, exactly
+	// as execState is stamped onto every page's ExecuteProperties. Never nil.
+	scratch *executor.ExecutionScratch
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -1962,6 +1978,12 @@ func (r *paginatingRows) fetchPage() error {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 		r.execState.RestoreRecursionLevels(recursionAtPageStart)
+		// Fresh per-page scratch bookkeeping, for the same reason the recursion
+		// levels are restored above: this closure is the FDB retry loop's body
+		// and runs again from the UNCHANGED r.continuation after a retryable
+		// error, so a failed attempt's adoptions must not survive into its
+		// retry.
+		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
 		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
@@ -1986,7 +2008,9 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, stateErr
 		}
 
-		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
+		evalCtx := executor.EmptyEvaluationContext().
+			WithStatementTime(r.statementTime).
+			WithExecutionScratch(r.scratch)
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
 		// ONCE in Execute, from the session clock (Session.BeginStatement /
 		// StatementNow — the same authority the INSERT…VALUES fold reads),
@@ -2090,6 +2114,14 @@ func (r *paginatingRows) fetchPage() error {
 	// move — this is the assignment that must not happen anywhere else.
 	r.exhausted = pageExhausted
 	r.continuation = pageCont
+	// Retiring scratch entries is statement-scoped state moving, so it belongs
+	// HERE with the position and nowhere earlier. Inside the closure it would
+	// run on an attempt whose transaction can still fail: the retry re-executes
+	// from the UNCHANGED r.continuation, and entries this attempt judged
+	// unreachable are exactly the ones that continuation may name. What makes
+	// the judgement sound is that r.continuation has now advanced, so the
+	// entries only the PREVIOUS one could name are genuinely unreachable.
+	r.scratch.SweepAfterPage(pageExhausted)
 	return nil
 }
 

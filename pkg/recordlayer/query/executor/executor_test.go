@@ -248,6 +248,14 @@ func TestExecuteUnorderedPrimaryKeyDistinct_PrimaryKeySemantics(t *testing.T) {
 	}
 }
 
+// TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet pins the
+// SCRATCH-LESS encoding: an execution that supplies no ExecutionScratch writes
+// the seen-set into the continuation by value, so the bytes alone resume
+// dedup-cleanly. That is the self-contained fallback, and it is quadratic
+// across pages — the by-reference carry an ExecutionScratch enables is pinned
+// separately in distinct_continuation_growth_test.go. The evalCtx here
+// deliberately has no scratch; adding one would move this test onto the other
+// encoding and stop covering this one.
 func TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet(
 	t *testing.T,
 ) {

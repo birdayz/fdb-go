@@ -48,6 +48,33 @@ type EvaluationContext struct {
 	// per-row evaluation cannot drift. Zero means "not stamped" —
 	// StatementNow then degrades to the wall clock.
 	statementTime time.Time
+	// scratch is the statement-scoped home for operator resume state that is
+	// too large to ride every page's continuation (see ExecutionScratch). It
+	// is a POINTER, so it survives the per-page struct copies the way the
+	// statement's ExecuteState survives ExecuteProperties' copies. Nil means
+	// "no scratch" and every operator falls back to a self-contained
+	// continuation.
+	scratch *ExecutionScratch
+}
+
+// WithExecutionScratch returns a copy carrying the statement's scratch. The
+// statement's paging loop stamps this once and reuses it for every page, which
+// is what lets an operator hand its live resume state to the next page instead
+// of serializing it. Like every other With* copy, it rides all derived
+// contexts.
+func (ec *EvaluationContext) WithExecutionScratch(s *ExecutionScratch) *EvaluationContext {
+	cp := *ec
+	cp.scratch = s
+	return &cp
+}
+
+// Scratch returns the statement's execution scratch, or nil when the execution
+// carries none.
+func (ec *EvaluationContext) Scratch() *ExecutionScratch {
+	if ec == nil {
+		return nil
+	}
+	return ec.scratch
 }
 
 // WithStatementTime returns a copy stamped with the statement-stable
