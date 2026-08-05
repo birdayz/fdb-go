@@ -48,7 +48,9 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -64,6 +66,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -137,12 +140,31 @@ func (s *duecSeries) medianAlloc() uint64 {
 	return as[len(as)/2]
 }
 
+// duecPerRepRatios pairs the two series REP BY REP and returns one ratio per
+// rep. Both the asserted medians and the regime detector below read this, so
+// they are computed over the same samples in the same pairing.
+func duecPerRepRatios(num, den []duecSample, pick func(duecSample) float64) []float64 {
+	n := len(num)
+	if len(den) < n {
+		n = len(den)
+	}
+	rs := make([]float64, 0, n)
+	for i := 0; i < n; i++ {
+		d := pick(den[i])
+		if d == 0 {
+			continue
+		}
+		rs = append(rs, pick(num[i])/d)
+	}
+	return rs
+}
+
 // duecMedianRatio is the median of the PER-PAIR ratios, not the ratio of the
 // medians. Only the former divides out a slow moment that hit one rep.
 func duecMedianRatio(num, den *duecSeries, pick func(duecSample) float64) float64 {
-	rs := make([]float64, 0, len(num.samples))
-	for i := range num.samples {
-		rs = append(rs, pick(num.samples[i])/pick(den.samples[i]))
+	rs := duecPerRepRatios(num.samples, den.samples, pick)
+	if len(rs) == 0 {
+		return math.NaN()
 	}
 	sort.Float64s(rs)
 	return rs[len(rs)/2]
@@ -150,6 +172,164 @@ func duecMedianRatio(num, den *duecSeries, pick func(duecSample) float64) float6
 
 func duecDurOf(s duecSample) float64   { return float64(s.dur) }
 func duecAllocOf(s duecSample) float64 { return float64(s.alloc) }
+
+// ---- can this run's clock carry a criterion at all? ---------------------
+//
+// The wall-clock criteria below compare two plans that differ only by how much
+// work the dedup operator does, and R3's margin over the full operator is
+// 9-18%. A criterion that fine is a statement about the MACHINE as much as
+// about the code: it holds only while the box can resolve a 9-18% difference
+// between two ~400 ms queries. When it cannot, the criterion does not become
+// weak evidence — it becomes noise wearing an assertion's clothes, and it fails
+// in BOTH directions (observed inverting to 1.035x on a loaded box, and
+// observed passing at 0.992x on a tree containing no R3 at all).
+//
+// The precedent is duecRaceInstrumented, one file over: instrumentation
+// invalidates the REGIME, not the property, so the wall-clock arms are withheld
+// and everything non-temporal keeps asserting. LOAD is the same class. What
+// follows is that same ruling with the trigger measured rather than declared by
+// a build tag, because load — unlike -race — is not knowable from a constant.
+//
+// TWO detectors, because either alone is insufficient.
+//
+// DETECTOR A — PROOF OF INVALIDITY. If any timed run dies on FDB's
+// transaction_too_old (1007), the measurement window was demonstrably not held:
+// the query ran past the 5-second MVCC horizon on a fixture that completes in
+// 215-554 ms when the box is healthy. That is not a slow sample, it is a
+// truncated one, and no statistic over the surviving samples repairs it.
+//
+// It is deliberately NOT a retry. Re-running until the window holds converts a
+// broken regime into a green one by resampling, which is the precise fudge this
+// mechanism exists to refuse — a probe that retries until it passes asserts only
+// that the box eventually had a good minute.
+//
+// DETECTOR B — GRADED LOAD, SELF-CALIBRATING. Detector A does not cover the
+// failure that actually shows up most: a run where every query completes, no
+// error is raised, and the criterion simply inverts. Reproduced under load at
+// B/D′ = 1.019x and 1.035x against a 0.95 bound, with no 1007 anywhere.
+//
+// So the probe calibrates itself against a pair whose true ratio is 1.0 BY
+// CONSTRUCTION. Rows C and A′ are the same access path — `Project(…,
+// IndexScan(BY_EMAIL, [<>] COVERING))` — with NO OPERATOR ON EITHER SIDE; C is
+// R2-elided and A′ never had a DISTINCT to elide. Nothing in RFC-210 can move
+// their ratio. Whatever the harness reports for C/A′ that is not 1.0 is
+// instrument error, measured on this box, in this run, in the same regime and
+// the same rep pairing as the claim.
+//
+// The principle: A MACHINE THAT CANNOT MEASURE A KNOWN-IDENTICAL PAIR AS
+// IDENTICAL CANNOT BE TRUSTED TO RESOLVE THE EFFECT. Its own error bar is the
+// evidence, and it is evidence the run produces rather than evidence quoted from
+// some other box.
+//
+// THE BOUND IS DERIVED FROM THE PROBE'S OWN RECORDED QUIET DATA, never from an
+// absolute wall-clock constant — "each side must finish inside N ms" would rot
+// the first time the hardware changed, and would red on a box that is merely
+// slow rather than merely loaded. RFC-210 §2.1 records C/A′ across four
+// independent quiet in-transaction runs as 0.88-1.02x, so 0.12 is the widest
+// deviation from 1.0 this pair has ever shown on a machine whose measurements
+// were believed. A run outside that envelope is outside every regime the
+// asserted numbers were taken in.
+//
+// WHAT THIS DOES AND DOES NOT CERTIFY, stated plainly because the gap is easy to
+// read past. C and A′ are the two SHORTEST shapes in the fixture (174-178 ms
+// against B and D′'s 373-445 ms), so a fixed-size stall is a larger fraction of
+// them and the null pair is a COARSER instrument than the claim it guards: its
+// quiet envelope, ±0.12, is wider than the 0.05 margin the B/D′ bound draws from
+// 1.0. Passing Detector B therefore does not prove the box resolved 5%. It
+// proves the box was not in the state that produced the observed inversions
+// (1.220x on the null pair, measured on the same run whose B/D′ inverted to
+// 1.035x). That is a NECESSARY condition, honestly bounded — not a sufficient
+// one dressed up as one.
+const (
+	// duecNullPairQuietDev is the widest deviation from 1.0 the null pair has
+	// shown across RFC-210 §2.1's four recorded quiet in-transaction runs
+	// (C/A′ = 0.88-1.02x). It is a RATIO, so it carries across hardware; the
+	// absolute milliseconds behind it do not and are never consulted.
+	duecNullPairQuietDev = 0.12
+
+	// duecTransactionTooOld is FDB's 1007. Named rather than inlined because
+	// the whole of Detector A is "this exact code, from any timed run".
+	duecTransactionTooOld = 1007
+)
+
+// duecRegimeVerdict reports whether this run's WALL CLOCK may carry a criterion,
+// and — when it may not — the reason, which is logged rather than swallowed.
+//
+// It is a pure function of the run's own samples so that the detector itself can
+// be driven with fabricated overload and shown to trip
+// (duec_regime_detector_test.go). A detector nothing ever exercises is a
+// detector nobody knows is dead.
+func duecRegimeVerdict(
+	raceInstrumented, sawTooOld bool, nullNum, nullDen []duecSample,
+) (ok bool, why string) {
+	if raceInstrumented {
+		return false, "the race detector taxes every memory access on BOTH sides of " +
+			"every pair, which inflates the shared base and compresses R3's margin " +
+			"toward 1.0 (measured 0.968x under -race against 0.82-0.91x without it)"
+	}
+	if sawTooOld {
+		return false, fmt.Sprintf(
+			"a timed run died on transaction_too_old (%d): the query ran past FDB's "+
+				"5-second MVCC horizon on a fixture that completes in 215-554 ms when "+
+				"the box is healthy, so the measurement window was demonstrably not "+
+				"held. This is never retried — resampling until the window holds would "+
+				"turn a broken regime into a green one",
+			duecTransactionTooOld)
+	}
+	rs := duecPerRepRatios(nullNum, nullDen, duecDurOf)
+	if len(rs) == 0 {
+		return false, "the null pair produced no usable per-rep ratios, so the run " +
+			"offers no evidence that its clock resolves anything"
+	}
+	sort.Float64s(rs)
+	med := rs[len(rs)/2]
+	if dev := math.Abs(med - 1.0); dev > duecNullPairQuietDev {
+		return false, fmt.Sprintf(
+			"the NULL PAIR C/A′ — the same access path with no operator on either "+
+				"side, whose true ratio is 1.0 by construction — measured %.3fx, a "+
+				"deviation of %.3f against the %.2f this pair has ever shown quiet "+
+				"(RFC-210 §2.1 records 0.88-1.02x over four runs). The box could not "+
+				"measure two identical plans as identical, so it cannot resolve R3's "+
+				"9-18%%. Per-rep ratios, sorted: %v",
+			med, dev, duecNullPairQuietDev, duecRoundRatios(rs))
+	}
+	return true, ""
+}
+
+// duecRoundRatios renders per-rep ratios at three digits, so a withholding log
+// line shows the shape of the dispersion and not just its median.
+func duecRoundRatios(rs []float64) []float64 {
+	out := make([]float64, len(rs))
+	for i, r := range rs {
+		out[i] = math.Round(r*1000) / 1000
+	}
+	return out
+}
+
+// duecIsTransactionTooOld reports whether err carries FDB's transaction_too_old
+// anywhere in its chain.
+//
+// Typed, never a string match on the rendered message. The relational layer
+// wraps 1007 as api.Error{Code: 40001} and keeps the cause
+// (connection.go's translateFDBCode), so the original survives errors.As at this
+// distance. Both carriers are checked for the same reason connection.go checks
+// both: the pure-Go client surfaces a value-typed fdb.Error and the wire reader
+// a pointer-typed *wire.FDBError, and a run that hit the other one would be read
+// as healthy.
+func duecIsTransactionTooOld(err error) bool {
+	if err == nil {
+		return false
+	}
+	var valErr fdb.Error
+	if errors.As(err, &valErr) && valErr.Code == duecTransactionTooOld {
+		return true
+	}
+	var wireErr *wire.FDBError
+	if errors.As(err, &wireErr) && wireErr.Code == duecTransactionTooOld {
+		return true
+	}
+	return false
+}
 
 func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	t.Parallel()
@@ -362,10 +542,20 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	for _, o := range order {
 		series[o.tag] = &duecSeries{tag: o.tag, query: o.query}
 	}
+	// sawTooOld is Detector A's whole state: whether ANY timed run in ANY rep
+	// lost its measurement window. It is sticky rather than per-shape because a
+	// window that failed once failed during a period this run was also timing
+	// everything else.
+	sawTooOld := false
 	for rep := 0; rep < duecReps; rep++ {
 		for _, o := range order {
 			s := series[o.tag]
-			sample, nulls := duecRunInTx(t, ctx, tconn, o.query)
+			sample, nulls, tooOld := duecRunInTx(t, ctx, tconn, o.query)
+			if tooOld {
+				sawTooOld = true
+				t.Logf("REGIME rep=%d %s: transaction_too_old after %d rows in %v",
+					rep, o.tag, sample.rows, sample.dur.Round(time.Millisecond))
+			}
 			s.samples = append(s.samples, sample)
 			s.rows, s.nulls = sample.rows, nulls
 		}
@@ -400,7 +590,9 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// than on one taken elsewhere and quoted.
 	ratio("A'", "A")
 	ratio("C", "A")
-	ratio("C", "A'")
+	// C/A' is also the NULL PAIR the regime detector calibrates on — no operator
+	// on either side, true ratio 1.0 by construction. See duecRegimeVerdict.
+	nullT, _ := ratio("C", "A'")
 	// R3's pair, and the decomposition that says the win is the OPERATOR rather
 	// than anything else that differs between the two columns. A is the same
 	// base scan with no operator on top, so D'/A is what the full operator
@@ -486,19 +678,74 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// effect and the null, which is what makes a failure here informative in
 	// either direction.
 	const r3Margin = 0.95
-	// WALL-CLOCK criteria only, and only when the clock means something. Race
-	// instrumentation taxes every memory access on BOTH sides of each pair, so
-	// the shared base inflates and R3's 13-17% margin compresses toward 1.0
-	// (measured 0.968x under -race). That invalidates the REGIME, not the
-	// property -- the same way the paged and sub-10k regimes cannot resolve it.
-	// Everything non-temporal above and below still runs and still asserts.
-	if duecRaceInstrumented {
-		t.Logf("RACE: wall-clock criteria withheld (B/D'=%.3fx s1=%.3fx s50=%.3fx). "+
-			"Instrumentation inflates both sides of every pair and compresses the "+
-			"ratio; the allocation criteria below still run, because the detector "+
-			"does not change how many bytes the seen-set charges.", bvdT, s1T, s50T)
+	// WALL-CLOCK criteria only, and only when the clock means something. The
+	// two detectors are defined above duecRegimeVerdict; this is where their
+	// verdict is spent.
+	//
+	// NOTE WHAT IS AND IS NOT WITHHELD, because the split is the entire ruling.
+	// Withheld: the three strict-win TIMING bounds, and only those. Still
+	// asserted, on every run, loaded or not: every plan-shape arm, the
+	// auto-commit proof-withholding arms, all nine statement-memory-budget rows,
+	// every row count and NULL count in both regimes, R2's half-NULL row count,
+	// the ordered/LIMIT shape arms, and the executor-variant arms. Those are
+	// COUNTS and SHAPES — properties of what the operator stored and what the
+	// planner emitted — and no amount of load moves them by even one byte. A
+	// loaded box loses the ability to say R3 is FASTER; it never loses the
+	// ability to say R3 fired, retained what it should, and returned the right
+	// rows. The budget rows in particular are the load-independent form of the
+	// same claim, and they red on master.
+	//
+	// NO CI LANE GUARANTEES A QUIET MEASUREMENT, and that is checked rather than
+	// hoped. `.github/workflows/ci.yml` sets `concurrency: group:
+	// ci-${{ github.ref }}`, which cancels only SAME-REF runs, so two different
+	// PRs never contend for cancellation — they contend for hardware. All four
+	// of its jobs (`ci`, `race`, `wire-oracle`, `govulncheck`) pin to
+	// `hetzner-fdb-vm`, a fleet of FIVE boxes serving one job each, so a single
+	// PR can occupy four fifths of the fleet and a second PR overlaps it by
+	// construction. And even a job alone on a box is not quiet: `.bazelrc` sets
+	// `--local_test_jobs=4`, so this probe runs beside up to three other FDB
+	// testcontainer targets inside its own invocation, on a 4-vCPU box. That
+	// last one is the floor, and no workflow edit removes it.
+	//
+	// nightly-coverage.yml is NOT the quiet lane either — it is strictly
+	// noisier. It runs `bazelisk coverage //...` (the whole suite, under
+	// coverage instrumentation), then two race steps, then benchmarks, in ONE
+	// job on that same fleet, and its own comments record that GitHub dispatches
+	// it whenever a box frees up, hours off its cron hour, alongside whatever
+	// else is queued. It guarantees coverage and a heartbeat; it guarantees
+	// nothing about the clock.
+	//
+	// So the honest status of the timing arms is: a QUIET-MACHINE / LOCAL
+	// instrument that still reds for a genuine R3 regression when the box can
+	// resolve one, and abstains — loudly, in the log — when it cannot. They are
+	// not a PR gate and must not be quoted as one. The PR gate for RFC-210 is
+	// the shape-and-count set listed above, which is load-independent by
+	// construction.
+	timingResolvable, withheldWhy := duecRegimeVerdict(
+		duecRaceInstrumented, sawTooOld, series["C"].samples, series["A'"].samples)
+	if !timingResolvable {
+		t.Logf("REGIME: wall-clock criteria WITHHELD (B/D'=%.3fx s1=%.3fx s50=%.3fx). %s.\n"+
+			"Everything non-temporal still runs and still asserts — shapes, row counts, "+
+			"NULL counts and the nine statement-memory-budget rows are counts rather "+
+			"than durations, and load does not move them.",
+			bvdT, s1T, s50T, withheldWhy)
+	} else {
+		// The per-rep ratios are logged on the ACCEPTING path too, not only when
+		// withholding. Detector B currently reads one statistic — the median's
+		// deviation from 1.0 — because that is the only one RFC-210 §2.1 records a
+		// quiet envelope for. A DISPERSION arm would be sharper (it would catch a
+		// run whose reps swing 3x while their median lands near 1.0 by luck), and
+		// it is not asserted here for exactly one reason: no quiet per-rep spread
+		// has ever been recorded, so any bound on it would be invented rather than
+		// derived. This line is what accumulates that record.
+		t.Logf("REGIME: null pair C/A' = %.3fx, inside the %.2f quiet envelope, and no "+
+			"timed run lost its window — wall-clock criteria ASSERTED. Per-rep "+
+			"ratios %v (logged so a quiet box's DISPERSION becomes recorded data; "+
+			"nothing asserts it yet).",
+			nullT, duecNullPairQuietDev,
+			duecRoundRatios(duecPerRepRatios(series["C"].samples, series["A'"].samples, duecDurOf)))
 	}
-	if !duecRaceInstrumented && bvdT > r3Margin {
+	if timingResolvable && bvdT > r3Margin {
 		t.Fatalf("R3 timing: B/D' = %.3fx is not strictly faster than the full "+
 			"distinct (B=%v D'=%v). R3's exempt test must run on the row's RAW "+
 			"SLOTS before the dedup key is packed; an implementation that packs "+
@@ -511,12 +758,12 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// worse than full", never "faster" — that asymmetry IS the content of
 	// "strictly dominates" — though it in fact measures 0.87-0.96x, because
 	// half the rows still skip the tuple encoder entirely.
-	if !duecRaceInstrumented && s1T > r3Margin {
+	if timingResolvable && s1T > r3Margin {
 		t.Fatalf("sweep 1%%: R3/full = %.3fx is not faster (bound %.2fx, for the same "+
 			"reason as B/D': without the route the two are one plan and the ratio is "+
 			"1.0 plus noise)", s1T, r3Margin)
 	}
-	if !duecRaceInstrumented && s50T > 1.0 {
+	if timingResolvable && s50T > 1.0 {
 		t.Fatalf("sweep 50%%: R3/full = %.3fx is WORSE than the full distinct. R3's "+
 			"seen-set is a subset of the full one on every input, so there is no "+
 			"density at which it may cost more.", s50T)
@@ -816,7 +1063,20 @@ func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullE
 // rolls back. The transaction is what licenses the secondary-UNIQUE proof, so
 // it is the only regime in which a timing here is about RFC-210 at all; the
 // timing covers QueryContext plus the drain, never BeginTx.
-func duecRunInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) (duecSample, int) {
+//
+// transaction_too_old is RETURNED rather than fatal, and that asymmetry is the
+// whole of Detector A. A 1007 here is not a bug in the code under test — it is
+// the box telling this run that its 5-second measurement window did not hold —
+// so it must reach the caller as EVIDENCE ABOUT THE REGIME instead of killing
+// the test and taking every non-temporal assertion down with it. Every OTHER
+// error still fatals: a genuine failure must stay loud, and reading an unrelated
+// break as "the box was busy" is exactly how a real defect would hide here.
+//
+// The partial sample is returned as measured rather than zeroed, so the ratios
+// the withholding path logs are finite and show what the run actually saw.
+func duecRunInTx(
+	t *testing.T, ctx context.Context, c *sql.Conn, q string,
+) (sample duecSample, nulls int, tooOld bool) {
 	t.Helper()
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {
@@ -827,14 +1087,27 @@ func duecRunInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) (duec
 	var m0 runtime.MemStats
 	runtime.ReadMemStats(&m0)
 	start := time.Now()
+	finish := func(n, nul int, too bool) (duecSample, int, bool) {
+		d := time.Since(start)
+		var m1 runtime.MemStats
+		runtime.ReadMemStats(&m1)
+		return duecSample{rows: n, dur: d, alloc: m1.TotalAlloc - m0.TotalAlloc}, nul, too
+	}
 	rows, err := tx.QueryContext(ctx, q)
 	if err != nil {
+		if duecIsTransactionTooOld(err) {
+			return finish(0, 0, true)
+		}
 		t.Fatalf("query %q: %v", q, err)
 	}
-	n, nulls := 0, 0
+	n := 0
 	var s sql.NullString
 	for rows.Next() {
 		if err := rows.Scan(&s); err != nil {
+			if duecIsTransactionTooOld(err) {
+				rows.Close()
+				return finish(n, nulls, true)
+			}
 			t.Fatalf("scan: %v", err)
 		}
 		n++
@@ -843,13 +1116,14 @@ func duecRunInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) (duec
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		if duecIsTransactionTooOld(err) {
+			return finish(n, nulls, true)
+		}
 		t.Fatalf("rows.Err %q: %v", q, err)
 	}
 	rows.Close()
-	d := time.Since(start)
-	var m1 runtime.MemStats
-	runtime.ReadMemStats(&m1)
-	return duecSample{rows: n, dur: d, alloc: m1.TotalAlloc - m0.TotalAlloc}, nulls
+	return finish(n, nulls, false)
 }
 
 // duecBudgetRun executes q inside an explicit transaction and returns the error

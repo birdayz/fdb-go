@@ -24,4 +24,10 @@ package sqldriver_test
 // alloc ratios stay at 0.907-0.931 under -race, comfortably inside their bound.
 // Dropping them here would give up the one dimension instrumentation leaves
 // intact.
+//
+// This constant is no longer the only trigger. It is now one of three inputs to
+// duecRegimeVerdict, which generalises the same ruling to LOAD — a regime that,
+// unlike instrumentation, cannot be read off a build tag and so is measured from
+// the run's own samples. Nothing about the -race case changed; it simply stopped
+// being the only way the clock can be unusable.
 const duecRaceInstrumented = true
