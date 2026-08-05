@@ -2282,6 +2282,13 @@ func executeHashDistinct(
 	seen := newBoundedSet[string](props.State)
 	var order []string
 	var adoptedToken int64
+	// base is the committed set carried by reference. A scratch-bearing
+	// execution always has one — empty on the first page — so every page after
+	// it publishes a delta OVER something rather than replacing it.
+	var base *seenLayer
+	if evalCtx.Scratch() != nil {
+		base = newSeenLayer()
+	}
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
@@ -2290,40 +2297,22 @@ func executeHashDistinct(
 		}
 		innerCont = dc.GetInnerContinuation()
 		if token := dc.GetStateToken(); token != 0 {
-			// The set was carried BY REFERENCE: take the live one back from the
-			// statement scratch rather than re-parsing it out of the bytes,
-			// which is what makes a P-page drain linear instead of quadratic. A
-			// token the scratch does not hold is an error, never a silent
-			// resume against an empty set.
-			st, aerr := evalCtx.Scratch().adoptDistinct(token)
+			// The set was carried BY REFERENCE: take the committed one back
+			// from the statement scratch rather than re-parsing it out of the
+			// bytes, which is what makes a P-page drain linear instead of
+			// quadratic. A token the scratch does not hold is an error, never a
+			// silent resume against an empty set.
+			//
+			// The layer that comes back is READ-ONLY: this page accumulates
+			// into its own fresh delta (seen/order, still zero here) so that a
+			// retryable failure mid-page leaves the committed set exactly as
+			// the retry's re-adoption of this same token expects to find it.
+			adopted, aerr := evalCtx.Scratch().adoptDistinct(token, props.State)
 			if aerr != nil {
 				return nil, aerr
 			}
 			adoptedToken = token
-			order = st.order[:st.n]
-			seen = st.seen
-			if st.n != len(st.order) {
-				// The parked cursor advanced past the prefix this continuation
-				// claims, so the live map holds keys the resume must NOT
-				// suppress. Rebuild from the immutable prefix. Off the paging
-				// loop's path: it serializes a drained cursor's terminal
-				// position, where the two agree. The prefix is COPIED: this
-				// cursor appends to it, and the parked slice's tail still
-				// belongs to a continuation that may yet be resumed.
-				order = append([]string(nil), order...)
-				seen = newBoundedSet[string](props.State)
-				for _, key := range order {
-					if _, addErr := seen.Add(key, int64(len(key))); addErr != nil {
-						props.State.ReleaseMemory(seen.Charged())
-						return nil, addErr
-					}
-				}
-			} else if rerr := seen.Rebind(props.State); rerr != nil {
-				// The carried set must re-declare its bytes against THIS
-				// page's budget; a breach is the loud budget error.
-				props.State.ReleaseMemory(seen.Charged())
-				return nil, rerr
-			}
+			base = adopted
 		} else {
 			for _, key := range dc.GetSeenKeys() {
 				packedKey := string(key)
@@ -2355,6 +2344,7 @@ func executeHashDistinct(
 	}
 	cursor := &distinctHashCursor{
 		inner:        innerCursor,
+		base:         base,
 		seen:         seen,
 		order:        order,
 		keyer:        keyer,

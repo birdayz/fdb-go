@@ -156,31 +156,38 @@ type queryResultDistinctKeyer func(QueryResult) (string, error)
 
 type distinctHashCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
-	seen  *boundedSet[string]
+	// base is the COMMITTED set this page resumed from, shared and READ-ONLY:
+	// this cursor never writes to it, which is what makes re-executing a page
+	// idempotent when the FDB retry loop replays the same continuation. Nil on
+	// the scratch-less path, where seen holds everything.
+	base *seenLayer
+	// seen is this page's PRIVATE delta — the keys first sighted on this page.
+	// Charged and released per page. On the scratch-less path it is instead the
+	// whole set, rebuilt from the continuation bytes.
+	seen *boundedSet[string]
 	// keyer selects the identity being deduplicated. Value DISTINCT uses the
 	// packed positional row; unordered primary-key DISTINCT uses the packed
 	// QueryResult.PrimaryKey. Continuation and memory behavior are shared.
 	keyer queryResultDistinctKeyer
-	// order is the distinct keys in INSERTION order (append-only). seen (a map)
-	// answers Contains in O(1); order gives each continuation an O(1),
-	// reallocation-safe SNAPSHOT: it captures len(order), and order[:n] is an
-	// immutable prefix (append never mutates earlier elements), so a
-	// continuation encodes exactly the keys emitted through its own result
-	// regardless of when ToBytes runs or how far the cursor later advances — no
-	// lazy read of the live set (the streaming path's eager packLast, done
-	// symmetrically here). Insertion order also makes the encoding deterministic
-	// without a sort.
+	// order is THIS PAGE's new keys in INSERTION order (append-only), or the
+	// whole set on the scratch-less path. seen (a map) answers Contains in
+	// O(1); order gives each continuation an O(1), reallocation-safe SNAPSHOT:
+	// it captures len(order), and order[:n] is an immutable prefix (append
+	// never mutates earlier elements), so a continuation names exactly the keys
+	// emitted through its own result regardless of when ToBytes runs or how far
+	// the cursor later advances — no lazy read of the live set (the streaming
+	// path's eager packLast, done symmetrically here). Insertion order also
+	// makes the encoding deterministic without a sort.
 	order  []string
 	closed bool
-	// scratch, when non-nil, is where a continuation parks the LIVE seen-set
-	// for the next page instead of serializing it. adoptedToken is the entry
-	// this cursor resumed from and parkedToken the entry it last wrote; a new
-	// park drops whichever of the two is outstanding, so the scratch holds at
-	// most one entry per live cursor and a continuation stays resumable until
-	// its own successor is minted.
+	// scratch, when non-nil, is where a continuation publishes this page's
+	// delta over base instead of serializing the whole set. adoptedToken is the
+	// entry this cursor resumed from; it is recorded on every state this cursor
+	// publishes, and is dropped only when one of those successors is itself
+	// ADOPTED — minting a successor proves nothing, because the attempt that
+	// minted it can still fail and its retry needs this very entry.
 	scratch      *ExecutionScratch
 	adoptedToken int64
-	parkedToken  int64
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
@@ -218,6 +225,13 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 		key, err := c.keyer(row)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		// A key in the COMMITTED set was emitted by an earlier page. Checked
+		// before the delta and WITHOUT touching it: the committed set is shared
+		// with the entry a retry of this page would re-adopt, so this page must
+		// only ever read it.
+		if c.base.Contains(key) {
+			continue
 		}
 		// Add charges the key's bytes against the statement budget on FIRST
 		// sight and returns added=false for a duplicate; a budget breach is a
@@ -261,31 +275,28 @@ func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorCont
 	}, nil
 }
 
-// parkSeen hands the live seen-set to the scratch under a fresh token, for the
-// continuation identified by the insertion-order prefix length n. Returns 0
-// when the execution carries no scratch, which routes the continuation to the
-// self-contained (quadratic) encoding.
+// parkSeen publishes this page's delta over the committed base under a fresh
+// token, for the continuation identified by the insertion-order prefix length
+// n. Returns 0 when the execution carries no scratch, which routes the
+// continuation to the self-contained (quadratic) encoding.
 //
 // n is passed rather than read from the cursor because the continuation was
 // snapshotted at a specific prefix; a cursor that advanced afterward must not
 // silently widen what its earlier continuation claimed to have emitted.
+//
+// Nothing is evicted here. The attempt doing the publishing may still fail, and
+// its retry resumes from c.adoptedToken — so that entry has to survive until a
+// SUCCESSOR is adopted (ExecutionScratch rule 2).
 func (c *distinctHashCursor) parkSeen(n int) int64 {
 	if c.scratch == nil {
 		return 0
 	}
-	drop := c.parkedToken
-	if drop == 0 {
-		drop = c.adoptedToken
-	}
-	token := c.scratch.parkDistinct(&distinctResumeState{
-		seen:    c.seen,
-		order:   c.order,
-		n:       n,
-		charged: c.seen.Charged(),
-		prev:    drop,
+	return c.scratch.parkDistinct(&distinctResumeState{
+		base:       c.base,
+		deltaOrder: c.order,
+		deltaN:     n,
+		prev:       c.adoptedToken,
 	})
-	c.parkedToken = token
-	return token
 }
 
 func (c *distinctHashCursor) Close() error {

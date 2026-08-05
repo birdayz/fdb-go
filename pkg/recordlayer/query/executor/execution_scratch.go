@@ -1,6 +1,10 @@
 package executor
 
-import "fmt"
+import (
+	"fmt"
+
+	"fdb.dev/pkg/recordlayer"
+)
 
 // ExecutionScratch is the statement-scoped home for operator resume state that
 // is too large to serialize into every page's continuation.
@@ -36,6 +40,42 @@ import "fmt"
 // impossible state rather than a supported one — it is reported as an error,
 // never deduped against an empty set.
 //
+// THE INVARIANT THAT MAKES IT SAFE: **executing a page must be idempotent with
+// respect to the scratch.** Lifetime is not the whole story — the same
+// continuation bytes are not merely HELD for the statement, they are EXECUTED
+// more than once. paginatingRows.fetchPage runs its whole body inside the FDB
+// retry loop (runInCapturedTx -> DB.Run -> TransactCtx, fdb/database.go:323),
+// which re-invokes the closure from the UNCHANGED r.continuation on any
+// retryable error; the closure resets r.buf, so the failed attempt's rows are
+// discarded. A scratch that let the failed attempt mutate shared state would
+// therefore lose rows silently — the retry would treat the discarded attempt's
+// values as already emitted. (Reproduced: a mid-drain abort on a 12-value
+// fixture emitted 10, no error. The by-value encoding was immune by
+// construction, because bytes are immutable.) Two rules restore it:
+//
+//  1. A published set is IMMUTABLE. A resumed cursor never touches the set it
+//     adopted; it accumulates its own page's new keys in a private delta and
+//     publishes base+delta as a NEW entry. A dying attempt then mutates nothing
+//     its retry can see. The base is never COPIED per page — that would restore
+//     the quadratic — it is extended in place exactly once, when rule 2 proves
+//     no one can reach its earlier form again.
+//
+//  2. Eviction keys on ADOPT, never on PARK. Reaching token T proves the page
+//     that minted T committed and was consumed, so T's predecessor is dead.
+//     MINTING T proves nothing: the attempt that minted it can still fail, and
+//     its retry resumes from the predecessor it was minted from. (Reproduced:
+//     park-time eviction turned a routine retryable error after a completed
+//     page into a hard "seen-set not held" failure.) Evicting on adopt keeps
+//     the bound at a couple of live entries per operator all the same.
+//
+// MEMORY. A committed layer is charged ONCE, permanently, against the
+// statement's ExecuteState when its keys are folded in — it really is held for
+// the statement's lifetime, so releasing it at page teardown would tell the
+// budget that a live set is free. Only the page's own delta is charged and
+// released per page. Between pages the by-value encoding was equally
+// uncharged, so this is not a regression in either direction; it is simply the
+// accurate account.
+//
 // Concurrency: the executor is single-threaded per statement (zero goroutine
 // launches in this package, pinned by package_invariant_test.go), so the maps
 // need no lock, exactly as ExecuteState's counters do not.
@@ -64,35 +104,68 @@ func (s *ExecutionScratch) MintedDistinctSets() int64 {
 	return s.nextToken
 }
 
-// distinctResumeState is one unordered-distinct operator's live seen-set, parked
-// between the page that produced it and the page that resumes it.
+// LiveDistinctSets returns how many parked states the scratch still holds.
+// Test/diagnostic accessor; production code never reads it. It is what pins the
+// eviction bound — the scratch must not accumulate one entry per page.
+func (s *ExecutionScratch) LiveDistinctSets() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.distinct)
+}
+
+// seenLayer is a committed set of dedup keys, shared by every state that
+// extends it. It is append-only and is extended ONLY by adoptDistinct's fold,
+// which runs exactly once per delta, at the moment adoption proves the layer's
+// earlier form is unreachable. Growing it in place is what keeps the whole
+// drain linear: each key is folded once, never re-copied per page.
 //
-// order/n are the insertion-ordered keys and the prefix length the continuation
-// was snapshotted at. seen may hold MORE than order[:n] if the cursor advanced
-// after the continuation was serialized, so adoption checks the two agree and
-// rebuilds the set from the immutable prefix when they do not (correct, and off
-// the paging loop's path — it serializes a drained cursor's terminal position).
+// owner names the token whose committed set the layer currently represents, so
+// a REPEATED adoption of that token (an FDB retry) recognises the fold as
+// already done instead of applying it twice.
+type seenLayer struct {
+	m     map[string]struct{}
+	owner int64
+}
+
+func newSeenLayer() *seenLayer {
+	return &seenLayer{m: make(map[string]struct{})}
+}
+
+// Contains reports whether the committed set holds key. Nil-safe: a cursor with
+// no adopted layer (the scratch-less fallback) has none.
+func (l *seenLayer) Contains(key string) bool {
+	if l == nil {
+		return false
+	}
+	_, ok := l.m[key]
+	return ok
+}
+
+// distinctResumeState is one page's published dedup state: the committed set
+// its cursor started from, plus that page's own new keys.
+//
+// The delta is kept as the insertion-ORDER PREFIX rather than a map on purpose.
+// deltaN is the length the continuation was minted at, and the order slice is
+// append-only, so order[:deltaN] is an immutable snapshot of exactly the keys
+// emitted through THAT continuation even if the cursor advanced afterward.
+// Materialising it costs one pass at adoption — the same pass the fold already
+// needs — so the snapshot is free rather than an extra copy.
 type distinctResumeState struct {
-	seen    *boundedSet[string]
-	order   []string
-	n       int
-	charged int64
-	// prev is the token this state was adopted from, dropped when this state is
-	// parked under a new token. Without it the scratch would accumulate one
-	// entry per page for the life of the statement; with it at most the
-	// previous and current page's entries are live per operator, so a
-	// continuation stays resumable until its successor is minted.
+	base       *seenLayer
+	deltaOrder []string
+	deltaN     int
+	// prev is the token this state's cursor adopted, dropped when a SUCCESSOR
+	// is adopted (never when one is minted — see rule 2 above).
 	prev int64
 }
 
-// parkDistinct stores a seen-set snapshot and returns the token naming it,
-// dropping the entry the state was adopted from.
+// parkDistinct publishes a state and returns the token naming it. It evicts
+// NOTHING: the attempt that mints a token may still fail, and its retry resumes
+// from the predecessor.
 func (s *ExecutionScratch) parkDistinct(st *distinctResumeState) int64 {
 	if s.distinct == nil {
-		s.distinct = make(map[int64]*distinctResumeState, 2)
-	}
-	if st.prev != 0 {
-		delete(s.distinct, st.prev)
+		s.distinct = make(map[int64]*distinctResumeState, 4)
 	}
 	s.nextToken++
 	token := s.nextToken
@@ -100,10 +173,21 @@ func (s *ExecutionScratch) parkDistinct(st *distinctResumeState) int64 {
 	return token
 }
 
-// adoptDistinct returns the seen-set parked under token. A miss is a hard
-// error: the alternative is to resume with an empty set and silently re-admit
-// every duplicate already emitted.
-func (s *ExecutionScratch) adoptDistinct(token int64) (*distinctResumeState, error) {
+// adoptDistinct returns the committed set named by token, folding that token's
+// delta into its base first. Adoption is the proof of consumption, so it is
+// also where the predecessor — and any sibling published by a failed attempt
+// from the same predecessor — is evicted.
+//
+// The returned layer is READ-ONLY to the caller: a resumed cursor accumulates
+// into its own delta, so a failed attempt leaves nothing behind for its retry
+// to trip over.
+//
+// A miss is a hard error: the alternative is to resume with an empty set and
+// silently re-admit every duplicate already emitted.
+func (s *ExecutionScratch) adoptDistinct(
+	token int64,
+	state *recordlayer.ExecuteState,
+) (*seenLayer, error) {
 	if s == nil || s.distinct == nil {
 		return nil, fmt.Errorf(
 			"distinct-hash continuation names seen-set %d but this execution carries no scratch",
@@ -117,5 +201,33 @@ func (s *ExecutionScratch) adoptDistinct(token int64) (*distinctResumeState, err
 			token,
 		)
 	}
-	return st, nil
+	// The predecessor is now unreachable, and so is anything a FAILED attempt
+	// published from that same predecessor — this adoption proves a different
+	// state was the one that committed. Dropping the siblings is what lets the
+	// fold below extend the shared base safely.
+	if st.prev != 0 {
+		delete(s.distinct, st.prev)
+		for other, cand := range s.distinct {
+			if other != token && cand.prev == st.prev {
+				delete(s.distinct, other)
+			}
+		}
+	}
+	if st.base.owner != token {
+		// Fold this page's keys into the committed layer, ONCE. Their bytes
+		// become a permanent statement charge (see MEMORY above).
+		var folded int64
+		for _, key := range st.deltaOrder[:st.deltaN] {
+			if _, dup := st.base.m[key]; dup {
+				continue
+			}
+			st.base.m[key] = struct{}{}
+			folded += int64(len(key))
+		}
+		if err := state.ChargeMemory(folded); err != nil {
+			return nil, err
+		}
+		st.base.owner = token
+	}
+	return st.base, nil
 }
