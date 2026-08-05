@@ -132,11 +132,12 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 		type probe struct {
 			name, sql string
 			mode      string
-			// wantJava/wantGo are asserted only for agreeAccept shapes. They
-			// are SEPARATE because the engines agree on every VALUE while
-			// differing on the reported column NAME — collapsing them to one
-			// expectation would have to drop the names, and the names are half
-			// the finding.
+			// wantJava/wantGo are SEPARATE because the engines agree on every
+			// VALUE while differing on the reported column NAME — collapsing
+			// them to one expectation would have to drop the names, and the
+			// names are half the finding. wantJava applies to agreeAccept
+			// shapes; wantGo applies to agreeAccept AND goOnly, where it names
+			// the single column+value the spelling must bind to.
 			wantJava, wantGo string
 			why              string
 		}
@@ -164,18 +165,21 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 			},
 			{
 				name: "unquoted_same_spelling", mode: goOnly,
-				sql: `SELECT KeepCase FROM QCASE WHERE id = 1`,
-				why: "an unquoted reference folds to KEEPCASE; Java's quoted column is case-preserving so it does not match",
+				sql:    `SELECT KeepCase FROM QCASE WHERE id = 1`,
+				wantGo: `[KEEPCASE][[42]]`,
+				why:    "an unquoted reference folds to KEEPCASE; Java's quoted column is case-preserving so it does not match",
 			},
 			{
 				name: "quoted_upper", mode: goOnly,
-				sql: `SELECT "KEEPCASE" FROM QCASE WHERE id = 1`,
-				why: "a quoted reference is exact on Java; Go folds it",
+				sql:    `SELECT "KEEPCASE" FROM QCASE WHERE id = 1`,
+				wantGo: `[KEEPCASE][[42]]`,
+				why:    "a quoted reference is exact on Java; Go folds it",
 			},
 			{
 				name: "quoted_lower", mode: goOnly,
-				sql: `SELECT "keepcase" FROM QCASE WHERE id = 1`,
-				why: "the same in the lower direction — this is the spelling the retired half of the claim was about",
+				sql:    `SELECT "keepcase" FROM QCASE WHERE id = 1`,
+				wantGo: `[KEEPCASE][[42]]`,
+				why:    "the same in the lower direction — this is the spelling the retired half of the claim was about",
 			},
 			{
 				name: "quoted_upper_of_unquoted_ddl_control", mode: agreeAccept,
@@ -186,8 +190,9 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 			},
 			{
 				name: "quoted_lower_of_unquoted_ddl_control", mode: goOnly,
-				sql: `SELECT "plain" FROM QCASE WHERE id = 1`,
-				why: "control in the other direction: Go's folding is a property of its resolver, not of the quoted-DDL path — it over-resolves an unquoted-DDL column too",
+				sql:    `SELECT "plain" FROM QCASE WHERE id = 1`,
+				wantGo: `[PLAIN][[7]]`,
+				why:    "control in the other direction: Go's folding is a property of its resolver, not of the quoted-DDL path — it over-resolves an unquoted-DDL column too",
 			},
 		}
 
@@ -226,8 +231,14 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 					fail("Java rejected, but not as undefined-column 42703: java=%s", java)
 				case !goSide.accepted:
 					fail("Go now REJECTS the folded spelling — Java parity may have been reached; re-read the watch-list entry rather than relaxing this: go=%s", goSide)
-				case goSide.value != `[KEEPCASE][[42]]` && goSide.value != `[PLAIN][[7]]`:
-					fail("Go resolved the folded spelling but to something unexpected: go=%s", goSide)
+				case goSide.value != p.wantGo:
+					// Each spelling names the ONE column+value it must bind to.
+					// Accepting any of the table's columns here would let a
+					// resolver that bound "plain" to KeepCase — a WRONG-COLUMN
+					// answer, far worse than the over-permissiveness under
+					// test — pass as the expected divergence.
+					fail("Go resolved the folded spelling to the WRONG column or value: got %s want ACCEPT(%s)",
+						goSide, p.wantGo)
 				}
 			}
 			fmt.Fprintf(GinkgoWriter, "%s %-38s %-11s java=%-34s go=%-34s %s\n",
