@@ -68,6 +68,41 @@ FDB the tests run against).
   enforcement.
 - **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min (orphans
   whose parent test died) and pins Ryuk's OOM score so the kernel reaps it last.
+- **`bazel-cache-prune`** (hourly): trims `/mnt/ci-data/bazel-disk-cache` to a 60%
+  volume-usage target, oldest-mtime-first (Bazel ≥ 7 touches entries on cache hit, so
+  mtime order is LRU order). Runs the stale-output-base sweep *first*, because those
+  directories free space the cache trim would otherwise evict warm entries to reclaim.
+
+  Why not the obvious alternatives:
+  - **Age-based pruning** (`-mtime +N`) deletes *nothing* precisely when it's needed:
+    heavy CI fills the 98 GB volume from empty in under 2 days, so at ENOSPC no file
+    passes any age cutoff. Two runners went ENOSPC exactly this way (2026-08, 69 GB +
+    20 GB caches, every file younger than the 7-day cutoff).
+  - **Bazel's in-server GC** (`--experimental_disk_cache_gc_max_size`, kept in
+    `/etc/bazel.bazelrc` as a second line of defense) only runs when the server is
+    *idle* — a box saturated with back-to-back jobs never triggers it.
+  - **Daily cadence**: at the observed fill rate, 60% → 100% takes ~19 h, and
+    `OnCalendar=daily` + 1 h jitter can gap up to 25 h between runs — ENOSPC in between.
+    Hourly with a 10 min jitter closes that; at/below target the script is a
+    single `df` and exits.
+
+  Safety against live Bazel traffic: `tmp/` and `gc/` are excluded from eviction
+  (in-flight uploads land in `tmp/` before rename; Bazel's own
+  `DiskCacheGarbageCollector` excludes both), `-mmin +15` keeps young entries out of
+  the candidate scan, and each candidate's mtime is rechecked immediately before the
+  unlink — `sort` buffers the whole scan, so an entry hit (= touched, Bazel ≥ 7)
+  between scan and deletion would otherwise still be on the list. The recheck
+  compares whole seconds deliberately: `find`'s `%T@` and `stat`'s fractional `%.Y`
+  print different precisions, and a strict string compare would skip every file and
+  turn the prune into a silent no-op. A *completed* entry unlinked while a reader
+  has it open is harmless — the open FD survives the unlink; Bazel treats the next
+  lookup as a cache miss.
+
+  `tmp/` itself is not immortal: interrupted uploads (Bazel killed, host reboot)
+  leave UUID-named partials there that nothing else reaps — startup only recreates
+  the directory. The prune deletes `tmp/` files older than a day, far beyond any
+  live upload's lifetime, before the usage check so a tmp-flooded volume still
+  recovers.
 
 ### The wedged-listener gap (open, deliberately)
 

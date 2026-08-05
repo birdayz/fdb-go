@@ -158,9 +158,25 @@ func (l *transitionPlanLogger) err() error {
 	return l.transErr
 }
 
+// queryIndexStateStrings runs query INSIDE AN EXPLICIT TRANSACTION, which is the
+// only regime in which a secondary-UNIQUE proof is drawn at all.
+//
+// The proof is a statement about the store at one instant, so it is licensed
+// only where the whole result comes from a single read version; in auto-commit
+// each page takes a fresh one and the proof is withheld. Every arm reached
+// through this helper — the affirmative ones that require `narrowed-by:U_EMAIL`
+// and the refusals that require its ABSENCE — therefore has to run in a
+// transaction. The refusals are the reason it matters most: in auto-commit no
+// index proves anything, so "a READABLE_UNIQUE_PENDING index licensed nothing"
+// would hold for a reason that has nothing to do with the index's state.
 func queryIndexStateStrings(t *testing.T, ctx context.Context, conn *sql.Conn, query string) []string {
 	t.Helper()
-	rows, err := conn.QueryContext(ctx, query)
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin for %q: %v", query, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		t.Fatalf("query %q: %v", query, err)
 	}

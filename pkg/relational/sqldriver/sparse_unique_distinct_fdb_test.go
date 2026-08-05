@@ -77,8 +77,23 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO fu (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'c@x', 0)")
 
+	// Both plans are read INSIDE AN EXPLICIT TRANSACTION, and that is what makes
+	// the refusal below a claim about SPARSENESS rather than about pagination.
+	//
+	// The secondary-UNIQUE proof is licensed only under a single read version,
+	// so in auto-commit NO index proves anything — sparse or full — and the
+	// sparse arm would pass for a reason that has nothing to do with clause 4.
+	// The control immediately below is the assertion that keeps this honest: it
+	// demands that a FULL unique index on the same table shape DOES draw a
+	// proof here, so a refusal on the sparse table is a refusal of that index.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// ---- the control fires ---------------------------------------------
-	fullExplain := explainPlan(t, ctx, db, "SELECT DISTINCT email FROM fu")
+	fullExplain := explainPlanOn(t, ctx, tx, "SELECT DISTINCT email FROM fu")
 	t.Logf("EXPLAIN control  => %s", fullExplain)
 	if !strings.Contains(fullExplain, "narrowed-by:FULL_U") {
 		t.Fatalf("the CONTROL did not draw a proof from its full unique index: %s\n"+
@@ -88,7 +103,7 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	}
 
 	// ---- the sparse index is refused ------------------------------------
-	sparseExplain := explainPlan(t, ctx, db, "SELECT DISTINCT email FROM sp")
+	sparseExplain := explainPlanOn(t, ctx, tx, "SELECT DISTINCT email FROM sp")
 	t.Logf("EXPLAIN sparse   => %s", sparseExplain)
 	if !strings.Contains(sparseExplain, "Distinct(") {
 		t.Fatalf("the DISTINCT was ELIDED over a SPARSE unique index: %s\n"+
@@ -124,7 +139,14 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// duplicate rows this assertion exists to catch. Measured under exactly that
 	// mutation. Keeping the query unordered keeps this assertion aimed at the
 	// unordered shape the EXPLAIN above pins.
-	rows, qerr := db.QueryContext(ctx, "SELECT DISTINCT email FROM sp")
+	//
+	// Run on the SAME TRANSACTION as the EXPLAINs, for the same reason they
+	// need one: a wrong admission of the sparse candidate can only produce
+	// duplicate rows where the proof is licensed at all. In auto-commit the
+	// proof is withheld unconditionally, the full operator runs, and three rows
+	// come back whether or not clause 4 does its job — so this assertion would
+	// hold vacuously exactly when it matters most.
+	rows, qerr := tx.QueryContext(ctx, "SELECT DISTINCT email FROM sp")
 	if qerr != nil {
 		t.Fatalf("query: %v", qerr)
 	}

@@ -66,14 +66,10 @@ write_files:
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
-  # link-ci-volume.sh points the stable /mnt/ci-data at the attached CI data volume. It is
-  # a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh executes this exact
-  # code against fixtures instead of a copy of it.
-  #
-  # Migrate-or-abort, never `ln -sfn` onto whatever is there: that puts the link INSIDE an
-  # existing directory, which is how the pool silently ran Docker and every bazel cache on
-  # the root disk with the volume empty. An occupied /mnt/ci-data aborts and asks for a
-  # migration. Incident narrative: infra/README.md.
+  # link-ci-volume.sh: stable /mnt/ci-data -> CI data volume. A FILE so
+  # infra/link_ci_volume_test.sh runs this exact code. Migrate-or-abort, never
+  # `ln -sfn` onto whatever is there (that nests the link inside an existing dir
+  # and silently runs Docker on the root disk). Incident: infra/README.md.
   - path: /usr/local/bin/link-ci-volume.sh
     permissions: "0755"
     content: |
@@ -152,13 +148,10 @@ write_files:
       chmod 0755 "$VOL"
       mkdir -p "$CI/docker" "$CI/bazel"
 
-  # Re-decide on EVERY boot whether Docker may run, once the mounts are up. See the bootcmd
-  # note: this is the only place that both runs every boot and can see the fstab mount.
-  # Fail CLOSED -- Docker runs only when /mnt/ci-data really is the volume symlink with its
-  # data-root on it, because an unmasked Docker without the volume silently refills the
-  # 75 GB root disk, which is worse than a box that visibly cannot run containers.
-  # A FILE, not an ExecStart one-liner, so infra/link_ci_volume_test.sh runs this exact
-  # code; ROOT defaults to "" and the test passes a fixture prefix.
+  # Re-decide EVERY boot whether Docker may run (only place that runs each boot
+  # AND sees the fstab mount). Fail CLOSED: unmasked Docker without the volume
+  # silently refills the 75 GB root disk — worse than visibly no containers.
+  # A FILE so link_ci_volume_test.sh runs this exact code (fixture ROOT arg).
   - path: /usr/local/bin/ci-docker-gate.sh
     permissions: "0755"
     content: |
@@ -332,10 +325,30 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Bazel-cache LRU prune. The bazelrc --experimental_disk_cache_gc_* flags run IN-SERVER
-  # during IDLE only and these servers rarely idle that long, so the native GC never
-  # engaged and the volume filled to ENOSPC. mtime is a true LRU signal (Bazel >=7
-  # touches entries on hit). Also sweeps stale output bases.
+  # Bazel-cache prune: size-targeted LRU (mtime; Bazel >=7 touches on hit). Age
+  # prunes delete nothing when CI fills in <2 days. Details: infra/README.md.
+  - path: /usr/local/bin/bazel-cache-prune.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      V=/mnt/ci-data
+      use() { df --output=pcent "$V" | tail -1 | tr -dc 0-9; }
+      # Day-old tmp/ partials are dead uploads nothing else reaps.
+      find "$V/bazel-disk-cache/tmp" -type f -mmin +1440 -delete 2>/dev/null
+      [ "$(use)" -le 60 ] && exit 0
+      # tmp/,gc/ = in-flight writes. Recheck mtime (whole secs) pre-unlink:
+      # sort buffers the scan, so -mmin cannot see a hit's touch. README.
+      find "$V/bazel-disk-cache" -type f \
+        -not -path "$V/bazel-disk-cache/tmp/*" -not -path "$V/bazel-disk-cache/gc/*" \
+        -mmin +15 -printf '%T@ %p\n' 2>/dev/null | sort -n | \
+      while read -r ts f; do
+        cur=$(stat -c %Y "$f" 2>/dev/null) || continue
+        [ "$cur" -gt "$${ts%.*}" ] && continue
+        rm -f "$f"
+        i=$((i+1))
+        [ $((i % 5000)) -eq 0 ] && [ "$(use)" -le 60 ] && break
+      done
+      exit 0
   - path: /etc/systemd/system/bazel-cache-prune.service
     content: |
       [Unit]
@@ -343,19 +356,20 @@ write_files:
 
       [Service]
       Type=oneshot
-      # $$ = literal $ for the shell (systemd would otherwise expand $var/$( to
-      # empty in ExecStart and silently no-op the tighten branch and the sweep).
-      ExecStart=/bin/sh -c "find /mnt/ci-data/bazel-disk-cache -type f -mtime +14 -delete 2>/dev/null; use=$$(df --output=pcent /mnt/ci-data | tail -1 | tr -dc 0-9); [ \"$$use\" -gt 70 ] && find /mnt/ci-data/bazel-disk-cache -type f -mtime +7 -delete 2>/dev/null; exit 0"
+      # Sweep first: frees space the trim would evict entries to reclaim.
+      # $$ = literal $ (systemd expands $var/$( to empty otherwise).
       ExecStart=/bin/sh -c "for d in /mnt/ci-data/bazel/_bazel_runner/*/; do case $$d in *cache*|*install*) continue;; esac; [ -n \"$$(find $$d -maxdepth 0 -mtime +14 2>/dev/null)\" ] && rm -rf $$d; done; exit 0"
+      ExecStart=/usr/local/bin/bazel-cache-prune.sh
 
   - path: /etc/systemd/system/bazel-cache-prune.timer
     content: |
       [Unit]
-      Description=Weekly bazel cache prune
+      Description=Hourly bazel cache prune
 
       [Timer]
-      OnCalendar=Sun 04:00
-      RandomizedDelaySec=1h
+      # Hourly: 60->100% fills in ~19h; daily+jitter can gap 25h. No-op at target.
+      OnCalendar=hourly
+      RandomizedDelaySec=10min
       Persistent=true
 
       [Install]
@@ -538,11 +552,9 @@ runcmd:
     # disk_cache/repository_cache at them unconditionally, so a classic runner without
     # them dies with "ERROR: [unix_jni.cc] /mnt/ci-data/bazel-disk-cache (Permission
     # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
-    # vulndb-mirror: cmd/vulnscan mirrors the vulnerability database here instead
-    # of fetching one document per advisory from vuln.go.dev on every job, which a
-    # fleet sharing a small address block gets 403-rate-limited for. The volume root
-    # is root-owned 0755, so the runner cannot create this itself and the scan
-    # fails closed (correctly) with "nothing to scan against".
+    # vulndb-mirror: cmd/vulnscan's local vuln.go.dev mirror (per-advisory fetches
+    # get the fleet 403-rate-limited). Root-owned volume root means the runner
+    # cannot mkdir this itself; absent, the scan fails closed. infra/README.md.
     install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache /mnt/ci-data/vulndb-mirror
     RUNNER_MODE="${runner_mode}"
     if [ "$RUNNER_MODE" = "classic" ]; then
@@ -606,5 +618,4 @@ runcmd:
   # Orphan FDB sweep timer (both modes; bazelscaleset also sweeps per-job, this is the net).
   - systemctl daemon-reload
   - systemctl enable --now orphan-fdb-sweep.timer
-  # Weekly bazel-cache LRU prune (deployed live 2026-07-05 after the volume-full CI outage).
   - systemctl enable --now bazel-cache-prune.timer

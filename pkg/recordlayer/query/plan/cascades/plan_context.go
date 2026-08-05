@@ -51,6 +51,20 @@ type PlannerConfiguration struct {
 	// back from InJoin to InUnion. Java default is 0 (no fallback).
 	AttemptFailedInJoinAsUnionMaxSize int
 
+	// SingleReadVersion asserts that the WHOLE result of this statement is
+	// produced at ONE read version, rather than each page taking a fresh one.
+	//
+	// It exists because a cross-row uniqueness proof is a statement about an
+	// INSTANT. A secondary UNIQUE index guarantees at most one row per key
+	// value at any single read version; a paged auto-commit statement spans
+	// many, and between two pages a value may be deleted from one row and
+	// re-inserted on another with a higher key. The index is never violated,
+	// and the value is emitted twice.
+	//
+	// False is the fail-closed default: a planning run that has not stated the
+	// condition does not get proofs that depend on it.
+	SingleReadVersion bool
+
 	// ShouldJoinRightDeep — when true, PartitionSelectRule only
 	// produces right-deep join trees (the upper partition has exactly
 	// 1 quantifier). This reduces join enumeration combinatorics at the
@@ -318,6 +332,19 @@ func candidatePreservesBaseRecordCardinality(candidate MatchCandidate) bool {
 			// traversal was rejected (scalar nesting, unsupported FAN_OUT shape,
 			// or inconsistent metadata). Direct shortcuts bypass traversal-based
 			// matching, so they must honor the same admission authority.
+			return false
+		}
+		if valueCandidate.opaqueFilter {
+			// A predicate with no proto representation — Go's
+			// Index.SetPredicate closure. The maintainers gate entry creation
+			// on that closure exactly as they do on a proto-derived one, so the
+			// index is genuinely sparse; only the planner's VIEW of it differs,
+			// and `predicateProto == nil` reads as "unfiltered".
+			//
+			// Checked ahead of the proto arm because it is the arm that fails
+			// when someone reads sparseness off the representation instead of
+			// the fact. A closure cannot be proved tautological, so there is no
+			// route by which it becomes complete.
 			return false
 		}
 		if valueCandidate.predicateProto != nil {

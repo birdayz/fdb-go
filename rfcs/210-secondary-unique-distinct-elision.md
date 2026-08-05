@@ -40,12 +40,21 @@ The measured benefit is narrower than the phrase "use the unique index" suggests
 and §2.1 leads with **two** refutations. The first: the elision removes an
 operator, it does not change the access path. The second, which forced the
 reformulation above: the fixture's own DDL put every measured query outside the
-original metadata-only clause 8, so every figure in §2.1's first table measures
-the *cost of the operator* rather than this RFC's benefit. §2.1's second table is
-the delivered delta, and the acceptance criteria are written against it. The
-value is concentrated in one regime — a paged, unordered
-`SELECT DISTINCT <unique column>`, where the redundant dedup is ~68-72% of the
-query's runtime.
+original metadata-only clause 8, so the figures that motivated this RFC measure
+the *cost of the operator* rather than its benefit (Appendix A). §2.1's
+delivered-delta table is the benefit, and the acceptance criteria are written
+against it.
+
+A third narrowing arrived with §5.3's single-read-version gate and it bounds the
+value more sharply than either refutation: the proof fires **only inside an
+explicit transaction**, because in auto-commit each page takes a fresh read
+version and a value can move between pages and be emitted twice. The delivering
+regime is therefore an **unpaged transactional** `SELECT DISTINCT <unique
+column>`, where R3 measures **0.82-0.91x** of the full dedup — taking the
+operator's overhead over a no-`DISTINCT` baseline from +13-24% down to +0-7%.
+R2's benefit is real but **not measurable on this fixture**, and §2.1 says so
+plainly rather than quoting a number that is mostly access path. The superseded
+paged auto-commit figures are in Appendix A.
 
 ## 2. What is declined today, and what it costs
 
@@ -88,8 +97,13 @@ Real FDB via `TestFDB_DistinctUniqueElisionCostProbe`
 Fixture: `users(id BIGINT, email STRING, payload STRING, PRIMARY KEY (id))` with
 `CREATE UNIQUE INDEX by_email ON users (email)`, **100 000 rows, every email
 distinct** — so the `DISTINCT` provably removes nothing and every microsecond it
-spends is waste. Each figure is a median over repeated runs on one store,
-reproduced across two full end-to-end runs.
+spends is waste. Each timing figure is the **median of nine per-rep ratios**
+between two queries run on the same store in the same rep, and every ratio range
+below is quoted across four independent end-to-end runs.
+
+**Every measurement is taken inside an EXPLICIT TRANSACTION**, including the
+`EXPLAIN`s below. That is not a harness preference; it is where the optimization
+exists at all, for the reason "The licensed domain" gives immediately after.
 
 **The plans, verbatim from `EXPLAIN`:**
 
@@ -118,39 +132,6 @@ entry. The cost model's preference for the base scan is empirically right. (That
 gap is a real and separate finding about the index access path; it is not this
 RFC's subject and no claim here rests on it.)
 
-**What the decline actually costs**, then, is one redundant operator — and the
-operator is more expensive than its CPU suggests. **This is the cost-of-the-
-operator table**, in the sense established above: an upper bound on what any
-route could recover, not a measurement of what any route does recover.
-
-| shape | rows | with `DISTINCT` | without | delta |
-|---|---|---|---|---|
-| unordered, single page | 100 000 | 388 ms | 333 ms | **+55 ms (+17%)** |
-| unordered, **paged** (`EXECUTION_SCANNED_ROWS_LIMIT=10000`, ~10 pages) | 100 000 | **559 ms** | **328 ms** | **+235 ms (≥+68%; see band note)** |
-| paged allocation churn | 100 000 | **424.9 MiB** | 157.7 MiB | **+267 MiB** |
-| ordered (streaming variant) | 100 000 | 6.95 s | 7.05 s | **noise-dominated at this scale** |
-| `ORDER BY … LIMIT 10` | 10 | 6 ms | 6 ms | 0 |
-| `LIMIT 10`, unordered | 10 | 5 ms | 5 ms | 0 |
-
-**The paged row is the real number, and the reason is structural rather than
-arithmetic.** The unordered shape gets the **hash-set** executor
-(`RecordQueryDistinctPlan.Streaming == false`, read off the planned plan —
-`EXPLAIN` does not render it). `executeHashDistinct` serializes **every seen key**
-into `DistinctHashContinuation` on each page and rebuilds the set from it on
-resume, so across P pages the seen-key set is copied O(P²) times in total. The
-measured +267 MiB of churn at ten pages is that. The paged no-`DISTINCT` run
-costs the same as the unpaged one (328 vs 333 ms), so pagination itself is free
-here and the entire delta is the operator.
-
-**Band note — the figures above are one box, and a third data point widened
-them.** An independent reproduction measured the paged delta at **+88%**. So the
-paged cost is quoted as **≥+68%** rather than as a point estimate or a narrow
-band, and every downstream criterion (§7.5) is written against the lower edge.
-Likewise the paged ratio is **1.68x-1.88x**, not "1.72x", and §2.1's
-index-path penalty is **15x-21x** (the reproduction measured 15.3x), not "21x".
-None of the arguments here turn on the width of those bands, which is why the
-conservative edge is used throughout.
-
 **And the honest negatives, all measured:** the `DISTINCT` does not block a
 covering-index-only plan (there is none for either query), does not force a
 base-record fetch the other shape avoids, and does not defeat early termination —
@@ -158,136 +139,171 @@ base-record fetch the other shape avoids, and does not defeat early termination 
 100k rows because the cursors are pipelined.
 
 **The ordered shape is noise-dominated at this scale — which is a weaker claim
-than "no difference", and the weaker claim is the true one.** The reproduction's
-spreads were `[9.2-15.3 s]` with `DISTINCT` and `[7.3-12.6 s]` without: heavily
-overlapping, so no delta is resolvable, but the earlier "below noise (±300 ms)"
-overstated the precision by an order of magnitude. Nothing here establishes that
-the streaming variant is free — only that this fixture cannot measure it. §7.5
-therefore sets no timing criterion on that shape, and stating why matters: an
-unmeasurable delta is not a measured zero.
+than "no difference", and the weaker claim is the true one.** The spreads were
+`[9.2-15.3 s]` with `DISTINCT` and `[7.3-12.6 s]` without: heavily overlapping,
+so no delta is resolvable. Nothing here establishes that the streaming variant is
+free — only that this fixture cannot measure it. §7.5 therefore sets no timing
+criterion on that shape, and stating why matters: an unmeasurable delta is not a
+measured zero. The ordered and `LIMIT` shapes are still pinned for **plan shape
+and executor variant**, because which variant fires decides which cost the
+operator pays and `EXPLAIN` does not render it.
 
-So the case for lifting is narrower than it first looks and rests on one regime:
-**a paged, unordered `SELECT DISTINCT <unique-column>`, where the redundant
-operator costs ~68-72% of the query's runtime and an allocation load that grows with
-the number of distinct values.** That regime is the ordinary one for a
-result-set-paginating client over a unique column, which is exactly the query a
-`UNIQUE` index invites.
+**What the decline actually costs** is one redundant operator. Before measuring
+it, the region where that cost is recoverable at all has to be stated, because
+the optimization's own soundness gate answers that question ahead of any
+measurement — and an earlier draft of this section measured a region the gate
+excludes.
 
-**And that regime is an upper bound on the recoverable cost, not the delivered
-one.** What is delivered depends on which route of §5.1.2 fires, which depends on
-the query. Hence the second table.
+#### The licensed domain
 
-#### The delivered delta — what each route actually recovers
+The secondary-`UNIQUE` proof is a statement about the store at ONE INSTANT, so
+§5.3's gate licenses it only where the whole result is drawn from a single read
+version: **inside an explicit transaction**. In auto-commit each page takes a
+fresh read version, so a value can be deleted from one row and re-inserted on
+another between pages and be emitted twice — a `UNIQUE` index cannot forbid that
+interleaving, because at no instant do two rows carry the value
+(`distinct_unique_elision_paging_repro_test.go`). Both routes are withheld there
+and the full operator comes back.
 
-Three runs on the §2.1 fixture, same store, back-to-back, median of 5 pairs, in
-the paged unordered regime the criteria are written for (100k rows,
-`EXECUTION_SCANNED_ROWS_LIMIT=10000`):
+The delivering regime is therefore **unpaged transactional `DISTINCT`**. Its two
+neighbours are excluded by measurement rather than by assumption:
+
+- **Unpaged in-transaction has no ceiling this fixture can find.** 100 000 rows
+  completes in 215-554 ms, an order of magnitude inside FDB's 5-second MVCC
+  window. Nothing here suggests where the ceiling is; only that it is above the
+  largest size measured.
+- **Paged in-transaction is bounded, and tightly** — see *Paging inside a
+  transaction* below. It also shows no recoverable delta: the R3 pair measured
+  **0.906-1.045x** at the sizes it survives, which straddles 1.0.
+- **Auto-commit is not a performance regime at all**, because no route fires in
+  it. Timed there, the R3 pair is one plan compared against itself: its median
+  ALLOCATION ratio is exactly **1.000x** while its time ratio wanders between
+  **0.858x and 1.012x** across runs. Neither number is about this RFC, and a
+  criterion written on them would report R3 as measured where R3 does not exist.
+
+#### The delivered delta — R3
+
+Unpaged, inside a transaction, on the §2.1 fixture; median of nine per-rep
+ratios; ratio ranges across four independent runs. Absolute milliseconds are from
+one representative run and are soft — the claim is the ratio, which is taken
+between two queries in the same rep on the same store.
 
 | # | query | route | time | churn | plan shape (verified via `EXPLAIN`) |
 |---|---|---|---|---|---|
-| A | `SELECT email FROM users` | — (naive baseline, no `DISTINCT`) | 371 ms | 164.9 MiB | `Project([EMAIL#1], Scan(USERS))` |
-| A′ | `SELECT email FROM users WHERE email IS NOT NULL` | — (**R2's denominator**) | 186 ms | 107.9 MiB | `Project([EMAIL#1], IndexScan(BY_EMAIL, [<>] COVERING))` |
-| B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | 372 ms | 175.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS))) narrowed-by:BY_EMAIL` |
-| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision (**non-regression guard**) | 183 ms | 107.9 MiB | `Project(…, IndexScan(BY_EMAIL, [<>] COVERING)) distinct-by:BY_EMAIL` — **no `Distinct` node** |
-| D′ | `SELECT DISTINCT email_plain FROM users` | — (in-process stand-in for D) | 580 ms | 432.0 MiB | `Distinct(Project([EMAIL_PLAIN#2], Scan(USERS)))` |
-| D | `SELECT DISTINCT email FROM users` on today's `master` | — | 567 ms | 432.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS)))`, no stamp |
+| A | `SELECT email FROM users` | — (no operator; R3's denominator for the decomposition) | 355 ms | 175.4 MiB | `Project([EMAIL#1], Scan(USERS))` |
+| A′ | `SELECT email FROM users WHERE email IS NOT NULL` | — (no operator, index path) | 174 ms | 118.0 MiB | `Project([EMAIL#1], IndexScan(BY_EMAIL, [<>] COVERING))` |
+| B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | 373 ms | 187.6 MiB | `Distinct(Project([EMAIL#1], Scan(USERS))) narrowed-by:BY_EMAIL` |
+| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision | 178 ms | 118.0 MiB | `Project(…, IndexScan(BY_EMAIL, [<>] COVERING)) distinct-by:BY_EMAIL` — **no `Distinct` node** |
+| D′ | `SELECT DISTINCT email_plain FROM users` | — (full dedup; R3's control) | 445 ms | 211.9 MiB | `Distinct(Project([EMAIL_PLAIN#2], Scan(USERS)))` |
 
-Timing ratios: C/A **0.523x** · C/A′ **0.980x** · **B/D′ 0.659x** · B/A **1.039x** ·
-sweep R3/full **0.657x** (1%) and **0.780x** (50%). On `master`, B/D′ is **0.997x**.
+**R3's measured win: B/D′ = 0.82-0.91x in time and 0.885x in allocation**, i.e.
+9-18% faster and 11.5% less allocated, consistently across every run. The
+allocation ratio is quoted because it is stable to three digits (0.885 in every
+run) but it is **not asserted** — `runtime.MemStats.TotalAlloc` is process-global
+and the probe shares its binary with the rest of the suite (§7.5).
 
-**Allocation figures are DIAGNOSTIC ONLY and are deliberately not asserted
-anywhere** — `runtime.MemStats.TotalAlloc` is a process-global counter and the
-probe shares its test binary with the rest of the suite (see §7.5). The
-deterministic instrument is the memory budget and the retained counts.
+**The decomposition is what proves the win is the OPERATOR**, rather than
+anything else that distinguishes an indexed column from an unindexed mirror of
+it. Against row A — the same base scan carrying no operator at all:
 
-**D′ is licensed as D's stand-in by measurement, not by assumption.** Running both
-on `master` — where neither route exists — gives B/D′ = **0.997x**, i.e. the two
-queries are the same work on the same data. That is what lets the comparison stay
-inside one process on one store instead of straddling two worktrees, and D is
-reported beside it so the substitution is checkable. It is also the fact that
-forces R3's criterion to be a **margin** bound rather than `< 1.0`: the null
-hypothesis already passes `< 1.0` half the time.
+| | vs A (time) | vs A (churn) |
+|---|---|---|
+| D′, the full distinct | **1.13-1.24x** | 1.21x |
+| B, the narrowed distinct | **1.00-1.07x** | 1.07x |
 
-**Headline: R3 cuts the operator's overhead over the no-`DISTINCT` baseline from
-+58% to +4% in time, and takes its retained seen-set from 100 000 keys to zero.**
+**Headline: R3 takes the operator's overhead over the no-`DISTINCT` baseline from
++13-24% down to +0-7%, and takes its retained seen-set from 100 000 keys to
+zero.** A column-position or projection-width artefact could not produce that
+pattern; only removing the retention can.
 
-*(Absolute milliseconds are soft: the measuring box was at 97% disk utilisation,
-which CLAUDE.md flags as a latency-distortion risk. Every criterion below is a
-RATIO between two queries run back-to-back on the same store, and the ratios held
-across a quiet run and a noisy one.)*
+**D′ is licensed as the stand-in for pre-RFC behaviour by measurement, not by
+assumption.** Run on `master`, where neither route exists, B/D′ is **0.997x** —
+the two queries are the same work on the same data. That is what lets the
+comparison stay inside one process on one store instead of straddling two
+worktrees. It is also what forces R3's criterion to be a **margin** bound rather
+than `< 1.0`: the null hypothesis already passes `< 1.0` half the time.
 
-**Row A′ exists because C-vs-A is not a clean isolation, and this was found by
-measuring rather than by reasoning.** `WHERE email IS NOT NULL` does not merely
-add a filter: it is SARGable, so it independently moves the plan onto the
-covering `IndexScan`. C-vs-A therefore mixes R2's delivered benefit with an
-access-path change, and reads better than R2 deserves. A′ holds the access path
-fixed and varies only the presence of the `DISTINCT`, which is the thing R2
-removes. **A′ is R2's denominator; A is kept only as the naive baseline a reader
-would otherwise reach for.**
+#### R2's benefit is NOT measurable on this fixture, and that is recorded rather than worked around
 
-The comparisons that matter, and what each would mean:
+No timing claim is made for R2 anywhere in this RFC or in the probe. Two
+independent reasons, either sufficient on its own:
 
-- **B vs D** is R3's delivered benefit on the bare query — the shape a user
-  writes without thinking about NULLs, and the shape that could not be helped at
-  all under the RFC as originally drafted.
-- **C vs A′** should be *indistinguishable*, because under R2 they are the same
-  plan with one operator removed. It is a NON-REGRESSION GUARD rather than
-  evidence of benefit: on `master` row C already plans a **streaming** distinct
-  (the `Distinct` sits over index-ordered filtered input, so it holds no seen-set
-  at all), so there is no retained-key difference for R2 to remove and no
-  measurement that separates the two trees. **R2's discriminator is the plan
-  shape** — no `Distinct` node, `distinct-by:BY_EMAIL` — which does red on
-  `master`.
-- **C vs A** is reported but is NOT the criterion, for the reason above.
-- **B vs A** is the residual R3 leaves on the table, and is the honest measure of
-  how much R2's reachability matters.
+1. **The predicate moves the access path on its own, with no operator involved.**
+   `EMAIL` is indexed, so `email IS NOT NULL` is SARGable and the plan becomes
+   `IndexScan(BY_EMAIL, [<>] COVERING)`; `EMAIL_PLAIN` is unindexed, so the same
+   predicate stays a residual over a base scan. Rows A and A′ carry **no
+   `DISTINCT` on either side** and differ only by that predicate, and A′/A
+   measures **0.49-0.50x**. So a C-vs-A ratio — C measures 0.46-0.58x — is
+   almost entirely the access path and almost none of it the elision. Against
+   A′, which holds the access path fixed and varies only the operator, C
+   measures **0.88-1.02x**: no resolvable delta.
+2. **The two operators are different operators.** R2 removes a **streaming**
+   distinct over index-ordered input, which holds no seen-set at all; every
+   available control times a **hash** distinct over a base scan. The estimator is
+   wrong in kind, so no band over it means anything.
 
-**What the elision provably removes is per-page key RETENTION, and that is what
-gets asserted** — as a memory budget the operator either survives or breaches,
-and as exact retained-key counts. Removing an operator does not change the I/O,
-so the runtime delta lives inside the harness's noise; allocation *looked* like
-the figure with teeth and is not one, because `TotalAlloc` is process-global (see
-§7.5). Retention is local to the query and exact.
+The deeper point is structural: **no query on this branch produces
+`Distinct(Project(IndexScan(BY_EMAIL, [<>] COVERING)))`** — the plan R2 actually
+replaces — so R2's benefit cannot be measured here by construction, and no
+rearrangement of the fixture changes that. What R2 is discharged by instead is
+exact rather than statistical: the plan shape (no `Distinct` node,
+`distinct-by:BY_EMAIL`, both of which do red on `master`) and the row counts on
+the half-NULL fixture, where dropping the NULL-rejecting predicate after drawing
+the proof shows up as 50 001 rows instead of 50 000.
 
-Every figure above and below is MEASURED by the §7.5 probe against the delivered
-implementation, on one box in one run, and none is carried over from the
-cost-of-the-operator table — that table bounds B–D rather than substituting for
-it.
+R2's remaining measured figures are **guard rails, not evidence**, and are logged
+rather than asserted for that reason.
 
 #### The NULL-density sweep — R3's dominance as a measurement
 
 R3's claim is that the narrowed seen-set is a subset of the full one on **every**
 input, degenerating to empty on an ordinary table. That is an argument in §5.1.2;
-this is the measurement that makes it a fact. Same fixture, same paged unordered
-shape, varying only the fraction of rows whose `email` is NULL:
+this is the measurement that makes it a fact. Same fixture, same unpaged
+transactional shape, varying only the fraction of rows whose `email` is NULL:
 
-| NULL density | rows retained by full distinct | retained by R3 | runtime (full) | runtime (R3) | churn (full) | churn (R3) | R3/full |
-|---|---|---|---|---|---|---|---|
-| 0% | 100 000 | **0** | 580 ms | 372 ms | 432.0 MiB | 175.7 MiB | 0.659x / 0.407x |
-| 1% | 100 000 | **1 000** | 572 ms | 371 ms | 431.5 MiB | 176.3 MiB | 0.646x / 0.408x |
-| 50% | 100 000 | **50 000** | 433 ms | 334 ms | 292.5 MiB | 167.2 MiB | 0.772x / 0.571x |
+| NULL density | rows entered, full | rows entered, R3 | keys retained, full | keys retained, R3 | R3/full time |
+|---|---|---|---|---|---|
+| 0% | 100 000 | **0** | 100 000 | **0** | 0.82-0.91x |
+| 1% | 100 000 | **1 000** | 99 001 | **1** | 0.81-0.91x |
+| 50% | 100 000 | **50 000** | 50 001 | **1** | 0.87-0.96x |
 
-The retained-row counts came out exactly as drafted — they are read off the
-hash-distinct's serialized continuation, not estimated. A sharper number is worth
-recording beside them: the **KEYS** those rows collapse to are 100 000 / 99 001 /
-50 001 for the full operator against **0 / 1 / 1** for R3. The row counts show R3
-touching less; the key counts show what it actually retains, and on an ordinary
-table that is nothing at all.
+The retention columns are read off the hash-distinct's serialized continuation,
+not estimated, and are asserted exactly — they are counts, so they carry no band
+and no noise argument. The rows-entered column shows R3 touching less; the
+keys-retained column shows what it actually keeps, and on an ordinary table that
+is nothing at all.
 
 Output rows are 100 000 / 99 001 / 50 001 and are identical **value for value**
 between the two operators at every density; `SELECT DISTINCT email` over 50%
-NULLs returns exactly one NULL row.
+NULLs returns exactly one NULL row. That correctness half is asserted in **both**
+regimes — in-transaction, where the narrowed operator produces the rows, and in
+paged auto-commit, where the fallback does. A gate that withheld the proof but
+left the query mis-deduplicated would pass every in-transaction row.
 
-The retained-row columns are the structural claim and are asserted exactly (they
-are counts, not timings, so no band is needed). The 50% row is the near-worst
-case and its acceptance criterion is **"no worse than full"**, not "faster" —
-which is the whole content of *strictly dominates*: R3 may not be allowed to be
-slower anywhere, and it is not required to be faster everywhere.
+The 50% row's acceptance criterion is **"no worse than full"**, not "faster" —
+which is the whole content of *strictly dominates*: R3 may not be slower
+anywhere, and is not required to be faster everywhere. It in fact measures
+0.87-0.96x, because half the rows still skip the tuple encoder entirely.
 
-Note the sweep also has to hold the **row results** constant across the three
-densities: `SELECT DISTINCT email` over 50% NULLs must return one NULL row
-however the operator was narrowed. That is the correctness half and it is asserted
-alongside the counts.
+#### Paging inside a transaction costs ~140 ms per page
+
+A durable architectural constraint, worth recording independently of this RFC
+because anything that pages inside an explicit transaction inherits it.
+
+Each page inside a transaction carries roughly **140 ms of fixed cost**. Ten
+pages therefore spend ~1.4 s of overhead before any row work, and the whole
+statement must still finish inside FDB's **5-second MVCC window**. Measured on
+this fixture at a ten-page split, that puts the ceiling at about **25 000 rows**:
+flaky at 25 000 and dead at 50 000 and above, where every shape fails — elided,
+narrowed and full-dedup control alike. The failure is not specific to any plan;
+it is the window.
+
+Two consequences. First, paging inside a transaction is not a way to make a large
+transactional scan affordable — it makes it *less* affordable, since the unpaged
+form of the same 100 000-row query completes in 215-554 ms. Second, RFC-210's
+routes gain nothing from it: the paged transactional R3 pair measures
+0.906-1.045x, no resolvable win, because the per-page fixed cost swamps the
+operator's contribution long before the operator matters.
 
 ## 3. Java, read first — Java never reaches the decision at all
 
@@ -1789,78 +1805,88 @@ exception being carved for this RFC.
 
 ### 7.5 Performance
 
-The probe from §2.1 is committed with this RFC, but **as committed it only
-asserts plan shapes and executor variants — it does not assert a single timing or
-allocation figure.** Its timing sections `t.Logf`. Turning it into the regression
-harness is therefore implementation work, not a property it already has, and this
-section is a specification for that rewrite rather than a description of it. An
-implementation that lands the elision and leaves the probe logging has not met
-§7.5.
+The probe from §2.1 is the regression harness, and it ASSERTS rather than logs.
+Every criterion below is a bound the committed test enforces; every figure it
+cannot enforce is logged and labelled as such in the same file.
 
-**And the criteria are written against §2.1's DELIVERED-DELTA table, not against
-its cost-of-the-operator table.** That is the substantive change the second
-refutation forced here: a criterion of the form "the `DISTINCT` query approaches
-the no-`DISTINCT` query" was written when the elision was believed to fire on the
-bare SQL query. It does not — the bare query gets **R3**, which narrows the
-operator rather than removing it — so the criterion has to name its route.
+**The criteria are written on the regime the optimization actually delivers into
+— unpaged, inside an explicit transaction — and this is the substantive change
+from an earlier draft.** That draft set its bounds on a **paged auto-commit**
+100k scan. §5.3's single-read-version gate withholds both routes there, so those
+bounds compared a plan against itself: the pair's median allocation ratio is
+exactly 1.000x and its time ratio wanders between 0.858x and 1.012x. Bounds like
+that are not weak criteria, they are criteria about nothing, and they are deleted
+rather than relaxed. The historical figures are preserved in the appendix.
 
-The criteria, on the regime the change is actually for and deliberately not on
-the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta rows:
+The criteria, then:
 
-- **R2, full elision (C vs A′).** Paged, unordered, 100k rows, all-distinct:
-  `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` must come within
-  **1.15x** of `SELECT email FROM users WHERE email IS NOT NULL` — **A′, not A**.
-  The denominator carries the same predicate deliberately: `IS NOT NULL` is
-  SARGable and independently moves the plan onto the covering `IndexScan`, so a
-  bound against A would credit R2 with an access-path change it did not make.
-  Both sides run back-to-back on the same store so a slow moment lands on both,
-  and the ratio is a median of 5 pairs, for the reason RFC-209 §7 sets out:
-  single pairs on this harness drift enough to fail a clean run.
-
-  **A bound against A is very nearly vacuous, and the measurement is what showed
-  it.** C measures **0.523x** of A and clears the 1.15x band with a 2x margin
-  while proving nothing about the elision, because `IS NOT NULL` independently
-  moves the access path onto the covering index.
-
-  **R2's only real discriminator is the PLAN SHAPE, and this is a fact about
-  `master` rather than a weakness of the probe.** On `master`, row C plans a
-  **streaming** distinct — the `Distinct` sits over index-ordered filtered input,
-  so equal rows are already adjacent and it holds **no seen-set at all**. There is
-  therefore no retained-key difference to measure for row C, and no memory budget
-  that R2's elision discharges but `master`'s operator breaches. It is also why
-  `master`'s churn ratio for this row was only 1.27x rather than the multiple seen
-  on the bare query: what R2 removes here is an operator that was already cheap.
-
-  So the criterion for R2 is the assertion that row C's plan contains **no
-  `Distinct` node** and carries `distinct-by:BY_EMAIL`, which does red on `master`.
-  The ratios for this row are **non-regression guards**, not evidence of benefit:
-
-  1. **GUARD — C/A ≤ 1.15x.** Branch **0.523x**. Survives on `master` too, and is
-     kept as a guard rail against a regression, not offered as proof.
-  2. **DIAGNOSTIC, NOT A CRITERION — C/A′ timing** (branch **0.980x**) and every
-     churn figure. Both are in the under-10%-separation class; see the note on
-     process-global allocation below.
-- **R3, narrowed distinct (B vs D′).** The bare `SELECT DISTINCT email FROM users`
-  must beat today's full distinct on the same shape — the 0%-NULL case, where
-  R3's seen-set is empty. The bound is expressed against **D′** (today's
-  operator) rather than against A, because R3 does not remove the operator and a
-  bound against A would be a criterion on an outcome R3 does not claim.
+- **R3, narrowed distinct (B vs D′) — the one timing criterion.** Unpaged, inside
+  a transaction, 100k rows, all-distinct. `SELECT DISTINCT email FROM users` must
+  beat the full distinct on the same shape — the 0%-NULL case, where R3's
+  seen-set is empty. The bound is against **D′** (today's operator) rather than
+  against A, because R3 does not remove the operator and a bound against A would
+  be a criterion on an outcome R3 does not claim.
 
   **"Strictly faster" cannot be spelled `< 1.0`, and this was caught by the
   mutation check rather than by review.** Without the route, B and D′ are *the
   same plan over the same data*, so their ratio is 1.0 ± noise — `master`
   measures **0.997x**, which passes a `< 1.0` criterion on a coin flip and on a
   tree containing no R3 at all. The criterion is therefore a MARGIN bound,
-  **B/D′ ≤ 0.90**, drawn from the measured effect size (branch **0.659x**, and
-  0.657x / 0.780x across the sweep) and comfortably outside the noise band the
-  null hypothesis occupies. The 1% sweep row carries the same **≤ 0.90**; the 50%
-  row keeps its asymmetric **≤ 1.0** ("no worse than full"), which is the whole
-  content of *strictly dominates*.
+  **B/D′ ≤ 0.95**, drawn from the measured effect (**0.82-0.91x** across four
+  runs) and from the null it must exclude (**0.94-1.04x**, measured by forcing
+  the executor's exempt test to admit every row so the stamp survives and the
+  narrowing delivers nothing). The 1% sweep row carries the same **≤ 0.95**; the
+  50% row keeps its asymmetric **≤ 1.0** ("no worse than full"), which is the
+  whole content of *strictly dominates*.
+
+  The ratio is the **median of nine per-rep ratios**, not a ratio of medians —
+  only the former divides out a slow moment that hit one rep. Nine rather than
+  RFC-209 §7's five because the effect here is ~12-14% and the measured null
+  reaches 0.942x; five reps leave those populations closer than the bound's own
+  separation.
 
   The exempt test must be evaluated on the row's raw slots **before** the dedup
   key is packed, so a non-exempt row costs a nil/NaN check and nothing else; an
   implementation that packs first and tests after will fail this row while
-  passing every correctness test.
+  passing every correctness test. The decomposition against A is what states that
+  positively: the full operator costs 1.13-1.24x of the no-operator baseline and
+  the narrowed one costs 1.00-1.07x.
+- **R2, full elision — NO TIMING CRITERION, and the reason is structural.** §2.1
+  records it in full: the only available control runs a different access path
+  (the operator-free pair alone measures 0.49-0.50x), and the two sides are
+  different operators (R2 removes a **streaming** distinct holding no seen-set;
+  every control times a **hash** distinct over a base scan). No query on this
+  branch produces the plan R2 replaces, so its benefit is unmeasurable here by
+  construction rather than by an accident of the fixture.
+
+  R2's criteria are therefore exact rather than statistical, and all of them do
+  red on `master`:
+
+  1. Row C's plan contains **no `Distinct` node** and carries
+     `distinct-by:BY_EMAIL`.
+  2. On the half-NULL `USERS50` fixture, the elided plan retains the
+     NULL-rejecting predicate — asserted as the scan range
+     `IndexScan(BY_EMAIL50, [<>]` and, independently of how the rejection is
+     carried, as a row count of **exactly 50 000**. This is the fixture where
+     §7.1's *retains-the-filter* criterion can fail; on the zero-NULL table it
+     cannot.
+  3. The row count is collected **inside a transaction**. In auto-commit the
+     proof is withheld and the operator survives, so the query returns 50 000
+     rows whether or not the predicate would have been dropped from the elided
+     plan — an auto-commit count there would pass on an implementation that
+     leaks every NULL.
+
+  Its ratios are logged as guard rails and asserted nowhere.
+- **AUTO-COMMIT — correctness and plan shape, never timing.** The regime the gate
+  withholds the proof from gets its own arms, asserting exactly what is true
+  there: no `narrowed-by:`/`distinct-by:` stamp is rendered on any of the five
+  proof-eligible shapes, a `Distinct(` operator IS present on each (withholding
+  the proof must restore the full operator, not leave the query undeduplicated),
+  and the rows are correct at every NULL density. That last one is not a
+  duplicate of the in-transaction row check: in-transaction the narrowed operator
+  produces the rows, in auto-commit the fallback does, and a gate that withheld
+  the proof but left the query mis-deduplicated would pass every in-transaction
+  row.
 - **RETENTION, not allocation churn — and this replaced a criterion that could
   not survive its own test suite.** The draft asserted allocation ratios. Those
   are measured from `runtime.MemStats.TotalAlloc`, a **process-global** counter,
@@ -1875,8 +1901,12 @@ the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta ro
 
   What replaces them is exact rather than statistical: a **`MAX_STATEMENT_MEMORY_BYTES`
   budget (65536) on a second pinned connection**, which turns "how much does the
-  operator retain" into a survive/breach bit. Nine rows are asserted, and the
-  three groups are what make it an instrument rather than an observation:
+  operator retain" into a survive/breach bit. It runs unpaged and inside a
+  transaction like everything else, for the same two reasons — the proof is
+  licensed nowhere else, and paging in a transaction cannot reach this fixture's
+  size — and the move costs the instrument nothing, because the seen-set is
+  charged as it grows rather than as it is serialized. Nine rows are asserted,
+  and the three groups are what make it an instrument rather than an observation:
 
   - **DISCRIMINATORS** — B, S1-R3, S50-R3 **survive on branch and breach on
     `master`**. This is R3's benefit, stated as a fact that flips.
@@ -1900,9 +1930,13 @@ the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta ro
   property**: the fail-closed default is load-bearing, and a change that made
   that path start proving things from an index's declared uniqueness would be a
   soundness regression even though it would look like coverage improving. The
-  executor-side retention measurement is taken through `WithNarrowedDedup`
-  instead, which is the seam that does not require the planner to have consulted
-  a store.
+  executor-side retention measurement is taken through
+  `PlanRecordQueryAssertingAllIndexesReadable` instead — the affirmative
+  all-readable view the live generator mints after fetching a snapshot — so the
+  narrowing and its exempt slots are the PLANNER's rather than the test's. A
+  hand-written `WithNarrowedDedup("BY_EMAIL", []int{0})` would have measured the
+  executor over a plan the planner had no part in, and would agree with a broken
+  slot mapping on every fixture whose key column happens to be projected first.
 - **The NULL-density sweep's retained-row counts are asserted exactly** (§2.1).
   They are counts, not timings, so they carry no band and no noise argument, and
   they are what turns "R3 strictly dominates" from an argument into a test. The
@@ -1912,11 +1946,11 @@ the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta ro
   unresolvable delta measures the harness, not the change. They are still
   asserted for *correct rows and plan shape* in §7.1, just not timed. Note this
   is "unmeasurable here", not "measured as zero" (§2.1).
-
-The bound is 1.15x rather than 1.0x because the elision removes an operator, not
-a scan: the two plans do the same I/O, and the residual is per-query fixed cost.
-A criterion of "strictly no slower" would fail on noise while proving nothing
-more.
+- **No criterion on the PAGED regimes, in either mode.** Paged auto-commit runs
+  the same plan on both sides of every pair; paged in-transaction is bounded by
+  the MVCC window near 25 000 rows and shows no resolvable delta (0.906-1.045x)
+  below it. Both are §2.1 findings, and in both cases the honest response is the
+  absence of a bound rather than a loose one.
 
 ### 7.6 The refutation test is rewritten, never deleted
 
@@ -2143,7 +2177,7 @@ Where each landed:
 | C3 | carried completeness must not survive prefixing | §5.5; §8 sufficiency note |
 | C4 | `isUnique(Index)` overload family; derived-side-alive / requested-side-dead reframing; `ImplementDistinctRule`'s own fragility caveat | §3 |
 | C5 | the third `eval` check (`isReadable`); `QueryPlan.java` is in `fdb-relational-core`; cache-bypass argument; `aliasMinted` prohibition quoted | §5.2, §5.3 |
-| C6 | paging delta quoted as a band | §1, §2.1 |
+| C6 | paging delta quoted as a band | Appendix A (the regime it measured is now excluded) |
 | C7 | name the in-flight O(P²) work | §9(h) |
 
 Three of these — C1, C2, C3 — are blocking on the RFC text, and all three are
@@ -2169,7 +2203,7 @@ healthy — the gate would fire only while some unrelated index was mid-build.
 | **BLOCKER**: candidate ⇏ `READABLE` on non-generator paths | §5.1.1 — new subsection; clause 1 rewritten |
 | decision (b) + (c), both | §5.1.1 (b, refined to a tri-state) and §7.3 (c, on the existing SQL-path test) |
 | §7.3 note wrong twice (`TAGS` `createsDuplicates=true`; `SCORE` via clause 5) | §7.3 — replaced with a per-arm table; conclusion unchanged |
-| measurement bands (+88% third point; 15.3x) | §2.1 — `≥+68%`, `1.68x-1.88x`, `15x-21x` |
+| measurement bands (+88% third point; 15.3x) | Appendix A — `≥+68%`, `1.68x-1.88x`; `15x-21x` in §2.1 |
 | ordered shape is noise-dominated, not "no difference" | §2.1 — spreads quoted, claim weakened |
 | §7.5 must say the probe is REWRITTEN to assert | §7.5 — stated as implementation work |
 | citations: `OrderingProperty.java:596-604`, `:52-57`, `:185-192` + 4th sentence, `:272`, #635/#653 | §3, §5.5 |
@@ -2201,3 +2235,54 @@ either was deferral with a scoping story. Where each condition landed:
 Remaining gates: **Torvalds delta-read** on §5.1.1; **Graefe** on the
 implementation lap, one lap at completion of the whole arm; codex + `@claude` at
 implementation completion.
+
+## Appendix A. Historical motivation — the paged auto-commit measurements
+
+**These figures are superseded and are kept only as a record of what motivated
+this RFC. They measure a regime the design now excludes, and no criterion rests
+on them.** They were taken on a **paged auto-commit** 100 000-row scan
+(`EXECUTION_SCANNED_ROWS_LIMIT=10000`, ~10 pages) before §5.3's
+single-read-version gate existed. That gate withholds both routes in auto-commit,
+so on the delivered implementation neither R2 nor R3 fires on any query in this
+appendix — the numbers below describe the cost of an operator that, in that
+regime, is still there.
+
+They are recorded rather than deleted because the reasoning they produced is
+still sound and still visible in the design: the paged hash distinct is expensive
+because it serializes its whole seen-set per page, and that is what made a
+redundant `DISTINCT` worth removing in the first place.
+
+| shape | rows | with `DISTINCT` | without | delta |
+|---|---|---|---|---|
+| unordered, single page | 100 000 | 388 ms | 333 ms | +55 ms (+17%) |
+| unordered, **paged** (~10 pages) | 100 000 | 559 ms | 328 ms | +235 ms (≥+68%) |
+| paged allocation churn | 100 000 | 424.9 MiB | 157.7 MiB | +267 MiB |
+| ordered (streaming variant) | 100 000 | 6.95 s | 7.05 s | noise-dominated |
+| `ORDER BY … LIMIT 10` | 10 | 6 ms | 6 ms | 0 |
+| `LIMIT 10`, unordered | 10 | 5 ms | 5 ms | 0 |
+
+The paged row was the headline, and the mechanism behind it is unchanged and
+still true: the unordered shape gets the **hash-set** executor
+(`RecordQueryDistinctPlan.Streaming == false`), and `executeHashDistinct`
+serializes **every seen key** into `DistinctHashContinuation` on each page and
+rebuilds the set on resume, so across P pages the set is copied O(P²) times. The
+measured +267 MiB at ten pages is that. The paged no-`DISTINCT` run cost the same
+as the unpaged one (328 vs 333 ms), so pagination itself was free and the whole
+delta was the operator.
+
+An independent reproduction measured that paged delta at +88% rather than +68%,
+which is why it was quoted as a band (**≥+68%**, ratio **1.68x-1.88x**) and why
+§2.1's index-path penalty is **15x-21x** rather than a point estimate.
+
+The corresponding delivered-delta figures from the same regime — C/A 0.523x, C/A′
+0.980x, B/D′ 0.659x, B/A 1.039x, sweep 0.657x (1%) and 0.780x (50%) — are
+likewise historical. On the delivered implementation those queries all plan the
+full operator in auto-commit, so a re-run of that table measures one plan against
+itself; §2.1's in-regime table replaces it entirely.
+
+**Two things carried forward from this appendix and are load-bearing today.**
+The first is that the paged hash distinct's O(P²) continuation cost is real, and
+it is why §2.1 records the separate architectural finding that paging *inside a
+transaction* costs ~140 ms per page and cannot reach this fixture's size at all.
+The second is `master`'s B/D′ = **0.997x**, which is what makes `< 1.0` an
+unusable spelling of "strictly faster" and forces §7.5's margin bound.

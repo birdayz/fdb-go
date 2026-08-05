@@ -531,6 +531,11 @@ func PlanRecordQueryAssertingAllIndexesReadable(
 ) (plans.RecordQueryPlan, error) {
 	popts := plannerOptionsFrom(nil)
 	popts.config.ReadableIndexes = cascades.AllIndexesReadable()
+	// The caller asserts BOTH conditions the secondary-UNIQUE proof rests on.
+	// The second is that the whole result comes from ONE read version — true of
+	// a metadata-only planning run by construction, since it executes nothing
+	// and pages nowhere.
+	popts.config.SingleReadVersion = true
 	plan, _, err := planRecordQueryAndSubqueriesWithOptions(
 		sql, md, defaultEmbeddedSchema, stats, popts)
 	return plan, err

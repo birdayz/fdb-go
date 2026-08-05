@@ -394,6 +394,34 @@ func secondaryUniqueEliminationProof(
 	if !ctx.GetPlannerConfiguration().ReadableIndexes.IndexStatesEstablished() {
 		return secondaryUniqueProof{}
 	}
+	// The proof is a statement about an INSTANT, so it licenses nothing unless
+	// the whole result is produced at ONE read version.
+	//
+	// A secondary UNIQUE index guarantees at most one row per key value at any
+	// single read version. A paged auto-commit statement spans many: each page
+	// runs its own transaction (cascades_generator.go's fetchPage, when no
+	// explicit transaction was captured), so between pages a value may be
+	// deleted from one row and re-inserted on another with a higher key. The
+	// index is never violated at any instant, and the value is emitted twice.
+	//
+	// BOTH routes are withheld, not just full elision. R3 narrows retention to
+	// the exempt subset, so a non-exempt value — the ordinary case — is
+	// retained nowhere and duplicates across the page boundary exactly as the
+	// elided plan does.
+	//
+	// The PRIMARY-KEY arm beside this one is deliberately NOT gated, and the
+	// asymmetry is the whole reason this clause is specific to the secondary
+	// arm: a primary key IS the row's identity, so a row that moved carries a
+	// different value and cannot duplicate one already emitted. Only a
+	// SECONDARY unique value can migrate to a new identity and be seen twice.
+	//
+	// This is not a Java parity question — Java never draws this proof at all
+	// — and it is not a general property of pagination: the full hash DISTINCT
+	// keeps deduplicating across pages, which is precisely the guarantee the
+	// elision would otherwise remove.
+	if !ctx.GetPlannerConfiguration().SingleReadVersion {
+		return secondaryUniqueProof{}
+	}
 
 	// The proof is stated in ONE layout — the scan row that both the projected
 	// references and the metadata key columns address (RFC-197's boundary rule:

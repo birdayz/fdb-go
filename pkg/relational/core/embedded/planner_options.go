@@ -134,8 +134,13 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // the scope it got before planner options were keyed.
 func (p plannerOptions) cacheKeyPart() string {
 	readable := p.config.ReadableIndexes
+	// SingleReadVersion joins the early-return condition because it CHANGES THE
+	// PLAN: it is what licenses the secondary-UNIQUE DISTINCT proof, so two
+	// statements differing only in it plan differently and must not share a
+	// cache entry. Leaving it out of the key is how an explicit transaction's
+	// elided plan gets served to an auto-commit statement that may not have it.
 	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep &&
-		!readable.IndexStatesEstablished() {
+		!p.config.SingleReadVersion && !readable.IndexStatesEstablished() {
 		return ""
 	}
 	names := make([]string, 0, len(p.disabledRules))
@@ -146,6 +151,9 @@ func (p plannerOptions) cacheKeyPart() string {
 	var b strings.Builder
 	if p.config.ShouldJoinRightDeep {
 		b.WriteString("rd")
+	}
+	if p.config.SingleReadVersion {
+		b.WriteString("srv")
 	}
 	for _, n := range names {
 		b.WriteString(strconv.Itoa(len(n)))

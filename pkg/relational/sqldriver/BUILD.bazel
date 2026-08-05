@@ -171,6 +171,8 @@ go_test(
         "distinct_orderby_limit_probe_test.go",
         "distinct_proof_index_state_fdb_test.go",
         "distinct_unique_elision_cost_probe_test.go",
+        "distinct_unique_elision_paging_repro_test.go",
+        "distinct_unique_elision_single_read_version_test.go",
         "dml_cascades_fdb_test.go",
         "dml_dry_run_fdb_test.go",
         "dml_predicate_probe_test.go",

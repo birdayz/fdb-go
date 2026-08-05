@@ -24,6 +24,11 @@ type indexTestPlanContext struct {
 func (c *indexTestPlanContext) GetPlannerConfiguration() PlannerConfiguration {
 	cfg := DefaultPlannerConfiguration()
 	cfg.ReadableIndexes = c.readableIndexes
+	// A unit fixture EXECUTES nothing and PAGES nowhere, so "the whole result
+	// comes from one read version" is true of it by construction. Stating it
+	// keeps the single-read-version gate from silently disabling every proof
+	// here, without weakening the gate: the condition really does hold.
+	cfg.SingleReadVersion = true
 	return cfg
 }
 

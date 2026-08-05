@@ -348,6 +348,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, stateErr
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
+	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
+	// licenses anything when the WHOLE result comes from one read version.
+	// fetchPage routes on exactly this condition: with an explicit transaction
+	// every page joins it and shares its read version; without one each page
+	// runs its own auto-commit transaction and takes a fresh one, so a value
+	// can move between pages and be emitted twice. See
+	// PlannerConfiguration.SingleReadVersion.
+	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
 	// (case-sensitive, never normalized) and the injective canonical query
 	// text. NOT q.GetText() — that concatenated tokens with no separator,
@@ -1084,6 +1092,14 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	popts := plannerOptionsFrom(g.c.Options())
 	popts.config.ReadableIndexes = readableIndexesFrom(md, dmlIndexStateSnapshot)
+	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
+	// licenses anything when the WHOLE result comes from one read version.
+	// fetchPage routes on exactly this condition: with an explicit transaction
+	// every page joins it and shares its read version; without one each page
+	// runs its own auto-commit transaction and takes a fresh one, so a value
+	// can move between pages and be emitted twice. See
+	// PlannerConfiguration.SingleReadVersion.
+	popts.config.SingleReadVersion = g.c.activeTx != nil
 	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
@@ -1333,6 +1349,16 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		execState: recordlayer.NewExecuteState(
 			optInt64(c.Options(), api.OptMaxStatementMemoryBytes, 0),
 		),
+		// The statement-scoped scratch, minted ONCE for the same reason
+		// execState is: each page rebuilds the cursor hierarchy, and an
+		// operator whose resume state is O(rows already emitted) — the
+		// unordered hash DISTINCT's seen-set — must hand that state to the next
+		// page instead of serializing it into every page's continuation, which
+		// costs O(pages^2) to write and re-parse. These continuations never
+		// leave the statement (statement continuations are rejected outright,
+		// see cascadesPlan's continuation check), so the scratch has exactly
+		// their lifetime.
+		scratch: executor.NewExecutionScratch(),
 	}
 
 	// Eagerly fetch the first page so execution errors (type mismatches,
@@ -1434,6 +1460,12 @@ type paginatingRows struct {
 	// pointer into the page's ExecuteProperties.State, so the in-memory
 	// buffering budget accumulates across the whole statement. Never nil.
 	execState *recordlayer.ExecuteState
+
+	// scratch is the statement-wide home for operator resume state too large
+	// to ride every page's continuation (executor.ExecutionScratch). Minted
+	// ONCE in Execute and stamped onto every page's EvaluationContext, exactly
+	// as execState is stamped onto every page's ExecuteProperties. Never nil.
+	scratch *executor.ExecutionScratch
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -1962,6 +1994,12 @@ func (r *paginatingRows) fetchPage() error {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 		r.execState.RestoreRecursionLevels(recursionAtPageStart)
+		// Fresh per-page scratch bookkeeping, for the same reason the recursion
+		// levels are restored above: this closure is the FDB retry loop's body
+		// and runs again from the UNCHANGED r.continuation after a retryable
+		// error, so a failed attempt's adoptions must not survive into its
+		// retry.
+		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
 		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
@@ -1986,7 +2024,9 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, stateErr
 		}
 
-		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
+		evalCtx := executor.EmptyEvaluationContext().
+			WithStatementTime(r.statementTime).
+			WithExecutionScratch(r.scratch)
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
 		// ONCE in Execute, from the session clock (Session.BeginStatement /
 		// StatementNow — the same authority the INSERT…VALUES fold reads),
@@ -2090,6 +2130,14 @@ func (r *paginatingRows) fetchPage() error {
 	// move — this is the assignment that must not happen anywhere else.
 	r.exhausted = pageExhausted
 	r.continuation = pageCont
+	// Retiring scratch entries is statement-scoped state moving, so it belongs
+	// HERE with the position and nowhere earlier. Inside the closure it would
+	// run on an attempt whose transaction can still fail: the retry re-executes
+	// from the UNCHANGED r.continuation, and entries this attempt judged
+	// unreachable are exactly the ones that continuation may name. What makes
+	// the judgement sound is that r.continuation has now advanced, so the
+	// entries only the PREVIOUS one could name are genuinely unreachable.
+	r.scratch.SweepAfterPage(pageExhausted)
 	return nil
 }
 
@@ -2827,6 +2875,22 @@ func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 // classified differently.
 func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
 	return d.idx.GetPredicateProto()
+}
+
+// IndexHasOpaqueFilter reports the case IndexPredicateProto structurally cannot:
+// the index FILTERS, but through a Go closure with no serialized form, so there
+// is no proto to hand over and nothing the matcher could account for.
+//
+// Both answers come from the same index and they disagree exactly here — proto
+// nil, filter present. Sparseness is the FACT (HasFilteringPredicate, which the
+// candidate loop above already consults for the aggregate/vector families);
+// predicateProto is one REPRESENTATION of it. Reading the second as the first
+// makes a closure-filtered index look complete, which is a wrong-rows failure:
+// its UNIQUE declaration would license a DISTINCT elision covering records it
+// never held, and a scan over it would stand in for a base table it does not
+// cover.
+func (d *metadataIndexDef) IndexHasOpaqueFilter() bool {
+	return d.idx.HasFilteringPredicate() && d.idx.GetPredicateProto() == nil
 }
 
 // IndexKeyComponentTypes derives one authoritative physical tuple type per

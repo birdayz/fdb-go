@@ -2,7 +2,9 @@ package sqldriver_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -41,16 +43,17 @@ func assertStaleIndexDependency(t *testing.T, err error, indexName string) {
 	}
 }
 
-// assertNarrowedByUEmailOnBaseScan pins the precondition every 40001 test in
-// this file rests on: the plan is narrowed by U_EMAIL and does NOT scan it. If
-// the access path ever moves onto U_EMAIL these tests keep passing while
+// assertNarrowedByUEmailOnBaseScan pins the precondition every index-state test
+// in this file rests on: the plan is narrowed by U_EMAIL and does NOT scan it.
+// If the access path ever moves onto U_EMAIL these tests keep passing while
 // testing the ordinary index-scan dependency instead of the stamp, which is the
 // silent way this file stops covering what it claims to.
 func assertNarrowedByUEmailOnBaseScan(t *testing.T, explain string) {
 	t.Helper()
 	if !strings.Contains(explain, "narrowed-by:U_EMAIL") {
 		t.Fatalf("the plan is not narrowed by U_EMAIL, so it has no proof-only "+
-			"dependency on it and this test's 40001 would be vacuous: %s", explain)
+			"dependency on it and this test's claim about that dependency — that it "+
+			"refuses, or that it survives — would be vacuous: %s", explain)
 	}
 	if strings.Contains(explain, "IndexScan") {
 		t.Fatalf("the plan now READS an index: %s\nThe whole point of this query "+
@@ -163,15 +166,61 @@ func TestFDB_DistinctProof_NonReadableUniqueIndexLicensesNothing(t *testing.T) {
 	}
 }
 
-// The transition lands between PLANNING and the first page — two separate
-// transactions — and the plan it invalidates does not name the index anywhere
-// except in its proof stamp. Without the stamp collected as a dependency the
-// statement would return rows deduplicated under a narrowing the store no longer
-// backs.
-func TestFDB_DistinctProof_TransitionBetweenPlanAndFirstPageFails40001(t *testing.T) {
+// singleReadVersionBrokenMessage names, once, what a failure of either
+// invisibility pin below actually means. Both fire a REAL index-state transition
+// strictly inside a statement whose plan carries a proof stamp on U_EMAIL, so a
+// 40001 out of either one is not a stray error: it says the statement observed
+// two different store states, which is the premise RFC-210's proof denies.
+const singleReadVersionBrokenMessage = "The statement observed a mid-statement " +
+	"index-state transition, so it did NOT run at one read version. That is the " +
+	"property PlannerConfiguration.SingleReadVersion asserts, and it is the ONLY " +
+	"reason the secondary-UNIQUE proof is admissible here: re-arming this scenario " +
+	"re-arms a plan whose DISTINCT was narrowed on a uniqueness claim the store " +
+	"withdrew mid-flight. Fix the read-version scoping; do not relax this test."
+
+// drainDistinctProofRows reads a result set to completion and returns its values
+// sorted, so an assertion can name the ANSWER and not only the error.
+func drainDistinctProofRows(t *testing.T, rows *sql.Rows) []string {
+	t.Helper()
+	var got []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, value)
+	}
+	sort.Strings(got)
+	return got
+}
+
+// A transition landing between PLANNING and the FIRST PAGE is INVISIBLE inside
+// an explicit transaction — by construction, not by luck.
+//
+// The proof is drawn only under PlannerConfiguration.SingleReadVersion, which is
+// set from the connection's explicit transaction (planSelectCascades). Inside one
+// transaction, planning and every page read at ONE read version: planning's
+// index-state store open takes it, and every page reuses that same
+// transaction-scoped store (connection.go's storeIn). A transition committed by
+// another transaction after planning is therefore not in this statement's
+// snapshot, and the per-page dependency revalidation — which still runs, against
+// that same snapshot — has nothing to refuse.
+//
+// So this pins a NEGATIVE result, and the negative is what licenses the design:
+// it is why "the transition arrived after we planned" is not a wrong-rows hazard
+// for an in-transaction statement. It replaces an assertion that this shape
+// raises 40001, which was written while the proof was drawn in AUTO-COMMIT —
+// where planning and each page are separate transactions and the hazard is real.
+//
+// It is NOT vacuous: the plan asserted below carries `narrowed-by:U_EMAIL`, so
+// the statement genuinely holds a proof-only dependency on the index being
+// transitioned, and the revalidation genuinely evaluates it on every page.
+func TestFDB_DistinctProof_TransitionAfterPlanningIsInvisibleInOneTransaction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newIndexStatePlanningFixture(t)
+	// Fires at the end of the statement's ONLY planning call: after the plan and
+	// its proof stamp exist, before the first page produces a row.
 	logger := &nthPlanTransitionLogger{n: 1, fn: func() error {
 		return f.makeUniqueIndexPending(ctx)
 	}}
@@ -179,26 +228,61 @@ func TestFDB_DistinctProof_TransitionBetweenPlanAndFirstPageFails40001(t *testin
 		ec.SetPlanLogger(logger)
 	})
 
-	rows, err := conn.QueryContext(ctx, distinctProofQuery)
-	if rows != nil {
-		_ = rows.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
 	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, queryErr := tx.QueryContext(ctx, distinctProofQuery)
 	if transitionErr := logger.err(); transitionErr != nil {
 		t.Fatalf("logger state transition: %v", transitionErr)
 	}
+	if queryErr != nil {
+		t.Fatalf("a transition landing after planning failed an in-transaction "+
+			"statement: %v\n%s", queryErr, singleReadVersionBrokenMessage)
+	}
+	defer func() { _ = rows.Close() }()
+
 	events := logger.snapshot()
 	if len(events) != 1 {
 		t.Fatalf("planning events = %d, want 1", len(events))
 	}
+	// Without the stamp there is no proof-only dependency on U_EMAIL and this
+	// test pins nothing: any statement survives a transition it never depended on.
 	assertNarrowedByUEmailOnBaseScan(t, events[0].PlanExplain)
-	assertStaleIndexDependency(t, err, "U_EMAIL")
+
+	got := drainDistinctProofRows(t, rows)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("a transition landing after planning failed an in-transaction "+
+			"statement mid-drain: %v\n%s", err, singleReadVersionBrokenMessage)
+	}
+	if strings.Join(got, ",") != distinctProofWantRows {
+		t.Fatalf("rows = %v, want %s", got, distinctProofWantRows)
+	}
 }
 
-// The same transition, one page later. An auto-commit statement's pages are
-// SEPARATE transactions, so a check made once per statement — a plan-cache key
-// included — cannot see this one. The second page must refuse rather than
-// continue narrowing under a uniqueness claim that has been withdrawn.
-func TestFDB_DistinctProof_TransitionBetweenPagesFails40001(t *testing.T) {
+// The same transition, one PAGE later, and invisible for the same reason: an
+// explicit transaction's pages are not separate transactions, so there is no
+// second read version for the transition to become visible at.
+//
+// This is the arm that most obviously changed meaning. In auto-commit each page
+// IS a transaction, a transition between two of them is real, and the second page
+// must refuse — which the sibling
+// TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001 still pins, on a
+// plan that SCANS U_EMAIL. Under the read-version gate a proof-carrying plan
+// cannot arise in auto-commit at all, so the shape that reaches here is the
+// in-transaction one, where the correct outcome is that the statement finishes
+// with every value exactly once.
+//
+// The one-row page limit is what makes this a claim about PAGES: a leaf cursor
+// gets one free record per page (key_value_cursor.go's per-cursor initial pass)
+// while the record budget itself is transaction-scoped, so with the limit at 1
+// every page yields exactly one row and three rows cannot come from one page. The
+// sibling test named above is the sentinel for that fact — if the limit ever
+// stopped forcing page boundaries it goes red, rather than this one going quietly
+// vacuous.
+func TestFDB_DistinctProof_TransitionBetweenPagesIsInvisibleInOneTransaction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newIndexStatePlanningFixture(t)
@@ -209,7 +293,13 @@ func TestFDB_DistinctProof_TransitionBetweenPagesFails40001(t *testing.T) {
 		ec.SetPlanLogger(logger)
 	})
 
-	rows, err := conn.QueryContext(ctx, distinctProofQuery)
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, distinctProofQuery)
 	if err != nil {
 		t.Fatalf("query first page: %v", err)
 	}
@@ -227,71 +317,246 @@ func TestFDB_DistinctProof_TransitionBetweenPagesFails40001(t *testing.T) {
 	if err := rows.Scan(&email); err != nil {
 		t.Fatalf("scan first buffered row: %v", err)
 	}
+	// Committed by a DIFFERENT transaction, strictly between two pages of this
+	// one; every later page still reads the snapshot the statement started from.
 	if err := f.makeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition after first page: %v", err)
 	}
-	for rows.Next() {
-		var more string
-		if err := rows.Scan(&more); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		t.Fatalf("a page after the transition returned %q from a stale plan", more)
+
+	got := append([]string{email}, drainDistinctProofRows(t, rows)...)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("a transition landing between two pages of ONE transaction "+
+			"failed the statement: %v\n%s", err, singleReadVersionBrokenMessage)
 	}
-	assertStaleIndexDependency(t, rows.Err(), "U_EMAIL")
+	sort.Strings(got)
+	if strings.Join(got, ",") != distinctProofWantRows {
+		t.Fatalf("rows across pages spanning the transition = %v, want %s\n"+
+			"A short or duplicated result is the OTHER way the single-read-version "+
+			"property fails: the pages disagreed about the store.",
+			got, distinctProofWantRows)
+	}
 }
 
-// THE CACHE-HIT REGRESSION. Dependencies are a function of the PLAN, so a cache
-// hit derives them from the cached plan — which is only possible because the
-// proof lives IN the plan.
+// THE PROTECTION THAT ACTUALLY RUNS when an index transitions between two
+// transactions on one connection: the second statement does NOT get the cached
+// proof-carrying plan, because the readable-index view is part of the plan-cache
+// key (plannerOptions.cacheKeyPart) and the transition changed it. It replans and
+// gets an honest, unstamped plan.
 //
-// A side-channel design (a proof-only list threaded out of the fresh-planning
-// path) drops the dependency on every cache hit, and the cache hit is precisely
-// the long-lived case the revalidation exists for: the first execution guarded,
-// every later one unguarded. That shape passes every other test in this file,
-// which is why this one asserts the cache actually HIT — a miss here would
-// replan against the new state, run correctly, and quietly retire the test.
-func TestFDB_DistinctProof_TransitionAgainstCachedPlanFails40001(t *testing.T) {
+// This is worth pinning precisely because it is the mechanism a reader expects
+// execution-time revalidation to provide, and does not. Under the read-version
+// gate a proof exists only inside an explicit transaction, where planning and
+// every page share ONE read version — so the two cases are exhaustive and
+// neither leaves a stale proof running:
+//
+//   - the transition is visible to the next statement's planning, so the cache
+//     key differs and the plan is rebuilt (this test); or
+//   - it is not visible to that planning, in which case it is not visible to
+//     that statement's execution either, and the proof still holds at the read
+//     version the whole statement runs at (the two invisibility pins above).
+//
+// If this test ever reports a cache HIT, that third case has appeared: a plan
+// whose proof rests on an index state the store has withdrawn, served to a
+// statement at a read version that can see the withdrawal. Nothing downstream
+// would catch it — that is what the sibling cache-hit test below asks the
+// execution-time check to do.
+func TestFDB_DistinctProof_TransitionBetweenTransactionsReplansTheProofAway(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newIndexStatePlanningFixture(t)
-	// Fires at the end of the SECOND planning call: the cache lookup has already
-	// happened and returned a hit, and the execution transaction has not opened.
-	logger := &nthPlanTransitionLogger{n: 2, fn: func() error {
-		return f.makeUniqueIndexPending(ctx)
-	}}
+	logger := &syncCaptureLogger{}
 	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
 
-	// Warm the cache. No transition yet, so this one must succeed.
+	// Warm the connection's plan cache from inside a transaction, which is the
+	// only regime that draws the proof at all.
 	got := queryIndexStateStrings(t, ctx, conn, distinctProofQuery)
 	if strings.Join(got, ",") != distinctProofWantRows {
 		t.Fatalf("warming run rows = %v, want %s", got, distinctProofWantRows)
 	}
-
-	rows, err := conn.QueryContext(ctx, distinctProofQuery)
-	if rows != nil {
-		_ = rows.Close()
+	warm := logger.snapshot()
+	if len(warm) != 1 {
+		t.Fatalf("planning events after warming = %d, want 1", len(warm))
 	}
-	if transitionErr := logger.err(); transitionErr != nil {
-		t.Fatalf("logger state transition: %v", transitionErr)
+	assertNarrowedByUEmailOnBaseScan(t, warm[0].PlanExplain)
+
+	// Strictly BETWEEN the two transactions: the next statement's planning reads
+	// a store state that already has it.
+	if err := f.makeUniqueIndexPending(ctx); err != nil {
+		t.Fatalf("transition between transactions: %v", err)
 	}
 
+	got = queryIndexStateStrings(t, ctx, conn, distinctProofQuery)
+	if strings.Join(got, ",") != distinctProofWantRows {
+		t.Fatalf("post-transition rows = %v, want %s", got, distinctProofWantRows)
+	}
 	events := logger.snapshot()
 	if len(events) != 2 {
 		t.Fatalf("planning events = %d, want 2", len(events))
 	}
-	assertNarrowedByUEmailOnBaseScan(t, events[0].PlanExplain)
-	if events[0].Cache != embedded.PlanCacheMiss {
-		t.Fatalf("the warming run was %s, want miss: nothing was cached, so the "+
-			"second run cannot be a hit", events[0].Cache)
+	if events[1].Cache != embedded.PlanCacheMiss {
+		t.Fatalf("the post-transition run was %s: the connection served the plan "+
+			"cached before the transition, whose DISTINCT is narrowed on U_EMAIL's "+
+			"withdrawn uniqueness claim: %s\nThe readable-index view must stay part "+
+			"of the plan-cache key; without it nothing else can catch this, because "+
+			"a statement inside one transaction cannot observe a transition that "+
+			"preceded its own read version.", events[1].Cache, events[1].PlanExplain)
 	}
-	if events[1].Cache != embedded.PlanCacheHit {
-		t.Fatalf("the second run was %s, want hit: this test only covers the "+
-			"cache-hit dependency path when the cache actually hits", events[1].Cache)
+	if strings.Contains(events[1].PlanExplain, "U_EMAIL") {
+		t.Fatalf("the replanned statement still rests on a READABLE_UNIQUE_PENDING "+
+			"index: %s", events[1].PlanExplain)
 	}
-	assertNarrowedByUEmailOnBaseScan(t, events[1].PlanExplain)
-	assertStaleIndexDependency(t, err, "U_EMAIL")
+	if !strings.Contains(events[1].PlanExplain, "Distinct(") {
+		t.Fatalf("the replanned statement has no dedup operator, so the withdrawn "+
+			"proof was replaced by nothing: %s", events[1].PlanExplain)
+	}
+}
+
+// carriesUEmailProof reports whether an EXPLAIN still advertises U_EMAIL as the
+// licence for a DISTINCT decision — either arm of the proof: `narrowed-by:` for
+// the R3 residual dedup, `distinct-by:` for a full R2 elision. Those two strings
+// are the ONLY places a plan admits that its dedup rests on a secondary UNIQUE
+// index, so they are what "still stamped" has to mean here.
+func carriesUEmailProof(explain string) bool {
+	return strings.Contains(explain, "narrowed-by:U_EMAIL") ||
+		strings.Contains(explain, "distinct-by:U_EMAIL")
+}
+
+// runDistinctProofInTx runs the proof query inside an explicit transaction and
+// returns the rows and the error WITHOUT failing the test on either. A refusal
+// is a legitimate outcome for the disjunction below, so the usual helper — which
+// fatals on any query error — cannot express it.
+func runDistinctProofInTx(t *testing.T, ctx context.Context, conn *sql.Conn) ([]string, error) {
+	t.Helper()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, distinctProofQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var value string
+		if scanErr := rows.Scan(&value); scanErr != nil {
+			t.Fatalf("scan: %v", scanErr)
+		}
+		got = append(got, value)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return got, rowsErr
+	}
+	sort.Strings(got)
+	return got, nil
+}
+
+// A WITHDRAWN PROOF IS NEVER SILENTLY SERVED. This pins the disjunction the
+// system actually guarantees, which is weaker than either single mechanism and
+// is the thing that is actually true.
+//
+// After an index-state transition that withdraws the proof, landing strictly
+// BETWEEN two transactions on one connection, the next statement must either
+//
+//	(a) REPLAN — the readable-index view is part of the plan-cache key
+//	    (plannerOptions.cacheKeyPart), so the transition changed the key, the
+//	    lookup misses, and the rebuilt plan carries no proof on the transitioned
+//	    index; or
+//	(b) REFUSE — SQLSTATE 40001 naming the stale dependency, from the
+//	    execution-time dependency revalidation.
+//
+// What it must NEVER do is the third thing: return rows from a plan still
+// stamped with the withdrawn index.
+//
+// So the FORBIDDEN outcome is the assertion, not either arm. Asserting a
+// specific arm is what made the predecessor of this test unreachable: it demanded
+// a cache HIT and a 40001 together, and there is no window in which both occur.
+// A transition visible to the next planning call changes the cache key and forces
+// a replan; a transition NOT visible to that planning call is equally invisible to
+// that statement's execution, since the two share one read version. There is no
+// third window, so "hit AND 40001" was asserting a state the design excludes.
+//
+// (a) is what a healthy tree does today. (b) is the backstop that fires if the
+// cache key ever stops including the readable-index set — which is exactly the
+// mutation that proves these are two independent layers rather than one dressed
+// as two. The sibling
+// TestFDB_DistinctProof_TransitionBetweenTransactionsReplansTheProofAway pins (a)
+// concretely, so the specific mechanism is not left unpinned by this test's
+// deliberate agnosticism about which arm fires.
+func TestFDB_DistinctProof_WithdrawnProofIsNeverSilentlyServed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newIndexStatePlanningFixture(t)
+	logger := &syncCaptureLogger{}
+	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetPlanLogger(logger)
+	})
+
+	// Warm the connection's plan cache from inside a transaction, the only regime
+	// that draws the proof at all under the read-version gate.
+	got, err := runDistinctProofInTx(t, ctx, conn)
+	if err != nil {
+		t.Fatalf("warming run: %v", err)
+	}
+	if strings.Join(got, ",") != distinctProofWantRows {
+		t.Fatalf("warming run rows = %v, want %s", got, distinctProofWantRows)
+	}
+	warm := logger.snapshot()
+	if len(warm) != 1 {
+		t.Fatalf("planning events after warming = %d, want 1", len(warm))
+	}
+	if warm[0].Cache != embedded.PlanCacheMiss {
+		t.Fatalf("the warming run was %s, want miss: nothing was cached before it, "+
+			"so a later HIT could not be attributed to this plan", warm[0].Cache)
+	}
+	// Non-vacuity: without a stamped plan in the cache there is no proof for the
+	// transition to withdraw, and the disjunction below holds for a statement that
+	// never depended on U_EMAIL in the first place.
+	assertNarrowedByUEmailOnBaseScan(t, warm[0].PlanExplain)
+
+	// Strictly BETWEEN the two transactions, so the next statement's planning and
+	// its execution both run at a read version that can see the withdrawal.
+	if err := f.makeUniqueIndexPending(ctx); err != nil {
+		t.Fatalf("transition between transactions: %v", err)
+	}
+
+	got, err = runDistinctProofInTx(t, ctx, conn)
+	events := logger.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("planning events = %d, want 2", len(events))
+	}
+	second := events[1]
+
+	if carriesUEmailProof(second.PlanExplain) && err == nil && len(got) > 0 {
+		t.Fatalf("SILENT WRONG ROWS: a plan still stamped with the WITHDRAWN "+
+			"U_EMAIL proof returned %d rows with no error.\n"+
+			"cache=%s plan=%s\n"+
+			"U_EMAIL is READABLE_UNIQUE_PENDING — the store no longer stands behind "+
+			"the uniqueness this plan's DISTINCT decision rests on, so these rows may "+
+			"contain duplicates the query asked to be rid of.\n"+
+			"This is precisely the case BOTH layers exist to prevent, and reaching it "+
+			"means BOTH failed: the readable-index section of "+
+			"plannerOptions.cacheKeyPart did not force a replan, AND the "+
+			"execution-time dependency revalidation did not refuse. Either one alone "+
+			"would have caught it. Fix whichever regressed; do not relax this test.",
+			len(got), second.Cache, second.PlanExplain)
+	}
+
+	// Beyond the forbidden outcome, whichever arm fired must have fired properly.
+	if err != nil {
+		// Arm (b): a refusal has to name the dependency that moved, or the operator
+		// is sent to the wrong index.
+		assertStaleIndexDependency(t, err, "U_EMAIL")
+		return
+	}
+	// Arm (a): replanned, so the answer must still be the correct one.
+	if strings.Join(got, ",") != distinctProofWantRows {
+		t.Fatalf("the replanned statement returned %v, want %s: %s",
+			got, distinctProofWantRows, second.PlanExplain)
+	}
 }
 
 // BOTH LICENSES HOLD → NO STAMP, and therefore NO 40001.

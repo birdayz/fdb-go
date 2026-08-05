@@ -17,7 +17,13 @@ type pkPlanContext struct {
 }
 
 func (c *pkPlanContext) GetPlannerConfiguration() PlannerConfiguration {
-	return DefaultPlannerConfiguration()
+	cfg := DefaultPlannerConfiguration()
+	// A unit fixture EXECUTES nothing and PAGES nowhere, so "the whole result
+	// comes from one read version" is true of it by construction. Stating it
+	// keeps the single-read-version gate from silently disabling every proof
+	// here, without weakening the gate: the condition really does hold.
+	cfg.SingleReadVersion = true
+	return cfg
 }
 
 func (c *pkPlanContext) GetMatchCandidates() []MatchCandidate { return nil }
