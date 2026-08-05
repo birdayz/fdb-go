@@ -1892,6 +1892,33 @@ func materializeDriverValue(v any) any {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
+	// The page's OUTCOME is staged in locals and published to r only after the
+	// page's transaction has succeeded.
+	//
+	// In auto-commit the closure below is the body of a DB.Run retry loop, so it
+	// may run more than once, and it RESUMES FROM r.continuation while clearing
+	// r.buf at its top. Any position it writes to r before its transaction
+	// commits is therefore position a re-execution inherits — and a re-execution
+	// that inherits an already-advanced continuation resumes PAST the rows the
+	// failed attempt drained, whose buffer it has just discarded. Those rows are
+	// silently gone: no error, no duplicate, a short result set.
+	//
+	// The invariant is the ordinary transactional one — a result set's position
+	// advances with the transaction that produced it, or not at all — and it is
+	// kept structurally, by the assignment site, rather than by argument about
+	// which failures can reach it. (Today none can: an auto-commit SELECT page
+	// is read-only, so its commit takes FDB's client-side read-only fast path
+	// and never returns not_committed; DML materializes its whole target set and
+	// so is always single-page; and a captured explicit transaction is not
+	// retried at all. Each of those is a property of code elsewhere, which is
+	// exactly why this must not depend on them — the tests that pin them name
+	// what re-arms this if one is relaxed.)
+	//
+	// r.buf needs no staging: the closure truncates it at the top of every
+	// attempt, so it is idempotent by construction.
+	var pageExhausted bool
+	var pageCont []byte
+
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
@@ -2008,14 +2035,20 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, api.NewError(api.ErrCodeExecutionLimitReached,
 				"query cannot progress under the configured per-page resource limits (a page produced no rows and no continuation advance); raise the scan/row limits")
 		}
-		r.exhausted = exhausted
-		r.continuation = contBytes
+		// Staged, NOT published: pageExhausted/pageCont are locals that the
+		// caller copies onto r only after the transaction succeeded. See the
+		// comment above the declarations.
+		pageExhausted, pageCont = exhausted, contBytes
 		return nil, nil
 	})
 
 	if txErr != nil {
 		return translateExecErrorCtx(r.ctx, txErr)
 	}
+	// The page's transaction committed. Only now does the result set's position
+	// move — this is the assignment that must not happen anywhere else.
+	r.exhausted = pageExhausted
+	r.continuation = pageCont
 	return nil
 }
 
