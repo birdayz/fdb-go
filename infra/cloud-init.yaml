@@ -332,10 +332,24 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Bazel-cache LRU prune. The bazelrc --experimental_disk_cache_gc_* flags run IN-SERVER
-  # during IDLE only and these servers rarely idle that long, so the native GC never
-  # engaged and the volume filled to ENOSPC. mtime is a true LRU signal (Bazel >=7
-  # touches entries on hit). Also sweeps stale output bases.
+  # Bazel-cache prune: SIZE-TARGETED, oldest-first (mtime = LRU, Bazel >=7 touches
+  # on hit). Not age-based: heavy CI fills the volume in <2 days, when no file
+  # passes any -mtime cutoff — an age prune deletes nothing exactly at ENOSPC.
+  # In-server gc flags never engage (idle-only). Details: infra/README.md.
+  - path: /usr/local/bin/bazel-cache-prune.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      V=/mnt/ci-data
+      use() { df --output=pcent "$V" | tail -1 | tr -dc 0-9; }
+      [ "$(use)" -le 60 ] && exit 0
+      find "$V/bazel-disk-cache" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2- | \
+      while IFS= read -r f; do
+        rm -f "$f"
+        i=$((i+1))
+        [ $((i % 5000)) -eq 0 ] && [ "$(use)" -le 60 ] && break
+      done
+      exit 0
   - path: /etc/systemd/system/bazel-cache-prune.service
     content: |
       [Unit]
@@ -343,18 +357,19 @@ write_files:
 
       [Service]
       Type=oneshot
+      ExecStart=/usr/local/bin/bazel-cache-prune.sh
       # $$ = literal $ for the shell (systemd would otherwise expand $var/$( to
-      # empty in ExecStart and silently no-op the tighten branch and the sweep).
-      ExecStart=/bin/sh -c "find /mnt/ci-data/bazel-disk-cache -type f -mtime +14 -delete 2>/dev/null; use=$$(df --output=pcent /mnt/ci-data | tail -1 | tr -dc 0-9); [ \"$$use\" -gt 70 ] && find /mnt/ci-data/bazel-disk-cache -type f -mtime +7 -delete 2>/dev/null; exit 0"
+      # empty in ExecStart and silently no-op the sweep).
       ExecStart=/bin/sh -c "for d in /mnt/ci-data/bazel/_bazel_runner/*/; do case $$d in *cache*|*install*) continue;; esac; [ -n \"$$(find $$d -maxdepth 0 -mtime +14 2>/dev/null)\" ] && rm -rf $$d; done; exit 0"
 
   - path: /etc/systemd/system/bazel-cache-prune.timer
     content: |
       [Unit]
-      Description=Weekly bazel cache prune
+      Description=Daily bazel cache prune
 
       [Timer]
-      OnCalendar=Sun 04:00
+      # Daily: a week is 5x the observed fill-from-empty time under heavy CI.
+      OnCalendar=daily
       RandomizedDelaySec=1h
       Persistent=true
 
@@ -606,5 +621,4 @@ runcmd:
   # Orphan FDB sweep timer (both modes; bazelscaleset also sweeps per-job, this is the net).
   - systemctl daemon-reload
   - systemctl enable --now orphan-fdb-sweep.timer
-  # Weekly bazel-cache LRU prune (deployed live 2026-07-05 after the volume-full CI outage).
   - systemctl enable --now bazel-cache-prune.timer
