@@ -39,6 +39,31 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 	if len(groupingKeys) == 0 {
 		return
 	}
+	// A streaming aggregation compares each row against the PREVIOUS group
+	// only. That is sound exactly when rows equal under the GROUPING IDENTITY
+	// arrive ADJACENT — which is what an index gives you, for every coordinate
+	// whose tuple encoding clusters that identity.
+	//
+	// A FLOAT/DOUBLE coordinate does not. The grouping identity is
+	// java.lang.Double.equals (Java decides a group break with
+	// `!currentGroup.equals(nextGroup)` over a protobuf message,
+	// StreamGrouping.java:186), which collapses every NaN payload to one value,
+	// while tuple encoding scatters those payloads into two blocks at OPPOSITE
+	// ENDS of the key space. So the NaN group opens near the start of the scan,
+	// closes, and reopens at the end — and the aggregation emits it TWICE. That
+	// is a wrong answer, and it is one this rule creates: without it the query
+	// is served by a sort beneath the aggregation, whose comparator
+	// (CompareFloat64) makes every NaN one value and lands them adjacent.
+	//
+	// The predicate is the one values.TypeTerminatesOrderingClaim authority the
+	// ordering producers ask, because it is the same underlying fact — physical
+	// key order is not this column's logical order. The DIFFERENCE is that a
+	// claim may be TRUNCATED to its good prefix while clustering may not:
+	// clustering is a property of the whole key, so anything short of every
+	// grouping key disqualifies the shortcut.
+	if values.ClaimableTypedKeyPrefix(groupingKeys) < len(groupingKeys) {
+		return
+	}
 
 	innerRef := gb.GetInner().GetRangesOver()
 	if innerRef == nil {

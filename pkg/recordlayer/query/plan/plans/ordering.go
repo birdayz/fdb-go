@@ -694,16 +694,14 @@ func claimableNameLimit(layout values.Type, names []string) int {
 // arrives from the translator already typed, and there is no layout — so
 // routing it through the name path with a nil layout would ask a question that
 // always answers "not a float" and would silently claim every ordering.
+//
+// It is the plans-side door to values.ClaimableTypedKeyPrefix, which the
+// planner's StreamingAggFromIndexRule also asks — for a different reason (input
+// CLUSTERING, not advertised order) but off the same predicate, so the rule
+// that BUILDS the plan and the derivation that DESCRIBES it cannot classify the
+// same grouping key differently.
 func claimableTypedKeyLimit(keys []values.Value) int {
-	for i, k := range keys {
-		if k == nil {
-			continue
-		}
-		if values.TypeTerminatesOrderingClaim(k.Type()) {
-			return i
-		}
-	}
-	return len(keys)
+	return values.ClaimableTypedKeyPrefix(keys)
 }
 
 // orderingColumnOfName mints an ordering key for a METADATA column name

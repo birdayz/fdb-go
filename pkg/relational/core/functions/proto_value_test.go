@@ -232,12 +232,19 @@ func TestConvertToProtoValue_Float_FromInt(t *testing.T) {
 	}
 }
 
-func TestConvertToProtoValue_Float_NaNReject(t *testing.T) {
+// A NaN narrows into a FLOAT column EXACTLY, so nothing rejects it. The
+// float32 range check exists to catch a FINITE double the narrowing would turn
+// into Infinity; NaN is not that, and refusing it here made INSERT … VALUES
+// disagree with the executor's converter, which UPDATE and INSERT … SELECT use.
+func TestConvertToProtoValue_Float_NaNIsStored(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_float")
-	_, err := ConvertToProtoValue(fd, math.NaN())
-	if err == nil {
-		t.Fatal("NaN → float should error")
+	pv, err := ConvertToProtoValue(fd, math.NaN())
+	if err != nil {
+		t.Fatalf("NaN → FLOAT: %v", err)
+	}
+	if !math.IsNaN(float64(float32(pv.Float()))) {
+		t.Fatalf("NaN → FLOAT stored %v, want NaN", pv.Float())
 	}
 }
 
@@ -274,12 +281,18 @@ func TestConvertToProtoValue_Double_FromInt(t *testing.T) {
 	}
 }
 
-func TestConvertToProtoValue_Double_NaNReject(t *testing.T) {
+// A DOUBLE column carries every IEEE-754 value. Java's does: nothing on its
+// write or query path inspects a double's finiteness, and its comparator
+// (Double.compareTo) ranks NaN rather than refusing it.
+func TestConvertToProtoValue_Double_NaNIsStored(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_double")
-	_, err := ConvertToProtoValue(fd, math.NaN())
-	if err == nil {
-		t.Fatal("NaN → double should error")
+	pv, err := ConvertToProtoValue(fd, math.NaN())
+	if err != nil {
+		t.Fatalf("NaN → DOUBLE: %v", err)
+	}
+	if !math.IsNaN(pv.Float()) {
+		t.Fatalf("NaN → DOUBLE stored %v, want NaN", pv.Float())
 	}
 }
 
@@ -698,34 +711,35 @@ func TestConvertToProtoValue_Double_FromInt64(t *testing.T) {
 	}
 }
 
-func TestConvertToProtoValue_Double_NaN(t *testing.T) {
-	t.Parallel()
-	fd := typedFD("val_double")
-	_, err := ConvertToProtoValue(fd, math.NaN())
-	if err == nil {
-		t.Fatal("expected error for NaN in double field")
-	}
-}
-
 func TestConvertToProtoValue_Double_Inf(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_double")
-	_, err := ConvertToProtoValue(fd, math.Inf(1))
-	if err == nil {
-		t.Fatal("expected error for +Inf in double field")
-	}
-	_, err = ConvertToProtoValue(fd, math.Inf(-1))
-	if err == nil {
-		t.Fatal("expected error for -Inf in double field")
+	for _, want := range []float64{math.Inf(1), math.Inf(-1)} {
+		pv, err := ConvertToProtoValue(fd, want)
+		if err != nil {
+			t.Fatalf("%v → DOUBLE: %v", want, err)
+		}
+		if pv.Float() != want {
+			t.Fatalf("%v → DOUBLE stored %v", want, pv.Float())
+		}
 	}
 }
 
-func TestConvertToProtoValue_Float_Inf(t *testing.T) {
+// ±Infinity into a FLOAT column IS rejected — but by the narrowing range check
+// rather than by a non-finiteness rule, which is why the code is
+// NumericValueOutOfRange (22003) and not InvalidParameter (22023). The
+// distinction is what makes NaN's acceptance above coherent rather than
+// arbitrary, and it is the answer the executor's converter already gave for
+// UPDATE and INSERT … SELECT.
+func TestConvertToProtoValue_Float_InfIsARangeError(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_float")
-	_, err := ConvertToProtoValue(fd, math.Inf(1))
-	if err == nil {
-		t.Fatal("expected error for +Inf in float field")
+	for _, in := range []float64{math.Inf(1), math.Inf(-1)} {
+		_, err := ConvertToProtoValue(fd, in)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeNumericValueOutOfRange {
+			t.Fatalf("%v → FLOAT: want %s, got %v", in, api.ErrCodeNumericValueOutOfRange, err)
+		}
 	}
 }
 

@@ -2398,6 +2398,16 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // and still ends in a divergence. CockroachDB merges because it normalizes
 // zero inside its key encoder (EncodeFloatAscending) — the same principle,
 // applied to an encoding it controls and we do not.
+//
+// The float32 arm below is reached only by DIRECT callers, never by a query. A
+// 32-bit FLOAT column arrives at this layer already WIDENED to float64, so SQL
+// DISTINCT on a FLOAT is served by the float64 arm. MEASURED: a panic at the
+// top of the float32 arm passes the whole SQL-level gate and fails only
+// TestPackedDedupKeyCanonicalizesNaNsButPreservesSignedZero, which calls this
+// function directly. The arm is kept because this takes []any and its contract
+// is over Go values rather than over what today's SQL layer happens to hand
+// it — but it must not be cited as evidence that a float32 path is exercised,
+// and the group-key encoder deliberately has no such arm for that reason.
 func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {

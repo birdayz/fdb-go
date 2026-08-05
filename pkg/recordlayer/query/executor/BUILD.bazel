@@ -46,6 +46,7 @@ go_library(
 go_test(
     name = "executor_test",
     srcs = [
+        "agg_continuation_group_key_rederive_test.go",
         "aggregate_avg_precision_test.go",
         "aggregate_output_slot_identity_test.go",
         "bench_proto_test.go",
@@ -245,6 +246,7 @@ go_test(
         "scan_range_set_cursor_fuzz_test.go",
         "scan_range_set_cursor_test.go",
         "signed_zero_scan_helpers_test.go",
+        "agg_continuation_group_key_rederive_test.go",
         "merge_child_width_assertion_test.go",
     ],
     tags = ["resources:memory:400"],

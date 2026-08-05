@@ -238,8 +238,36 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 // withPartialState restores accumulator state from a previous transaction's
 // continuation. Mirrors Java's StreamGrouping constructor with
 // PartialAggregationResult parameter.
+//
+// The saved groupKey bytes are DELIBERATELY NOT the resumed key. They were
+// packed by whichever binary minted the token, under whatever group-key
+// encoding that binary had, and the very next row is keyed by THIS binary's
+// encoder — so installing them verbatim compares two different encodings and
+// reports a group break that is not one.
+//
+// That is not hypothetical: canonicalizing NaN in the group key changed the
+// encoding, and Go's own math.NaN() is 0x7ff8000000000001 rather than the
+// canonical 0x7ff8000000000000, so an ordinary mid-group token minted before
+// that change carries a key this binary would never produce. Resuming it
+// verbatim finalizes the partial group on its own and emits the same group
+// TWICE — a wrong answer produced purely by upgrading.
+//
+// So the key is RE-DERIVED from the continuation's decoded keyVals, which ride
+// typed and lossless precisely so this is possible. The saved bytes are used
+// for nothing. A future encoding change is then automatically compatible for
+// the same reason, rather than needing its own migration.
+//
+// Re-derivation can fail only if a keyVal is unencodable, which
+// encodeAggGroupKey already refuses to write; on that path the saved bytes are
+// the best remaining answer and are used unchanged rather than dropping the
+// partial group.
 func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *groupState) {
 	c.currentGroupKey = groupKey
+	if !c.scalarMode && len(keyVals) > 0 {
+		if rederived, err := packGroupKey(keyVals); err == nil {
+			c.currentGroupKey = rederived
+		}
+	}
 	c.currentKeyVals = keyVals
 	c.current = gs
 }
@@ -469,18 +497,67 @@ func valueReadsBakedOrdinal(v values.Value) bool {
 	return false
 }
 
+// canonicalizeGroupKeyFloat applies the GROUPING identity to a float before it
+// is packed into the group key: every NaN payload becomes one value, and the
+// two signed zeros stay distinct.
+//
+// That is java.lang.Double.equals — doubleToLongBits — which is what Java's
+// streaming aggregation compares (StreamGrouping.java:186 decides a group break
+// with `!currentGroup.equals(nextGroup)` over a protobuf message, and protobuf
+// compares a double field with Double.equals). It is deliberately NOT IEEE
+// `==`, under which the two zeros would merge and no two NaNs would ever match.
+//
+// THERE IS NO float32 COMPANION, and its absence is a measured fact rather than
+// an oversight. A 32-bit FLOAT column arrives at this layer already WIDENED to
+// float64 — the SQL row path hands back float64 for both carriers — so a
+// float32 never reaches computeGroupKey from a query. MEASURED: a panic at the
+// top of a float32 arm here passed the entire SQL-level gate untouched, and a
+// `GROUP BY` on a FLOAT column carrying the payloads 0x7fc00000 and 0xffc00000
+// is served correctly by the float64 arm above
+// (TestFDB_FloatGroupByNaNAuthority_Float32 pins exactly that, and goes red
+// with this canonicalization removed).
+//
+// A float32 that somehow did arrive is still handled: the switch has no
+// float32 case, so it falls to appendDistinctValue, which canonicalizes NaN at
+// every nesting level. Correct by fall-through beats a specialized arm no
+// caller reaches — a dead arm cannot be mutation-tested, so it is a claim the
+// suite can never check.
+func canonicalizeGroupKeyFloat(v float64) float64 {
+	if math.IsNaN(v) {
+		return math.Float64frombits(distinctCanonicalNaN64Bits)
+	}
+	return v
+}
+
 func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error) {
 	if c.scalarMode {
 		return "", nil, nil
 	}
 	keyParts := make([]any, len(c.groupingKeys))
-	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
 		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
 		}
 		keyParts[i] = v
+	}
+	packed, err := packGroupKey(keyParts)
+	if err != nil {
+		return "", nil, err
+	}
+	return packed, keyParts, nil
+}
+
+// packGroupKey turns evaluated grouping-key VALUES into the packed group key.
+//
+// It is separate from computeGroupKey because the resume path has values but no
+// row to evaluate: withPartialState re-derives the key from the continuation's
+// decoded keyVals rather than trusting the bytes the continuation carries. Both
+// callers must use the same encoder or a resume compares keys from two
+// different ones.
+func packGroupKey(keyParts []any) (string, error) {
+	t := make(tuple.Tuple, len(keyParts))
+	for i, v := range keyParts {
 		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
 		// Any other slot type (UUID [16]byte, composite ARRAY/STRUCT values)
 		// encodes LOSSLESSLY via the continuation codec as one []byte tuple
@@ -488,36 +565,70 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// ([]any{"a b"} vs []any{"a","b"}) and merged distinct groups
 		// (RFC-180 C3).
 		//
-		// The packed key rides through the aggregate continuation VERBATIM
-		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
-		// compared byte-for-byte on resume to detect a group change, so any
-		// deterministic packing is safe; both sides of a resume re-derive it
-		// with this same encoding. The group's surfaced VALUE rides separately
-		// in keyVals (typed, lossless).
+		// The packed key rides through the aggregate continuation as raw bytes
+		// (encodeAggGroupKey, not a JSON string) and is compared byte-for-byte
+		// on resume to detect a group change. Those saved bytes are NOT trusted
+		// as the resumed key: withPartialState re-derives it from the
+		// continuation's keyVals through this same function, so a token minted
+		// by an older binary under an older encoding still compares against
+		// keys built by this one. The group's surfaced VALUE rides separately
+		// in keyVals (typed, lossless), which is what makes that possible.
 		//
-		// A zero-valued float is packed VERBATIM, so -0.0 and +0.0 are two
-		// groups. This is deliberate and must stay: when the same GROUP BY is
-		// served by a maintained aggregate index, the grouping prefix IS the
-		// index key, so the two signed zeros are two physical entries that Java
-		// reads the same way (Java's own grouping splits them too — StreamGrouping
-		// compares DynamicMessage grouping values by object-field equality, so a
-		// DOUBLE field ultimately uses Double.equals). Canonicalizing here
-		// would make the answer depend on whether an aggregate index exists.
-		// packedDedupKey follows the same rule for the same reason; see its doc
-		// comment for the full argument, including why the opposite choice
-		// broke the ordered dedup path.
+		// FLOAT/DOUBLE grouping identity is java.lang.Double.equals, and it says
+		// two different things that must BOTH be honoured. Java's streaming
+		// aggregation compares grouping values with
+		// `!currentGroup.equals(nextGroup)` (StreamGrouping.java:186) over the
+		// protobuf DynamicMessage that RecordConstructorValue.eval builds
+		// (RecordConstructorValue.java:113-140), and protobuf message equality
+		// compares a double field with Double.equals — doubleToLongBits:
+		//
+		//   every NaN payload is ONE value (the bits are canonicalized)
+		//   -0.0 and +0.0 are TWO values   (the bits differ — the OPPOSITE of
+		//                                   IEEE `==`)
+		//
+		// So NaN is canonicalized here and zero is packed VERBATIM. Packing
+		// both verbatim — which is what this did — takes the correct half of
+		// that rule and applies it to the case it does not cover.
+		//
+		// The zero half must stay: when the same GROUP BY is served by a
+		// maintained aggregate index the grouping prefix IS the index key, so
+		// the two signed zeros are two physical entries Java reads the same
+		// way, and merging them would change what is on the wire.
+		//
+		// The NaN half does NOT have that constraint in the direction that
+		// matters. An aggregate index splits NaN payloads in Java too
+		// (AtomicMutationIndexMaintainer.java:141,158 packs the prefix, and
+		// tuple encoding preserves the payload), so Java is itself
+		// plan-dependent on NaN — one group through the streaming plan, two
+		// through the index. Reproducing that split is conformance; inventing a
+		// THIRD answer, where Go's streaming path splits and its own DISTINCT
+		// (executor.packedDedupKey) merges, is not.
+		//
+		// Composites go through appendDistinctValue rather than appendContValue
+		// so a NaN inside an ARRAY or STRUCT grouping key obeys the same rule
+		// at every nesting level, exactly as protobuf message equality does.
+		// (appendContValue remains the reversible continuation codec and must
+		// keep every raw bit; the two encoders differ on purpose.)
+		//
+		// The canonical NaN payloads are the ones packedDedupKey uses, so
+		// GROUP BY and DISTINCT agree on the DOUBLE carrier — which is the
+		// carrier both actually see. Neither sees a float32 from a query (see
+		// canonicalizeGroupKeyFloat), so that is a shared CONSTANT, not a
+		// shared exercised path, and it is not claimed as one.
 		switch tv := v.(type) {
-		case nil, int64, float64, string, []byte, bool:
+		case float64:
+			t[i] = canonicalizeGroupKeyFloat(tv)
+		case nil, int64, string, []byte, bool:
 			t[i] = tv
 		default:
-			b, cerr := appendContValue(nil, v)
+			b, cerr := appendDistinctValue(nil, v)
 			if cerr != nil {
-				return "", nil, fmt.Errorf("group key slot %d: %w", i, cerr)
+				return "", fmt.Errorf("group key slot %d: %w", i, cerr)
 			}
 			t[i] = b
 		}
 	}
-	return string(t.Pack()), keyParts, nil
+	return string(t.Pack()), nil
 }
 
 func (c *aggregateCursor) newGroupState() *groupState {

@@ -142,12 +142,14 @@ derivations can classify the same column differently.
 
 ### This is a live bug, not a theoretical one
 
-NaN is reachable from ordinary SQL today. Plain `INSERT ... VALUES` and bound
-parameters reject non-finite values at the proto-write boundary with `22023`
-("cannot store NaN or Infinity"), but **`UPDATE` and `INSERT ... SELECT` do
-not route through that guard**. The differential test seeds its NaN rows
-through exactly that path — `UPDATE t SET e = (e * 10.0) + (e * -10.0)` — which
-is how it can exist at all. So a user can put a NaN in a table with supported
+NaN is reachable from ordinary SQL today, through **every** write path. When
+this was written that was not so: plain `INSERT ... VALUES` and bound parameters
+rejected non-finite values at the proto-write boundary with `22023` ("cannot
+store NaN or Infinity") while `UPDATE` and `INSERT ... SELECT` did not, and the
+differential test seeded its NaN rows through the one path that worked. That
+Go-only guard is gone — Java has no such rule anywhere, and a column that
+accepted a value through one syntax and refused it through another was the
+defect, not the protection. So a user can put a NaN in a table with supported
 SQL and then get wrong-ordered rows out of an ORDER BY, and with `LIMIT`, the
 wrong rows entirely.
 

@@ -50,9 +50,12 @@ func (g aggFloatGroup) String() string {
 //   - BOTH NaN signs, with DISTINCT payloads. A positive NaN alone hides the
 //     defect entirely: it is physically and logically last. The negative NaN is
 //     the one that packs BEFORE -Inf while comparing GREATEST.
-//   - id 80 is BALLAST, and it is not decoration. The non-finite rows can only
-//     be created by UPDATE (INSERT ... VALUES and bind parameters reject
-//     non-finite floats with 22023), and they are seeded at 1.0e308. Without a
+//   - id 80 is BALLAST, and it is not decoration. The non-finite rows are
+//     created by UPDATE out of a 1.0e308 seed — arithmetic is how the two
+//     DISTINCT NaN payloads are obtained, since no literal spells the
+//     sign-bit-SET quiet NaN that `(+Inf) + (-Inf)` yields. (It was once also
+//     the only path that accepted them at all; every write path does now — see
+//     nonfinite_float_write_symmetry_fdb_test.go.) Without a
 //     row that KEEPS 1.0e308, those updates vacate that group — and the SUM
 //     index then reports a phantom `{1e+308 sum=0}` group that no oracle
 //     produces. That is an index-maintenance defect, entirely independent of
@@ -253,9 +256,28 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 
 	// The NaN tie order is NOT asserted. All NaN payloads are ONE logical value
 	// under CompareFloat64, so GROUP BY leaves them tied and their relative
-	// order is free. (That GROUP BY produces TWO NaN groups rather than one is a
-	// separate, unfixed dedup question — it holds identically on the oracle, so
-	// it is not what any assertion here turns on.)
+	// order is free.
+	//
+	// The NaN GROUP COUNT is a different matter, and it is where the producers
+	// would part company — except that after RFC-209 neither case below reaches
+	// the one that behaves differently:
+	//
+	//   - A streaming aggregation groups by java.lang.Double.equals, which
+	//     collapses every NaN payload. It reports ONE NaN group, matching the
+	//     oracle exactly. BOTH cases below now plan this way.
+	//   - An aggregate index stores each group as its own FDB entry keyed by the
+	//     packed grouping prefix, and tuple encoding preserves the payload, so
+	//     two payloads are two entries — in Go and in Java alike
+	//     (AtomicMutationIndexMaintainer.java:141,158, read back one row per
+	//     entry by RecordQueryAggregateIndexPlan.java:128-144, no StreamGrouping
+	//     anywhere in that path). Java is itself plan-dependent here. Merging
+	//     them in Go would mean writing key bytes Java does not.
+	//
+	// That second behaviour is pinned in
+	// TestFDB_FloatAggregateIndexSplitsNaNPayloads rather than here, on a shape
+	// the aggregate-index producer still serves. It asserts the plan FIRST and
+	// fails — never skips — if the planner stops choosing that producer, so the
+	// coverage cannot evaporate the way it just did in this file.
 	for _, tc := range []struct {
 		name, table, wantPlan string
 	}{
@@ -317,6 +339,18 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 			}
 			// The differential: same groups, same sums, same position of the NaN
 			// block — only the free tie order inside it may differ.
+			// Both cases now plan streaming aggregation (RFC-209's
+			// group-existence merge declines an unbound raw DOUBLE grouping
+			// coordinate), and a streaming aggregation groups by Double.equals,
+			// which collapses every NaN payload. So both sides report ONE NaN
+			// group and the plain differential applies to each.
+			//
+			// The aggregate-index producer's OPPOSITE behaviour — it splits the
+			// payloads, because its grouping prefix is the packed index key —
+			// is not covered here now that no case reaches it. It is pinned on
+			// its own in TestFDB_FloatAggregateIndexSplitsNaNPayloads, which
+			// fails loudly rather than skipping if the planner stops choosing
+			// that producer.
 			if !sameAggFloatGroups(sortedAggFloatGroups(nans), sortedAggFloatGroups(refNaNs)) {
 				t.Errorf("DIFFERENTIAL MISMATCH on the NaN tie class: indexed=%v oracle=%v\n"+
 					"  query: %s\n  plan:  %s\n  ref:   %s", nans, refNaNs, q, plan, refQ)
