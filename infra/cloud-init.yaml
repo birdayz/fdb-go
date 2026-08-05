@@ -66,14 +66,10 @@ write_files:
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
-  # link-ci-volume.sh points the stable /mnt/ci-data at the attached CI data volume. It is
-  # a FILE, not an inline runcmd block, so infra/link_ci_volume_test.sh executes this exact
-  # code against fixtures instead of a copy of it.
-  #
-  # Migrate-or-abort, never `ln -sfn` onto whatever is there: that puts the link INSIDE an
-  # existing directory, which is how the pool silently ran Docker and every bazel cache on
-  # the root disk with the volume empty. An occupied /mnt/ci-data aborts and asks for a
-  # migration. Incident narrative: infra/README.md.
+  # link-ci-volume.sh: stable /mnt/ci-data -> CI data volume. A FILE so
+  # infra/link_ci_volume_test.sh runs this exact code. Migrate-or-abort, never
+  # `ln -sfn` onto whatever is there (that nests the link inside an existing dir
+  # and silently runs Docker on the root disk). Incident: infra/README.md.
   - path: /usr/local/bin/link-ci-volume.sh
     permissions: "0755"
     content: |
@@ -332,10 +328,8 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Bazel-cache prune: SIZE-TARGETED, oldest-first (mtime = LRU, Bazel >=7 touches
-  # on hit). Not age-based: heavy CI fills the volume in <2 days, when no file
-  # passes any -mtime cutoff — an age prune deletes nothing exactly at ENOSPC.
-  # In-server gc flags never engage (idle-only). Details: infra/README.md.
+  # Bazel-cache prune: size-targeted LRU (mtime; Bazel >=7 touches on hit). Age
+  # prunes delete nothing when CI fills in <2 days. Details: infra/README.md.
   - path: /usr/local/bin/bazel-cache-prune.sh
     permissions: "0755"
     content: |
@@ -343,7 +337,11 @@ write_files:
       V=/mnt/ci-data
       use() { df --output=pcent "$V" | tail -1 | tr -dc 0-9; }
       [ "$(use)" -le 60 ] && exit 0
-      find "$V/bazel-disk-cache" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2- | \
+      # tmp/ and gc/ hold in-flight writes; -mmin +15 covers the scan-to-unlink
+      # race. Unlink under a reader is safe (open FDs survive).
+      find "$V/bazel-disk-cache" -type f \
+        -not -path "$V/bazel-disk-cache/tmp/*" -not -path "$V/bazel-disk-cache/gc/*" \
+        -mmin +15 -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2- | \
       while IFS= read -r f; do
         rm -f "$f"
         i=$((i+1))
@@ -357,20 +355,20 @@ write_files:
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/bazel-cache-prune.sh
-      # $$ = literal $ for the shell (systemd would otherwise expand $var/$( to
-      # empty in ExecStart and silently no-op the sweep).
+      # Sweep first: frees space the trim would evict entries to reclaim.
+      # $$ = literal $ (systemd expands $var/$( to empty otherwise).
       ExecStart=/bin/sh -c "for d in /mnt/ci-data/bazel/_bazel_runner/*/; do case $$d in *cache*|*install*) continue;; esac; [ -n \"$$(find $$d -maxdepth 0 -mtime +14 2>/dev/null)\" ] && rm -rf $$d; done; exit 0"
+      ExecStart=/usr/local/bin/bazel-cache-prune.sh
 
   - path: /etc/systemd/system/bazel-cache-prune.timer
     content: |
       [Unit]
-      Description=Daily bazel cache prune
+      Description=Hourly bazel cache prune
 
       [Timer]
-      # Daily: a week is 5x the observed fill-from-empty time under heavy CI.
-      OnCalendar=daily
-      RandomizedDelaySec=1h
+      # Hourly: 60->100% fills in ~19h; daily+jitter can gap 25h. No-op at target.
+      OnCalendar=hourly
+      RandomizedDelaySec=10min
       Persistent=true
 
       [Install]
@@ -553,11 +551,9 @@ runcmd:
     # disk_cache/repository_cache at them unconditionally, so a classic runner without
     # them dies with "ERROR: [unix_jni.cc] /mnt/ci-data/bazel-disk-cache (Permission
     # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
-    # vulndb-mirror: cmd/vulnscan mirrors the vulnerability database here instead
-    # of fetching one document per advisory from vuln.go.dev on every job, which a
-    # fleet sharing a small address block gets 403-rate-limited for. The volume root
-    # is root-owned 0755, so the runner cannot create this itself and the scan
-    # fails closed (correctly) with "nothing to scan against".
+    # vulndb-mirror: cmd/vulnscan's local vuln.go.dev mirror (per-advisory fetches
+    # get the fleet 403-rate-limited). Root-owned volume root means the runner
+    # cannot mkdir this itself; absent, the scan fails closed. infra/README.md.
     install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache /mnt/ci-data/vulndb-mirror
     RUNNER_MODE="${runner_mode}"
     if [ "$RUNNER_MODE" = "classic" ]; then
