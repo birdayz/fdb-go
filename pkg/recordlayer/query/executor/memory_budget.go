@@ -132,6 +132,20 @@ func (s *boundedSet[K]) Len() int {
 	return len(s.m)
 }
 
+// Rebind moves an already-populated set onto a different statement state,
+// re-charging everything it holds in ONE call. It exists for resume state that
+// outlives the page that built it (ExecutionScratch): each page mints a fresh
+// ExecuteState and releases its charge at teardown, so a set handed forward
+// must re-declare its bytes against the page now holding it — otherwise the
+// second page's budget would see a large live set as free. A breach of the new
+// budget is returned as the loud error it is; the set is left bound to the new
+// state with its charge applied, exactly as an incremental Add that breached
+// leaves the counter, so the caller's teardown release stays balanced.
+func (s *boundedSet[K]) Rebind(st *recordlayer.ExecuteState) error {
+	s.st = st
+	return st.ChargeMemory(s.charged)
+}
+
 // estimateQueryResultBytes returns an approximate resident-byte estimate for a
 // QueryResult, for charging against the statement memory budget (RFC-130). It
 // is intentionally NOT exact heap size — a ceiling signal, not a measurement —

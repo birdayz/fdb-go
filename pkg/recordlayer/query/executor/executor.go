@@ -2205,22 +2205,27 @@ func executeDistinct(
 	}
 
 	// Hash path (UNORDERED input): dedup by the packed dedup key via a
-	// memory-budget-charged set that RIDES THE CONTINUATION (TODO.md C5).
-	// Carrying the seen-set makes the hash distinct
-	// resume-clean: a duplicate whose run straddles a scanned-rows page boundary
-	// is not re-admitted (the fresh-per-page set used to lose its state across
-	// the internal-paging Execute boundary and return WRONG ROWS). This fixes
-	// both the unordered case and DISTINCT + ORDER-BY-on-a-non-output-column,
+	// memory-budget-charged set that SURVIVES THE RESUME (TODO.md C5), so a
+	// duplicate whose run straddles a scanned-rows page boundary is not
+	// re-admitted (the fresh-per-page set used to lose its state across the
+	// internal-paging Execute boundary and return WRONG ROWS). This covers both
+	// the unordered case and DISTINCT + ORDER-BY-on-a-non-output-column,
 	// neither of which the ordering-detection streaming path (above) reaches.
+	//
+	// The set crosses the boundary BY REFERENCE, parked in the statement's
+	// ExecutionScratch and named by a token in the continuation. Writing it into
+	// the continuation instead — which is what a self-contained continuation
+	// would require — makes page P carry every key emitted through page P, i.e.
+	// O(pages^2) bytes written and re-parsed across a drain; that encoding
+	// survives only for a scratch-less execution.
 	//
 	// SELECT DISTINCT is a Go-only extension — Java's SQL layer never dedups it,
 	// and Java's value-distinct HashSet is likewise un-carried across
 	// continuations — so this continuation is Go-internal
 	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
 	// is bounded by the statement memory budget; a high-cardinality DISTINCT
-	// that would blow the continuation fails LOUDLY on the budget (never silent
-	// wrong rows), the signal that the cost-based sort-distinct follow-up should
-	// have been chosen.
+	// fails LOUDLY on the budget (never silent wrong rows), the signal that the
+	// cost-based sort-distinct follow-up should have been chosen.
 	return executeHashDistinct(
 		ctx,
 		p.GetInner(),
@@ -2233,8 +2238,12 @@ func executeDistinct(
 }
 
 // executeUnorderedPrimaryKeyDistinct removes duplicate records by primary key.
-// The input need not be ordered; executeHashDistinct therefore persists the
-// complete seen-key set in each continuation.
+// The input need not be ordered, so the seen-key set is the operator's whole
+// memory and must survive a resume; executeHashDistinct carries it across the
+// page boundary by reference through the statement's ExecutionScratch. Java's
+// RecordQueryUnorderedPrimaryKeyDistinctPlan (:100-104) instead mints a fresh
+// HashSet per execution and passes the inner continuation through, so a
+// duplicate spanning a resume is re-admitted there.
 func executeUnorderedPrimaryKeyDistinct(
 	ctx context.Context,
 	p *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
@@ -2255,9 +2264,12 @@ func executeUnorderedPrimaryKeyDistinct(
 }
 
 // executeHashDistinct is the common resume-clean unordered-distinct path. Its
-// continuation contains the inner position and every key seen so far in
-// deterministic insertion order. Rebuilding a page re-charges the set against
-// the statement budget; cursor teardown releases the page's live charge.
+// continuation contains the inner position plus the IDENTITY of the seen-set:
+// a scratch token when the execution carries an ExecutionScratch (the live set
+// is handed forward untouched — O(1) bytes, linear total work), and otherwise
+// every key seen so far in deterministic insertion order (self-contained, and
+// quadratic across pages). Each page re-charges the set against its own
+// statement budget and releases that charge at cursor teardown.
 func executeHashDistinct(
 	ctx context.Context,
 	inner plans.RecordQueryPlan,
@@ -2269,6 +2281,7 @@ func executeHashDistinct(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	seen := newBoundedSet[string](props.State)
 	var order []string
+	var adoptedToken int64
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
@@ -2276,17 +2289,54 @@ func executeHashDistinct(
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
-		for _, key := range dc.GetSeenKeys() {
-			packedKey := string(key)
-			added, addErr := seen.Add(packedKey, int64(len(key)))
-			if addErr != nil {
-				// No cursor exists yet, so release the partially rebuilt set
-				// directly instead of relying on a close hook.
-				props.State.ReleaseMemory(seen.Charged())
-				return nil, addErr
+		if token := dc.GetStateToken(); token != 0 {
+			// The set was carried BY REFERENCE: take the live one back from the
+			// statement scratch rather than re-parsing it out of the bytes,
+			// which is what makes a P-page drain linear instead of quadratic. A
+			// token the scratch does not hold is an error, never a silent
+			// resume against an empty set.
+			st, aerr := evalCtx.Scratch().adoptDistinct(token)
+			if aerr != nil {
+				return nil, aerr
 			}
-			if added {
-				order = append(order, packedKey)
+			adoptedToken = token
+			order = st.order[:st.n]
+			seen = st.seen
+			if st.n != len(st.order) {
+				// The parked cursor advanced past the prefix this continuation
+				// claims, so the live map holds keys the resume must NOT
+				// suppress. Rebuild from the immutable prefix. Off the paging
+				// loop's path: it serializes a drained cursor's terminal
+				// position, where the two agree. The prefix is COPIED: this
+				// cursor appends to it, and the parked slice's tail still
+				// belongs to a continuation that may yet be resumed.
+				order = append([]string(nil), order...)
+				seen = newBoundedSet[string](props.State)
+				for _, key := range order {
+					if _, addErr := seen.Add(key, int64(len(key))); addErr != nil {
+						props.State.ReleaseMemory(seen.Charged())
+						return nil, addErr
+					}
+				}
+			} else if rerr := seen.Rebind(props.State); rerr != nil {
+				// The carried set must re-declare its bytes against THIS
+				// page's budget; a breach is the loud budget error.
+				props.State.ReleaseMemory(seen.Charged())
+				return nil, rerr
+			}
+		} else {
+			for _, key := range dc.GetSeenKeys() {
+				packedKey := string(key)
+				added, addErr := seen.Add(packedKey, int64(len(key)))
+				if addErr != nil {
+					// No cursor exists yet, so release the partially rebuilt set
+					// directly instead of relying on a close hook.
+					props.State.ReleaseMemory(seen.Charged())
+					return nil, addErr
+				}
+				if added {
+					order = append(order, packedKey)
+				}
 			}
 		}
 	}
@@ -2304,10 +2354,12 @@ func executeHashDistinct(
 		return nil, err
 	}
 	cursor := &distinctHashCursor{
-		inner: innerCursor,
-		seen:  seen,
-		order: order,
-		keyer: keyer,
+		inner:        innerCursor,
+		seen:         seen,
+		order:        order,
+		keyer:        keyer,
+		scratch:      evalCtx.Scratch(),
+		adoptedToken: adoptedToken,
 	}
 	return newCloseHookCursor(
 		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),

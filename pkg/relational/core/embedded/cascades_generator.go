@@ -1333,6 +1333,16 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		execState: recordlayer.NewExecuteState(
 			optInt64(c.Options(), api.OptMaxStatementMemoryBytes, 0),
 		),
+		// The statement-scoped scratch, minted ONCE for the same reason
+		// execState is: each page rebuilds the cursor hierarchy, and an
+		// operator whose resume state is O(rows already emitted) — the
+		// unordered hash DISTINCT's seen-set — must hand that state to the next
+		// page instead of serializing it into every page's continuation, which
+		// costs O(pages^2) to write and re-parse. These continuations never
+		// leave the statement (statement continuations are rejected outright,
+		// see cascadesPlan's continuation check), so the scratch has exactly
+		// their lifetime.
+		scratch: executor.NewExecutionScratch(),
 	}
 
 	// Eagerly fetch the first page so execution errors (type mismatches,
@@ -1434,6 +1444,12 @@ type paginatingRows struct {
 	// pointer into the page's ExecuteProperties.State, so the in-memory
 	// buffering budget accumulates across the whole statement. Never nil.
 	execState *recordlayer.ExecuteState
+
+	// scratch is the statement-wide home for operator resume state too large
+	// to ride every page's continuation (executor.ExecutionScratch). Minted
+	// ONCE in Execute and stamped onto every page's EvaluationContext, exactly
+	// as execState is stamped onto every page's ExecuteProperties. Never nil.
+	scratch *executor.ExecutionScratch
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -1986,7 +2002,9 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, stateErr
 		}
 
-		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
+		evalCtx := executor.EmptyEvaluationContext().
+			WithStatementTime(r.statementTime).
+			WithExecutionScratch(r.scratch)
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
 		// ONCE in Execute, from the session clock (Session.BeginStatement /
 		// StatementNow — the same authority the INSERT…VALUES fold reads),

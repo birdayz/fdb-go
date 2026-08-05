@@ -31,20 +31,33 @@ const (
 )
 
 // DistinctHashContinuation is the resume state of executeDistinct's non-
-// streaming (hash) path: the inner cursor position plus every dedup key already
-// emitted. Carrying the seen-set makes the hash distinct resume-clean — a
-// duplicate whose run straddles a scanned-rows page boundary is not re-admitted
-// (TODO C5). The set is bounded by the statement memory
-// budget it is charged against, so an over-budget high-cardinality DISTINCT
-// fails loudly (the existing budget error) rather than emitting wrong rows; the
-// cost-based sort-vs-hash choice that routes such shapes to a sort is a
-// follow-up.
+// streaming (hash) path: the inner cursor position plus the identity of the
+// seen-set that makes the resume dedup-clean (a duplicate whose run straddles a
+// scanned-rows page boundary must not be re-admitted).
+//
+// The seen-set is carried by REFERENCE (stateToken) whenever the execution
+// supplies a scratch — i.e. for every statement, the only thing that ever pages
+// a plan. Carrying it BY VALUE (seenKeys) is quadratic: page P's continuation
+// then holds every key emitted through page P, so a P-page drain serializes and
+// re-parses O(P^2) keys in total. seenKeys survives only as the self-contained
+// encoding for a scratch-less execution, which no production path performs.
+//
+// Exactly one of the two is populated. The set is bounded by the statement
+// memory budget it is charged against, so an over-budget high-cardinality
+// DISTINCT fails loudly (the existing budget error) rather than emitting wrong
+// rows; the cost-based sort-vs-hash choice that routes such shapes to a sort is
+// a follow-up.
 type DistinctHashContinuation struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// innerContinuation is the wrapped inner cursor's resume bytes.
 	InnerContinuation []byte `protobuf:"bytes,1,opt,name=innerContinuation" json:"innerContinuation,omitempty"`
-	// seenKeys are the packed dedup keys (distinctKey) already emitted.
-	SeenKeys      [][]byte `protobuf:"bytes,2,rep,name=seenKeys" json:"seenKeys,omitempty"`
+	// seenKeys are the packed dedup keys (distinctKey) already emitted. Set
+	// only when the execution carries no scratch to hold the live set.
+	SeenKeys [][]byte `protobuf:"bytes,2,rep,name=seenKeys" json:"seenKeys,omitempty"`
+	// stateToken names the live seen-set parked in the execution scratch.
+	// Non-zero means the set is carried by reference; a resume that cannot
+	// find the token FAILS LOUDLY rather than deduping against an empty set.
+	StateToken    *int64 `protobuf:"varint,3,opt,name=stateToken" json:"stateToken,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -93,14 +106,24 @@ func (x *DistinctHashContinuation) GetSeenKeys() [][]byte {
 	return nil
 }
 
+func (x *DistinctHashContinuation) GetStateToken() int64 {
+	if x != nil && x.StateToken != nil {
+		return *x.StateToken
+	}
+	return 0
+}
+
 var File_distinct_continuation_proto protoreflect.FileDescriptor
 
 const file_distinct_continuation_proto_rawDesc = "" +
 	"\n" +
-	"\x1bdistinct_continuation.proto\x12)com.apple.foundationdb.relational.cursors\"d\n" +
+	"\x1bdistinct_continuation.proto\x12)com.apple.foundationdb.relational.cursors\"\x84\x01\n" +
 	"\x18DistinctHashContinuation\x12,\n" +
 	"\x11innerContinuation\x18\x01 \x01(\fR\x11innerContinuation\x12\x1a\n" +
-	"\bseenKeys\x18\x02 \x03(\fR\bseenKeysB\xa1\x02\n" +
+	"\bseenKeys\x18\x02 \x03(\fR\bseenKeys\x12\x1e\n" +
+	"\n" +
+	"stateToken\x18\x03 \x01(\x03R\n" +
+	"stateTokenB\xa1\x02\n" +
 	"-com.com.apple.foundationdb.relational.cursorsB\x19DistinctContinuationProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRC\xaa\x02)Com.Apple.Foundationdb.Relational.Cursors\xca\x02)Com\\Apple\\Foundationdb\\Relational\\Cursors\xe2\x025Com\\Apple\\Foundationdb\\Relational\\Cursors\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Relational::Cursors"
 
 var (

@@ -136,13 +136,22 @@ var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 // distinctHashCursor is the shared resume-clean hash executor for unordered
 // value DISTINCT and unordered primary-key DISTINCT. Its injected keyer picks
 // the identity; the cursor charges the packed keys to a bounded set and carries
-// the whole set through gen.DistinctHashContinuation, so a duplicate spanning
-// a page boundary is not re-admitted. It does not require ordered input.
+// that set across page boundaries through gen.DistinctHashContinuation, so a
+// duplicate spanning a page boundary is not re-admitted. It does not require
+// ordered input.
+//
+// The set is carried BY REFERENCE when the execution supplies an
+// ExecutionScratch — the continuation names it with a token and the live set is
+// handed to the next page untouched. Carrying it BY VALUE is what a
+// self-contained continuation would require and is quadratic in the number of
+// pages (see ExecutionScratch for the measurement); that encoding survives only
+// for a scratch-less execution, which no production path performs.
 //
 // The set is bounded by the statement memory budget it charges against, so a
-// high-cardinality DISTINCT that would blow the continuation instead fails
-// LOUDLY on the budget (never silent wrong rows). This continuation is
-// Go-internal; there is no Java wire format to match.
+// high-cardinality DISTINCT instead fails LOUDLY on the budget (never silent
+// wrong rows). This continuation is Go-internal; there is no Java wire format
+// to match — Java's equivalent plan keeps no dedup state across a resume at all
+// and re-admits the duplicate.
 type queryResultDistinctKeyer func(QueryResult) (string, error)
 
 type distinctHashCursor struct {
@@ -163,6 +172,15 @@ type distinctHashCursor struct {
 	// without a sort.
 	order  []string
 	closed bool
+	// scratch, when non-nil, is where a continuation parks the LIVE seen-set
+	// for the next page instead of serializing it. adoptedToken is the entry
+	// this cursor resumed from and parkedToken the entry it last wrote; a new
+	// park drops whichever of the two is outstanding, so the scratch holds at
+	// most one entry per live cursor and a continuation stays resumable until
+	// its own successor is minted.
+	scratch      *ExecutionScratch
+	adoptedToken int64
+	parkedToken  int64
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
@@ -235,7 +253,39 @@ func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorCont
 	if err != nil {
 		return nil, fmt.Errorf("distinct-hash continuation: %w", err)
 	}
-	return &distinctHashContinuation{inner: innerBytes, order: c.order, n: len(c.order)}, nil
+	return &distinctHashContinuation{
+		inner:  innerBytes,
+		order:  c.order,
+		n:      len(c.order),
+		cursor: c,
+	}, nil
+}
+
+// parkSeen hands the live seen-set to the scratch under a fresh token, for the
+// continuation identified by the insertion-order prefix length n. Returns 0
+// when the execution carries no scratch, which routes the continuation to the
+// self-contained (quadratic) encoding.
+//
+// n is passed rather than read from the cursor because the continuation was
+// snapshotted at a specific prefix; a cursor that advanced afterward must not
+// silently widen what its earlier continuation claimed to have emitted.
+func (c *distinctHashCursor) parkSeen(n int) int64 {
+	if c.scratch == nil {
+		return 0
+	}
+	drop := c.parkedToken
+	if drop == 0 {
+		drop = c.adoptedToken
+	}
+	token := c.scratch.parkDistinct(&distinctResumeState{
+		seen:    c.seen,
+		order:   c.order,
+		n:       n,
+		charged: c.seen.Charged(),
+		prev:    drop,
+	})
+	c.parkedToken = token
+	return token
 }
 
 func (c *distinctHashCursor) Close() error {
@@ -249,16 +299,35 @@ func (c *distinctHashCursor) Close() error {
 func (c *distinctHashCursor) IsClosed() bool { return c.closed }
 
 // distinctHashContinuation marshals the DistinctHashContinuation at ToBytes()
-// time from the captured insertion-order prefix order[:n] (immutable — see
-// wrapContinuation). Insertion order is already deterministic, so no sort is
-// needed.
+// time. With a scratch it parks the live seen-set and names it with a token, so
+// the bytes are O(1) in the number of keys emitted; without one it falls back
+// to writing the captured insertion-order prefix order[:n] (immutable — see
+// wrapContinuation), which is self-contained and quadratic across pages.
+// Insertion order is already deterministic, so no sort is needed.
+//
+// The token is minted at most ONCE per continuation object and cached, so
+// repeated ToBytes calls are idempotent — the same bytes, no second scratch
+// entry, and the first token stays valid.
 type distinctHashContinuation struct {
-	inner []byte
-	order []string
-	n     int
+	inner  []byte
+	order  []string
+	n      int
+	cursor *distinctHashCursor
+	token  int64
 }
 
 func (d *distinctHashContinuation) ToBytes() ([]byte, error) {
+	if d.token == 0 && d.cursor != nil {
+		d.token = d.cursor.parkSeen(d.n)
+	}
+	if d.token != 0 {
+		token := d.token
+		cont := &gen.DistinctHashContinuation{
+			InnerContinuation: d.inner,
+			StateToken:        &token,
+		}
+		return cont.MarshalVT()
+	}
 	keys := d.order[:d.n]
 	seenBytes := make([][]byte, len(keys))
 	for i, k := range keys {
