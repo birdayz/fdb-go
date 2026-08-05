@@ -128,10 +128,23 @@ func TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused(t *testing.T) {
 		name string
 		bits uint64
 	}{
-		// What math.NaN() and the 'NaN' literal both produce. This one MUST be
-		// accepted: refusing it would break the ordinary case, and it is the
+		// What math.NaN() and CAST('NaN' AS DOUBLE) both produce. This one MUST
+		// be accepted: refusing it would break the ordinary case, and it is the
 		// pattern the write-symmetry test binds.
 		{name: "go_default_nan", bits: 0x7ff8000000000001},
+		// JAVA'S Double.NaN — and the pattern a Go caller gets from
+		// float32(math.NaN()) widened back to float64. It MUST be accepted, and
+		// for a reason beyond convenience: this is the value Java WRITES, so
+		// refusing it would mean a Go client could not re-bind a NaN it had just
+		// read out of a Java-written record. That is the shared-cluster
+		// invariant this port exists to hold, broken over a value that is
+		// perfectly representable — CAST('NaN' AS FLOAT) evaluates to exactly
+		// these bits, because ParseFloat with bitSize 32 returns
+		// float64(float32(NaN)) and the cast path returns it unchanged.
+		//
+		// An earlier revision of this fix accepted only the pattern above and
+		// rejected this one with 22023. MEASURED then, and pinned now.
+		{name: "java_canonical_nan", bits: 0x7ff8000000000000},
 		// Sign bit set — (+Inf)+(-Inf). Storable through UPDATE arithmetic, so
 		// the column can hold it; the question is only whether the BIND path
 		// can carry it truthfully.
@@ -172,20 +185,51 @@ func TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused(t *testing.T) {
 		})
 	}
 
-	// The accepted pattern is not merely "some NaN" — it must be the bound bits.
-	t.Run("accepted_default_nan_is_bit_exact", func(t *testing.T) {
-		if _, e := db.ExecContext(ctx,
-			"INSERT INTO t (id, d) VALUES (?, ?)", int64(600), math.NaN()); e != nil {
-			t.Fatalf("math.NaN() must bind — it is the pattern the 'NaN' literal parses to: %v", e)
-		}
-		var got float64
-		if e := db.QueryRowContext(ctx,
-			"SELECT d FROM t WHERE id = 600").Scan(&got); e != nil {
-			t.Fatalf("readback: %v", e)
-		}
-		if math.Float64bits(got) != math.Float64bits(math.NaN()) {
-			t.Errorf("math.NaN() round-tripped as %#016x, want %#016x",
-				math.Float64bits(got), math.Float64bits(math.NaN()))
+	// An accepted pattern is not merely "some NaN" — it must be the bound bits.
+	// Both go through the Go values a caller actually has in hand, rather than
+	// through hex constants, so the test fails if either of those ordinary
+	// expressions stops being bindable.
+	for _, tc := range []struct {
+		name string
+		id   int64
+		val  float64
+		why  string
+	}{
+		{
+			name: "math_NaN", id: 600, val: math.NaN(),
+			why: "math.NaN() is what any Go caller passes",
+		},
+		{
+			name: "widened_float32_NaN", id: 601, val: float64(float32(math.NaN())),
+			why: "float32(math.NaN()) widened is Java's Double.NaN — the pattern read " +
+				"back from a Java-written record",
+		},
+	} {
+		t.Run("accepted_"+tc.name+"_is_bit_exact", func(t *testing.T) {
+			if _, e := db.ExecContext(ctx,
+				"INSERT INTO t (id, d) VALUES (?, ?)", tc.id, tc.val); e != nil {
+				t.Fatalf("%s must bind (%s): %v", tc.name, tc.why, e)
+			}
+			var got float64
+			if e := db.QueryRowContext(ctx,
+				fmt.Sprintf("SELECT d FROM t WHERE id = %d", tc.id)).Scan(&got); e != nil {
+				t.Fatalf("readback: %v", e)
+			}
+			if math.Float64bits(got) != math.Float64bits(tc.val) {
+				t.Errorf("%s round-tripped as %#016x, want %#016x",
+					tc.name, math.Float64bits(got), math.Float64bits(tc.val))
+			}
+		})
+	}
+
+	// The two accepted patterns must be DISTINCT. If the toolchain ever made
+	// ParseFloat("NaN", 32) and ParseFloat("NaN", 64) agree, the cases above
+	// would silently become one test run twice and the FLOAT-cast rendering
+	// would stop being covered.
+	t.Run("the_two_accepted_patterns_are_distinct", func(t *testing.T) {
+		if math.Float64bits(math.NaN()) == math.Float64bits(float64(float32(math.NaN()))) {
+			t.Fatal("math.NaN() and its float32-widened form share a bit pattern; the " +
+				"two-rendering distinction this test rests on has collapsed")
 		}
 	})
 }
