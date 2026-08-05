@@ -390,12 +390,19 @@ its census tests, not the generator, so nothing was retired.
     line terminator): `WHERE name LIKE 'abc'` matches `"abc\n"`. Deliberate Java-parity
     (verified against a live JDK over 1.2M cases), pinned in the LIKE test tables — listed here
     because it will read as a bug to anyone who hasn't seen the derivation.
-18. ON-DISK MIGRATION (CQ-89 → CQ-90): stale `CARDINALITY()` index entries written by pre-fix Go.
-    **STAYS ON THE WATCH LIST.** The mechanism is proven and the recipe is written (see below), but
-    no `LastModifiedVersion` bump has been applied to any schema — the bump is authored per-schema
-    at deployment, so until each affected schema has actually been migrated, the hazard below is
-    still live on any store carrying pre-fix entries. This entry retires when the affected schemas
-    have been rebuilt, not when the mechanism was proven.
+18. ~~ON-DISK MIGRATION (CQ-89 → CQ-90): stale `CARDINALITY()` index entries written by pre-fix
+    Go.~~ **RETIRED — UNREACHABLE IN PRODUCTION.** Not "migration proven": *unreachable*. The
+    product is pre-release, so every production store will be created fresh by a post-CQ-89 binary.
+    No pre-fix binary will ever have written a store that carries into production, and the stale
+    `0x00` entry can only exist on a store some pre-fix binary wrote. The hazard therefore survives
+    only on **carried-forward dev/test data**, where the recipe in the appendix below applies, and
+    for **external adopters** who ran a pre-fix Go binary.
+    **The premise, stated so it can be checked rather than assumed:** this retirement rests entirely
+    on "no production store predates CQ-89". If a store written by a pre-CQ-89 Go binary is ever
+    promoted into production — a restored dev backup, a cluster carried forward, an adopter's
+    existing data — this entry is **re-armed** and the appendix recipe becomes mandatory for its
+    cardinality indexes. That is the one fact to re-check, and it is a deployment fact, not a code
+    one.
     CQ-89 changed the index key for an EMPTY non-nullable (flat repeated) array from a NULL key to
     the integer key `0` — measured, the entry key moved from `indexSubspace ‖ 0x00 ‖ pk` to
     `indexSubspace ‖ 0x14 ‖ pk`. Java always keyed `0`
@@ -415,15 +422,71 @@ its census tests, not the generator, so nothing was retired.
     rebuild is what makes it audible. Latent today: `builder.go:606-608` honours the flag but no
     SQL DDL route reaches it. Pinned — `TestFDB_ArrayCardinalityUniqueIndex`.
     Superseded ruling (CQ-90): DOCUMENT, DO NOT FORCE — no `LastModifiedVersion` bump, because
-    pre-production means every affected store is dev/test. That premise expired on first
-    production deployment, which was the booked trigger; see the migration block below.
+    pre-production means every affected store is dev/test. Superseded not by the trigger firing but
+    by the trigger becoming unreachable: production stores are all created fresh. See the appendix.
 
-**CQ-90 — MECHANISM PROVEN, RECIPE DOCUMENTED; the bump is applied per-schema at deployment.**
-The trigger the DOCUMENT-DO-NOT-FORCE ruling booked has fired — production deployment is imminent,
-so the premise it rested on ("every affected store is dev/test") no longer holds. What landed is
-the *mechanism and its proof*, not a migration of any particular schema: an index's
-`LastModifiedVersion` is per-schema metadata, so nothing in the engine can bump it on an operator's
-behalf. Entry 18 therefore stays open until the affected schemas are actually rebuilt. Pinned —
+Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
+`NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
+
+### Rebuild-path correctness (landed with CQ-90, and the reason that work matters)
+
+This is engine behaviour on the path **every future index addition takes under a live tenant**, not
+migration tooling. It was found while proving the CQ-89 migration and outlives it entirely.
+
+*The inline rebuild's uniqueness semantics were wrong in Go, in two different directions before they
+were right.* Java's `checkVersion` rebuild attempts `markIndexReadable(index)` — the one-argument
+form, i.e. `allowUniquePending=FALSE` (`FDBRecordStore.java:4602` → `:3767-3768`) — so
+`checkAndUpdateBuiltIndexState` (`:3821`) refuses on a violation (`:3856-3861`); the index is
+neither made readable nor parked in `READABLE_UNIQUE_PENDING`. But `rebuildIndex` then **swallows**
+that refusal: the chain ends in `.handle((b, t) -> { if (t != null) logExceptionAsWarn(…); …;
+return null; })` (`:4602-4615`), and a handle returning normally completes the future normally. Java
+pins the net effect itself in `FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627`
+— index WRITE_ONLY, every conflicting primary key in the violations subspace, and the transaction
+**commits**.
+
+Go originally called `MarkIndexReadableOrUniquePending` unconditionally, silently parking a
+violation in a state nobody opted into; a first correction then made the failure propagate, which
+turns any index addition that meets bad data into a **store-open outage** Java does not have. The
+landed behaviour is Java's: the open commits, the index is left WRITE_ONLY and therefore *not
+scannable* (so queries fall back to base scans and no read is wrong), and the violations are durable
+and name both records — Java writes the pair in both directions,
+`StandardIndexMaintainer.java:497-498`.
+
+`READABLE_UNIQUE_PENDING` is **not** the default landing spot. Java core reaches it from one caller
+only, `IndexingBase.java:324`, gated on `IndexingPolicy.shouldAllowUniquePendingState`
+(`OnlineIndexer.java:1117`) — an opt-in defaulting FALSE (`:1220`, javadoc: *"allow=false (default,
+backward compatible): throw an exception"*) that also requires format version >=
+`READABLE_UNIQUE_PENDING` (`FormatVersion.java:145`). Go now mirrors that via
+`OnlineIndexerBuilder.SetAllowUniquePendingState`, and **both conjuncts** are pinned — the opt-in
+and the format version.
+
+*`StoreBuilder.SetFormatVersion`, and the feature gates it made necessary.* Proving the format
+conjunct needed a store below format 9, which Go could not produce: `maybeUpgradeFormatVersion`
+raised every store to the newest version the binary knew, on every open. Java takes that target from
+the **builder** (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`, `:2245`/`:2266`) precisely so a
+rolling upgrade can pin every instance to the OLD format and stop any one of them writing a layout
+the others cannot read. Go now has it (plus the `OnlineIndexerBuilder` twin, which Java gets free by
+reusing the caller's store builder); the upgrade targets it rather than a constant, it is a ceiling
+that never downgrades, an explicit `SetFormatVersion(0)` is rejected rather than read as unset, and
+default behaviour is unchanged.
+
+Pinning a version made a **wire-compat** gap reachable and it is closed with it: every version-gated
+store-header feature WRITE now checks the ACTUAL header version, porting Java's per-site
+`isAtLeast` guards — header user fields (`:3222`), record-count state (`:3443`), store lock state
+(`:3478`/`:3494`), incarnation (`:3503`/`:3517`), and the record-count key/state written at store
+creation (`:5950-5957`). Without them a store pinned at 11 wrote a v12 lock into an 11 header, and
+an older instance — the very instance the pin exists to protect — ignored a lock it should have
+honoured.
+
+### Appendix (reference): the CQ-89 cardinality-key migration
+
+Not a production action — see entry 18. This is the runbook for the two cases where a store can
+still carry pre-fix `0x00` cardinality entries: **carried-forward dev/test data**, and **external
+adopters** who ran a pre-CQ-89 Go binary. It is kept because the tests behind it pin engine
+behaviour that runs on every future index addition, not because a fleet migration is pending.
+
+The mechanism, not a migration of any particular schema: an index's `LastModifiedVersion` is
+per-schema metadata, so nothing in the engine can bump it on an operator's behalf. Pinned —
 `sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which reconstructs the pre-fix on-disk state
 byte-for-byte (rewriting each cardinality-0 entry to the `0x00` key, which is the *only* thing
 CQ-89 changed on the write path), reproduces the defect, runs the migration, and asserts both the
@@ -451,54 +514,6 @@ returns it to READABLE. **A real record count requires a COUNT index in the meta
 `getRecordCountForRebuildPolicy` falls through to an emptiness probe and reports `MaxInt64` for any
 non-empty store, so the DISABLED + `OnlineIndexer` arm is the path every relational SQL schema takes
 today.
-
-*The uniqueness sub-hazard surfaces as an UNUSABLE INDEX, not a failed open — and the distinction is
-the whole safety argument.* The build is three-staged, and stopping at stage two gets it wrong.
-While the index is WRITE_ONLY, `checkUniqueness` records a violation rather than throwing (Java's
-`standardIndexMaintainer.checkUniqueness` calls `addUniquenessViolation` once per conflicting
-primary key, `StandardIndexMaintainer.java:497-498`), so the scan completes. The inline rebuild then
-calls the one-argument `markIndexReadable(index)` (`FDBRecordStore.java:4602` → `:3767-3768`,
-`allowUniquePending=FALSE`) and `checkAndUpdateBuiltIndexState` (`:3821`) throws
-`RecordIndexUniquenessViolation` (`:3856-3861`) — so the index is **not** made readable, and not
-parked in `READABLE_UNIQUE_PENDING` either. But `rebuildIndex` **swallows** that throw: the chain
-ends in `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...); …; return null; })`
-(`:4602-4615`), and a handle returning normally completes the future normally.
-
-So what an operator actually sees on a pre-fix pair of empty NOT NULL arrays — which the old NULL key
-let bypass the check entirely — is: **the store opens and commits normally**, the migration itself
-ran (stale `0x00` entries gone, both records keyed `0`), the index is left **WRITE_ONLY** and
-therefore *not scannable*, and the violations sit in the violations subspace naming both records.
-Java pins exactly this in its own test,
-`FDBRecordStoreUniqueIndexTest.addUniqueIndexViaCheckVersion:615-627`.
-
-That is the safe outcome, and propagating would be strictly worse: a non-scannable index means
-queries fall back to base scans and **no read is wrong**, whereas a propagated error would turn any
-metadata evolution that meets bad data into a **store-open outage** — every transaction against the
-store fails, not just the one index. The loud signal is the index being unusable plus the durable,
-enumerable violations; it is not a failed open.
-
-`READABLE_UNIQUE_PENDING` is **not** the default landing spot. Java core reaches it from one caller
-only, `IndexingBase.java:324`, gated on `IndexingPolicy.shouldAllowUniquePendingState`
-(`OnlineIndexer.java:1117`) — an opt-in defaulting FALSE (`:1220`, javadoc: *"allow=false (default,
-backward compatible): throw an exception"*) that also requires format version >=
-`READABLE_UNIQUE_PENDING` (`FormatVersion.java:145`). Go now mirrors that exactly, via
-`OnlineIndexerBuilder.SetAllowUniquePendingState`; before this change Go called
-`MarkIndexReadableOrUniquePending` unconditionally on both the inline and online paths, which
-silently downgraded a violation into a pending state nobody asked for. **Both conjuncts** of the
-gate are pinned, the opt-in and the format version. The failure all of this excludes is the quiet
-one — a rebuild that "succeeds" by discarding an entry.
-
-*A second divergence fell out of covering that format conjunct, and is fixed here too.* Proving the
-format half needs a store below format 9, which Go could not produce: `maybeUpgradeFormatVersion`
-raised every store to the newest version the binary knew, on every open. Java takes that target from
-the **builder** (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`, `:2245`/`:2266`) precisely so a
-rolling upgrade can pin every instance to the OLD format and stop any one of them writing a layout
-the others cannot read. Go now has `StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder`
-twin, which Java gets free by reusing the caller's store builder); the upgrade targets it rather
-than a constant, and it is a ceiling that never downgrades. Default behaviour is unchanged.
-
-Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
-`NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
 
 ### Correctness-elimination order (2026-08-01)
 

@@ -13921,21 +13921,35 @@ None is speculative: each was re-verified against the tree before booking.
   the joins golden decision is re-derived from real counts.
 
 - [x] **CQ-90 (on-disk migration for the CQ-89 cardinality key change) —
-  the booked trigger fired; MECHANISM PROVEN + RECIPE DOCUMENTED.**
-  The DOCUMENT-DO-NOT-FORCE ruling rested entirely on "every affected store is
-  dev/test", and its own text named the expiry: first production deployment.
-  Production deployment is now imminent, so the conditional go/no-go below
-  resolves to GO. Doing it now is the cheap moment — rebuilds on today's
-  dev/test stores are free or trivially small; the same rebuilds after a
-  production cluster fills up are a multi-week operation.
-  **Scope, stated precisely so the checkbox is not read as more than it is:**
-  NO `LastModifiedVersion` bump has been applied to any schema, and none can be
-  from here — an index's version is per-schema metadata authored by its owner.
-  What landed is the mechanism, proven end-to-end for exactly this migration,
-  plus the recipe operators run per schema at deployment.
-  `road-to-prod.md` entry 18 therefore STAYS on the watch list until the
-  affected schemas have actually been rebuilt. Pinned end-to-end by
-  `pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`.
+  CLOSED: UNREACHABLE IN PRODUCTION, on fresh-store grounds.**
+  Not closed because a migration was performed or even proven — closed because
+  the hazard cannot occur in production. The product is pre-release, so every
+  production store is created fresh by a post-CQ-89 binary, and a stale `0x00`
+  cardinality entry can only exist on a store some PRE-fix binary wrote. The
+  conditional go/no-go this item booked is therefore moot: there is no fleet to
+  migrate.
+  **Where the hazard does survive**, and where the recipe still applies:
+  carried-forward dev/test data, and external adopters who ran a pre-CQ-89 Go
+  binary. The recipe now lives as a reference appendix in `road-to-prod.md`
+  rather than as a pending production action, and watch-list entry 18 is
+  RETIRED on these grounds.
+  **The premise, stated so it can be re-checked:** this rests entirely on "no
+  production store predates CQ-89". Promote a pre-fix store into production —
+  a restored dev backup, a carried-forward cluster, an adopter's existing data
+  — and the hazard is LIVE again and the appendix recipe becomes mandatory for
+  its cardinality indexes. That is a deployment fact, not a code fact, which is
+  why it is written down rather than inferred.
+  **WHAT THIS ITEM ACTUALLY DELIVERED**, and why the tests stay: engine
+  behaviour on the path EVERY future index addition takes under a live tenant.
+  (a) The inline rebuild's uniqueness semantics, wrong in Go in two opposite
+  directions before they were right (below). (b) `StoreBuilder.SetFormatVersion`
+  — Java's rolling-upgrade capability Go lacked entirely — plus the per-feature
+  format gates that pinning made reachable, which are WIRE-COMPAT fixes.
+  (c) Pins on the DISABLED / `OnlineIndexer` / clear-on-disable /
+  whole-schema-bump behaviours. None of that is migration tooling and none of it
+  retires with entry 18. Pinned by
+  `pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go` and the
+  `StoreBuilder_FormatVersion` specs.
 
   **NO automatic engine-side bump — decided by reading Java, not by punting.**
   Java has NO mechanism that force-rebuilds an index because the library's own
@@ -14102,10 +14116,12 @@ None is speculative: each was re-verified against the tree before booking.
   (`metadata_evolution_validator.go:488-504` already implements Java's
   `allowIndexRebuilds` contract, so the mechanism exists — only the decision
   to use it is pending).
-  → Resolved via branch (b): the deployment was scheduled while stale entries
-  could still exist. The MECHANISM and its proof landed (tests above); the bump
-  itself is per-schema and is applied at deployment, so `road-to-prod.md` entry
-  18 stays open until the affected schemas are rebuilt.
+  → Resolved by NEITHER branch as written: both assumed a production store could
+  carry pre-fix entries. It cannot — production stores are all created fresh by
+  post-CQ-89 binaries, so the trigger is unreachable rather than fired, and
+  entry 18 retires on that ground. The engine work the investigation produced
+  (rebuild-path uniqueness parity, `SetFormatVersion` + feature gates, the
+  behaviour pins) stands on its own and is listed above.
 
 - [ ] **CQ-91 (query-engine — needs its own RFC + Graefe ACK): Go has THREE
   independent implementations of Java's ONE field-read helper; consolidate
