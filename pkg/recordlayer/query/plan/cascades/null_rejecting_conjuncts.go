@@ -22,9 +22,16 @@ import (
 //
 // This file is the second route: a predicate strictly between the scan and the
 // consumer that rejects NULL on every key column empties the exempt set's NULL
-// half ON THIS STREAM, which is all a consumer needs. It is what makes both
-// consumers of properties.SecondaryUniqueKeyGloballyEnforced — the DISTINCT
-// elision and the strict-ordering claim — reachable from an ordinary SQL query.
+// half ON THIS STREAM, which is all a consumer needs. It is what makes the
+// DISTINCT elision reachable from an ordinary SQL query.
+//
+// The allow-list below is shared with the STRICT-ORDERING consumer; the WALK is
+// not, and deliberately. That consumer reads an index scan's ComparisonRange
+// instead (null_rejecting_scan_range.go) and may NOT read a residual filter's
+// conjuncts, because its only place to record a conclusion is a flag on the scan
+// BELOW the filter — which still emits the index's NULL entries. The DISTINCT
+// elision has no such problem: it happens above the filter, on the stream the
+// conjuncts are about.
 //
 // The FLOAT/DOUBLE half is untouched here and must stay untouched: `d IS NOT
 // NULL` admits every NaN encoding, so no NULL rejection says anything about the

@@ -183,28 +183,63 @@ Three runs on the §2.1 fixture, same store, back-to-back, median of 5 pairs, in
 the paged unordered regime the criteria are written for (100k rows,
 `EXECUTION_SCANNED_ROWS_LIMIT=10000`):
 
-| # | query | route | operator after | measured |
-|---|---|---|---|---|
-| A | `SELECT email FROM users` | — (baseline, no `DISTINCT` written) | none | ⟨M-A⟩ |
-| B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | narrowed distinct | ⟨M-B⟩ |
-| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision | none | ⟨M-C⟩ |
-| D | `SELECT DISTINCT email FROM users` on today's `master` | — | full distinct | ⟨M-D⟩ |
+| # | query | route | time | churn | plan shape (verified via `EXPLAIN`) |
+|---|---|---|---|---|---|
+| A | `SELECT email FROM users` | — (naive baseline, no `DISTINCT`) | 371 ms | 164.9 MiB | `Project([EMAIL#1], Scan(USERS))` |
+| A′ | `SELECT email FROM users WHERE email IS NOT NULL` | — (**R2's denominator**) | 186 ms | 107.9 MiB | `Project([EMAIL#1], IndexScan(BY_EMAIL, [<>] COVERING))` |
+| B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | 372 ms | 175.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS))) narrowed-by:BY_EMAIL` |
+| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision | 183 ms | 107.9 MiB | `Project(…, IndexScan(BY_EMAIL, [<>] COVERING)) distinct-by:BY_EMAIL` — **no `Distinct` node** |
+| D′ | `SELECT DISTINCT email_plain FROM users` | — (in-process stand-in for D) | 580 ms | 432.0 MiB | `Distinct(Project([EMAIL_PLAIN#2], Scan(USERS)))` |
+| D | `SELECT DISTINCT email FROM users` on today's `master` | — | 567 ms | 432.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS)))`, no stamp |
+
+Ratios: C/A **0.499x** / 0.654x · **C/A′ 0.986x / 1.000x** · **B/D′ 0.659x / 0.407x** ·
+B/A 1.045x / 1.065x. On `master`: B/A 1.583x / 2.618x, C/A′ 1.187x / **1.270x**.
+
+**D′ is licensed as D's stand-in by measurement, not by assumption.** Running both
+on `master` — where neither route exists — gives B/D′ = **0.992x / 1.000x**, i.e.
+the two queries are the same work on the same data. That is what lets the
+comparison stay inside one process on one store instead of straddling two
+worktrees, and D is reported beside it so the substitution is checkable.
+
+**Headline: R3 cuts the operator's overhead over the no-`DISTINCT` baseline from
++58% to +4% in time, and from 2.62x to 1.07x in allocation.**
+
+*(Absolute milliseconds are soft: the measuring box was at 97% disk utilisation,
+which CLAUDE.md flags as a latency-distortion risk. Every criterion below is a
+RATIO between two queries run back-to-back on the same store, and the ratios held
+across a quiet run and a noisy one.)*
+
+**Row A′ exists because C-vs-A is not a clean isolation, and this was found by
+measuring rather than by reasoning.** `WHERE email IS NOT NULL` does not merely
+add a filter: it is SARGable, so it independently moves the plan onto the
+covering `IndexScan`. C-vs-A therefore mixes R2's delivered benefit with an
+access-path change, and reads better than R2 deserves. A′ holds the access path
+fixed and varies only the presence of the `DISTINCT`, which is the thing R2
+removes. **A′ is R2's denominator; A is kept only as the naive baseline a reader
+would otherwise reach for.**
 
 The comparisons that matter, and what each would mean:
 
 - **B vs D** is R3's delivered benefit on the bare query — the shape a user
   writes without thinking about NULLs, and the shape that could not be helped at
   all under the RFC as originally drafted.
-- **C vs A** is R2's delivered benefit: it should be *indistinguishable*, because
-  under R2 the plans are the same plan modulo the filter.
+- **C vs A′** is R2's delivered benefit: it should be *indistinguishable*, because
+  under R2 they are the same plan with one operator removed.
+- **C vs A** is reported but is NOT the criterion, for the reason above.
 - **B vs A** is the residual R3 leaves on the table, and is the honest measure of
   how much R2's reachability matters.
 
-> **MEASUREMENT PLACEHOLDER.** ⟨M-A⟩…⟨M-D⟩ and the sweep below are filled by the
-> §7.5 probe rewrite against the delivered implementation, on the same box, in
-> one run. They are deliberately **not** carried over from the cost-of-the-
-> operator table: that table's numbers are a bound on B–D, not a substitute for
-> it. This RFC is not complete while these read ⟨M-x⟩.
+**The allocation ratio is the figure with teeth here, not the runtime.** Removing
+an operator does not change the I/O, so the runtime delta lives inside the
+harness's noise; what the elision provably removes is per-page key retention, and
+that shows up in churn. Measured against the 1.15x band, the branch comes in at
+**0.999x** where `master` is **1.262x** — a result that separates cleanly while
+the timings do not.
+
+Every figure above and below is MEASURED by the §7.5 probe against the delivered
+implementation, on one box in one run, and none is carried over from the
+cost-of-the-operator table — that table bounds B–D rather than substituting for
+it.
 
 #### The NULL-density sweep — R3's dominance as a measurement
 
@@ -213,11 +248,22 @@ input, degenerating to empty on an ordinary table. That is an argument in §5.1.
 this is the measurement that makes it a fact. Same fixture, same paged unordered
 shape, varying only the fraction of rows whose `email` is NULL:
 
-| NULL density | rows retained by full distinct | retained by R3 | runtime (full) | runtime (R3) | churn (full) | churn (R3) |
-|---|---|---|---|---|---|---|
-| 0% | 100 000 | 0 | ⟨S-0⟩ | ⟨S-0'⟩ | ⟨S-0c⟩ | ⟨S-0c'⟩ |
-| 1% | 100 000 | 1 000 | ⟨S-1⟩ | ⟨S-1'⟩ | ⟨S-1c⟩ | ⟨S-1c'⟩ |
-| 50% | 100 000 | 50 000 | ⟨S-50⟩ | ⟨S-50'⟩ | ⟨S-50c⟩ | ⟨S-50c'⟩ |
+| NULL density | rows retained by full distinct | retained by R3 | runtime (full) | runtime (R3) | churn (full) | churn (R3) | R3/full |
+|---|---|---|---|---|---|---|---|
+| 0% | 100 000 | **0** | 580 ms | 372 ms | 432.0 MiB | 175.7 MiB | 0.659x / 0.407x |
+| 1% | 100 000 | **1 000** | 572 ms | 371 ms | 431.5 MiB | 176.3 MiB | 0.646x / 0.408x |
+| 50% | 100 000 | **50 000** | 433 ms | 334 ms | 292.5 MiB | 167.2 MiB | 0.772x / 0.571x |
+
+The retained-row counts came out exactly as drafted — they are read off the
+hash-distinct's serialized continuation, not estimated. A sharper number is worth
+recording beside them: the **KEYS** those rows collapse to are 100 000 / 99 001 /
+50 001 for the full operator against **0 / 1 / 1** for R3. The row counts show R3
+touching less; the key counts show what it actually retains, and on an ordinary
+table that is nothing at all.
+
+Output rows are 100 000 / 99 001 / 50 001 and are identical **value for value**
+between the two operators at every density; `SELECT DISTINCT email` over 50%
+NULLs returns exactly one NULL row.
 
 The retained-row columns are the structural claim and are asserted exactly (they
 are counts, not timings, so no band is needed). The 50% row is the near-worst
@@ -1256,14 +1302,97 @@ NULL-bound parameter: it would compile to a singleton range **enclosing the NULL
 boundary**, and if no residual filter survives, the scan emits the NULL entries
 while the rule claims strict sorting over genuine ties.
 
-**Whether that shape is constructible in this engine is UNESTABLISHED**, and it
-is recorded as unestablished rather than assumed either way. It must be settled
-with evidence — a probe, committed as a test whichever way it comes out — before
-a scan range is permitted to license the claim. If it is constructible, the
-allow-list needs an operand condition on the scan-range route that the filter
-route does not need. The asymmetry is the finding; the conservative reading of it
-is that the sort half's R2 admits a comparison from a scan range only when the
-operand is provably non-NULL.
+#### SETTLED: the shape is constructible, and it is empty rather than dangerous
+
+The question above is answered, and the answer is not the one either horn of it
+predicted. **The shape IS constructible** — `WHERE email = NULL` is neither
+rejected nor folded on the way to a scan range, and it leaves no residual:
+
+- The SQL frontend builds a real `ComparisonPredicate{Equals, NullValue}`.
+  `Resolver.ResolveComparison` has no NULL arm, and every type gate it does have
+  is skipped because `NullValue.Type()` is `Unknown`.
+- No simplification rewrites it. `ComparisonConstantSimplifyRule` requires the
+  *left* side to be constant, so a column declines it.
+- The data-access rules SARG it: `isSargableComparisonForMatch(Equals)` is true,
+  `comparisonTypesCompatible` waves an Unknown RHS through, and
+  `ComparisonRange.Merge` produces `ComparisonRangeEquality` **without ever
+  inspecting the operand**. Because the predicate binds to a placeholder it is
+  not re-applied as residual compensation.
+
+So a strict-ordering claim genuinely could be made over that scan. It is
+nonetheless **sound**, for a reason that lives in the executor rather than in the
+planner: the binder short-circuits a NULL-valued equality to an **empty range**
+(`scan_range_binding.go:321-325`) — the SQL fact that `NULL = x` is UNKNOWN for
+every row, enforced where the key bytes are chosen. The scan reads nothing, and
+**zero rows have no ties**. The planner reaches the same conclusion independently
+for a *literal* NULL (`PhysicalEqualityShapeForComponent` returns
+`Unsatisfiable`), but that is not the load-bearing fact: a parameter's value is
+not constant-foldable at plan time, and the binder catches both.
+
+**Neither the allow-list nor the routes need an operand condition.** What the
+scan-range route needs is the allow-list it already has, because the two kinds
+that *do* enclose the NULL boundary — `IS NULL` and `IS NOT DISTINCT FROM`, both
+of which bind to `alternatives = []any{nil}` — are exactly the two the filter
+route already refuses. One allow-list, two consumers.
+
+One further binder fact is load-bearing and was not obvious: a **bare upper
+bound** (`col < 'm'`) could defensibly have started the scan at the bottom of the
+key space and swept every NULL entry in. It does not — both the `LessThan` and
+`LessThanOrEq` arms install an *exclusive* low at the NULL boundary when none
+exists (`tail.lowIsNullBoundary`), which is Java's
+`Range.greaterThan(NULL_boundary)` arrived at from the other side. That is what
+licenses those two entries; without it `IS NOT NULL` would be the only ordered
+comparison that could stay.
+
+Because a sort claim has no residual, both facts are pinned as executor tests
+(`scan_range_null_boundary_test.go`) rather than left as prose: each names, in
+its failure message, the admission that becomes unsound if the binder changes.
+
+#### What the sort half's R2 is, therefore
+
+**The scan-range route is the only one this consumer may use**, and that is the
+second soundness finding rather than a scoping decision. It was arrived at by
+building the filter route first and measuring what it did.
+
+The scan-range route is also the one that fires on the SQL §5.7 quotes: `IS NOT
+NULL` is admitted by `isSargableComparisonForMatch`, so the planner pushes it
+*into* the range and leaves no residual filter — without it, R2-for-ordering would
+be live code no query reaches.
+
+**Why the filter route is refused here but correct for `DISTINCT`.** R2's routes
+are not symmetric across its two consumers, and the asymmetry is the mirror image
+of the one recorded above:
+
+- For the `DISTINCT` consumer, a residual filter's conjuncts are valid evidence.
+  The elision happens at the `DISTINCT` node, which sits **above** the filter, so
+  the stream the proof is about is the stream the decision is made on.
+- For the ordering consumer it is not, because **there is nowhere to put the
+  conclusion**. `strictlySorted` is a field on `RecordQueryIndexPlan`, and
+  `ordering.go:1222` hands it to `NewRichOrdering` as that scan's own
+  *distinctness*. Marking the scan **below** a filter asserts tie-freedom of a
+  stream that still contains every NULL entry the index holds, and the false claim
+  is then readable from the bare scan node by any consumer that never sees the
+  filter.
+
+That is measured, not argued. An earlier revision of this change did descend
+through the filter; `SELECT n FROM t WHERE n <> 'z' ORDER BY n` then planned
+`PredicatesFilter(IndexScan(U, [*]))` whose scan reported
+`HintRichOrdering().IsDistinct() == true` over a **full** scan. `NOT_EQUALS` is on
+R2's allow-list and does genuinely reject NULL — the conjunct was right and the
+place the conclusion landed was wrong.
+
+So only evidence that is a property of the **scan itself** may license this claim.
+A scan range qualifies precisely because the range determines what the scan emits.
+The refusal is pinned from both sides: at the rule
+(`cascades/null_rejecting_scan_range_test.go`) and through the real planner
+(`secondary_unique_proof_reachability_test.go`), the latter with both filter node
+kinds, since a refusal that knew only `RecordQueryFilterPlan` would be satisfied
+by no real query — the SQL path emits `RecordQueryPredicatesFilterPlan`.
+
+`strictlyOrderedIfUnique` and `makeStrictlySorted` consequently enumerate exactly
+the same shapes, and both directions are pinned: a shape the walk admits but the
+marker leaves unchanged is a proved claim dropped on the floor, and a shape the
+marker rebuilds but the walk refuses is a claim made without a proof.
 
 **There is NO R3 analogue, and inventing one would be a soundness bug.** This is
 the part most likely to be got wrong by symmetry, so it is stated as a
@@ -1562,27 +1691,73 @@ operator rather than removing it — so the criterion has to name its route.
 The criteria, on the regime the change is actually for and deliberately not on
 the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta rows:
 
-- **R2, full elision (C vs A).** Paged, unordered, 100k rows, all-distinct:
+- **R2, full elision (C vs A′).** Paged, unordered, 100k rows, all-distinct:
   `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` must come within
-  **1.15x** of `SELECT email FROM users`. This is the criterion the old text
-  wanted; it is only now attached to a query on which the elision can actually
-  fire. Both sides run back-to-back on the same store so a slow moment lands on
-  both, and the ratio is a median of 5 pairs, for the reason RFC-209 §7 sets out:
+  **1.15x** of `SELECT email FROM users WHERE email IS NOT NULL` — **A′, not A**.
+  The denominator carries the same predicate deliberately: `IS NOT NULL` is
+  SARGable and independently moves the plan onto the covering `IndexScan`, so a
+  bound against A would credit R2 with an access-path change it did not make.
+  Both sides run back-to-back on the same store so a slow moment lands on both,
+  and the ratio is a median of 5 pairs, for the reason RFC-209 §7 sets out:
   single pairs on this harness drift enough to fail a clean run.
-- **R3, narrowed distinct (B vs D).** The bare `SELECT DISTINCT email FROM users`
-  must be **strictly faster than today's full distinct** on the same shape — the
-  0%-NULL case, where R3's seen-set is empty. The bound is expressed against **D**
-  (today's operator) rather than against A, because R3 does not remove the
-  operator and a bound against A would be a criterion on an outcome R3 does not
-  claim. The exempt test must be evaluated on the row's raw slots **before** the
-  dedup key is packed, so a non-exempt row costs a nil/NaN check and nothing
-  else; an implementation that packs first and tests after will fail this row
-  while passing every correctness test.
-- **Allocation churn**, R2 shape within **1.15x** of the no-`DISTINCT` run (today
-  ~2.7x), and R3 shape **at or below** today's. This is the criterion that would
-  catch an implementation that elides the operator in `EXPLAIN` while some other
-  path reintroduces per-page key retention — and, for R3, one that narrows the
+
+  **A bound against A is very nearly vacuous, and the measurement is what showed
+  it.** C measures **0.499x** of A and clears the 1.15x band with a 2x margin
+  while proving nothing about the elision, because `IS NOT NULL` independently
+  moves the access path onto the covering index. So the criteria have a stated
+  hierarchy rather than a list:
+
+  1. **PRIMARY — C/A′ ALLOCATION ≤ 1.15x.** Branch **1.000x**, `master`
+     **1.270x**. This is the one that separates, and it is the one the probe fails
+     on when run against a tree without the route.
+  2. **SECONDARY — C/A′ TIMING ≤ 1.15x.** Branch 0.986x, so about 7% of headroom
+     — real, but soft on a loaded box, which is why it is not the primary.
+  3. **REPORTED, NOT A CRITERION — C/A.** Kept because a reader reaches for it
+     first, and labelled so nobody mistakes 0.499x for evidence.
+- **R3, narrowed distinct (B vs D′).** The bare `SELECT DISTINCT email FROM users`
+  must beat today's full distinct on the same shape — the 0%-NULL case, where
+  R3's seen-set is empty. The bound is expressed against **D′** (today's
+  operator) rather than against A, because R3 does not remove the operator and a
+  bound against A would be a criterion on an outcome R3 does not claim.
+
+  **"Strictly faster" cannot be spelled `< 1.0`, and this was caught by the
+  mutation check rather than by review.** Without the route, B and D′ are *the
+  same plan over the same data*, so their ratio is 1.0 ± noise — `master`
+  measures **0.992x**, which passes a `< 1.0` criterion on a coin flip and on a
+  tree containing no R3 at all. The criterion is therefore a MARGIN bound,
+  **B/D′ ≤ 0.90**, drawn from the measured effect size (0.62–0.73x across the
+  sweep) and comfortably outside the noise band the null hypothesis occupies. The
+  1% sweep row carries the same bound; the 50% row keeps its asymmetric `≤ 1.0`
+  ("no worse than full"), which is the whole content of *strictly dominates*.
+
+  The exempt test must be evaluated on the row's raw slots **before** the dedup
+  key is packed, so a non-exempt row costs a nil/NaN check and nothing else; an
+  implementation that packs first and tests after will fail this row while
+  passing every correctness test.
+- **Allocation churn**, R2 shape within **1.15x** of the no-`DISTINCT` run (A′),
+  and R3 shape **at or below** today's. This is the criterion that would catch an
+  implementation that elides the operator in `EXPLAIN` while some other path
+  reintroduces per-page key retention — and, for R3, one that narrows the
   *seen-set* without narrowing what gets serialized into the continuation.
+
+  **This is the criterion with teeth, and it is the one that actually separates.**
+  Measured: the branch is at **0.999x** against the 1.15x band, `master` at
+  **1.262x** — the same probe run against `master` fails this row, which is what
+  makes it a regression sentinel rather than a description. The timing rows on
+  the same runs do not separate, and saying so is part of the result: an
+  operator-removal is not an I/O change.
+
+- **A harness fact that is part of the specification, not a limitation of it.**
+  `PlanRecordQueryWithMetadata` **cannot observe R2 or R3 at all**, because it
+  never establishes index-state evidence, and clause 1 of the admission predicate
+  demands AFFIRMATIVE evidence rather than the absence of contrary evidence
+  (§5.1). Its refusal is therefore asserted **explicitly and as a positive
+  property**: the fail-closed default is load-bearing, and a change that made
+  that path start proving things from an index's declared uniqueness would be a
+  soundness regression even though it would look like coverage improving. The
+  executor-side retention measurement is taken through `WithNarrowedDedup`
+  instead, which is the seam that does not require the planner to have consulted
+  a store.
 - **The NULL-density sweep's retained-row counts are asserted exactly** (§2.1).
   They are counts, not timings, so they carry no band and no noise argument, and
   they are what turns "R3 strictly dominates" from an argument into a test. The
@@ -1624,6 +1799,14 @@ rewrite:
   the unfiltered `ORDER BY n` must still *not* claim strict sorting, because R2
   did not fire and R1 cannot — so the test pins the boundary rather than one side
   of it.
+
+  As landed it carries **five** rows, not two, because the boundary turned out to
+  have more than one edge: `IS NOT NULL` and `> 'a'` license (scan range),
+  unfiltered and `IS NULL` decline (nothing proved, and the exempt set
+  respectively), and `<> 'z'` **declines despite being on R2's allow-list** —
+  the SQL-path twin of the residual-filter refusal in §5.7. That last row is the
+  one that would have been missed by a two-row test, and it is the row an
+  unsound implementation passes every other row while failing.
 - **(d) NEW: R2 end-to-end.** The DISTINCT consumer of the same gate, on the same
   filtered shape, asserting full elision and correct rows.
 - **(e) NEW: R3 end-to-end.** The unfiltered shape, asserting a narrowed distinct
@@ -1665,6 +1848,16 @@ Unmodified:
 - `TestFDB_RawNaNPrimaryKeySuffixRetainsLogicalSort`
 - `TestFDB_UniquePendingIndexDoesNotEliminateDistinct`
 - `TestFDB_NonReadableIndexIsNotAMatchCandidate`
+
+**VERIFIED.** All 18 are green, and the "unmodified" claim is checked rather than
+asserted: every file holding one of them is byte-identical to #617's head
+(`d482747ad`) except `rule_distinct_on_unique_elim_test.go`, which is the file
+§8 already names as edited — and the three pins listed above that live *in* it
+are function-by-function identical to their #617 text. `TestStrictlySorted_*`
+and `TestPlanner_StrictlySorted_*` are the group that matters most here, since
+§5.7 changes the rule they exercise; they pass unedited, which is what makes
+"the strict-ordering consumer got a new route" mean *added* rather than
+*altered*.
 
 Edited, with the edit named up front so it is reviewed and not discovered:
 

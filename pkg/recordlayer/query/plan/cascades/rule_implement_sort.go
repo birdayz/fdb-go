@@ -296,21 +296,60 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *pr
 // equality-bound unsorted keys). Mirrors Java's RemoveSortRule.strictlyOrderedIfUnique.
 // Looks through Fetch wrappers to find the underlying index scan.
 func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int) bool {
-	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
-		return indexHasGloballyEnforcedUniqueKey(p) && numKeys >= len(p.GetColumnNames())
+	scan := indexScanUnderOrderPreservingWrappers(expr)
+	if scan == nil {
+		return false
 	}
+	return numKeys >= len(scan.GetColumnNames()) &&
+		indexHasStreamEnforcedUniqueKey(scan)
+}
+
+// indexScanUnderOrderPreservingWrappers finds the index scan this expression's
+// claimed ordering ultimately comes from.
+//
+// IT DELIBERATELY DOES NOT DESCEND THROUGH A FILTER, and that is a soundness
+// requirement rather than a missing case. R2's two routes are NOT symmetric
+// across its two consumers, which is the mirror image of the asymmetry recorded
+// at indexHasStreamEnforcedUniqueKey:
+//
+//   - For the DISTINCT consumer, a residual filter's conjuncts are valid
+//     evidence. The elision happens at the DISTINCT node, which sits ABOVE the
+//     filter, so the stream the proof is about is the stream the decision is
+//     made on.
+//   - For THIS consumer it is not, because there is nowhere to put the
+//     conclusion. `strictlySorted` is a field on RecordQueryIndexPlan, and
+//     ordering.go:1222 hands it to NewRichOrdering as the scan's own DISTINCTNESS.
+//     A filter's conjuncts prove something about the FILTER's output; marking the
+//     scan below it asserts that property of a stream that still contains the
+//     index's NULL entries. The claim is then readable from the bare scan node by
+//     any consumer that never sees the filter — measured: `WHERE n <> 'z' ORDER
+//     BY n` produced `PredicatesFilter(IndexScan(U, [*]))` whose scan reported
+//     IsDistinct() == true over a full scan including every NULL entry.
+//
+// So only evidence that is a property of the SCAN ITSELF may license this claim,
+// which is exactly the scan-range route: the range determines what the scan
+// emits, so a range excluding the NULL boundary is a fact about the marked node.
+// The refutation is pinned in the SQL-path witness rather than left as prose.
+func indexScanUnderOrderPreservingWrappers(
+	expr expressions.RelationalExpression,
+) *plans.RecordQueryIndexPlan {
+	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
+		return p
+	}
+	// A fetch reshapes rows without removing any, so the scan under it emits
+	// exactly what the fetch does and the flag describes the right stream.
 	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		ref := fw.GetInnerQuantifier().GetRangesOver()
 		if ref == nil {
-			return false
+			return nil
 		}
 		for _, m := range ref.AllMembers() {
 			if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
-				return indexHasGloballyEnforcedUniqueKey(p) && numKeys >= len(p.GetColumnNames())
+				return p
 			}
 		}
 	}
-	return false
+	return nil
 }
 
 // indexHasGloballyEnforcedUniqueKey is the strict-ordering consumer of the same
@@ -334,24 +373,51 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 // on the streams where it is TRUE is a NULL-rejecting predicate emptying the
 // index's exempt set, exactly as for the DISTINCT consumer.
 //
-// A CONSTRAINT on wiring that in, recorded because the two routes are not
-// interchangeable and the difference is a soundness trap. The DISTINCT route
-// reads FILTER conjuncts, where three-valued semantics does the work: `col =
-// <anything NULL>` evaluates to UNKNOWN and the row is dropped whatever the
-// operand turns out to be. An index scan's ComparisonRange is not a predicate
-// evaluation — it is a PHYSICAL KEY ENCLOSURE, and comparison_range.go:196-203
-// classifies ComparisonEquals, ComparisonIsNull and ComparisonNotDistinctFrom
-// alike as scan-range equality types. IsNull and NotDistinctFrom are refused by
-// the NULL-rejection allow-list already, but an Equals whose operand is a NULL
-// literal or a NULL-bound parameter would compile to a singleton range ENCLOSING
-// the NULL boundary; with no residual filter left, the scan emits the NULL
-// entries while this function claims strict sorting over genuine ties. Whether
-// that shape is constructible here is UNESTABLISHED. It must be settled with
-// evidence before a scan range is allowed to license this claim, because a sort
-// claim — unlike a DISTINCT — has no residual that could catch the error.
-func indexHasGloballyEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
-	return p != nil && p.IsUnique() && properties.SecondaryUniqueKeyGloballyEnforced(
-		p.GetKeyComponentTypes(), len(p.GetColumnNames()),
+// R2's two routes are not interchangeable, and the difference was recorded here
+// as an open soundness question before it was settled. It is settled now, and
+// the answer is in null_rejecting_scan_range.go with the binder citations: the
+// DISTINCT route reads FILTER conjuncts, where three-valued semantics does the
+// work, while an index scan's ComparisonRange is a PHYSICAL KEY ENCLOSURE, and
+// comparison_range.go:196-203 classifies ComparisonEquals, ComparisonIsNull and
+// ComparisonNotDistinctFrom alike as scan-range equality types.
+//
+// The worry was that an Equals over a NULL literal or a NULL-bound parameter
+// would compile to a singleton range ENCLOSING the NULL boundary and, with no
+// residual filter, emit NULL entries under a strict-sorting claim that has no
+// residual to catch the error. That shape IS constructible — the planner builds
+// the equality range and leaves no residual — but it does not enclose the NULL
+// boundary: the binder short-circuits a NULL-valued equality to an EMPTY range
+// (scan_range_binding.go:321-325) rather than seeking [null]. Zero rows have no
+// ties. The two kinds that DO enclose the NULL boundary, IS NULL and IS NOT
+// DISTINCT FROM, are the two the allow-list already refuses.
+//
+// So the scan-range route licenses the claim, and it is the ONLY route that may.
+// The `WHERE email IS NOT NULL` of §5.7 is SARGed into the scan range, so this is
+// also the route that fires on the shape the RFC quotes.
+//
+// The FILTER route is deliberately absent, and its absence is a second soundness
+// finding rather than an omission — see indexScanUnderOrderPreservingWrappers.
+// R2's routes are not symmetric across its two consumers: a residual filter's
+// conjuncts prove something about the FILTER's output, and this consumer's only
+// place to record a conclusion is a field on the SCAN below it.
+//
+// indexHasStreamEnforcedUniqueKey is therefore the same predicate restricted to
+// ONE STREAM, exactly as the DISTINCT consumer's clause 8 is — with the stream
+// described by what the scan's own range encloses.
+func indexHasStreamEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
+	if p == nil || !p.IsUnique() {
+		return false
+	}
+	keyColumns := p.GetColumnNames()
+	// Each key column needs its own evidence and the positions are never rounded
+	// up: a composite UNIQUE (a, b) with only `a` constrained still admits
+	// (1, NULL) and (1, NULL), so an uncovered position stays false and declines
+	// the proof. nullRejectedByScanRange states the evidence in the index's own
+	// KEY COLUMN ORDER, which is the order GetKeyComponentTypes arrives in and
+	// therefore the only order the gate can consume.
+	return properties.SecondaryUniqueKeyEnforcedOnStream(
+		p.GetKeyComponentTypes(), len(keyColumns),
+		nullRejectedByScanRange(p.GetScanComparisons(), len(keyColumns)),
 	)
 }
 
@@ -359,6 +425,11 @@ func indexHasGloballyEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
 // as strictlySorted. For index scans, this creates a new wrapper with
 // a cloned plan. For Fetch wrappers, creates a new Fetch wrapping a
 // strictlySorted index plan. For other plan types, returns unchanged.
+//
+// The wrappers it rebuilds must be exactly those
+// indexScanUnderOrderPreservingWrappers descends through: a shape the walk
+// admits but this function returns unchanged is a claim that was proved and then
+// silently dropped, so the two enumerations move together.
 func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
 	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
 		// WithStrictlySorted is a struct copy — it preserves the index metadata

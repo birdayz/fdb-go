@@ -1,13 +1,32 @@
 package sqldriver_test
 
-// MEASUREMENT PROBE for the secondary-UNIQUE DISTINCT-elision RFC.
+// RFC-210's performance harness: the secondary-UNIQUE DISTINCT-elision routes,
+// measured and ASSERTED rather than logged.
 //
-// distinctEliminatedByUniqueKey (rule_implement_distinct_final.go) declines to
-// admit a SECONDARY UNIQUE index as a proof that a DISTINCT is redundant. This
-// probe measures what that decline costs on a real store: the plan shape with
-// and without the DISTINCT keyword, the wall-clock delta, and whether the
-// DISTINCT blocks anything structurally (covering-index-only access, LIMIT
-// pushdown / early termination).
+// Three routes discharge a DISTINCT over a secondary UNIQUE index. R1
+// (metadata) is inert on the SQL surface, because the DDL rejects a NOT NULL
+// scalar column. R2 fires when a NULL-rejecting conjunct covers every key
+// column and removes the operator outright. R3 is the floor: the operator
+// stays, but only rows carrying a NULL/NaN key component enter the seen-set.
+//
+// This file holds two tests, and the split is deliberate — they measure two
+// different things and only their conjunction is the claim:
+//
+//   - TestFDB_DistinctUniqueElisionCostProbe measures COST through the real SQL
+//     path, where the planner is the thing under test: only that path
+//     establishes index states, so only that path can yield an R2/R3 plan.
+//   - TestFDB_DistinctUniqueElisionRetention measures the seen-set's exact
+//     CONTENT through the executor, by reading the hash-distinct's continuation.
+//     That needs a plan object in hand, so it builds the narrowed plan directly.
+//     Whether the planner PRODUCES that plan is the other test's assertion.
+//
+// The fixture carries EMAIL_PLAIN alongside EMAIL: identical values, identical
+// key bytes, no unique index. `SELECT DISTINCT email_plain` is therefore the
+// full-distinct control for `SELECT DISTINCT email` — same access path, same
+// projection width, same dedup keys, differing only in whether a proof exists.
+// Measured on master, where no route fires, the two run within 1.007x of each
+// other, which is what makes the control a stand-in for pre-RFC behaviour on
+// the same store instead of a cross-process comparison.
 
 import (
 	"context"
@@ -20,13 +39,83 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 const duecRows = 100000
+
+// duecReps is the pair count RFC-209 §7 settled on: a single pair on this
+// harness drifts enough to fail a clean run, and every ratio below is the
+// MEDIAN of the per-rep ratios rather than a ratio of medians — the two sides
+// of a pair run back-to-back, so a slow moment lands on both and divides out.
+const duecReps = 5
+
+// duecPageScanLimit forces the 100k query to span ~10 pages. Unbounded runs
+// finish inside ONE page and so never charge the hash-distinct's continuation,
+// which serializes every seen key and rebuilds the set on resume. The paged
+// unordered regime is the one RFC-210's criteria are written for precisely
+// because it is where the redundant operator is expensive.
+const duecPageScanLimit = 10000
+
+// duecRun is one measured execution: rows, wall clock, and the bytes this
+// process cumulatively allocated during it (the seen-set churn shows up here).
+type duecSample struct {
+	rows  int
+	dur   time.Duration
+	alloc uint64
+}
+
+// duecMeasure accumulates duecReps samples per query.
+type duecSeries struct {
+	tag, query string
+	rows       int
+	nulls      int
+	samples    []duecSample
+}
+
+func (s *duecSeries) medianDur() time.Duration {
+	ds := make([]time.Duration, 0, len(s.samples))
+	for _, x := range s.samples {
+		ds = append(ds, x.dur)
+	}
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+	return ds[len(ds)/2]
+}
+
+func (s *duecSeries) medianAlloc() uint64 {
+	as := make([]uint64, 0, len(s.samples))
+	for _, x := range s.samples {
+		as = append(as, x.alloc)
+	}
+	sort.Slice(as, func(i, j int) bool { return as[i] < as[j] })
+	return as[len(as)/2]
+}
+
+// duecMedianRatio is the median of the PER-PAIR ratios, not the ratio of the
+// medians. Only the former divides out a slow moment that hit one rep.
+func duecMedianRatio(num, den *duecSeries, pick func(duecSample) float64) float64 {
+	rs := make([]float64, 0, len(num.samples))
+	for i := range num.samples {
+		rs = append(rs, pick(num.samples[i])/pick(den.samples[i]))
+	}
+	sort.Float64s(rs)
+	return rs[len(rs)/2]
+}
+
+func duecDurOf(s duecSample) float64   { return float64(s.dur) }
+func duecAllocOf(s duecSample) float64 { return float64(s.alloc) }
 
 func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	t.Parallel()
@@ -36,10 +125,16 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	ctx := context.Background()
 	setup := openTestDB(t, "/testdb_duec")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_duec")
+	// Three tables differing only in NULL density. EMAIL_PLAIN mirrors EMAIL
+	// value for value, NULL for NULL, and carries no index.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duec "+
-			"CREATE TABLE users (id BIGINT, email STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email ON users (email)")
+			"CREATE TABLE users (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email ON users (email) "+
+			"CREATE TABLE users1 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email1 ON users1 (email) "+
+			"CREATE TABLE users50 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email50 ON users50 (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
 	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -49,10 +144,293 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(16)
 
-	// ---- load ----------------------------------------------------------
+	duecLoad(t, ctx, db, "users", 0)
+	duecLoad(t, ctx, db, "users1", 100)
+	duecLoad(t, ctx, db, "users50", 2)
+
+	// ---- plan shapes ---------------------------------------------------
+	// Every measurement below is interpretable only against the plan it was
+	// taken on, so the shapes are ASSERTED. Each failure message names the fact
+	// of RFC-210 that changed.
+	ex := func(q string) string { return explainPlan(t, ctx, db, q) }
+	const (
+		qA  = "SELECT email FROM users"
+		qA2 = "SELECT email FROM users WHERE email IS NOT NULL"
+		qB  = "SELECT DISTINCT email FROM users"
+		qC  = "SELECT DISTINCT email FROM users WHERE email IS NOT NULL"
+		qD  = "SELECT DISTINCT email_plain FROM users"
+	)
+	explains := map[string]string{}
+	for _, q := range []string{
+		qA, qA2, qB, qC, qD,
+		"SELECT DISTINCT email FROM users1", "SELECT DISTINCT email_plain FROM users1",
+		"SELECT DISTINCT email FROM users50", "SELECT DISTINCT email_plain FROM users50",
+		"SELECT DISTINCT email FROM users ORDER BY email",
+		"SELECT email FROM users ORDER BY email",
+		"SELECT DISTINCT email FROM users ORDER BY email LIMIT 10",
+		"SELECT email FROM users ORDER BY email LIMIT 10",
+		"SELECT DISTINCT email FROM users LIMIT 10",
+		"SELECT email FROM users LIMIT 10",
+	} {
+		explains[q] = ex(q)
+		t.Logf("EXPLAIN %-56s => %s", q, explains[q])
+	}
+
+	// Row A. The baseline the delivered-delta table compares against: a plain
+	// base-record scan with no operator on top. If the access path moves, the
+	// comparison measures something else.
+	if strings.Contains(explains[qA], "Distinct(") ||
+		!strings.Contains(explains[qA], "Scan(USERS)") ||
+		strings.Contains(explains[qA], "IndexScan") {
+		t.Fatalf("row A is no longer a plain base-record scan: %s", explains[qA])
+	}
+	// Row A'. The control row C is actually "the same plan modulo the DISTINCT":
+	// adding the NULL-rejecting filter moves the access path to the covering
+	// index REGARDLESS of the DISTINCT, so A is NOT that control and a C-vs-A
+	// ratio partly measures the access path. Both bounds are asserted below;
+	// this one is the one that isolates the operator.
+	if strings.Contains(explains[qA2], "Distinct(") ||
+		!strings.Contains(explains[qA2], "IndexScan(BY_EMAIL,") {
+		t.Fatalf("row A' is no longer a covering index scan without a distinct: %s\n"+
+			"It is the only control that isolates R2's elision from the access-path "+
+			"change the filter causes on its own.", explains[qA2])
+	}
+	// Row B — R3. The operator SURVIVES and carries the narrowing stamp. Both
+	// halves matter: a plan with no Distinct at all would mean R2 fired on an
+	// unfiltered query (unsound over a nullable key), and a Distinct without the
+	// stamp would mean R3 stopped firing and the query pays the full seen-set.
+	if !strings.Contains(explains[qB], "Distinct(") {
+		t.Fatalf("row B lost its distinct operator entirely: %s\n"+
+			"R2 must NOT fire on an unfiltered query over a NULLABLE unique key: "+
+			"two NULL emails are two index entries and one output row.", explains[qB])
+	}
+	if !strings.Contains(explains[qB], "narrowed-by:BY_EMAIL") {
+		t.Fatalf("row B is no longer NARROWED by BY_EMAIL: %s\n"+
+			"R3 (rule_implement_distinct_final.go, WithNarrowedDedup) stopped firing; "+
+			"the bare SELECT DISTINCT is back to the full seen-set and every timing "+
+			"and churn bound below is measuring the pre-RFC operator.", explains[qB])
+	}
+	// Row C — R2. No operator at all.
+	if strings.Contains(explains[qC], "Distinct(") {
+		t.Fatalf("row C still carries a physical distinct: %s\n"+
+			"R2's full elision (a NULL-rejecting conjunct on every key column) "+
+			"stopped firing.", explains[qC])
+	}
+	if !strings.Contains(explains[qC], "distinct-by:BY_EMAIL") {
+		t.Fatalf("row C carries no elision proof stamp: %s\n"+
+			"An elision without the stamp is an elision whose dependency on the "+
+			"index's state was never recorded (RFC-210 §5.2).", explains[qC])
+	}
+	// Row D' — the full-distinct control. Same shape as B, no stamp.
+	if !strings.Contains(explains[qD], "Distinct(") ||
+		strings.Contains(explains[qD], "narrowed-by") ||
+		!strings.Contains(explains[qD], "Scan(USERS)") ||
+		strings.Contains(explains[qD], "IndexScan") {
+		t.Fatalf("the full-distinct control is no longer an unstamped distinct over a "+
+			"base scan: %s\nEMAIL_PLAIN must stay unindexed; if it acquires a proof "+
+			"the control becomes a copy of row B and every R3 bound below is vacuous.",
+			explains[qD])
+	}
+	// The sweep's two operators, at both densities.
+	for _, tbl := range []string{"users1", "users50"} {
+		r3, full := "SELECT DISTINCT email FROM "+tbl, "SELECT DISTINCT email_plain FROM "+tbl
+		if !strings.Contains(explains[r3], "narrowed-by:BY_EMAIL") {
+			t.Fatalf("sweep %s: the R3 side is not narrowed: %s", tbl, explains[r3])
+		}
+		if !strings.Contains(explains[full], "Distinct(") ||
+			strings.Contains(explains[full], "narrowed-by") {
+			t.Fatalf("sweep %s: the full side is not an unstamped distinct: %s", tbl, explains[full])
+		}
+	}
+
+	// ---- measurement ---------------------------------------------------
+	pconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, int64(duecPageScanLimit)).Build())
+	})
+	series := map[string]*duecSeries{}
+	order := []struct{ tag, query string }{
+		{"A", qA},
+		{"A'", qA2},
+		{"B", qB},
+		{"C", qC},
+		{"D'", qD},
+		{"S1-full", "SELECT DISTINCT email_plain FROM users1"},
+		{"S1-R3", "SELECT DISTINCT email FROM users1"},
+		{"S50-full", "SELECT DISTINCT email_plain FROM users50"},
+		{"S50-R3", "SELECT DISTINCT email FROM users50"},
+	}
+	for _, o := range order {
+		series[o.tag] = &duecSeries{tag: o.tag, query: o.query}
+	}
+	for rep := 0; rep < duecReps; rep++ {
+		for _, o := range order {
+			s := series[o.tag]
+			sample, nulls := duecRunPaged(t, ctx, pconn, o.query)
+			s.samples = append(s.samples, sample)
+			s.rows, s.nulls = sample.rows, nulls
+		}
+	}
+	for _, o := range order {
+		s := series[o.tag]
+		t.Logf("PAGED %-9s rows=%-7d nullRows=%-3d medDur=%-10v medAllocMiB=%-8.1f durs=%v",
+			s.tag, s.rows, s.nulls, s.medianDur().Round(time.Millisecond),
+			float64(s.medianAlloc())/(1<<20),
+			func() []time.Duration {
+				out := make([]time.Duration, 0, len(s.samples))
+				for _, x := range s.samples {
+					out = append(out, x.dur.Round(time.Millisecond))
+				}
+				return out
+			}())
+	}
+	ratio := func(num, den string) (timeR, allocR float64) {
+		timeR = duecMedianRatio(series[num], series[den], duecDurOf)
+		allocR = duecMedianRatio(series[num], series[den], duecAllocOf)
+		t.Logf("RATIO %-9s / %-9s medTime=%.3fx medAlloc=%.3fx", num, den, timeR, allocR)
+		return timeR, allocR
+	}
+	cvaT, cvaA := ratio("C", "A")
+	cva2T, cva2A := ratio("C", "A'")
+	bvdT, bvdA := ratio("B", "D'")
+	ratio("B", "A")
+	s1T, s1A := ratio("S1-R3", "S1-full")
+	s50T, s50A := ratio("S50-R3", "S50-full")
+
+	// R2, full elision. The RFC's criterion is C within 1.15x of A. It is
+	// asserted as written, and then again against A' — the control that holds
+	// the access path fixed and is therefore the bound that can actually catch a
+	// regression in the elision itself.
+	const band = 1.15
+	if cvaT > band {
+		t.Fatalf("R2 timing: C/A = %.3fx exceeds %.2fx (C=%v A=%v)",
+			cvaT, band, series["C"].medianDur(), series["A"].medianDur())
+	}
+	if cva2T > band {
+		t.Fatalf("R2 timing against the access-path-matched control: C/A' = %.3fx "+
+			"exceeds %.2fx (C=%v A'=%v). Unlike C/A this bound DISCRIMINATES: with "+
+			"the operator retained it measures 1.16-1.19x, so it fails.",
+			cva2T, band, series["C"].medianDur(), series["A'"].medianDur())
+	}
+	// Allocation is the criterion that catches an implementation which elides
+	// the operator in EXPLAIN while some other path reintroduces per-page key
+	// retention. It is also the stable one: churn varies by well under 1% run to
+	// run, where wall clock varies by tens of percent.
+	if cvaA > band {
+		t.Fatalf("R2 churn: C/A = %.3fx exceeds %.2fx (C=%.1f MiB A=%.1f MiB)",
+			cvaA, band, float64(series["C"].medianAlloc())/(1<<20),
+			float64(series["A"].medianAlloc())/(1<<20))
+	}
+	if cva2A > band {
+		t.Fatalf("R2 churn against the access-path-matched control: C/A' = %.3fx "+
+			"exceeds %.2fx (C=%.1f MiB A'=%.1f MiB). Measured on master, where the "+
+			"operator survives, this ratio is 1.26x — so this bound is the one that "+
+			"distinguishes an elided operator from a retained one.",
+			cva2A, band, float64(series["C"].medianAlloc())/(1<<20),
+			float64(series["A'"].medianAlloc())/(1<<20))
+	}
+
+	// R3, narrowed distinct, on the 0%-NULL store where its seen-set is empty.
+	// The bound is against the FULL distinct (D'), not against A: R3 does not
+	// remove the operator, so a bound against A would be a criterion on an
+	// outcome R3 never claims.
+	// "Strictly faster" cannot be spelled `< 1.0`. With R3 absent, B and D' are
+	// the SAME plan over the same data, so their ratio is 1.0 plus noise and a
+	// `< 1.0` test is a coin flip — measured at 0.992x on a tree without the
+	// route, where it would have passed. The bound is therefore a MARGIN drawn
+	// from the effect's measured size (0.66-0.73x delivered): anything at or
+	// above 0.9x is not R3 working, it is R3 missing.
+	const r3Margin = 0.90
+	if bvdT > r3Margin {
+		t.Fatalf("R3 timing: B/D' = %.3fx is not strictly faster than the full "+
+			"distinct (B=%v D'=%v). R3's exempt test must run on the row's RAW "+
+			"SLOTS before the dedup key is packed; an implementation that packs "+
+			"first and tests after is correct and delivers almost none of this.",
+			bvdT, series["B"].medianDur(), series["D'"].medianDur())
+	}
+	if bvdA > 1.0 {
+		t.Fatalf("R3 churn: B/D' = %.3fx is above the full distinct's (B=%.1f MiB "+
+			"D'=%.1f MiB). Narrowing the seen-set without narrowing what gets "+
+			"SERIALIZED into the continuation would land exactly here.",
+			bvdA, float64(series["B"].medianAlloc())/(1<<20),
+			float64(series["D'"].medianAlloc())/(1<<20))
+	}
+
+	// The sweep's timing criterion. At 1% the seen-set is 1 key against 99 001,
+	// so R3 must be faster. At 50% it is the near-worst case and the criterion
+	// is "no worse than full", never "faster" — that asymmetry IS the content of
+	// "strictly dominates".
+	if s1T > r3Margin {
+		t.Fatalf("sweep 1%%: R3/full = %.3fx is not faster (bound %.2fx, for the same "+
+			"reason as B/D': without the route the two are one plan and the ratio is "+
+			"1.0 plus noise)", s1T, r3Margin)
+	}
+	if s50T > 1.0 {
+		t.Fatalf("sweep 50%%: R3/full = %.3fx is WORSE than the full distinct. R3's "+
+			"seen-set is a subset of the full one on every input, so there is no "+
+			"density at which it may cost more.", s50T)
+	}
+	if s1A > 1.0 || s50A > 1.0 {
+		t.Fatalf("sweep churn: R3 allocates more than full (1%%: %.3fx, 50%%: %.3fx)", s1A, s50A)
+	}
+
+	// ---- rows are identical, whatever the operator ----------------------
+	// The correctness half of the sweep. 50% NULLs must yield exactly ONE NULL
+	// row, and the narrowed operator must agree with the full one value for
+	// value at every density.
+	for _, c := range []struct {
+		table    string
+		wantRows int
+	}{
+		{"users", 100000},
+		{"users1", 99001},
+		{"users50", 50001},
+	} {
+		r3 := duecCollect(t, ctx, pconn, "SELECT DISTINCT email FROM "+c.table)
+		full := duecCollect(t, ctx, pconn, "SELECT DISTINCT email_plain FROM "+c.table)
+		if len(r3) != c.wantRows {
+			t.Fatalf("%s: narrowed DISTINCT returned %d rows, want %d", c.table, len(r3), c.wantRows)
+		}
+		if len(full) != c.wantRows {
+			t.Fatalf("%s: full DISTINCT returned %d rows, want %d", c.table, len(full), c.wantRows)
+		}
+		nulls := 0
+		for i := range r3 {
+			if r3[i] != full[i] {
+				t.Fatalf("%s: narrowed and full DISTINCT disagree at %d: %q vs %q",
+					c.table, i, r3[i], full[i])
+			}
+			if r3[i] == "NULL" {
+				nulls++
+			}
+		}
+		wantNulls := 0
+		if c.table != "users" {
+			wantNulls = 1
+		}
+		if nulls != wantNulls {
+			t.Fatalf("%s: narrowed DISTINCT returned %d NULL rows, want %d — a NULL "+
+				"key component is EXEMPT, which is exactly why it still has to be "+
+				"deduplicated down to one row", c.table, nulls, wantNulls)
+		}
+		t.Logf("ROWS %-8s rows=%d nullRows=%d identical=true", c.table, len(r3), nulls)
+	}
+
+	// ---- ordered and LIMIT shapes: shape only, never timed --------------
+	// RFC-210 §2.1 could not resolve a delta on these — the spreads overlap
+	// heavily — and a bound on an unresolvable delta measures the harness. They
+	// are still pinned for SHAPE, because which executor variant fires decides
+	// which cost the operator pays and EXPLAIN does not render it.
+	duecAssertVariants(t, explains)
+}
+
+// duecLoad fills one table; every nullEvery-th row gets a NULL email (and the
+// same NULL in the unindexed mirror column). nullEvery <= 0 means none.
+func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery int) {
+	t.Helper()
 	const batch = 250
 	const workers = 8
-	loadStart := time.Now()
+	start := time.Now()
 	var wg sync.WaitGroup
 	errCh := make(chan error, workers)
 	per := duecRows / workers
@@ -63,16 +441,22 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			lo := w * per
 			for base := lo; base < lo+per; base += batch {
 				var sb strings.Builder
-				sb.WriteString("INSERT INTO users (id, email, payload) VALUES ")
+				fmt.Fprintf(&sb, "INSERT INTO %s (id, email, email_plain, payload) VALUES ", table)
 				for i := 0; i < batch; i++ {
 					id := base + i
 					if i > 0 {
 						sb.WriteString(",")
 					}
-					fmt.Fprintf(&sb, "(%d, 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id, id)
+					if nullEvery > 0 && id%nullEvery == 0 {
+						fmt.Fprintf(&sb, "(%d, NULL, NULL, 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')", id, id)
+						continue
+					}
+					fmt.Fprintf(&sb,
+						"(%d, 'user%07d@example.com', 'user%07d@example.com', 'pad-%07d-xxxxxxxxxxxxxxxxxxxx')",
+						id, id, id, id)
 				}
 				if _, e := db.ExecContext(ctx, sb.String()); e != nil {
-					errCh <- fmt.Errorf("insert batch at %d: %w", base, e)
+					errCh <- fmt.Errorf("insert %s at %d: %w", table, base, e)
 					return
 				}
 			}
@@ -83,266 +467,426 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	for e := range errCh {
 		t.Fatalf("load: %v", e)
 	}
-	loadDur := time.Since(loadStart)
+	var n, nulls int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM "+table+" WHERE email IS NULL").Scan(&nulls); err != nil {
+		t.Fatalf("null count %s: %v", table, err)
+	}
+	if n != duecRows {
+		t.Fatalf("%s loaded %d rows, want %d", table, n, duecRows)
+	}
+	wantNulls := int64(0)
+	if nullEvery > 0 {
+		wantNulls = int64(duecRows / nullEvery)
+	}
+	if nulls != wantNulls {
+		t.Fatalf("%s holds %d NULL emails, want %d — the NULL density IS the sweep's "+
+			"independent variable", table, nulls, wantNulls)
+	}
+	t.Logf("LOAD %-8s rows=%d nullEmails=%d in %v",
+		table, n, nulls, time.Since(start).Round(time.Millisecond))
+}
 
-	var loaded int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&loaded); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	t.Logf("LOAD: %d rows in %v (%.0f rows/s); COUNT(*) = %d",
-		duecRows, loadDur.Round(time.Millisecond),
-		float64(duecRows)/loadDur.Seconds(), loaded)
-
-	// ---- EXPLAIN -------------------------------------------------------
-	queries := []struct{ name, sql string }{
-		{"distinct", "SELECT DISTINCT email FROM users"},
-		{"no_distinct", "SELECT email FROM users"},
-		{"distinct_order", "SELECT DISTINCT email FROM users ORDER BY email"},
-		{"no_distinct_order", "SELECT email FROM users ORDER BY email"},
-		{"distinct_order_limit", "SELECT DISTINCT email FROM users ORDER BY email LIMIT 10"},
-		{"no_distinct_order_limit", "SELECT email FROM users ORDER BY email LIMIT 10"},
-		{"distinct_limit", "SELECT DISTINCT email FROM users LIMIT 10"},
-		{"no_distinct_limit", "SELECT email FROM users LIMIT 10"},
-	}
-	explains := make(map[string]string, len(queries))
-	for _, q := range queries {
-		explains[q.name] = explainPlan(t, ctx, db, q.sql)
-		t.Logf("EXPLAIN %-24s %s\n    => %s", q.name, q.sql, explains[q.name])
-	}
-
-	// The measurements below are only interpretable against the plan shapes they
-	// were taken on, so those shapes are ASSERTED rather than logged. Each
-	// assertion is a fact RFC-210 rests on, and each failure message names what
-	// changed.
-	if !strings.Contains(explains["distinct"], "Distinct(") {
-		t.Fatalf("SELECT DISTINCT over a secondary-UNIQUE column no longer carries a "+
-			"physical distinct: %s\nThe secondary-UNIQUE elision decline "+
-			"(distinctEliminatedByUniqueKey) has been lifted. This probe must be "+
-			"updated to assert the ELIDED shape and to enforce RFC-210's perf "+
-			"criterion, not deleted.", explains["distinct"])
-	}
-	// The elision's output shape. That it is a base-record Scan and NOT
-	// IndexScan(BY_EMAIL) is the refutation of "the unique index would answer the
-	// query directly" — measured at 0.33s here versus 6.95s for the index path.
-	if strings.Contains(explains["no_distinct"], "Distinct(") ||
-		!strings.Contains(explains["no_distinct"], "Scan(USERS)") ||
-		strings.Contains(explains["no_distinct"], "IndexScan") {
-		t.Fatalf("the no-DISTINCT shape is no longer a plain base-record scan: %s\n"+
-			"RFC-210 §2.1's cost comparison compares the DISTINCT plan against THIS "+
-			"plan; if the access path moved, the comparison measures something else.",
-			explains["no_distinct"])
-	}
-	if !strings.Contains(explains["distinct_order"], "IndexScan(BY_EMAIL") {
-		t.Fatalf("ORDER BY email no longer reaches BY_EMAIL: %s", explains["distinct_order"])
-	}
-
-	// ---- timing --------------------------------------------------------
-	// run executes q, returning the row count, the wall clock, the bytes this
-	// goroutine's execution cumulatively allocated (TotalAlloc delta — the
-	// hash-set churn shows up here), and the peak process HeapInuse sampled
-	// every 2ms while the query runs.
-	run := func(q string) (int, time.Duration, uint64, uint64) {
-		runtime.GC()
-		var m0 runtime.MemStats
-		runtime.ReadMemStats(&m0)
-		var peak uint64
-		stop := make(chan struct{})
-		var sampWG sync.WaitGroup
-		sampWG.Add(1)
-		go func() {
-			defer sampWG.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				var ms runtime.MemStats
-				runtime.ReadMemStats(&ms)
-				if ms.HeapInuse > peak {
-					peak = ms.HeapInuse
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
-		}()
-		start := time.Now()
-		rows, err := db.QueryContext(ctx, q)
-		if err != nil {
-			t.Fatalf("query %q: %v", q, err)
-		}
-		n := 0
-		var s sql.NullString
-		for rows.Next() {
-			if err := rows.Scan(&s); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			n++
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("rows.Err %q: %v", q, err)
-		}
-		rows.Close()
-		d := time.Since(start)
-		close(stop)
-		sampWG.Wait()
-		var m1 runtime.MemStats
-		runtime.ReadMemStats(&m1)
-		return n, d, m1.TotalAlloc - m0.TotalAlloc, peak
-	}
-
-	const reps = 7
-	type result struct {
-		name     string
-		n        int
-		durs     []time.Duration
-		median   time.Duration
-		medAlloc uint64
-		medPeak  uint64
-	}
-	var results []result
-	for _, q := range queries {
-		r := result{name: q.name}
-		var allocs, peaks []uint64
-		for i := 0; i < reps; i++ {
-			n, d, a, p := run(q.sql)
-			r.n = n
-			r.durs = append(r.durs, d)
-			allocs = append(allocs, a)
-			peaks = append(peaks, p)
-		}
-		sorted := append([]time.Duration(nil), r.durs...)
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-		r.median = sorted[len(sorted)/2]
-		sort.Slice(allocs, func(i, j int) bool { return allocs[i] < allocs[j] })
-		sort.Slice(peaks, func(i, j int) bool { return peaks[i] < peaks[j] })
-		r.medAlloc = allocs[len(allocs)/2]
-		r.medPeak = peaks[len(peaks)/2]
-		results = append(results, r)
-	}
-	for _, r := range results {
-		t.Logf("TIMING %-24s rows=%-7d median=%-12v medAllocMiB=%-8.1f medPeakHeapMiB=%-8.1f all=%v",
-			r.name, r.n, r.median.Round(time.Millisecond),
-			float64(r.medAlloc)/(1<<20), float64(r.medPeak)/(1<<20), r.durs)
-	}
-
-	// ---- paged (multi-page) cost ---------------------------------------
-	// The unbounded runs above finish inside one page, so they never charge
-	// the hash-distinct's continuation: executeHashDistinct serializes EVERY
-	// seen key into DistinctHashContinuation and rebuilds the set from it on
-	// resume. Forcing a scanned-rows limit makes the 100k query span ~10 pages
-	// and exposes that O(distinct-values) per-page cost.
-	const pageScanLimit = 10000
-	pconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().
-			Set(api.OptExecutionScannedRowsLimit, int64(pageScanLimit)).Build())
-	})
-	runPaged := func(q string) (int, time.Duration, uint64) {
-		runtime.GC()
-		var m0 runtime.MemStats
-		runtime.ReadMemStats(&m0)
-		start := time.Now()
-		rows, err := pconn.QueryContext(ctx, q)
-		if err != nil {
-			t.Fatalf("paged query %q: %v", q, err)
-		}
-		n := 0
-		var s sql.NullString
-		for rows.Next() {
-			if err := rows.Scan(&s); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			n++
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("paged rows.Err %q: %v", q, err)
-		}
-		rows.Close()
-		d := time.Since(start)
-		var m1 runtime.MemStats
-		runtime.ReadMemStats(&m1)
-		return n, d, m1.TotalAlloc - m0.TotalAlloc
-	}
-	for _, q := range []struct{ name, sql string }{
-		{"paged_distinct", "SELECT DISTINCT email FROM users"},
-		{"paged_no_distinct", "SELECT email FROM users"},
-	} {
-		var ds []time.Duration
-		var as []uint64
-		var n int
-		for i := 0; i < 5; i++ {
-			nn, d, a := runPaged(q.sql)
-			n = nn
-			ds = append(ds, d)
-			as = append(as, a)
-		}
-		sorted := append([]time.Duration(nil), ds...)
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-		sort.Slice(as, func(i, j int) bool { return as[i] < as[j] })
-		t.Logf("PAGED(scanLimit=%d) %-20s rows=%-7d median=%-12v medAllocMiB=%-8.1f all=%v",
-			pageScanLimit, q.name, n, sorted[len(sorted)/2].Round(time.Millisecond),
-			float64(as[len(as)/2])/(1<<20), ds)
-	}
-
-	// ---- executor variant ---------------------------------------------
-	// Same shape as the SQL schema above, built through the metadata builder so
-	// the planned plan object is reachable and RecordQueryDistinctPlan.Streaming
-	// can be read (EXPLAIN deliberately does not render it).
-	cols := []metadata.ColumnSpec{
-		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("EMAIL", api.NewStringType(false), 2),
-		metadata.NewColumnSpec("PAYLOAD", api.NewStringType(false), 3),
-	}
-	b := metadata.NewSchemaTemplateBuilder().SetName("duec")
-	b.AddTable("USERS", cols, []string{"ID"})
-	b.AddIndex("USERS", "BY_EMAIL", []string{"EMAIL"}, true)
-	tmpl, err := b.Build()
+// duecRunPaged executes one query on the scanned-rows-limited connection.
+func duecRunPaged(t *testing.T, ctx context.Context, c *sql.Conn, q string) (duecSample, int) {
+	t.Helper()
+	runtime.GC()
+	var m0 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	start := time.Now()
+	rows, err := c.QueryContext(ctx, q)
 	if err != nil {
-		t.Fatalf("build metadata: %v", err)
+		t.Fatalf("query %q: %v", q, err)
 	}
-	md := tmpl.Underlying()
-	if idx := md.GetIndex("BY_EMAIL"); idx == nil || !idx.IsUnique() {
-		t.Fatal("BY_EMAIL missing or not unique")
-	}
-	for _, q := range queries {
-		p, e := embedded.PlanRecordQueryWithMetadata(q.sql, md, nil)
-		if e != nil {
-			t.Logf("VARIANT %-24s plan error: %v", q.name, e)
-			continue
+	n, nulls := 0, 0
+	var s sql.NullString
+	for rows.Next() {
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
 		}
-		found := false
-		streaming := false
+		n++
+		if !s.Valid {
+			nulls++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err %q: %v", q, err)
+	}
+	rows.Close()
+	d := time.Since(start)
+	var m1 runtime.MemStats
+	runtime.ReadMemStats(&m1)
+	return duecSample{rows: n, dur: d, alloc: m1.TotalAlloc - m0.TotalAlloc}, nulls
+}
+
+// duecCollect returns the query's values sorted, with SQL NULL as "NULL", so
+// two operators' outputs can be compared as multisets.
+func duecCollect(t *testing.T, ctx context.Context, c *sql.Conn, q string) []string {
+	t.Helper()
+	rows, err := c.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("collect %q: %v", q, err)
+	}
+	defer rows.Close()
+	var out []string
+	var s sql.NullString
+	for rows.Next() {
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if s.Valid {
+			out = append(out, "v:"+s.String)
+		} else {
+			out = append(out, "NULL")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// duecAssertVariants pins which executor variant each shape gets, through the
+// metadata-only planning harness.
+//
+// That harness NEVER yields R2 or R3, and the reason is load-bearing rather
+// than incidental: secondaryUniqueEliminationProof demands AFFIRMATIVE evidence
+// that index states were established, and only the SELECT/DML generator paths
+// supply it. A metadata-only run may still plan an index scan, but it may not
+// prove anything from an index's declared uniqueness. So this function asserts
+// the UNPROVEN shapes, and the SQL EXPLAINs above assert the proven ones; the
+// pairing is what makes "only a run that asked the store gets the proof"
+// testable rather than merely commented.
+func duecAssertVariants(t *testing.T, explains map[string]string) {
+	t.Helper()
+	md := duecMetaData(t)
+	shapes := []struct {
+		name, query    string
+		wantDistinct   bool
+		wantStreaming  bool
+		wantNarrowable bool
+	}{
+		{"distinct", "SELECT DISTINCT email FROM users", true, false, false},
+		{"no_distinct", "SELECT email FROM users", false, false, false},
+		{"distinct_order", "SELECT DISTINCT email FROM users ORDER BY email", true, true, false},
+		{"no_distinct_order", "SELECT email FROM users ORDER BY email", false, false, false},
+		{"distinct_order_limit", "SELECT DISTINCT email FROM users ORDER BY email LIMIT 10", true, true, false},
+		{"distinct_limit", "SELECT DISTINCT email FROM users LIMIT 10", true, false, false},
+	}
+	for _, s := range shapes {
+		p, e := embedded.PlanRecordQueryWithMetadata(s.query, md, nil)
+		if e != nil {
+			t.Fatalf("VARIANT %s: plan error: %v", s.name, e)
+		}
+		found, streaming, narrowed := false, false, false
 		plans.Walk(p, func(node plans.RecordQueryPlan) bool {
 			if d, ok := node.(*plans.RecordQueryDistinctPlan); ok {
 				found = true
 				streaming = d.Streaming
+				narrowed = narrowed || d.IsNarrowedDedup()
 			}
 			return true
 		})
-		t.Logf("VARIANT %-24s distinctPresent=%v streaming=%v plan=%s", q.name, found, streaming, p.Explain())
-		// Which executor variant fires decides which cost the decline actually
-		// pays, and EXPLAIN does not render it — so it is asserted here. The
-		// unordered shape gets the HASH set, whose seen-key set is serialized into
-		// every continuation page (executeHashDistinct); that is where RFC-210
-		// §2.1's +72%/+267MiB paged figure comes from. The ordered shape gets the
-		// streaming variant, which carries no seen-key set — and is why that RFC
-		// sets no timing criterion on the ordered shape.
-		switch q.name {
-		case "distinct":
-			if !found || streaming {
-				t.Fatalf("unordered SELECT DISTINCT: want the hash variant "+
-					"(distinctPresent=true, streaming=false), got present=%v streaming=%v",
-					found, streaming)
-			}
-		case "distinct_order":
-			if !found || !streaming {
-				t.Fatalf("ordered SELECT DISTINCT: want the streaming variant "+
-					"(distinctPresent=true, streaming=true), got present=%v streaming=%v",
-					found, streaming)
-			}
-		case "no_distinct", "no_distinct_order":
-			if found {
-				t.Fatalf("%s should carry no distinct operator at all", q.name)
-			}
+		t.Logf("VARIANT %-22s distinct=%v streaming=%v narrowed=%v plan=%s",
+			s.name, found, streaming, narrowed, p.Explain())
+		if found != s.wantDistinct {
+			t.Fatalf("VARIANT %s: distinctPresent=%v, want %v (%s)",
+				s.name, found, s.wantDistinct, p.Explain())
 		}
+		if found && streaming != s.wantStreaming {
+			// The unordered shape gets the HASH set, whose seen-key set rides
+			// every continuation page; the ordered shape gets the streaming
+			// variant, which carries no seen-key set at all — which is why
+			// RFC-210 sets no timing criterion on the ordered shape.
+			t.Fatalf("VARIANT %s: streaming=%v, want %v (%s)",
+				s.name, streaming, s.wantStreaming, p.Explain())
+		}
+		if narrowed != s.wantNarrowable {
+			t.Fatalf("VARIANT %s: narrowed=%v on the METADATA-ONLY harness, want %v.\n"+
+				"That harness establishes no index states, so no secondary-UNIQUE "+
+				"proof may be drawn on it. If this now narrows, the proof is being "+
+				"drawn without affirmative evidence that the index is readable — "+
+				"which is the exact failure the ReadableIndexes gate exists to "+
+				"prevent. If index states were deliberately threaded here, this "+
+				"expectation is what needs updating.", s.name, narrowed, s.wantNarrowable)
+		}
+	}
+	// The ordered SQL shape reaches the index; asserted because the streaming
+	// variant above is only available on an ordered input.
+	if !strings.Contains(explains["SELECT DISTINCT email FROM users ORDER BY email"], "IndexScan(BY_EMAIL") {
+		t.Fatalf("ORDER BY email no longer reaches BY_EMAIL: %s",
+			explains["SELECT DISTINCT email FROM users ORDER BY email"])
+	}
+}
+
+// TestFDB_DistinctUniqueElisionRetention measures the EXACT content of the
+// hash-distinct's seen-set at three NULL densities, by reading it back off the
+// continuation the operator serializes.
+//
+// The row limit is set to the number of rows the query produces, so the cursor
+// stops at LIMIT rather than at exhaustion and its live continuation therefore
+// carries the COMPLETE set. An exhausted cursor returns an end continuation,
+// which carries nothing.
+//
+// Two projections are measured because they answer two different questions.
+// `SELECT DISTINCT email` gives the KEYS retained — the memory and
+// continuation-bytes cost. `SELECT DISTINCT email, payload` gives the ROWS that
+// ENTERED: PAYLOAD is unique per row, so every admitted row packs a different
+// key and the key count IS the row count. Without the second projection the
+// 1%-and-50% rows are indistinguishable, since a thousand NULL emails collapse
+// to one key.
+func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	md := duecMetaData(t)
+	desc := md.GetRecordType("USERS").Descriptor
+
+	for _, d := range []struct {
+		label     string
+		nullEvery int
+		outRows   int
+		wantNulls int
+	}{
+		{"0%", 0, 100000, 0},
+		{"1%", 100, 99001, 1000},
+		{"50%", 2, 50001, 50000},
+	} {
+		ks := subspace.FromBytes(tuple.Tuple{t.Name(), d.label}.Pack())
+		duecDirectLoad(t, ctx, db, md, desc, ks, d.nullEvery)
+
+		// Keys retained: what the seen-set holds and what rides the continuation.
+		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, false)
+		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, true)
+		// Rows entered: the structural claim of RFC-210 §2.1's sweep table.
+		fullRows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS", duecRows, false)
+		r3Rows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS", duecRows, true)
+		t.Logf("RETAINED %-4s keys full=%-6d r3=%-6d | rows-entered full=%-6d r3=%-6d",
+			d.label, fullKeys.keys, r3Keys.keys, fullRows.keys, r3Rows.keys)
+
+		// The full distinct admits EVERY row, at every density. That is the
+		// column the sweep table compares R3 against, and it is flat by
+		// construction: the operator has no exempt set.
+		if fullRows.keys != duecRows {
+			t.Fatalf("density %s: full distinct admitted %d rows, want %d",
+				d.label, fullRows.keys, duecRows)
+		}
+		// R3 admits EXACTLY the exempt rows — the NULL-keyed ones. Not "about",
+		// not "at most": the narrowed seen-set is a subset of the full one on
+		// every input and degenerates to EMPTY on an ordinary table, and an
+		// off-by-anything here means the exempt test is looking at the wrong
+		// slot or running after the key is packed.
+		if r3Rows.keys != d.wantNulls {
+			t.Fatalf("density %s: R3 admitted %d rows, want exactly %d (the rows with "+
+				"a NULL email). R3's seen-set must be exactly the exempt subset.",
+				d.label, r3Rows.keys, d.wantNulls)
+		}
+		// And the keys those rows collapse to: all NULL emails share one key, so
+		// R3 holds 0 keys on an ordinary table and 1 wherever a NULL exists —
+		// against the full operator's one key per distinct value.
+		wantR3Keys := 0
+		if d.wantNulls > 0 {
+			wantR3Keys = 1
+		}
+		if r3Keys.keys != wantR3Keys {
+			t.Fatalf("density %s: R3 retained %d keys, want %d", d.label, r3Keys.keys, wantR3Keys)
+		}
+		if fullKeys.keys != d.outRows {
+			t.Fatalf("density %s: full distinct retained %d keys, want %d (one per "+
+				"output row)", d.label, fullKeys.keys, d.outRows)
+		}
+		if !r3Keys.narrowed || fullKeys.narrowed {
+			t.Fatalf("density %s: narrowing flags are wrong (r3=%v full=%v)",
+				d.label, r3Keys.narrowed, fullKeys.narrowed)
+		}
+		if fullKeys.rows != d.outRows || r3Keys.rows != d.outRows {
+			t.Fatalf("density %s: row counts differ between the operators: full=%d r3=%d, want %d",
+				d.label, fullKeys.rows, r3Keys.rows, d.outRows)
+		}
+	}
+}
+
+type duecRetention struct {
+	rows     int
+	keys     int
+	narrowed bool
+}
+
+// duecRetained plans a query, optionally applies R3's narrowing, executes it
+// against ks with a returned-row limit, and reports the seen-set size read off
+// the resulting continuation.
+//
+// The narrowing is applied HERE rather than taken from the planner because the
+// metadata-only harness deliberately refuses to draw a secondary-UNIQUE proof
+// (see duecAssertVariants). The planner's production of the narrowed plan is
+// asserted through EXPLAIN on the SQL path; this measures what the executor
+// does with it.
+func duecRetained(
+	t *testing.T,
+	ctx context.Context,
+	db *recordlayer.FDBDatabase,
+	md *recordlayer.RecordMetaData,
+	ks subspace.Subspace,
+	query string,
+	rowLimit int,
+	narrow bool,
+) duecRetention {
+	t.Helper()
+	plan, perr := embedded.PlanRecordQueryWithMetadata(query, md, nil)
+	if perr != nil {
+		t.Fatalf("plan %q: %v", query, perr)
+	}
+	if narrow {
+		d, ok := plan.(*plans.RecordQueryDistinctPlan)
+		if !ok {
+			t.Fatalf("root of %q is %T, want a distinct to narrow", query, plan)
+		}
+		plan = d.WithNarrowedDedup("BY_EMAIL", []int{0})
+	}
+	var out duecRetention
+	plans.Walk(plan, func(n plans.RecordQueryPlan) bool {
+		if d, ok := n.(*plans.RecordQueryDistinctPlan); ok && d.IsNarrowedDedup() {
+			out.narrowed = true
+		}
+		return true
+	})
+	_, rerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+		if sErr != nil {
+			return nil, sErr
+		}
+		cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+			executor.EmptyEvaluationContext(), nil,
+			recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(rowLimit))
+		if cErr != nil {
+			return nil, cErr
+		}
+		defer cursor.Close()
+		for {
+			next, nErr := cursor.OnNext(ctx)
+			if nErr != nil {
+				return nil, nErr
+			}
+			if next.HasNext() {
+				out.rows++
+				continue
+			}
+			cont := next.GetContinuation()
+			if cont == nil || cont.IsEnd() {
+				return nil, fmt.Errorf(
+					"cursor stopped without a live continuation (reason %v after %d rows); "+
+						"the row limit must stop it BEFORE exhaustion or the seen-set is unreadable",
+					next.GetNoNextReason(), out.rows)
+			}
+			encoded, eErr := cont.ToBytes()
+			if eErr != nil {
+				return nil, eErr
+			}
+			var dc gen.DistinctHashContinuation
+			if uErr := dc.UnmarshalVT(encoded); uErr != nil {
+				return nil, fmt.Errorf("not a DistinctHashContinuation: %w", uErr)
+			}
+			out.keys = len(dc.GetSeenKeys())
+			return nil, nil
+		}
+	})
+	if rerr != nil {
+		t.Fatalf("retained %q (narrow=%v): %v", query, narrow, rerr)
+	}
+	return out
+}
+
+// duecMetaData is the fixture's schema as record-layer metadata: the same
+// shape the SQL DDL above creates, so a plan built here is the plan the SQL
+// path builds modulo the proof the SQL path is allowed to draw.
+func duecMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	tmpl, err := embedded.BuildSchemaTemplateFromDDL(`
+		CREATE TABLE USERS (id bigint, email string, email_plain string, payload string, PRIMARY KEY(id))
+		CREATE UNIQUE INDEX by_email ON USERS (email)`)
+	if err != nil {
+		t.Fatalf("schema DDL: %v", err)
+	}
+	md := tmpl.Underlying()
+	idx := md.GetIndex("BY_EMAIL")
+	if idx == nil || !idx.IsUnique() {
+		t.Fatal("BY_EMAIL missing or not unique — the whole fixture rests on it")
+	}
+	return md
+}
+
+// duecDirectLoad writes the fixture through the record layer, so the retention
+// test owns a store it can execute a hand-built plan against.
+func duecDirectLoad(
+	t *testing.T,
+	ctx context.Context,
+	db *recordlayer.FDBDatabase,
+	md *recordlayer.RecordMetaData,
+	desc protoreflect.MessageDescriptor,
+	ks subspace.Subspace,
+	nullEvery int,
+) {
+	t.Helper()
+	const workers = 8
+	const perTx = 200
+	per := duecRows / workers
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			lo := w * per
+			for base := lo; base < lo+perTx*((per+perTx-1)/perTx); base += perTx {
+				if base >= lo+per {
+					break
+				}
+				_, e := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, sErr := recordlayer.NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					if sErr != nil {
+						return nil, sErr
+					}
+					for i := 0; i < perTx; i++ {
+						id := int64(base + i)
+						m := dynamicpb.NewMessage(desc)
+						m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+						if nullEvery <= 0 || int(id)%nullEvery != 0 {
+							v := fmt.Sprintf("user%07d@example.com", id)
+							m.Set(desc.Fields().ByName("EMAIL"), protoreflect.ValueOfString(v))
+							m.Set(desc.Fields().ByName("EMAIL_PLAIN"), protoreflect.ValueOfString(v))
+						}
+						m.Set(desc.Fields().ByName("PAYLOAD"), protoreflect.ValueOfString(
+							fmt.Sprintf("pad-%07d-xxxxxxxxxxxxxxxxxxxx", id)))
+						if _, se := store.SaveRecord(proto.Message(m)); se != nil {
+							return nil, se
+						}
+					}
+					return nil, nil
+				})
+				if e != nil {
+					errCh <- fmt.Errorf("direct load at %d: %w", base, e)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		t.Fatalf("%v", e)
 	}
 }

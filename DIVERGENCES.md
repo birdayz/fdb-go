@@ -1607,11 +1607,12 @@ not in an edge case. `strictlySorted` is a proposition the plan asserts to its
 consumers so they can skip work; there is no partial version of it, and no
 downstream operator that catches it being wrong.
 
-**What Go does.** `indexHasGloballyEnforcedUniqueKey`
+**What Go does.** `indexHasStreamEnforcedUniqueKey`
 (`cascades/rule_implement_sort.go`) routes through
-`properties.SecondaryUniqueKeyGloballyEnforced`, whose nullability clause refuses
-exactly this case. The divergence is documented at that call site so it is not
-mistaken for a redundant check and "simplified" back into Java's shape.
+`properties.SecondaryUniqueKeyEnforcedOnStream`, whose nullability clause refuses
+exactly this case unless the stream itself rules the NULLs out. The divergence is
+documented at that call site so it is not mistaken for a redundant check and
+"simplified" back into Java's shape.
 
 The cost is a retained sort where Java elides one, on a nullable unique key. That
 shows up in the cross-engine harness as a deliberate plan-shape difference. The
@@ -1620,12 +1621,20 @@ alternative is a wrong answer, so it is not a close trade.
 **Reachability, and the reason the divergence is currently invisible.** The gate
 is `false` for every SQL-expressible secondary unique index today, because the
 SQL DDL rejects a `NOT NULL` scalar column (deliberately, for Java parity — `NOT
-NULL` is accepted only on `ARRAY` types). So Go's claim is not merely stricter
-than Java's, it never fires from SQL at all. RFC-210 §5.7 is what makes it
+NULL` is accepted only on `ARRAY` types). So Go's claim was not merely stricter
+than Java's, it never fired from SQL at all. RFC-210 §5.7 is what makes it
 reachable on the streams where it is TRUE — a NULL-rejecting predicate empties
 the index's exempt set — and it does so WITHOUT relaxing the clause. Note there
 is deliberately no residual-dedup analogue for the sort claim; the RFC states
 that as a prohibition rather than an omission.
+
+The evidence a *scan range* rejects NULL is not the same evidence a *predicate*
+does, and the difference was carried as an open question before it was settled.
+It is settled: a scan range's admission rests on two binder facts — a NULL-valued
+equality binds to an EMPTY range rather than seeking `[null]`, and a bare upper
+bound installs an exclusive low at the NULL boundary. Both are pinned in
+`executor/scan_range_null_boundary_test.go`, because a sort claim has no residual
+that could catch either one changing.
 
 **To report upstream.** Not yet filed. The report should cite `:153` and the
 three-NULL-entry witness above; it is a soundness bug in Java's own terms, not a

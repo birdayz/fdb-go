@@ -9,52 +9,60 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// properties.SecondaryUniqueKeyGloballyEnforced is the shared gate for the two
-// things a secondary UNIQUE index is allowed to prove: that a DISTINCT is
-// redundant, and that an index scan is strictly sorted. Both require every
-// indexed key component to be NOT NULL, and the requirement is not negotiable —
-// under NULLS DISTINCT the uniqueness check is SKIPPED when a component is NULL,
-// so a UNIQUE index on a nullable column legitimately holds (NULL), (NULL),
-// (NULL), distinguished only by their appended primary keys.
+// This test is the probe that produced RFC-210's second refutation: the arm it
+// was written to record as unreachable was unreachable for a reason nobody had
+// stated, and stating it is what produced R2 and R3. It is REWRITTEN rather than
+// deleted now that those routes are live — three of its claims survive, one
+// INVERTS, and the boundary between them is the thing worth pinning.
 //
-// This test pins a NEGATIVE result, and it is load-bearing rather than
-// decorative: it is what makes "the proof does not fire on any SQL query" a
-// measured fact rather than an assumption, and it names exactly what gets
-// re-armed if the fact changes.
+// A secondary UNIQUE index's EXEMPT SET is the entries on which the declaration
+// constrains nothing or something finer than logical row equality: NULL key
+// components (under NULLS DISTINCT the uniqueness check is SKIPPED, so one NULL
+// prefix legitimately holds arbitrarily many entries) and raw-NaN components.
+// Every proof built on a UNIQUE declaration needs that set to be EMPTY on the
+// rows it will see. Three routes discharge it:
 //
-// The SQL layer cannot express a NOT NULL scalar column at all — CREATE rejects
-// it, deliberately, for Java parity (NOT NULL is accepted only for ARRAY column
-// types). So every scalar column is proto OPTIONAL, every SQL-expressible
-// secondary unique index has a nullable key, and the gate is false for all of
-// them. An ARRAY column can be NOT NULL, but an array key is fan-out, which the
-// base-record-cardinality clause refuses for an independent reason.
+//	R1 — the CATALOG: every key component declared NOT NULL, none FLOAT/DOUBLE.
+//	R2 — the PREDICATE: NULL rejected on every key column, on THIS stream.
+//	R3 — the RESIDUAL: dedup exactly the exempt subset instead of proving it empty.
 //
-// WHAT RE-ARMS IF THIS TEST GOES RED: a scalar NOT NULL column becoming
-// expressible makes BOTH proofs live on the SQL surface for the first time.
-// Neither has end-to-end coverage today because neither can fire, and both then
-// need it — the DISTINCT elision especially, because its failure mode is
-// duplicate rows rather than a missed optimization.
-func TestSecondaryUniqueProofIsUnreachableWhileScalarNotNullIsInexpressible(t *testing.T) {
+// What this test pins is the BOUNDARY: R1 cannot fire from SQL at all, and R2
+// can. The two facts are one fact seen from two sides, and separating them is
+// how the arm came to look dead when it was only inert.
+func TestSecondaryUniqueProofBoundary_R1UnreachableFromSQL(t *testing.T) {
 	t.Parallel()
 
-	// (a) The DDL rejects a NOT NULL scalar. This is the root fact; everything
-	// below is its consequence.
+	// ---------------------------------------------------------------------
+	// (a) The ROOT FACT, unchanged: the DDL rejects a NOT NULL scalar column.
+	//
+	// It is MORE load-bearing now than when this test was written, not less. It
+	// is the reason R1 is vacuous on the SQL surface, which is the reason R2 and
+	// R3 exist at all. NOT NULL is accepted only for ARRAY column types
+	// (deliberately, for Java parity), and an array key is fan-out, which the
+	// base-record-cardinality clause refuses for an independent reason.
+	// ---------------------------------------------------------------------
 	_, err := buildSchemaTemplateFromDDL(
 		"CREATE TABLE T (ID BIGINT, E STRING NOT NULL, PRIMARY KEY (ID))")
 	if err == nil {
-		t.Fatal("CREATE TABLE accepted a NOT NULL scalar column. Both secondary-UNIQUE " +
-			"proofs (DISTINCT elision, strict-ordering) are now reachable from SQL for " +
-			"the first time and require end-to-end coverage")
+		t.Fatal("CREATE TABLE accepted a NOT NULL scalar column. R1 — the catalog " +
+			"route — is now reachable from SQL for the first time and needs the " +
+			"end-to-end coverage it does not have; every existing SQL-level test of " +
+			"this area exercises R2 or R3 instead")
 	}
 	if !strings.Contains(err.Error(), "NOT NULL is only allowed for ARRAY column type") {
 		t.Fatalf("NOT NULL on a scalar is rejected for an unexpected reason, so this "+
 			"test is no longer pinning the fact it names: %v", err)
 	}
 
-	// (b) Consequence at the CANDIDATE level: every SQL-expressible secondary
-	// unique index key is nullable, whatever the column type and whichever
-	// CREATE INDEX form declares it — including a key over a PRIMARY KEY column,
-	// which is non-null in storage but not in the type the planner reads.
+	// ---------------------------------------------------------------------
+	// (b) The consequence at the CANDIDATE level, with the claim NARROWED.
+	//
+	// This arm used to assert "the proof does not fire on any SQL query". That is
+	// now FALSE — R2 and R3 fire. The surviving claim is the precise one:
+	// SecondaryUniqueKeyGloballyEnforced, which is R1's implementation, is false
+	// for EVERY SQL-expressible unique index. Same loop, same fixtures, a claim
+	// about R1 rather than about the whole arm.
+	// ---------------------------------------------------------------------
 	for name, ddl := range map[string]string{
 		"STRING":  "CREATE TABLE T (ID BIGINT, N STRING, PRIMARY KEY (ID))\nCREATE UNIQUE INDEX U ON T (N)",
 		"INTEGER": "CREATE TABLE T (ID BIGINT, N INTEGER, PRIMARY KEY (ID))\nCREATE UNIQUE INDEX U ON T (N)",
@@ -83,9 +91,9 @@ func TestSecondaryUniqueProofIsUnreachableWhileScalarNotNullIsInexpressible(t *t
 			}
 			seen = true
 			if properties.SecondaryUniqueKeyGloballyEnforced(typed.GetKeyComponentTypes(), 1) {
-				t.Fatalf("%s: unique index U has a globally enforced key (%v). The "+
-					"secondary-UNIQUE DISTINCT elision can now fire on a SQL query and "+
-					"needs the end-to-end coverage it does not have",
+				t.Fatalf("%s: unique index U has a globally enforced key (%v). R1 now "+
+					"fires from SQL, which it never has; the routes below are no "+
+					"longer the only ones and R1 needs coverage of its own",
 					name, typed.GetKeyComponentTypes())
 			}
 		}
@@ -93,34 +101,102 @@ func TestSecondaryUniqueProofIsUnreachableWhileScalarNotNullIsInexpressible(t *t
 			t.Fatalf("%s: no unique candidate named U was built, so this row observed nothing", name)
 		}
 	}
+}
 
-	// (c) Consequence at the PLAN level, for the OTHER consumer of the same
-	// gate. #617's strict-ordering claim (indexHasGloballyEnforcedUniqueKey) is
-	// dead on the SQL surface for exactly this reason, which is why nothing here
-	// changed when the DISTINCT arm was added.
-	plan, err := PlanPhysicalForTest(
-		"SELECT N FROM T ORDER BY N",
-		"CREATE TABLE T (ID BIGINT, N STRING, PRIMARY KEY (ID))\nCREATE UNIQUE INDEX U ON T (N)",
-		nil)
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	scanned := false
-	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
-		indexPlan, ok := node.(*plans.RecordQueryIndexPlan)
-		if !ok || !indexPlan.IsUnique() {
-			return true
-		}
-		scanned = true
-		if indexPlan.IsStrictlySorted() {
-			t.Fatalf("a SQL-planned unique index scan is strictlySorted (%s). The "+
-				"strict-ordering half of the gate is live on the SQL surface now",
-				plan.Explain())
-		}
-		return true
-	})
-	if !scanned {
-		t.Fatalf("the ORDER BY query planned no unique index scan, so (c) observed "+
-			"nothing: %s", plan.Explain())
+// TestSecondaryUniqueProof_StrictOrderingReachability is arm (c), and it is the
+// one that INVERTED.
+//
+// It used to assert that a SQL-planned unique index scan is never strictlySorted
+// — the blanket unreachability the whole test was written to record. RFC-210 §5.7
+// makes that false on a NULL-rejecting stream, and deliberately so: over a UNIQUE
+// index on a nullable column the claim is FALSE in general (the index legitimately
+// holds (NULL,pk=1),(NULL,pk=2),(NULL,pk=3), three entries whose claimed sort key
+// is identical — the upstream bug Java ships at RemoveSortRule.java:153), and TRUE
+// exactly when the scan cannot reach those entries.
+//
+// So the arm keeps both sides and pins the BOUNDARY rather than one edge of it.
+// Each row below states which route decides it and why.
+func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
+	t.Parallel()
+
+	const ddl = "CREATE TABLE T (ID BIGINT, N STRING, PRIMARY KEY (ID))\n" +
+		"CREATE UNIQUE INDEX U ON T (N)"
+
+	for _, tc := range []struct {
+		name           string
+		query          string
+		wantStrictSort bool
+		because        string
+	}{
+		{
+			name:           "unfiltered_declines",
+			query:          "SELECT N FROM T ORDER BY N",
+			wantStrictSort: false,
+			because: "the scan reaches every entry the index holds, NULLs included, " +
+				"so its sort key has genuine ties. R1 is false for this index (arm (b)) " +
+				"and R2 has nothing to read. This is the negative half of the boundary " +
+				"and the shape Java claims strictlySorted on",
+		},
+		{
+			name:           "is_not_null_licenses",
+			query:          "SELECT N FROM T WHERE N IS NOT NULL ORDER BY N",
+			wantStrictSort: true,
+			because: "R2 via the SCAN RANGE. IS NOT NULL is admitted by " +
+				"isSargableComparisonForMatch, so the planner pushes it INTO the range " +
+				"rather than leaving a residual filter — which is why the scan-range " +
+				"route is the one that matters here and not the filter route",
+		},
+		{
+			name:           "ordered_bound_licenses",
+			query:          "SELECT N FROM T WHERE N > 'a' ORDER BY N",
+			wantStrictSort: true,
+			because: "R2 again: a lower bound at a non-NULL comparand sits above the " +
+				"NULL boundary, so the NULL entries are outside the range",
+		},
+		{
+			name:           "residual_filter_declines",
+			query:          "SELECT N FROM T WHERE N <> 'z' ORDER BY N",
+			wantStrictSort: false,
+			because: "the SQL-path twin of the refusal in " +
+				"cascades/null_rejecting_scan_range_test.go. `N <> 'z'` DOES reject " +
+				"NULL and NOT_EQUALS IS on R2's allow-list, but it is not SARGable, so " +
+				"it survives as PredicatesFilter over a FULL scan. Crediting it would " +
+				"mark the scan BELOW the filter, and that scan still emits every NULL " +
+				"entry — its own RichOrdering would then claim distinctness over a " +
+				"stream with ties, readable by any consumer that never sees the filter",
+		},
+		{
+			name:           "is_null_declines",
+			query:          "SELECT N FROM T WHERE N IS NULL ORDER BY N",
+			wantStrictSort: false,
+			because: "the trap. IS NULL is a scan-range EQUALITY type exactly as " +
+				"ordinary equality is, and it seeks the NULL entries — which on this " +
+				"stream are ALL that is left. Refused by the allow-list",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanPhysicalForTest(tc.query, ddl, nil)
+			if err != nil {
+				t.Fatalf("plan %q: %v", tc.query, err)
+			}
+			scanned := false
+			plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+				indexPlan, ok := node.(*plans.RecordQueryIndexPlan)
+				if !ok || !indexPlan.IsUnique() {
+					return true
+				}
+				scanned = true
+				if got := indexPlan.IsStrictlySorted(); got != tc.wantStrictSort {
+					t.Fatalf("%s\nstrictlySorted = %v, want %v — because %s\nplan: %s",
+						tc.query, got, tc.wantStrictSort, tc.because, plan.Explain())
+				}
+				return true
+			})
+			if !scanned {
+				t.Fatalf("%s planned no unique index scan, so this row observed "+
+					"nothing: %s", tc.query, plan.Explain())
+			}
+		})
 	}
 }
