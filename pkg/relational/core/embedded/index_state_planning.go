@@ -27,22 +27,32 @@ import (
 // another.
 //
 // The dependency is a SET OF INDEXES, and it is deliberately not the store's
-// whole index-state snapshot. Two properties follow, and both are Java's:
+// whole index-state snapshot. The set being SCOPED is the one property this
+// enforces: an index the plan does not depend on may change state freely.
+// Signing the whole snapshot instead makes an unrelated index build fail every
+// in-flight statement in the database with a retryable error — a self-inflicted
+// outage rather than a correctness measure.
 //
-//   - SCOPED. An index the plan does not depend on may change state freely.
-//     Signing the whole snapshot instead makes an unrelated index build fail
-//     every in-flight statement in the database with a retryable error, which is
-//     a self-inflicted outage rather than a correctness measure.
-//   - DIRECTIONAL. Only a dependency ceasing to be READABLE invalidates. An
-//     index that was excluded at planning and has since BECOME readable leaves
-//     the plan correct and merely less optimal, so it must not invalidate.
-//     Java is emphatic about this: RecordStoreState.compatibleWith
-//     (RecordStoreState.java:242-247) iterates the CURRENT state's index map,
-//     which holds only the NON-readable exceptions, and requires each to be
-//     non-readable in the planned state too — an index readable now and
-//     excluded then is never even examined. Its javadoc names the reason: such
-//     operations "will be less efficient with the older state information, but
-//     they should not cause correctness problems".
+// DIRECTIONALITY IS NOT A SECOND MECHANISM. Nothing below checks it, and
+// nothing needs to: an index that was NOT readable at planning was not a
+// candidate (the RFC-209 readable-index filter, pinned by
+// TestFDB_NonReadableIndexIsNotAMatchCandidate), so no plan can scan it and no
+// proof can rest on it, so it is not in this set, so its becoming readable is
+// not examined. "An index becoming readable never invalidates" is therefore a
+// THEOREM entailed by scoping plus that filter, not a rule someone has to
+// remember to keep enforcing. Java lands in the same place by the same
+// structural route: RecordStoreState.compatibleWith
+// (RecordStoreState.java:242-247) iterates the CURRENT state's index map, which
+// holds only the NON-readable exceptions, so an index readable now and excluded
+// then is never examined either. Its javadoc names the reason such a plan is
+// still fine: it "will be less efficient with the older state information, but
+// [should] not cause correctness problems".
+//
+// The practical consequence is worth stating because it is what makes the
+// scoping non-negotiable rather than merely tidy: an unscoped signature is
+// incompatible with store states RFC-209 already supports. Every query against
+// a store holding any WRITE_ONLY index would 40001 — including the queries
+// whose whole point is that they still answer correctly from a slower plan.
 //
 // WHAT GOES IN THE SET. Java collects `plan.getUsedIndexes()` — the indexes the
 // plan SCANS, gathered by delegation down the plan tree
@@ -51,8 +61,25 @@ import (
 // is a dependency even when no leaf scans it. A uniqueness proof that elides a
 // DISTINCT is the motivating case — the resulting plan reads base records and
 // names the index nowhere, so a scan-only set would miss precisely the
-// dependency that can produce WRONG ROWS rather than an error. See
-// planIndexDependencies.
+// dependency that can produce WRONG ROWS rather than an error.
+//
+// THE CLASS A READER WILL WORRY ABOUT, and why it is already covered. The
+// ProvenCardinalities family (plan_properties.go, planning_cost_model.go,
+// expression_partition.go) gates max-cardinality-1 proofs on an index's UNIQUE
+// flag, and those proofs feed FlatMap ordering, the nested-loop-join
+// caseOneOuter shape, and intersection-leg pruning. Every one of them is
+// SELF-REFERENTIAL: the bound is proved about an index scan that remains a leaf
+// of the yielded plan, so the leaf walk below already collects it. Pruning is
+// the one that looks like an exception and is not — discarding a leg cannot make
+// a SURVIVING leg incorrect, and the survivor's own indexes are collected from
+// the plan that survives.
+//
+// So the proof-only set is empty today. That is measured rather than assumed,
+// and it is kept true by a test rather than by this comment: the one genuinely
+// proof-only shape, a secondary UNIQUE index licensing a DISTINCT elision, is
+// declined outright, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
+// is what fails if that decline is lifted without the dependency being recorded
+// here. See planIndexDependencies.
 
 // planIndexDependencies is a plan's complete index dependency set. The element
 // type is predicates.UsedIndex — the SAME type the ported
@@ -152,6 +179,15 @@ func collectScannedIndexNames(plan plans.RecordQueryPlan, into map[string]struct
 // storeIndexAvailability adapts a live store's metadata and index states to the
 // question the predicate asks. Both come from the SAME store open, so they
 // cannot describe two different moments.
+//
+// states MUST be complete over md — every index the metadata names, present
+// with its state (fetchIndexStateSnapshot's contract, which GetAllIndexStates
+// satisfies by construction). IsIndexReadable requires presence and so fails
+// CLOSED on a name it does not find, which is a deliberate divergence from
+// Java's RecordStoreState, where an absent entry DEFAULTS to readable. Java can
+// default because its map is definitionally the exceptions to a known universe;
+// here an absent name means the caller passed a partial map, and treating that
+// as "readable" would turn a caller's bug into a silently skipped check.
 type storeIndexAvailability struct {
 	md     *recordlayer.RecordMetaData
 	states map[string]recordlayer.IndexState

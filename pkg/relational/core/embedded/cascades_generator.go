@@ -321,23 +321,24 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	defer func() { ls.finish(err) }()
 
 	popts := plannerOptionsFrom(g.c.Options())
-	// The readable-index view and the plan's index-state signature are BOTH
-	// derived from one store open, taken before the cache key is built.
+	// ONE index-state read serves both the readable-index VIEW and the plan's
+	// index DEPENDENCIES, and it is taken before the cache key is built.
 	//
 	// The view decides which indexes may back a plan and is PART of the cache
 	// key; Java keys its plan cache the same way (PlannerConfiguration carries
 	// readableIndexes, QueryCacheKey carries the whole configuration —
-	// QueryCacheKey.java:127,142). The signature is the plan's index-state
-	// DEPENDENCY, revalidated inside every execution transaction; the cache key
-	// cannot do that job, because an auto-commit statement's pages are separate
-	// transactions and the key is consulted once per statement. See
-	// index_state_planning.go.
+	// QueryCacheKey.java:127,142). The dependencies are the indexes the finished
+	// plan's correctness rests on, revalidated inside every execution
+	// transaction; the cache key cannot do that job, because an auto-commit
+	// statement's pages are separate transactions and the key is consulted once
+	// per statement. See index_state_planning.go.
 	//
 	// One open, not two: the open is the dominant cost on this path
 	// (TestFDB_ReadableIndexViewLatency measures ~1.28 ms of a 2.71 ms cached
-	// point-lookup SELECT), and it must be one read anyway — a view and a
-	// signature taken from two different transactions could disagree, which is
-	// the exact incoherence the signature exists to detect.
+	// point-lookup SELECT), and it must be one read anyway — the view decides
+	// which indexes become candidates, and the dependencies are read off the
+	// plan those candidates produce, so two reads could have the plan built
+	// against one moment's states and its dependencies pinned to another's.
 	//
 	// Opening the store, rather than reading the index-state subspace directly,
 	// is what makes the state the one checkVersion has already reconciled — see
