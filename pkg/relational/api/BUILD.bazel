@@ -11,6 +11,7 @@ go_library(
         "datatype.go",
         "datatype_composite.go",
         "datatype_primitive.go",
+        "ddl_scope_error.go",
         "direct_access.go",
         "errcode.go",
         "error.go",

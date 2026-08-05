@@ -61,6 +61,9 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
+	if err := c.checkDDLDatabaseScope("CREATE DATABASE", dbPath); err != nil {
+		return 0, err
+	}
 	action := c.sess.Factory.CreateDatabase(dbPath, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
@@ -68,6 +71,9 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.DropDatabaseStatementContext) (int64, error) {
 	dbPath := s.Path().GetText()
 	if err := validateDatabasePath(dbPath); err != nil {
+		return 0, err
+	}
+	if err := c.checkDDLDatabaseScope("DROP DATABASE", dbPath); err != nil {
 		return 0, err
 	}
 	throwIfNotExist := s.IfExists() == nil
@@ -86,6 +92,9 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 	// creates TEST, which is how a `schema=TEST` connection then finds it.
 	// The database PATH is not an identifier and stays verbatim.
 	schemaName = functions.StripIdentifierQuotes(schemaName)
+	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
+		return 0, err
+	}
 	templateID := s.SchemaTemplateId().GetText()
 	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
@@ -112,6 +121,9 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)
 	}
+	if err := c.checkDDLDatabaseScope("DROP SCHEMA", dbPath); err != nil {
+		return 0, err
+	}
 	action := c.sess.Factory.DropSchema(dbPath, schemaName, *api.NoOptions())
 	if err := c.runDDL(ctx, action); err != nil {
 		return 0, err
@@ -121,6 +133,9 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 }
 
 func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antlrgen.DropSchemaTemplateStatementContext) (int64, error) {
+	if err := c.checkSchemaTemplateDDLAllowed("DROP SCHEMA TEMPLATE"); err != nil {
+		return 0, err
+	}
 	templateID := s.Uid().GetText()
 	throwIfNotExist := s.IfExists() == nil
 	action := c.sess.Factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
@@ -128,6 +143,9 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 }
 
 func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *antlrgen.CreateSchemaTemplateStatementContext) (int64, error) {
+	if err := c.checkSchemaTemplateDDLAllowed("CREATE SCHEMA TEMPLATE"); err != nil {
+		return 0, err
+	}
 	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
@@ -872,6 +890,74 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 		return nil, txn.Commit()
 	})
 	return err
+}
+
+// checkDDLDatabaseScope rejects a DDL statement whose resolved database path
+// lies outside the connection's own database, when the connection has
+// RESTRICT_DDL_TO_SESSION_DATABASE set. With the option unset (the default) it
+// is a no-op and behaviour is exactly Java's.
+//
+// This is the single chokepoint for the check, and it takes the ALREADY
+// RESOLVED database path — the value the ConstantAction will act on — rather
+// than the statement text. parseSchemaIdentifier is a lexical split on the last
+// "/", so `CREATE SCHEMA /other/S` and `DROP SCHEMA /other/S` reach the catalog
+// with a database the connection never opened; DROP/CREATE DATABASE take theirs
+// straight off the parse tree. Checking the resolved path covers all four
+// without any string matching on SQL.
+//
+// Java has no equivalent: SemanticAnalyzer.parseSchemaURI splits the identifier
+// and returns it without ever comparing against the connection. The only
+// reserved-path guard on the Java side is DropDatabaseConstantAction's exact
+// "/__SYS" check; CreateDatabaseConstantAction has no such guard at all. Java
+// assumes authorization happens above the SQL engine. This option is for
+// deployments where the connection itself is the trust boundary, which is why
+// it is opt-in rather than the default.
+//
+// Scope is containment, not equality: a connection on /tenant-a may operate on
+// /tenant-a and anything nested under it, the same predicate SHOW DATABASES
+// uses for its prefix. Comparison is at path-segment granularity, so /tenant-a
+// gets no authority over /tenant-abc.
+func (c *EmbeddedConnection) checkDDLDatabaseScope(operation, dbPath string) error {
+	if !optBool(c.Options(), api.OptRestrictDDLToSessionDatabase, false) {
+		return nil
+	}
+	// No separate check for an unscopable session path: databaseInPrefix
+	// rejects "" and the bare root "/" outright, so a session that scopes
+	// nothing confers authority over nothing — not, as a raw prefix test would
+	// have it, authority over every database on the cluster.
+	if databaseInPrefix(dbPath, c.sess.DBPath) {
+		return nil
+	}
+	return api.NewCrossDatabaseDDLError(operation, c.sess.DBPath, dbPath)
+}
+
+// checkSchemaTemplateDDLAllowed refuses CREATE / DROP SCHEMA TEMPLATE outright
+// on a connection with RESTRICT_DDL_TO_SESSION_DATABASE set. With the option
+// unset (the default) it is a no-op and behaviour is exactly Java's.
+//
+// Refusal rather than scoping, because there is nothing to scope against. A
+// schema template is cluster-global in the catalog wire format — the Templates
+// record has no owning database — so checkDDLDatabaseScope has no database to
+// compare and the template namespace is shared by every tenant. That sharing is
+// what makes template DDL a cross-tenant operation even though it names no
+// database:
+//
+//   - DROP SCHEMA TEMPLATE removes ALL versions of the template. A schema
+//     resolves its stored template version when it is loaded, so dropping a
+//     template another tenant's schema was created from leaves that schema
+//     unloadable.
+//   - CREATE SCHEMA TEMPLATE can re-mint a name at a version another tenant's
+//     schemas already reference, changing the metadata those schemas resolve to.
+//
+// Neither is expressible as "inside or outside my database", so a restricted
+// connection gets no template DDL at all. A deployment that needs per-tenant
+// templates namespaces the template NAME and performs template DDL on an
+// unrestricted administrative connection.
+func (c *EmbeddedConnection) checkSchemaTemplateDDLAllowed(operation string) error {
+	if !optBool(c.Options(), api.OptRestrictDDLToSessionDatabase, false) {
+		return nil
+	}
+	return api.NewSchemaTemplateDDLRestrictedError(operation, c.sess.DBPath)
 }
 
 // parseSchemaIdentifier splits "/dbpath/schemaname" into its parts.
