@@ -10772,7 +10772,7 @@ None is speculative: each was re-verified against the tree before booking.
   probe kept as a regression, since it is the measurement that proved the current
   gates accidental.
 
-- [ ] **CQ-47 (HIGH) — binding-stress 0/50, every seed, un-root-caused.** · under
+- [x] **CQ-47 (HIGH) — binding-stress 0/50, every seed, un-root-caused.** · under
   investigation
   **Nightly Fuzz binding-stress, runs `30072919663` (07-24) and `30147568953`
   (07-25)** — `binding-stress: 0/50 pass, 50 fail, 0 FDB deaths (1000 ops/seed)`.
@@ -10783,6 +10783,35 @@ None is speculative: each was re-verified against the tree before booking.
   around 07-23, not at seed-specific behaviour.
   DONE = root-caused, fixed, pinned. Reproduce locally first:
   `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start 1`.
+
+  **DONE 2026-08-05.** Root cause: `python_fdb_tar` was built without
+  `--dereference`. Bazel stages an external repo's srcs as symlinks into the
+  execroot, so the archive stored absolute paths into the builder's own
+  output_base instead of file content. It therefore unpacked correctly only on
+  the tree that produced it — which is exactly why the lane never reproduced
+  locally while failing on every CI runner. Off that tree every member dangles,
+  `fdb/` unpacks as a directory with no importable `__init__.py`, and Python does
+  not error: it resolves `import fdb` to an empty implicit namespace package. The
+  tester then died on the first attribute it touched,
+  `AttributeError: module 'fdb' has no attribute 'api_version'`, identically for
+  all 50 seeds with the cluster healthy. The 08-04 nightly (job 91913623773)
+  printed the tell directly — `Python FDB client: None`, i.e. `fdb.__file__` was
+  None — after #583 improved the per-seed reporting.
+  The preflight #583 added to catch this class did not: a bare `import fdb`
+  succeeds on a namespace package, so the guard was fake. It now rejects a
+  `__file__`-less package explicitly and touches `fdb.api_version`.
+  Pinned by `TestPinnedPythonClientTarCarriesContentNotSymlinksIntoTheBuildTree`
+  (tar carries content, no link members) and
+  `TestPreflightRejectsAnEmptyNamespacePackage` (stages the exact broken shape).
+  Both go red under independent reverts of their own direction; the pre-existing
+  `TestPinnedPythonClientIsImportableNotTheCMakeTemplateTree` stays green on the
+  broken tar, since it only asserted entry *names* — that is the dimension that
+  was unprobed. Measured after the fix: api 100/100 × 1000 ops, directory
+  30/30 × 500 ops, 0 FDB deaths.
+  NOT part of this failure, seen once in the same 08-04 job and still unexplained:
+  seed 1 died at container start with `unable to apply cgroup configuration …
+  Message recipient disconnected from message bus` (FDB=DEAD) — a runner-side
+  systemd/dbus fault, not a harness or client defect.
 
 - [x] **CQ-48 (MED) — docs authority reconciliation: five living documents assert
   states the code has left behind.** · M
